@@ -3,9 +3,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 thread_local! {
-    /// Ambient enum-name set consulted by [`resolve_type_expr_with_aliases_kinded`]
-    /// as a LAST-RESORT fallback for a bare `Named` type that resolves as neither
-    /// a builtin, alias, structure, nor trait (task 2998).
+    /// Ambient map from each in-scope enum's name to its declared type params
+    /// (empty for a non-generic enum), consulted by
+    /// [`resolve_type_expr_with_aliases_kinded`] as a LAST-RESORT fallback for a
+    /// bare `Named` type that resolves as neither a builtin, alias, structure, nor
+    /// trait (task 2998). The params let a bare GENERIC name be held to R2(b)/R3
+    /// via [`resolve_argless_enum_annotation`].
     ///
     /// Why a thread-local rather than an explicit `enum_names` argument: enum names
     /// must be visible at the INNER type-arg resolution of a parameterized builtin
@@ -16,7 +19,7 @@ thread_local! {
     /// crate (including unit tests). Threading a new argument through all of them
     /// for a narrow fallback would be large churn with no behavioural change at the
     /// many sites that would pass it empty. Instead the resolver reads this ambient
-    /// set, installed (via [`EnumNameScope`]) at exactly four sites, each of which
+    /// map, installed (via [`EnumNameScope`]) at exactly four sites, each of which
     /// has the module's `enum_defs` in scope:
     ///
     ///   * `entity.rs`    — struct-param resolution (task 2998);
@@ -31,9 +34,10 @@ thread_local! {
     /// unaffected — the same param-position scoping precedent as qualified-assoc
     /// resolution (`entity.rs`). Keep this list in sync: `grep -rn
     /// 'EnumNameScope::new' crates/` is the authority.
-    /// Type resolution is single-threaded per module and the set lives only for the
+    /// Type resolution is single-threaded per module and the map lives only for the
     /// lifetime of an `EnumNameScope` guard.
-    static RESOLUTION_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    static RESOLUTION_ENUM_NAMES: RefCell<HashMap<String, Vec<reify_ir::TypeParam>>> =
+        RefCell::new(HashMap::new());
 
     /// Ambient set of MODULE-LOCAL enum names that SHADOW a same-named PRELUDE
     /// `structure def` in param positions (task #5429; PRD
@@ -47,8 +51,8 @@ thread_local! {
     /// conformance walker then rejected an `Enum(Fit)` argument against a
     /// "structure type Fit" param.
     ///
-    /// How this differs from [`RESOLUTION_ENUM_NAMES`] — the two sets are
-    /// deliberately separate, not one hoisted set:
+    /// How this differs from [`RESOLUTION_ENUM_NAMES`] — the two are
+    /// deliberately separate, not one hoisted collection:
     /// - **Membership.** This set is MODULE-LOCAL only (`ctx.enum_defs`), whereas
     ///   `RESOLUTION_ENUM_NAMES` is installed from `ctx.resolution_enums` =
     ///   prelude ++ local. A PRELUDE enum must never shadow a LOCAL structure —
@@ -77,20 +81,23 @@ thread_local! {
     static RESOLUTION_SHADOWING_ENUM_NAMES: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
 }
 
-/// RAII guard that installs an ambient enum-name set into [`RESOLUTION_ENUM_NAMES`]
-/// for its lifetime, restoring the prior set on drop so nested scopes compose
+/// RAII guard that installs the given enums into [`RESOLUTION_ENUM_NAMES`]
+/// for its lifetime, restoring the prior map on drop so nested scopes compose
 /// (task 2998). Construct one around a region of type resolution that should
 /// recognise enum names as inner type args of parameterized builtins (e.g. the
 /// `Option<EnumT>` in a struct `param` type); see `entity.rs` struct-param
 /// resolution.
 pub(crate) struct EnumNameScope {
-    prev: HashSet<String>,
+    prev: HashMap<String, Vec<reify_ir::TypeParam>>,
 }
 
 impl EnumNameScope {
-    pub(crate) fn new(enum_names: HashSet<String>) -> Self {
-        let prev =
-            RESOLUTION_ENUM_NAMES.with(|s| std::mem::replace(&mut *s.borrow_mut(), enum_names));
+    pub(crate) fn new(enum_defs: &[reify_ir::EnumDef]) -> Self {
+        let enums = enum_defs
+            .iter()
+            .map(|e| (e.name.clone(), e.type_params.clone()))
+            .collect();
+        let prev = RESOLUTION_ENUM_NAMES.with(|s| std::mem::replace(&mut *s.borrow_mut(), enums));
         EnumNameScope { prev }
     }
 }
@@ -102,10 +109,24 @@ impl Drop for EnumNameScope {
     }
 }
 
+/// The ambient enum named `name` (see [`RESOLUTION_ENUM_NAMES`]) resolved as an
+/// argument-less annotation, or `None` when no in-scope enum has that name.
+fn resolve_ambient_bare_enum(
+    name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Option<Type> {
+    RESOLUTION_ENUM_NAMES.with(|s| {
+        s.borrow().get(name).map(|type_params| {
+            resolve_argless_enum_annotation(name, type_params, diagnostics, span)
+        })
+    })
+}
+
 /// RAII guard that installs an ambient shadowing-enum-name set into
 /// [`RESOLUTION_SHADOWING_ENUM_NAMES`] for its lifetime, restoring the prior set
 /// on drop so nested scopes compose (task #5429). Modelled on [`EnumNameScope`];
-/// see that type and `RESOLUTION_SHADOWING_ENUM_NAMES` for why the two sets are
+/// see that type and `RESOLUTION_SHADOWING_ENUM_NAMES` for why the two are
 /// separate.
 ///
 /// Construct one around a region of type resolution where a MODULE-LOCAL `enum N`
@@ -1373,11 +1394,77 @@ pub(crate) fn resolve_enum_type(name: &str, enum_defs: &[reify_ir::EnumDef]) -> 
     }
 }
 
+fn enum_type_arity_error(
+    name: &str,
+    expected: usize,
+    found: usize,
+    span: SourceSpan,
+) -> Diagnostic {
+    let plural = if expected == 1 { "" } else { "s" };
+    Diagnostic::error(format!(
+        "enum `{name}` expects {expected} type argument{plural}, found {found}"
+    ))
+    .with_label(DiagnosticLabel::new(span, "wrong number of type arguments"))
+}
+
+/// Resolve an enum annotation written with no type arguments.
+///
+/// A non-generic enum is `Type::Enum(name)`. A generic enum is filled from its
+/// declared defaults when every type parameter has one, and is otherwise an arity
+/// error (docs/prds/v0_6/generic-enum-type-arg-retention.md §6 R2(b), R3).
+pub(crate) fn resolve_argless_enum_annotation(
+    name: &str,
+    type_params: &[reify_ir::TypeParam],
+    diagnostics: &mut Vec<Diagnostic>,
+    span: SourceSpan,
+) -> Type {
+    if type_params.is_empty() {
+        return Type::Enum(name.to_string());
+    }
+    match fill_type_param_defaults(type_params) {
+        Some(args) => Type::Applied {
+            name: name.to_string(),
+            args,
+        },
+        None => {
+            diagnostics.push(enum_type_arity_error(name, type_params.len(), 0, span));
+            Type::Enum(name.to_string())
+        }
+    }
+}
+
+/// Every type parameter's declared default, or `None` when any parameter has
+/// none. Filled left to right, so an earlier parameter named anywhere in a
+/// default takes that parameter's filled argument (`<A = Length, B = Option<A>>`
+/// fills `B` as `Option<Length>`).
+///
+/// [`convert_type_params`] resolves defaults without the parameter list in
+/// scope and drops a default's type arguments, so today the only earlier-param
+/// default that arrives is a whole `StructureRef("A")` (`B = Option<A>` arrives
+/// as `StructureRef("Option")`). #5994 lowers the name to `TypeParam("A")` and
+/// keeps the arguments.
+fn fill_type_param_defaults(type_params: &[reify_ir::TypeParam]) -> Option<Vec<Type>> {
+    let mut filled: HashMap<String, Type> = HashMap::new();
+    type_params
+        .iter()
+        .map(|tp| {
+            let default = tp.default.as_ref()?;
+            let arg = match default {
+                Type::StructureRef(name) if filled.contains_key(name) => filled[name].clone(),
+                _ => substitute_type_params(default, &filled),
+            };
+            filled.insert(tp.name.clone(), arg.clone());
+            Some(arg)
+        })
+        .collect()
+}
+
 /// Resolve an enum name with optional type arguments to a `Type`.
 ///
-/// Three cases:
+/// Four cases:
 /// 1. `name` is not a known enum → `None` (caller falls through to other resolution).
-/// 2. `type_args` is empty → `Some(Type::Enum(name))` (plain enum, unchanged).
+/// 2. `type_args` is empty → `resolve_argless_enum_annotation` (plain enum
+///    unchanged; generic: defaults fill or arity error).
 /// 3. Enum is GENERIC (non-empty `EnumDef.type_params`) AND `type_args` non-empty
 ///    → resolve each arg via `resolve_type_expr_with_aliases`, return
 ///    `Some(Type::Applied { name, args })` (reuses the 4603 γ carrier).
@@ -1398,24 +1485,21 @@ pub(crate) fn resolve_enum_type_with_args(
 ) -> Option<Type> {
     let enum_def = enum_defs.iter().find(|e| e.name == name)?;
     if type_args.is_empty() {
-        return Some(Type::Enum(name.to_string()));
+        return Some(resolve_argless_enum_annotation(
+            name,
+            &enum_def.type_params,
+            diagnostics,
+            span,
+        ));
     }
     if !enum_def.type_params.is_empty() {
         if type_args.len() != enum_def.type_params.len() {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "enum `{}` expects {} type argument{}, found {}",
-                    name,
-                    enum_def.type_params.len(),
-                    if enum_def.type_params.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    type_args.len()
-                ))
-                .with_label(DiagnosticLabel::new(span, "wrong number of type arguments")),
-            );
+            diagnostics.push(enum_type_arity_error(
+                name,
+                enum_def.type_params.len(),
+                type_args.len(),
+                span,
+            ));
             return Some(Type::Enum(name.to_string()));
         }
         let args: Vec<Type> = type_args
@@ -1865,7 +1949,9 @@ pub(crate) fn resolve_type_expr_with_aliases(
 ///    docs/prds/v0_6/uniform-member-access.md §4 M5 / D8): a MODULE-LOCAL
 ///    `enum N` outranks a same-named PRELUDE `structure def N`, so `enum Fit` +
 ///    `param fit : Fit` lowers to `Type::Enum("Fit")` rather than being
-///    conflated with std.tolerancing's `structure def Fit`.
+///    conflated with std.tolerancing's `structure def Fit`. A bare GENERIC
+///    shadowing enum goes through `resolve_argless_enum_annotation` when an
+///    `EnumNameScope` holds it, exactly as in step 5.
 ///
 ///    Each conjunct earns its place:
 ///
@@ -1888,13 +1974,14 @@ pub(crate) fn resolve_type_expr_with_aliases(
 /// 5. Enum-name fallback (task 2998): an enum used as an inner type arg of a
 ///    parameterized builtin (e.g. the `QoIDescriptor` in
 ///    `Option<QoIDescriptor>`) reaches here because step 1 resolves builtins /
-///    aliases / structures / traits but NOT enums. Consult the ambient enum set
+///    aliases / structures / traits but NOT enums. Consult the ambient enums
 ///    installed by `EnumNameScope` (non-empty around struct-param, fn
 ///    param/return and constraint-def param resolution; empty otherwise — see
-///    `RESOLUTION_ENUM_NAMES` for the authoritative install-site list). Bare
-///    names only, for the same reason as step 4: an `Enum<Args>` form keeps
-///    `type_args` non-empty and falls through, and entity.rs then emits "enum
-///    does not accept type arguments". This is the same enum fallback the
+///    `RESOLUTION_ENUM_NAMES` for the authoritative install-site list). A bare
+///    GENERIC enum goes through `resolve_argless_enum_annotation`: defaults
+///    fill it, or it is an arity error. Bare names only, for the same reason
+///    as step 4: an `Enum<Args>` form keeps `type_args` non-empty and falls
+///    through to `resolve_enum_type_with_args`. This is the same enum fallback the
 ///    struct-param (entity.rs) and enum-variant-payload (enums_phase.rs) paths
 ///    use via `resolve_enum_type`, lifted to cover the nested-in-builtin
 ///    position that explicit `structure_names` / `trait_names` threading does
@@ -2026,13 +2113,18 @@ fn resolve_entity_name_with_shadowing(
             && matches!(ty, Type::StructureRef(_))
             && RESOLUTION_SHADOWING_ENUM_NAMES.with(|s| s.borrow().contains(name))
         {
-            return Some(Type::Enum(name.to_string()));
+            return Some(
+                resolve_ambient_bare_enum(name, diagnostics, span)
+                    .unwrap_or_else(|| Type::Enum(name.to_string())),
+            );
         }
         return Some(ty);
     }
 
-    if type_args.is_empty() && RESOLUTION_ENUM_NAMES.with(|s| s.borrow().contains(name)) {
-        return Some(Type::Enum(name.to_string()));
+    if type_args.is_empty()
+        && let Some(ty) = resolve_ambient_bare_enum(name, diagnostics, span)
+    {
+        return Some(ty);
     }
 
     None
@@ -2052,7 +2144,7 @@ fn resolve_entity_name_with_shadowing(
 /// makes the next namespace a single-site addition instead of two copies that
 /// must be kept in step by hand.
 ///
-/// Enums answer through the ambient `RESOLUTION_ENUM_NAMES` set, so a caller
+/// Enums answer through the ambient `RESOLUTION_ENUM_NAMES` map, so a caller
 /// that cares about them must install an [`EnumNameScope`] first — the same
 /// channel the `_kinded` and alias-body tails read, rather than a second
 /// plumbing axis for the same question.
@@ -2079,29 +2171,21 @@ fn type_name_is_known(
     if is_parameterized_builtin_name(name) || alias_registry.lookup(name).is_some() {
         return true;
     }
-    // A name-existence question carries no type arguments, and with `type_args`
-    // empty no arm of the resolver can emit a diagnostic or call `resolve_arg`
-    // — so the span is never read and the scratch vector is never written. The
-    // assert keeps that true if an arm is ever added.
+    // A bare generic enum's arity diagnostic is irrelevant to whether the name
+    // exists, so it is dropped.
     let no_type_params = HashSet::new();
-    let mut scratch: Vec<Diagnostic> = Vec::new();
-    let known = resolve_entity_name_with_shadowing(
+    resolve_entity_name_with_shadowing(
         name,
         &[],
         &no_type_params,
         alias_registry,
         structure_names,
         trait_names,
-        &mut scratch,
+        &mut Vec::new(),
         SourceSpan::empty(0),
         &mut |_, _| None,
     )
-    .is_some();
-    debug_assert!(
-        scratch.is_empty(),
-        "a bare name-existence resolution must not emit diagnostics; got {scratch:?}"
-    );
-    known
+    .is_some()
 }
 
 /// Dimension-kinded variant of [`resolve_type_expr_with_aliases`].
@@ -2406,7 +2490,7 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
 /// The deferred use-site arm in [`resolve_type_expr_with_aliases_kinded`]
 /// resolves an entity-bodied alias by RECURSING into that same function, so the
 /// body's ENUM-ness is only visible where the ambient [`RESOLUTION_ENUM_NAMES`]
-/// set is live. [`EnumNameScope`] installs it at four places — struct-param
+/// map is live. [`EnumNameScope`] installs it at four places — struct-param
 /// resolution (`entity.rs`), fn param and fn return resolution (`functions.rs`),
 /// and, since task 6416, constraint-def param resolution (`defs_phase.rs`).
 ///
@@ -3413,7 +3497,7 @@ pub(crate) fn substitute_expr_result_types(expr: &mut CompiledExpr, subst: &Hash
 ///
 /// Enum names are deliberately NOT a field: they travel on the ambient
 /// `RESOLUTION_ENUM_NAMES` thread-local, which the non-parametric `_kinded`
-/// tail already reads for exactly this purpose. Adding a third set here would
+/// tail already reads for exactly this purpose. Adding a third field here would
 /// be a second plumbing axis for the same question.
 ///
 /// Both name sets are EMPTY on the alias-DFS pre-pass path, and that emptiness
@@ -4789,8 +4873,8 @@ pub(crate) fn check_applied_type_arg_bounds(
 /// exists because the two drifted: this guard had no enum arm while the
 /// resolver had `RESOLUTION_ENUM_NAMES`, so `pub type G<T> = Option<SomeEnum>`
 /// failed its own definition site with "references unknown name" for a plainly
-/// declared name.  The enum names arrive through an [`EnumNameScope`] rather
-/// than a direct set membership for exactly that reason.
+/// declared name.  The enums arrive through an [`EnumNameScope`] rather than
+/// a lookup of this guard's own for exactly that reason.
 ///
 /// Resolving names in isolation (rather than re-resolving the whole body)
 /// avoids false-positives on valid `Rate<Q>=Q/Time` (Q is a free param; the
@@ -4823,7 +4907,7 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
     alias_registry: &TypeAliasRegistry,
     structure_names: &HashSet<String>,
     trait_names: &HashSet<String>,
-    enum_names: &HashSet<String>,
+    enum_defs: &[reify_ir::EnumDef],
     template_registry: &HashMap<String, &TopologyTemplate>,
     trait_registry: &HashMap<String, &CompiledTrait>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -4846,13 +4930,13 @@ pub(crate) fn validate_pub_parametric_alias_def_site(
     // Strings) to suppress duplicate errors for the same name across the body.
     //
     // The scope is what puts ENUMS in front of `type_name_is_known`: the
-    // resolver reads enum names from the ambient set, so installing
-    // `enum_names` here is how this guard asks about them through the same
+    // resolver reads enums from the ambient map, so installing
+    // `enum_defs` here is how this guard asks about them through the same
     // channel every other caller uses instead of keeping its own arm. It is
     // scoped to case (a) alone — case (b) below deliberately keeps its existing
     // "body did not reduce to a Type ⇒ skip the bound check" behaviour.
     {
-        let _enum_scope = EnumNameScope::new(enum_names.clone());
+        let _enum_scope = EnumNameScope::new(enum_defs);
         let mut seen: HashSet<String> = HashSet::new();
         for name in collect_type_expr_names(body) {
             if !seen.insert(name.clone()) {
@@ -6491,6 +6575,45 @@ mod tests {
             result,
             Type::projection(Type::StructureRef("X".to_string()), "M"),
             "Projection with concrete base must be unchanged by substitution"
+        );
+    }
+
+    /// A default that names an earlier type parameter below its top level
+    /// (`<A = Length, B = Option<A>>`, in the `TypeParam` form #5994 lowers the
+    /// name to) takes that parameter's filled argument at depth.
+    #[test]
+    fn argless_enum_annotation_fills_nested_earlier_param_default() {
+        let defaulted = |name: &str, default: Type| reify_ir::TypeParam {
+            name: name.to_string(),
+            bounds: vec![],
+            default: Some(default),
+        };
+        let type_params = [
+            defaulted("A", Type::length()),
+            defaulted(
+                "B",
+                Type::Option(Box::new(Type::TypeParam("A".to_string()))),
+            ),
+        ];
+        let mut diagnostics = Vec::new();
+        let ty = resolve_argless_enum_annotation(
+            "E",
+            &type_params,
+            &mut diagnostics,
+            reify_core::SourceSpan::new(0, 0),
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a fully defaulted enum must not be an arity error; got: {:?}",
+            diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            ty,
+            Type::applied(
+                "E",
+                vec![Type::length(), Type::Option(Box::new(Type::length()))]
+            ),
+            "`B = Option<A>` must fill as `Option<Length>`"
         );
     }
 

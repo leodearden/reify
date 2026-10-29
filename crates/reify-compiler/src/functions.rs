@@ -107,9 +107,7 @@ pub(crate) fn compile_function(
         // The return-type resolution below installs its own separately-
         // scoped `EnumNameScope` (result-fallback Layer-B substrate,
         // return-position sibling of this param-position scope).
-        let _enum_scope = crate::type_resolution::EnumNameScope::new(
-            enum_defs.iter().map(|e| e.name.clone()).collect(),
-        );
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
         for p in &fn_def.params {
             let (ty, resolved) = match resolve_type_expr_with_aliases_kinded(
                 &p.type_expr,
@@ -248,9 +246,7 @@ pub(crate) fn compile_function(
         // `Option<Color>`). Scoped to this block — dropped before the function
         // body is compiled below — so body compilation is byte-for-byte
         // unchanged.
-        let _enum_scope = crate::type_resolution::EnumNameScope::new(
-            enum_defs.iter().map(|e| e.name.clone()).collect(),
-        );
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
         match &fn_def.return_type {
             Some(te) => {
                 match resolve_type_expr_with_aliases_kinded(
