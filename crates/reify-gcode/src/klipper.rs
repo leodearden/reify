@@ -5,12 +5,10 @@
 //! `SET_VELOCITY_LIMIT`) at the top of [`parse_klipper_line`] and falls
 //! through to [`crate::marlin::parse_line`] for every other line — so
 //! the core G0/G1/G2/G3/G92 + standalone `F` + ignored-M-code dispatch
-//! is shared (not duplicated). See plan design decision #7.
+//! is shared (not duplicated).
 //!
 //! Klipper directive names are matched **uppercase-only**; mixed/lowercase
-//! variants fall through to marlin and produce `UnknownCommand`. See
-//! plan design decision #6 for why a per-arm case-insensitivity layer is
-//! avoided.
+//! variants fall through to marlin and produce `UnknownCommand`.
 
 use crate::ast::{GcodeCommand, InputShaper, SetVelocityLimit};
 use crate::error::{ParseError, ParseErrorKind};
@@ -24,7 +22,7 @@ use crate::marlin;
 /// (blank/comment lines counted), short-circuit on first failure.
 /// Malformed KEY=VALUE tokens are surfaced as
 /// [`ParseErrorKind::InvalidParameter`] with `letter: '='` — a semantic
-/// approximation (see design decision #4); the offending raw token is
+/// approximation; the offending raw token is
 /// preserved in `value`.
 pub fn parse_klipper(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
     let mut out = Vec::new();
@@ -45,8 +43,7 @@ pub fn parse_klipper(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
 /// uppercase keyword. Everything else — every shared G/M code, every
 /// standalone `F`, and unrecognised tokens — is delegated to
 /// [`marlin::parse_line`]. That delegation is the authoritative dispatch
-/// for shared codes; do not duplicate arms here. See plan design
-/// decision #7.
+/// for shared codes; do not duplicate arms here.
 fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
     let mut tokens = line.split_whitespace();
     // `line` is guaranteed non-empty / non-whitespace by `parse_klipper`'s
@@ -78,7 +75,7 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
 /// Walk `tokens` and parse each as `KEY=VALUE`, returning the ordered
 /// vec.
 ///
-/// # Split contract (design decision #5)
+/// # Split contract
 ///
 /// Tokens are split at the **first** `=` only — `str::find('=')` returns
 /// the earliest match, so the value substring carries any subsequent
@@ -110,7 +107,7 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
 /// There is no dedicated `MalformedDirectiveParam` variant in
 /// `error.rs` because that module is shared with the Marlin dialect
 /// (touched by every dialect's scope-lock) and is out of scope for
-/// task ν. See plan design decision #4 — when error-rendering needs
+/// task ν. When error-rendering needs
 /// to distinguish KV-malformation from axis-letter malformation, the
 /// fix is to add a dedicated variant in `error.rs` rather than to
 /// reinterpret the `letter: '='` sentinel here.

@@ -2,7 +2,7 @@
 //!
 //! Cases here pin the `parse_klipper` entry point's behavior on
 //! Klipper-specific directives (`SET_VELOCITY_LIMIT`, `INPUT_SHAPER`).
-//! Per design decision #2 the `INPUT_SHAPER` AST identity is the only
+//! The `INPUT_SHAPER` AST identity is the only
 //! signal this task ships — `W_GcodeDialectShaperConflict` emission is
 //! deferred to consumer task ο (`gcode_import`).
 
@@ -236,9 +236,8 @@ fn input_shaper_malformed_kv_no_equals_is_invalid_parameter() {
     );
 }
 
-// Klipper directives are matched **uppercase-only** here — see design
-// decision #6 in plan analysis and the module-level doc in
-// `src/klipper.rs`. Lowercase / mixed-case variants fall through to
+// Klipper directives are matched **uppercase-only** here — see the
+// module-level doc in `src/klipper.rs`. Lowercase / mixed-case variants fall through to
 // `marlin::parse_line`, which surfaces `UnknownCommand` on the raw
 // token. Pinning this lets any future relaxation be a deliberate
 // contract change rather than an accidental drift.
