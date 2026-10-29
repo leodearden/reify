@@ -18,6 +18,8 @@ const HOST: Host = Host {
 };
 
 const SOLVE_REDUCED_DEFINITION_AND_TEST_ITEMS: &[&str] = &[TEST_ITEMS[0], "fn solve_reduced"];
+const COMBINED_BUILDER_AND_TEST_ITEMS: &[&str] =
+    &[TEST_ITEMS[0], "fn combined_force_density_matrix"];
 
 const SRC: &[&str] = &["src/"];
 const SRC_AND_TESTS: &[&str] = &["src/", "tests/"];
@@ -232,21 +234,23 @@ const RATCHETS: &[Ratchet] = &[
             )
         }),
     },
-    // A textual proxy: it counts by-reference `Mat + &Mat` sums, while the one
-    // line-plus-surface sum, `combined_force_density_matrix`'s, is by value.
+    // A line-plus-surface sum needs a line `D`, and `assemble_d` is the one
+    // line-`D` builder, so a hand-summed combined `D` shows up here however it
+    // spells its `+`. The baseline's two are surface-free: the line-only group
+    // search's objective and `explicit_form`.
     Ratchet {
-        name: "hand-summed-combined-d",
-        home: "combined_force_density_matrix in form_find_free.rs (solver-crates-layering gap-fill χ-ff)",
-        baseline: 0,
-        measure: Measure::Occurrences(Pattern::production(
-            " + &",
-            &[
-                "src/form_find_free.rs",
-                "src/form_find.rs",
-                "src/prestress_stability.rs",
-            ],
-            "let d = &d_line + &surface_mat;",
-        )),
+        name: "line-d-assemblies-outside-the-combined-builder",
+        home: "combined_force_density_matrix in form_find_free.rs, for any D with a surface term \
+               (solver-crates-layering gap-fill χ-ff)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            skip_items: COMBINED_BUILDER_AND_TEST_ITEMS,
+            ..Pattern::production(
+                "assemble_d(",
+                &["src/form_find_free.rs"],
+                "let d = assemble_d(n, members, &q) + &surface_mat;",
+            )
+        }),
     },
 ];
 
