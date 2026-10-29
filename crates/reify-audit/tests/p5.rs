@@ -677,6 +677,39 @@ mod tests {
         assert_eq!(other_event_type, None);
     }
 
+    /// Schema pin for the sweep's batched runs.db query, held to the seeded
+    /// schema the way `runs_db_schema_pin` holds `PRODUCTION_QUERY`: it must
+    /// list each task with a `task_completed` event exactly once, and nothing
+    /// else — not a task with only another event type, and not a NULL id.
+    #[test]
+    fn runs_db_completed_tasks_query_pin() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "a");
+        insert_task_completed_event(&conn, "a");
+        insert_task_completed_event(&conn, "b");
+        insert_event(&conn, "c", "task_started");
+        conn.execute(
+            "INSERT INTO events (task_id, event_type) VALUES (NULL, 'task_completed')",
+            [],
+        )
+        .expect("insert a NULL-id event");
+
+        let mut stmt = conn
+            .prepare(p5_phantom_done::PRODUCTION_COMPLETED_TASKS_QUERY)
+            .expect("the batched query must prepare against the seeded schema");
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query_map")
+            .collect::<Result<_, _>>()
+            .expect("every row decodes as a task id");
+        let completed: std::collections::HashSet<String> = rows.iter().cloned().collect();
+        assert_eq!(rows.len(), completed.len(), "each task is listed once; got {rows:?}");
+        assert_eq!(
+            completed,
+            ["a", "b"].map(str::to_string).into_iter().collect(),
+        );
+    }
+
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
     /// survives future refactors. No production-code change required; this
     /// branch was added in amend e5e8932cb6 but never had a direct test.
