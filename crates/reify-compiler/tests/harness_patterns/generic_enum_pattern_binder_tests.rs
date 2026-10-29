@@ -381,6 +381,47 @@ fn annotation_bare_enum_with_all_defaults_fills_from_defaults() {
     }
 }
 
+/// R2(b) through a parametric alias: a body naming the bare generic enum is
+/// resolved at each use of the alias, so the arity error is reported once, at
+/// that use, whether or not the alias is `pub`.
+#[test]
+fn bare_generic_enum_in_parametric_alias_body_is_one_arity_error_at_the_use_site() {
+    let use_site = "R<Length>";
+    let failures: Vec<String> = ["pub type", "type"]
+        .into_iter()
+        .filter_map(|alias_kw| {
+            let source = format!(
+                "{RESULT_ENUM_SOURCE}\n{alias_kw} R<T> = Option<Result>\nstructure def D {{ param x : {use_site} }}"
+            );
+            let arity_errors: Vec<_> = compile_with_stdlib_helper(&source)
+                .diagnostics
+                .into_iter()
+                .filter(|d| {
+                    d.severity == Severity::Error
+                        && d.message == "enum `Result` expects 2 type arguments, found 0"
+                })
+                .collect();
+            let labelled: Vec<&str> = arity_errors
+                .iter()
+                .flat_map(|d| &d.labels)
+                .map(|l| {
+                    source
+                        .get(l.span.start as usize..l.span.end as usize)
+                        .unwrap_or("<outside the source>")
+                })
+                .collect();
+            (arity_errors.len() != 1 || labelled != [use_site]).then(|| {
+                format!(
+                    "`{alias_kw} R<T> = Option<Result>`: expected one arity error labelled \
+                     {use_site:?}; got {} labelled {labelled:?}",
+                    arity_errors.len()
+                )
+            })
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// The `pub` parametric-alias def-site guard probes the bare name `Result`; the
 /// arity diagnostic for that bare probe must not leak into (or panic) the compile.
 #[test]
