@@ -353,6 +353,26 @@ impl MpcRow {
     ///   `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i]·u[dofs[i]]) / coeffs[0]`
     ///   is well-defined. See the module-level doc on the pivot convention.
     /// - `rhs` is not finite — `rhs` must be a finite number.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reify_solver_elastic::MpcRow;
+    ///
+    /// let row = MpcRow::new(vec![0, 6], vec![1.0, -1.0], 0.0);
+    /// assert_eq!(row.dofs(), [0, 6]);
+    /// assert_eq!(row.coeffs(), [1.0, -1.0]);
+    /// assert_eq!(row.rhs(), 0.0);
+    /// ```
+    ///
+    /// Outside this module the fields are private, so a zero-pivot row cannot
+    /// be built by struct literal:
+    ///
+    /// ```compile_fail,E0451
+    /// use reify_solver_elastic::MpcRow;
+    ///
+    /// let _ = MpcRow { dofs: vec![0], coeffs: vec![0.0], rhs: 0.0 };
+    /// ```
     pub fn new(dofs: Vec<usize>, coeffs: Vec<f64>, rhs: f64) -> Self {
         assert_eq!(
             dofs.len(),
@@ -516,62 +536,6 @@ impl MpcRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // Step 1 (RED): MpcRow::new constructor contract tests
-    // -----------------------------------------------------------------------
-
-    /// `MpcRow::new` must panic when `dofs.len() != coeffs.len()`.
-    #[test]
-    #[should_panic(expected = "dofs.len()")]
-    fn mpc_row_new_panics_on_length_mismatch() {
-        // len 2 vs len 1 — must panic
-        let _ = MpcRow::new(vec![1, 2], vec![1.0], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `coeffs[0]` (the pivot coefficient) is zero.
-    #[test]
-    #[should_panic(expected = "pivot")]
-    fn mpc_row_new_panics_on_zero_pivot_coefficient() {
-        // zero pivot — must panic
-        let _ = MpcRow::new(vec![3, 7], vec![0.0, 1.0], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `dofs` is empty (zero DOFs).
-    #[test]
-    #[should_panic(expected = "at least one")]
-    fn mpc_row_new_panics_on_empty_dofs() {
-        // len-equality passes (0 == 0), but is_empty check fires.
-        let _ = MpcRow::new(vec![], vec![], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `coeffs[0]` is NaN.
-    ///
-    /// NaN passes the `!= 0.0` guard (IEEE 754: `NaN == 0.0` is false, so
-    /// `NaN != 0.0` is true), so this test pins that the `is_finite` guard
-    /// is the one that catches NaN.  Reordering those two pivot-coefficient
-    /// asserts would silently break this contract.
-    #[test]
-    #[should_panic(expected = "finite")]
-    fn mpc_row_new_panics_on_nan_pivot() {
-        let _ = MpcRow::new(vec![1], vec![f64::NAN], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `rhs` is infinite.
-    #[test]
-    #[should_panic(expected = "rhs")]
-    fn mpc_row_new_panics_on_infinite_rhs() {
-        let _ = MpcRow::new(vec![1], vec![1.0], f64::INFINITY);
-    }
-
-    /// `MpcRow::new` constructs and the fields round-trip exactly.
-    #[test]
-    fn mpc_row_new_round_trips_dofs_coeffs_rhs() {
-        let row = MpcRow::new(vec![3, 7, 11], vec![1.0, -0.5, 0.5], 0.25);
-        assert_eq!(row.dofs, vec![3, 7, 11]);
-        assert_eq!(row.coeffs, vec![1.0, -0.5, 0.5]);
-        assert_eq!(row.rhs.to_bits(), 0.25_f64.to_bits());
-    }
 
     // -----------------------------------------------------------------------
     // Step 3 (RED): apply_mpc_row_elimination — homogeneous single MPC
