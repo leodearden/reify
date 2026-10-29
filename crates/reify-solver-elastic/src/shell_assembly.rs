@@ -533,16 +533,17 @@ pub fn shell_element_stiffness_mitc3_plus(
     // ---- MITC3+ transverse-shear K (Lee, Lee & Bathe 2014, Eq. 9) ----
     // On a flat facet the cubic bubble is INERT in transverse shear
     // (K_NB^shear ≡ 0; DD#2 retracted — esc-3392 corrected resolution). The
-    // shear-locking cure lives entirely in the NODAL assumed field: sample the
-    // bare three-node (DISP3) covariant transverse shear at the six interior
-    // tying points A-F and re-interpolate via Eq. 9 — a softer field than bare
-    // MITC3's edge-midpoint Eq. 5 (the difference has O(1) structural terms, so
-    // K* is NOT bit-identical to bare MITC3). The bubble enters BENDING only
-    // (K_BB^bend above), so the shear block touches the 18 nodal DOFs only and
-    // the bubble columns (18, 19) of the shear stay zero ⇒ K_NB = 0.
+    // assumed field is NODAL: sample the metric-carrying three-node (DISP3)
+    // covariant transverse shear (`ShellKinematics::covariant_shear_b`) at the
+    // six interior tying points A-F and re-interpolate via Eq. 9 — a different
+    // field from bare MITC3's edge-midpoint Eq. 5 (the difference has O(1)
+    // structural terms, so K* is NOT bit-identical to bare MITC3). The bubble
+    // enters BENDING only (K_BB^bend above), so the shear block touches the 18
+    // nodal DOFs only and the bubble columns (18, 19) of the shear stay zero ⇒
+    // K_NB = 0.
     let mut b_tp = [[[0.0_f64; NDOF]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
     for (kk, tp) in interior.iter().enumerate() {
-        b_tp[kk] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
+        b_tp[kk] = kin.covariant_shear_b(tp.coord);
     }
 
     // The assumed covariant field (Eq. 9) is linear in (r,s), so the shear

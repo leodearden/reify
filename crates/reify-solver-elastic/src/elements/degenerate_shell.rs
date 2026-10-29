@@ -620,48 +620,43 @@ fn degenerate_exact_covariant_membrane_b(
     b
 }
 
-/// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) at the in-plane
-/// reference coordinate `coord`, carried VERBATIM from the MITC3+ formulation
-/// (task 3392) using the **flat-facet** (global `u_z/θ_x/θ_y`) kinematics.
+/// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) of the flat-facet
+/// MITC3+ element for the flat triangle `nodes`, at the in-plane reference
+/// coordinate `coord`.
 ///
 /// Rows are the covariant components `(γ_ξζ, γ_ηζ)`; columns the 18 nodal DOFs
-/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`). Construction — identical to the inline
-/// assembly in [`crate::shell_assembly::shell_element_stiffness_mitc3_plus`]:
+/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`) in the facet's local frame. Construction
+/// — identical to [`crate::shell_assembly::shell_element_stiffness_mitc3_plus`]:
 ///
-/// 1. sample the bare three-node (DISP3) covariant shear
-///    ([`Mitc3Plus::covariant_shear_b_nodal`]) at the six interior tying points
-///    ([`Mitc3Plus::interior_tying_points`]);
+/// 1. sample the metric-carrying three-node (DISP3) covariant shear
+///    ([`crate::shell_kinematics::ShellKinematics::covariant_shear_b`]) at the six
+///    interior tying points ([`Mitc3Plus::interior_tying_points`]);
 /// 2. re-interpolate each DOF column via
 ///    [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Lee–Lee–Bathe Eq. 9).
 ///
-/// This field is **geometry-free** (pure natural coordinates): it is *exactly*
-/// task 3392's assumed transverse-shear field — no new shear formulation is
-/// introduced here.
+/// # Role: a flat-equivalence reference, NOT the stiffness path
 ///
-/// # Role: a documented flat-equivalence reference, NOT the stiffness path
-///
-/// `Mitc3Plus::covariant_shear_b_nodal` hard-codes the flat-facet Reissner–Mindlin
-/// kinematics — it reads the *global* `u_z` (DOF 2), `θ_x` (DOF 3), `θ_y` (DOF 4)
-/// and assumes the shell normal is the global `+z`; it carries neither `θ_z` nor
-/// the per-node director `V_i`. On a curved (tilted-director) patch no linear
-/// covariant→physical map of this flat field can simultaneously satisfy the
-/// rigid-body null-space and 3D-rotation isotropy (esc-4068-127). It is therefore
-/// **not** the field the stiffness uses; [`degenerate_transverse_shear_b`] builds
-/// the covariant shear from the *exact* degenerate kinematics instead. This
-/// function is a test-only (`#[cfg(test)]`) witness that, when flat, the exact
-/// kinematics coincide with task 3392's carried DISP3 covariant field, used by
-/// the constant-state and flat-reduction tests below. "No new shear field" holds
-/// by construction: it invokes only the task-3392 primitives
-/// (`covariant_shear_b_nodal` + `interpolate_assumed_shear_mitc3_plus`), so there
-/// is no second reconstruction to drift against.
+/// The flat field reads `u_z` (DOF 2), `θ_x` (DOF 3), `θ_y` (DOF 4) about the
+/// facet normal; it carries neither `θ_z` nor the per-node director `V_i`. On a
+/// curved (tilted-director) patch no linear covariant→physical map of this flat
+/// field can simultaneously satisfy the rigid-body null-space and 3D-rotation
+/// isotropy (esc-4068-127), so [`degenerate_transverse_shear_b`] builds the
+/// covariant shear from the *exact* degenerate kinematics instead. This
+/// test-only witness checks that, when flat, those exact kinematics coincide
+/// with the flat MITC3+ field. It invokes only the flat element's own
+/// primitives, so there is no second reconstruction to drift against.
 #[cfg(test)]
-fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+fn degenerate_assumed_covariant_shear_b(
+    nodes: &[[f64; 3]; 3],
+    coord: ShellReferenceCoord,
+) -> [[f64; 18]; 2] {
     use crate::elements::mitc3_plus::ShearStrain;
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &build_shell_frame(nodes));
     let interior = Mitc3Plus.interior_tying_points();
-    // (1) Sample the bare-DISP3 covariant shear at the six interior tying points.
+    // (1) Sample the DISP3 covariant shear at the six interior tying points.
     let mut b_tp = [[[0.0_f64; 18]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
     for (k, tp) in interior.iter().enumerate() {
-        b_tp[k] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
+        b_tp[k] = kin.covariant_shear_b(tp.coord);
     }
     // (2) Re-interpolate each DOF column via Eq. 9 at `coord`.
     let mut b = [[0.0_f64; 18]; 2];
@@ -1490,6 +1485,7 @@ mod tests {
     /// state `(γ_ξζ = α, γ_ηζ = 0)`, so Eq. 9 must return `(α, 0)` at any `(ξ,η)`.
     #[test]
     fn degenerate_assumed_covariant_shear_reproduces_constant_state() {
+        let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let alpha = 0.7_f64;
         let mut u = [0.0_f64; 18];
         for i in 0..3 {
@@ -1500,7 +1496,7 @@ mod tests {
             ShellReferenceCoord::new(0.2, 0.3),
             ShellReferenceCoord::new(0.5, 0.25),
         ] {
-            let b = degenerate_assumed_covariant_shear_b(p);
+            let b = degenerate_assumed_covariant_shear_b(&nodes, p);
             let e = shear_b_times_u(&b, &u);
             assert!((e[0] - alpha).abs() < TOL, "γ_ξζ at {p:?} = {} expected {alpha}", e[0]);
             assert!(e[1].abs() < TOL, "γ_ηζ at {p:?} = {} expected 0", e[1]);
@@ -1550,7 +1546,8 @@ mod tests {
         let inv_t = kin.jac2_inv_t;
 
         let (pxi, peta) = (0.25_f64, 0.35_f64);
-        let b_cov = degenerate_assumed_covariant_shear_b(ShellReferenceCoord::new(pxi, peta));
+        let b_cov =
+            degenerate_assumed_covariant_shear_b(&nodes, ShellReferenceCoord::new(pxi, peta));
         // Reference physical B = J2⁻ᵀ · b_cov (3392's constant-J flat map).
         let mut b_ref = [[0.0_f64; 18]; 2];
         for dof in 0..18 {

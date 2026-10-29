@@ -46,8 +46,6 @@ pub struct ShellKinematics {
 /// - `nodes` — three physical vertex positions in global coordinates.
 /// - `frame` — pre-built local mid-surface frame (from `build_shell_frame`).
 pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinematics {
-    const NDOF: usize = Mitc3Plus::N_DOFS; // 18 total DOFs
-    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
     const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
 
     let r = frame.r;
@@ -94,29 +92,9 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
         [-jac2[0][1] / det2, jac2[0][0] / det2],
     ];
 
-    // --- Covariant shear B-matrix at each MITC3 tying point ---
-    // b_cov_at_tying_points[tp_idx][cov_component][dof]
-    // For each tying point (ξ_t, η_t):
-    //   γ_ξζ = Σ_i dn_ref[i][0] * u_z_i + N_i(tp) * θ_y_i
-    //   γ_ηζ = Σ_i dn_ref[i][1] * u_z_i - N_i(tp) * θ_x_i
     let tying_pts = Mitc3Plus.tying_points();
-    let mut b_cov_at_tying_points = [[[0.0_f64; NDOF]; 2]; 3];
-    for (tp_idx, tp) in tying_pts.iter().enumerate() {
-        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
-        // shape_grad_at returns constant ∇N_0=(−1,−1), ∇N_1=(1,0), ∇N_2=(0,1)
-        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord);
-        for node in 0..NN {
-            let dof_uz = NDP * node + 2;
-            let dof_tx = NDP * node + 3;
-            let dof_ty = NDP * node + 4;
-            // γ_ξζ contribution: dn_ref[node][0]*u_z + N*θ_y
-            b_cov_at_tying_points[tp_idx][0][dof_uz] += dn_ref_tp[node][0];
-            b_cov_at_tying_points[tp_idx][0][dof_ty] += n_at_tp[node];
-            // γ_ηζ contribution: dn_ref[node][1]*u_z - N*θ_x
-            b_cov_at_tying_points[tp_idx][1][dof_uz] += dn_ref_tp[node][1];
-            b_cov_at_tying_points[tp_idx][1][dof_tx] -= n_at_tp[node];
-        }
-    }
+    let b_cov_at_tying_points =
+        std::array::from_fn(|tp_idx| covariant_shear_b_at(&jac2, tying_pts[tp_idx].coord));
 
     ShellKinematics {
         local_nodes_2d,
@@ -140,21 +118,25 @@ impl ShellKinematics {
     /// i.e. `γ_α = ∂w/∂ξ_α + g_α · (θ_y, −θ_x)`, so the physical shear
     /// `J2⁻ᵀ · B · u = ∇w + (θ_y, −θ_x)` on any flat triangle.
     pub fn covariant_shear_b(&self, coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
-        const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
-        let h = Mitc3Plus.shape_at(coord);
-        let dh = Mitc3Plus.shape_grad_at(coord);
-        let j = self.jac2;
-        let mut b = [[0.0_f64; Mitc3Plus::N_DOFS]; 2];
-        for node in 0..Mitc3Plus::N_NODES {
-            let (uz, tx, ty) = (NDP * node + 2, NDP * node + 3, NDP * node + 4);
-            for (alpha, row) in b.iter_mut().enumerate() {
-                row[uz] = dh[node][alpha];
-                row[ty] = j[0][alpha] * h[node];
-                row[tx] = -j[1][alpha] * h[node];
-            }
-        }
-        b
+        covariant_shear_b_at(&self.jac2, coord)
     }
+}
+
+/// [`ShellKinematics::covariant_shear_b`] for the local-frame J2 `jac2`.
+fn covariant_shear_b_at(jac2: &[[f64; 2]; 2], coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+    let h = Mitc3Plus.shape_at(coord);
+    let dh = Mitc3Plus.shape_grad_at(coord);
+    let mut b = [[0.0_f64; Mitc3Plus::N_DOFS]; 2];
+    for node in 0..Mitc3Plus::N_NODES {
+        let (uz, tx, ty) = (NDP * node + 2, NDP * node + 3, NDP * node + 4);
+        for (alpha, row) in b.iter_mut().enumerate() {
+            row[uz] = dh[node][alpha];
+            row[ty] = jac2[0][alpha] * h[node];
+            row[tx] = -jac2[1][alpha] * h[node];
+        }
+    }
+    b
 }
 
 #[cfg(test)]
