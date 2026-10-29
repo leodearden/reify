@@ -43,7 +43,7 @@ tasks:
       paths:
       - crates/reify-compiler/src
   - name: prologue-sets-gone
-    binding: 'producer-self — compile_entity''s `let mut known_geometry_lets: HashSet<&str>` (and its three siblings) are replaced by one MemberKinds value.'
+    binding: 'producer-self — compile_entity''s `let mut known_geometry_lets: HashSet<&str>` (and its three siblings) are replaced by one MemberKinds value. Retro-critic R4 (2026-10-20): the pattern has 2 hits today (compile_entity and build_structure_def_skeleton), so the check goes green only once β also converts the skeleton or #5494 has deleted it — the intended binding (D1).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -165,7 +165,7 @@ tasks:
     binding: 'existing-substrate — one mint (connect.rs format!("__connector_{}")) and three starts_with recognisers (engine_eval.rs connector_pin_if_determined and is_strict_connector_instance_auto; resolve_order.rs connector-first loop); SubComponentDecl has no origin field.'
     verdict: PASS
   - name: user-named-connector-accepted
-    binding: 'probe — `sub __connector_0 = Gain()` compiles and evaluates rc 0 with no reserved-name diagnostic; a parent-constrains-child-auto probe gave identical output for __connector_0 and plain_0, so B9 is asserted structurally (origin == Declared), not as a solver-outcome difference.'
+    binding: 'probe — `sub __connector_0 = Gain()` compiles and evaluates rc 0 with no reserved-name diagnostic; a parent-constrains-child-auto probe gave identical output for __connector_0 and plain_0, so B9 is asserted structurally (origin == Declared). Corrected by retro-critic R4 M2 (2026-10-20): beside a connector connect the user sub collides with the minted name and silently changes the connector''s solved value (10mm -> 3mm); ζ adds a reserved-prefix Error (or a mint that skips taken names) and boundary row B9b pins it.'
     verdict: PASS
   - name: origin-field
     binding: 'producer-self — SubOrigin enum and SubComponentDecl.origin.'
@@ -177,14 +177,14 @@ tasks:
       paths:
       - crates/reify-compiler/src
   - name: recognisers-gone
-    binding: 'producer-self — no production starts_with("__connector_") remains (R2 = 1).'
+    binding: 'producer-self — no production starts_with("__connector_") remains (R2 = 1). Path widened to crates/reify-eval/src by retro-critic R4 (the third recogniser is in resolve_order.rs).'
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: starts_with\("__connector_"\)
       expect: absent
       paths:
-      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-eval/src
 - label: η
   task_id: 8736
   title: 'Conformance tests through the conformance entry, not the phases'
@@ -244,7 +244,7 @@ tasks:
     binding: 'existing-substrate — compile_builder/entities_phase.rs §(4) composes dof_kind_of, the Type::Error skip, E_ARG_TYPE_MISMATCH, body_has_undecidable_kind_split, residual_kinds, declared_kinds and check_joint_dof; the module''s docs assign gating to "the caller" twice.'
     verdict: PASS
   - name: single-entry
-    binding: 'producer-self — joint_dof_diagnostics is the module''s entry point and entities_phase calls only it.'
+    binding: 'producer-self — joint_dof_diagnostics is the module''s entry point and entities_phase calls only it. Retro-critic R4 polarity (2026-10-20): the pattern also matches a comment (entities_phase.rs `// … (see joint_self_check::body_has_undecidable_kind_split)`); κ deletes or rewords that comment in the same diff, or the check stays red after a correct implementation (κ''s record carries the note).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -260,10 +260,10 @@ tasks:
     binding: 'measured — RELATION_FN_NAMES doc "**9 names**" over a 10-entry slice; 10 `args.len() == 3` guards above #[cfg(test)]; the ΔDOF-sum test iterates its own curated list.'
     verdict: PASS
   - name: relation-kind-enum
-    binding: 'producer:#8830 (S6 γ: RelationKind in reify-ir, RelationInstance.kind set at reify-eval relate_solve::relation_instance per S6 ruling R4; λ keys RelationSig on the same RelationKind::from_name). Wired as a real dependency of #8741 and λ released by the S6 session on 2026-10-13.'
+    binding: 'producer:#9418 (S8-ψ: RelationKind is reify-builtins'' generated Relation binding-kind sub-enum, minted by registry! from the 12 relation rows) bound by #8830 (S6 γ: reify-constraints and reify-eval take reify-builtins as a normal dependency; RelationInstance.kind: reify_builtins::RelationKind set at reify-eval relate_solve::relation_instance via lookup(name, argc), per S6 ruling R4; no from_name). Retro-critic R6 (2026-10-20) supersedes the reify-ir RelationKind. Wired as real dependencies of #8741 (#8830 since 2026-10-13; #9418 since 2026-10-20).'
     verdict: PASS
   - name: table-present
-    binding: 'producer-self — one RelationSig static table.'
+    binding: 'producer-self — RelationSig { operands, metric_slot } returned by the total fn relation_sig(RelationKind) (retro-critic R6).'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -271,6 +271,24 @@ tasks:
       expect: present
       paths:
       - crates/reify-compiler/src
+  - name: relation-names-derive-from-rows
+    binding: 'producer-self (retro-critic R6) — RELATION_FN_NAMES is gone; relation names derive from the reify-builtins rows (lookup(name, argc) is the one parser).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'RELATION_FN_NAMES: &\[&str\] = &\['
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/relation_signatures.rs
+  - name: relation-sig-reads-the-registry
+    binding: 'producer-self (retro-critic R6) — arity and result type are read from the reify-builtins row (row_for(BuiltinId::from(kind))), never re-declared.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'reify_builtins::'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/relation_signatures.rs
 - label: μ
   task_id: 8742
   title: 'ParseErrorKind on ParseError'
@@ -345,3 +363,84 @@ tasks:
       expect: present
       paths:
       - docs/prds/v0_6/compiler-declaration-passes.md
+- label: ρ
+  task_id: 9321
+  title: 'reify-ast child enumeration: Expr::for_each_child(_mut), MemberDecl::for_each_direct_expr, MemberDecl::child_scopes; walk_members over child_scopes; ratchet row (gap-fill 2026-10-16, K2-D2)'
+  capabilities:
+  - name: hand-rolled-enumerations-on-main
+    binding: 'existing-substrate — at main 04be9302ea reify-ast has walk_members over MemberRecursionSet but no Expr child enumeration (git grep "fn for_each_child" in crates/reify-ast/src: 0). Eight independent child enumerations in three crates: reify-lsp references/walk.rs for_each_direct_subexpr, for_each_member_direct_expr, for_each_child_scope (with a `_ => {}` arm); references/local.rs expr_member_segment_hit and cursor_on_member_segment; reify-compiler entity.rs for_each_child/_mut, dot_chain_lint.rs and shadow_lint.rs walk_expr_depth. walk.rs binds `derivation: _`, so SubDerivation operands, overrides, using_plane and derivation.members are visited by no walker.'
+    verdict: PASS
+  - name: expr-child-enumeration
+    binding: 'producer-self — Expr::for_each_child (+ _mut) in reify-ast, wildcard-free over ExprKind.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn for_each_child\b
+      expect: present
+      paths:
+      - crates/reify-ast/src
+  - name: member-child-scopes
+    binding: 'producer-self — MemberDecl::child_scopes (including derivation.members) and MemberDecl::for_each_direct_expr (including derivation operands, override values/guards, using_plane); walk_members re-expressed over child_scopes.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn child_scopes\b
+      expect: present
+      paths:
+      - crates/reify-ast/src
+  - name: hand-rolled-match-ratchet
+    binding: 'producer-self — an adoption-ratchet row counting hand-rolled ExprKind/MemberDecl child matches outside reify-ast (INV candidate 5), at today''s count, lowered by the consumers (S27 ψ₂, #7860).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'a grep cannot assert a count; the ratchet member''s own hermetic fixtures are the evidence.'
+- label: σ
+  task_id: 9322
+  title: 'SpannedIdent for declared and referenced names, field by field; name_token_span and the empty-span conventions deleted (gap-fill 2026-10-16, K2-D2)'
+  capabilities:
+  - name: names-rescanned-on-main
+    binding: 'existing-substrate — SubDecl.name and structure_name are String (reify-ast decl.rs); SpannedIdent already exists in reify-core and is used by SubDerivation and index_binder; reify-lsp decl_oracle.rs::name_token_span rescans source text (49 references across 7 reify-lsp files, tests included). ExprKind::FunctionCall callee and TypeParamDecl.bounds carry no span (#7683, #7684).'
+    verdict: PASS
+  - name: lowering-populates-spans
+    binding: 'producer-self — syntax-lowering-contract ruling R4 (2026-10-18, docs/prds/v0_6/syntax-lowering-contract.md §4: "No leaf here") gives σ the fields, their population at the ts_parser.rs lowering sites and the tests; there is no σ ← lowering-leaf edge to wait for. G4 row owner: S9 σ. (Was OPEN on the not-yet-filed stream at 2026-10-16; corrected per retro-critic R4 drift.)'
+    verdict: PASS
+  - name: name-rescan-deleted
+    binding: 'producer-self — name_token_span and the three empty-span conventions are deleted once every declared and referenced name carries its span (structure_name, type_name, ConstraintInst name first, then declaration names, FunctionCall callee, TypeParamDecl.bounds).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn name_token_span\b
+      expect: absent
+      paths:
+      - crates/reify-lsp/src
+- label: ε₂
+  task_id: 9323
+  title: 'compile_connection keeps the typed PortPath; own vs sub-member endpoint classified from PortRoot (gap-fill 2026-10-16, K9-D1)'
+  capabilities:
+  - name: string-reclassification-on-main
+    binding: 'existing-substrate — at main aabecfe241 connect.rs::resolve_port_name is `PortPath::parse(expr, None)?.port_name()`: the endpoint is parsed into the typed PortPath and flattened back to a String; own_port_name and sub_member_endpoint then re-classify that String with strip_prefix("self.") / contains(''.'') / contains(''['') / rsplit_once / split_once to decide own-port vs sub-member, direction lookup, the undefined-port error and auto-match. ε #8734 typed only the deferred forall-connect path.'
+    verdict: PASS
+  - name: own-port-string-classifier-gone
+    binding: 'producer-self.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn own_port_name\b
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/connect.rs
+  - name: sub-member-string-classifier-gone
+    binding: 'producer-self.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn sub_member_endpoint\b
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/connect.rs
+  - name: unindexed-collection-endpoint-diagnosed
+    binding: 'ported from #7659 (subsumed) — `sub vents : List<Vent>` with `connect vents.outlet -> hub.feed` compiles clean today and reports a phantom Satisfied compat constraint; after ε₂ a Named root naming a collection or keyed sub with non-empty members is diagnosed, pointing at the per-element form.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural; the connect_compile_tests.rs case and the boundary rows in the PRD gap-fill section are the cover.'

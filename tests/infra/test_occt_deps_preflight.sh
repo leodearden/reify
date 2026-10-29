@@ -30,6 +30,16 @@
 #      EMITS evidence, and that a match emits nothing (the green output shape
 #      is byte-parsed by run_all.sh's cause_hint and dark-factory's
 #      classifier).
+#   R. READER: scripts/native_deps_table.py, driven only through its CLI. On
+#      the real crates/reify-build-utils/native-deps.toml it exits 0, and its
+#      eval'd output declares every row's columns as <ROW^^>_<COLUMN^^>. A
+#      missing file, malformed TOML, a missing required column, an unknown
+#      column, a non-identifier row key and an empty sentinel each exit
+#      non-zero naming the offender. Values survive eval literally (no
+#      expansion, no word splitting), and absent optional columns are emitted
+#      EMPTY, so a same-named variable in the caller's environment cannot leak
+#      through. An interpreter without stdlib tomllib exits 3, not the
+#      table-defect 1.
 #   1. scripts/check-manifold-deps.sh exists and is executable.
 #   2. OCCT ABSENCE: both override dirs empty => non-zero, output names OCCT.
 #   3. OCCT LIB-ONLY MISSING: headers present, libs absent => non-zero, output
@@ -37,19 +47,6 @@
 #   4. OCCT INCLUDE-ONLY MISSING: libs present, headers absent => non-zero,
 #      output names Standard_Failure.hxx and the offending include dir. This is
 #      the mixed case that silently produces a stub build.
-#   5. PARITY, DATA (anti-drift), OCCT: the marker-delimited declarations in
-#      scripts/check-manifold-deps.sh equal `NativeDep::Occt`'s arms in
-#      crates/reify-build-utils/src/lib.rs — both candidate lists INCLUDING
-#      ORDER (system paths must stay ahead of /opt/reify-deps' OCCT 7.9) and
-#      both sentinel names. Rust is the source of truth; bash is a declared
-#      mirror. Every parse must yield a non-empty result, so a renamed anchor
-#      fails loudly instead of passing vacuously.
-#      PARITY, SNAP FALLBACK: the same mirror one layer down — the default of
-#      the guard's OCCT_SNAP_ROOT equals the literal in
-#      find_dir_with_override's `read_dir(..)`, and the guard's
-#      sentinel -> subdir `case` equals that fn's `match sentinel` arms, order
-#      included. Declaration-level, because on a host that HAS system OCCT the
-#      candidate loop short-circuits before either side's fallback ever runs.
 #   6. OCCT SONAME pin — ACCEPTED + RECORDING (a Debian-shaped chain carrying
 #      the first OCCT_ACCEPTED_SONAMES value => exit 0, and the guard prints
 #      the version and both dirs); PATCH-SHAPED (`-> ....<accepted>.1`, a
@@ -72,12 +69,6 @@
 #      => exit 0.
 #   9. OPENVDB PRESENCE: the same three, naming libopenvdb.so or the NESTED
 #      openvdb/openvdb.h sentinel.
-#  10. PARITY, DATA (anti-drift), GMSH + OPENVDB: section 5's check applied to
-#      the `gmsh-candidates` and `openvdb-candidates` blocks. Order matters
-#      here too and is the OPPOSITE of OCCT's — /opt/reify-deps must LEAD for
-#      both — and OpenVdb's lib order differs from Gmsh's, so a drift that
-#      merely swapped two entries would still resolve, just against the wrong
-#      install, silently.
 #  11. GREEN-PATH RECORDING for the two new arms: on the all-present path the
 #      guard names each dep's resolved dirs AND the SONAME read from the
 #      FIRST-level symlink target (gmsh one hop => 4.15.2; openvdb two hops =>
@@ -89,34 +80,43 @@
 #      two — exit 0, recorded as `<Label> unknown at ` — driven from the same
 #      _mk_plainfile_lib_fixture so the two expectations cannot be silently
 #      unified by a later dedup.
-#  12. COMPLETENESS: the set of deps gated by scripts/check-manifold-deps.sh
-#      (derived from its `# BEGIN <dep>-candidates` marker-block NAMES) equals
-#      the variants of `enum NativeDep` (derived from its
-#      `// BEGIN native-dep-variants` markers). Compared as SETS — arm PRESENCE
-#      is the contract, arm order is not. This is the assert that would have
-#      caught task 6493's own finding, and the one that stops a FOURTH native
-#      dep shipping ungated.
-#  13. OCCT XDE TOOLKITS (step-assembly-import α): the guard's
-#      OCCT_XDE_TOOLKITS equals the set in build.rs's `// BEGIN
-#      occt-xde-toolkits` block; an OCCT lib dir lacking lib<TK>.so.<soname>
-#      for any of them => non-zero, output names the missing file and the dir;
-#      a complete install => exit 0 with every resolved toolkit file RECORDED.
-#      The OCCT lib fixture builders model a complete install (they materialise
-#      every toolkit), so every other OCCT positive control stays about what it
+#  12. EVERY ROW GATES: for each row of the real native-deps.toml (rows, env
+#      names and sentinels all read through the reader), an EMPTY
+#      <DEP>_LIB_DIR, then <DEP>_INCLUDE_DIR, with every other dep healthy,
+#      reds the guard naming that row's own sentinel and the offending dir. A
+#      row whose arm declares data but gates nothing fails here.
+#  13. OCCT XDE TOOLKITS (step-assembly-import α): for each toolkit the occt
+#      row's xde_toolkits lists, an OCCT lib dir lacking lib<TK>.so.<soname>
+#      => non-zero, output names the missing file and the dir; a complete
+#      install => exit 0 with every resolved toolkit file RECORDED. The OCCT
+#      lib fixture builders model a complete install (they materialise every
+#      toolkit), so every other OCCT positive control stays about what it
 #      tests.
+#  14. TABLE-DRIVEN DISPATCH, through fixture tables: exported-EMPTY overrides
+#      fall through to the table's candidates (the bash half of the
+#      empty-override rule); a fourth row with no arm reds naming the row; an
+#      arm with no row reds naming the arm; a malformed or missing table reds
+#      as unreadable naming the path; a reader that cannot run (python3 exits
+#      3 or 127) reds without blaming the table; the occt row's snap table
+#      resolves a fixture snap root, and the same layout without it does not
+#      resolve.
 #
-# The accepted-SONAME value is DERIVED from the guard, never hardcoded here, so
-# a legitimate future pin bump stays a one-line diff in one file. Every derived
-# parse asserts non-empty first.
+# The accepted-SONAME value is DERIVED from the guard, and every per-dep name
+# from the reader, never hardcoded here, so a legitimate future pin bump or
+# table edit stays a one-file diff. Every derived value asserts non-empty
+# first.
 #
-# Hermeticity: `pool`. Pure bash + filesystem — no cargo, no npm, no network.
-# Every case is driven through the <DEP>_LIB_DIR / <DEP>_INCLUDE_DIR overrides
-# the BUILD already honours (NativeDep::{lib_env,include_env}), pointed at
-# `mktemp -d` fixtures under $_TMPDIR, so no bespoke test-only env seam is
-# added to production code. The guard is deliberately stricter than
-# `find_dir_with_override` here (it demands the sentinel inside an override
-# rather than trusting the path), which is exactly what makes those cases
-# drivable.
+# Hermeticity: `pool`. Pure bash + filesystem + the stdlib reader — no cargo,
+# no npm, no network. Every case is driven through the <DEP>_LIB_DIR /
+# <DEP>_INCLUDE_DIR overrides the BUILD already honours (each row's
+# include_env / lib_env), pointed at `mktemp -d` fixtures under $_TMPDIR. The
+# guard is deliberately stricter than the build here (it demands the sentinel
+# inside an override rather than trusting the path), which is exactly what
+# makes those cases drivable. The guard's ONE fixture seam of its own is
+# REIFY_NATIVE_DEPS_TABLE, which points it at a fixture table; section 14 uses
+# it to reach what no override can (a fourth row, a missing row, a malformed
+# table, the snap fallback). This file unsets it at the top, so every other
+# case reads the real table.
 #
 # KNOWN, DELIBERATE CAVEAT: check-manifold-deps.sh is ONE script with
 # SEQUENTIAL arms — manifold prebuilt, tbb pin, OCCT, Gmsh, OpenVDB — and the
@@ -153,14 +153,46 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/test_helpers.sh"
 
 GUARD="$REPO_ROOT/scripts/check-manifold-deps.sh"
-RUST_SRC="$REPO_ROOT/crates/reify-build-utils/src/lib.rs"
-OCCT_BUILD_RS="$REPO_ROOT/crates/reify-kernel-occt/build.rs"
 SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+READER="$REPO_ROOT/scripts/native_deps_table.py"
+NATIVE_DEPS_TABLE="$REPO_ROOT/crates/reify-build-utils/native-deps.toml"
+
+# An ambient value would point every real-table case below at another table.
+unset REIFY_NATIVE_DEPS_TABLE
 
 _TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$_TMPDIR"' EXIT
 
 echo "=== native-dep preflight tests (OCCT + Gmsh + OpenVDB) ==="
+
+# ---------------------------------------------------------------------------
+# The real table, read ONCE through the reader the guard uses.
+#
+# Every per-dep name below — rows, env names, sentinels, snap subdirs, XDE
+# toolkits — comes from these declarations rather than being listed again
+# here. If the read fails there is nothing to derive the cases from, so the
+# suite stops with a named failure instead of a bare `set -u` abort later.
+# ---------------------------------------------------------------------------
+_TABLE_RC=0
+_TABLE_DECLS="$(python3 -I "$READER" "$NATIVE_DEPS_TABLE")" || _TABLE_RC=$?
+
+_table_read_ok() {
+    [ "$_TABLE_RC" -eq 0 ] && [ -n "$_TABLE_DECLS" ]
+}
+
+assert "reader exits 0 on the real native-deps.toml and declares its rows (exit $_TABLE_RC)" \
+    _table_read_ok
+
+if ! _table_read_ok; then
+    echo "  every case below derives its per-dep names from that read; stopping"
+    test_summary
+    exit 1
+fi
+eval "$_TABLE_DECLS"
+
+# The OCCT XDE toolkits the guard requires, from the occt row. Up here because
+# every OCCT lib fixture below materialises them.
+_OCCT_XDE_TOOLKITS=("${OCCT_XDE_TOOLKITS[@]}")
 
 # ---------------------------------------------------------------------------
 # Fixture + invocation helpers
@@ -490,165 +522,11 @@ _majmin_lines() {
 }
 
 # ---------------------------------------------------------------------------
-# Parity parsers
+# Single-side parsers: data only the guard or setup-dev.sh declares.
 #
-# Both sides must FAIL LOUDLY (empty result -> a named assert failure) when
-# their anchor is not found. A parity test that silently degrades to
-# "" == "" would recreate the exact class of vacuity this task fixes.
+# Each must FAIL LOUDLY (empty result -> a named assert failure) when its
+# anchor is not found, so a renamed anchor cannot pass vacuously.
 # ---------------------------------------------------------------------------
-
-# _rust_dep_list <fn-name> <Variant> — the ordered
-# `NativeDep::<Variant> => &[...]` string literals from the named fn block in
-# crates/reify-build-utils/src/lib.rs, one per line. Anchored to `fn <name>`
-# and bounded by that fn's closing brace, so the several `NativeDep::<V> =>`
-# arms in the file can never be confused.
-#
-# Handles all THREE literal shapes present in that file without special-casing:
-# the one-line `NativeDep::Gmsh => &["a", "b"],` form; the multi-line
-# `NativeDep::Occt => &[` + one-string-per-line + `],` form; and the block
-# `NativeDep::OpenVdb => { &[...] }` form whose arm line itself carries no
-# literals. Only the variant string is parameterised — no parser fork per dep.
-_rust_dep_list() {
-    awk -v fname="fn $1" -v arm="NativeDep::$2 =>" '
-        index($0, fname) { infn = 1; next }
-        infn && /^    }$/ { exit }
-        infn && index($0, arm) { inarm = 1 }
-        inarm {
-            n = split($0, parts, "\"")
-            for (i = 2; i <= n; i += 2) print parts[i]
-            if (index($0, "]")) exit
-        }
-    ' "$RUST_SRC"
-}
-
-# _rust_dep_scalar <fn-name> <Variant> — the single string literal on the
-# `NativeDep::<Variant> =>` arm of the named fn block. Same anchoring rules.
-_rust_dep_scalar() {
-    awk -v fname="fn $1" -v arm="NativeDep::$2 =>" '
-        index($0, fname) { infn = 1; next }
-        infn && /^    }$/ { exit }
-        infn && index($0, arm) {
-            n = split($0, parts, "\"")
-            if (n >= 2) print parts[2]
-            exit
-        }
-    ' "$RUST_SRC"
-}
-
-# _rust_snap_root — the literal dir find_dir_with_override's snap fallback
-# scans (`std::fs::read_dir("/snap/freecad")`). Anchored INSIDE the
-# snap_subdir block so an unrelated read_dir elsewhere cannot satisfy it.
-_rust_snap_root() {
-    awk '
-        index($0, "let snap_subdir = match sentinel") { insnap = 1; next }
-        insnap && /^}/ { exit }
-        insnap && index($0, "read_dir(") {
-            n = split($0, parts, "\"")
-            if (n >= 2) print parts[2]
-            exit
-        }
-    ' "$RUST_SRC"
-}
-
-# _rust_snap_map — `<sentinel> <subdir>` pairs from that same `match sentinel`,
-# one per line, in arm order.
-_rust_snap_map() {
-    awk '
-        index($0, "let snap_subdir = match sentinel") { insnap = 1; next }
-        insnap && /^[[:space:]]*};/ { exit }
-        insnap {
-            n = split($0, parts, "\"")
-            if (n >= 4) print parts[2], parts[4]
-        }
-    ' "$RUST_SRC"
-}
-
-# _bash_snap_root — the DEFAULT of the guard's OCCT_SNAP_ROOT assignment.
-_bash_snap_root() {
-    sed -n 's/^OCCT_SNAP_ROOT="${OCCT_SNAP_ROOT:-\(.*\)}"$/\1/p' "$GUARD" | head -1
-}
-
-# _bash_snap_map — `<sentinel> <subdir>` pairs from dep_find_dir's
-# `case "$sentinel"`, one per line, in arm order.
-_bash_snap_map() {
-    awk '
-        index($0, "case \"$sentinel\" in") { incase = 1; next }
-        incase && index($0, "esac") { exit }
-        incase && index($0, "snap_subdir=") {
-            line = $0
-            sub(/^[[:space:]]+/, "", line)
-            p = index(line, ")")
-            if (p == 0) next
-            pat = substr(line, 1, p - 1)
-            rest = substr(line, p + 1)
-            n = split(rest, parts, "\"")
-            if (n >= 2) print pat, parts[2]
-        }
-    ' "$GUARD"
-}
-
-# _rust_native_dep_variants — the variant names of `enum NativeDep`, one per
-# line, read from INSIDE the `// BEGIN native-dep-variants` marker block in
-# crates/reify-build-utils/src/lib.rs.
-#
-# Marker-anchored rather than brace-anchored so the enum body stays the single
-# source of truth and nothing is duplicated — the markers only make it
-# parseable. An unmarked enum yields NOTHING, which the mandatory
-# anchor-integrity assert below turns into a named failure rather than a
-# silently vacuous set comparison.
-_rust_native_dep_variants() {
-    # WHOLE-LINE anchoring, not index(): the enum's own doc comment NAMES these
-    # markers in prose (explaining why they exist), and a substring match would
-    # open the block there and swallow the `#[derive(..)]` and `pub enum ..`
-    # lines as if they were variants. A marker line must be nothing but the
-    # marker.
-    awk '
-        $0 ~ /^[[:space:]]*\/\/ BEGIN native-dep-variants[[:space:]]*$/ { inblk = 1; next }
-        inblk && $0 ~ /^[[:space:]]*\/\/ END native-dep-variants[[:space:]]*$/ { exit }
-        !inblk { next }
-        {
-            line = $0
-            sub(/\/\/.*/, "", line)
-            gsub(/[[:space:],]/, "", line)
-            if (line != "") print line
-        }
-    ' "$RUST_SRC"
-}
-
-# _rust_occt_xde_toolkits — the toolkit names inside the
-# `// BEGIN occt-xde-toolkits` marker block of crates/reify-kernel-occt/build.rs,
-# one per line. Whole-line anchored like _rust_native_dep_variants, and an
-# unmarked block yields NOTHING, which section 13's anchor assert names.
-_rust_occt_xde_toolkits() {
-    awk '
-        $0 ~ /^[[:space:]]*\/\/ BEGIN occt-xde-toolkits[[:space:]]*$/ { inblk = 1; next }
-        inblk && $0 ~ /^[[:space:]]*\/\/ END occt-xde-toolkits[[:space:]]*$/ { exit }
-        !inblk { next }
-        {
-            line = $0
-            sub(/\/\/.*/, "", line)
-            gsub(/[[:space:]",]/, "", line)
-            if (line != "") print line
-        }
-    ' "$OCCT_BUILD_RS"
-}
-
-# _bash_gated_deps — the dep names scripts/check-manifold-deps.sh actually
-# gates, DERIVED from its `# BEGIN <dep>-candidates` marker-block names rather
-# than listed again here. Deriving it is the point: a fourth dep that ships
-# without a gate arm shows up as a set difference, with nothing to keep in
-# sync.
-_bash_gated_deps() {
-    sed -n 's/^# BEGIN \([a-z0-9]*\)-candidates.*/\1/p' "$GUARD"
-}
-
-# _norm_dep_set — lowercase + sort -u, so `NativeDep::OpenVdb` and the
-# `openvdb-candidates` block name compare equal. Order carries NO meaning here
-# (unlike the candidate lists, where it is the whole invariant): arm order in
-# the guard is not a contract, only arm PRESENCE is.
-_norm_dep_set() {
-    tr '[:upper:]' '[:lower:]' | sort -u
-}
 
 # _extract_bash_array <VAR> — elements of the named bash array, one per line,
 # in declaration order, from shell source on stdin. Handles both the one-line
@@ -678,33 +556,6 @@ _bash_guard_array() {
     _extract_bash_array "$1" < "$GUARD"
 }
 
-# _bash_block_array <block> <VAR> — the named array as declared INSIDE the
-# `# BEGIN <block>` / `# END <block>` marker block, so a same-named array
-# elsewhere in the file can never satisfy the parity parse.
-_bash_block_array() {
-    sed -n "/# BEGIN $1/,/# END $1/p" "$GUARD" \
-        | _extract_bash_array "$2"
-}
-
-# _bash_block_scalar <block> <VAR> — value of the named scalar assignment
-# inside that same marker block.
-_bash_block_scalar() {
-    awk -v blk="$1" -v var="$2" '
-        index($0, "# BEGIN " blk) { inblk = 1; next }
-        inblk && index($0, "# END " blk) { exit }
-        !inblk { next }
-        $0 ~ ("^[[:space:]]*" var "=") {
-            line = $0
-            sub(/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/, "", line)
-            sub(/[[:space:]]*#.*/, "", line)
-            gsub(/"/, "", line)
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-            print line
-            exit
-        }
-    ' "$GUARD"
-}
-
 # _setup_dev_occt_version — the version scripts/setup-dev.sh's OCCT block
 # expects back from dpkg. Anchored to that section's `# ---------- OCCT`
 # banner and bounded by the next banner, so the parse cannot drift onto an
@@ -724,18 +575,12 @@ _setup_dev_occt_version() {
     ' "$SETUP_DEV"
 }
 
-# Derived once, up here, because section 5's positive-control fixture also has
-# to carry an ACCEPTED version once the SONAME pin exists — hardcoding it in
-# two places would turn a legitimate pin bump into a multi-file edit. The
-# non-empty assert lives with the SONAME section below.
+# Derived once, up here, because every OCCT positive-control fixture has to
+# carry an ACCEPTED version — hardcoding it in two places would turn a
+# legitimate pin bump into a multi-file edit. The non-empty assert lives with
+# the SONAME section below.
 _ACCEPTED_SONAMES="$(_bash_guard_array OCCT_ACCEPTED_SONAMES)"
 _ACCEPTED_FIRST="$(printf '%s\n' "$_ACCEPTED_SONAMES" | head -1)"
-
-# The OCCT XDE toolkits the guard requires, derived from its OCCT_XDE_TOOLKITS
-# for the same reason, and up here because every OCCT lib fixture below
-# materialises them. Section 13 asserts the parse non-empty and equal to
-# build.rs's linked set.
-mapfile -t _OCCT_XDE_TOOLKITS < <(_bash_guard_array OCCT_XDE_TOOLKITS)
 
 # Healthy UPSTREAM OCCT, built at the DERIVED accepted version rather than a
 # hardcoded 7.8, so a legitimate future pin bump stays a one-line diff in one
@@ -751,7 +596,7 @@ _UPSTREAM_OCCT_INC="$(_mk_include_fixture upstream-occt-include)"
 _OCCT_OK=(OCCT_LIB_DIR="$_UPSTREAM_OCCT_LIB" OCCT_INCLUDE_DIR="$_UPSTREAM_OCCT_INC")
 
 # EVERY arm with an override seam, healthy. The all-green baseline that
-# section 12's behavioural completeness loop perturbs one dep at a time.
+# section 12's every-row loop perturbs one dep at a time.
 _ALL_DEPS_OK=("${_OCCT_OK[@]}" "${_DOWNSTREAM_OK[@]}")
 
 # ---------------------------------------------------------------------------
@@ -898,6 +743,225 @@ assert "_guard_output_names emits NOTHING when every needle matches (green shape
     _no_emission_on_match
 
 # ---------------------------------------------------------------------------
+# R. READER — scripts/native_deps_table.py, through its CLI only.
+#
+# The guard evals this reader's stdout, so the reader is where the table's
+# invariants are enforced: a malformed or hostile table must exit non-zero
+# rather than emit declarations, and anything it does emit must be inert
+# under eval. Every eval below runs in a SUBSHELL checker (`f() ( ... )`), so
+# no declaration leaks into this file's own namespace.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- R: reader — native_deps_table.py declares every row, rejects bad tables ---"
+
+# _toml_min_row <key> [<omitted-column>] — a minimal VALID row for reader
+# fixtures, every required column present (minus <omitted-column>, if given)
+# and no optional one. Env and cfg names derive from <key>.
+_toml_min_row() {
+    local key="$1" omit="${2:-}" upper="${1^^}" col
+    local -A cols=(
+        [include_env]="\"${upper}_INCLUDE_DIR\""
+        [lib_env]="\"${upper}_LIB_DIR\""
+        [cfg]="\"has_${key}\""
+        [include_candidates]='["/nonexistent/include"]'
+        [lib_candidates]='["/nonexistent/lib"]'
+        [include_sentinel]="\"${key}.h\""
+        [lib_sentinel]="\"lib${key}.so\""
+    )
+    printf '[%s]\n' "$key"
+    for col in include_env lib_env cfg include_candidates lib_candidates include_sentinel lib_sentinel; do
+        [ "$col" = "$omit" ] && continue
+        printf '%s = %s\n' "$col" "${cols[$col]}"
+    done
+}
+
+# _reader_rejects <table> <needle>... — the reader exits NON-zero on <table>
+# and its combined output names every needle. Guarded on the reader existing
+# first: a missing reader also exits non-zero, which would false-pass every
+# rejection below. On a miss it echoes the evidence, as _guard_env_output_names
+# does.
+_reader_rejects() {
+    local table="$1" out rc=0 needle
+    shift
+    [ -f "$READER" ] || { echo "  | reader not found: $READER"; return 1; }
+    out="$(python3 -I "$READER" "$table" 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  | reader exited 0 on a table it must reject: $table"
+        echo "  | ---- reader output ----"
+        printf '  | %s\n' "$out"
+        return 1
+    fi
+    for needle in "$@"; do
+        if ! _out_contains "$out" "$needle"; then
+            echo "  | needle NOT FOUND in the reader output: $needle (exit $rc)"
+            echo "  | ---- reader output ----"
+            printf '  | %s\n' "$out"
+            return 1
+        fi
+    done
+}
+
+# --- (a) the real table, as read and eval'd once at the top of this file ----
+
+# _reader_real_declares_row <row> — NATIVE_DEP_ROWS holds <row>.
+_reader_real_declares_row() (
+    eval "$_TABLE_DECLS" || exit 1
+    local r
+    for r in "${NATIVE_DEP_ROWS[@]}"; do
+        [ "$r" = "$1" ] && exit 0
+    done
+    echo "  | NATIVE_DEP_ROWS lacks '$1': (${NATIVE_DEP_ROWS[*]})"
+    exit 1
+)
+
+for _row in occt gmsh openvdb; do
+    assert "reader's NATIVE_DEP_ROWS on the real table contains '$_row'" \
+        _reader_real_declares_row "$_row"
+done
+
+# _reader_real_rows_complete — every row the real table declares carries every
+# required column, non-empty: the scalars, and both candidate arrays.
+_reader_real_rows_complete() (
+    eval "$_TABLE_DECLS" || exit 1
+    local row up col name bad=0
+    [ "${#NATIVE_DEP_ROWS[@]}" -gt 0 ] || { echo "  | NATIVE_DEP_ROWS is empty"; exit 1; }
+    for row in "${NATIVE_DEP_ROWS[@]}"; do
+        up="${row^^}"
+        for col in INCLUDE_SENTINEL LIB_SENTINEL INCLUDE_ENV LIB_ENV CFG; do
+            name="${up}_${col}"
+            if [ -z "${!name:-}" ]; then
+                echo "  | $name is empty or undeclared"
+                bad=1
+            fi
+        done
+        for col in INCLUDE_CANDIDATES LIB_CANDIDATES; do
+            name="${up}_${col}"
+            local -n arr="$name"
+            if ! declare -p "$name" >/dev/null 2>&1 || [ "${#arr[@]}" -eq 0 ]; then
+                echo "  | $name is an empty or undeclared array"
+                bad=1
+            fi
+            unset -n arr
+        done
+    done
+    exit "$bad"
+)
+
+assert "reader declares every row's sentinels, env names, cfg and both candidate arrays non-empty" \
+    _reader_real_rows_complete
+
+# --- (b)-(f) rejections -----------------------------------------------------
+_READER_MISSING="$_TMPDIR/reader-no-such-table.toml"
+assert "reader exits non-zero on a missing table file, naming the path" \
+    _reader_rejects "$_READER_MISSING" "$_READER_MISSING"
+
+_READER_MALFORMED="$_TMPDIR/reader-malformed.toml"
+printf '[occt\n' > "$_READER_MALFORMED"
+assert "reader exits non-zero on malformed TOML, naming the path" \
+    _reader_rejects "$_READER_MALFORMED" "$_READER_MALFORMED"
+
+_READER_NO_SENT="$_TMPDIR/reader-missing-column.toml"
+_toml_min_row occt lib_sentinel > "$_READER_NO_SENT"
+assert "reader exits non-zero on a row missing a required column, naming the row and 'lib_sentinel'" \
+    _reader_rejects "$_READER_NO_SENT" "occt" "lib_sentinel"
+
+_READER_UNKNOWN_COL="$_TMPDIR/reader-unknown-column.toml"
+{ _toml_min_row occt; printf 'snapp = 1\n'; } > "$_READER_UNKNOWN_COL"
+assert "reader exits non-zero on an unknown column, naming it ('snapp')" \
+    _reader_rejects "$_READER_UNKNOWN_COL" "snapp"
+
+_READER_BAD_KEY="$_TMPDIR/reader-bad-key.toml"
+_toml_min_row open-vdb > "$_READER_BAD_KEY"
+assert "reader exits non-zero on a row key that is not [a-z][a-z0-9]* ('open-vdb')" \
+    _reader_rejects "$_READER_BAD_KEY" "open-vdb"
+
+_READER_EMPTY_SENT="$_TMPDIR/reader-empty-sentinel.toml"
+{ _toml_min_row occt include_sentinel; printf 'include_sentinel = ""\n'; } > "$_READER_EMPTY_SENT"
+assert "reader exits non-zero on an empty sentinel, naming the row and 'include_sentinel'" \
+    _reader_rejects "$_READER_EMPTY_SENT" "occt" "include_sentinel"
+
+# --- (g) values survive eval literally -------------------------------------
+_READER_QUOTE_MARKER="$_TMPDIR/reader-quote-marker"
+_READER_QUOTE_CAND="/tmp/a b/\$(touch $_READER_QUOTE_MARKER)/it's"
+_READER_QUOTE="$_TMPDIR/reader-quoting.toml"
+{
+    _toml_min_row quote include_candidates
+    printf 'include_candidates = ["%s"]\n' "$_READER_QUOTE_CAND"
+} > "$_READER_QUOTE"
+
+# _reader_value_is_literal — the hostile candidate comes back as ONE element
+# equal to the literal string, and the command substitution inside it never
+# ran.
+_reader_value_is_literal() (
+    local decls
+    decls="$(python3 -I "$READER" "$_READER_QUOTE")" || exit 1
+    eval "$decls" || exit 1
+    if [ "${#QUOTE_INCLUDE_CANDIDATES[@]}" -ne 1 ] \
+        || [ "${QUOTE_INCLUDE_CANDIDATES[0]}" != "$_READER_QUOTE_CAND" ]; then
+        echo "  | QUOTE_INCLUDE_CANDIDATES after eval: $(declare -p QUOTE_INCLUDE_CANDIDATES)"
+        exit 1
+    fi
+    if [ -e "$_READER_QUOTE_MARKER" ]; then
+        echo "  | eval EXECUTED the embedded \$(touch ...): $_READER_QUOTE_MARKER exists"
+        exit 1
+    fi
+)
+
+assert "a candidate holding a space, \$(...) and a single quote survives eval as one literal element, unexecuted" \
+    _reader_value_is_literal
+
+# --- (h) absent optional columns are emitted EMPTY -------------------------
+_READER_NO_OPT="$_TMPDIR/reader-no-optional.toml"
+_toml_min_row gmsh > "$_READER_NO_OPT"
+
+# _reader_absent_optionals_are_empty — with same-named variables EXPORTED in
+# the caller's environment, the eval still leaves the snap scalars empty and
+# the XDE toolkit list an empty array: the reader declared them, so nothing
+# ambient leaks into what the guard reads.
+_reader_absent_optionals_are_empty() (
+    export GMSH_SNAP_ROOT=/leak GMSH_SNAP_INCLUDE_SUBDIR=/leak \
+        GMSH_SNAP_LIB_SUBDIR=/leak GMSH_XDE_TOOLKITS=/leak
+    local decls name bad=0
+    decls="$(python3 -I "$READER" "$_READER_NO_OPT")" || exit 1
+    eval "$decls" || exit 1
+    for name in GMSH_SNAP_ROOT GMSH_SNAP_INCLUDE_SUBDIR GMSH_SNAP_LIB_SUBDIR; do
+        if [ -n "${!name}" ]; then
+            echo "  | $name leaked through: '${!name}'"
+            bad=1
+        fi
+    done
+    if [ "${#GMSH_XDE_TOOLKITS[@]}" -ne 0 ] || [ -n "${GMSH_XDE_TOOLKITS[0]:-}" ]; then
+        echo "  | GMSH_XDE_TOOLKITS is not an empty array: $(declare -p GMSH_XDE_TOOLKITS)"
+        bad=1
+    fi
+    exit "$bad"
+)
+
+assert "a row with no snap / xde_toolkits emits them EMPTY, overriding same-named exported variables" \
+    _reader_absent_optionals_are_empty
+
+# --- (i) no stdlib tomllib => exit 3, not the table-defect 1 ---------------
+# Simulated on this interpreter: a None entry in sys.modules makes
+# `import tomllib` raise ImportError, as it does on Python < 3.11.
+_reader_without_tomllib_exits_3() {
+    local out rc=0
+    [ -f "$READER" ] || { echo "  | reader not found: $READER"; return 1; }
+    out="$(python3 -I -c 'import runpy, sys
+sys.modules["tomllib"] = None
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")' "$READER" "$NATIVE_DEPS_TABLE" 2>&1)" || rc=$?
+    if [ "$rc" -ne 3 ] || ! _out_contains "$out" "tomllib"; then
+        echo "  | expected exit 3 naming tomllib, got exit $rc"
+        echo "  | ---- reader output ----"
+        printf '  | %s\n' "$out"
+        return 1
+    fi
+}
+
+assert "reader exits 3 naming tomllib when the interpreter has none" \
+    _reader_without_tomllib_exits_3
+
+# ---------------------------------------------------------------------------
 # 1. Guard script exists and is executable
 # ---------------------------------------------------------------------------
 echo ""
@@ -962,129 +1026,6 @@ assert "guard output NAMES Standard_Failure.hxx and the offending include dir" \
 
 assert "guard exits 0 when BOTH override dirs carry their sentinels (positive control)" \
     _guard_exits_zero "$_LIB_OK" "$_INC_OK"
-
-# ---------------------------------------------------------------------------
-# 5. PARITY — the bash mirror equals NativeDep::Occt, order included
-# ---------------------------------------------------------------------------
-echo ""
-echo "--- 5: parity — bash occt-candidates block mirrors NativeDep::Occt ---"
-
-# _parity_diff <a> <b> — order-sensitive difference of two newline-separated
-# lists, empty when they agree. The priority ORDER is itself the invariant, so
-# a set comparison would not do: OCCT's system paths must stay ahead of
-# /opt/reify-deps' OCCT 7.9, and conversely Gmsh/OpenVDB's /opt/reify-deps must
-# stay ahead of apt's stale gmsh 4.12.1 / openvdb 10.0.1.
-_parity_diff() {
-    diff <(printf '%s\n' "$1") <(printf '%s\n' "$2") 2>&1 || true
-}
-
-# _assert_dep_parity <Variant> <block> <PREFIX>
-#
-# The whole mirror check for one native dep: Rust's `NativeDep::<Variant>` arms
-# (the single source of truth) against the `# BEGIN <block>` marker block in
-# scripts/check-manifold-deps.sh (a declared mirror), for both candidate lists
-# ORDER INCLUDED and both sentinels.
-#
-# The four ANCHOR-INTEGRITY asserts come FIRST and are mandatory. Without them
-# a renamed fn, a dropped marker block or a mistyped variant degrades every
-# comparison below to "" == "" and the whole section passes while guarding
-# NOTHING — which is the same vacuity class this file exists to close, one
-# level up.
-_assert_dep_parity() {
-    local variant="$1" block="$2" prefix="$3"
-    local rust_lib rust_inc rust_lib_sent rust_inc_sent
-    local bash_lib bash_inc bash_lib_sent bash_inc_sent
-    local lib_diff inc_diff
-
-    rust_lib="$(_rust_dep_list lib_candidates "$variant")"
-    rust_inc="$(_rust_dep_list include_candidates "$variant")"
-    rust_lib_sent="$(_rust_dep_scalar lib_sentinel "$variant")"
-    rust_inc_sent="$(_rust_dep_scalar include_sentinel "$variant")"
-
-    bash_lib="$(_bash_block_array "$block" "${prefix}_LIB_CANDIDATES")"
-    bash_inc="$(_bash_block_array "$block" "${prefix}_INCLUDE_CANDIDATES")"
-    bash_lib_sent="$(_bash_block_scalar "$block" "${prefix}_LIB_SENTINEL")"
-    bash_inc_sent="$(_bash_block_scalar "$block" "${prefix}_INCLUDE_SENTINEL")"
-
-    assert "Rust parse of NativeDep::$variant lib_candidates is non-empty (anchor 'fn lib_candidates' found)" \
-        test -n "$rust_lib"
-    assert "Rust parse of NativeDep::$variant include_candidates is non-empty (anchor 'fn include_candidates' found)" \
-        test -n "$rust_inc"
-    assert "Rust parse of NativeDep::$variant lib_sentinel is non-empty (anchor 'fn lib_sentinel' found)" \
-        test -n "$rust_lib_sent"
-    assert "Rust parse of NativeDep::$variant include_sentinel is non-empty (anchor 'fn include_sentinel' found)" \
-        test -n "$rust_inc_sent"
-    assert "bash parse of ${prefix}_LIB_CANDIDATES is non-empty ($block marker block found)" \
-        test -n "$bash_lib"
-    assert "bash parse of ${prefix}_INCLUDE_CANDIDATES is non-empty ($block marker block found)" \
-        test -n "$bash_inc"
-    assert "bash parse of ${prefix}_LIB_SENTINEL is non-empty ($block marker block found)" \
-        test -n "$bash_lib_sent"
-    assert "bash parse of ${prefix}_INCLUDE_SENTINEL is non-empty ($block marker block found)" \
-        test -n "$bash_inc_sent"
-
-    lib_diff="$(_parity_diff "$rust_lib" "$bash_lib")"
-    if [ -n "$lib_diff" ]; then
-        echo "  $variant lib-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
-        printf '%s\n' "$lib_diff" | sed 's/^/    /'
-    fi
-    assert "bash ${prefix}_LIB_CANDIDATES equals NativeDep::$variant lib_candidates, order included" \
-        test -z "$lib_diff"
-
-    inc_diff="$(_parity_diff "$rust_inc" "$bash_inc")"
-    if [ -n "$inc_diff" ]; then
-        echo "  $variant include-candidate drift (< reify-build-utils, > check-manifold-deps.sh):"
-        printf '%s\n' "$inc_diff" | sed 's/^/    /'
-    fi
-    assert "bash ${prefix}_INCLUDE_CANDIDATES equals NativeDep::$variant include_candidates, order included" \
-        test -z "$inc_diff"
-
-    assert "bash ${prefix}_LIB_SENTINEL ('$bash_lib_sent') equals NativeDep::$variant lib_sentinel ('$rust_lib_sent')" \
-        test "$bash_lib_sent" = "$rust_lib_sent"
-
-    assert "bash ${prefix}_INCLUDE_SENTINEL ('$bash_inc_sent') equals NativeDep::$variant include_sentinel ('$rust_inc_sent')" \
-        test "$bash_inc_sent" = "$rust_inc_sent"
-}
-
-_assert_dep_parity Occt occt-candidates OCCT
-
-# --- 6: the same mirror one layer down — the snap-fallback ALGORITHM.
-#
-# The candidate lists above are DATA; the numbered-/snap/freecad fallback is
-# duplicated LOGIC, and on any host with system OCCT the candidate loop
-# short-circuits before either side's fallback runs, so nothing exercises it.
-# These asserts pin it by declaration instead: a change to the scanned root, to
-# the sentinel -> subdir mapping, or to arm order on the Rust side fails here
-# rather than silently diverging.
-_RUST_SNAP_ROOT="$(_rust_snap_root)"
-_BASH_SNAP_ROOT="$(_bash_snap_root)"
-_RUST_SNAP_MAP="$(_rust_snap_map)"
-_BASH_SNAP_MAP="$(_bash_snap_map)"
-
-assert "Rust parse of the snap-fallback root is non-empty (anchor 'let snap_subdir = match sentinel' found)" \
-    test -n "$_RUST_SNAP_ROOT"
-assert "bash parse of OCCT_SNAP_ROOT's default is non-empty (defaulted assignment found)" \
-    test -n "$_BASH_SNAP_ROOT"
-assert "Rust parse of the snap sentinel -> subdir map is non-empty" \
-    test -n "$_RUST_SNAP_MAP"
-assert "bash parse of the snap sentinel -> subdir case is non-empty (dep_find_dir's case found)" \
-    test -n "$_BASH_SNAP_MAP"
-
-assert "OCCT_SNAP_ROOT's default ('$_BASH_SNAP_ROOT') equals find_dir_with_override's read_dir literal ('$_RUST_SNAP_ROOT')" \
-    test "$_BASH_SNAP_ROOT" = "$_RUST_SNAP_ROOT"
-
-_SNAP_MAP_DIFF="$(_parity_diff "$_RUST_SNAP_MAP" "$_BASH_SNAP_MAP")"
-if [ -n "$_SNAP_MAP_DIFF" ]; then
-    echo "  OCCT snap sentinel->subdir drift (< reify-build-utils, > check-manifold-deps.sh):"
-    printf '%s\n' "$_SNAP_MAP_DIFF" | sed 's/^/    /'
-fi
-assert "bash snap sentinel->subdir case equals find_dir_with_override's match arms, order included" \
-    test -z "$_SNAP_MAP_DIFF"
-
-# The override-precedence rule the two sides also share (an exported-but-EMPTY
-# override counts as UNSET) is pinned on the Rust side by
-# find_dir_ignores_exported_but_empty_override; it is not drivable from here
-# without falling back to live host state, which this file deliberately avoids.
 
 # ---------------------------------------------------------------------------
 # 6. SONAME pin — the resolved version must be a declared, accepted one.
@@ -1294,29 +1235,6 @@ assert "guard exits 0 when BOTH OpenVDB override dirs carry their sentinels (pos
         OPENVDB_LIB_DIR="$_OPENVDB_LIB_OK" OPENVDB_INCLUDE_DIR="$_OPENVDB_INC_OK"
 
 # ---------------------------------------------------------------------------
-# 10. PARITY for the two new mirrors — the same anti-drift check section 5
-#     applies to OCCT, run against `gmsh-candidates` and `openvdb-candidates`.
-#
-# Rust stays the single source of truth. Order is compared, not just membership,
-# because the priority order IS the invariant on both new arms and it is the
-# OPPOSITE of OCCT's: /opt/reify-deps must lead for gmsh and openvdb (that is
-# where reify's 4.15.2 / 13.0.0 live) where it appears in NEITHER of OCCT's
-# lists (the conda env ships OCCT 7.9 as a transitive of gmsh while reify links
-# system OCCT 7.8). Gmsh's and OpenVdb's own lib orders also differ from each
-# other, so a drift that merely swapped two entries would still resolve — just
-# against the wrong install, silently.
-#
-# Every parse asserts non-empty FIRST (inside _assert_dep_parity), so a renamed
-# fn, a dropped marker block or a mistyped variant fails loudly instead of
-# degrading the comparison to "" == "" and passing while guarding nothing.
-# ---------------------------------------------------------------------------
-echo ""
-echo "--- 10: parity — gmsh/openvdb marker blocks mirror their NativeDep arms ---"
-
-_assert_dep_parity Gmsh gmsh-candidates GMSH
-_assert_dep_parity OpenVdb openvdb-candidates OPENVDB
-
-# ---------------------------------------------------------------------------
 # 11. GREEN-PATH RECORDING for the two new arms (task #6493).
 #
 # Sections 8 and 9 pin only FAILURE paths, so a green Gmsh/OpenVDB result says
@@ -1392,87 +1310,29 @@ assert "guard RECORDS 'OpenVDB unknown at ' rather than hard-failing on the unde
         -- "OpenVDB unknown at " "$_OPENVDB_LIB_PLAIN"
 
 # ---------------------------------------------------------------------------
-# 12. COMPLETENESS — every NativeDep variant has a gate arm (task #6493).
+# 12. EVERY ROW GATES — each table row's arm reds on a missing dir (task #6493).
 #
-# This is the assert that would have caught this task's own finding, and the
-# one that stops a FOURTH native dep from silently shipping ungated. Gmsh and
-# OpenVDB sat behind byte-for-byte the same fail-OPEN build.rs as OCCT for the
-# whole time OCCT had a gate and they did not — nothing anywhere compared the
-# two lists, so nothing could notice.
+# A DECLARED arm and a GATING arm are not the same thing. Gmsh and OpenVDB sat
+# behind byte-for-byte the same fail-OPEN build.rs as OCCT for the whole time
+# OCCT had a gate and they did not. The guard now dispatches every table row
+# to an arm and fails closed on a row without one (section 14), but an arm
+# that reads its row and gates nothing would pass that check. This loop is
+# the behavioural one.
 #
-# Both sides are DERIVED, so nothing is duplicated: the bash side from the
-# `# BEGIN <dep>-candidates` marker-block NAMES already present for the parity
-# checks, the Rust side from the `// BEGIN native-dep-variants` markers around
-# the enum body. Adding a variant without an arm therefore reds HERE, at the
-# cheapest possible place.
-#
-# Compared as SETS. Order carries no meaning for this one — unlike the
-# candidate lists, where order IS the invariant — because arm PRESENCE is the
-# contract, not arm sequence.
-#
-# The two non-empty asserts and the >= 3 assert come FIRST and are mandatory:
-# without them a dropped marker on either side degrades the comparison to
-# "" == "" and this section passes while guarding nothing.
-#
-# TWO HALVES, and the second is the load-bearing one. The set comparison above
-# is LEXICAL: it reads `# BEGIN <dep>-candidates` COMMENT lines and nothing
-# more. A fourth variant shipping candidate arrays inside a correctly named
-# marker block but NO consuming presence check — no dep_find_dir call, no
-# hint+exit — would satisfy it, satisfy section 10's parity asserts, and
-# satisfy the assert message, while still shipping ungated. A DECLARED arm and
-# a GATING arm are not the same thing.
-#
-# So the loop below is BEHAVIOURAL. For each dep DERIVED from the guard's own
-# marker blocks it drives the guard with every other dep healthy and that dep's
-# lib dir (then its include dir) pointed at an EMPTY fixture, and asserts the
-# guard REDS naming that dep's declared sentinel and the offending dir. Both
-# sides are still derived — the dep names from the marker blocks, the sentinels
-# from `_bash_block_scalar` — so nothing is duplicated and a fourth dep is
-# covered the moment its block exists.
+# For each row of the real table it drives the guard with every other dep
+# healthy and that row's lib dir (then its include dir) pointed at an EMPTY
+# fixture, and asserts the guard REDS naming that row's own sentinel and the
+# offending dir. Rows, env names and sentinels all come from the reader, so a
+# fourth row is covered the moment it exists.
 #
 # The healthy-everything-else part is what keeps it non-vacuous: arms run in
-# declaration order and the first failure exits, so without it an UPSTREAM
-# arm's exit would satisfy the non-zero assert for a downstream dep that gates
+# table order and the first failure exits, so without it an UPSTREAM arm's
+# exit would satisfy the non-zero assert for a downstream dep that gates
 # nothing. The paired output assert names a DEP-SPECIFIC sentinel for the same
 # reason.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- 12: completeness — every NativeDep variant has a check-manifold-deps arm ---"
-
-_RUST_VARIANTS="$(_rust_native_dep_variants)"
-_BASH_GATED="$(_bash_gated_deps)"
-
-assert "Rust parse of enum NativeDep's variants is non-empty (anchor '// BEGIN native-dep-variants' found)" \
-    test -n "$_RUST_VARIANTS"
-
-assert "bash parse of the gated dep set is non-empty ('# BEGIN <dep>-candidates' markers found)" \
-    test -n "$_BASH_GATED"
-
-_variant_count() {
-    local n
-    n="$(printf '%s\n' "$_RUST_VARIANTS" | grep -c .)" || true
-    [ "${n:-0}" -ge 3 ]
-}
-
-assert "Rust parse yields at least 3 NativeDep variants (Occt, Gmsh, OpenVdb — parse is not truncated)" \
-    _variant_count
-
-_RUST_DEP_SET="$(printf '%s\n' "$_RUST_VARIANTS" | _norm_dep_set)"
-_BASH_DEP_SET="$(printf '%s\n' "$_BASH_GATED" | _norm_dep_set)"
-
-_DEP_SET_DIFF="$(_parity_diff "$_RUST_DEP_SET" "$_BASH_DEP_SET")"
-if [ -n "$_DEP_SET_DIFF" ]; then
-    echo "  NativeDep gate coverage gap (< enum NativeDep, > check-manifold-deps.sh arms):"
-    printf '%s\n' "$_DEP_SET_DIFF" | sed 's/^/    /'
-    echo "  A variant present on the left but not the right ships a SILENT stub"
-    echo "  kernel: its build.rs emits a cargo:warning and returns without the cfg,"
-    echo "  so every gated item vanishes and the suite reports zero tests REPORTED"
-    echo "  rather than zero tests FAILED."
-fi
-assert "every enum NativeDep variant has a '# BEGIN <dep>-candidates' arm in check-manifold-deps.sh" \
-    test -z "$_DEP_SET_DIFF"
-
-# --- the behavioural half: each declared arm must actually GATE ------------
+echo "--- 12: every table row gates — an empty dir reds the guard naming that row ---"
 
 # _env_replacing <VAR> <value> <env-item>... — the given VAR=VALUE override
 # list with <VAR>'s entry swapped for <value>, one item per line.
@@ -1496,37 +1356,34 @@ _env_replacing() {
     printf '%s=%s\n' "$var" "$val"
 }
 
+_both_nonempty() {
+    [ -n "$1" ] && [ -n "$2" ]
+}
+
 _COMPLETENESS_EMPTY="$(_mk_empty_fixture completeness-empty)"
 
-# Herestring, NOT `printf | while read`: a pipeline would run the loop body in
-# a SUBSHELL and every assert's PASS/FAIL increment would be discarded with it,
-# leaving this section reporting nothing while appearing to run.
-while IFS= read -r _dep; do
-    [ -n "$_dep" ] || continue
-
-    # The uppercase form is the token the marker block, the override env vars
-    # and the sentinel/candidate names all already share, so it is derived, not
-    # listed.
-    _PREFIX="${_dep^^}"
-
+for _row in "${NATIVE_DEP_ROWS[@]}"; do
     for _half in LIB INCLUDE; do
-        _SENT="$(_bash_block_scalar "$_dep-candidates" "${_PREFIX}_${_half}_SENTINEL")"
+        _env_ref="${_row^^}_${_half}_ENV"
+        _sent_ref="${_row^^}_${_half}_SENTINEL"
+        _ENV_NAME="${!_env_ref:-}"
+        _SENT="${!_sent_ref:-}"
 
-        # Mandatory, and first: an unparsed sentinel would make the output
+        # Mandatory, and first: an empty sentinel would make the output
         # assert below match the empty needle against anything and pass while
         # proving nothing.
-        assert "gate arm '$_dep': ${_PREFIX}_${_half}_SENTINEL parses non-empty from its marker block" \
-            test -n "$_SENT"
+        assert "gate arm '$_row': the table declares a non-empty $_half env name ('$_ENV_NAME') and sentinel ('$_SENT')" \
+            _both_nonempty "$_ENV_NAME" "$_SENT"
 
-        mapfile -t _GATE_ENVS < <(_env_replacing "${_PREFIX}_${_half}_DIR" "$_COMPLETENESS_EMPTY" "${_ALL_DEPS_OK[@]}")
+        mapfile -t _GATE_ENVS < <(_env_replacing "$_ENV_NAME" "$_COMPLETENESS_EMPTY" "${_ALL_DEPS_OK[@]}")
 
-        assert "gate arm '$_dep' is BEHAVIOURAL: an empty ${_PREFIX}_${_half}_DIR reds the guard (every other dep healthy)" \
+        assert "gate arm '$_row' is BEHAVIOURAL: an empty $_ENV_NAME reds the guard (every other dep healthy)" \
             _guard_env_exits_nonzero "${_GATE_ENVS[@]}"
 
-        assert "gate arm '$_dep' names its own $_half sentinel ('$_SENT') and the offending dir — the red is attributable to $_dep" \
+        assert "gate arm '$_row' names its own $_half sentinel ('$_SENT') and the offending dir — the red is attributable to $_row" \
             _guard_env_output_names "${_GATE_ENVS[@]}" -- "$_SENT" "$_COMPLETENESS_EMPTY"
     done
-done <<< "$_BASH_GATED"
+done
 
 # ---------------------------------------------------------------------------
 # 13. OCCT XDE TOOLKITS — presence fatal, resolved files recorded.
@@ -1536,31 +1393,15 @@ done <<< "$_BASH_GATED"
 # fixture is at the accepted SONAME with healthy headers, so the toolkit rule is
 # the only thing under test, and each red names the toolkit file it is about.
 #
-# Both toolkit sets are DERIVED: the guard's OCCT_XDE_TOOLKITS, and build.rs's
-# `// BEGIN occt-xde-toolkits` block. A toolkit build.rs links without the
-# guard requiring it reds the parity assert; one the guard declares is driven
-# by the behavioural loop with no edit here.
+# The toolkits are the occt row's xde_toolkits — the one list build.rs links
+# and the guard requires — so a toolkit added there is driven by the loop
+# below with no edit here.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- 13: XDE toolkits — presence fatal, recorded ---"
 
-_BUILD_RS_XDE="$(_rust_occt_xde_toolkits)"
-
-assert "build.rs parse of the XDE toolkits is non-empty (anchor '// BEGIN occt-xde-toolkits' found)" \
-    test -n "$_BUILD_RS_XDE"
-
-assert "guard parse of OCCT_XDE_TOOLKITS is non-empty" \
+assert "the occt row's xde_toolkits is non-empty (the loop below is not vacuous)" \
     test "${#_OCCT_XDE_TOOLKITS[@]}" -gt 0
-
-_XDE_SET_DIFF="$(_parity_diff \
-    "$(printf '%s\n' "$_BUILD_RS_XDE" | sort -u)" \
-    "$(printf '%s\n' "${_OCCT_XDE_TOOLKITS[@]}" | sort -u)")"
-if [ -n "$_XDE_SET_DIFF" ]; then
-    echo "  XDE toolkit gate gap (< build.rs occt-xde-toolkits, > guard OCCT_XDE_TOOLKITS):"
-    printf '%s\n' "$_XDE_SET_DIFF" | sed 's/^/    /'
-fi
-assert "the guard's OCCT_XDE_TOOLKITS equals the toolkits build.rs links for the STEP reader" \
-    test -z "$_XDE_SET_DIFF"
 
 _XDE_INC="$(_mk_include_fixture xde-include)"
 
@@ -1586,5 +1427,220 @@ done
 
 assert "guard RECORDS every resolved XDE toolkit file on the green path" \
     _guard_output_names "$_XDE_LIB_OK" "$_XDE_INC" "${_XDE_RECORDED[@]}"
+
+# ---------------------------------------------------------------------------
+# 14. TABLE-DRIVEN DISPATCH — the guard reads REIFY_NATIVE_DEPS_TABLE.
+#
+# Each case points the guard at a FIXTURE table assembled from rows whose env
+# names, cfg, sentinels, snap subdirs and XDE toolkits are the REAL ones, read
+# through the reader at the top of this file. Only the candidates, the snap
+# root and the row set vary, and the real table is never edited textually.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- 14: table-driven dispatch — fixture tables drive rows, arms and the snap fallback ---"
+
+# _toml_str <value> — <value> as a TOML basic string.
+_toml_str() {
+    local v="${1//\\/\\\\}"
+    printf '"%s"' "${v//\"/\\\"}"
+}
+
+# _toml_row <key> <include_candidate> <lib_candidate> — a [<key>] row carrying
+# the real row's names and XDE toolkits, and one candidate per half.
+_toml_row() {
+    local key="$1" up="${1^^}" col ref tk sep=""
+    printf '[%s]\n' "$key"
+    for col in include_env lib_env cfg include_sentinel lib_sentinel; do
+        ref="${up}_${col^^}"
+        printf '%s = %s\n' "$col" "$(_toml_str "${!ref}")"
+    done
+    printf 'include_candidates = [%s]\n' "$(_toml_str "$2")"
+    printf 'lib_candidates = [%s]\n' "$(_toml_str "$3")"
+    local -n xde="${up}_XDE_TOOLKITS"
+    if [ "${#xde[@]}" -gt 0 ]; then
+        printf 'xde_toolkits = ['
+        for tk in "${xde[@]}"; do
+            printf '%s%s' "$sep" "$(_toml_str "$tk")"
+            sep=", "
+        done
+        printf ']\n'
+    fi
+}
+
+# _toml_snap <key> <root> — a [<key>.snap] table rooted at <root>, with the
+# real row's subdirs.
+_toml_snap() {
+    local up="${1^^}" inc lib
+    inc="${up}_SNAP_INCLUDE_SUBDIR"
+    lib="${up}_SNAP_LIB_SUBDIR"
+    printf '[%s.snap]\n' "$1"
+    printf 'root = %s\n' "$(_toml_str "$2")"
+    printf 'include_subdir = %s\n' "$(_toml_str "${!inc}")"
+    printf 'lib_subdir = %s\n' "$(_toml_str "${!lib}")"
+}
+
+# _guard_env_output_lacks <VAR=VALUE>... -- <needle>... — the guard's combined
+# output contains NONE of the needles. Echoes the evidence on a hit, as
+# _guard_env_output_names does on a miss.
+_guard_env_output_lacks() {
+    [ -x "$GUARD" ] || return 1
+    local -a envs=()
+    while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+        envs+=("$1")
+        shift
+    done
+    [ "${1:-}" = "--" ] && shift
+    local out needle rc=0 line
+    out="$(_guard_run "${envs[@]}")" || rc=$?
+    for needle in "$@"; do
+        if _out_contains "$out" "$needle"; then
+            echo "  | needle FOUND in the guard output, where it must not be: $needle"
+            echo "  | guard exit status: $rc"
+            echo "  | ---- captured guard output ----"
+            while IFS= read -r line; do
+                echo "  | $line"
+            done <<< "$out"
+            echo "  | ---- end captured guard output ----"
+            return 1
+        fi
+    done
+    return 0
+}
+
+_TABLE_HEALTHY="$_TMPDIR/table-healthy.toml"
+{
+    _toml_row occt "$_UPSTREAM_OCCT_INC" "$_UPSTREAM_OCCT_LIB"
+    _toml_row gmsh "$_GMSH_INC_OK" "$_GMSH_LIB_OK"
+    _toml_row openvdb "$_OPENVDB_INC_OK" "$_OPENVDB_LIB_OK"
+} > "$_TABLE_HEALTHY"
+
+# --- (i) exported-EMPTY overrides fall through to the table's candidates ----
+# The bash half of the empty-override rule the build shares: an empty
+# <DEP>_LIB_DIR / <DEP>_INCLUDE_DIR counts as unset.
+_EMPTY_OVERRIDES=()
+for _row in "${NATIVE_DEP_ROWS[@]}"; do
+    for _half in INCLUDE LIB; do
+        _env_ref="${_row^^}_${_half}_ENV"
+        _EMPTY_OVERRIDES+=("${!_env_ref}=")
+    done
+done
+
+assert "every <DEP>_{LIB,INCLUDE}_DIR exported EMPTY => the guard falls through to the fixture table's candidates (exit 0)" \
+    _guard_env_exits_zero REIFY_NATIVE_DEPS_TABLE="$_TABLE_HEALTHY" "${_EMPTY_OVERRIDES[@]}"
+
+assert "...and RECORDS each dep at its fixture-table candidate, not at an override or a host path" \
+    _guard_env_output_names REIFY_NATIVE_DEPS_TABLE="$_TABLE_HEALTHY" "${_EMPTY_OVERRIDES[@]}" \
+        -- "OCCT $_ACCEPTED_FIRST at $_UPSTREAM_OCCT_LIB" "Gmsh 4.15.2 at $_GMSH_LIB_OK" \
+        "OpenVDB 13.0 at $_OPENVDB_LIB_OK"
+
+# --- (ii) a fourth row with no arm ------------------------------------------
+_TABLE_FOURTH="$_TMPDIR/table-fourth-row.toml"
+{
+    cat "$_TABLE_HEALTHY"
+    _toml_min_row frobnicate
+} > "$_TABLE_FOURTH"
+
+assert "a fourth table row with no arm reds the guard (every dep override healthy)" \
+    _guard_env_exits_nonzero REIFY_NATIVE_DEPS_TABLE="$_TABLE_FOURTH" "${_ALL_DEPS_OK[@]}"
+
+assert "the fourth-row red names the row ('frobnicate')" \
+    _guard_env_output_names REIFY_NATIVE_DEPS_TABLE="$_TABLE_FOURTH" "${_ALL_DEPS_OK[@]}" \
+        -- "frobnicate"
+
+assert "the fourth-row red is the dispatch's, not the reader's (no 'native-deps table unreadable')" \
+    _guard_env_output_lacks REIFY_NATIVE_DEPS_TABLE="$_TABLE_FOURTH" "${_ALL_DEPS_OK[@]}" \
+        -- "native-deps table unreadable"
+
+# --- (iii) an arm with no row -----------------------------------------------
+# No openvdb override, and a table filename without the word, so the only
+# way 'openvdb' reaches the output is the guard naming the orphaned arm.
+_TABLE_TWO_ROWS="$_TMPDIR/table-two-rows.toml"
+{
+    _toml_row occt "$_UPSTREAM_OCCT_INC" "$_UPSTREAM_OCCT_LIB"
+    _toml_row gmsh "$_GMSH_INC_OK" "$_GMSH_LIB_OK"
+} > "$_TABLE_TWO_ROWS"
+
+assert "a table lacking the openvdb row reds the guard (its arm has no row)" \
+    _guard_env_exits_nonzero REIFY_NATIVE_DEPS_TABLE="$_TABLE_TWO_ROWS" "${_OCCT_OK[@]}" "${_GMSH_OK[@]}"
+
+assert "the arm-without-row red names 'openvdb'" \
+    _guard_env_output_names REIFY_NATIVE_DEPS_TABLE="$_TABLE_TWO_ROWS" "${_OCCT_OK[@]}" "${_GMSH_OK[@]}" \
+        -- "openvdb"
+
+# --- (iv) an unreadable table ------------------------------------------------
+_TABLE_MALFORMED="$_TMPDIR/table-malformed.toml"
+printf '[occt\n' > "$_TABLE_MALFORMED"
+_TABLE_ABSENT="$_TMPDIR/table-absent.toml"
+
+for _table in "$_TABLE_MALFORMED" "$_TABLE_ABSENT"; do
+    assert "an unreadable table (${_table##*/}) reds the guard (every dep override healthy)" \
+        _guard_env_exits_nonzero REIFY_NATIVE_DEPS_TABLE="$_table" "${_ALL_DEPS_OK[@]}"
+
+    assert "the unreadable-table red says 'native-deps table unreadable' and names ${_table##*/}" \
+        _guard_env_output_names REIFY_NATIVE_DEPS_TABLE="$_table" "${_ALL_DEPS_OK[@]}" \
+            -- "native-deps table unreadable" "$_table"
+done
+
+# --- (iv-b) a reader that cannot run is not blamed on the table ------------
+# A python3 stub first on PATH exits as a missing interpreter (127) or one
+# without tomllib (the reader's 3) would.
+_PY3_STUB_DIR="$_TMPDIR/python3-stub"
+mkdir -p "$_PY3_STUB_DIR"
+printf '#!/bin/sh\nexit "$PY3_STUB_RC"\n' > "$_PY3_STUB_DIR/python3"
+chmod +x "$_PY3_STUB_DIR/python3"
+
+for _stub_rc in 3 127; do
+    _PY3_STUB=(PATH="$_PY3_STUB_DIR:$PATH" PY3_STUB_RC="$_stub_rc")
+
+    assert "a reader that cannot run (python3 exits $_stub_rc) reds the guard" \
+        _guard_env_exits_nonzero "${_PY3_STUB[@]}" "${_ALL_DEPS_OK[@]}"
+
+    assert "...naming the reader's exit and its python3 >= 3.11 requirement" \
+        _guard_env_output_names "${_PY3_STUB[@]}" "${_ALL_DEPS_OK[@]}" \
+            -- "cannot run the native-deps reader (exit $_stub_rc)" "python3 >= 3.11"
+
+    assert "...and NOT as a table defect (no 'native-deps table unreadable')" \
+        _guard_env_output_lacks "${_PY3_STUB[@]}" "${_ALL_DEPS_OK[@]}" \
+            -- "native-deps table unreadable" "bug in the table"
+done
+
+# --- (v)/(vi) the occt row's snap table -------------------------------------
+# OCCT's candidates hold nothing, so only the snap scan can resolve it. The
+# overrides are UNSET rather than emptied, and FIRST in the list, because GNU
+# env stops option parsing at the first assignment.
+_SNAP_ROOT="$_TMPDIR/snap-root"
+_SNAP_LIB="$(_mk_lib_fixture "snap-root/4242/$OCCT_SNAP_LIB_SUBDIR" "$_ACCEPTED_FIRST")"
+_SNAP_INC="$(_mk_include_fixture "snap-root/4242/$OCCT_SNAP_INCLUDE_SUBDIR" "$OCCT_INCLUDE_SENTINEL")"
+_SNAP_NO_CANDIDATE="$(_mk_empty_fixture snap-no-candidate)"
+
+_TABLE_SNAP="$_TMPDIR/table-snap.toml"
+_TABLE_NO_SNAP="$_TMPDIR/table-no-snap.toml"
+{
+    _toml_row occt "$_SNAP_NO_CANDIDATE" "$_SNAP_NO_CANDIDATE"
+    _toml_snap occt "$_SNAP_ROOT"
+    _toml_row gmsh "$_GMSH_INC_OK" "$_GMSH_LIB_OK"
+    _toml_row openvdb "$_OPENVDB_INC_OK" "$_OPENVDB_LIB_OK"
+} > "$_TABLE_SNAP"
+{
+    _toml_row occt "$_SNAP_NO_CANDIDATE" "$_SNAP_NO_CANDIDATE"
+    _toml_row gmsh "$_GMSH_INC_OK" "$_GMSH_LIB_OK"
+    _toml_row openvdb "$_OPENVDB_INC_OK" "$_OPENVDB_LIB_OK"
+} > "$_TABLE_NO_SNAP"
+
+_UNSET_OCCT=(--unset="$OCCT_LIB_ENV" --unset="$OCCT_INCLUDE_ENV")
+
+assert "the occt row's snap table resolves OCCT from a fixture snap root (exit 0)" \
+    _guard_env_exits_zero "${_UNSET_OCCT[@]}" REIFY_NATIVE_DEPS_TABLE="$_TABLE_SNAP" "${_DOWNSTREAM_OK[@]}"
+
+assert "the snap-resolved OCCT is RECORDED at both <root>/<rev>/<subdir> dirs" \
+    _guard_env_output_names "${_UNSET_OCCT[@]}" REIFY_NATIVE_DEPS_TABLE="$_TABLE_SNAP" "${_DOWNSTREAM_OK[@]}" \
+        -- "OCCT $_ACCEPTED_FIRST at $_SNAP_LIB" "$_SNAP_INC"
+
+assert "the same layout WITHOUT the snap table reds the guard — the row's snap table is what resolved it" \
+    _guard_env_exits_nonzero "${_UNSET_OCCT[@]}" REIFY_NATIVE_DEPS_TABLE="$_TABLE_NO_SNAP" "${_DOWNSTREAM_OK[@]}"
+
+assert "the no-snap red names the OCCT include sentinel ('$OCCT_INCLUDE_SENTINEL')" \
+    _guard_env_output_names "${_UNSET_OCCT[@]}" REIFY_NATIVE_DEPS_TABLE="$_TABLE_NO_SNAP" "${_DOWNSTREAM_OK[@]}" \
+        -- "$OCCT_INCLUDE_SENTINEL"
 
 test_summary

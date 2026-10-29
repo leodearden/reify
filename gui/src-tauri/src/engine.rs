@@ -2130,12 +2130,14 @@ impl EngineSession {
         out
     }
 
-    /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
+    /// Create a new EngineSession with the given solver posture, constraint
+    /// checker and optional geometry kernel.
     pub fn new(
+        posture: reify_eval::SolverPosture,
         checker: Box<dyn ConstraintChecker>,
         kernel: Option<Box<dyn GeometryKernel>>,
     ) -> Self {
-        Self::from_engine(Engine::new(checker, kernel))
+        Self::from_engine(Engine::new(posture, checker, kernel))
     }
 
     /// Create a new EngineSession using the inventory-based kernel registry.
@@ -2149,19 +2151,20 @@ impl EngineSession {
     /// - the production solver (below).
     ///
     /// Unit tests that require a mock or failing kernel should continue to
-    /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
+    /// use `EngineSession::new(posture, checker, Some(Box::new(MockGeometryKernel::new())))` —
     /// the kernel-injection seam is preserved for that use-case.
     ///
     /// ## Production solver
     ///
-    /// The production solver set (`SolverRegistry::production()`: DimensionalSolver +
-    /// geometric SolveSpaceSolver) is installed here — the only place where the
-    /// documented production-binary boot path runs.  Deliberately NOT installed in
-    /// the shared `from_engine`/`EngineSession::new` path so that `new`-based unit
-    /// tests keep `solver = None` and are unperturbed.
+    /// The engine is constructed `SolverPosture::Solve(ResolutionProfile::FRESH)`,
+    /// which wires the production solver set (`SolverRegistry::production()`:
+    /// DimensionalSolver + geometric SolveSpaceSolver). `EngineSession::new` takes
+    /// its posture from the caller instead, so `new`-based unit tests name theirs.
     pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
-        let mut engine = Engine::with_registered_kernel(checker)
-            .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        let mut engine = Engine::with_registered_kernel(
+            reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            checker,
+        );
         engine.ensure_openvdb_kernel();
         Self::from_engine(engine)
     }
@@ -4796,6 +4799,7 @@ impl EngineSession {
 
         // Phase 4: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
         let mut preview_engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(reify_constraints::SimpleConstraintChecker),
             None, // no geometry kernel — preview is values + constraints only
         );

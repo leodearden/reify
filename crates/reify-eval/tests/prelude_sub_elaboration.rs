@@ -33,7 +33,7 @@ structure def D {
 #[test]
 fn stdlib_occurrence_sub_elaborates_via_prelude_fallback() {
     let compiled = parse_and_compile_with_stdlib(SINGLE_STL_OUTPUT);
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&compiled);
 
     assert!(
@@ -99,7 +99,7 @@ fn stdlib_occurrence_sub_elaborates_via_prelude_fallback() {
 #[test]
 fn eval_cached_no_unknown_structure_error_for_stdlib_occurrence_sub() {
     let compiled = parse_and_compile_with_stdlib(SINGLE_STL_OUTPUT);
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval_cached(&compiled, VersionId(1));
 
     assert!(
@@ -129,7 +129,7 @@ fn genuinely_unknown_structure_still_errors_with_prelude_loaded() {
 
     // Engine::new loads the real stdlib prelude — the fallback has plenty of
     // templates to search and must still come up empty for "DoesNotExist".
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
     assert!(
         result.diagnostics.iter().any(|d| {
@@ -143,7 +143,7 @@ fn genuinely_unknown_structure_still_errors_with_prelude_loaded() {
     );
     assert_eq!(engine.last_sub_component_unknown_structure_errors(), 1);
 
-    let mut cached_engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut cached_engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let cached = cached_engine.eval_cached(&module, VersionId(1));
     assert!(
         cached.eval_result.diagnostics.iter().any(|d| {

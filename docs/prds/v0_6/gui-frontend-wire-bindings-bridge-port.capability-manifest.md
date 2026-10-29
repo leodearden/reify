@@ -63,14 +63,18 @@ Appendix A (one source; this manifest does not restate them).
 | χ | joint-dimension-enum | producer:S25 κ #8946 (descriptor read through S6 JointKind), upstream | PASS | grep `pub enum JointDimension` present in `gui/src-tauri/src` |
 | ν | lsp-method-union | producer:S27 κ #8760 (LspMethod), upstream; Builder::typ::<T>() of an unreferenced renamed enum probed (PRD §2.9) | PASS | grep `LspMethod` present in `gui/src/bindings.ts` |
 | ξ | port-type | producer-self — 0 matches at 1b06f93151 | PASS | grep `export type BridgePort` present in `gui/src` |
+| ξ | rust-turn-minter-gone | producer-self — 2 matches (the static and its fetch_add) at c7bbfe2519; gap-fill 2026-10-16 K7-D4 (Leo B): the store is the single turn-id minter, claude_send_message forwards its id (fk-67feaf8cc7e2) | PASS | grep `MSG_COUNTER` absent in `gui/src-tauri/src/claude_bridge.rs` |
 | ο | wholesale-mocks-gone | producer-self — 27 matching lines across the 8 files at 1b06f93151 (comments included) | PASS | grep `vi\.mock\(['"](\.\./)+bridge['"]` absent in `gui/src/__tests__` |
 | ο | source-parsing-guard-gone | producer-self — 1 match at 1b06f93151 | PASS | grep `export function extractBridgeFactoryKeys` absent in `gui/src/__tests__` |
+| ο | turn-id-forwarded | producer-self — 1 match (App.tsx onSend discards the store id) at c7bbfe2519; gap-fill 2026-10-16 K7-D4 (Leo B; fk-67feaf8cc7e2) | PASS | grep `onSend: \(_id` absent in `gui/src/App.tsx` |
 | π | scene-module | producer-self — new module (PRD §4.5) | PASS | path `gui/src/app/scene.ts` present |
 | ρ | unadvertised-rows | producer:S25 τ #8955 (debug_tools.rs + committed debug-tools.json), upstream; Leo OQ1 | PASS | grep `"advertised": false` present in `gui/src-tauri` |
 | ρ | strengthened-schemas | producer:S25 τ #8955, upstream; 0 minLength keywords in the tool schemas at 1b06f93151 | PASS | grep `"minLength"` present in `gui/src-tauri` |
 | σ | validator-module | producer-self — 0 matches at 1b06f93151 | PASS | grep `export function validate` present in `gui/src/debug` |
 | σ | guard-census-gone | producer-self — 1 match at 1b06f93151 | PASS | grep `export const TYPE_GUARDED_RESOLVER_TOOLS` absent in `gui/src/debug` |
 | τ | resolve-leaf | producer-self — new module (PRD §4.6) | PASS | path `gui/src/debug/resolve.ts` present |
+| τ₂ | debug-orbit-sync-gone | producer-self — 2 matches in gui/src/debug/bridge.ts at c7bbfe2519 (import + set_camera call), 0 in Viewport.tsx (the restore copy lacks it: the #6497 defect); after τ #9081 the call sits in a gui/src/debug family module, still under the path; gap-fill 2026-10-16 K7-D6 | PASS | grep `syncOrbitUpAxis` absent in `gui/src/debug, gui/src/viewport/Viewport.tsx` |
+| τ₂ | camera-pose-module | producer-self — 0 matches at c7bbfe2519 (cameraPose.ts is created by the leaf); gap-fill 2026-10-16 K7-D6 | PASS | grep `export function applyCameraState` present in `gui/src/viewport` |
 | υ | hand-tool-name-literal-gone | producer:S25 τ #8955 + ρ, upstream; 1 match at 1b06f93151 | PASS | grep `export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set\(\[` absent in `gui/test/visual/assertions.ts` |
 | υ | rust-source-reader-gone | producer-self — 1 match at 1b06f93151 (readers retired by S25 θ and τ, upstream) | PASS | grep `export function readTauriSrc` absent in `gui/src/__tests__` |
 | ω | terminal-status | producer-self — the committed header | PASS | manual — the close stamp is a docs edit verified by reading the header |

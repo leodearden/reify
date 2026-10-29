@@ -196,7 +196,7 @@ tasks:
       kind: grep
       pattern: engine\.set_capture_repr_tol\(true\)
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: zero-bound-comparator-unchanged
     binding: 'C-ZERO reuses the shipped comparator verbatim: tolerance_combine.rs:285 `let
@@ -441,7 +441,7 @@ tasks:
       kind: grep
       pattern: d\.severity == Severity::Error
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: rejection-observed-absent-today-vacuity-check
     binding: 'G6 branch 4, VACUITY half. Zero .ri in the repo pairs a bound with an export:
@@ -465,7 +465,7 @@ tasks:
       kind: grep
       pattern: fn module_has_representation_within
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: named-producer-does-not-cover-the-surface-the-signal-names
     binding: 'PASS-WITH-AMENDMENT. FALSIFIES the PRD §9 η Modules line and Lock note. `reify
@@ -499,7 +499,7 @@ tasks:
       kind: grep
       pattern: 'engine\.(realize_for_check|realize)\(&compiled\)'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: refusal-cannot-withhold-the-file-by-severity-alone
     binding: D3-4, NEW. In Mode A, cmd_build runs std::fs::write(path, &data) at main.rs:~1062

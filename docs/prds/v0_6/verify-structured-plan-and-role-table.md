@@ -1,6 +1,6 @@
 # PRD — verify: structured plan steps and one role table (review-all S18)
 
-**Status:** decomposed 2026-10-15 — tasks #9095–#9117 (22 leaves; ids in §10) and dark_factory #7006; review-all-reify-20261010 program, stream S18 (wave 2, spawn session). Leo ruled the open questions Q1–Q4 on 2026-10-14 and Q5 on 2026-10-15 (§12). A fable critic pass (24 findings) is folded in.
+**Status:** decomposed 2026-10-15 — tasks #9095–#9117 (22 leaves; ids in §10) and dark_factory #7006; review-all-reify-20261010 program, stream S18 (wave 2, spawn session). Leo ruled the open questions Q1–Q4 on 2026-10-14 and Q5 on 2026-10-15 (§12). A fable critic pass (24 findings) is folded in. gap-fill 2026-10-16: new leaves τ #9312, υ #9313, φ #9314, χ #9315; ζ #9112 and β #9097 amended (§Gap-fill amendments).
 **Program:** `plans/review-all-program-reify-20261012.md`, stream **S18** (size L, risk high, mode spawn, wave 2, no hard upstream seam). Ruling: §Resolved decisions → "S18 verify.sh: structured plan steps and one role table" (all-Python target; `scripts/verify.sh` becomes a one-line exec shim; the text projections stay byte-stable; a plan-parity test gates a one-commit cutover; `run_all.sh` stays out). Cross-references are folded in from §Lead amendments, from the pass-1/pass-2 rulings R2 (S22) and Q1/Q2 (S19), and from the S21/S22/S19/S27 cross-reference lines.
 **Findings closed:** 13 keys: `fk-507b17f8adc7` (high), `fk-21149d55fd41` (high), `fk-902a5ad9889e` (high), `fk-73c909381788`, `fk-03d27a868cfd`, `fk-b072e820e926`, `fk-fc5ee820d36e`, `fk-d47473e4d8d8`, `fk-6ccbfc296ee8`, `fk-7b476f26ad45`, `fk-763b633b2775`, `fk-3988a6996b82`, `fk-7bc1c1449010` (medium). None had a mechanical filing (report §Mechanical filings: all `open → this stream`). The key-index scan of all 8,890 reify tasks on 2026-10-14 found no task carrying any of them.
 **Invariants established:** none promoted to this stream. Every extraction leaf names its adoption-ratchet row (program INV candidate 5) in `tests/infra/adoption-ratchet.manifest`. The new declarable surfaces (knob registry, role/profile tables) get a census row (§4 D14, G7).
@@ -415,6 +415,7 @@ New lines must never start with `FAILED `, end in ` FAILED`, begin `error: could
 
 - **New assertions are Python** (stdlib `unittest`, a `.sh` wrapper, a `run-all-classification.manifest` row).
 - **Infra-map rows** (critic K18). Each `scripts/reify_verify/*.py` module and `scripts/verify.py` get the same `tests/infra/test_verify_*.sh` glob row that `scripts/verify.sh` has today, plus their specific rows. Task-tier selection must not narrow when logic moves out of verify.sh.
+  - *Amended 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-5):* this hand-row clause stays in force through the port window and **ends at leaf τ**. τ replaces `scripts/verify-pipeline-infra-tests.txt` with a `# guards:` header in each `tests/infra` member, which `reify_verify.selection` reads at plan time.
 - **Moved bash blocks stay bash** (S19 R-3 precedent, D7 there).
 - **The 16 source-reading files.** Their source greps are replaced by Python structured-query tests over `--print-plan=json`, `--print-role-policy`, `--print-knobs` and executor behaviour. They are never replaced by imports of package internals (stance: tests drive public seams).
 - **Hard-coded pass counts.** `test_verify_nextest_absent_suites.sh` hard-codes minimum pass counts for eight sibling suites (fold-verifier V9): compile_gate, semaphore_wiring, offline_partition, semaphore_e2e, verify_scope, failfast_order, occt_gated_scope and retry_subset. A leaf that changes the assertion count of one of them updates its count in the same diff.
@@ -503,6 +504,7 @@ There is never a hand list, so a call the planner makes cannot be missing from t
 ## 9. Follow-up candidates (recorded, not filed)
 
 - A single `reify-audit --print-scope-predicates` data export, so `selection` can drop its three guarded copies once a cheap build path exists.
+  - *Filed 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-10 (1)) in a cheaper form as leaf φ:* one data file `crates/reify-audit/scope-predicates.toml` that reify-audit `include_str!`s and `selection` reads as a D15 `DataFile`. It needs no binary.
 - A typed retry-spec file replacing DF's six retry env vars (DF D-g) and a structured `--confirm-failed --format=json` (DF D-f).
 
 ## 10. Decomposition plan
@@ -626,6 +628,7 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
     - `DF_VERIFY_ROLE=merge scripts/verify.sh all --profile both --scope all --print-plan` equals the last bash render byte for byte, apart from the listed divergences.
     - `requires-full-gate scripts/lib_test_semaphore.sh` still exits 0.
   - Depends on γ1, γ2, ε, η1, η2, ι, κ, #8654, #8662.
+  - *Amended 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §D-K8-10 (2), G1 sentence-sized form):* ζ's commit message records how each long comment block of `scripts/verify.sh` is classified: enforced-by-type (deleted), persistent rationale, or reviewer history (dropped). Moving the persistent rationale to `docs/notes/verify-pipeline-design.md` is leaf χ, after ζ.
 - **ξ #9113 — `test_verify_scope.sh` h14 partition (6)** · medium · no own key; subsumes #8486.
   - Scope: the record's six partitions over a `verify_scope_fixture_lib.sh` that also holds the PG-DRIFT/PG-DRIFT-GUI derivations GV-6 reads. #8486's heuristic-13 obstacle is fixed: the `plan_for*` helpers take the fixture as a parameter instead of reading scenario globals. The 89 ordered scope greps → `plan_header_field`; ratchet `ordered-scope-grep` → 0.
   - Signal: no file over 1,500 lines; same assertion total (the `test_verify_nextest_absent_suites.sh` S-row updated).
@@ -641,6 +644,26 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
 - **σ #9116 — Retire the bash Layer-A reaper functions** · low · no own key.
   - Scope: `reaper_run_in_pgroup`, `reaper_teardown` and `reaper_kill_pgroup` have no consumer after ζ, so they are deleted with their `test_proc_reaper.sh` unit sections. `reap-orphans` (Layer B) stays.
   - Signal: `git grep -n 'reaper_run_in_pgroup' -- scripts tests` returns nothing.
+  - Depends on ζ.
+- **τ #9312 — Tests declare what they guard (`# guards:` header)** · medium · key `fk-a4abc5559858` (gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-5).
+  - Scope: a `# guards: <path-or-glob> ...` header in each `tests/infra` member (or `GUARDS = [...]` in a `.py` member), in the same header block as S19 υ's `# run-all-bucket:` pragma. One parser in `reify_verify.selection` reads it at plan time, with fnmatch matching as today. One structural Python member checks that every member has a header or an explicit `guards: none`. Deleted: `scripts/verify-pipeline-infra-tests.txt` (177 rows), the `is-registered` anti-drift sweep in `verify-pipeline-guard.sh`, and the fixtures that copy the map. D14's hand-row clause ends here.
+  - Signal: a new `tests/infra` member without a `# guards:` line reds the structural member; editing an artifact a member declares selects that member at task tier, with no map row.
+  - Depends on ζ. Held there because bash `select_infra_tests` reads the txt until cutover.
+- **υ #9313 — Crate scope classes declared in the crate** · medium · key `fk-9911cc28f75c` (weakened) (gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-6).
+  - Scope: each crate's Cargo.toml gets `[package.metadata.reify-scope]` with boolean `corpus_reader`, `release_sensitive` and `harness_consolidatable`. `crate_scope_classes(cargo_metadata)` in `scripts/reify_path_attribution.py` reads it from the metadata call `affected_crates` already makes. `attribute()`, the release-declared set and the kloc set read it.
+  - Deleted, with their drift tests: `RI_CORPUS_CRATES`, `scripts/release-sensitive-crates.txt` and the lib's crate literal. `scripts/occt-touching-crates.txt` stays until the leaf shows the `occt_touching_set` closure is equal to it.
+  - One structural test checks that every declared key names a workspace member. β keeps its `BashCall` shape; this leaf replaces what those BashCalls read.
+  - The finding record is corrected: `dark-factory-orchestrator.yaml` lines 215-216 are a comment pointing at the txt, not a third copy.
+  - Signal: marking a crate `corpus_reader = true` in its own Cargo.toml is the whole edit that puts it in the corpus scope class.
+  - Depends on β.
+- **φ #9314 — reify-audit scope predicates as one data file** · low · key `fk-b1c017e8b73a` (gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-10 (1)).
+  - Scope: `crates/reify-audit/scope-predicates.toml` holds the swept-extension / PDIAG / PDOCCOVER path predicates. ptodo, pdiag and pdoccover `include_str!` it, and `selection` reads it as a D15 `DataFile`. A Rust test pins file ≡ predicates. The three guarded copies and their PT/PDIAG/PDOCCOVER drift tests are deleted.
+  - S24 seam note: the Rust half is in S24's reify-audit area.
+  - Signal: adding a swept extension is one edit to the toml.
+  - Depends on ζ.
+- **χ #9315 — verify-pipeline rationale gets a home** · low · key `fk-9662894f1522` (gap-fill 2026-10-16, plans/gap-fill-deliberation-reify-20261016.md §D-K8-10 (2)).
+  - Scope: write `docs/notes/verify-pipeline-design.md` from the blocks ζ's commit message classified as persistent rationale (read the pre-cutover text with `git show <ζ>^:scripts/verify.sh`). Each section carries a symbol pointer into `scripts/reify_verify/`. Link it from `docs/notes/verify-pipeline-knobs.md`.
+  - Signal: every block ζ classified as persistent rationale has a section there.
   - Depends on ζ.
 - **ω #9117 — PRD close** · low · no own key.
   - Scope: terminal stamp, ID backfill, AS-AUTHORED freeze of this PRD and its manifest. Clears any S18 priority override still set (§11 pins).
@@ -674,6 +697,7 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
     - The ~106 fixture-registration tasks are not held: the D6 derivation reproduces their list entry, and bash PG-DRIFT guards it until ζ. They get the Q4 note.
     - #8567 and #8591 are comment-only cite fixes in files ν/ο move; file locks serialise them.
 - **Subsumed at filing:** #7775 → π, #7645 → κ, #7647 → θ, #8440 → θ2, #7002 and #7785 → ι, #7581 → μ, #8486 → ξ, #9056 → β (+ ζ).
+- **Gap-fill edges (2026-10-16):** ζ → τ, φ, χ; β → υ. None of these leaves becomes a prerequisite of a #8612 closure task (G1).
 - **Pinned (Leo Q5):** the S18 chain up to and including ζ — α, π, β, γ1, γ2, κ, ε, η1, η2, ι, ν, ζ — plus its open upstream prerequisites #8654, #8685, #8919 and #8476 (#7491, #8662 and #7424 have landed). Each pin is `pinned: true`, checked with `get_pin_queue`. ω's close clears any S18 override still set.
 - **Gate:** #8612 depends on the high leaves α, γ1, ε, η1, ζ.
 - **Dark-factory companion:** `metadata.external_deps` on reify ζ.
@@ -706,3 +730,12 @@ Every leaf touches verify-pipeline files, so each pays the full gate per landing
 - B1's per-shard wall time: γ1 measures it; if a shard exceeds the selective-infra leaf's 10-minute wall with margin, it shards further. Never sample the grid.
 - Critic record: a fable/high critic seat reviewed the assembled draft on 2026-10-14 (24 findings: 1 blocker, 11 major, 12 minor). All 24 are folded in; the `critic K<n>` tags in the text mark where.
 - The per-step timing hook's shape once #7424 lands (ε ports whatever #7424 ships).
+
+## Gap-fill amendments (2026-10-16)
+
+- **New leaf τ #9312, after ζ #9112; D14's infra-map row clause ends at τ.** plans/gap-fill-deliberation-reify-20261016.md §D-K8-5.
+- **New leaf υ #9313, after β #9097.** §D-K8-6. Crate scope classes move into `[package.metadata.reify-scope]`, read once from cargo metadata; RI_CORPUS_CRATES, `release-sensitive-crates.txt` and the kloc literal are deleted. `harness_layout_consolidatable_crates` keeps its contract until this leaf moves it (S19 θ / cargo-native stream cross-reference).
+- **New leaf φ #9314, after ζ: the §9 follow-up candidate is filed in data-file form.** §D-K8-10 (1). The S24 seam note covers `crates/reify-audit`.
+- **ζ #9112 amended, sentence-sized (G1).** §D-K8-10 (2). The commit message records the classification of verify.sh's long comment blocks. **New leaf χ #9315 after ζ** moves the persistent rationale to `docs/notes/verify-pipeline-design.md`.
+- **β #9097 description hygiene.** Uncontested block. It now reads "staged primary diff fails wide (D5 amended 2026-10-15; implemented by #9170)".
+- **D-K8-10 (5).** A standalone low task after β retires B13 and `direct_crates_per_path` and subsumes #7766. It is not a leaf of this PRD.

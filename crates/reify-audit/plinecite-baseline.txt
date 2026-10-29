@@ -1,9 +1,10 @@
 # PLINECITE baseline — accepted line-cite debt.
 #
 # One row per line, `<path> :: <cite>`: a tracked in-scope file, and a hard
-# `<file>.rs:<line>` / `<file>.ri:<line>` cite that one of its comment lines
-# carries. The citing line's own number is deliberately absent, so a row
-# survives code motion.
+# line cite one of its comment lines carries, quoted from its stem through its
+# line number (`cache.rs:617`, `entity.rs ~2145`, `lib.rs line 444`; grammar:
+# docs/prds/reify-audit-stale-line-cite-detector.md §4). The citing line's own
+# number is deliberately absent, so a row survives code motion.
 #
 # GENERATED — do not hand-edit. Regenerate with:
 #   cargo run -p reify-audit --bin plinecite-baseline-gen -- --project-root . --write
@@ -45,14 +46,11 @@ crates/reify-builtins/src/resolvers.rs :: crates/reify-eval/src/lib.rs:330
 crates/reify-builtins/src/resolvers.rs :: signatures_common.rs:26
 crates/reify-cli/src/cache.rs :: cache.rs:348
 crates/reify-cli/src/cache.rs :: cache.rs:358
-crates/reify-cli/src/main.rs :: engine_admin.rs:754
-crates/reify-cli/src/main.rs :: engine_build.rs:1961
-crates/reify-cli/src/main.rs :: engine_eval.rs:3884
-crates/reify-cli/src/main.rs :: process.ri:55
-crates/reify-cli/src/main.rs :: ty.rs:81
-crates/reify-cli/src/mcp_context.rs :: mcp_context.rs:230
-crates/reify-cli/src/mcp_context.rs :: mcp_context.rs:239
-crates/reify-cli/src/mcp_context.rs :: mcp_context.rs:248
+crates/reify-cli/src/cmd/explain.rs :: engine_eval.rs:3884
+crates/reify-cli/src/module_capabilities.rs :: engine_admin.rs:754
+crates/reify-cli/src/module_capabilities.rs :: engine_build.rs:1961
+crates/reify-cli/src/module_capabilities.rs :: process.ri:55
+crates/reify-cli/src/module_capabilities.rs :: ty.rs:81
 crates/reify-compiler/src/annotations/schema.rs :: annotations.rs:114
 crates/reify-compiler/src/annotations/schema.rs :: annotations.rs:153
 crates/reify-compiler/src/annotations/schema.rs :: annotations.rs:198
@@ -71,50 +69,42 @@ crates/reify-compiler/src/compile_builder/entities_phase.rs :: entity.rs:3692
 crates/reify-compiler/src/compile_builder/entities_phase.rs :: expr.rs:1530
 crates/reify-compiler/src/compile_builder/entities_phase.rs :: lib.rs:382
 crates/reify-compiler/src/compile_builder/enums_phase.rs :: stdlib/ports_mechanical.ri:35
-crates/reify-compiler/src/compile_builder/functions_phase.rs :: entity.rs:396
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:196
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:283
 crates/reify-compiler/src/compile_builder/pre_pass.rs :: server.rs:379
 crates/reify-compiler/src/compile_builder/specialization_scope_check.rs :: shadow_lint.rs:39
 crates/reify-compiler/src/compile_builder/traits_phase.rs :: ctx.rs:181
-crates/reify-compiler/src/conformance/checker.rs :: checker.rs:596
 crates/reify-compiler/src/conformance/checker.rs :: conformance/mod.rs:2131
 crates/reify-compiler/src/conformance/checker.rs :: conformance/mod.rs:53
 crates/reify-compiler/src/conformance/checker.rs :: expr.rs:388
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:3
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:66
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:81
-crates/reify-compiler/src/conformance/mod.rs :: checker.rs:766
-crates/reify-compiler/src/conformance/mod.rs :: conformance.rs:358
-crates/reify-compiler/src/conformance/mod.rs :: conformance.rs:406
-crates/reify-compiler/src/conformance/mod.rs :: conformance.rs:411
-crates/reify-compiler/src/conformance/mod.rs :: conformance.rs:415
 crates/reify-compiler/src/conformance/mod.rs :: crates/reify-core/src/ty.rs:120
-crates/reify-compiler/src/conformance/mod.rs :: decl.rs:818
-crates/reify-compiler/src/conformance/mod.rs :: entity.rs:329
 crates/reify-compiler/src/conformance/mod.rs :: examples/dynamics/pendulum_idyn.ri:24
 crates/reify-compiler/src/conformance/mod.rs :: examples/m6_result_recovery.ri:30
 crates/reify-compiler/src/conformance/mod.rs :: expr.rs:782
-crates/reify-compiler/src/conformance/mod.rs :: let_type_disambiguation_tests.rs:234
-crates/reify-compiler/src/conformance/mod.rs :: let_type_disambiguation_tests.rs:470
-crates/reify-compiler/src/conformance/mod.rs :: mod.rs:256
-crates/reify-compiler/src/conformance/mod.rs :: mod.rs:993
 crates/reify-compiler/src/conformance/mod.rs :: stdlib/trajectory.ri:103
-crates/reify-compiler/src/conformance/mod.rs :: tests/boundary1_consumer.rs:280
-crates/reify-compiler/src/conformance/mod.rs :: trait_merge_tests.rs:282
-crates/reify-compiler/src/conformance/mod.rs :: traits.rs:36
 crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:163
 crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:232
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:3
 crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:334
 crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:83
 crates/reify-compiler/src/conformance/mod.rs :: type_resolution.rs:3134
 crates/reify-compiler/src/conformance/sub_component_validation.rs :: crates/reify-eval/src/engine_eval.rs:55
 crates/reify-compiler/src/conformance/sub_component_validation.rs :: engine_eval.rs:2283
+crates/reify-compiler/src/connect.rs :: entity.rs (~2145
+crates/reify-compiler/src/connect.rs :: entity.rs (~2726
+crates/reify-compiler/src/connect.rs :: entity.rs ~2249
+crates/reify-compiler/src/connect.rs :: graph.rs ~429
+crates/reify-compiler/src/connect.rs :: unfold.rs ~308
 crates/reify-compiler/src/entity.rs :: checker.rs:908
 crates/reify-compiler/src/entity.rs :: compile_builder/hash.rs:69
 crates/reify-compiler/src/entity.rs :: conformance/checker.rs:1813
 crates/reify-compiler/src/entity.rs :: conformance/checker.rs:548
+crates/reify-compiler/src/entity.rs :: entity.rs ~1179
+crates/reify-compiler/src/entity.rs :: entity.rs ~1420
+crates/reify-compiler/src/entity.rs :: entity.rs ~1916
+crates/reify-compiler/src/entity.rs :: entity.rs ~2810
 crates/reify-compiler/src/entity.rs :: entity.rs:1109
 crates/reify-compiler/src/entity.rs :: entity.rs:1140
 crates/reify-compiler/src/entity.rs :: entity.rs:1331
@@ -131,11 +121,13 @@ crates/reify-compiler/src/entity.rs :: entity.rs:853
 crates/reify-compiler/src/entity.rs :: entity.rs:857
 crates/reify-compiler/src/entity.rs :: entity.rs:882
 crates/reify-compiler/src/entity.rs :: entity.rs:984
+crates/reify-compiler/src/entity.rs :: entity.rs:~631
 crates/reify-compiler/src/entity.rs :: expr.rs:1070
 crates/reify-compiler/src/entity.rs :: expr.rs:1413
 crates/reify-compiler/src/entity.rs :: expr.rs:1425
 crates/reify-compiler/src/entity.rs :: expr.rs:2718
 crates/reify-compiler/src/entity.rs :: graph.rs:386
+crates/reify-compiler/src/entity.rs :: guards.rs ~469
 crates/reify-compiler/src/entity.rs :: guards.rs:128
 crates/reify-compiler/src/entity.rs :: unfold.rs:336
 crates/reify-compiler/src/expr.rs :: engine_eval.rs:122
@@ -145,6 +137,10 @@ crates/reify-compiler/src/expr.rs :: entity.rs:1483
 crates/reify-compiler/src/expr.rs :: entity.rs:247
 crates/reify-compiler/src/expr.rs :: entity.rs:778
 crates/reify-compiler/src/expr.rs :: entity.rs:813
+crates/reify-compiler/src/expr.rs :: expr.rs ~1029
+crates/reify-compiler/src/expr.rs :: expr.rs ~1188
+crates/reify-compiler/src/expr.rs :: expr.rs ~1324
+crates/reify-compiler/src/expr.rs :: expr.rs ~2081
 crates/reify-compiler/src/expr.rs :: expr.rs:1049
 crates/reify-compiler/src/expr.rs :: expr.rs:1317
 crates/reify-compiler/src/expr.rs :: expr.rs:200
@@ -161,7 +157,9 @@ crates/reify-compiler/src/forall_elaborate.rs :: expr.rs:1791
 crates/reify-compiler/src/functions.rs :: entity.rs:560
 crates/reify-compiler/src/functions.rs :: functions.rs:103
 crates/reify-compiler/src/functions.rs :: reify-types/src/expr.rs:298
+crates/reify-compiler/src/geometry.rs :: entity.rs:~531
 crates/reify-compiler/src/geometry.rs :: geometry.rs:552
+crates/reify-compiler/src/geometry.rs :: guards.rs:~183
 crates/reify-compiler/src/geometry_boolean.rs :: expr.rs:1307
 crates/reify-compiler/src/geometry_boolean.rs :: expr.rs:1562
 crates/reify-compiler/src/geometry_modify.rs :: crates/reify-kernel-occt/src/lib.rs:36
@@ -173,16 +171,14 @@ crates/reify-compiler/src/joint_signatures.rs :: lib.rs:215
 crates/reify-compiler/src/lib.rs :: engine_eval.rs:55
 crates/reify-compiler/src/lib.rs :: lib.rs:270
 crates/reify-compiler/src/lib.rs :: stdlib/tolerancing.ri:268
+crates/reify-compiler/src/list_helpers.rs :: expr.rs:~1741
+crates/reify-compiler/src/list_helpers.rs :: expr.rs:~4374
 crates/reify-compiler/src/math_signatures.rs :: lib.rs:420
 crates/reify-compiler/src/math_signatures.rs :: numeric.rs:41
 crates/reify-compiler/src/math_signatures.rs :: reify-stdlib/src/geometry.rs:936
 crates/reify-compiler/src/math_signatures.rs :: trig.rs:20
 crates/reify-compiler/src/math_signatures.rs :: trig.rs:9
 crates/reify-compiler/src/member_path.rs :: expr.rs:843
-crates/reify-compiler/src/orientation_signatures.rs :: geometry.rs:677
-crates/reify-compiler/src/orientation_signatures.rs :: orientation.rs:203
-crates/reify-compiler/src/orientation_signatures.rs :: orientation.rs:264
-crates/reify-compiler/src/orientation_signatures.rs :: orientation.rs:440
 crates/reify-compiler/src/stdlib_loader.rs :: modal_analysis_fns.ri:6
 crates/reify-compiler/src/traits.rs :: decl.rs:818
 crates/reify-compiler/src/traits.rs :: traits.rs:295
@@ -255,6 +251,9 @@ crates/reify-core/src/diagnostics.rs :: crates/reify-lsp/src/convert.rs:435
 crates/reify-core/src/diagnostics.rs :: crates/reify-stdlib/src/geometry.rs:1670
 crates/reify-core/src/diagnostics.rs :: dispatcher.rs:1010
 crates/reify-core/src/diagnostics.rs :: elastic_static.rs:8493
+crates/reify-core/src/diagnostics.rs :: engine_eval.rs:~2832
+crates/reify-core/src/diagnostics.rs :: entity.rs ~1916
+crates/reify-core/src/diagnostics.rs :: entity.rs ~2810
 crates/reify-core/src/diagnostics.rs :: expr.rs:670
 crates/reify-core/src/diagnostics.rs :: expr.rs:679
 crates/reify-core/src/diagnostics.rs :: solver_buckling.ri:84
@@ -267,7 +266,6 @@ crates/reify-core/src/field_calculus.rs :: calculus.rs:2102
 crates/reify-core/src/field_calculus.rs :: reify-expr/src/calculus.rs:19
 crates/reify-core/src/ty.rs :: conformance.rs:521
 crates/reify-core/src/ty.rs :: crates/reify-ir/src/geometry.rs:567
-crates/reify-core/src/units.rs :: dimension.rs:262
 crates/reify-doc/src/fmt_markdown.rs :: fmt_markdown.rs:337
 crates/reify-doc/src/fmt_markdown.rs :: fmt_markdown.rs:610
 crates/reify-doc/src/fmt_markdown.rs :: tests/fmt_html_tests.rs:1101
@@ -277,6 +275,7 @@ crates/reify-eval/src/cache_divergence.rs :: engine_eval.rs:5380
 crates/reify-eval/src/compute_cache_key.rs :: hash.rs:32
 crates/reify-eval/src/compute_cache_key.rs :: identity.rs:119
 crates/reify-eval/src/compute_targets/buckling.rs :: modal_ops.rs:1838
+crates/reify-eval/src/compute_targets/elastic_static.rs :: elastic_static.rs:~570
 crates/reify-eval/src/compute_targets/elastic_static.rs :: engine_build.rs:10328
 crates/reify-eval/src/compute_targets/elastic_static.rs :: reify-solver-elastic/src/shell_boundary.rs:133
 crates/reify-eval/src/compute_targets/elastic_static.rs :: solve_elastic_static_e2e.rs:231
@@ -328,6 +327,7 @@ crates/reify-eval/src/engine_build.rs :: crates/reify-compiler/src/types.rs:848
 crates/reify-eval/src/engine_build.rs :: crates/reify-eval/src/unfold.rs:292
 crates/reify-eval/src/engine_build.rs :: deps.rs:149
 crates/reify-eval/src/engine_build.rs :: deps.rs:2795
+crates/reify-eval/src/engine_build.rs :: engine_build.rs ~6693
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:103
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:1663
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:1802
@@ -511,6 +511,7 @@ crates/reify-expr/src/lib.rs :: crates/reify-expr/tests/collection_eval_tests.rs
 crates/reify-expr/src/lib.rs :: entity.rs:1104
 crates/reify-expr/src/lib.rs :: entity.rs:1107
 crates/reify-expr/src/lib.rs :: entity.rs:4107
+crates/reify-expr/src/lib.rs :: lib.rs line 444
 crates/reify-expr/src/lib.rs :: lib.rs:145
 crates/reify-expr/src/lib.rs :: lib.rs:2022
 crates/reify-expr/src/lib.rs :: lib.rs:206
@@ -572,18 +573,13 @@ crates/reify-kernel-manifold/src/kernel.rs :: crates/reify-test-support/src/mock
 crates/reify-kernel-manifold/src/kernel.rs :: kernel.rs:111
 crates/reify-kernel-manifold/src/lib.rs :: crates/reify-kernel-occt/src/register.rs:27
 crates/reify-kernel-manifold/src/lib.rs :: crates/reify-test-support/src/mocks.rs:889
+crates/reify-kernel-manifold/src/queries.rs :: kernel.rs lines 178
 crates/reify-kernel-manifold/src/queries.rs :: kernel.rs:135
 crates/reify-kernel-manifold/src/queries.rs :: kernel.rs:478
 crates/reify-kernel-manifold/src/queries.rs :: kernel.rs:507
 crates/reify-kernel-manifold/src/register.rs :: crates/reify-kernel-occt/src/register.rs:27
-crates/reify-kernel-occt/src/lib.rs :: crates/reify-eval/src/geometry_ops.rs:482
-crates/reify-kernel-occt/src/lib.rs :: crates/reify-ir/src/kernel_validation.rs:163
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:1597
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:2167
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:2398
 crates/reify-kernel-occt/src/lib.rs :: lib.rs:2742
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:957
-crates/reify-kernel-occt/src/lib.rs :: lib.rs:968
+crates/reify-kernel-occt/src/op_args.rs :: crates/reify-eval/src/geometry_ops.rs:482
 crates/reify-kernel-occt/src/register.rs :: gui/src-tauri/src/kernel_status.rs:48
 crates/reify-kernel-occt/src/tessellate_options.rs :: crates/reify-eval/src/realization_cache.rs:85
 crates/reify-kernel-occt/src/tessellate_options.rs :: crates/reify-types/src/hash.rs:27
@@ -605,13 +601,11 @@ crates/reify-lsp/src/analysis.rs :: server.rs:268
 crates/reify-lsp/src/completion.rs :: crates/reify-compiler/src/type_resolution.rs:3790
 crates/reify-lsp/src/diagnostics.rs :: cache.rs:482
 crates/reify-lsp/src/diagnostics.rs :: crates/reify-eval/src/engine_eval.rs:210
-crates/reify-lsp/src/diagnostics.rs :: engine_eval.rs:1183
-crates/reify-lsp/src/diagnostics.rs :: engine_eval.rs:1529
 crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs :: crates/reify-cli/src/main.rs:200
 crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs :: crates/reify-eval/src/engine_eval.rs:206
 crates/reify-lsp/src/diagnostics/auto_type_param_fixtures.rs :: crates/reify-eval/src/engine_eval.rs:210
 crates/reify-lsp/src/diagnostics/eval_guard.rs :: crates/reify-eval/src/engine_eval.rs:210
-crates/reify-lsp/src/references.rs :: ast.rs:196
+crates/reify-lsp/src/references/cross_file/tests.rs :: ast.rs:196
 crates/reify-mesh-morph/src/elasticity.rs :: assembly/global.rs:23
 crates/reify-mesh-morph/src/elasticity.rs :: elasticity.rs:221
 crates/reify-mesh-morph/src/elasticity.rs :: laplacian.rs:103
@@ -626,6 +620,7 @@ crates/reify-mesh-morph/src/quality.rs :: geometry.rs:2966
 crates/reify-mesh-morph/src/quality.rs :: geometry.rs:8255
 crates/reify-mesh-morph/src/quality.rs :: geometry.rs:8272
 crates/reify-mesh-morph/src/quality.rs :: laplacian.rs:141
+crates/reify-shell-extract/src/mid_surface_naming.rs :: segmentation.rs lines 188
 crates/reify-shell-extract/src/mid_surface_naming.rs :: segmentation.rs:186
 crates/reify-shell-extract/src/mid_surface_naming.rs :: segmentation.rs:188
 crates/reify-shell-extract/src/pruning.rs :: mesher.rs:1121
@@ -659,20 +654,17 @@ crates/reify-solver-elastic/src/adaptive.rs :: crates/reify-kernel-gmsh/tests/th
 crates/reify-solver-elastic/src/assembly/tet.rs :: crates/reify-solver-elastic/src/elements/tet_p2.rs:31
 crates/reify-solver-elastic/src/assembly/tet.rs :: lib.rs:19
 crates/reify-solver-elastic/src/constitutive.rs :: crates/reify-compiler/stdlib/materials_fea.ri:94
-crates/reify-solver-elastic/src/form_find.rs :: reify-eval/src/compute_targets/form_find.rs:308
 crates/reify-solver-elastic/src/interpolation.rs :: assembly/tet.rs:182
 crates/reify-solver-elastic/src/joint_stiffness.rs :: assembly/global.rs:345
 crates/reify-solver-elastic/src/joint_stiffness.rs :: assembly/global.rs:60
 crates/reify-solver-elastic/src/joint_stiffness.rs :: modal_ops.rs:484
 crates/reify-solver-elastic/src/joint_stiffness.rs :: modal_ops.rs:515
-crates/reify-solver-elastic/src/lib.rs :: reify-eval/src/compute_targets/form_find.rs:308
 crates/reify-solver-elastic/src/mass_matrix.rs :: elements/mod.rs:117
 crates/reify-solver-elastic/src/progressive.rs :: progressive.rs:66
 crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:182
 crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:208
 crates/reify-solver-elastic/src/result.rs :: assembly/tet.rs:244
 crates/reify-solver-elastic/src/result.rs :: result.rs:78
-crates/reify-solver-elastic/src/shell_assembly.rs :: crates/reify-compiler/stdlib/solver_elastic.ri:276
 crates/reify-solver-elastic/src/shell_boundary.rs :: crates/reify-eval/src/kernel_registry.rs:915
 crates/reify-solver-elastic/src/sweep.rs :: crates/reify-eval/src/kernel_registry.rs:915
 crates/reify-solver-elastic/src/sweep.rs :: mesher.rs:46
@@ -713,6 +705,7 @@ crates/reify-stdlib/src/helpers.rs :: fea/loads.rs:161
 crates/reify-stdlib/src/helpers.rs :: stackup.rs:32
 crates/reify-stdlib/src/helpers.rs :: tolerancing.rs:86
 crates/reify-stdlib/src/joints.rs :: geometry.rs:3625
+crates/reify-stdlib/src/joints.rs :: joints.rs ~200
 crates/reify-stdlib/src/joints.rs :: joints.rs:1079
 crates/reify-stdlib/src/joints.rs :: joints.rs:67
 crates/reify-stdlib/src/joints.rs :: joints.rs:815

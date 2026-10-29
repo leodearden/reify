@@ -3,10 +3,9 @@
  *
  * Exports findUsesCommand — a CodeMirror Command factory that reads the cursor
  * from view.state.selection.main.head, sends a textDocument/references request
- * (declaration ∪ uses, scoped to the open document's enclosing entity body by
- * the α reference-collector), maps the resulting LSP Location[] into
- * ReferenceResult[], and forwards them to a callback so the GUI can populate
- * the Find-uses panel.
+ * (declaration ∪ uses across the workspace, imported files included), maps the
+ * resulting LSP Location[] into ReferenceResult[], and forwards them to a
+ * callback so the GUI can populate the Find-uses panel.
  *
  * Mirrors gotoDefinitionCommand (gotoDefinition.ts): no @codemirror/view or
  * @codemirror/state runtime imports are added here — the keymap.of wrapping
@@ -19,13 +18,15 @@
 import type { EditorView } from '@codemirror/view';
 import { askFresh, versionsDisagree, type VersionSkewGuard } from './versionSkew';
 import type { Location, LspClient } from './lspClient';
+import { canonicalizeKey, isSameFile } from '../utils/pathUtils';
+import type { SourceLocation } from '../types';
 
 /**
  * A single reference occurrence, in native LSP (0-based) coordinates.
  *
- * The +1 conversion to the editor's 1-based SourceLocation happens later, at
- * the App click handler that drives setScrollToLocation — not here, so the
- * panel and command stay in LSP-native coordinates end to end.
+ * The panel and command stay in LSP-native coordinates end to end; the
+ * conversion to the editor's 1-based, path-keyed SourceLocation is
+ * {@link referenceSourceLocation}, applied when a row is navigated to.
  */
 export interface ReferenceResult {
   uri: string;
@@ -34,6 +35,17 @@ export interface ReferenceResult {
   endLine: number;
   endCharacter: number;
   preview?: string;
+}
+
+/** The editor location of a reference: 1-based, keyed by the decoded store path rather than the URI. */
+export function referenceSourceLocation(r: ReferenceResult): SourceLocation {
+  return {
+    file_path: canonicalizeKey(r.uri),
+    line: r.line + 1,
+    column: r.character + 1,
+    end_line: r.endLine + 1,
+    end_column: r.endCharacter + 1,
+  };
 }
 
 /**
@@ -137,7 +149,7 @@ export function findUsesCommand(
       .then((locations) => {
         // Checked after the LAST await, guard or not: Editor forgets the old
         // URI's version on a switch, which leaves the version comparison blind.
-        if (!locations || uriGetter() !== uri) return;
+        if (!locations || !isSameFile(uriGetter(), uri)) return;
         onResults(locations.map((location) => toReferenceResult(view, location)));
       })
       .catch((err) => console.warn('findUses: failed to collect references', err));

@@ -65,7 +65,7 @@ Further properties:
 | α | baselines-measured | measured at e217c0f30b by the critic/fold-check: joint-kind-string-dispatch ≈20 (C10 rule), internal-eval-builtin ≈26 (multi-line calls joined), record-key-literal 16, strip-world-sentinel 2; α re-measures every row at its own HEAD | PASS | manual (baseline numbers are α's own measurement; the member enforces them) |
 | β | joint-kind-in-ir | producer-self — reify-ir has no JointKind at main; reify-ir deps are reify-core + reify-ast and every consumer crate depends on reify-ir | PASS | grep present `pub enum JointKind` in `crates/reify-ir/src` |
 | β | upstream-8545-flat-width | producer:#8545 (in progress; branch task/8545 adds loop_closure_value::flat_width) — same file | PASS | manual (dependency edge is the enforcement) |
-| γ | relation-kind-in-ir | producer-self — no RelationKind anywhere at main | PASS | grep present `pub enum RelationKind` in `crates/reify-ir/src` |
+| γ | relation-kind-is-the-registry-enum | **[Amended 2026-10-20, retro-critic R6]** `RelationKind` is `reify_builtins::RelationKind` (S8-ψ #9418); red at main (the sub-enum does not exist yet), green when γ binds it; replaces `relation-kind-in-ir`. The no-`from_name` rule (I-REG-1) is prose, not a check | PASS | grep present `reify_builtins::RelationKind` in `crates/reify-constraints/src` |
 | γ | instance-carries-kind | grep: RelationInstance { name: String, operands, nominal_delta_dof } in reify-constraints relate_solve.rs; one construction site reify-eval relate_solve::relation_instance | PASS | grep present `kind: RelationKind` in `crates/reify-constraints/src/relate_solve.rs` |
 | δ | ctor-table-derives | grep: joint_signatures::joint_ctor_result_type is a 10-name string match at main | PASS | grep present `JointKind::from_ctor_name` in `crates/reify-compiler/src/joint_signatures.rs` |
 | δ | relate-mount-list-derives | grep: relate_solve::is_motion_joint_cell_type hard-codes six nominal names at main | PASS | grep present `JointKind::from_nominal_type_name` in `crates/reify-eval/src/relate_solve.rs` |
@@ -112,6 +112,8 @@ Further properties:
 | υ | stand-in-solve-gone | grep: input_shape.rs::run_tots (canonical stand-in model) at main; fixture tests/prd-gate/fixtures/s6_tots_infeasible.ri: eval optimal = undef, check 'All constraints satisfied' (exit 0) | PASS | grep absent `fn run_tots\(` in `crates/reify-stdlib/src/trajectory` |
 | φ | codes-exist | grep: no TrajectoryConstraintInfeasible in reify-core DiagnosticCode at main; infeasible becomes ComputeOutcome::Failed with the coded Error | PASS | grep present `TrajectoryConstraintInfeasible` in `crates/reify-core/src/diagnostics.rs` |
 | φ | code-str-gone | grep: TotsOutcome::code_str, 0 production callers | PASS | grep absent `fn code_str\(` in `crates/reify-stdlib/src/trajectory/tots.rs` |
+| φ₂ | gcode-parse-error-code | grep: no GcodeParseError in reify-core DiagnosticCode at main; the parse error is dropped by eval_gcode_import (silent Undef) | PASS | grep present `GcodeParseError` in `crates/reify-core/src/diagnostics.rs` |
+| φ₂ | gcode-dead-code-allow-gone | grep: module-wide `#![allow(dead_code)]` in gcode_import.rs (warnings never read outside tests) | PASS | grep absent `#!\[allow\(dead_code\)\]` in `crates/reify-stdlib/src/trajectory/gcode_import.rs` |
 | χ | s8-typed-diagnose-column | producer: S8 typed diagnose-hook column (wave 2, not yet authored); held via x_seam_wait | OPEN | manual (held leaf; released by S8's session) |
 | ψ₁ | joint-kinds-const-gone | grep: joints.rs pub(crate) const JOINT_KINDS at main | PASS | grep absent `const JOINT_KINDS` in `crates/reify-stdlib/src` |
 | ψ₁ | driving-kinds-const-gone | grep: joints.rs pub(crate) const DRIVING_JOINT_KINDS at main | PASS | grep absent `const DRIVING_JOINT_KINDS` in `crates/reify-stdlib/src` |
@@ -121,3 +123,11 @@ Further properties:
 | ψ₃ | track-access-module | h14: trampoline.rs location/deviation accessor group | PASS | grep present `mod track_access` in `crates/reify-stdlib/src/trajectory` |
 | ω₁ | docs-truth-four-items | overlay docs-truth gate: chunk, exemplar + INDEX line, reify-design index line, discoverability | PASS | manual (docs-truth acceptance is a smoke compile plus findability review) |
 | ω₂ | terminal-stamp | overlay decompose-close obligation | PASS | manual (committed header; prose is not grepped) |
+
+## Gap-fill amendments (2026-10-16)
+
+From `plans/gap-fill-deliberation-reify-20261016.md` §K6-D5: new leaf φ₂ #9281 with the two `φ₂` rows above, confirmed red at main `c7bbfe2519` with `git grep -E` (the author-time count of 39 grep checks is now 41). The §K6-D6 honesty task #9283 is standalone; its check lives on the task, not here.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+From `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`: γ #8830 binds `reify_builtins::RelationKind` (S8-ψ #9418, new edge #8830 ← #9418). Its check `relation-kind-in-ir` (`pub enum RelationKind` present in `crates/reify-ir/src`) is replaced by `relation-kind-is-the-registry-enum` (`reify_builtins::RelationKind` present in `crates/reify-constraints/src`; red at main, green when γ binds the S8-ψ sub-enum); `instance-carries-kind` is unchanged. γ's files: `crates/reify-constraints/src/{relate_solve,solvespace,classifier}.rs`, `crates/reify-eval/src/relate_solve.rs`, `crates/reify-constraints/Cargo.toml`, `crates/reify-eval/Cargo.toml`; reify-ir `relation_kind.rs` and `lib.rs` dropped (three writes: this row, the `.yaml`, #8830's `metadata.delivered_checks` / `metadata.files`).

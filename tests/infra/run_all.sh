@@ -94,6 +94,42 @@
 #                                   would let a wedged/over-subscribed pool
 #                                   semaphore block run_all.sh indefinitely,
 #                                   defeating the pool's never-hang contract.
+#   REIFY_RUN_ALL_MEMBER_TIMEOUT    per-member wall-clock budget, seconds
+#                                   (default 1200; task 9441). Applies on
+#                                   EVERY path. A member still running at its
+#                                   budget is TERMed together with its whole
+#                                   process group, is recorded as FAILED with
+#                                   a `MEMBER_TIMEOUT FAIL member=<name>
+#                                   budget_s=<B> elapsed_s=<E> rc=<rc>` line
+#                                   in its output and FAILED-DETAIL block, is
+#                                   named by an `ERROR: run_all.sh: member
+#                                   <name> exceeded ...` line on stderr, and is
+#                                   never retried. Mechanism:
+#                                   run-all-member-budget-lib.sh.
+#                                   Bounds ONE member, not the run: sized so
+#                                   that one member's POOL_WAIT + budget +
+#                                   grace (1800 + 1200 + 30) stays inside
+#                                   verify.sh's 60m merge envelope, so a single
+#                                   stuck member ends as a named FAILED rather
+#                                   than the envelope's anonymous INTERRUPTED.
+#                                   The serial phases run members one after
+#                                   another, so two slow members there (or a
+#                                   slow pool member and a slow serial one) can
+#                                   still reach the envelope.
+#                                   Must be a positive integer (exit 64
+#                                   otherwise; a leading zero is decimal);
+#                                   there is no "unlimited".
+#   REIFY_RUN_ALL_MEMBER_KILL_GRACE seconds between that TERM and a KILL of
+#                                   whatever in the member's group survived it
+#                                   (default 30). Must be a positive integer
+#                                   (exit 64 otherwise). The member's own
+#                                   timeout process counts the grace and sends
+#                                   the KILL, so it lands even when run_all is
+#                                   gone by then. With the default it lands
+#                                   before the merge envelope's --kill-after
+#                                   (60) KILLs run_all; a larger grace works,
+#                                   but a member that ignores TERM then
+#                                   outlives run_all by the difference.
 #   REIFY_RUN_ALL_POOL_PSI_PROC_PATH   PSI source (default /proc/pressure/cpu)
 #   REIFY_RUN_ALL_POOL_PSI_THRESHOLD   avg10 ceiling (default 85; soft)
 #   REIFY_RUN_ALL_POOL_PSI_ATTEMPTS    load_tolerant_attempts base (default 3)
@@ -218,15 +254,25 @@
 #                                      recorded run_ids to consider (task
 #                                      #5142; default 20). A malformed value
 #                                      fails OPEN to 20.
-#   REIFY_RUN_ALL_TIMING_OUT           Path of a JSONL file that receives this
-#                                      run's timing record (task 7424): one
-#                                      summary line naming the path taken
-#                                      and, on the pool path, per-phase
-#                                      begin/end and one line per member
-#                                      attempt. Consumed and UNSET at
-#                                      startup, so no member inherits it.
-#                                      Silent and fail-open. Schema:
+#   REIFY_RUN_ALL_TIMING_OUT           Path of a file that receives a copy of
+#                                      this run's event records, through
+#                                      lib_event_log.sh's EVENT_LOG_COPY_TO
+#                                      sink (task 9309). Consumed and UNSET
+#                                      at startup, and the copy sink is never
+#                                      exported, so no member inherits
+#                                      either. Silent and fail-open. Schema:
+#                                      tests/infra/README.md "Verify event
+#                                      channel"; the ledger's fold of it:
 #                                      docs/notes/verify-instrumentation-ledger.md.
+#   REIFY_VERIFY_EVENT_LOG             Path of the verify-tree JSON-lines
+#                                      event channel, exported by dark-factory
+#                                      per verify invocation (task 8685). This
+#                                      run appends its run_start,
+#                                      member_start, member_finish and
+#                                      run_finish records; every member runs
+#                                      with it UNSET (C4). Inert when unset.
+#                                      Schema: tests/infra/README.md "Verify
+#                                      event channel".
 
 set -euo pipefail
 
@@ -264,6 +310,36 @@ if [ ! -f "$_RA_GIT_ENV_SCRUB_LIB" ]; then
 fi
 # shellcheck source=scripts/lib_git_env_scrub.sh
 source "$_RA_GIT_ENV_SCRUB_LIB"
+
+# ---------------------------------------------------------------------------
+# Verify event channel encoder (task 8685): this run's run_start,
+# member_start, member_finish and run_finish records go to
+# REIFY_VERIFY_EVENT_LOG through it.
+# Hard-required and unconditional for the scrub's reason above: every branch
+# writes records, legacy included, which never sources lib_slot_acquire.sh.
+# The lib's own source guard makes the pool path's transitive source a no-op.
+# ---------------------------------------------------------------------------
+_RA_EVENT_LOG_LIB="$SCRIPT_DIR/../../scripts/lib_event_log.sh"
+if [ ! -f "$_RA_EVENT_LOG_LIB" ]; then
+    echo "run_all.sh: ERROR — scripts/lib_event_log.sh not found at $_RA_EVENT_LOG_LIB" >&2
+    exit 1
+fi
+# shellcheck source=scripts/lib_event_log.sh
+source "$_RA_EVENT_LOG_LIB"
+
+# ---------------------------------------------------------------------------
+# Per-member budget (task 9441): member_budget_run spawns each member under
+# its REIFY_RUN_ALL_MEMBER_TIMEOUT, and member_budget_exceeded attributes a
+# timeout. Hard-required for the scrub's reason above: every branch spawns
+# members.
+# ---------------------------------------------------------------------------
+_RA_MEMBER_BUDGET_LIB="$SCRIPT_DIR/run-all-member-budget-lib.sh"
+if [ ! -f "$_RA_MEMBER_BUDGET_LIB" ]; then
+    echo "run_all.sh: ERROR — tests/infra/run-all-member-budget-lib.sh not found at $_RA_MEMBER_BUDGET_LIB" >&2
+    exit 1
+fi
+# shellcheck source=tests/infra/run-all-member-budget-lib.sh
+source "$_RA_MEMBER_BUDGET_LIB"
 
 # Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
 # line so the chronic-offender scan (_ra_flaky_chronic_check) can window
@@ -305,9 +381,9 @@ while [ "$#" -gt 0 ]; do
 done
 INFRA_DIR="${INFRA_DIR:-$SCRIPT_DIR}"
 
-_RA_TIMING_OUT="${REIFY_RUN_ALL_TIMING_OUT:-}"
+EVENT_LOG_COPY_TO="${REIFY_RUN_ALL_TIMING_OUT:-}"
+export -n EVENT_LOG_COPY_TO
 unset REIFY_RUN_ALL_TIMING_OUT
-_RA_PATH=""
 
 # --scope value validation: empty (default) selects the unchanged pool/legacy
 # behavior below; "host-infra" selects the H9 branch; any other non-empty
@@ -595,30 +671,16 @@ _ra_emit_sanitized() {
 # Fail-open: a missing/unreadable captured file, or zero matches, is a
 # silent no-op -- this is pure observability layered on the failure path and
 # must never itself become a new failure source or change any exit code
-# (INV-4). Keeps only the LAST _RA_FAIL_DETAIL_MAX matches, with a loud
-# (non-silent) truncation-indicator line prepended when the match count
-# exceeds the cap -- the repo's no-silent-caps convention.
+# (INV-4). Prints EVERY match: the _RA_FAIL_DETAIL_MAX bound is applied once,
+# by _ra_record_result, which projects the same kept lines into both the text
+# block (with its loud truncation-indicator line -- the repo's no-silent-caps
+# convention) and the member_finish record (task 8685).
 # ---------------------------------------------------------------------------
 _ra_collect_fail_detail() {
     local _file="$1"
     [ -f "$_file" ] || return 0
-
-    local _matched
-    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed "${_RA_SANITIZE_SED[@]}" || true)"
-    [ -n "$_matched" ] || return 0
-
-    local _count
-    _count="$(printf '%s\n' "$_matched" | wc -l | tr -d ' ')"
-
-    local _bounded
-    _bounded="$(printf '%s\n' "$_matched" | tail -n "$_RA_FAIL_DETAIL_MAX")"
-
-    if [ "$_count" -gt "$_RA_FAIL_DETAIL_MAX" ]; then
-        local _omitted=$((_count - _RA_FAIL_DETAIL_MAX))
-        _bounded="$(printf '... (%s earlier FAIL line(s) omitted; see per-test output above) ...\n%s' "$_omitted" "$_bounded")"
-    fi
-
-    printf '%s\n' "$_bounded"
+    grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null \
+        | sed "${_RA_SANITIZE_SED[@]}" || true
 }
 
 # _ra_emit_fail_detail <name>
@@ -644,17 +706,28 @@ _ra_emit_fail_detail() {
 #                                    re-emits later;
 #   _ra_record_result                the one RESULT: PASS/FAIL verdict.
 # A run's outcome crosses back from a pool worker subshell through files: the
-# rc file and the out file's fail-detail sidecar.
+# rc file and the out file's fail-detail and duration sidecars.
 # ---------------------------------------------------------------------------
 
-# _ra_spawn_member <name> -- the ONE member spawn line. Every member gets the
-# git-env scrub, an unset REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this
-# run's discovery only; a member that drives run_all.sh over its own fixtures
-# must not inherit the filter) and FD 9 closed (no member holds a lock FD this
-# run or its caller opened).
-_ra_spawn_member() {
-    reify_git_env_scrub env -u REIFY_RUN_ALL_MEMBER_SUBSET bash "$INFRA_DIR/$1" 9<&-
-}
+# _ra_spawn_member <name> -- the ONE member spawn line. Every member runs
+# under its budget, in a process group of its own (member_budget_run; the
+# REIFY_RUN_ALL_MEMBER_TIMEOUT knob), and gets the git-env scrub, an unset
+# REIFY_RUN_ALL_MEMBER_SUBSET (that knob filters this run's discovery only; a
+# member that drives run_all.sh over its own fixtures must not inherit the
+# filter), an unset REIFY_VERIFY_EVENT_LOG (no member writes the parent
+# channel, PRD §4 C4), FD 9 closed (no member holds a lock FD this run or its
+# caller opened) and the run's saved stdout/stderr closed (so no member, nor a
+# background child it leaves behind, holds the verify stream open). The body
+# is a subshell so those closes never reach the main shell, where a deferred
+# TERM trap runs inside this call and writes through the saved fds.
+# The scrub is the printed `env -u ...` argv, not the reify_git_env_scrub
+# function, because timeout must exec the command and cannot exec a function.
+_ra_spawn_member() (
+    exec 9<&- {_RA_RUN_STDOUT_FD}>&- {_RA_RUN_STDERR_FD}>&-
+    # shellcheck disable=SC2046  # the scrub prefix is deliberately split into argv words
+    member_budget_run "$_RA_MEMBER_TIMEOUT" "$_RA_MEMBER_KILL_GRACE" \
+        $(reify_git_env_scrub_prefix) -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_VERIFY_EVENT_LOG bash "$INFRA_DIR/$1"
+)
 
 # _ra_sanitize_stream -- stdin to stdout through the one $_RA_SANITIZE_SED
 # chain, line-buffered so a live member's output is never held back.
@@ -685,22 +758,91 @@ _ra_fail_detail_file() {
     printf '%s\n' "$1.detail"
 }
 
-# _ra_run_member <name> <out-file> <rc-file> <capture|stream>
+# _ra_times_file <out-file> -- the path of an out file's times sidecar: the
+# run's queued, started and ended event-clock instants (epoch ns, `-` when
+# unknown). Never ends in .rc, so no `*.rc` glob sees it.
+_ra_times_file() {
+    printf '%s\n' "$1.times"
+}
+
+# _ra_read_times <out-file> <queued-var> <started-var> <ended-var> -- loads the
+# times sidecar's three instants; a `-`, a missing token or a missing sidecar
+# loads empty (the record encodes that as null).
+_ra_read_times() {
+    local _rrt_q="" _rrt_s="" _rrt_e=""
+    { read -r _rrt_q _rrt_s _rrt_e < "$(_ra_times_file "$1")"; } 2>/dev/null || true
+    [ "$_rrt_q" != - ] || _rrt_q=""
+    [ "$_rrt_s" != - ] || _rrt_s=""
+    [ "$_rrt_e" != - ] || _rrt_e=""
+    printf -v "$2" '%s' "$_rrt_q"
+    printf -v "$3" '%s' "$_rrt_s"
+    printf -v "$4" '%s' "$_rrt_e"
+}
+
+# _ra_duration_ms <out-var> <started-ns> <ended-ns> -- the one duration
+# derivation: whole ms between two instants, else empty.
+_ra_duration_ms() {
+    local _rdm_ms=""
+    if [[ "$2" =~ ^[0-9]+$ ]] && [[ "$3" =~ ^[0-9]+$ ]]; then
+        _rdm_ms=$(( ($3 - $2) / 1000000 ))
+    fi
+    printf -v "$1" '%s' "$_rdm_ms"
+}
+
+# _ra_phase_finish <phase> <started-ns> -- closes a phase: one phase_finish
+# record from <started-ns> to now.
+_ra_phase_finish() {
+    local _rpf_ended
+    event_log_clock_ns _rpf_ended
+    event_log_emit_phase_finish "$1" "$2" "$_rpf_ended"
+}
+
+# _ra_timeout_file <out-file> -- the path of an out file's budget sidecar,
+# present only when that run hit its REIFY_RUN_ALL_MEMBER_TIMEOUT.
+_ra_timeout_file() {
+    printf '%s\n' "$1.timeout"
+}
+
+# _ra_note_timeout <name> <out-file> <capture|stream> <rc> <elapsed-ms>
+#   Records a run that hit its budget. It writes the out file's budget sidecar
+#   (Phase 2.5 reads it), and appends a `MEMBER_TIMEOUT FAIL ...` line to the
+#   out file, which the fail-detail collector then carries into FAILED-DETAIL
+#   and member_finish. When streaming, it also prints that line live, inside
+#   the member's block. Then one ERROR line on stderr names the member.
+_ra_note_timeout() {
+    local _name="$1" _out_file="$2" _mode="$3" _rc="$4" _secs=$(( $5 / 1000 )) _line
+    _line="MEMBER_TIMEOUT FAIL member=$_name budget_s=$_RA_MEMBER_TIMEOUT elapsed_s=$_secs rc=$_rc"
+    : > "$(_ra_timeout_file "$_out_file")" || true
+    printf '%s\n' "$_line" >> "$_out_file" || true
+    if [ "$_mode" = stream ]; then
+        printf '%s\n' "$_line"
+    fi
+    echo "ERROR: run_all.sh: member $_name exceeded its ${_RA_MEMBER_TIMEOUT}s budget (elapsed ${_secs}s, rc=$_rc); its process group was killed -- recorded as FAILED" >&2
+}
+
+# _ra_run_member <name> <out-file> <rc-file> <capture|stream> <attempt> [<queued-ns>]
 #   capture: runs the member silently, both streams into <out-file>.
 #   stream: runs it live, both streams merged and sanitized on the way to
 #   stdout, tee'd RAW into <out-file> (the fail-detail collector and the slot
 #   breadcrumb read raw bytes). It returns only once every process holding
 #   the member's stdout has closed it, so a background child's late output
 #   stays inside the member's block, at the cost of waiting for that child.
-#   Then writes the fail-detail sidecar (rc != 0) and, LAST, the rc file, so a
-#   reader that sees the rc also sees the detail. Returns 0 whatever the
-#   member did; the verdict is the rc file's.
+#   <attempt> (1, or 2 for the Phase-2.5 retry) goes on the member_start
+#   record written before the spawn. <queued-ns> is when a pool worker began
+#   waiting for its slot. A run that hit its budget is recorded by
+#   _ra_note_timeout first. Then writes the fail-detail sidecar (rc != 0),
+#   the times sidecar (queued, started, ended on the event clock) and, LAST,
+#   the rc file, so a reader that sees the rc also sees every sidecar.
+#   Returns 0 whatever the member did; the verdict is the rc file's.
 _ra_run_member() {
-    if [ "$#" -ne 4 ]; then
-        echo "ERROR: run_all.sh: _ra_run_member: usage: <name> <out-file> <rc-file> <capture|stream> (got $# args)" >&2
+    if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+        echo "ERROR: run_all.sh: _ra_run_member: usage: <name> <out-file> <rc-file> <capture|stream> <attempt> [<queued-ns>] (got $# args)" >&2
         return 64
     fi
-    local _name="$1" _out_file="$2" _rc_file="$3" _mode="$4" _rc=0 _ps=()
+    local _name="$1" _out_file="$2" _rc_file="$3" _mode="$4" _attempt="$5" _queued="${6:-}" _rc=0 _ps=()
+    local _t0 _t1 _ms
+    event_log_emit_member_start "$_name" "$_attempt" "$_mode"
+    event_log_clock_ns _t0
     case "$_mode" in
         capture)
             _ra_spawn_member "$_name" > "$_out_file" 2>&1 || _rc=$?
@@ -718,6 +860,11 @@ _ra_run_member() {
             return 64
             ;;
     esac
+    event_log_clock_ns _t1
+    _ra_duration_ms _ms "$_t0" "$_t1"
+    if member_budget_exceeded "$_rc" "$_ms" "$_RA_MEMBER_TIMEOUT"; then
+        _ra_note_timeout "$_name" "$_out_file" "$_mode" "$_rc" "$_ms"
+    fi
     local _detail
     _detail="$(_ra_fail_detail_file "$_out_file")"
     if [ "$_rc" -ne 0 ]; then
@@ -725,6 +872,7 @@ _ra_run_member() {
     else
         rm -f "$_detail"
     fi
+    printf '%s %s %s\n' "${_queued:--}" "${_t0:--}" "${_t1:--}" > "$(_ra_times_file "$_out_file")" || true
     _ra_write_rc "$_rc_file" "$_rc"
     return 0
 }
@@ -764,7 +912,12 @@ _ra_replay_member() {
 # _ra_record_result <name> <rc> <out-file> [--retried]
 #   Prints the member's verdict and records it: a PASS after a serial retry is
 #   flaky, a FAIL counts and takes the out file's fail detail (if any) into the
-#   Summary FAILED region.
+#   Summary FAILED region. Writes the member's ONE member_finish record (the
+#   attempt is 2 when --retried).
+#   The fail detail keeps the LAST _RA_FAIL_DETAIL_MAX collected lines; the
+#   text block prefixes them with the omitted-count indicator line and the
+#   record carries the same lines plus that count, so both projections come
+#   from one bound and no reader parses the indicator.
 _ra_record_result() {
     local _name="${1:-}" _rc="${2:-}" _out_file="${3:-}" _retried="${4:-}"
     if [ "$#" -lt 3 ] || [ "$#" -gt 4 ] || { [ -n "$_retried" ] && [ "$_retried" != "--retried" ]; }; then
@@ -775,23 +928,45 @@ _ra_record_result() {
         echo "ERROR: run_all.sh: _ra_record_result: rc for $_name must be an integer (got '$_rc')" >&2
         return 64
     fi
+    local _attempt=1 _queued _started _ended _duration_ms
+    [ -z "$_retried" ] || _attempt=2
+    _ra_read_times "$_out_file" _queued _started _ended
+    _ra_duration_ms _duration_ms "$_started" "$_ended"
     if [ "$_rc" -eq 0 ]; then
         if [ -n "$_retried" ]; then
             echo "  RESULT: PASS ($_name) [flaky: passed on serial retry]"
             flaky_names+=("$_name")
+            event_log_emit_member_finish "$_name" "$_attempt" "$_rc" FLAKY_PASS "$_duration_ms" \
+                "$_queued" "$_started" "$_ended" 0
         else
             echo "  RESULT: PASS ($_name)"
+            event_log_emit_member_finish "$_name" "$_attempt" "$_rc" PASS "$_duration_ms" \
+                "$_queued" "$_started" "$_ended" 0
         fi
         return 0
     fi
     echo "  RESULT: FAIL ($_name)"
     failures=$((failures + 1))
     failed_names+=("$_name")
-    local _detail
+    local _detail _omitted _text
+    local -a _lines=() _kept=()
     _detail="$(_ra_fail_detail_file "$_out_file")"
-    if [ -s "$_detail" ]; then
-        _ra_fail_detail["$_name"]="$(cat "$_detail")"
+    if [ -f "$_detail" ]; then
+        mapfile -t _lines < "$_detail" || _lines=()
     fi
+    _omitted=$(( ${#_lines[@]} - _RA_FAIL_DETAIL_MAX ))
+    [ "$_omitted" -gt 0 ] || _omitted=0
+    _kept=("${_lines[@]:_omitted}")
+    if [ "${#_kept[@]}" -gt 0 ]; then
+        printf -v _text '%s\n' "${_kept[@]}"
+        _text="${_text%$'\n'}"
+        if [ "$_omitted" -gt 0 ]; then
+            _text="... ($_omitted earlier FAIL line(s) omitted; see per-test output above) ..."$'\n'"$_text"
+        fi
+        _ra_fail_detail["$_name"]="$_text"
+    fi
+    event_log_emit_member_finish "$_name" "$_attempt" "$_rc" FAIL "$_duration_ms" \
+        "$_queued" "$_started" "$_ended" "$_omitted" "${_kept[@]+"${_kept[@]}"}"
     return 0
 }
 
@@ -811,7 +986,7 @@ _ra_run_serial_member() {
     local _wd="$1" _name="$2" _rc
     _ra_interrupt_if_worktree_gone
     _ra_emit_member_header "$_name"
-    _ra_run_member "$_name" "$_wd/$_name.out" "$_wd/$_name.rc" stream
+    _ra_run_member "$_name" "$_wd/$_name.out" "$_wd/$_name.rc" stream 1
     _rc="$(_ra_read_rc "$_wd/$_name.rc")"
     if [ "$_rc" -eq 127 ]; then
         _ra_interrupt_if_worktree_gone
@@ -821,31 +996,59 @@ _ra_run_serial_member() {
 
 # _ra_record_subset_skip <name> -- the member-subset framing for a discovered
 # member it was not asked to run: acknowledged, never invoked, never a failure.
+# Its member_finish is the SKIP record: attempt 0, no rc, no duration, no times.
 _ra_record_subset_skip() {
     echo ""
     echo "--- Skipped (member-subset): $1 ---"
     echo "  RESULT: SKIP ($1)"
     member_subset_skipped+=("$1")
+    event_log_emit_member_finish "$1" 0 "" SKIP "" "" "" "" 0
+}
+
+# _ra_emit_run_finish <interrupted> <failures> [failed-name...] -- the
+# run_finish record. discovered, flaky_names and member_subset_skipped are
+# read as LIVE state, as _ra_on_term reads them: this also closes the run
+# from the interrupted exits, where no caller holds them.
+# The first exit path to get here closes the run and every later call is a
+# no-op, so a TERM landing between a written run_finish and the exit adds no
+# second one. The flag is set after the write, so no TERM can cost the run
+# its only run_finish.
+_ra_emit_run_finish() {
+    [ "$_RA_RUN_FINISH_WRITTEN" = 0 ] || return 0
+    local _interrupted="$1" _failures="$2"
+    shift 2
+    event_log_emit_run_finish "$discovered" "$_failures" "$_interrupted" \
+        "$#" "$@" \
+        "${#flaky_names[@]}" "${flaky_names[@]+"${flaky_names[@]}"}" \
+        "${#member_subset_skipped[@]}" "${member_subset_skipped[@]+"${member_subset_skipped[@]}"}"
+    _RA_RUN_FINISH_WRITTEN=1
 }
 
 # _ra_on_exit -- the one EXIT handler: stops the pool's progress printer,
 # removes the pool and serial scratch workdirs, and releases the H9 Lane-X
 # lock if this run holds it. Each branch's explicit stop/release stays the
-# primary path; this is the backstop for an early or signal-driven exit. A
-# SIGKILL bypasses every trap; that residue is the orphaned-test-binary
-# reaper's (docs/notes/orphaned-test-binary-reaper.md).
+# primary path; this is the backstop for an early or signal-driven exit.
+# _ra_on_term calls it too, so it is idempotent: each action clears the state
+# it acted on, and a second call does nothing. A SIGKILL bypasses every trap:
+# the progress printer then stops on its own once run_all's main pid is gone,
+# and the remaining residue is the orphaned-test-binary reaper's
+# (docs/notes/orphaned-test-binary-reaper.md).
 _ra_on_exit() {
     if [ -n "${_h2_progress_pid:-}" ]; then
         kill "$_h2_progress_pid" 2>/dev/null || true
+        _h2_progress_pid=""
     fi
     if [ -n "${_H2_WORKDIR:-}" ]; then
         rm -rf "$_H2_WORKDIR" || true
+        _H2_WORKDIR=""
     fi
     if [ -n "${_RA_SERIAL_WORKDIR:-}" ]; then
         rm -rf "$_RA_SERIAL_WORKDIR" || true
+        _RA_SERIAL_WORKDIR=""
     fi
     if [ "${_RA_LANE_X_HELD:-0}" = "1" ]; then
         lane_x_flock_release || true
+        _RA_LANE_X_HELD=0
     fi
     return 0
 }
@@ -892,84 +1095,6 @@ _ra_discovery_diag() {
     echo "ERROR: run_all.sh pool: host state at failure: loadavg=${_la} psi_cpu_avg10=${_avg10} (task #5123 discovery/partition guard)" >&2
 
     exit "$_rc"
-}
-
-# ---------------------------------------------------------------------------
-# Timing record (task 7424) -- written only when REIFY_RUN_ALL_TIMING_OUT was
-# set; silent and fail-open. Marks are epoch-second files in the pool
-# workdir, named so they never end in .rc (the progress printer counts *.rc).
-# Schema: docs/notes/verify-instrumentation-ledger.md.
-# ---------------------------------------------------------------------------
-_ra_mark() {
-    [ -n "$_RA_TIMING_OUT" ] || return 0
-    { printf '%s\n' "${EPOCHREALTIME/,/.}" > "$1"; } 2>/dev/null || true
-    return 0
-}
-
-# _ra_tv <file> -- sets _RA_TV to the number in a mark/rc file, else null.
-_ra_tv() {
-    _RA_TV=null
-    local _v=""
-    [ -f "$1" ] || return 0
-    IFS= read -r _v < "$1" 2>/dev/null || true
-    if [[ "$_v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then _RA_TV="$_v"; fi
-    return 0
-}
-
-_ra_timing_phase() {
-    local _b _e
-    _ra_tv "$_H2_WORKDIR/phase-$1.begin"; _b="$_RA_TV"
-    _ra_tv "$_H2_WORKDIR/phase-$1.end"; _e="$_RA_TV"
-    printf '"%s":{"began_at":%s,"ended_at":%s}' "$1" "$_b" "$_e"
-}
-
-# _ra_timing_member <name> <phase> <queued-file|""> <start-file> <end-file> <rc-file>
-_ra_timing_member() {
-    local _q _s _e _r
-    _ra_tv "$3"; _q="$_RA_TV"
-    _ra_tv "$4"; _s="$_RA_TV"
-    _ra_tv "$5"; _e="$_RA_TV"
-    _ra_tv "$6"; _r="$_RA_TV"
-    printf '{"kind":"member","name":"%s","phase":"%s","queued_at":%s,"started_at":%s,"ended_at":%s,"rc":%s}\n' \
-        "$1" "$2" "$_q" "$_s" "$_e" "$_r"
-}
-
-_ra_timing_pool_lines() {
-    local _name _i _w="$_H2_WORKDIR"
-    printf '{"kind":"summary","path":"pool","run_id":"%s","phases":{' "$_RA_RUN_ID"
-    _ra_timing_phase pool; printf ','
-    _ra_timing_phase serial; printf ','
-    _ra_timing_phase retry
-    printf '},"totals":{"members":%d,"pool":%d,"serial":%d,"retried":%d}}\n' \
-        "${#_h2_discovered_list[@]}" "${#_h2_pool_members[@]}" "${#_h2_serial_members[@]}" "${#_h2_retried[@]}"
-    for _name in "${_h2_discovered_list[@]}"; do
-        [[ "$_name" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
-        _i="${_h2_index_of[$_name]}"
-        if [ "${_h2_is_pool[$_name]:-0}" = "1" ]; then
-            _ra_timing_member "$_name" pool "$_w/$_i.tq" "$_w/$_i.ts" "$_w/$_i.te" "$_w/$_i.rc"
-        else
-            _ra_timing_member "$_name" serial "" "$_w/$_i.ts" "$_w/$_i.te" "$_w/$_i.rc"
-        fi
-        if [ "${_h2_retried[$_name]:-0}" = "1" ]; then
-            _ra_timing_member "$_name" retry "" "$_w/$_i.retry.ts" "$_w/$_i.retry.te" "$_w/$_i.retry.rc"
-        fi
-    done
-}
-
-# Writes the whole record to a sibling .tmp, then renames it into place.
-_ra_timing_write() {
-    [ -n "$_RA_TIMING_OUT" ] || return 0
-    local _tmp="$_RA_TIMING_OUT.tmp"
-    {
-        {
-            if [ "$_RA_PATH" = "pool" ]; then
-                _ra_timing_pool_lines
-            else
-                printf '{"kind":"summary","path":"%s","run_id":"%s"}\n' "$_RA_PATH" "$_RA_RUN_ID"
-            fi
-        } > "$_tmp" && mv -f "$_tmp" "$_RA_TIMING_OUT"
-    } 2>/dev/null || rm -f "$_tmp" 2>/dev/null || true
-    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1119,22 +1244,25 @@ _ra_partial_failed_names() {
 #
 # TERM-signal handler: installed immediately below (before ANY phase work),
 # so it covers both the pool and legacy-serial paths alike. The merge-tier
-# envelope wraps run_all.sh in `timeout --kill-after=60 30m` (verify.sh) --
-# timeout sends SIGTERM first (SIGKILL only after the kill-after grace
+# outer envelope (verify.sh's run_all.sh add_tool line) wraps run_all.sh in
+# `timeout --kill-after=...` -- timeout sends SIGTERM first (SIGKILL only after the kill-after grace
 # period), so this handler gets a real window to reclassify a mid-run kill
 # BEFORE dark-factory's classifier falls through to a tree_sitter_generate_error
 # mislabel for want of any Summary/FAILED line (the normal-path
 # `=== Summary:` / `=== FAILED:` emit block at the end of this file never
 # runs on a signal death).
 #
-# Emits, to STDOUT (the same stream the normal-path marker uses and DF's
-# `^FAILED\s` scan reads):
+# Emits, to the run's own STDOUT (the stream the normal-path marker uses and
+# DF's `^FAILED\s` scan reads), saved at startup in _RA_RUN_STDOUT_FD because
+# fd 1 may be a capture-mode member's out file when the trap fires:
 #   - a distinct `=== Summary: INTERRUPTED ... ===` line, deliberately NOT
 #     matching the byte-exact `=== Summary: N discovered, M failed ===`
 #     substring the contract tests assert (T9a/T13b/T22e class).
 #   - `=== FAILED: <names> (partial) ===` (human-readable) and the bare
 #     `FAILED <names> (partial)` classifier line (matches DF's `^FAILED\s`
 #     reclassifier -- pattern #7b, checked before the tree-sitter mislabel).
+# Then closes the event channel's run with an interrupted run_finish whose
+# failed list is those same names (task 8685).
 #
 # Name attribution is best-effort and fail-open: the sorted-unique union of
 # _ra_partial_failed_names (the .rc-file scan) and the existing failed_names
@@ -1156,28 +1284,36 @@ _ra_partial_failed_names() {
 # a bare interrupt as a failure is the accepted tradeoff over risking a
 # silent fall-through back to the tree_sitter_generate_error mislabel.
 #
-# Re-raises via `trap - TERM; kill -TERM $$` (rather than `exit`) so the
-# process's recorded exit status reflects signal death (143), and so the
-# _ra_on_exit cleanup still runs AFTER this handler returns -- this
-# handler's `.rc` scan above therefore sees the workdir before that cleanup
-# removes it.
+# Then runs the _ra_on_exit cleanup itself, after the `.rc` scan above has
+# read the workdir it removes. The EXIT trap cannot be relied on for this:
+# the re-raise below does not run it. Re-raises via `trap - TERM; kill -TERM
+# $$` (rather than `exit`) so the process's recorded exit status reflects
+# signal death (143).
 # ---------------------------------------------------------------------------
 _ra_on_term() {
     set +e
+    local -a _names=()
 
-    echo ""
-    echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
+    {
+        echo ""
+        echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
 
-    local _names
-    _names="$(
-        { _ra_partial_failed_names; printf '%s\n' "${failed_names[@]:-}"; } 2>/dev/null \
-            | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//'
-    )"
+        # One array feeds both the text lines and the run_finish record, so the
+        # record's failed names equal the classifier line's by construction.
+        mapfile -t _names < <(
+            { _ra_partial_failed_names; printf '%s\n' "${failed_names[@]:-}"; } 2>/dev/null \
+                | sed '/^$/d' | sort -u
+        )
 
-    # Unconditional even when $_names is empty -- see "DELIBERATE" above.
-    echo "=== FAILED: ${_names} (partial) ==="
-    printf 'FAILED %s(partial)\n' "${_names:+$_names }"
+        # Unconditional even when $_names is empty -- see "DELIBERATE" above.
+        echo "=== FAILED: ${_names[*]} (partial) ==="
+        printf 'FAILED %s(partial)\n' "${_names[*]:+${_names[*]} }"
 
+        # After the classifier lines, so the record can never pre-empt them.
+        _ra_emit_run_finish true "${#_names[@]}" "${_names[@]+"${_names[@]}"}"
+    } >&"$_RA_RUN_STDOUT_FD" 2>&"$_RA_RUN_STDERR_FD"
+
+    _ra_on_exit >&"$_RA_RUN_STDOUT_FD" 2>&"$_RA_RUN_STDERR_FD"
     trap - TERM
     kill -TERM $$
 }
@@ -1193,7 +1329,8 @@ _ra_on_term() {
 #
 # _ra_interrupt_if_worktree_gone: no-op unless _ra_worktree_gone; otherwise
 # emits a line-anchored "=== INTERRUPTED (worktree removed) ===" marker to
-# STDOUT (the same stream dark-factory's classifier reads) and exits
+# STDOUT (the same stream dark-factory's classifier reads), closes the event
+# channel's run with an interrupted run_finish (task 8685) and exits
 # _RA_INTERRUPTED_EXIT_CODE (99), bypassing the normal Summary/FAILED block
 # entirely. _ra_on_exit still runs on this exit, cleaning up /tmp state and
 # stopping the progress printer.
@@ -1212,6 +1349,7 @@ _ra_interrupt_if_worktree_gone() {
     _ra_worktree_gone || return 0
     echo ""
     echo "=== INTERRUPTED (worktree removed) ==="
+    _ra_emit_run_finish true "$failures" "${failed_names[@]+"${failed_names[@]}"}"
     exit "${_RA_INTERRUPTED_EXIT_CODE:-99}"
 }
 
@@ -1221,11 +1359,17 @@ failed_names=()
 declare -A _ra_fail_detail=()   # failed member name -> bounded FAIL-detail lines (task #5329)
 flaky_names=()
 member_subset_skipped=()
+_RA_RUN_FINISH_WRITTEN=0
 
 # Install the TERM trap BEFORE any phase work (pool or legacy), so a
 # mid-run outer-timeout SIGTERM is reclassified regardless of which path is
 # active (task #5147). See _ra_on_term above. The EXIT cleanup is one handler
 # for every branch; see _ra_on_exit.
+# The run's own stdout/stderr are saved first: a TERM trap runs inside whatever
+# redirect is active in the main shell when it fires (a capture-mode member's
+# out file in Phase 2/2.5), so _ra_on_term writes through these fds, never
+# through fd 1/2. They must exist before the trap does.
+exec {_RA_RUN_STDOUT_FD}>&1 {_RA_RUN_STDERR_FD}>&2
 trap _ra_on_term TERM
 trap _ra_on_exit EXIT
 
@@ -1699,8 +1843,38 @@ if [ "${REIFY_RUN_ALL_SUBSET_COUNT_ONLY:-}" = "1" ]; then
     exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Per-member budget knobs (task 9441; see the Knobs block above). Resolved
+# here, after the count-only probe (which runs no member) and before the
+# branch chain, so every path runs its members under them. Shell-local, never
+# exported: no member inherits them. Load-bearing, so a malformed value exits
+# 64.
+# ---------------------------------------------------------------------------
+# _ra_resolve_seconds_knob <var> <knob> <default> [<hint>]
+#   The one validation of a seconds knob. Sets <var> to the value of the
+#   variable named <knob> (<default> when unset or empty), written as a plain
+#   decimal: bash arithmetic would read a leading zero as octal, while GNU
+#   timeout reads it as decimal. Exits 64 unless the value is a positive
+#   integer; <hint>, when given, ends the malformed-value message.
+_ra_resolve_seconds_knob() {
+    local _raw="${!2:-$3}"
+    case "$_raw" in
+        ''|*[!0-9]*)
+            echo "ERROR: run_all.sh: $2 must be a positive integer number of seconds (got '$_raw')${4:+; $4}" >&2
+            exit 64
+            ;;
+    esac
+    [ "$_raw" -ge 1 ] 2>/dev/null || { echo "ERROR: run_all.sh: $2 must be >= 1 (got '$_raw')" >&2; exit 64; }
+    printf -v "$1" '%d' "$((10#$_raw))"
+}
+_ra_resolve_seconds_knob _RA_MEMBER_TIMEOUT REIFY_RUN_ALL_MEMBER_TIMEOUT 1200
+_ra_resolve_seconds_knob _RA_MEMBER_KILL_GRACE REIFY_RUN_ALL_MEMBER_KILL_GRACE 30
+command -v timeout >/dev/null 2>&1 || {
+    echo "ERROR: run_all.sh: the per-member budget needs GNU timeout (coreutils) on PATH" >&2
+    exit 1
+}
+
 if [ "$SCOPE" = "host-infra" ]; then
-    _RA_PATH=host-infra
     # -------------------------------------------------------------------------
     # H9 host-infra branch (docs/prds/run-all-host-infra-partition.md task H9):
     # runs EXACTLY the declared host-exclusive set (the INVERSE of H3's
@@ -1746,15 +1920,17 @@ if [ "$SCOPE" = "host-infra" ]; then
     _RA_LANE_X_HELD=1
 
     discovered=${#_h9_members[@]}
+    event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" host-infra "$discovered"
     _ra_serial_workdir_create
+    event_log_clock_ns _ra_phase_started
     for _h9_name in "${_h9_members[@]+"${_h9_members[@]}"}"; do
         _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_h9_name"
     done
+    _ra_phase_finish serial "$_ra_phase_started"
 
     lane_x_flock_release
     _RA_LANE_X_HELD=0
 elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
-    _RA_PATH=member-subset
     # -------------------------------------------------------------------------
     # REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch (task #5288; PRD
     # docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8): on a
@@ -1771,8 +1947,10 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     # verify stream, which the one sanitizer chain covers as on every branch.
     # -------------------------------------------------------------------------
     discovered=${#_ra_discovered[@]}
+    event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" subset "$discovered"
     _ra_serial_workdir_create
     _ra_subset_matched=()
+    event_log_clock_ns _ra_phase_started
     for _ra_subset_base in "${_ra_discovered[@]+"${_ra_discovered[@]}"}"; do
         if _ra_in_member_subset "$_ra_subset_base"; then
             _ra_subset_matched+=("$_ra_subset_base")
@@ -1781,6 +1959,7 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             _ra_record_subset_skip "$_ra_subset_base"
         fi
     done
+    _ra_phase_finish serial "$_ra_phase_started"
 
     # Unmatched subset entries: named in the knob but not present in
     # INFRA_DIR (typo/stale retry name) -- a loud stderr WARNING, never a
@@ -1799,7 +1978,6 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
         fi
     done
 elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
-    _RA_PATH=pool
     # -------------------------------------------------------------------------
     # Concurrent pool path.
     # -------------------------------------------------------------------------
@@ -1830,7 +2008,6 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # identical policy. Keep both host-global lock defaults in sync if either
     # changes.
     _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-/tmp/reify-run-all-pool-$(id -u).lock}"
-    _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
 
     # Reject non-integer values -- notably slot_acquire's own "unlimited"
     # sentinel (lib_slot_acquire.sh), which it would otherwise honor verbatim
@@ -1838,15 +2015,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # SOFT admission that never hangs (admits unslotted on deadline); letting
     # "unlimited" through would silently defeat that guarantee on a
     # wedged/over-subscribed host-global semaphore. Fail fast instead, before
-    # any discovery/execution work, mirroring the REIFY_RUN_ALL_POOL_CONCURRENCY
-    # validation style below.
-    case "$_H2_POOL_WAIT" in
-        ''|*[!0-9]*)
-            echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be a positive integer number of seconds (got '${_H2_POOL_WAIT}'); the slot_acquire 'unlimited' sentinel is not supported here -- it would defeat the pool's never-hang soft-admission guarantee" >&2
-            exit 64
-            ;;
-    esac
-    [ "$_H2_POOL_WAIT" -ge 1 ] || { echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be >= 1 (got '${_H2_POOL_WAIT}')" >&2; exit 64; }
+    # any discovery/execution work.
+    _ra_resolve_seconds_knob _H2_POOL_WAIT REIFY_RUN_ALL_POOL_WAIT 1800 \
+        "the slot_acquire 'unlimited' sentinel is not supported here -- it would defeat the pool's never-hang soft-admission guarantee"
 
     # Clock-stop reason token for the pool worker's slot_acquire wait (task
     # #5147). Passed as slot_acquire's optional 4th REASON arg so a REAL
@@ -1900,6 +2071,14 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # dispatch instead. Detail: docs/notes/verify-pipeline-knobs.md,
     # "Slot-acquisition-timeout sentinel".
     _H2_POOL_TIMEOUT_DISPOSITION="soft"
+
+    # Slot-timeout record EMITTER for the same wait (slot_acquire's optional
+    # 7th arg, task 8685): C2's token for this one finite-WAIT path outside
+    # dark-factory's basename allowlist. The derived default would say
+    # `run_all.sh`, which hides that this is the pool wait. The worker
+    # subshell runs before the member spawn and keeps run_all's env, so the
+    # record goes to the PARENT channel (PRD D4).
+    _H2_POOL_TIMEOUT_EMITTER="run_all_pool"
 
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
     # observability / strictly additive (INV-4): unlike the load-bearing
@@ -1973,6 +2152,8 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # Partition/pool-workdir-setup guard ends here -- clear before
     # the PSI-gate definition and Phases 1-3 so it never wraps them.
     trap - ERR
+
+    event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" pool "$discovered"
 
     # -- PSI soft-gate (parent-side, before each pool spawn) ---------------------
     # Paces pool spawns under sustained CPU pressure without ever reducing N,
@@ -2092,8 +2273,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # configured, instead of hanging the caller for the whole
             # interval (e.g. up to 3600s at the ceiling exercised by
             # Test 22's fast-pool fixture).
+            # Also stops once run_all's main shell ($$, here as in the
+            # parent) is gone: a SIGKILL'd run_all runs no cleanup, so its
+            # workdir outlives it.
             _h2_slept=0
-            while [ -d "$_H2_WORKDIR" ]; do
+            while [ -d "$_H2_WORKDIR" ] && kill -0 "$$" 2>/dev/null; do
                 sleep 1
                 _h2_slept=$((_h2_slept + 1))
                 if [ "$_h2_slept" -ge "$_h2_progress_secs" ]; then
@@ -2108,7 +2292,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         disown 2>/dev/null || true
     fi
 
-    _ra_mark "$_H2_WORKDIR/phase-pool.begin"
+    event_log_clock_ns _h2_phase_started
     for _h2_name in "${_h2_pool_members[@]}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
 
@@ -2132,11 +2316,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # Soft acquire: on deadline (75) proceed unslotted -- never skip a
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
-            _ra_mark "$_H2_WORKDIR/${_h2_i}.tq"
-            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" || _h2_slot_rc=$?
-            _ra_mark "$_H2_WORKDIR/${_h2_i}.ts"
-            _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture
-            _ra_mark "$_H2_WORKDIR/${_h2_i}.te"
+            event_log_clock_ns _h2_queued
+            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" "$_H2_POOL_TIMEOUT_REASON" "$_H2_POOL_TIMEOUT_DISPOSITION" "$_H2_POOL_TIMEOUT_EMITTER" || _h2_slot_rc=$?
+            _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture 1 "$_h2_queued"
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
             fi
@@ -2148,7 +2330,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
     fi
-    _ra_mark "$_H2_WORKDIR/phase-pool.end"
+    _ra_phase_finish pool "$_h2_phase_started"
 
     # W4e primary check point (task #5261): _H2_WORKDIR lives under TMPDIR
     # (/tmp), so it survives an INFRA_DIR deletion and the Phase-1 join above
@@ -2169,15 +2351,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     fi
 
     # -- Phase 2: serial (foreground, one at a time, discovered order) -----------
-    _ra_mark "$_H2_WORKDIR/phase-serial.begin"
+    event_log_clock_ns _h2_phase_started
     for _h2_name in "${_h2_serial_members[@]}"; do
         _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
-        _ra_mark "$_H2_WORKDIR/${_h2_i}.ts"
-        _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture
-        _ra_mark "$_H2_WORKDIR/${_h2_i}.te"
+        _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out" "$_H2_WORKDIR/${_h2_i}.rc" capture 1
     done
-    _ra_mark "$_H2_WORKDIR/phase-serial.end"
+    _ra_phase_finish serial "$_h2_phase_started"
 
     # -- Phase 2.5: serial retry-once of failed pool/intra-run-serial members
     # (deflake) --------------------------------------------------------------
@@ -2196,20 +2376,25 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # failed_names/failures) -- see Phase 3 below; a member that fails twice
     # keeps the exact existing FAILED contract. Exactly ONE retry per failed
     # eligible member; no slot_acquire/PSI gate (already serial).
+    # A member that hit its budget is NOT retried (task 9441): a retry could
+    # spend another whole budget here and push the run back toward the merge
+    # envelope, turning a named FAILED into an anonymous INTERRUPTED.
     declare -A _h2_retried=()
-    _ra_mark "$_H2_WORKDIR/phase-retry.begin"
+    event_log_clock_ns _h2_phase_started
     for _h2_name in "${_h2_discovered_list[@]}"; do
         if [ "${_h2_is_pool[$_h2_name]:-0}" != "1" ] && [ "${_h2_is_intra_serial[$_h2_name]:-0}" != "1" ]; then
             continue
         fi
         _h2_i="${_h2_index_of[$_h2_name]}"
         [ "$(_ra_read_rc "$_H2_WORKDIR/${_h2_i}.rc")" -eq 0 ] && continue
-        _ra_mark "$_H2_WORKDIR/${_h2_i}.retry.ts"
-        _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out" "$_H2_WORKDIR/${_h2_i}.retry.rc" capture
-        _ra_mark "$_H2_WORKDIR/${_h2_i}.retry.te"
+        if [ -e "$(_ra_timeout_file "$_H2_WORKDIR/${_h2_i}.out")" ]; then
+            echo "INFO: run_all.sh: not retrying $_h2_name -- it exceeded its ${_RA_MEMBER_TIMEOUT}s budget" >&2
+            continue
+        fi
+        _ra_run_member "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out" "$_H2_WORKDIR/${_h2_i}.retry.rc" capture 2
         _h2_retried["$_h2_name"]=1
     done
-    _ra_mark "$_H2_WORKDIR/phase-retry.end"
+    _ra_phase_finish retry "$_h2_phase_started"
 
     # -- Phase 3: emit (discovered/sorted order -- preserves the output contract) --
     for _h2_name in "${_h2_discovered_list[@]}"; do
@@ -2232,18 +2417,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         fi
     done
 else
-    _RA_PATH=legacy-serial
     # -------------------------------------------------------------------------
     # Legacy all-serial fallback: the pool's members, in the pool's order, run
     # one at a time, each live under the serial policy (_ra_run_serial_member).
     # -------------------------------------------------------------------------
     discovered=${#_ra_default_scope_members[@]}
+    event_log_emit_run_start "$_RA_RUN_ID" "${SCOPE:-all}" serial "$discovered"
     _ra_serial_workdir_create
+    event_log_clock_ns _ra_phase_started
     for _ra_legacy_name in "${_ra_default_scope_members[@]+"${_ra_default_scope_members[@]}"}"; do
         _ra_run_serial_member "$_RA_SERIAL_WORKDIR" "$_ra_legacy_name"
     done
+    _ra_phase_finish serial "$_ra_phase_started"
 fi
-_ra_timing_write
 
 # W4e final backstop (task #5261): covers a nuke on the very last member,
 # which no subsequent loop iteration would otherwise catch (there is no
@@ -2287,6 +2473,7 @@ if [ "${#flaky_names[@]}" -gt 0 ]; then
         _ra_flaky_chronic_check "$_RA_FLAKY_LEDGER" "$_ra_chronic_n" "$_ra_chronic_m" "$_ra_flaky_name"
     done
 fi
+_ra_emit_run_finish false "$failures" "${failed_names[@]+"${failed_names[@]}"}"
 
 # Post-run content-skip ledger advance (task 5273, step-12): green shas advance
 # only on an all-pass ACTIVE run; a no-op for every inert/failed run.

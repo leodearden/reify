@@ -1,6 +1,6 @@
 # PRD — Realization pipeline (reify-eval): one per-template walk, a typed executor
 
-**Status:** decomposed 2026-10-15 (pass 2): α #4727 (adopted), β₁ #9154, β₂ #9155, γ #9156, δ #9158, ε #9157, ζ #8534 (adopted), η #9159, θ #9160, ι₁ #9161, ι₂ #9162, ι₃ #9163, ω #9164; out-of-plan follow-up #9165 (R6). Subsumed and cancelled: #4691 (→ β₁), #8333 (→ η). Out-of-batch edges: #9036 ← α; #9092 ← δ; gate #8612 ← δ, η. R5 widenings (three writes each): #6745 #6923 #6171 #6168 #6177 #6170 #6175 #8395 #8396 #8400 #6610 #6926. Authored pass 1, 2026-10-15 — review-all program `review-all-reify-20261010`, stream **S2** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R6 in this session (§11). An adversarial critic pass (fable/high: 1 blocker, 4 majors, 6 minors, each reproduced in code) is folded, and an opus/high fold-verifier's second pass (7 majors, 10 minors) is folded on top, and a focused opus re-verify of §1, §5.5 and §8 is folded after that (§11 fold records). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D14).
+**Status:** decomposed 2026-10-15 (pass 2): α #4727 (adopted), β₁ #9154, β₂ #9155, γ #9156, δ #9158, ε #9157, ζ #8534 (adopted), η #9159, θ #9160, ι₁ #9161, ι₂ #9162, ι₃ #9163, ω #9164; out-of-plan follow-up #9165 (R6). Subsumed and cancelled: #4691 (→ β₁), #8333 (→ η). gap-fill 2026-10-16: κ #9263, λ #9264, μ #9265 (§5.11–§5.13); #8329 cancelled (→ λ). Out-of-batch edges: #9036 ← α; #9092 ← δ; gate #8612 ← δ, η. R5 widenings (three writes each): #6745 #6923 #6171 #6168 #6177 #6170 #6175 #8395 #8396 #8400 #6610 #6926. Authored pass 1, 2026-10-15 — review-all program `review-all-reify-20261010`, stream **S2** (wave 3, spawn mode, size L, risk high; `plans/review-all-program-reify-20261012.md`). Leo ruled R1–R6 in this session (§11). An adversarial critic pass (fable/high: 1 blocker, 4 majors, 6 minors, each reproduced in code) is folded, and an opus/high fold-verifier's second pass (7 majors, 10 minors) is folded on top, and a focused opus re-verify of §1, §5.5 and §8 is folded after that (§11 fold records). v0_6. Approach **B + H** (§5 contract, §6 two-way boundary tests; rationale D14).
 **Invariants touched:** **INV-ARCH-1** (`module-sccs-only-shrink`): γ takes `geometry_ops` out of the 24-module reify-eval SCC and lowers its baseline row in the same diff; every new module this PRD adds imports nothing in the residual engine SCC. **INV-BUILD-3** (cache-hit parity): δ moves `probe_realization_cache` into the executor and re-points the row's pointer (S24 grammar; §5.10). No registry status cell is flipped by this stream. Every leaf that extracts a construct names its row in `tests/infra/adoption-ratchet.manifest` (program invariant candidate 5, §5.9).
 **Finding keys closed (5):** fk-f7e4716af878 (η), fk-53997e96ef7c (δ), fk-17e2aa81f6d6 (θ), fk-98754d80a67e (α, the adopted #4727), fk-9e6d548589d8 (ζ, the adopted #8534). Leaves that only contribute to a key carry it as `x_finding_part` (§9).
 **Code anchors** verified against main `d4cd598fee` (2026-10-14) by six scout seats and re-checked by the lead. Since the review anchor `a030ee7528`, engine_build.rs changed by 474 lines (#6308's owner routing among them) and execute_realization_ops shrank from 2,317 to 2,304 lines; no finding's substance changed. Cite-by-symbol; re-locate lines at implementation time. Line numbers appear only in the dated §10.
@@ -71,7 +71,7 @@
 - The shared resolver returns `&dyn GeometryKernel`, but `densify_grid_to_sampled` takes `&mut self`, so the arm cannot route through the helper as it stands.
 - A second writer of the projection store exists in engine_build (`redispatch_geometry_consuming_compute_nodes` pre-tessellates BRep bodies and inserts directly). An absent-node arm has a third inline degrade tail.
 - Three `#[allow(dead_code)]` sit on live items, and the module header and `degrade_projection`'s doc describe states that have since landed.
-- **Four homes of one tolerance.** `Engine::DEFAULT_TESSELLATION_TOLERANCE`, `MESH_PROJECTION_SENTINEL_TOL` (realization_content), `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` (geometry_ops) and `GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M` (engine_constraints) each hold `0.0001` and say they "mirror" the first. #4691 (pending, polish) tracks two of them.
+- **Four homes of one tolerance.** `Engine::DEFAULT_TESSELLATION_TOLERANCE`, `MESH_PROJECTION_SENTINEL_TOL` (realization_content), `MAX_DEVIATION_TESSELLATION_TOLERANCE_M` (geometry_ops) and `GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M` (engine_constraints) each hold `0.0001` and say they "mirror" the first. #4691 (polish) tracks two of them.
 
 ### 2.6 The file and the cycle (h14)
 - engine_build.rs is 14,468 lines (14,030 production). The record's seven-partition measurement holds at main (§10.5), with two corrections:
@@ -142,7 +142,7 @@
 - **D7 — The rollback scope is unchanged and stated (δ).** Rollback restores `step_handles` and removes every intermediate this realization inserted, including those inserted by the failing op before it failed. Topology-attribute entries and kernel-side geometry from rolled-back ops are per-build state and stay, as today. The commit owner's doc says so, and B-δ1 pins it.
 - **D8 — R3: the oracle owns kernel and repr (ε).**
   - `realization_handles` becomes `HashMap<RealizationNodeId, RealizedTerminal { handle: KernelHandle, repr: ReprKind }>`. It is still written and cleared only on build surfaces (S1's asymmetry, unchanged).
-  - Every reader that needs a realization's geometry takes the owner kernel and the repr from the entry, never from the graph node: the projection, `realize_solid_sdf`, `measure_min_feature`/`measure_min_wall`, `revalidate_geometry_handle`, the redispatch pre-tessellation, and S12's `capture_measurement`, whose context entries carry the `RealizedTerminal`. `engine_constraints`' three direct reads are retired by S12 ε1 #9017 (its row C6), a dependency of ε.
+  - Every reader that needs a realization's geometry takes the owner kernel and the repr from the entry, never from the graph node: the projection, `realize_solid_sdf` (and through it `measure_thickness_pair`, the one DFM thickness reader), `revalidate_geometry_handle`, the redispatch pre-tessellation, and S12's `capture_measurement`, whose context entries carry the `RealizedTerminal`. `engine_constraints`' three direct reads are retired by S12 ε1 #9017 (its row C6), a dependency of ε.
   - The selector gate is not an oracle reader: it reads the walk-local map (D2).
   - The graph node's `produced_repr` / `produced_kernel` become the last surface's outcome: provenance, `realization_kernel_provenance` and the CLI's `--verbose` line.
 - **D9 — One write-back sink (η introduces it, θ completes it; R4).**
@@ -230,6 +230,7 @@ Per template, in order:
 4. For each `HydrateCell` step, call `hydrate_value_cell_in_loop` with `realization_read_cells` and the template-start copy of the walk-local repr map.
 5. The post-process set (`run_post_processes` takes the current walk-local repr map):
    - `Realize`: `post_process_geometry_handle_cells`, both redispatches, conformance, kinematic, `run_post_processes`, containment samples and the contentless-redispatch warnings, in today's order.
+   - *Amended 2026-10-16 (gap-fill §K4-D2):* once λ #9264 lands, the geometry and as-printed redispatches leave this post-process set; they become scheduled `BuildStep::DispatchCompute` steps (§5.12), and the contentless warnings read `RedispatchStatus::Contentless` entries.
    - `Tessellate`: `hydrate_geometry_handles_into_values`, conformance, kinematic and `run_post_processes`.
 6. `snapshot_named_steps`.
 
@@ -328,7 +329,7 @@ impl PerBuildState {
 }
 ```
 - `post_process_geometry_handle_cells` writes the entry from the terminal `KernelHandle` and the outcome's repr, on build surfaces only. The reset table is S1's, unchanged.
-- **Readers** take the owner kernel (`entry.handle.kernel`, routed through S10's `select(OnHandle{owner})`) and the repr (`entry.repr`) from the entry: `project_realization_read_handle` and its resolver, `realize_solid_sdf`, `measure_min_feature`, `measure_min_wall`, `revalidate_geometry_handle`, and the redispatch pre-tessellation.
+- **Readers** take the owner kernel (`entry.handle.kernel`, routed through S10's `select(OnHandle{owner})`) and the repr (`entry.repr`) from the entry: `project_realization_read_handle` and its resolver, `realize_solid_sdf` (the DFM thickness reader `measure_thickness_pair` reaches the oracle only through it), `revalidate_geometry_handle`, and the redispatch pre-tessellation.
 - **S12's context.** `capture_measurement` copies entries into `MeasurementContext` with their upstream hash. A context entry carries a `RealizedTerminal`, not a bare `GeometryHandleId` (cross-reference to S12, §8).
 - **Node fields.** The node's `produced_repr`/`produced_kernel` are read only by `realization_kernel_provenance` (the CLI's verbose print reads it) and `realized_reprs_snapshot` until η deletes it (ratchet row `node-outcome-read`, §5.9).
 
@@ -395,6 +396,43 @@ Measured with `python3 tests/infra/adoption_ratchet.py --manifest <scratch rows>
 - **Prose.** The comments that state the old shape go with their code: the `RealizationOpsInput` "8 ORTHOGONAL fields" doc, distance's mirror NOTE, the symmetric-write comment, the stale `BuildSurface` doc, `demand_scoped_unified_pass`'s duplicate doc and the legacy notes. Rationale that must persist goes to this PRD, not inline (Comments stance).
 - **Drift guards.** A new reify-eval integration test is a module of an existing harness (`harness_engine`, `harness_cache`, `harness_kernel_realization`), never a new binary (the harness-layout gate lists reify-eval in `_HL_CRATES`). No leaf adds a wall-clock bound. The ratchet rows are manifest rows of an existing infra member, so no `run-all-classification.manifest` row is needed.
 
+### 5.11 The realized-step value (κ #9263; gap-fill 2026-10-16, §K4-D1)
+
+```rust
+// RealizedStep is ε's RealizedTerminal (§5.6), reused; no twin type.
+pub(crate) type RealizedStep = RealizedTerminal;   // { handle: KernelHandle, repr: ReprKind }
+pub(crate) struct CachedRealization {
+    pub terminal: KernelHandle, pub repr: ReprKind, pub egress_body: Option<MeshedVolume>,
+    pub swept_kind: Option<SweptKind>, pub attribute_entries: /* topology-attribute facets */,
+}
+pub(crate) fn apply_realized(cached: &CachedRealization, outputs: &mut RealizationOutputs<'_>);
+```
+- `RealizedStep` is the executor's step-list element and the value type of `named_steps` and `module_named_steps`; seeding copies whole steps. `named_step_reprs`, `realization_step_reprs` and the positional `filter_map` go.
+- `CachedRealization` is the terminal cache value. `apply_realized` is the one writer, called by both the hit (probe) and the miss path, so INV-BUILD-3 holds by construction and is re-registered type-enforced. `evict_family` evicts every facet at once.
+- `SweptKindTable` is keyed by `KernelHandle` (INV-GEO-2 extended; two-kernel same-id test).
+- `volume_mesh_sources` is deleted wherever it then lives (S1 λ #9050 moves it into `EngineCaches` first, as filed; §8).
+- The cache value for conversion intermediates is κ's tactical choice (a separate map, or a `CachedRealization` with empty facets).
+- κ's first behaviour test (B-κ1: the same module built twice; the swept kind read on the cache-served terminal) lands first, so the code-read FeatureDatumAmbiguous consequence becomes evidence.
+
+### 5.12 Scheduled compute dispatch (λ #9264; gap-fill 2026-10-16, §K4-D2)
+
+```rust
+enum BuildStep { Realize(usize), HydrateCell(ValueCellId), DispatchCompute(ComputeNodeId) }
+pub(crate) enum RedispatchStatus { Pending, Dispatched { inputs_hash: ContentHash }, Failed(ErrorRef), Contentless }
+```
+- The unified pass emits `DispatchCompute(node)` after the `Realize` steps of every realization the node's geometry args reference.
+- The walk owns a `RedispatchStatus` map, written only by the step handler. `Failed` reuses #7781's diagnostic path. The as-printed pass joins the same map (absorbing #8329).
+- Emitted on `PostProcessSet::Realize` surfaces only (Build, BuildSnapshot, PlacedBodies); never on tessellate. S2 R3/R6 are not reopened; #9165 extends the step to tessellate surfaces once it solves tessellate freshness, and decides then whether R3's build-only handle-oracle clause must widen.
+- Deleted: the per-template scan and graph clone, the latch guards, `RedispatchPassState.failed_pretessellations` / `contentless_skips`, the end-of-build stranded reconstruction.
+- Invariant: each geometry-consuming compute node is dispatched exactly once per build, after its inputs; a failed dispatch is a coded diagnostic (extends INV-SF-1).
+
+### 5.13 GeometryOp parent accessors (μ #9265; gap-fill 2026-10-16, §K4-D3)
+
+- `GeometryOp::parents()` and `parents_mut()` in `crates/reify-ir/src/geometry/op.rs` (S10 α₃ #8932 creates the file), each one exhaustive match with no wildcard.
+- `ParentRole` is derived from `parents()` (or the column is dropped and `expects_geom_arg` calls a derived `role()`).
+- `substitute_op_parents` loops over `parents_mut()`; `parent_handles_for_op` and `populate_attribute_history` take parents from `parents()`; `classify_op_input_reprs` loses its catch-all.
+- The three private-fn coverage tests become per-role behaviour tests through `execute_realization`. The two false "the compiler flags/enforces drift" claims and the stale `#[allow(dead_code)] // Wired into … step-8` go.
+
 ## 6. Boundary-test sketch (two-way)
 
 | id | side | scenario | precondition | postcondition | leaf |
@@ -430,7 +468,7 @@ Measured with `python3 tests/infra/adoption_ratchet.py --manifest <scratch rows>
 
 - **`detect_let_cycle`'s duplicate cycle report.** It is the only cycle report on eval/check surfaces without a unified pass. Its de-duplication is noted in engine_build's cycle-diagnostics comment and is not this stream's.
 - **Realization handles on tessellate surfaces (R3's rejected option B).** The GUI still has no handle oracle, so geometry-consuming compute inputs in a GUI session still degrade, as today.
-- **Redispatch of geometry-consuming compute nodes on tessellate surfaces.**
+- **Redispatch of geometry-consuming compute nodes on tessellate surfaces.** *Amended 2026-10-16 (gap-fill §K4-D2):* build-surface compute dispatch is now in scope (λ #9264, §5.12); the tessellate-surface exclusion stands, and its extension is #9165's.
 - **`build_snapshot` gaining the post-geometry re-check.**
 - **`is_terminal_realization` by schedule position** instead of by template index.
 - **Rolling back topology-attribute entries of failed realizations** (D7 records the residual).
@@ -458,6 +496,9 @@ Measured with `python3 tests/infra/adoption_ratchet.py --manifest <scratch rows>
 | #6422 (pending), #6032 (pending) | sibling | #6422 changes the Realization entry's payload hash; #6032 asks for an export-free `Engine::realize`, which is `realize_for_check` under η's new name | theirs | whichever of #6422 / η lands second rebases; pass-2 note on #6032 that η's rename delivers its API |
 | #8401, #8489, #8460, #8288, #7164, #7300, #8330, #7296, #9024, #5980, #8215 | sibling | edit post-process ordering (#8401 after `post_process_geometry_handle_cells`), add a non-emitting build variant (#8489, which becomes an `EntryRequest` row), stamp `input_cone_hash` (#8460), drop `demanded_boundary` (#8288, whose `RealizationDemand` name also clashes with S5 #8994's) and touch redispatch / demand regions | theirs | file locks serialise; pass 2 posts a cross-reference note on each naming the S2 leaf that moves its region |
 | meshing-service, hex-wedge, #6989, #6371 | sibling | edit the VolumeMesh arm or the mixed-region seam | theirs | file locks serialise; δ / β₂ rebase over what lands first |
+| S1 engine-state-partition λ #9050 (gap-fill 2026-10-16, §K4-D1; contradiction 5) | upstream | λ moves `volume_mesh_sources` into `EngineCaches` as filed; S2 κ #9263 later deletes it | S1 moves; S2 deletes | no new S2→S1 edge; λ not delayed; note on #9050 |
+| S10 kernel-interface-typed-seam α₃ #8932 / θ₂ #8981 (gap-fill 2026-10-16, §K4-D3) | upstream (seam) | α₃ creates `crates/reify-ir/src/geometry/op.rs`, where μ #9265 adds `GeometryOp::parents()`/`parents_mut()`; θ₂ edits the same file | S10 owns the file; S2 μ owns the accessors | μ ← α₃; file locks serialise against θ₂, whichever lands second rebases |
+| #7781, #8329, #7184, #7332 (gap-fill 2026-10-16, §K4-D2) | sibling | #7781 owns the redispatch Err-swallow (λ reuses its Failed path); #8329 is absorbed by λ and cancelled; #7184 and #7332 edit the same redispatch functions | theirs; λ owns the schedule step | λ ← #7781; whichever of #7184/#7332 and λ lands second rebases |
 
 ## 9. Decomposition plan
 
@@ -555,6 +596,21 @@ Labels are Greek; task ids were assigned at decompose (2026-10-15) and are backf
   - **Signal.** B-ι1; rows `engine-free-geometry-post-process` and `engine-free-build-export` at 0.
   - **Keys.** none (`x_finding_part` fk-53997e96ef7c). Medium.
   - **Deps.** θ, ι₁, ι₂, #8872.
+- **κ #9263 — One realized-step value (gap-fill 2026-10-16, §K4-D1).**
+  - **Work.** §5.11: `RealizedStep` for the step list, `named_steps` and `module_named_steps`; `CachedRealization` with one `apply_realized` for hit and miss; `SweptKindTable` keyed by `KernelHandle`; delete `volume_mesh_sources`; INV-BUILD-3 re-registered type-enforced. B-κ1 lands first.
+  - **Signal.** B-κ1 (same module built twice; the cache-served terminal reads its swept kind), B-κ2 (two-kernel same-id swept kind); `volume_mesh_sources` and `named_step_reprs` absent.
+  - **Keys.** fk-a1dbdb4e699e, fk-9d5be5dd1b72, fk-da0908f1437e. **High** (gate #9171).
+  - **Deps.** δ, ε, η, S1 ε #9043. Follow-on per G1 (no #8612-closure leaf waits on it).
+- **λ #9264 — Scheduled compute dispatch on build surfaces (gap-fill 2026-10-16, §K4-D2).**
+  - **Work.** §5.12: `BuildStep::DispatchCompute`, the walk-owned `RedispatchStatus`; both redispatch passes leave the post-process set; absorbs #8329.
+  - **Signal.** B-λ1 (a dispatch failure after inputs realize is a coded Error and a failed cell), B-λ2 (a successful as-printed cascade dispatches once for 0 and 2 trailing templates), B-λ3 (regression floor byte-identical).
+  - **Keys.** fk-67a469b5e339. Subsumes #8329. **High** (gate #9171).
+  - **Deps.** η, #7781.
+- **μ #9265 — `GeometryOp::parents()` / `parents_mut()` (gap-fill 2026-10-16, §K4-D3).**
+  - **Work.** §5.13.
+  - **Signal.** The accessor pair exists in reify-ir; the false drift claims are gone; per-role behaviour tests through `execute_realization` replace the private-fn coverage tests.
+  - **Keys.** fk-abfd068e9631 (weakened). Medium.
+  - **Deps.** δ, S10 α₃ #8932.
 - **ω #9164 — PRD close.**
   - **Work.**
     - Measure engine_build.rs and engine_build/tests.rs against heuristic 14 (D12). If either is still above the alarm, record the named partition and its symptoms in the commit.
@@ -677,7 +733,13 @@ Rules are inline. Six scout seats measured; the lead re-ran the decisive caller 
 - **#9092.** Its text is amended at pass 2 to name `execute_realization` / `ExecutedRealization.morph_outcome`.
 
 **Open questions (tactical; decide in the named leaf).**
-1. **VolumeMesh cache-hit parity** (δ, INV-BUILD-3). Today a hit returns no `MeshedVolume`. Suggested: δ pins today's behaviour (B-δ4). If `record_and_resolve_terminal` then observably differs from the miss path, δ makes `CacheHit` carry the terminal's `MeshedVolume` from the gmsh handle.
+1. **VolumeMesh cache-hit parity** (δ, INV-BUILD-3). Today a hit returns no `MeshedVolume`. Suggested: δ pins today's behaviour (B-δ4). If `record_and_resolve_terminal` then observably differs from the miss path, δ makes `CacheHit` carry the terminal's `MeshedVolume` from the gmsh handle. **Closed 2026-10-16 (gap-fill §K4-D1):** δ stays a move and its B-δ4 pin stands until κ #9263, whose `CachedRealization.egress_body` (applied by the one `apply_realized`) carries the facet on hit and miss alike; κ's parity test supersedes B-δ4.
 2. **Golden format** (α). Suggested: one JSON projection per corpus case under `crates/reify-eval/tests/harness_cache/goldens/`, generated by a `--bless`-style env-gated test and reviewed in the diff.
 3. **`OverrideRealizer` signature** (γ). Suggested: today's nine arguments, unchanged; instantiation-value-flow may widen it later.
 4. **Module names** (any leaf). An implementing architect may rename a §5.8 module when heuristic 1 suggests better, and records the reason in the commit. The purpose sentence is binding; the name is not.
+
+## Gap-fill amendments (2026-10-16)
+
+- **K4-D1** (`plans/gap-fill-deliberation-reify-20261016.md` §K4-D1): new leaf **κ #9263** (high, gate #9171) — one realized-step value (§5.11). Open question 1 closed in `CachedRealization` form. §8 gains the S1 λ #9050 row (contradiction 5: λ moves `volume_mesh_sources` as filed; κ deletes it). Notes on δ #9158 (B-δ4 superseded by κ's parity test; δ stays a move) and S1 λ #9050. ω #9164 ← κ.
+- **K4-D2** (§K4-D2): new leaf **λ #9264** (high, gate #9171) — `BuildStep::DispatchCompute` and `RedispatchStatus` on build surfaces (§5.12). §5.2 item 5 and §7 amended in place (marked). #8329 cancelled as subsumed by λ (content ported). Follow-up #9165 amended: once it solves tessellate freshness it extends DispatchCompute/RedispatchStatus to tessellate surfaces and decides R3's build-only oracle clause. R3/R6 not reopened. ω #9164 ← λ.
+- **K4-D3** (§K4-D3): new leaf **μ #9265** (medium) — `GeometryOp::parents()` / `parents_mut()` (§5.13). §8 gains the S10 α₃ #8932 / θ₂ #8981 seam row. ω #9164 ← μ.

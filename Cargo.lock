@@ -4272,7 +4272,11 @@ dependencies = [
 name = "reify-build-utils"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
+ "serde",
+ "syn 2.0.117",
  "tempfile",
+ "toml 0.8.2",
 ]
 
 [[package]]
@@ -4327,6 +4331,7 @@ dependencies = [
  "reify-eval",
  "reify-expr",
  "reify-ir",
+ "reify-mcp",
  "reify-syntax",
  "reify-test-support",
  "stacker",
@@ -4377,7 +4382,6 @@ dependencies = [
  "reify-core",
  "reify-expr",
  "reify-ir",
- "reify-stdlib",
  "reify-test-support",
  "tracing",
 ]
@@ -4508,8 +4512,10 @@ version = "0.1.0"
 name = "reify-geometry"
 version = "0.1.0"
 dependencies = [
+ "reify-core",
  "reify-ir",
  "reify-test-support",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -4570,9 +4576,12 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-kernel-conformance",
+ "reify-kernel-fidget",
  "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
+ "strum 0.26.3",
 ]
 
 [[package]]

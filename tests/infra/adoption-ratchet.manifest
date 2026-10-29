@@ -23,8 +23,9 @@
 # find -name or ls alike.
 inline-discovery-loop | test_["']?[*] | tests/infra/run_all.sh | 0 | α #8678
 # member-spawn-site: every run_all member spawn goes through _ra_spawn_member,
-# the one line carrying the git-env scrub, env isolation and FD hygiene.
-member-spawn-site | reify_git_env_scrub (bash|env) | tests/infra/run_all.sh | 1 | β #8681
+# the one line carrying the member budget, git-env scrub, env isolation and FD
+# hygiene.
+member-spawn-site | bash "[$]INFRA_DIR/ | tests/infra/run_all.sh | 1 | β #8681
 # result-fail-recorder: a member FAIL verdict is printed only by
 # _ra_record_result.
 result-fail-recorder | RESULT: FAIL | tests/infra/run_all.sh | 1 | β #8681
@@ -48,3 +49,18 @@ tree-generation-stores | [tT]reeGeneration | gui/src/stores/*.ts | 0 | δ #9065
 # layout-default-import-debug: layout defaults live in LAYOUT_DIMENSIONS
 # (gui/src/stores/layoutStore.ts); the debug bridge resets through layout.reset().
 layout-default-import-debug | DEFAULT_[A-Z_]+(WIDTH|HEIGHT|COLLAPSED) | gui/src/debug/*.ts | 0 | ε #9066
+# sidecar-args-literal: the claude CLI argv is built only by buildClaudeArgs
+# (gui/sidecar/src/claudeArgs.ts); the ceiling is that file's one argv literal.
+sidecar-args-literal | --output-format | gui/sidecar/src/*.ts | 1 | ζ #9067
+# gc-inline-gen-layout: test_warm_lane_gc.sh builds refresh-warm-base.sh's
+# base-generation layout (target -> target.gen.1 plus target.gen.1.lock) only in
+# make_gc_fixture, whose own touch is the one allowed hit.
+gc-inline-gen-layout | touch .*target\.gen\.1\.lock | tests/infra/test_warm_lane_gc.sh | 1 | ν #8721
+# gc-inline-seed-stub: every test_warm_lane_gc.sh seed stub is printed by a
+# named *_seed_stub_body emitter and redirected by its block, so no line writes
+# a heredoc straight into a *SEED_STUB file, whichever of the redirect and the
+# heredoc comes first.
+gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<<|<<.*> *"?[$][{]?[A-Z0-9_]*SEED_STUB | tests/infra/test_warm_lane_gc.sh | 0 | ν #8721
+# ordered-scope-grep: scope-decision fields are read with plan_capture_lib.sh's
+# plan_header_field, order-independently; ξ #9113 lowers this to 0.
+ordered-scope-grep | RUN_RUST=[01] RUN_GUI=[01] | tests/infra/test_*.sh | 82 | θ #9105

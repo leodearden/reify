@@ -92,7 +92,7 @@ fn print_usage(out: &mut dyn Write) {
         pattern_flag::TOKENS.join("|")
     );
     let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
-    let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
+    let _ = writeln!(out, "  --tasks-file <path>      TaskMetadata JSON-array test fixture; overrides the live loader (fixtures only)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
@@ -126,9 +126,10 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "                                   Soak by running this binary directly.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Tasks source:");
-    let _ = writeln!(out, "  By default, tasks are loaded live from the fused-memory MCP server.");
-    let _ = writeln!(out, "  Pass --tasks-file <path> to load from a JSON array fixture instead");
-    let _ = writeln!(out, "  (used by the integration test suite).");
+    let _ = writeln!(out, "  Tasks are loaded live from the fused-memory MCP server (--pre-done: one");
+    let _ = writeln!(out, "  get_task; otherwise one get_tasks). Every production caller (the pre-done");
+    let _ = writeln!(out, "  wrapper, the /audit skill) uses this live loader. --tasks-file <path> is");
+    let _ = writeln!(out, "  for test fixtures only.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Output:");
     let _ = writeln!(out, "  stderr: JSON array of Finding objects");
@@ -389,8 +390,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
-    // its own --tasks-file, --runs-db, and --project-root before forwarding $@
-    // which may include caller-supplied overrides), the last occurrence wins.
+    // its own --runs-db and --project-root before forwarding $@, which may
+    // include caller-supplied overrides), the last occurrence wins.
     // The wrapper relies on this contract: it prepends its defaults so that
     // any flag in the caller's $@ implicitly overrides the wrapper-supplied
     // value without requiring the wrapper to parse and strip $@.
@@ -561,18 +562,30 @@ fn load_tasks_from_json_file(path: &str) -> Result<HashMap<String, TaskMetadata>
         .collect())
 }
 
+/// The whole `--pre-done` fused-memory fetch (handshake plus `get_task`) must
+/// finish within this. dark-factory's `pre_done_hook.py` kills the hook at
+/// 30 s while it holds the project's task-mutation write lock. This share
+/// leaves the rest of that 30 s for the freshness guard and P5's git legs, and
+/// turns a hung fused-memory into this binary's own diagnosable 125 rather
+/// than a `pre_done_hook_timeout` kill. See f-infra-design §11.1.2.
+const PRE_DONE_FUSED_MEMORY_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Live fused-memory MCP loader (production path).
 ///
 /// `pre_done_task_id` is `Some(id)` on the pre-done hook hot path — only
-/// that one task is fetched (`get_task`). On the sweep path it is `None`
-/// and the whole task corpus is pulled (`get_tasks`).
+/// that one task is fetched (`get_task`), within
+/// [`PRE_DONE_FUSED_MEMORY_BUDGET`]. On the sweep path it is `None` and the
+/// whole task corpus is pulled (`get_tasks`).
 fn load_tasks_from_fused_memory(
     url: &str,
     project_root: &str,
     pre_done_task_id: Option<&str>,
 ) -> Result<HashMap<String, TaskMetadata>, String> {
-    let client = FusedMemoryClient::new(url)
-        .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
+    let client = match pre_done_task_id {
+        Some(_) => FusedMemoryClient::with_budget(url, PRE_DONE_FUSED_MEMORY_BUDGET),
+        None => FusedMemoryClient::new(url),
+    }
+    .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
     // Canonicalize project_root so `.` (the hook's inherited cwd) becomes
     // the absolute path fused-memory keys its DB on.
     let project_root_abs = std::fs::canonicalize(project_root)

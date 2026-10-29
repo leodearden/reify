@@ -6,10 +6,19 @@ tasks:
   title: 'tooling-front-end α: adoption ratchet member for the extraction leaves (INV candidate 5)'
   capabilities:
   - name: ratchet-member-exists
-    binding: 'producer-self — new tests/infra Python member + .sh wrapper + run-all-classification.manifest row in one diff; production view via scripts/lib_rust_production_view.sh (exists at main 8e6ffcac9d)'
+    binding: 'producer-self — new tests/infra Python member + .sh wrapper in one diff, registered by # run-all-bucket: pragma if S19 υ #9303 has landed, else a run-all-classification.manifest row (amended 2026-10-20, retro-critic R3 MAJ-5)'
     verdict: PASS
     delivered_check:
       kind: path
+      paths:
+      - tests/infra/test_tooling_front_end_ratchet.py
+      expect: present
+  - name: rows-on-the-shared-construct-engine
+    binding: 'producer:#8730 (S9 α, upstream, real dependency edge) — the member imports rust_construct_ratchet and writes no engine of its own (amended 2026-10-20, retro-critic R3 MAJ-5)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'rust_construct_ratchet'
       paths:
       - tests/infra/test_tooling_front_end_ratchet.py
       expect: present
@@ -119,11 +128,11 @@ tasks:
       - crates/reify-lsp/src
       expect: present
   - name: guarded-fea-hint-fixture
-    binding: 'B7 fixture authored by ζ; premise (a where-guarded let can carry an @optimized result to a constraint) to be probed by the decompose D3 workflow'
+    binding: 'B7 fixture authored by ζ; guard-aware (amended 2026-10-20, retro-critic R3 MAJ-6): ζ reads the guard cell value from check_result and walks guarded constraints through all_constraints(), a widening of S9 ν #8743; the guard-false half stands. Verdict closes in-leaf with the measured outcome of both halves'
     verdict: OPEN
     delivered_check:
       kind: manual
-      reason: fixture is the leaf's own deliverable; D3 probes it at decompose
+      reason: fixture is the leaf's own deliverable; ζ probes both B7 halves in-leaf and closes this verdict with the measured outcome
 - label: η
   task_id: 8772
   title: 'tooling-front-end η: Declaration::member_scopes() and the five LSP member lookups through it'
@@ -161,7 +170,7 @@ tasks:
   title: 'tooling-front-end κ: LspMethod owns the method set, concurrency class and blocking-work placement'
   capabilities:
   - name: lsp-method-enum
-    binding: 'producer-self — handle_request matches raw strings at main'
+    binding: 'producer-self — handle_request matches raw strings at main; homed in the leaf module crates/reify-lsp/src/lsp_method.rs, which imports no crate module (amended 2026-10-20, retro-critic R3 MAJ-3)'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -194,7 +203,7 @@ tasks:
   title: 'tooling-front-end ι: hover and completion run through BlockingWorkPlacement'
   capabilities:
   - name: hover-placed
-    binding: 'producer-self — hover/completion build AnalysisContext inline at main; the run label is "hover"'
+    binding: 'producer-self — hover/completion build AnalysisContext inline at main; the run label is "hover". Brittle (amended 2026-10-20, retro-critic R3 MIN-2): if ι labels runs from LspMethod, ι re-anchors this check in three writes (yaml, md twin, task metadata) before landing, or keeps the literal label'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -269,7 +278,7 @@ tasks:
       - crates/reify-lsp/src/analysis.rs
       expect: present
   - name: module-name-derivation-gone
-    binding: 'producer-self — pub fn module_name_from_uri in reify-lsp at main'
+    binding: 'producer-self — pub fn module_name_from_uri in reify-lsp at main; satisfiable within γ because γ exports reify_compiler::module_path_for_entry, used by compile_program and by document.rs, goto_def.rs and symbols.rs (amended 2026-10-20, retro-critic R3 BLK-2)'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -278,7 +287,7 @@ tasks:
       - crates/reify-lsp/src
       expect: absent
   - name: stdlib-enum-divergence
-    binding: 'probe 2026-10-12: reify check tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri exit 0; reify mcp-server get_diagnostics -> unresolved type: InfillPattern'
+    binding: 'historical / non-regression (amended 2026-10-20, retro-critic R3 MAJ-1) — probe 2026-10-12: reify check tests/prd-gate/fixtures/tooling_fe_stdlib_enum.ri exit 0; reify mcp-server get_diagnostics -> unresolved type: InfillPattern. reify mcp-server was deleted by #6665 (2026-10-14); LSP diagnostics are empty and hover resolves the enum today, so the fixture is a non-regression row, not γ''s RED signal (γ''s RED signal is multi-file: hover/completion on an importing entry resolve an imported pub template)'
     verdict: PASS
 - label: ν
   task_id: 8763
@@ -383,3 +392,82 @@ tasks:
     delivered_check:
       kind: manual
       reason: docs-only header edit
+- label: ψ₂
+  task_id: 9324
+  title: 'tooling-front-end ψ₂: cursor_on_member_segment / expr_member_segment_hit onto S9 ρ''s shared enumeration; walk.rs helpers deleted (gap-fill 2026-10-16, K2-D2)'
+  note: 'depends on ψ #8757 (done) and S9 ρ (reify-ast child enumeration)'
+  capabilities:
+  - name: shared-enumeration-substrate
+    binding: 'producer: S9 ρ (docs/prds/v0_6/compiler-declaration-passes.md, gap-fill 2026-10-16) — Expr::for_each_child, MemberDecl::for_each_direct_expr, MemberDecl::child_scopes in reify-ast; real dependency edge'
+    verdict: PASS
+  - name: walk-helpers-deleted
+    binding: 'producer-self — references/walk.rs for_each_direct_subexpr, for_each_member_direct_expr, sub_direct_exprs, keyed_entry_param_override_exprs and for_each_child_scope present at main; references/local.rs expr_member_segment_hit and cursor_on_member_segment hand-match ExprKind and MemberDecl'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn for_each_direct_subexpr\b'
+      paths:
+      - crates/reify-lsp/src
+      expect: absent
+- label: ψ₃
+  task_id: 9325
+  title: 'tooling-front-end ψ₃: cursor.rs — resolve_cursor -> CursorTarget consumed by hover, goto_def, references, rename, highlight and completion (gap-fill 2026-10-16, K2-D3)'
+  note: 'depends on S9 ρ and ψ₂; subsumes #7607 (goto_def Phase C)'
+  capabilities:
+  - name: per-feature-cursor-seams-on-main
+    binding: 'existing-substrate — convert.rs::find_word_at_offset is the cursor seam for hover, goto_def and references/rename; the member-segment guard exists only in references/local.rs; goto_def Phase C is lexical and pinned to its wrong answer (#7607); completion::determine_context classifies from the line text; no cursor.rs or resolve_cursor at main'
+    verdict: PASS
+  - name: cursor-module
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      paths:
+      - crates/reify-lsp/src/cursor.rs
+      expect: present
+  - name: cursor-target-enum
+    binding: 'producer-self — CursorTarget { DeclName | ValueUse { binding } | MemberSegment { base } | TypeUse | Keyword | Trivia(Comment | String) | None }'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum CursorTarget\b'
+      paths:
+      - crates/reify-lsp/src
+      expect: present
+- label: γ₂
+  task_id: 9326
+  title: 'tooling-front-end γ₂: analysis::analyse — one compile+check per document version, memoised on DocumentState; AnalysisContext a view (gap-fill 2026-10-16, K2-D4)'
+  note: 'depends on γ #8778, β #8761, ε #8759, ι #8774'
+  capabilities:
+  - name: compile-check-spelled-thrice-on-main
+    binding: 'existing-substrate — compile_with_stdlib_checked + eval_guard::skip_reason + Engine::new(SimpleConstraintChecker) appear in AnalysisContext::from_parsed, compute_diagnostics_with_state and compute_diagnostics; hover and completion rebuild AnalysisContext (full compile + check) per request; only the parse is memoised (DocumentState::parsed_cache)'
+    verdict: PASS
+  - name: compile-program-entry
+    binding: 'producer:#8778 (γ) — AnalysisContext on compile_program; real dependency edge; analyse() wraps that call'
+    verdict: PASS
+  - name: analyse-constructor
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn analyse\('
+      paths:
+      - crates/reify-lsp/src/analysis.rs
+      expect: present
+- label: ε₂
+  task_id: 9327
+  title: 'tooling-front-end ε₂: compute_diagnostics_with_state split into stage functions; eval_stage the sole EvalState writer; LspDiagnosticCode + lsp_diagnostic (gap-fill 2026-10-16, K2-D4)'
+  note: 'depends on ε #8759, ζ #8771, ω #8770 and γ₂'
+  capabilities:
+  - name: monolithic-pipeline-on-main
+    binding: 'existing-substrate — compute_diagnostics_with_state runs ~495 lines (diagnostics.rs) interleaving parse, compile, containment skip, EvalState version/hash/eval, check fallback, violation filtering, FEA hint and freshness; the EvalState ordering rule lives in prose; "computation-failed"/"computation-pending" are string codes; `source: Some("reify"` hand-built 4x in diagnostics.rs, 2x convert.rs, 1x eval_guard.rs'
+    verdict: PASS
+  - name: typed-lsp-codes
+    binding: 'producer-self'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum LspDiagnosticCode\b'
+      paths:
+      - crates/reify-lsp/src
+      expect: present

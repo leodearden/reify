@@ -117,6 +117,17 @@ scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
 scripts/verify-ledger.py
 #
+# scripts/verify_events_lib.py (task 9309): the C2 event-record parser that
+#   scripts/verify-ledger.py imports to fold each plan step's
+#   step-<i>.run-all.jsonl into the record's run_all block. verify.sh invokes
+#   verify-ledger.py rather than sourcing it, and a Python import is invisible
+#   to both of verify-pipeline-guard.sh's auto-derivation clauses, so an edit
+#   here would otherwise take the config fast-path while changing what every
+#   ledger record says about run_all. verify-ledger.py imports it at module
+#   top level, so any copy of verify-ledger.py (a fixture, a copy list) must
+#   ship this sibling with it: without it every subcommand fails on import.
+scripts/verify_events_lib.py
+#
 # scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
 #   behind `--confirm-failed`. Both callers are inside the verify pipeline —
 #   the recording pass's inline manifest write (fused into emit_nextest_pass's
@@ -138,6 +149,15 @@ scripts/confirm-failed-manifest.sh
 #   alone would otherwise take the merge-worker config fast-path and ambush the
 #   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
 scripts/lib_slot_acquire.sh
+#
+# scripts/lib_event_log.sh: the REIFY_VERIFY_EVENT_LOG JSON-lines encoder
+#   (task 8685), sourced TRANSITIVELY (verify.sh → lib_test_semaphore.sh →
+#   lib_slot_acquire.sh → lib_event_log.sh) and by tests/infra/run_all.sh.
+#   Not derivable from verify.sh's direct 'source "$SCRIPT_DIR/..."' lines, so
+#   verify-pipeline-guard.sh's auto-derivation misses it.  An edit to this lib
+#   alone would otherwise take the merge-worker config fast-path and ambush the
+#   next Rust task (the #4618/#4624→#4288 class; see CLAUDE.md).
+scripts/lib_event_log.sh
 #
 # scripts/lib_lane_x_flock.sh: sibling lock-acquire lib sourced TRANSITIVELY
 #   by tests/infra/run_all.sh (--scope host-infra), same non-derivable
@@ -275,3 +295,13 @@ scripts/lib_rust_production_view.sh
 #   here; until it lands, an agent iterating on the runner at --scope branch
 #   discovers a break only at merge time.
 scripts/gui-vitest-run.sh
+#
+# gui/src/__tests__/reifyGrammarCorpus.expected-clean.json (task #9096, S18
+#   PRD D6): the GUI grammar drift ledger's pin set. It is read by
+#   gui/src/__tests__/reifyGrammarCorpusLedger.test.ts and by
+#   tests/infra/test_verify_scope.sh's PG-DRIFT-GUI today, and by the S18
+#   Python planner (β) to classify tests/prd-gate/fixtures/*.ri edits. It is
+#   data that changes scope decisions, neither sourced by nor named in a
+#   verify.sh plan line, so neither auto-derivation clause covers it and a
+#   JSON-only diff would otherwise take the merge-worker config fast path.
+gui/src/__tests__/reifyGrammarCorpus.expected-clean.json

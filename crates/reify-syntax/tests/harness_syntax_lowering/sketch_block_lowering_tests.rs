@@ -196,7 +196,7 @@ fn aux_let_in_a_sketch_body_rides_the_existing_aux_marking() {
 
 /// `span` covers the whole block and `content_hash` is non-default.
 ///
-/// Six exhaustive matches in `ts_parser.rs`'s own test module read this pair off
+/// Six exhaustive matches in the `ts_parser::tests` module read this pair off
 /// every `MemberDecl`; a `SketchDecl` with a zero hash or a collapsed span would
 /// pass those matches while breaking incremental-reparse identity.
 #[test]

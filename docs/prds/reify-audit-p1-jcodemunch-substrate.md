@@ -1,7 +1,7 @@
 # reify-audit P1 jcodemunch substrate (F-infra slice 2)
 
 **Date:** 2026-05-30
-**Status:** design — decompose-ready
+**Status: SHIPPED.** All 9 decomposition leaves have landed — L-SERVE #4102, L-TRAIT #4095, L-CLIENT #4103, L-WIRE #4096, L-PDEAD #4097, L-PUNTESTED #4098, L-PLAYER #4099, L-SKILL #4100, L-SMOKE #4101; shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its "P1 is inert" framing, stub description, line anchors and task-state remarks are dated 2026-05-30 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** LIVE — §3 (the jcodemunch tool signatures `reify-audit` rustdoc defers to), §4 (including the §4-b trait surface and §4-d advisory severity, which rustdoc and the detector tests cite) and §10 (the task-4115 opt-in decision and the task-4557 PTODO scope note). AS-AUTHORED — §§0–2 and §§5–9.
 **Scope marker:** slice 2 of the shipped F-infra (`docs/architecture-audit/f-infra-design.md`). Slice 1 landed the `reify-audit` library + CLI + `/audit` skill + pre-done P5 hook (tasks T-1…T-8, 3670/3675/3731). This slice makes the **P1 producer-orphan detector actually produce findings on live sweeps** by replacing the `NoopJCodemunchOps` stub with a real jcodemunch-MCP-backed implementation, and adds three new jcodemunch-backed detectors.
 
 ---

@@ -196,6 +196,11 @@ pub fn fn_call(
     }
 }
 
+/// Create a call to the stdlib builtin `name`, qualified as `std::<name>`.
+pub fn std_call(name: &str, args: Vec<CompiledExpr>, result_type: Type) -> CompiledExpr {
+    fn_call(name, &format!("std::{name}"), args, result_type)
+}
+
 /// Create a user-defined function call expression.
 pub fn user_fn_call(
     function_name: &str,
@@ -742,5 +747,24 @@ mod tests {
             }),
         };
         literal(frame_value);
+    }
+
+    #[test]
+    fn std_call_qualifies_the_builtin_under_std_and_keeps_the_result_type() {
+        let args = vec![literal(Value::Real(4.0))];
+        let call = std_call("sqrt", args.clone(), Type::dimensionless_scalar());
+        match &call.kind {
+            CompiledExprKind::FunctionCall { function, args } => {
+                assert_eq!(function.name, "sqrt");
+                assert_eq!(function.qualified_name, "std::sqrt");
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected a FunctionCall, got {other:?}"),
+        }
+        assert_eq!(call.result_type, Type::dimensionless_scalar());
+        assert_eq!(
+            call.content_hash,
+            fn_call("sqrt", "std::sqrt", args, Type::dimensionless_scalar()).content_hash
+        );
     }
 }

@@ -762,7 +762,7 @@ mod cli {
     ///
     /// This must be a subprocess test, not a library one: `std::env::set_var`
     /// is process-global and would race sibling tests under `cargo test`'s
-    /// thread-per-test model (the same hazard `tests/common/git_env.rs`
+    /// thread-per-test model (the same hazard `tests/common/replay.rs`
     /// documents at length for `GIT_DIR`).
     #[test]
     fn pre_done_warn_only_env_downgrades_refusal_to_low() {
@@ -1446,10 +1446,11 @@ mod cli {
     /// Duplicate flags follow last-wins semantics.
     ///
     /// The pre-done hook wrapper (`scripts/reify-audit-predone-wrapper.sh`)
-    /// passes `--tasks-file <snapshot> --runs-db <db> --project-root <root>`
-    /// *before* forwarding `$@`. Callers can override any of those defaults by
-    /// appending their own flags. This test locks that the last `--tasks-file`
-    /// occurrence wins, so the wrapper's assumption never silently breaks.
+    /// passes `--runs-db <db> --project-root <root>` *before* forwarding
+    /// `$@`. Callers can override any of those defaults by
+    /// appending their own flags. This test observes last-wins through
+    /// `--tasks-file`, the one flag a hermetic fixture can observe, so the
+    /// wrapper's assumption never silently breaks.
     ///
     /// See the `parse_args` doc-comment in `src/bin/reify-audit.rs` for the
     /// authoritative description of the last-wins contract.
@@ -2558,7 +2559,7 @@ mod cli {
     /// Adding a `ptodo_*` test raises the selection freely; losing one fails.
     #[test]
     fn hook_env_replay_of_ptodo_git_fixture_tests() {
-        common::git_env::replay_self_under_hook_git_env(&["cli::ptodo_"], 5);
+        common::replay::replay_self_under_hook_git_env(&["cli::ptodo_"], 5);
     }
 
     /// §6.7 PTODO liveness degradation (end-to-end): `--pattern PTODO` over a
@@ -3882,6 +3883,73 @@ mod http_loader {
         );
     }
 
+    /// Pre-done via HTTP loader: a fused-memory that accepts the call but
+    /// stalls its `get_task` reply must cost the hook a diagnosable 125,
+    /// not dark-factory's 30 s hook kill (`pre_done_hook_timeout`), which
+    /// would also hold the project's task-mutation write lock for all 30 s.
+    ///
+    /// The reply is held for [`STALL`]: past the pre-done fetch budget, yet
+    /// inside the 30 s per-request cap, so only a pre-done budget cuts it
+    /// short. It is a corroborated task, so a binary that waited it out
+    /// would exit 0, not 125. The test therefore pins the budget below
+    /// `STALL`. It asserts no elapsed time; `released` only lets the mock
+    /// stop waiting once the binary has exited.
+    #[test]
+    fn pre_done_via_http_loader_stalled_get_task_exits_125_inside_the_hook_timeout() {
+        const STALL: Duration = Duration::from_secs(20);
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let runs_db = write_empty_runs_db(dir);
+        insert_completed_event(&runs_db, "9999");
+
+        let released = Arc::new(AtomicBool::new(false));
+        let released_in_mock = Arc::clone(&released);
+        let mock = spawn_mock_mcp(move |_args| {
+            let stalled_at = std::time::Instant::now();
+            while !released_in_mock.load(Ordering::Relaxed) && stalled_at.elapsed() < STALL {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Some(serde_json::json!({
+                "id": "9999",
+                "title": "Mock task 9999",
+                "status": "done",
+                "updatedAt": "2026-05-16T07:39:04Z",
+                "metadata": {
+                    "files": [],
+                    "done_provenance": {"kind": "merged", "commit": "cafebabe", "note": null}
+                }
+            }))
+        });
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--task", "9999",
+                "--pre-done",
+                "--fused-memory-url", mock.url(),
+                "--runs-db", runs_db.to_str().unwrap(),
+                "--project-root", dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit");
+
+        released.store(true, Ordering::Relaxed);
+        mock.stop();
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(125),
+            "a get_task reply stalled past the pre-done budget must exit 125; stderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("error loading task 9999 from fused-memory")
+                && stderr.contains("timed out"),
+            "the 125 must name the stalled fetch as a timeout; stderr: {stderr}"
+        );
+    }
+
     /// Regression: sweep path via HTTP loader must not overflow ureq's
     /// 10 MiB `into_string` cap when the task corpus exceeds 10 MiB.
     ///
@@ -4659,16 +4727,17 @@ mod freshness_gate {
         }
     }
 
-    /// PER-CALL FAIL-SOFT — the vacuous pass that survives every other check.
+    /// PER-CALL FAIL-SOFT, PDEAD — the anti-rot lock for
+    /// `breadcrumbs::PDEAD_GET_DEAD_CODE`.
     ///
     /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
-    /// `breadcrumbs::PDEAD_CALL`. This test is the anti-rot lock for that
-    /// literal. The seam tests over there prove `assert_live_leg` FIRES on a
-    /// given string; they cannot prove that string is what the binary actually
-    /// emits. This test observes the breadcrumb come out of the REAL binary on
-    /// the ordinary merge gate, so a reword of the `eprintln!` in
-    /// `RealJCodemunchOps::get_dead_code`'s `Err` arm turns THIS test red
-    /// instead of silently reverting the capstone to vacuous.
+    /// `breadcrumbs::PDEAD_CALL`. The seam tests over there prove
+    /// `assert_live_leg` FIRES on a given string; they cannot prove that
+    /// string is what the binary actually emits. This test observes the
+    /// breadcrumb come out of the REAL binary on the ordinary merge gate, so a
+    /// reword of the `eprintln!` that `RealJCodemunchOps::call_or_fail`
+    /// renders for `get_dead_code` turns THIS test red instead of leaving the
+    /// capstone asserting the absence of a string that can no longer appear.
     ///
     /// Both consumers read the SAME constant, so a reword is one edit in
     /// `tests/common/breadcrumbs.rs` and both move together. When each binary
@@ -4677,57 +4746,22 @@ mod freshness_gate {
     /// absence of a string that could no longer appear — PRD §2.4's failure
     /// mode displaced one file over.
     ///
-    /// The sibling below (`serve_down_fail_soft_takes_precedence_over_a_stale_index`,
-    /// above) pins the CONSTRUCTION layer; this pins the PER-CALL layer. They
-    /// are independent: a per-call failure happens AFTER a successful
-    /// handshake, which is exactly what the first four assertions here
-    /// document — this run is indistinguishable from success without the
-    /// fifth.
+    /// `serve_down_fail_soft_takes_precedence_over_a_stale_index` (above)
+    /// pins the CONSTRUCTION layer; this pins the PER-CALL layer. They are
+    /// independent: a per-call failure happens AFTER a successful handshake.
+    /// The contract itself — one Low `PDeadCodeUnexamined` in place of the
+    /// sweep — is `assert_per_call_fail_soft`'s, shared with PUNTESTED and
+    /// PLAYER.
     ///
     /// HERMETIC and gate-resident, like the rest of this module: no serve, no
     /// network, no `uvx`, no `#[ignore]`.
     #[test]
-    fn per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch() {
-        let s = scenario();
-        // FRESH index, so the §4.3 gate ADMITS. Required: under a
-        // jcodemunch-only run set a stale/empty index hard-exits 125 BEFORE
-        // any `tools/call`, and no breadcrumb could ever be reached.
-        write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
-
-        // `None` => HTTP 200 carrying a top-level JSON-RPC `error` envelope,
-        // which `JcodemunchClient::call_tool` maps to `LoadError::Protocol` —
-        // landing on precisely the `Err` arm that prints the breadcrumb.
-        // `initialize` and `notifications/initialized` are still answered
-        // normally, so `RealJCodemunchOps::new` SUCCEEDS and the construction
-        // fail-soft stays silent.
-        let mock = spawn_mock_mcp(|_args| None);
-        let out = s.run("PDEAD", &["--jcodemunch-url", mock.url()]);
-        // Tear the mock down BEFORE asserting so a failing assertion cannot
-        // leak the accept thread into the rest of the run (the convention
-        // every other mock-using test in this file follows; `Drop` alone sets
-        // the flag without joining the thread).
-        mock.stop();
-        let stderr = String::from_utf8_lossy(&out.stderr);
-
-        // --- the four assertions that ALL PASS on this vacuous run ---
-        assert_admitted_after_a_successful_handshake(&out, &stderr);
-        let findings = parse_findings_from_stderr(&stderr);
-        assert!(
-            findings.is_empty(),
-            "the errored op returns Vec::new(), so PDEAD's array must be \
-             empty here; got {findings:?}\nstderr:\n{stderr}"
-        );
-
-        // --- the fifth, and the only one that can tell the difference ---
-        assert!(
-            stderr.contains(breadcrumbs::PDEAD_GET_DEAD_CODE),
-            "the real binary must emit the per-call fail-soft breadcrumb this \
-             run's emptiness is EXPLAINED BY. Every assertion above passed, so \
-             without this one the run is indistinguishable from a genuine \
-             zero-finding success. If the `eprintln!` at \
-             the Err arm of RealJCodemunchOps::get_dead_code was reworded, \
-             update breadcrumbs::PDEAD_GET_DEAD_CODE — the live capstone reads the \
-             same constant and moves with it.\nstderr:\n{stderr}"
+    fn per_call_fail_soft_on_pdead() {
+        assert_per_call_fail_soft(
+            "PDEAD",
+            "PDeadCodeUnexamined",
+            "get_dead_code_v2",
+            breadcrumbs::PDEAD_GET_DEAD_CODE,
         );
     }
 
@@ -4737,8 +4771,8 @@ mod freshness_gate {
     /// CONSUMER: `jcodemunch_live.rs::assert_live_leg`, via
     /// `breadcrumbs::P1_CALL`, which reads the same
     /// `breadcrumbs::P1_GET_CHANGED_SYMBOLS` this test asserts on — so a
-    /// reword of the `eprintln!` in `RealJCodemunchOps::get_changed_symbols`'s
-    /// `Err` arm is one edit and both consumers move.
+    /// reword of the `eprintln!` that `RealJCodemunchOps::call_or_fail`
+    /// renders for `get_changed_symbols` is one edit and both consumers move.
     ///
     /// `find_references` is NOT asserted HERE, and could not be: this
     /// responder errors every tool, so `get_changed_symbols` errors and
@@ -4828,6 +4862,11 @@ mod freshness_gate {
     /// A symbol that tripped either guard would be skipped before
     /// `find_references` was ever called, and this test would pass vacuously.
     ///
+    /// The findings array is the second half of the lock. A failed lookup is
+    /// not an answer of "no caller", so the run must carry no
+    /// `P1ProducerOrphan` for `seed` (which `/audit` would auto-file as a
+    /// `Wire seed consumer` task), and one Low `P1TaskUnexamined` naming it.
+    ///
     /// HERMETIC and gate-resident: no serve, no network, no `uvx`, no
     /// `#[ignore]`.
     #[test]
@@ -4863,28 +4902,42 @@ mod freshness_gate {
         );
 
         // The symbol flowed all the way through: find_references errored, so
-        // it returned no reference, so P1 found no non-test caller and
-        // reported the orphan. Asserting the FINDING (not emptiness) is what
-        // proves the row survived decode + enrichment + every per-symbol
-        // suppression guard.
+        // P1 SKIPPED `seed` rather than reading the failure as "no caller",
+        // and recorded the task as unexamined, naming the symbol. A finding
+        // that names `seed` (not emptiness) is what proves the row survived
+        // decode + enrichment + every per-symbol suppression guard and reached
+        // the find_references call.
         let findings = parse_findings_from_stderr(&stderr);
+        assert!(
+            !findings.iter().any(|f| f["pattern"] == "P1ProducerOrphan"),
+            "a failed find_references proves nothing about callers, so it must \
+             never become an orphan; got {findings:?}\nstderr:\n{stderr}"
+        );
         assert_eq!(
             findings.len(),
             1,
-            "expected exactly the one orphan finding for `seed`; \
+            "expected exactly the one unexamined finding for the task; \
              got {findings:?}\nstderr:\n{stderr}"
         );
+        let finding = &findings[0];
+        assert_eq!(finding["pattern"], "P1TaskUnexamined", "got {finding:?}");
         assert_eq!(
-            findings[0]["pattern"], "P1ProducerOrphan",
-            "the finding must come from the P1 detector; \
-             got {:?}",
-            findings[0]
+            finding["severity"], "Low",
+            "Low keeps the exit code neutral; got {finding:?}"
+        );
+        assert_eq!(
+            finding["task_id"], "synthetic-per-call-p1",
+            "got {finding:?}"
+        );
+        let summary = finding["summary"].as_str().unwrap_or_default();
+        assert!(
+            summary.contains("`seed`"),
+            "the finding must name the symbol the mock returned, or the row \
+             did not actually reach the detector; got {finding:?}"
         );
         assert!(
-            findings[0]["summary"].as_str().unwrap_or_default().contains("`seed`"),
-            "the finding must name the symbol the mock returned, or the row \
-             did not actually reach the detector; got {:?}",
-            findings[0]
+            summary.contains(&s.live_head),
+            "the summary must name the task's range; got {finding:?}"
         );
 
         assert!(
@@ -4904,19 +4957,33 @@ mod freshness_gate {
     const PUNTESTED_GET_UNTESTED_SYMBOLS: &str = "jcodemunch get_untested_symbols:";
     const PLAYER_GET_LAYER_VIOLATIONS: &str = "jcodemunch get_layer_violations:";
 
-    /// Runs one jcodemunch-only `pattern` after a successful handshake against
-    /// a responder that errors every `tools/call`, and asserts the PER-CALL
-    /// fail-soft shape: admitted, an empty but PRESENT findings array, and
-    /// `breadcrumb` on stderr.
+    /// The corpus-level PER-CALL contract PDEAD, PUNTESTED and PLAYER share,
+    /// stated once. Runs one jcodemunch-only `pattern` after a successful
+    /// handshake against a responder that errors every `tools/call`, and
+    /// asserts: admitted; a findings array holding exactly one Low,
+    /// empty-`task_id` `unexamined` finding whose summary names the failed
+    /// wire `tool` (the detector's one query is its whole sweep, so the
+    /// failure replaces the run's result); and `breadcrumb` on stderr, which
+    /// pins that `Err` arm's `eprintln!` against the real binary.
     ///
-    /// The index is FRESH because both callers' run sets are jcodemunch-only,
+    /// The index is FRESH because every caller's run set is jcodemunch-only,
     /// so a stale or empty index would exit 125 before any `tools/call`.
-    fn assert_per_call_fail_soft(pattern: &str, breadcrumb: &str) {
+    ///
+    /// The responder's `None` is HTTP 200 carrying a top-level JSON-RPC
+    /// `error` envelope, which `JcodemunchClient::call_tool` maps to
+    /// `LoadError::Protocol` — landing on precisely the `Err` arm under test.
+    /// `initialize` and `notifications/initialized` are still answered
+    /// normally, so `RealJCodemunchOps::new` SUCCEEDS and the construction
+    /// fail-soft stays silent.
+    fn assert_per_call_fail_soft(pattern: &str, unexamined: &str, tool: &str, breadcrumb: &str) {
         let s = scenario();
         write_index_db(&s.index_dir, &s.repo_id, Some(&s.live_head), 7);
 
         let mock = spawn_mock_mcp(|_args| None);
         let out = s.run(pattern, &["--jcodemunch-url", mock.url()]);
+        // Tear the mock down BEFORE asserting so a failing assertion cannot
+        // leak the accept thread into the rest of the run (`Drop` alone sets
+        // the flag without joining the thread).
         mock.stop();
         let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -4927,34 +4994,63 @@ mod freshness_gate {
              not pass for an empty one; stderr:\n{stderr}"
         );
         let findings = parse_findings_from_stderr(&stderr);
+        assert_eq!(
+            findings.len(),
+            1,
+            "the failed {tool} must surface as exactly one finding; \
+             got {findings:?}\nstderr:\n{stderr}"
+        );
+        let finding = &findings[0];
+        assert_eq!(finding["pattern"], unexamined, "got {finding:?}");
+        assert_eq!(
+            finding["severity"], "Low",
+            "Low keeps the exit code neutral; got {finding:?}"
+        );
+        assert_eq!(
+            finding["task_id"], "",
+            "{pattern} is repo-wide; got {finding:?}"
+        );
         assert!(
-            findings.is_empty(),
-            "the errored op returns Vec::new(), so {pattern}'s array must be \
-             empty; got {findings:?}\nstderr:\n{stderr}"
+            finding["summary"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(tool),
+            "the summary must name the failed tool `{tool}`; got {finding:?}"
         );
         assert!(
             stderr.contains(breadcrumb),
-            "the real binary must emit `{breadcrumb}`, the only signal that \
-             tells this empty run from a clean one. If that Err arm's \
-             `eprintln!` was reworded, update the const in freshness_gate.\
+            "the real binary must emit `{breadcrumb}`. If that Err arm's \
+             `eprintln!` was reworded, update the const that spells it.\
              \nstderr:\n{stderr}"
         );
     }
 
-    /// PER-CALL FAIL-SOFT, PUNTESTED — locks the `Err` arm of
-    /// `RealJCodemunchOps::get_untested_symbols` against the real binary.
+    /// PER-CALL FAIL-SOFT, PUNTESTED — locks the breadcrumb
+    /// `RealJCodemunchOps::call_or_fail` renders for `get_untested_symbols`
+    /// against the real binary.
     /// HERMETIC and gate-resident.
     #[test]
     fn per_call_fail_soft_on_puntested() {
-        assert_per_call_fail_soft("PUNTESTED", PUNTESTED_GET_UNTESTED_SYMBOLS);
+        assert_per_call_fail_soft(
+            "PUNTESTED",
+            "PUntestedUnexamined",
+            "get_untested_symbols",
+            PUNTESTED_GET_UNTESTED_SYMBOLS,
+        );
     }
 
-    /// PER-CALL FAIL-SOFT, PLAYER — locks the `Err` arm of
-    /// `RealJCodemunchOps::get_layer_violations` against the real binary.
+    /// PER-CALL FAIL-SOFT, PLAYER — locks the breadcrumb
+    /// `RealJCodemunchOps::call_or_fail` renders for `get_layer_violations`
+    /// against the real binary.
     /// HERMETIC and gate-resident.
     #[test]
     fn per_call_fail_soft_on_player() {
-        assert_per_call_fail_soft("PLAYER", PLAYER_GET_LAYER_VIOLATIONS);
+        assert_per_call_fail_soft(
+            "PLAYER",
+            "PLayerViolationUnexamined",
+            "get_layer_violations",
+            PLAYER_GET_LAYER_VIOLATIONS,
+        );
     }
 
     /// `--no-jcodemunch` PRECEDENCE — the explicit escape hatch bypasses the

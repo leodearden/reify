@@ -48,14 +48,12 @@
     ],
     "reify-ir": [
       [
-        "boundary_attachment",
-        "expr",
-        "geometry",
-        "value"
-      ],
-      [
         "completeness",
         "ranked"
+      ],
+      [
+        "expr",
+        "value"
       ]
     ],
     "reify-kernel-gmsh": [
@@ -74,7 +72,6 @@
       [
         "assembly",
         "elements",
-        "shell_assembly",
         "shell_kinematics"
       ]
     ],

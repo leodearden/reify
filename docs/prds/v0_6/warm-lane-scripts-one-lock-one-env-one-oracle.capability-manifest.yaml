@@ -6,7 +6,7 @@ tasks:
   title: 'warm-lane S20 L1: lane-lock API in lib_lane_lock.sh; seed/thin/gc acquire through it; --assume-lane-lock-held asserts'
   capabilities:
   - name: probe-substrate-exists
-    binding: 'scripts/lib_lane_lock.sh::lane_lock_probe at main 8e6ffcac9d — shared non-blocking read-only probe, IDLE for an absent file, BUSY only on -E 124 contention; sourced by warm-lane-audit.sh and warm-lane-lock-guard.sh only.'
+    binding: 'deliverable — lane_lock_assert_held is defined in scripts/lib_lane_lock.sh beside the pre-existing lane_lock_probe substrate. [Amended 2026-10-20, retro-critic R7: relabelled; the check asserts the deliverable, not the substrate. The substrate itself, lane_lock_probe at main 8e6ffcac9d, is a shared non-blocking read-only probe, IDLE for an absent file, BUSY only on -E 124 contention, sourced by warm-lane-audit.sh and warm-lane-lock-guard.sh only.]'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -21,7 +21,7 @@ tasks:
     binding: 'dark-factory _seed_rc_to_unavailable maps 75/76/77/124/127 specially and every other non-zero to FAULT; seed-warm-lane.sh uses no exit 70 at main (exit codes 0,1,2,64,76 only).'
     verdict: PASS
   - name: seed-acquires-through-the-lib
-    binding: 'deliverable — seed no longer composes ${LANE_DIR}.lock itself.'
+    binding: 'deliverable — seed no longer composes ${LANE_DIR}.lock itself. [Amended 2026-10-20, retro-critic R7: this check is anchored on one spelling; "$LANE_DIR.lock" or "${LANE_DIR%/}.lock" would also satisfy absent, so it is acceptable only together with the adoption-ratchet.manifest rows lane-lock-path-construction and lane-lock-exec-open at ceiling 0.]'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -40,17 +40,49 @@ tasks:
   - name: retired-names-have-no-production-setter
     binding: 'systemd units pass --mount explicitly (reify-warm-lane-gc.service); orchestrator-reify.service.d/warm-lane.conf sets only REIFY_LANE_LEAK_STATUS_CMD; dark-factory orchestrator/src + shared: 0 hits for the four retired names.'
     verdict: PASS
-  - name: lock-guard-reads-new-name
-    binding: deliverable
+  - name: lock-guard-reads-new-name-warm-lane-lock-guard.sh
+    binding: 'deliverable — scripts/warm-lane-lock-guard.sh reads REIFY_WARM_LANE_WORKTREES. [Amended 2026-10-20, retro-critic R7: one check per script, anchored on the read; the former single check over five paths went green on any one hit, comments included.]'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: REIFY_WARM_LANE_WORKTREES
+      pattern: '\$\{REIFY_WARM_LANE_WORKTREES'
       paths:
       - scripts/warm-lane-lock-guard.sh
+      expect: present
+  - name: lock-guard-reads-new-name-warm-lane-audit.sh
+    binding: 'deliverable — scripts/warm-lane-audit.sh reads REIFY_WARM_LANE_WORKTREES. [Amended 2026-10-20, retro-critic R7: one check per script, anchored on the read; the former single check over five paths went green on any one hit, comments included.]'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\$\{REIFY_WARM_LANE_WORKTREES'
+      paths:
       - scripts/warm-lane-audit.sh
+      expect: present
+  - name: lock-guard-reads-new-name-warm-lane-gc.sh
+    binding: 'deliverable — scripts/warm-lane-gc.sh reads REIFY_WARM_LANE_WORKTREES. [Amended 2026-10-20, retro-critic R7: one check per script, anchored on the read; the former single check over five paths went green on any one hit, comments included.]'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\$\{REIFY_WARM_LANE_WORKTREES'
+      paths:
       - scripts/warm-lane-gc.sh
+      expect: present
+  - name: lock-guard-reads-new-name-warm-lane-gc-sweep.sh
+    binding: 'deliverable — scripts/warm-lane-gc-sweep.sh reads REIFY_WARM_LANE_WORKTREES. [Amended 2026-10-20, retro-critic R7: one check per script, anchored on the read; the former single check over five paths went green on any one hit, comments included.]'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\$\{REIFY_WARM_LANE_WORKTREES'
+      paths:
       - scripts/warm-lane-gc-sweep.sh
+      expect: present
+  - name: lock-guard-reads-new-name-warm-lane-preflight.sh
+    binding: 'deliverable — scripts/warm-lane-preflight.sh reads REIFY_WARM_LANE_WORKTREES. [Amended 2026-10-20, retro-critic R7: one check per script, anchored on the read; the former single check over five paths went green on any one hit, comments included.]'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\$\{REIFY_WARM_LANE_WORKTREES'
+      paths:
       - scripts/warm-lane-preflight.sh
       expect: present
 - label: L3
@@ -111,13 +143,15 @@ tasks:
     binding: 'dark-factory orchestrator/lane_lifecycle.py::LaneRecord.to_json = json.dumps(to_dict(), indent=2); LaneState has six values; plan.json written by orchestrator/mcp/plan_tools.py.'
     verdict: PASS
   - name: golden-records-checked-in
-    binding: deliverable
+    binding: 'deliverable. [Amended 2026-10-20, retro-critic R7: the path check gains lane-state-released.json (the null-field golden) and lane-states.json (the L_CASES source); a partial vendor no longer passes.]'
     verdict: PASS
     delivered_check:
       kind: path
       paths:
       - tests/infra/fixtures/warm_lane_golden/plan.json
       - tests/infra/fixtures/warm_lane_golden/lane-state.json
+      - tests/infra/fixtures/warm_lane_golden/lane-state-released.json
+      - tests/infra/fixtures/warm_lane_golden/lane-states.json
       expect: present
 - label: L6
   task_id: 8668
@@ -127,11 +161,11 @@ tasks:
     binding: '_do_reclaim spans one function with preserved_count incremented at 10 sites, flock -n 8 gates in both passes, live_ref_present in both passes (re-read at 8e6ffcac9d; file unchanged since a030ee7528).'
     verdict: PASS
   - name: gate-helper-exists
-    binding: deliverable
+    binding: 'deliverable. [Amended 2026-10-20, retro-critic R7: widened to match a subshell-bodied definition, gc''s house style for FD-scoped helpers (_reseed_lane_pinned() ( ); the helper is _with_entry_gate <entry> <precheck_fn> <act_fn>.]'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: '^_with_entry_gate\(\) \{'
+      pattern: '^_with_entry_gate\(\) [{(]'
       paths:
       - scripts/warm-lane-gc.sh
       expect: present
@@ -229,7 +263,7 @@ tasks:
 - label: D8
   external_task_id: dark_factory:6855
   title: 'reify S20 D8: _seed_script_supports reads seed-warm-lane.sh --capabilities'
-  note: 'dark-factory companion of L8; depends on reify:8670.'
+  note: 'dark-factory companion of L8; depends on reify:8670. [Amended 2026-10-20, retro-critic R7 M3: exact-line membership covers the capability-gated flags only (the CAPABILITIES array: --assume-lane-lock-held, --distinct-lock-refusal-rc), never the base flags.]'
   capabilities:
   - name: substring-probe-today
     binding: 'dark-factory git_ops.py::_seed_script_supports returns flag in _seed_script_text(...).'

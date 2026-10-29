@@ -523,9 +523,11 @@ assert "E3: ... positioned between the timeout and the bash it wraps" \
 # TWO normalizations are applied to run_all.sh's source before counting, in
 # this order, and each is load-bearing:
 #
-#   1. FOLD LINE CONTINUATIONS — so a spawn whose `reify_git_env_scrub` sits on
-#      the preceding physical line (the `env -u REIFY_RUN_ALL_MEMBER_SUBSET`
-#      site does exactly that) is counted as the one logical statement it is.
+#   1. FOLD LINE CONTINUATIONS — so a spawn whose scrub sits on a preceding
+#      physical line is counted as the one logical statement it is. Today's
+#      one site (`_ra_spawn_member`) carries the scrub as
+#      `$(reify_git_env_scrub_prefix)` on the spawn's own line, because its
+#      member runs under GNU timeout, which cannot exec a shell function.
 #   2. DROP COMMENT LINES — a bare `grep` for the invocation shape cannot tell
 #      an executable statement from prose, and run_all.sh is heavily commented,
 #      including a block that discusses the member spawns directly. The first

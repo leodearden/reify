@@ -5,14 +5,15 @@
 //! geometry cell). Every test drives `Engine::check`, the solve-then-fold path;
 //! `Engine::eval` alone never folds verdicts and so cannot see the defect.
 
-use reify_constraints::{SimpleConstraintChecker, SolverRegistry};
+use reify_constraints::SimpleConstraintChecker;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
 use reify_eval::{CheckResult, Engine};
 use reify_ir::{Satisfaction, Value};
 use reify_test_support::compile_source_with_stdlib;
 
-/// Compile `source` (asserting it is compile-clean) and check it with the
-/// production [`SolverRegistry`] — the wiring `reify-cli` uses — and the real
+/// Compile `source` (asserting it is compile-clean) and check it on a
+/// `SolverPosture::Solve` engine (the production solver registry, the wiring
+/// `reify-cli` uses) with the real
 /// [`SimpleConstraintChecker`] verdict fold.
 fn check_with_production_solver(source: &str) -> CheckResult {
     let compiled = compile_source_with_stdlib(source);
@@ -25,8 +26,7 @@ fn check_with_production_solver(source: &str) -> CheckResult {
         compile_errors.is_empty(),
         "fixture must be compile-clean; got {compile_errors:?}"
     );
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
-        .with_solver(Box::new(SolverRegistry::production()));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None);
     engine.check(&compiled)
 }
 

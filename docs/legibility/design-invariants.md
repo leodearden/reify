@@ -79,7 +79,9 @@ requires a census row in the same change.**
 | intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
-| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
+| verify knob registry and role/profile policy fields | `tests/infra/test_verify_policy.py` — every RolePolicy/ProfilePolicy field appears in `--print-role-policy`; every knob is documented in `docs/notes/verify-pipeline-knobs.md`; consumption itself is convention-only (`verify-structured-plan-and-role-table.md` D14) | shipped |
+| prose task-promises naming an owner (`owned by #N`, `deferred to task N`, `#N will …`, `until #N lands`) | PTODO lane δ-C → `orphaned` via the §19(b) cadenced liveness sweep (`reify-audit-ptodo-detector.md` §8.1, §21) | shipped |
+| prose task-promises outside δ-C's grammar (uncited "in a later task"; trailing `(task N)` on a future clause; promise split across lines) | convention-only — measured and declined (`reify-audit-ptodo-detector.md` §21) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`
@@ -335,8 +337,9 @@ the arc measure? Is there any path to an Angle-typed value in this
 feature that does not pass through a named primitive/channel/helper?
 
 **Evidence**: inverse trig and `phase`/`arg` return `Type::angle()` at
-the static layer (`crates/reify-compiler/src/math_signatures.rs:357,
-:375`) and tag `DimensionVector::ANGLE` at eval
+the static layer (their arms of `math_fn_result_type` in
+`crates/reify-compiler/src/math_signatures.rs`) and tag
+`DimensionVector::ANGLE` at eval
 (`crates/reify-stdlib/src/trig.rs:20-35`); the geometry queries `angle`
 and `angle_between_surfaces` are the same shape — `Type::angle()` at
 `crates/reify-compiler/src/units.rs:349` (`angle_between_surfaces`) and
@@ -444,7 +447,7 @@ status:
 | inverse trig / `phase` / `arg` | return type | `math_signatures.rs` + eval Angle tag | shipped |
 | `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
 | geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
-| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
+| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | shipped (α, #6179) |
 | `ElasticResult.rotation` = curl/2 | named channel | #6164 | shipped |
 | `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | shipped (σ, #6183) |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |
@@ -524,15 +527,42 @@ unrelated reasons — nothing in this family changes that:
   (`fn_param_default_compatible`), so even
   `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
   (`crates/reify-compiler/src/functions.rs:187-215`).
-- **`sin(2.5)` isn't a widening — trig arguments are unchecked**:
-  no argument-dimension check exists for the transcendental family.
-  `MATH_TRANSCENDENTAL_NAMES` is a name list only
-  (`crates/reify-compiler/src/math_signatures.rs:95-97`); its
-  "accept ANGLE-or-Real" comment is intent only, not enforced.
-  `math_fn_result_type` fixes just the RESULT type
-  (`crates/reify-compiler/src/math_signatures.rs:374`) and never
-  inspects the argument, so every argument passes: `sin(2.5)`,
-  `sin(ratio * 2.0)`, and `sin(5.0mm)` (LENGTH) all compile clean.
+- **`sin(2.5)` isn't a widening — forward-trig arguments are
+  dimension-checked, and dimensionless passes that check**: since
+  task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE
+  argument at compile time with a coded `ArgTypeMismatch`
+  (`check_forward_trig_arg_dimensions` in
+  `crates/reify-compiler/src/math_signatures.rs`, called from
+  `resolve_function_overload`'s `NoUserFunctions` arm in
+  `crates/reify-compiler/src/expr.rs`). `sin(5.0mm)` (LENGTH)
+  therefore no longer compiles clean. But `sin(2.5)` and
+  `sin(ratio * 2.0)` still do, and for the same reason as each
+  other: the check accepts `Angle`, dimensionless, and `Int` alike
+  — mirroring the eval contract in
+  `reify_stdlib::helpers::trig_input`
+  (`crates/reify-stdlib/src/helpers.rs`), which reads a bare
+  dimensionless value as radians. So the bullet's point survives:
+  the literal/expression distinction is still not what decides
+  `sin(2.5)`, and nothing here is a dimensionless→dimensioned
+  widening. The check is DIMENSION-only — a `Bool` or `Geometry`
+  argument still passes — and it lives inside the
+  `NoUserFunctions` arm, so a user-defined `fn sin(...)` shadows
+  both the builtin and its check.
+
+  The rest of the transcendental family remains unchecked, each
+  with a named owner: `exp`/`log` under task #6943
+  (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision
+  6(b)), and the inverse-trig names `asin`/`acos`/`atan`/`atan2`
+  under task #5809 (`docs/prds/v0_6/dimension-checked-readers.md`
+  leaf κ). In `crates/reify-compiler/src/math_signatures.rs`,
+  `MATH_TRANSCENDENTAL_NAMES` is still a bare name list for those
+  six, and its "accept ANGLE-or-Real" comment is still intent only;
+  `math_fn_result_type` still fixes only the RESULT type and never
+  inspects an argument. Both
+  non-enforcements are pinned by scope-fence tests in
+  `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
+  that name their owning task and are to be FLIPPED, not deleted,
+  when that task lands.
 
 Mandatoriness is owned elsewhere: the
 real-dimensionless-unification decision D5 (current ruling:

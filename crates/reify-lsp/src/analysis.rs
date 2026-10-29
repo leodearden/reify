@@ -53,9 +53,10 @@ pub struct AnalysisContext {
     /// without a second `eval` pass — `check` already ran `eval` and populated the
     /// snapshot + `last_undef_causes` side-map (PRD ζ design decision §3).
     ///
-    /// Send-safe: the server's hover handler creates `ctx` after its last `.await`
-    /// and never holds it across a suspend point (server.rs:268-284); Engine is
-    /// composed of `Send+Sync` parts (ConstraintChecker + kernels).
+    /// Send-safe: `ReifyLanguageServer::hover` and `::completion` build and drop
+    /// the context inside their blocking-work closure, so it never crosses a
+    /// suspend point; Engine is composed of `Send+Sync` parts
+    /// (ConstraintChecker + kernels).
     engine: reify_eval::Engine,
 }
 
@@ -94,7 +95,7 @@ impl AnalysisContext {
         let compiled =
             reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
         let checker = SimpleConstraintChecker;
-        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
         // Enable undef-cause capture BEFORE `check` so the post-eval snapshot
         // and last_undef_causes side-map are populated by the eval pass that
         // `check` calls internally.  Capture is additive (PRD A1 transparency):
@@ -740,19 +741,24 @@ mod tests {
                 ctx.check_result.diagnostics
             );
 
-            // The user-facing consequence is not silent: `compute_diagnostics`
-            // over the SAME document — which the server runs on open and on
-            // every change — carries the file-level Warning naming the
-            // offending cell. Asserted in full by the sibling test named
-            // above; probed here so the two halves of the degradation stay
-            // wired together at this entry point too.
+            // The user-facing consequence is not silent:
+            // `compute_diagnostics_with_state` over the SAME document — which
+            // the server runs on open and on every change — carries the
+            // file-level Warning naming the offending cell. Asserted in full
+            // by the sibling test named above; probed here so the two halves
+            // of the degradation stay wired together at this entry point too.
             assert!(
-                crate::diagnostics::compute_diagnostics(src, &test_uri())
-                    .iter()
-                    .any(|d| d.code
-                        == Some(tower_lsp::lsp_types::NumberOrString::String(
-                            "EvalSkippedUnrepresentableCell".to_string()
-                        ))),
+                crate::diagnostics::compute_diagnostics_with_state(
+                    &mut crate::diagnostics::EvalState::new(),
+                    src,
+                    &test_uri()
+                )
+                .diagnostics
+                .iter()
+                .any(|d| d.code
+                    == Some(tower_lsp::lsp_types::NumberOrString::String(
+                        "EvalSkippedUnrepresentableCell".to_string()
+                    ))),
                 "containment (AnalysisContext::from_parsed, {shape}): hover and \
                  completion show no computed values for this document, so the \
                  diagnostics path over the same document must tell the user \

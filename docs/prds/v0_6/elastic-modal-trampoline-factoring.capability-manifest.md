@@ -110,7 +110,7 @@ Every `kind: grep` check below was run with `git grep -E` against `HEAD` and is 
 
 - **shell-fallback-code** — producer:μ — no input-neutral shell-capability code at main. **PASS**. Check: grep `FeaShellRouteInputFallback` present in `crates/reify-core/src`.
 - **shell-requires-tet-code** — producer:μ. **PASS**. Check: grep `FeaShellRouteInputRequiresTet` present in `crates/reify-core/src`.
-- **dims-support-code** — producer:μ — dims supports other than the root clamp are silent on tet at main. **PASS**. Check: grep `FeaDimsSupportNotRealized` present in `crates/reify-core/src`.
+- **dims-support-code** — producer:μ — dims supports other than the root clamp are silent on tet at main. **PASS**. Check: grep `FeaSupportNotRealized` present in `crates/reify-core/src`. (Corrected 2026-10-19, support-realization-policy ruling R1: one cross-solver code; whichever of ξ #9120 / μ #9119 lands first mints it, so this check no longer discriminates μ from ξ — μ's other four checks do.)
 - **supports-present-arm-gone** — grep: FeaUnderConstrained's supports-present-none-root arm at main (elastic_static trampoline). **PASS**. Check: grep `!any_support_targets\(supports, SYNTHETIC_CLAMP_FACE\)` absent in `crates`.
 - **multi-load-bracket-root** — producer:μ (R3) — the example's dims support targets "mount_face" at main. **PASS**. Check: grep `FixedSupport\(\"mount_face\"\)` absent in `examples/multi_load_bracket.ri`.
 - **supports-decoder-upstream** — producer:#8683 upstream (S15 γ SupportSpec / LoadSpec). **PASS**. Check: manual — hard edge μ ← #8683; μ ← λ intra-batch.
@@ -130,6 +130,7 @@ Every `kind: grep` check below was run with `git grep -E` against `HEAD` and is 
 - **lumped-damping-plan** — producer:ξ — mechanism path calls classify_damping directly at main. **PASS**. Check: grep `fn plan_lumped_damping\(` present in `crates`.
 - **modal-reused-flags-gone** — grep: reused_assembly / reused_setup test-only fields at main. **PASS**. Check: grep `reused_assembly: bool|reused_setup: bool` absent in `crates`.
 - **seam-tests** — behavioural: BT7. **PASS**. Check: manual — BT7.
+- **boundary-conditions-echo-from-realization** — grep: run_modal_analysis echoes ModalResult.boundary_conditions from the options list via field_or at main, not from what was applied (gap-fill 2026-10-16 K5-4; three writes). **PASS**. Check: grep `field_or\(options, "boundary_conditions"` absent in `crates`.
 
 ## ο #9121 — Structured box mesh and BoxFace vocabulary in reify-solver-elastic; adopted by modal, elastic and tests
 

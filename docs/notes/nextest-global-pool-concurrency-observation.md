@@ -300,9 +300,9 @@ with a materially different instrument, and windows 1–2 must be read as floors
 ## Host-wide framing (do not confuse with the per-run bound)
 
 `test-threads` bounds **one** `cargo nextest run`, never the host.  With
-`REIFY_TEST_SEMAPHORE_CONCURRENCY` at 1 (dark-factory-orchestrator.yaml:331,
+`REIFY_TEST_SEMAPHORE_CONCURRENCY` at 1 (the `REIFY_TEST_SEMAPHORE_CONCURRENCY` key in dark-factory-orchestrator.yaml `verify_env`,
 dropped 2 -> 1 in df commit 712e6230d6) plus the merge role's bypass
-(`scripts/lib_test_semaphore.sh:91`), the reachable steady state is
+(the merge bypass in `test_semaphore_acquire`, `scripts/lib_test_semaphore.sh`), the reachable steady state is
 **2 × test-threads** — ~32 before task 6018, ~64 after.  A single lane's
 observed peak is therefore expected at or below 32, not 64.
 

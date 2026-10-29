@@ -1,5 +1,7 @@
 # Capability manifest — `reify-debug-mcp-expansion`
 
+**Status:** **SHIPPED (v0.6)** — all 14 leaves landed (4293–4305, 4307); AX-1 is excluded scope held by deferred tracker #4306 (Leo, 2026-10-19). **This manifest is the AS-AUTHORED record** of the 2026-06-03 authoring-time G3/G6 bindings; its file:line evidence is not a current statement of fact.
+
 Mechanizes G3 + G6 per leaf for `docs/prds/v0_6/reify-debug-mcp-expansion.md`. Each row binds a
 leaf's asserted capability to on-disk evidence. **Any FAIL binding blocks the batch from being
 queued.** Evidence forms per the reify `/prd` overlay (anti-orphan/wired, field-population,

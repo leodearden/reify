@@ -266,12 +266,12 @@ fn read_shell_channels_tail<R: Read>(r: &mut R) -> io::Result<Option<ShellChanne
 /// with the existing `ElasticResult.stress` (which aliases the mid layer);
 /// `frame` is the per-element row-major 3×3 local→global rotation matrix,
 /// matching the [`ShellFrame::local_to_global`] convention at
-/// `crates/reify-solver-elastic/src/shell_assembly.rs`.
+/// `crates/reify-solver-elastic/src/elements/shell_frame.rs`.
 ///
 /// PRD §11 OQ-1 (per-element vs per-vertex) is tactically resolved as
 /// per-element here; nodal conversion lives in PRD task θ (GUI populator).
 ///
-/// [`ShellFrame::local_to_global`]: ../../reify-solver-elastic/src/shell_assembly.rs
+/// [`ShellFrame::local_to_global`]: ../../reify-solver-elastic/src/elements/shell_frame.rs
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellChannels {
     /// Per-element stress at z = +t/2 (outer fibre), flattened to match the
@@ -589,7 +589,6 @@ pub struct ElasticResult {
 ///
 /// This is the single-`ElasticResult` scalar counterpart to the
 /// `MultiCaseResult` `envelope_displacement_magnitude` builtin.
-/// The `.ri` / gate exposure is deferred to consumer task #3787.
 pub fn max_deflection_magnitude(displacement: &[f64]) -> f64 {
     displacement
         .chunks_exact(3)

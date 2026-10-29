@@ -340,9 +340,10 @@ structure def PointLoad : Load {
     // takes is decided by what the field DENOTES (the RULING at trajectory.ri's
     // Vec3<Q> header, task 5848): a DIRECTION takes a dimensionless slot, a
     // POSITION or DISPLACEMENT takes Length. An applied-force direction is a
-    // unit vector, so it is genuinely dimensionless — `Vec3` (= `Vector3<Length>`)
-    // would be the wrong type, and the former `List<Real>` spelling was only ever
-    // a stand-in from before a dimensionless 3-tuple could be spelled at all.
+    // unit vector, so it is genuinely dimensionless — the Length slot
+    // (`Vec3<Length>` = `Vector3<Length>`) would be the wrong type, and the
+    // former `List<Real>` spelling was only ever a stand-in from before a
+    // dimensionless 3-tuple could be spelled at all.
     // Sibling precedents: `ModalOptions.reference_direction` (modal_analysis.ri)
     // and `FDMProcess.build_direction` (fdm.ri).
     param direction : Vector3<Dimensionless> = vec3(0.0, 0.0, -1.0)
@@ -502,7 +503,8 @@ structure def BodyForce : Load {
 //                  (standard Earth surface gravity, ISO 80000-3).
 //                  Override with e.g. `5 * STANDARD_GRAVITY()` for 5 g loads.
 //   `direction`  — unit vector pointing in the direction gravity acts.
-//                  `Vector3<Dimensionless>` — NOT `Vec3` (= `Vector3<Length>`).
+//                  `Vector3<Dimensionless>` — NOT the Length slot
+//                  `Vec3<Length>` (= `Vector3<Length>`).
 //                  Which Q a stdlib 3-vector field takes is decided by what the
 //                  field DENOTES (the RULING at trajectory.ri's Vec3<Q> header,
 //                  task 5848): a DIRECTION takes a dimensionless slot, a POSITION

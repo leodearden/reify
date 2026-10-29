@@ -81,6 +81,8 @@ mod selective_demand_gamma;
 mod selective_demand_measurement;
 #[path = "harness_cache/selective_demand_redemand_staleness.rs"]
 mod selective_demand_redemand_staleness;
+#[path = "harness_cache/selective_demand_sub_consumer_staleness.rs"]
+mod selective_demand_sub_consumer_staleness;
 #[path = "harness_cache/selective_eviction_conversion_intermediate.rs"]
 mod selective_eviction_conversion_intermediate;
 #[path = "harness_cache/selective_eviction_slider_drag_dispatch_e2e.rs"]

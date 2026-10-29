@@ -34,27 +34,11 @@ use reify_ir::{OpaqueState, PersistentMap, Value};
 use reify_test_support::tensegrity_fixtures::{
     TRIPLEX_CAPS, tall_triplex_tensegrity, triplex_group_ids, triplex_seeds,
 };
-use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine};
+use reify_test_support::{
+    collect_errors, compile_source_with_stdlib, make_simple_engine, read_real_or_scalar,
+};
 
 // ── helper types ──────────────────────────────────────────────────────────────
-
-/// Extract an f64 from a Length Scalar (or bare Real) coordinate component.
-fn coord_f64(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real coordinate, got {other:?}"),
-    }
-}
-
-/// Extract an f64 from a Force Scalar (or bare Real) force value.
-fn force_val(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real force, got {other:?}"),
-    }
-}
 
 /// Surface stresses: one uniform σ per membrane cap in `TRIPLEX_CAPS`.
 fn cap_stresses(sigma: f64) -> Value {
@@ -81,7 +65,11 @@ fn call_form_find_free(value_inputs: &[Value]) -> ComputeOutcome {
 /// Panics if the field is absent or not a `Value::List` — it must NEVER be Undef.
 fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
     match fields.get(&"surface_stresses".to_string()) {
-        Some(Value::List(items)) => items.iter().map(coord_f64).collect(),
+        Some(Value::List(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| read_real_or_scalar(v, &format!("surface_stresses[{i}]")))
+            .collect(),
         other => panic!(
             "FormFindResult.surface_stresses must be a Value::List \
              (never Undef / absent), got {other:?}"
@@ -144,14 +132,14 @@ fn trampoline_combined_prism_membrane_has_nonempty_surface_stresses() {
     };
     assert_eq!(forces.len(), 12, "expected 12 member forces (3 struts + 9 cables)");
     for (i, v) in forces.iter().enumerate().take(3) {
-        let f = force_val(v);
+        let f = read_real_or_scalar(v, &format!("member_forces[{i}]"));
         assert!(
             f < 0.0,
             "strut member_forces[{i}] must be compressive (< 0), got {f}"
         );
     }
     for (i, v) in forces.iter().enumerate().skip(3) {
-        let f = force_val(v);
+        let f = read_real_or_scalar(v, &format!("member_forces[{i}]"));
         assert!(
             f > 0.0,
             "cable member_forces[{i}] must be tensile (> 0), got {f}"

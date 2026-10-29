@@ -488,7 +488,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: FeaDimsSupportNotRealized
+      pattern: FeaSupportNotRealized
       paths:
       - crates/reify-core/src
       expect: present
@@ -596,6 +596,15 @@ tasks:
     delivered_check:
       kind: manual
       reason: BT7
+  - name: boundary-conditions-echo-from-realization
+    binding: 'grep: run_modal_analysis echoes ModalResult.boundary_conditions from the options list via field_or at main, not from what was applied (gap-fill 2026-10-16 K5-4; added after commit_planning, three writes)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: field_or\(options, "boundary_conditions"
+      paths:
+      - crates
+      expect: absent
 - label: ο
   task_id: 9121
   title: Structured box mesh and BoxFace vocabulary in reify-solver-elastic; adopted by modal, elastic and tests

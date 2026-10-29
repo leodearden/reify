@@ -966,6 +966,195 @@ mod tests {
         );
     }
 
+    /// A `find_references` call that FAILED is not an answer of "no caller".
+    /// Read as one, it turns a timeout into a Medium `P1ProducerOrphan` that
+    /// `/audit` would auto-file as `Wire alpha consumer`. So the symbol whose
+    /// lookup failed is SKIPPED, the task's other symbols are still examined
+    /// (`beta`'s genuine orphan is still reported), and the skip surfaces as
+    /// the task's one Low `P1TaskUnexamined`, naming the skipped symbol and
+    /// citing its declaration.
+    #[test]
+    fn a_failed_find_references_skips_the_symbol_and_reports_the_task_unexamined() {
+        let sha_a = task_sha("task_A");
+        const TIMEOUT: &str = "read body: timed out reading response";
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha_a}^1"),
+            &sha_a,
+            vec![
+                changed_symbol("alpha", "crates/reify-x/src/a.rs"),
+                changed_symbol("beta", "crates/reify-x/src/b.rs"),
+            ],
+        );
+        jc.fail_find_references("crates/reify-x/src/a.rs", "alpha", TIMEOUT);
+        jc.set_find_references("crates/reify-x/src/b.rs", "beta", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", NOW - 15 * DAY, None),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        let orphans: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1ProducerOrphan)
+            .collect();
+        assert!(
+            !orphans.iter().any(|f| f.summary.contains("`alpha`")),
+            "a failed lookup proves nothing about callers, so `alpha` must not \
+             be reported as an orphan; got {findings:?}"
+        );
+        assert_eq!(
+            orphans.len(),
+            1,
+            "the task's other symbol must still be examined: `beta`'s orphan \
+             must be reported; got {findings:?}"
+        );
+        assert!(
+            orphans[0].summary.contains("`beta`"),
+            "the surviving orphan must be `beta`'s; got {:?}",
+            orphans[0]
+        );
+
+        let unexamined: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1TaskUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "the skipped symbol must surface as exactly one P1TaskUnexamined; \
+             got {findings:?}"
+        );
+        let f = unexamined[0];
+        assert_eq!(f.task_id, "task_A", "it must name the task; got {f:?}");
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "an optional substrate's failure must never move the exit code; got {f:?}"
+        );
+        for needle in ["`alpha`", sha_a.as_str(), TIMEOUT] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the skipped symbol, the \
+                 range and the failure); got {:?}",
+                f.summary
+            );
+        }
+        assert!(
+            !f.summary.contains("`beta`"),
+            "`beta` was examined, so the unexamined finding must not name it; \
+             got {:?}",
+            f.summary
+        );
+        assert_eq!(
+            f.evidence,
+            vec![EvidenceRef::FileLine {
+                path: "crates/reify-x/src/a.rs".to_string(),
+                line: 42,
+                symbol: Some("alpha".to_string()),
+            }],
+            "the evidence must cite the skipped symbol's declaration"
+        );
+    }
+
+    /// The volume contract severity-routing.md §2 states: however many of a
+    /// task's lookups fail, the task yields ONE unexamined finding, naming
+    /// every skipped symbol and citing each declaration once.
+    #[test]
+    fn failed_find_references_calls_yield_one_unexamined_finding_per_task() {
+        let sha_a = task_sha("task_A");
+        const TIMEOUT: &str = "read body: timed out reading response";
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha_a}^1"),
+            &sha_a,
+            vec![
+                changed_symbol("alpha", "crates/reify-x/src/a.rs"),
+                changed_symbol("gamma", "crates/reify-x/src/c.rs"),
+            ],
+        );
+        jc.fail_find_references("crates/reify-x/src/a.rs", "alpha", TIMEOUT);
+        jc.fail_find_references("crates/reify-x/src/c.rs", "gamma", TIMEOUT);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", NOW - 15 * DAY, None),
+        );
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: Some(NOW),
+            producer_branch: None,
+        };
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.pattern == Pattern::P1ProducerOrphan),
+            "no lookup answered, so no symbol can be an orphan; got {findings:?}"
+        );
+        let unexamined: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1TaskUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "two failed lookups in one task must yield ONE P1TaskUnexamined, \
+             not one per symbol; got {findings:?}"
+        );
+        let f = unexamined[0];
+        assert!(
+            f.summary.contains("`alpha`") && f.summary.contains("`gamma`"),
+            "the one finding must name every skipped symbol; got {:?}",
+            f.summary
+        );
+        assert_eq!(
+            f.evidence,
+            vec![
+                EvidenceRef::FileLine {
+                    path: "crates/reify-x/src/a.rs".to_string(),
+                    line: 42,
+                    symbol: Some("alpha".to_string()),
+                },
+                EvidenceRef::FileLine {
+                    path: "crates/reify-x/src/c.rs".to_string(),
+                    line: 42,
+                    symbol: Some("gamma".to_string()),
+                },
+            ],
+            "one FileLine per skipped symbol, in the order they were examined"
+        );
+    }
+
     /// The other half of the distinction: a range jcodemunch answered with no
     /// symbol is an ordinary no-op, not an unexamined task. The mock answers
     /// an unkeyed range with an empty `Ok`.
@@ -1292,21 +1481,25 @@ mod tests {
         let _: Pattern = Pattern::PLayerViolation;
 
         // New mock methods: default-empty mock must return empty Vecs.
-        let dead = jc.get_dead_code(0.5);
+        let dead = jc.get_dead_code(0.5).expect("the mock answers get_dead_code");
         assert!(
             dead.is_empty(),
             "default mock get_dead_code must return empty Vec; got {:?}",
             dead
         );
 
-        let untested = jc.get_untested_symbols(0.5);
+        let untested = jc
+            .get_untested_symbols(0.5)
+            .expect("the mock answers get_untested_symbols");
         assert!(
             untested.is_empty(),
             "default mock get_untested_symbols must return empty Vec; got {:?}",
             untested
         );
 
-        let violations = jc.get_layer_violations();
+        let violations = jc
+            .get_layer_violations()
+            .expect("the mock answers get_layer_violations");
         assert!(
             violations.is_empty(),
             "default mock get_layer_violations must return empty Vec; got {:?}",
@@ -1379,7 +1572,7 @@ mod tests {
             },
         ]);
 
-        let dead = jc.get_dead_code(0.5);
+        let dead = jc.get_dead_code(0.5).expect("the mock answers get_dead_code");
         assert_eq!(
             dead.len(),
             2,
@@ -1389,7 +1582,9 @@ mod tests {
         assert!(dead.iter().all(|s| s.confidence >= 0.5));
         assert!(!dead.iter().any(|s| s.confidence < 0.5));
 
-        let untested = jc.get_untested_symbols(0.5);
+        let untested = jc
+            .get_untested_symbols(0.5)
+            .expect("the mock answers get_untested_symbols");
         assert_eq!(
             untested.len(),
             2,

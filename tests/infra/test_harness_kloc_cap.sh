@@ -369,7 +369,20 @@ WARN_PCT=90
 # Empty is the healthy end state. The array stays DECLARED because Section 5d
 # expands it under `set -u`, and lives in-script beside CAP_LINES and WARN_PCT
 # rather than in a manifest file.
-_KLOC_WARN_KNOWN=()
+#
+# harness_syntax.rs measured 18072/20000 = 90% at task #7809 (root 146 + 17856
+# across 55 module files + 70 external); bare main was already 17994, 6 under
+# the warn line. Its rule (a) split is #9402. #9398 moves the root to
+# harness_syntax/main.rs and must re-path this row in the same diff.
+#
+# harness_modules_ports.rs measured 18074/20000 = 90% at task #7196 (root 90 +
+# 17593 across 30 module files + 391 external); bare main was already 17893,
+# 107 under the warn line. Its rule (a) split is #9503. #9400 moves the root to
+# harness_modules_ports/main.rs and must re-path this row in the same diff.
+_KLOC_WARN_KNOWN=(
+    "crates/reify-syntax/tests/harness_syntax.rs"
+    "crates/reify-compiler/tests/harness_modules_ports.rs"
+)
 
 # The checked-in grandfather-baseline ratchet (resolved via the shared lib so
 # the REIFY_HARNESS_LAYOUT_BASELINE override is honored identically by both

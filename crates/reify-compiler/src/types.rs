@@ -630,11 +630,18 @@ pub enum CompiledForallBody {
     /// `Literal` root and is never rewritten, so each element's connection
     /// names the same ports the resolved (non-deferred) path names.
     ///
-    /// At runtime each element gets a fresh `CompiledConnection` paired with a
-    /// synthetic `Bool::True` compatibility constraint: the connect-time
-    /// direction check is not replayed, and `connector_type` / `params` are
-    /// dropped — no `connector_sub` or `frame_constraint` is created, and
-    /// `port_mappings` is carried verbatim.
+    /// **Kept from `compile_connection`:** the endpoint existence and direction
+    /// checks. `forall_elaborate.rs` runs them once, at capture, on the
+    /// bound-element endpoints: every element shares the collection sub's
+    /// child template, so the verdict holds whatever the count. At runtime each
+    /// element gets a fresh `CompiledConnection` paired with a compatibility
+    /// constraint carrying `directions_compatible`; `port_mappings` is carried
+    /// verbatim.
+    ///
+    /// **Dropped:** `connector_type` / `params`, which one info diagnostic at
+    /// capture reports — no `connector_sub`, connector-param validation or
+    /// `frame_constraint` is created — and the own-entity-only port-member
+    /// auto-matching and asymmetric-LocatedPort warning.
     Connect {
         left: PortPath,
         /// Direction operator from the source `connect` declaration.
@@ -648,6 +655,9 @@ pub enum CompiledForallBody {
         /// Explicit port-mappings (left_member, right_member). Carried
         /// through verbatim from the source declaration.
         port_mappings: Vec<(String, String)>,
+        /// The capture-time direction verdict that each element's
+        /// compatibility constraint carries.
+        directions_compatible: bool,
     },
 }
 
@@ -852,13 +862,14 @@ pub fn find_template<'a>(
 /// prelude templates they point at. They are separate because the tables are
 /// phase-locals in `phase_entities` while the templates outlive it.
 pub(crate) struct PreludeRegistries<'r, 't> {
-    /// Prelude templates for CONSTRUCTOR lowering — `EntityKind::Structure`-
-    /// FILTERED, because only `structure def`s are constructible via `Foo()`
-    /// (task 3540 / esc-3540-177 RULING 1).
+    /// Prelude templates for CONSTRUCTOR lowering — the `EntityKind::Structure`-
+    /// FILTERED view of `sub_target`, because only `structure def`s are
+    /// constructible via `Foo()` (task 3540 / esc-3540-177 RULING 1).
     pub(crate) ctor: &'r HashMap<String, &'t TopologyTemplate>,
-    /// Prelude templates for SUB-TARGET resolution — UNFILTERED by
-    /// `EntityKind`, because a sub target may be an occurrence
-    /// (`sub o = STLOutput(…)`). Read only via [`find_template_with_prelude`].
+    /// Prelude templates for SUB-TARGET resolution, each name bound by
+    /// [`crate::name_env`] (NS-P1) — UNFILTERED by `EntityKind`, because a sub
+    /// target may be an occurrence (`sub o = STLOutput(…)`). Read only via
+    /// [`find_template_with_prelude`].
     pub(crate) sub_target: &'r HashMap<String, &'t TopologyTemplate>,
     /// Entity names THIS module declares itself (local only — never seeded
     /// from the prelude). Suppresses the prelude fallback for a name the
@@ -1479,7 +1490,7 @@ pub enum CompiledGeometryOp {
 }
 
 /// Primitive geometry kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum PrimitiveKind {
     Box,
     Cylinder,
@@ -1507,33 +1518,11 @@ pub enum PrimitiveKind {
 }
 
 impl PrimitiveKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `PrimitiveKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 8] = [
-        Self::Box,
-        Self::Cylinder,
-        Self::Sphere,
-        Self::Tube,
-        Self::Cone,
-        Self::Wedge,
-        Self::Torus,
-        Self::HalfSpace,
-    ];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
     /// locks `ALL_PRIMITIVE.len() == PrimitiveKind::VARIANT_COUNT` at compile time.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for PrimitiveKind {
@@ -1552,7 +1541,7 @@ impl std::fmt::Display for PrimitiveKind {
 }
 
 /// Boolean geometry operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum BooleanOp {
     Union,
     Difference,
@@ -1560,26 +1549,13 @@ pub enum BooleanOp {
 }
 
 impl BooleanOp {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `BooleanOp` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 3] = [Self::Union, Self::Difference, Self::Intersection];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify-eval/tests/compile_geometry_op_characterization.rs` locks
     /// `ALL_BOOLEAN.len() == BooleanOp::VARIANT_COUNT` at compile time.  Booleans have
     /// no `*_COMPILERS` fn-table (they dispatch by inline match), so that characterization
     /// table is the whole registry surface for this family.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for BooleanOp {
@@ -1593,7 +1569,7 @@ impl std::fmt::Display for BooleanOp {
 }
 
 /// Modification operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum ModifyKind {
     Fillet,
     Chamfer,
@@ -1622,38 +1598,11 @@ pub enum ModifyKind {
 }
 
 impl ModifyKind {
-    /// Every variant of this enum, as a fixed-size const array.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
-    /// This is the **single source of truth** for the set of `ModifyKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array (add the new
-    /// element) and bump its explicit size annotation from `[Self; N]` to `[Self; N+1]`.
-    /// Rust rejects any length mismatch at compile time, so the size annotation is itself
-    /// an additional tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates, and
-    /// `const _: () = assert!(CASES.len() == ModifyKind::VARIANT_COUNT, ...)` in
-    /// `geometry_modify::single_geom_target_kinds()` fires at `cargo check`, forcing the
-    /// matching `CASES` row to be added.
-    const ALL: [Self; 10] = [
-        Self::Fillet,
-        Self::Chamfer,
-        Self::ChamferAsymmetric,
-        Self::Shell,
-        Self::Draft,
-        Self::Thicken,
-        Self::ZoneSlab,
-        Self::OffsetSolid,
-        Self::OffsetSurface,
-        Self::OffsetCurve,
-    ];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
-    ///
-    /// Cannot independently drift from `ALL` because it is `Self::ALL.len()`.  Consumer:
-    /// `geometry_modify::single_geom_target_kinds()` uses `const _: () = assert!(CASES.len()
+    /// Consumer: `geometry_modify::single_geom_target_kinds()` uses `const _: () = assert!(CASES.len()
     /// == ModifyKind::VARIANT_COUNT, ...)` to lock `CASES` coverage at compile time.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for ModifyKind {
@@ -1674,7 +1623,7 @@ impl std::fmt::Display for ModifyKind {
 }
 
 /// Transform operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum TransformKind {
     Translate,
     Rotate,
@@ -1690,32 +1639,11 @@ pub enum TransformKind {
 }
 
 impl TransformKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `TransformKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 7] = [
-        Self::Translate,
-        Self::Rotate,
-        Self::Scale,
-        Self::RotateAround,
-        Self::ApplyTransform,
-        Self::AffineApply,
-        Self::ScaleNonUniform,
-    ];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
     /// locks `ALL_TRANSFORM.len() == TransformKind::VARIANT_COUNT` at compile time.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for TransformKind {
@@ -1733,7 +1661,7 @@ impl std::fmt::Display for TransformKind {
 }
 
 /// Pattern operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum PatternKind {
     Linear,
     Circular,
@@ -1743,30 +1671,11 @@ pub enum PatternKind {
 }
 
 impl PatternKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `PatternKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 5] = [
-        Self::Linear,
-        Self::Circular,
-        Self::Mirror,
-        Self::Linear2D,
-        Self::Arbitrary,
-    ];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
     /// locks `ALL_PATTERN.len() == PatternKind::VARIANT_COUNT` at compile time.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 /// CONTRACT: these labels are USER-FACING, not variant nicknames.
@@ -1797,7 +1706,7 @@ impl std::fmt::Display for PatternKind {
 }
 
 /// Sweep operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum SweepKind {
     Loft,
     Extrude,
@@ -1819,36 +1728,13 @@ pub enum SweepKind {
 }
 
 impl SweepKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `SweepKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 9] = [
-        Self::Loft,
-        Self::Extrude,
-        Self::Revolve,
-        Self::Sweep,
-        Self::ExtrudeSymmetric,
-        Self::ExtrudeInfinite,
-        Self::SweepGuided,
-        Self::LoftGuided,
-        Self::Pipe,
-    ];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
     /// locks `ALL_SWEEP.len() == SweepKind::VARIANT_COUNT` at compile time.  That lock
     /// caught a real hole on its first application: `ALL_SWEEP` omitted `ExtrudeInfinite`
     /// while `SWEEP_COMPILERS` registered it, so the loop below it never checked that row.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for SweepKind {
@@ -1868,7 +1754,7 @@ impl std::fmt::Display for SweepKind {
 }
 
 /// Curve construction operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum CurveKind {
     LineSegment,
     Arc,
@@ -1879,31 +1765,11 @@ pub enum CurveKind {
 }
 
 impl CurveKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `CurveKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 6] = [
-        Self::LineSegment,
-        Self::Arc,
-        Self::Helix,
-        Self::InterpCurve,
-        Self::BezierCurve,
-        Self::NurbsCurve,
-    ];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
     /// locks `ALL_CURVE.len() == CurveKind::VARIANT_COUNT` at compile time.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for CurveKind {
@@ -1925,7 +1791,7 @@ impl std::fmt::Display for CurveKind {
 /// Used by [`CompiledGeometryOp::Profile`] and mapped to
 /// [`reify_ir::GeometryOp::RectangleProfile`] / [`reify_ir::GeometryOp::CircleProfile`]
 /// at eval time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum ProfileKind {
     /// Axis-aligned centred rectangle: `rectangle(width, height)`.
     Rectangle,
@@ -1938,24 +1804,11 @@ pub enum ProfileKind {
 }
 
 impl ProfileKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `ProfileKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 4] = [Self::Rectangle, Self::Circle, Self::Polygon, Self::Ellipse];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify_eval::geometry_ops`'s `compile_geometry_op_registry_completeness`
     /// locks `ALL_PROFILE.len() == ProfileKind::VARIANT_COUNT` at compile time.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for ProfileKind {
@@ -1974,33 +1827,20 @@ impl std::fmt::Display for ProfileKind {
 /// Each variant produces a non-planar, non-closed Surface-dimension BRep face.
 /// Used by [`CompiledGeometryOp::Surface`] and mapped to the corresponding
 /// `reify_ir::GeometryOp` variant at eval time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::EnumCount)]
 pub enum SurfaceKind {
     /// NURBS surface: `nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)`.
     Nurbs,
 }
 
 impl SurfaceKind {
-    /// Every variant of this enum, as a fixed-size const array.
-    ///
-    /// This is the **single source of truth** for the set of `SurfaceKind` variants.
-    /// `VARIANT_COUNT` is derived from `ALL.len()`, so it cannot independently drift
-    /// from this list.
-    ///
-    /// **Maintenance contract**: to add a new variant, extend this array and bump its
-    /// explicit size annotation from `[Self; N]` to `[Self; N+1]`.  Rust rejects any
-    /// length mismatch at compile time, so the size annotation is itself an additional
-    /// tripwire.  Once you bump the size, `VARIANT_COUNT` auto-updates and the consumer
-    /// lock named on it fires at `cargo check`, forcing the matching registry row.
-    const ALL: [Self; 1] = [Self::Nurbs];
-
-    /// Count of variants — derived from `ALL.len()`, not hand-maintained.
+    /// Count of variants — derived by `strum::EnumCount`, not hand-maintained.
     ///
     /// Consumer: `reify-eval/tests/compile_geometry_op_characterization.rs` locks
     /// `ALL_SURFACE.len() == SurfaceKind::VARIANT_COUNT` at compile time.  Surfaces have
     /// no `*_COMPILERS` fn-table (they dispatch by inline match), so that characterization
     /// table is the whole registry surface for this family.
-    pub const VARIANT_COUNT: usize = Self::ALL.len();
+    pub const VARIANT_COUNT: usize = <Self as strum::EnumCount>::COUNT;
 }
 
 impl std::fmt::Display for SurfaceKind {

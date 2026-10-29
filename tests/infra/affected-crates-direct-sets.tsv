@@ -4243,7 +4243,6 @@ scripts/reap-orphaned-test-binaries.sh	ALL
 scripts/refresh-warm-base.sh	ALL
 scripts/reify-audit-freshness.sh	ALL
 scripts/reify-audit-predone-wrapper.sh	ALL
-scripts/reify-audit-snapshot-filter.jq	ALL
 scripts/reify-bin-freshness.sh	ALL
 scripts/reify_audit_findings.py	ALL
 scripts/reify_overlap_detector.py	ALL

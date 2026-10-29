@@ -7,7 +7,7 @@
 // `ShellStress` structure (std/solver/elastic).
 
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d};
+use crate::elements::shell_frame::{ShellFrame, ShellSection, build_shell_frame, plane_stress_d};
 
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
 /// MITC3 shell element.
@@ -32,7 +32,7 @@ use crate::shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d};
 ///
 /// # To-global transform (T18-T20)
 ///
-/// Use [`crate::shell_assembly::ShellFrame::local_to_global`] to obtain the
+/// Use [`ShellFrame::local_to_global`] to obtain the
 /// local-to-global rotation matrix F, then `σ_global = F · σ_local · Fᵀ` for each layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellElementStress {
@@ -166,12 +166,9 @@ pub fn shell_element_stress(
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
 
     // Shear stresses: σ_xz = κ·G·γ_xz_phys, σ_yz = κ·G·γ_yz_phys (κ = 5/6)
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let g_mod = e / (2.0 * (1.0 + nu));
-    const KAPPA: f64 = 5.0 / 6.0;
-    let s_xz = KAPPA * g_mod * g_phys_xz;
-    let s_yz = KAPPA * g_mod * g_phys_yz;
+    let kappa_g = ShellSection::shear_kappa_g(material);
+    let s_xz = kappa_g * g_phys_xz;
+    let s_yz = kappa_g * g_phys_yz;
 
     // --- Assemble per-layer 3×3 stress tensors ---
     // In-plane: σ_voigt(z) = sv_mem + z·sv_bend; transverse-shear uniform.
@@ -261,7 +258,8 @@ pub fn flatten_shell_channels(
 mod tests {
     use super::*;
     use crate::assembly::ElementStiffness;
-    use crate::shell_assembly::{ShellFrame, shell_element_stiffness};
+    use crate::elements::shell_frame::ShellFrame;
+    use crate::shell_assembly::shell_element_stiffness;
 
     /// Compute K · u for an 18-DOF stiffness matrix.
     fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {
@@ -490,9 +488,7 @@ mod tests {
 
         let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
 
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g_mod = e / (2.0 * (1.0 + nu));
+        let g_mod = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let expected_sxz = kappa * g_mod * alpha;
 
@@ -632,6 +628,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Locks the transverse-shear path of `shell_element_stiffness` and
+    /// `shell_element_stress` together on the shear correction κ: the strain energy
+    /// `½·uᵀ·K·u` of a uniform `θ_y = α` state must equal `½·σ_xz·γ_xz·t·A` with
+    /// `σ_xz` recovered by the stress kernel and `γ_xz = α`.
+    ///
+    /// Uniform `θ_y` carries no membrane strain and, by partition of unity, no
+    /// curvature, so the stiffness energy is pure transverse shear. On UNIT_TRI
+    /// (R = identity, J2 = identity) the MITC3 assumed shear is `γ_xz = α`
+    /// everywhere, so stiffness and recovery can only agree if both use one κ·G.
+    #[test]
+    fn shell_transverse_shear_energy_locks_stiffness_and_stress_paths() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let area = 0.5_f64; // UNIT_TRI area
+        let alpha = 0.003_f64;
+
+        let mut u = [0.0_f64; 18];
+        for n in 0..3 {
+            u[6 * n + 4] = alpha; // uniform θ_y at all nodes
+        }
+
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+        let ku = matvec(&k, &u);
+        let u_stiffness = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+        let u_stress = 0.5 * s.mid[0][2] * alpha * t * area;
+
+        assert!(
+            (u_stiffness - u_stress).abs() <= 1e-9 * u_stress.abs(),
+            "½·uᵀKu = {u_stiffness:.12e}, ½·σ_xz·α·t·A = {u_stress:.12e}",
+        );
     }
 
     /// Zero-DOF regression guard (relocated from lib.rs doctest and strengthened).

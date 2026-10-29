@@ -109,6 +109,7 @@ test_find_uses_smoke_runner.sh pool
 test_flake_density_report.sh pool
 test_fleet_load_detector.sh pool
 test_flock_detached_fork_guard.sh pool
+test_gc_worktree_targets.sh pool
 test_git_rerere_guard.sh pool
 test_govtest_slice_reaper.sh pool
 test_graph_task_conflation_census.sh pool
@@ -147,6 +148,7 @@ test_lock_charter_lifecycle.sh pool
 test_main_gate_worktree_config.sh pool
 test_merge_role_lint_first_seam.sh pool
 test_merge_verify_cold_outer_timeout.sh pool
+test_merge_verify_trim_units.sh pool
 test_mesh_count_parity_smoke_runner.sh pool
 test_nan_safe_ordering_guard_wired.sh pool
 test_nextest_absent_lib.sh pool
@@ -178,6 +180,7 @@ test_pre_commit_ts_guard.sh pool
 test_proc_reaper.sh pool
 test_project_checks_typecheck.sh pool
 test_provision_warm_lane_fs.sh pool
+test_prune_unconsulted_target.sh pool
 test_pycache_gitignored.sh pool
 test_queue_db_gitignored.sh pool
 test_reconciliation_db_gitignored.sh pool
@@ -217,6 +220,7 @@ test_run_all_classification.sh pool
 test_run_all.sh pool
 test_run_all_clock_marker_sanitize.sh pool
 test_run_all_content_skip.sh pool
+test_run_all_member_lifetime.sh pool
 test_run_all_pool_lock_host_global.sh pool
 test_run_all_tiering.sh pool
 test_run_all_timing.sh pool
@@ -252,9 +256,11 @@ test_verify_background_sweep_ledger.sh pool
 test_verify_compile_gate.sh pool
 test_verify_confirm_failed.sh pool
 test_verify_env_ambient_isolation.sh pool
+test_verify_events.sh pool
 test_verify_failfast_order.sh pool
 test_verify_gate_exclude_heavy.sh pool
 test_verify_gui_feature_check.sh pool
+test_verify_gui_feature_test_pass.sh pool
 test_verify_gui_retry_specs.sh pool
 test_verify_ld_library_path_scope.sh pool
 test_verify_ledger_cli.sh pool
@@ -263,11 +269,14 @@ test_verify_ledger_lane_seed.sh pool
 test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
+test_verify_policy.sh pool
 test_verify_release_delta_skip.sh pool
 test_verify_retry_failed_only.sh pool
 test_verify_retry_subset.sh pool
 test_verify_role_prio.sh pool
 test_verify_scope.sh pool
+test_verify_scope_source_mode.sh pool
+test_verify_selective_infra_event_log_isolation.sh pool
 test_verify_semaphore_wiring.sh pool
 test_verify_test_threads.sh pool
 test_verify_throughput.sh pool

@@ -547,7 +547,7 @@ convention changes:
 
 | Primitive | Anchor | Notes |
 |---|---|---|
-| `box` | centred at origin, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally |
+| `box` | centred at origin, all 3 axes | corner at `(-width/2, -depth/2, -height/2)` — width/depth/height are the X/Y/Z extents, which diagnostics and completion name `size_x`/`size_y`/`size_z` |
 | `box_centered` | centred at origin, all 3 axes | op-identical alias of `box`, for symmetry with `cylinder_centered` |
 | `sphere` | centred at origin | |
 | `torus` | centred at origin; axis is +Z | |
@@ -1107,13 +1107,13 @@ trait MotivePort : MechanicalPort
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait GuidePort : MechanicalPort {
     param degrees_of_freedom : Int

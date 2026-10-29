@@ -3,6 +3,8 @@
 //! Combines classification + decomposition to dispatch sub-problems
 //! to domain-specific solvers.
 
+#![deny(clippy::iter_over_hash_type)]
+
 use crate::decompose::{ExpandedObjectiveRefs, SubProblem};
 use crate::dependent_reads::{CellReads, DependentCellReads};
 use crate::discrete_fallback::DiscreteFirstFallback;
@@ -12,7 +14,7 @@ use reify_ir::{
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
     RankedCandidate, RankedSolveResult, ResolutionProblem, SolveResult, UnOp, Value, ValueMap,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ε-band constants (task ε — PRD §12.1).
 // Half-width δ = max(REL · |obj*|, ABS) so a near-zero obj* yields a non-degenerate band.
@@ -67,13 +69,15 @@ pub enum ObjectiveConsumption {
     /// (`docs/prds/v0_6/fixtures/dic_min_unconstrained.ri`).
     NoComponents,
     /// Components exist but the objective's value-refs match **no** component's
-    /// auto params, so `solve_inner` silently attaches it to component 0. The
+    /// auto params, so `solve_inner` silently attaches it to component 0, the
+    /// component holding the earliest-declared auto-reading constraint. The
     /// solve succeeds and the objective governs nothing.
     FallbackComponentZero,
     /// The healthy case: the objective's refs reach component `component`'s
     /// auto params, so that component genuinely carries the objective.
     Consumed {
-        /// Index into the decomposition's component vector.
+        /// Index into the decomposition's component vector, which is in
+        /// first-constraint declaration order.
         component: usize,
     },
 }
@@ -98,11 +102,11 @@ pub enum ObjectiveConsumption {
 /// the routing — which then fired `E_OBJECTIVE_UNCONSUMED` on a model whose
 /// objective the solver had in fact consumed.
 ///
-/// The returned `component` index is an index INTO THE RETURNED VECTOR and is
-/// meaningless against any other decomposition: components are assembled by
-/// iterating a `HashMap` keyed on union-find roots, so their ORDER varies
-/// between invocations even for identical inputs. Callers must use the pair
-/// together.
+/// The returned `component` index is an index INTO THE RETURNED VECTOR, whose
+/// components are in first-constraint declaration order (the component holding
+/// the earliest-declared auto-reading constraint is index 0). It is meaningless
+/// against any other decomposition, such as one over a filtered or reordered
+/// problem, so callers must use the pair together.
 struct DecompositionPrelude {
     /// The components `solve_inner` routes on.
     components: Vec<SubProblem>,
@@ -181,9 +185,9 @@ fn decompose_prelude(problem: &ResolutionProblem) -> DecompositionPrelude {
     // objective-union step filters to auto indices, would get an empty set, and
     // would union nothing — two autos coupled only through that cell would land
     // in separate components, and the lookup below would fall through to the
-    // hardcoded `0`, handing the objective to an arbitrary component of a
-    // nondeterministic `HashMap` iteration while the other component's autos
-    // were solved feasibility-only against stale seeds.
+    // hardcoded `0`, handing the objective to whichever component holds the
+    // first-declared constraint while the other component's autos were solved
+    // feasibility-only against stale seeds.
     //
     // LAYER 2 (task #5467 / PRD2 α): the CONSTRAINT side follows
     // `dependent_cells` too, so `constraint s == 10.0` over `let s = a + b`
@@ -412,8 +416,9 @@ impl SolverRegistry {
         // exactly what the previous inline code did.
         //
         // `components` and `consumption` MUST be taken from the same call:
-        // `Consumed { component }` is an index into THIS vector, and component
-        // order varies between invocations (`HashMap`-keyed assembly).
+        // `Consumed { component }` is an index into THIS vector. Components are
+        // in first-constraint declaration order, so the `FallbackComponentZero`
+        // attachment and the first-failure early return below are deterministic.
         let DecompositionPrelude {
             components,
             consumption,
@@ -470,17 +475,20 @@ impl SolverRegistry {
         let mut other_values: HashMap<ValueCellId, Value> = HashMap::new();
         let mut other_unique = true;
 
+        let auto_param_of: HashMap<&ValueCellId, &AutoParam> =
+            problem.auto_params.iter().map(|ap| (&ap.id, ap)).collect();
+
         for (ci, component) in components.iter().enumerate() {
-            // Build sub-ResolutionProblem for this component. Autos keep
-            // DECLARATION order, never the component's hash order: CP-SAT
-            // searches in this order, so it decides which model comes back
-            // (PRD2 D4).
-            let sub_auto_params: Vec<AutoParam> = problem
+            // Build sub-ResolutionProblem for this component. Its autos come in
+            // the component's DECLARATION order: CP-SAT searches in this order,
+            // so it decides which model comes back
+            // (discrete-cost-minimisation §3 decision 10).
+            let sub_auto_params: Vec<AutoParam> = component
                 .auto_params
                 .iter()
-                .filter(|ap| component.auto_params.contains(&ap.id))
-                .cloned()
+                .map(|id| auto_param_of[id].clone())
                 .collect();
+            let component_autos: HashSet<&ValueCellId> = component.auto_params.iter().collect();
 
             // Attach objective only to the designated component
             let sub_objective = if objective_component == Some(ci) {
@@ -503,7 +511,8 @@ impl SolverRegistry {
                 .filter(|(id, _)| {
                     matches!(
                         dependent_auto_reads.lookup(id),
-                        CellReads::Foldable(autos) if autos.is_subset(&component.auto_params)
+                        CellReads::Foldable(autos)
+                            if autos.iter().all(|a| component_autos.contains(a))
                     )
                 })
                 .cloned()
@@ -1061,6 +1070,10 @@ fn solve_lexicographic(
                 unique: stage_unique,
             } => {
                 // Warm-start the next stage from this stage's solution.
+                #[expect(
+                    clippy::iter_over_hash_type,
+                    reason = "copies a HashMap into a ValueMap; keys are distinct, so iteration order cannot reach the result"
+                )]
                 for (k, v) in &values {
                     current_values.insert(k.clone(), v.clone());
                 }
@@ -1652,13 +1665,10 @@ mod objective_consumption_tests {
             "`a` and `b` are coupled only THROUGH `s`; decomposition follows \
              `dependent_cells`, so they must not split — got {components:?}"
         );
-        let expected: std::collections::HashSet<ValueCellId> =
-            [ValueCellId::new("P", "a"), ValueCellId::new("P", "b")]
-                .into_iter()
-                .collect();
         assert_eq!(
-            components[0].auto_params, expected,
-            "the single component must hold BOTH autos"
+            components[0].auto_params,
+            vec![ValueCellId::new("P", "a"), ValueCellId::new("P", "b")],
+            "the single component must hold BOTH autos, in declaration order"
         );
         assert_eq!(
             verdict,
@@ -1688,21 +1698,15 @@ mod objective_consumption_tests {
     /// holding the autos the objective reaches.
     ///
     /// Compared on `auto_params` per component (`SubProblem` derives only
-    /// `Debug`), CANONICALLY SORTED rather than in vector order. That is not
-    /// laxity — it is MEASURED: `decompose_into_components_with_reads` assembles
-    /// its result by iterating a `HashMap<usize, Vec<usize>>` keyed on
-    /// union-find roots, so the vector ORDER varies per `HashMap` instance. Two
-    /// invocations over identical inputs came back in opposite orders in 4 of 6
-    /// consecutive runs during step-17. An order-sensitive assertion here would
-    /// be a coin flip, and — more to the point — the ORDER is not the property
-    /// worth pinning; membership is.
+    /// `Debug`), CANONICALLY SORTED rather than in vector order: membership is
+    /// the property this test pins. Component order is pinned separately, by
+    /// tests/resolution_seam_determinism.rs.
     ///
-    /// What the order-sensitivity DOES mean is that a `component` index derived
-    /// from one decomposition cannot be used to index another. `solve_inner`
-    /// attaches the objective with `objective_component == Some(ci)` over the
-    /// vector it holds, so the index and the vector must come from ONE call —
-    /// which is precisely what step-18 makes true, and what the second
-    /// assertion below pins.
+    /// A `component` index derived from one decomposition cannot be used to
+    /// index another. `solve_inner` attaches the objective with
+    /// `objective_component == Some(ci)` over the vector it holds, so the index
+    /// and the vector must come from ONE call — which is precisely what step-18
+    /// makes true, and what the second assertion below pins.
     #[test]
     fn the_verdicts_component_index_names_the_objectives_component() {
         let p = problem_with_deps(
@@ -1714,8 +1718,8 @@ mod objective_consumption_tests {
 
         let (classified, verdict) = decompose_and_classify(&p);
 
-        /// Component membership, canonicalised so the comparison does not
-        /// depend on `HashMap` iteration order (see the doc above).
+        /// Component membership, canonicalised so the comparison pins
+        /// membership only (see the doc above).
         fn shape(cs: &[SubProblem]) -> Vec<Vec<String>> {
             let mut out: Vec<Vec<String>> = cs
                 .iter()

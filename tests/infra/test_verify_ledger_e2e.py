@@ -35,7 +35,11 @@ case " $* " in
         printf '%s' "${REIFY_VERIFY_RUN_ID-<unset>}" > "$STUB_STATE/run_id"
         printf '%s' "${REIFY_RUN_ALL_TIMING_OUT-}" > "$STUB_STATE/timing_out"
         if [ -n "${REIFY_RUN_ALL_TIMING_OUT:-}" ]; then
-            printf '{"kind":"summary","path":"stub"}\\n' > "$REIFY_RUN_ALL_TIMING_OUT"
+            source "$STUB_EVENT_LIB"
+            EVENT_LOG_COPY_TO="$REIFY_RUN_ALL_TIMING_OUT"
+            event_log_emit_run_start stub-run all serial 1
+            event_log_emit_member_finish test_stub.sh 1 0 PASS 2000 - 1700000001000000000 1700000003000000000 0
+            event_log_emit_phase_finish serial 1700000000500000000 1700000003500000000
         fi
         exit "${STUB_RC:-0}"
         ;;
@@ -80,6 +84,7 @@ class StubbedVerify:
             REIFY_TS_FRESHNESS_TARGET_DIR=str(self.work / "ts-freshness-target"),
             REIFY_VERIFY_LEDGER_LANE_DIR=str(self.lane),
             STUB_STATE=str(self.state),
+            STUB_EVENT_LIB=str(REPO_ROOT / "scripts" / "lib_event_log.sh"),
         )
         if ledger_dir is not None:
             env["REIFY_VERIFY_LEDGER_DIR"] = str(ledger_dir)
@@ -163,7 +168,28 @@ class VerifyLedgerE2ETests(unittest.TestCase):
         )
         for edge in ("before", "after"):
             self.assertIn("other_verify_runs", cargo_step["concurrency"][edge])
-        self.assertEqual(cargo_step["run_all"]["summary"], {"kind": "summary", "path": "stub"})
+        self.assertEqual(
+            cargo_step["run_all"],
+            {
+                "summary": {
+                    "run_id": "stub-run",
+                    "branch": "serial",
+                    "discovered": 1,
+                    "phases": {"serial": {"began_at": 1700000000.5, "ended_at": 1700000003.5}},
+                },
+                "members": [
+                    {
+                        "name": "test_stub.sh",
+                        "attempt": 1,
+                        "verdict": "PASS",
+                        "rc": 0,
+                        "queued_at": None,
+                        "started_at": 1700000001.0,
+                        "ended_at": 1700000003.0,
+                    }
+                ],
+            },
+        )
 
     def test_a_children_see_the_run_id_and_the_journal_is_removed(self):
         record = self.pass_record()

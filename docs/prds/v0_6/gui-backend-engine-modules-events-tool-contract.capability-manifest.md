@@ -61,6 +61,8 @@ counts and ceilings are the PRD's Appendix A (one source; this manifest does not
 | λ | deny-unused-must-use | producer-self — 0 matches at cf59570562 (critic C1-05: the attribute does not exist today) | PASS | grep `^#!\[deny\(unused_must_use\)\]` present in `gui/src-tauri/src/lib.rs` |
 | μ | emitter-reason-gone | producer-self — 1 match (the full_reload_only reason) at cf59570562 | PASS | grep `fea-diagnostics-changed emitter` absent in `gui/src-tauri/src/types.rs` |
 | μ | whole-opt-arm-present | producer-self — 0 matches at cf59570562 | PASS | grep `whole_opt` present in `gui/src-tauri/src/gui_state_schema.rs` |
+| μ₂ | macro-support-out-of-diff | producer-self — 1 match (diff.rs pub fn) at c7bbfe2519; gap-fill 2026-10-16 K7-D10 (3), G1 follow-on after μ #8948 (fk-65db0c1c9ef3) | PASS | grep `fn push_serialized_event` absent in `gui/src-tauri/src/diff.rs` |
+| μ₂ | macro-support-in-schema | producer-self — 0 matches at c7bbfe2519 (gui_state_schema.rs names it only in doc comments and the macro's $crate::diff:: path) | PASS | grep `fn push_serialized_event` present in `gui/src-tauri/src/gui_state_schema.rs` |
 | ν | tool-class-present | producer-self — 0 matches at cf59570562; subsumes #7722, #7071; depends #6665 | PASS | grep `^pub enum ToolClass` present in `crates/reify-mcp/src/registry.rs` |
 | ν | hand-parsed-params-gone | producer-self — 17 matches at cf59570562 | PASS | grep `params\["` absent in `crates/reify-mcp/src/tools/read.rs`, `crates/reify-mcp/src/tools/write.rs`, `crates/reify-mcp/src/tools/navigation.rs`, `crates/reify-mcp/src/tools/reference.rs` |
 | ν | update-result-gone | producer-self — 1 match at cf59570562 | PASS | grep `pub struct UpdateResult` absent in `crates/reify-mcp/src/types.rs` |

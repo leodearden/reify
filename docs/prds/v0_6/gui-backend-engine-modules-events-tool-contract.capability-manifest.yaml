@@ -254,6 +254,28 @@ tasks:
       expect: present
       paths:
       - gui/src-tauri/src/gui_state_schema.rs
+- label: μ₂
+  task_id: 9278
+  title: 'gui-backend μ₂: push_serialized_event moves into gui_state_schema.rs; reify-gui [diff, gui_state_schema, types] SCC baseline row removed'
+  capabilities:
+  - name: macro-support-out-of-diff
+    binding: 'producer-self — 1 match (diff.rs pub fn) at c7bbfe2519; gap-fill 2026-10-16 K7-D10 (3), G1 follow-on after μ #8948 (fk-65db0c1c9ef3)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn push_serialized_event
+      expect: absent
+      paths:
+      - gui/src-tauri/src/diff.rs
+  - name: macro-support-in-schema
+    binding: 'producer-self — 0 matches at c7bbfe2519 (gui_state_schema.rs names it only in doc comments and the macro''s $crate::diff:: path)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn push_serialized_event
+      expect: present
+      paths:
+      - gui/src-tauri/src/gui_state_schema.rs
 - label: ν
   task_id: 8949
   title: 'gui-backend ν: reify-mcp typed request/response, schema and ToolClass per tool'

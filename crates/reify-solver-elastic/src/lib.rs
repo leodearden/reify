@@ -415,7 +415,10 @@
 //!     &[reify_solver_elastic::MemberKind::Cable],
 //!     &ForceDensitySpec::Explicit(vec![1.0, 2.0]), // 2 densities for 1 member
 //! );
-//! assert_eq!(dim_err.unwrap_err(), FreeFormError::DimensionMismatch);
+//! assert_eq!(
+//!     dim_err.unwrap_err(),
+//!     FreeFormError::Input(reify_solver_elastic::ForceDensityInputError::DimensionMismatch),
+//! );
 //!
 //! // Task 3796: Tensegrity T2 self-stress & prestress-stability — crate-root
 //! // surface pin. Behaviour is covered by `prestress_stability::tests` and the
@@ -446,8 +449,8 @@
 //! // and the integration golden `tests/tensegrity_epsilon_anisotropic_membrane.rs`;
 //! // this block only pins that the ε public surface is reachable and callable.
 //! use reify_solver_elastic::{
-//!     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, PrincipalStress,
-//!     form_find_anchored_surfaces_aniso,
+//!     AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, ForceDensityInputError,
+//!     PrincipalStress, form_find_anchored_surfaces_aniso,
 //! };
 //! // Function-item signature pin: renamed/removed re-export or changed signature
 //! // trips this at doctest-compile time.
@@ -475,7 +478,10 @@
 //!     &[],          // 0 prestress specs — mismatch
 //!     &[0, 1, 2],
 //! );
-//! assert_eq!(mismatch_4416.unwrap_err(), AnisoFormFindError::SurfaceCountMismatch);
+//! assert_eq!(
+//!     mismatch_4416.unwrap_err(),
+//!     AnisoFormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
+//! );
 //!
 //! // Task 2929: FEA diagnostic mapping — neutral FeaFailure classifier smoke.
 //! // Pins the public surface of FeaFailure, thin_body_advisory,
@@ -524,6 +530,11 @@ pub mod error_estimator;
 // functionals of the displacement field and their dual loads. PRD
 // docs/prds/v0_6/goal-oriented-error-estimation.md §5.1/§5.3, §6 C2–C6.
 pub mod qoi;
+// Task 9273 (solver-crates-layering φ-ff): the dense force-density matrix and
+// its spectrum, below form_find, form_find_free and prestress_stability.
+pub(crate) mod fd_matrix;
+// Task 9271 (solver-crates-layering η₂): the validated GroupRatios spec, below form_find.
+pub(crate) mod group_spec;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
@@ -619,6 +630,7 @@ pub use elements::{
     // Task 4417/ζ: dedicated CST membrane element K_e.
     membrane_cst::element_stiffness_membrane_cst,
     mitc3_plus::{Mitc3Plus, ShellReferenceCoord, TyingPoint},
+    shell_frame::{ShellFrame, build_shell_frame, plane_stress_d},
     tet_p1::TetP1,
     tet_p2::TetP2,
     wedge_p1::WedgeP1,
@@ -664,9 +676,9 @@ pub use result::{
     recover_nodal_stress_p1, tet_volume_p1,
 };
 pub use shell_assembly::{
-    ShellFrame, build_shell_frame, plane_stress_d, shell_element_stiffness,
-    shell_element_stiffness_degenerate, shell_element_stiffness_degenerate_ans,
-    shell_element_stiffness_degenerate_ans_bubble, shell_element_stiffness_mitc3_plus,
+    shell_element_stiffness, shell_element_stiffness_degenerate,
+    shell_element_stiffness_degenerate_ans, shell_element_stiffness_degenerate_ans_bubble,
+    shell_element_stiffness_mitc3_plus,
 };
 pub use shell_boundary::{SupportBodyKind, SupportCompatibility, SupportKind, build_support_bcs};
 pub use shell_kinematics::{ShellKinematics, shell_kinematics};
@@ -701,14 +713,12 @@ pub use buckling_kernel::{
     BucklingKernelOptions, BucklingKernelResult, Mode,
     solve_buckling_kernel, solve_buckling_kernel_p2,
 };
-// Task 3452: P1-tet K_g element kernel + global assembly + shell/hex/wedge stubs.
+// Task 3452: P1-tet K_g element kernel + global assembly.
 // PRD: docs/prds/v0_5/buckling-eigensolver.md §13 task γ.
 // Task 3797: T3a bar/cable K_g element kernel + per-member tangent stiffness.
 pub use geometric_stiffness::{
     InitialStress3, bar_tangent_stiffness, geometric_element_stiffness_bar_p1,
-    geometric_element_stiffness_hex_p1, geometric_element_stiffness_shell,
     geometric_element_stiffness_tet_p1, geometric_element_stiffness_tet_p2,
-    geometric_element_stiffness_wedge_p1,
 };
 // Task 4417/ζ: Tensegrity-membrane — CST membrane K_g element kernel,
 // in-plane prestress resultant, and per-element tangent K_t = K_e + K_g.
@@ -825,19 +835,30 @@ pub use joint_stiffness::{JointStiffness, add_joint_stiffness};
 // NFDM surface (membrane) cotangent-Laplacian contributions into the SAME global D
 // (PRD docs/prds/v0_6/tensegrity-membrane.md §4, D1/D3).
 // Task 4416: Tensegrity-membrane ε — anisotropic warp/weft NFDM extension.
-// Per-triangle S=diag(σ_w,σ_f) in a per-triangle material frame; separate
-// AnisoFormFindError enum per plan D1 (avoids breaking the exhaustive match in
-// reify-eval/src/compute_targets/form_find.rs:308).
+// Per-triangle S=diag(σ_w,σ_f) in a per-triangle material frame; its own
+// AnisoFormFindError carries the stencil's DegenerateMaterialFrame.
+// Task 8628 (solver-crates-layering η): ForceDensityInputError / IndexedInput are
+// the one input vocabulary, nested as `Input(..)` in every form-find error enum.
 pub use form_find::{
-    AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, FormFindError,
-    FormFindSolve, MemberKind, PrincipalStress, form_find_anchored, form_find_anchored_surfaces,
+    AnisoFormFindError, AnisoFormFindSolve, AnisotropicSurfaceStress, ForceDensityInputError,
+    FormFindError, FormFindSolve, IndexedInput, MemberKind, PrincipalStress, RealInput,
+    SurfaceStressDefect, form_find_anchored, form_find_anchored_surfaces,
     form_find_anchored_surfaces_aniso,
 };
+// Task 9273 (solver-crates-layering φ-ff): why a force-density or Gram matrix has
+// no dense spectrum, nested as `Spectrum(..)` in FreeFormError and StabilityError.
+pub use fd_matrix::SpectrumError;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md Tier-1 leaf T1b. Eigenvalue /
 // null-space q search via faer; kernel-only (no .ri / stdlib / trampoline
 // wiring in this task, per plan.json design_decisions).
-pub use form_find_free::{ForceDensitySpec, FreeFormError, FreeFormResult, form_find_free, form_find_free_surfaces};
+pub use form_find_free::{
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, form_find_free,
+    form_find_free_surfaces,
+};
+// Task 9271 (solver-crates-layering η₂): why a GroupRatios spec cannot seed the
+// search, nested as `Input(MalformedGroupSpec(..))` in FreeFormError.
+pub use group_spec::GroupSpecDefect;
 // Task 3796: Tensegrity T2 — self-stress & prestress-stability analysis kernel.
 // PRD: docs/prds/v0_6/tensegrity-structures.md §5 / Tier-2 leaf T2. Equilibrium-
 // matrix null-space (self-stress states + internal mechanisms) + force-density

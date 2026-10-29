@@ -13,6 +13,8 @@ Evidence vocabulary:
 
 The D3 verification workflow is a decompose-time step and has not run.
 
+Amended 2026-10-20 (retro-critic sitting R9; `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R9): α's and ε's script checks are repointed to `tests/infra/adoption-ratchet.manifest` row greps, and β's children check is split one per child, mirroring the `.yaml` twin and the tasks' live `metadata.delivered_checks`.
+
 Probes executed 2026-10-12 with `target/debug/reify` (built 2026-10-11 19:33):
 - **P1:** `reify eval examples/topology_selectors/bottom_deck_selectors.ri` → rc 0, 34 stdout lines, no `error:` line. A second run is byte-identical.
 - **P2:** `reify eval examples/modal/transient_step_response.ri` → rc 0. `CantileverStepResponse.tip` is a 1,251-sample length history and `tip_face = Selector(FaceSelector:…)` feeds `StepForce.at`. A second run is byte-identical.
@@ -35,8 +37,19 @@ Performed by the pass-2 decompose session (2026-10-12) as three writes per check
 | `nodes_for_faces` reads only `carried.boundary()` | grep: body of `topology_selectors::nodes_for_faces` | PASS |
 | cycle edges are exactly the three in PRD §3 | grep: `use crate::compute_targets::result_topology::CarriedTopology` (topology_selectors), `use crate::topology_selectors::{…7 names}` (selector_vocabulary_v2), `crate::topology_selectors::resolve` (compute_targets/bc_resolve); the S3 skeptic's Tarjan run reproduced the 3-SCC | PASS |
 | external surface to re-point is bounded | grep: integration tests `harness_topology_selector/*`, `r3b_carried_topology_selector_resolution.rs`, `topology_attribute_local_features_e2e.rs` (`role_is_face`); production `bc_resolve`, `geometry_ops` (`resolve`, `resolve_with_attributes`, `region_query_capability`, `region_selector_display_name`), `modal_ops` | PASS |
-| infra wrapper pattern exists | grep: `tests/infra/test_flake_density_report.{py,sh}` plus its manifest row | PASS |
+| ~~infra wrapper pattern exists~~ shared adoption-ratchet engine exists | ~~grep: `tests/infra/test_flake_density_report.{py,sh}` plus its manifest row~~ grep: `tests/infra/adoption_ratchet.py`, `tests/infra/adoption-ratchet.manifest`, `test_infra_adoption_ratchet.sh` (#8678); no bespoke member (retro-critic R9 M2, 2026-10-20) | PASS |
 | behavioural oracle | probe P1, P2; `r3b_carried_topology_selector_resolution.rs::two_way_kernel_vs_carried_parity` exists | PASS |
+
+Delivered checks (amended 2026-10-20, retro-critic R9 M2/polarity: the `adoption-ratchet-member` script check `tests/infra/test_selector_resolution_ratchet.sh` is replaced by a manifest-row grep):
+
+| name | kind | delivered_check |
+|---|---|---|
+| one-composition-rule | grep | `fn compose<` present in `crates/reify-eval/src/selector_resolve.rs` |
+| normal-cone-single-home | grep | `struct NormalCone\b` present in `crates/reify-eval/src/topology_selectors.rs` |
+| carried-mode-takes-face-normals | grep | `pub fn resolve_against_face_normals\b` present in `crates/reify-eval/src/selector_resolve.rs` |
+| nodes-for-faces-on-carried-topology | grep | `fn nodes_for_faces\b` present in `crates/reify-eval/src/compute_targets/result_topology.rs` |
+| adoption-ratchet-rows-1-3 | grep | `^selector-resolution-` present in `tests/infra/adoption-ratchet.manifest` (absent at main) |
+| scc-dissolved-and-behaviour-unchanged | manual | production-region scoping and before/after byte identity are not one git grep; the adoption-ratchet rows 1-3 and the reviewer cover it |
 
 ## β — geometry_ops lower layers (args, pose, query, kinematic)
 
@@ -45,6 +58,15 @@ Performed by the pass-2 decompose session (2026-10-12) as three writes per check
 | D4 cycle measurement | probe: symbol cross-reference over the production region (cut at `mod tests;`) found compile↔selector_eval (`resolve_selector_to_list`, `resolve_parent_geometry_handle_arg`, `vec3_component_si` / `decode_plane`), kinematic↔selector_eval (`eval_arg_value` / `kernel_distance`, `scalar_got_label`), pose↔selector_eval (`FrameSubShapeKind` / `construct_frame_from_kernel`), and query→selector_eval (`dispatch_point3_length_reply`, `resolve_*_arg`) with selector_eval→query (`CapabilityRoute`, `route_capability`); placed_walk→pose only | PASS |
 | S3 moves five predicates out first | producer: S3's predicate-move leaf (`is_geometry_query_call`, `is_geometry_consumer_call`, `is_feature_datum_projection_call`, `consumes_geometry_or_selector`, `is_symbolic_eval_wired_selector_ctor`), id supplied by the lead in pass 2 | PENDING (cross-stream) |
 | dispatch-table guard survives a move | grep: `lock_dispatch_table!` ×7 and `geometry_ops/dispatch_table_uniqueness.rs` | PASS |
+
+Delivered checks (amended 2026-10-20, retro-critic R9 polarity: the single `^pub\(crate\) mod (args\|pose\|query\|kinematic);` check passed when any one child was declared, so it is split one per child):
+
+| name | kind | delivered_check |
+|---|---|---|
+| lower-layer-child-args | grep | `^pub\(crate\) mod args;` present in `crates/reify-eval/src/geometry_ops.rs` |
+| lower-layer-child-pose | grep | `^pub\(crate\) mod pose;` present in `crates/reify-eval/src/geometry_ops.rs` |
+| lower-layer-child-query | grep | `^pub\(crate\) mod query;` present in `crates/reify-eval/src/geometry_ops.rs` |
+| lower-layer-child-kinematic | grep | `^pub\(crate\) mod kinematic;` present in `crates/reify-eval/src/geometry_ops.rs` |
 
 ## γ — `selector_eval/`
 
@@ -69,6 +91,14 @@ Performed by the pass-2 decompose session (2026-10-12) as three writes per check
 | S2 contract holds today | probe: `grep -c` of every placed_walk symbol in `geometry_ops/tests.rs` = 0 | PASS |
 | baseline test count | probe: `grep -c '#\[test\]' geometry_ops/tests.rs` = 542 | PASS |
 
+Delivered checks (amended 2026-10-20, retro-critic R9 M2/polarity: the `pub-crate-surface-ratchet` script check was the same script as α's and read delivered before ε; it is now a single-line grep of ε's own row 4 id):
+
+| name | kind | delivered_check |
+|---|---|---|
+| crate-level-seam-test-module | grep | `^mod geometry_ops_seam_tests;` present in `crates/reify-eval/src/lib.rs` |
+| parent-test-module-retired | grep | `^mod tests;` absent in `crates/reify-eval/src/geometry_ops.rs` |
+| pub-crate-surface-ratchet | grep | `^selector-resolution-pub-crate-surface` present in `tests/infra/adoption-ratchet.manifest` (absent at main) |
+
 ## ζ — `ValidatedSketch`
 
 | Capability | Evidence | Verdict |
@@ -80,12 +110,26 @@ Performed by the pass-2 decompose session (2026-10-12) as three writes per check
 
 ## η — `WarmStatePool`
 
+Shipped: #8753 landed (merge `c59ea110a6`); its delivered checks are green, as expected for a done leaf.
+
 | Capability | Evidence | Verdict |
 |---|---|---|
 | `donate_preserving_lru` has no production caller | grep: only in docs (`engine_edit.rs` doc comments) and `warm_pool.rs` tests | PASS |
 | `checkout_with_lru_stamp` production use is `checkout()` only | grep: `checkout()` body; other callers are `engine_edit` tests (4) and `warm_pool.rs` tests | PASS |
 | the cost-carrying pair exists | grep: `pub fn checkout_with_lru_stamp_and_cost`, `pub fn donate_preserving_lru_with_cost` | PASS |
 | behavioural oracle | grep: `crates/reify-eval/tests/warm_state_donation.rs` | PASS |
+
+## κ (#9297) — op-kind dispatch total by type (gap-fill 2026-10-16, K4-D4)
+
+Added by the gap-fill applier (`plans/gap-fill-deliberation-reify-20261016.md` §K4-D4, finding fk-fe5ac99ce241). Evidence at main `c7bbfe2519`; every check below is RED there in the non-vacuous direction.
+
+| Capability | Evidence | Verdict | delivered_check |
+|---|---|---|---|
+| dispatch-lock-macro-deleted | grep: `macro_rules! lock_dispatch_table` plus 7 lock lines in `geometry_ops.rs` (8 matches in `crates/reify-eval`) | PASS | grep `lock_dispatch_table` absent in `crates/reify-eval` |
+| uniqueness-guard-deleted | grep: `mod dispatch_table_uniqueness;` in `geometry_ops.rs` (δ re-points it as a move) | PASS | grep `mod dispatch_table_uniqueness` absent in `crates/reify-eval/src` |
+| census-literal-deleted | grep: `DOCUMENTED_KIND_FAMILY_CENSUS` (2 matches) in `tests/compile_geometry_op_characterization.rs` | PASS | grep `DOCUMENTED_KIND_FAMILY_CENSUS` absent in `crates/reify-eval` |
+| lookup-is-total | grep: 7 `no registered compiler for` runtime errors in `geometry_ops.rs` | PASS | grep `no registered compiler for` absent in `crates/reify-eval/src` |
+| EnumCount upstream | producer: S7 π #8661 (in progress) derives `strum::EnumCount`; κ derives `strum::EnumIter` itself | PASS | manual (add_dependency) |
 
 ## θ — dropped (lead ruling Q1; S8 / #6010 own `from_name`)
 

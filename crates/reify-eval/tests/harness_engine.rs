@@ -158,3 +158,15 @@ mod discrete_default_on_e2e;
 // reason as #5417's and #5415's above.
 #[path = "harness_engine/indeterminate_reason_carrier_e2e.rs"]
 mod indeterminate_reason_carrier_e2e;
+// Task #6689's posture-taking constructor pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/solver_posture_construction.rs"]
+mod solver_posture_construction;
+// Task #6667's viewport-attribution pins land here for the same anti-re-accretion
+// reason as #5196's and #5360's above.
+#[path = "harness_engine/viewport_unmeasured_attribution.rs"]
+mod viewport_unmeasured_attribution;
+// Task #6100's first-class frame-datum eval regressions land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/first_class_frame_datum_eval.rs"]
+mod first_class_frame_datum_eval;

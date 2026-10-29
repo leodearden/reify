@@ -1340,7 +1340,7 @@ fn emit_rounded_union_compose(
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
-/// - `box(width, height, depth)`
+/// - `box(width, depth, height)` → `size_x`, `size_y`, `size_z` (the X/Y/Z extents)
 /// - `cylinder(radius, height)`
 /// - `sphere(radius)`
 ///
@@ -1699,9 +1699,9 @@ fn compile_geometry_call_inner(
 
     match name {
         // --- Primitives ---
-        // box_centered(width, height, depth) is an op-identical alias for box:
+        // box_centered(width, depth, height) is an op-identical alias for box:
         // make_box already centres the origin at the centroid
-        // (occt_wrapper.cpp gp_Pnt corner(-w/2,-h/2,-d/2)).
+        // (occt_wrapper.cpp gp_Pnt corner(-size_x/2, -size_y/2, -size_z/2)).
         // `name` is forwarded to check_arg_count_exact so diagnostics report
         // "box" or "box_centered" as appropriate.
         "box" | "box_centered" => {
@@ -1712,9 +1712,9 @@ fn compile_geometry_call_inner(
             Some(vec![CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".to_string(), it.next().unwrap()),
-                    ("height".to_string(), it.next().unwrap()),
-                    ("depth".to_string(), it.next().unwrap()),
+                    ("size_x".to_string(), it.next().unwrap()),
+                    ("size_y".to_string(), it.next().unwrap()),
+                    ("size_z".to_string(), it.next().unwrap()),
                 ],
             }])
         }
@@ -2748,18 +2748,18 @@ fn compile_geometry_call_inner(
             let body_a = CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".to_string(), width.clone()),
-                    ("height".to_string(), dims.depth_minus_2r.clone()),
-                    ("depth".to_string(), height.clone()),
+                    ("size_x".to_string(), width.clone()),
+                    ("size_y".to_string(), dims.depth_minus_2r.clone()),
+                    ("size_z".to_string(), height.clone()),
                 ],
             };
             // Box B: box(width-2r, depth, height)
             let body_b = CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".to_string(), dims.width_minus_2r.clone()),
-                    ("height".to_string(), depth.clone()),
-                    ("depth".to_string(), height.clone()),
+                    ("size_x".to_string(), dims.width_minus_2r.clone()),
+                    ("size_y".to_string(), depth.clone()),
+                    ("size_z".to_string(), height.clone()),
                 ],
             };
             // Corner op: cylinder(corner_r, height), re-emitted once per corner.
@@ -4466,18 +4466,13 @@ mod tests {
     /// stack holds, so without `stacker::maybe_grow` this SIGSEGVs the test
     /// binary exactly as the GUI did.
     ///
-    /// Why the cap is not exercised end-to-end here: an expression deeper than
-    /// 256 trips `compile_builder::dot_chain_lint` / `shadow_lint`, whose own
-    /// `MAX_EXPR_DEPTH = 256` fires a deliberate `debug_assert!(false, …)` in
-    /// debug/test builds (they pre-walk the parsed module in `lib.rs`, before
-    /// expression compilation). So the >256 path through `compile()` panics in
-    /// a *lint* before this task's cap can answer, and only the internal-entry
-    /// tests above can pin the cap's diagnostic. Parse-time recursion (a deep
-    /// source overflows the recursive-descent parser, which is why the parse
-    /// below runs on its own big stack) and drop-time AST recursion are the two
-    /// other unguarded surfaces on this input class. All three are deferred to
-    /// the follow-up filed from this task's amendment pass (fused-memory ticket
-    /// `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
+    /// The over-cap case through `compile()` is pinned by
+    /// `recursion_guard::tests::over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking`.
+    /// Parse-time recursion (a deep source overflows the recursive-descent
+    /// parser, which is why the parse below runs on its own big stack) and
+    /// drop-time AST recursion are separate unguarded surfaces on this input
+    /// class, deferred to the follow-up filed from this task's amendment pass
+    /// (fused-memory ticket `tkt_0RRPM0KWBRVFJRA82Q761N2HF9`, escalation id
     /// `agent-followup-5337-recursion-surfaces`), not fixed here.
     #[test]
     fn deeply_nested_geometry_source_compiles_via_public_api_on_2mb_stack() {
@@ -5422,7 +5417,7 @@ mod tests {
     }
 
     /// Helper: build a FunctionCall Expr named "box" with three specific numeric arg values.
-    fn make_box_with_values(w: f64, h: f64, d: f64) -> reify_ast::Expr {
+    fn make_box_with_values(size_x: f64, size_y: f64, size_z: f64) -> reify_ast::Expr {
         let num = |v: f64| reify_ast::Expr {
             kind: reify_ast::ExprKind::NumberLiteral {
                 value: v,
@@ -5433,7 +5428,7 @@ mod tests {
         reify_ast::Expr {
             kind: reify_ast::ExprKind::FunctionCall {
                 name: "box".to_string(),
-                args: vec![num(w), num(h), num(d)],
+                args: vec![num(size_x), num(size_y), num(size_z)],
                 arg_names: vec![None, None, None],
             },
             span: reify_core::SourceSpan::new(0, 1),

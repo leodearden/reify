@@ -66,9 +66,7 @@ These are Tauri **commands**, not fire-and-forget events. Listed here because th
 
 ## §3 — Debug-MCP RPCs (not fire-and-forget events; snake_case names; outside §1/§2 kebab-case grep contract)
 
-| RPC | Request shape | Response shape | Producer | Consumer | Upstream prereq |
-|---|---|---|---|---|---|
-| `morph_stats` | `()` or `{body_id: String}` | `MorphStats {morph_count: u32, remesh_count: u32, last_rejection_reason: Option<String>, …}` | `reify-mesh-morph` runtime stats accessor | `mcp__reify-debug__morph_stats` (new tool registered in `gui/src-tauri/src/debug.rs` registry) | task 2949 (depends on 2948 depends on 2947) |
+No debug-MCP RPC is inventoried here: debug tools, including the mesh-morph telemetry RPC `mesh_morph_stats`, are catalogued in [`docs/debug-mcp-contract.md`](debug-mcp-contract.md).
 
 ## §4 — Out-of-scope: payload extensions to existing channels
 

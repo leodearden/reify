@@ -8,17 +8,22 @@ mod analysis;
 mod branch_signature;
 mod calculus;
 mod complex;
+mod datum_projection;
 mod dual;
+mod dual_builtin_rules;
+mod dual_env;
 mod dual_eval;
+mod dual_seeds;
 mod field_reductions;
 pub mod interp;
 pub mod kleene;
+mod non_differentiable;
 mod option_recovery;
 pub mod sampled;
 mod sampled_fd;
 mod sanitize;
 
-// Task #6672 (solver-unification ε): the forward-mode AD surface.  The three
+// Task #6672 (solver-unification ε): the forward-mode AD surface.  The AD
 // modules are PRIVATE and these flat re-exports are the only path to them, so
 // `reify_expr::Tangent` is not merely the preferred spelling over
 // `reify_expr::dual::Tangent` — it is the reachable one, and consumers (η
@@ -30,10 +35,10 @@ pub use branch_signature::{
     RESERVED_PATH_SEGMENTS, KinkKind, KinkSite, ReductionKind, first_divergence,
 };
 pub use dual::{DualValue, Tangent};
-pub use dual_eval::{
-    DualEnv, NonDifferentiable, Seeds, eval_dual, eval_dual_with_env, jacobian_row,
-    jacobian_row_with_env,
-};
+pub use dual_env::DualEnv;
+pub use dual_eval::{eval_dual, eval_dual_with_env, jacobian_row, jacobian_row_with_env};
+pub use dual_seeds::Seeds;
+pub use non_differentiable::NonDifferentiable;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -44,6 +49,8 @@ use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, FIELD_ENTITY_PREFI
 use reify_core::overload::{slot_matches_head_tier, slot_matches_wildcard_tier};
 use reify_core::scalar_tolerance::scalars_equal;
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, CompiledPattern, DeterminacyPredicateKind, DeterminacyState, FieldSourceKind, InterpolationKind, PersistentMap, SampledField, SampledGridKind, SelectorKind, StructureInstanceData, StructureTypeId, UnOp, UndefCause, Value, ValueMap, quaternion_is_finite};
+
+use datum_projection::{datum_vec3, eval_datum_projection, eval_self_datum_projection};
 
 /// Maximum recursion depth for user-defined function calls.
 const MAX_RECURSION_DEPTH: u32 = 256;
@@ -922,6 +929,11 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
         } => {
             if !args.is_empty() {
                 return Value::Undef;
+            }
+            // `self.<datum>` projects the structure's identity frame; its
+            // `__self` receiver has no cell to evaluate.
+            if let Some(datum) = eval_self_datum_projection(&object.result_type, method) {
+                return datum;
             }
             let obj = eval_expr(object, ctx);
             if obj.is_undef() {
@@ -1981,51 +1993,57 @@ fn interp_render(value: &Value) -> String {
 /// `eval_user_fn_recursion_depth_exceeded`).
 ///
 /// The six name families (stackup math builtins / `"linear_combine"` / the
-/// geometry-builtin family (`geometry_diagnose`) / inverse-dynamics /
+/// geometry-builtin family (`geometry_diagnose`) / dynamics /
 /// `"iso_it_tolerance"` / `"orient_exp"`) are disjoint, so at most one of the
 /// six classifiers returns `Some` for any single `Undef`; each returns `None`
 /// for every other name or for valid input, making this a cheap no-op for
 /// ordinary builtins.
+///
+/// A classified `DimensionedArgRejected` also records that specific code as
+/// the cell's `UndefCause::OpContractFailed` (PRD-5 §7 I5), via
+/// [`push_op_contract_failure`].
 #[inline(never)]
 fn emit_undef_builtin_diagnostics(name: &str, args: &[Value], result: &Value, ctx: &EvalContext) {
-    if !matches!(result, Value::Undef) {
+    // The classifiers run when EITHER sink is attached: the undef-cause capture
+    // pass (`record_op_contract_failures`) re-evaluates with a cause sink and no
+    // diagnostics sink, and it is the pass that records the I5 cause below. With
+    // capture on, an Undef builtin cell is therefore classified once per pass.
+    if !matches!(result, Value::Undef) || (ctx.diagnostics.is_none() && ctx.undef_causes.is_none())
+    {
         return;
     }
-    let Some(sink) = ctx.diagnostics else {
-        return;
-    };
-    // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
-    if let Some(diag) = reify_stdlib::stackup_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
-    if let Some(diag) = reify_stdlib::fea_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Geometry-builtin diagnostics: post-`Undef`-only, one classifier with
-    // severity split by fault class, disjoint from the sibling hooks here.
-    // See `geometry_diagnose`'s own doc comment for the per-name breakdown.
-    if let Some(diag) = reify_stdlib::geometry_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Inverse-dynamics Undef: body has no resolvable mass.
-    if let Some(diag) = reify_stdlib::dynamics_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
-    // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
-    // Severity::Error instead of a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as stackup/fea/geometry/dynamics.
-    if let Some(diag) = reify_stdlib::tolerancing_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
-    }
-    // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
-    // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
-    // spelling, so this Severity::Error is the migration mechanism for that
-    // breaking change rather than a silent Undef. Post-Undef-only, same
-    // (name,&[Value])->Option<Diagnostic> shape as the five above.
-    if let Some(diag) = reify_stdlib::orientation_diagnose(name, args) {
-        sink.borrow_mut().push(diag);
+    let classified = [
+        // §4.4 stackup error diagnostics (empty/invalid chain, bad samples).
+        reify_stdlib::stackup_diagnose(name, args),
+        // Multi-load-case FEA failures (empty/unknown-case weights, incompatible meshes).
+        reify_stdlib::fea_diagnose(name, args),
+        // Geometry-builtin diagnostics: one classifier with severity split by
+        // fault class. See `geometry_diagnose`'s own doc for the per-name breakdown.
+        reify_stdlib::geometry_diagnose(name, args),
+        // Dynamics: inverse-dynamics body mass / compliance, and the
+        // `mass_properties` / `point_mass` argument dimensions.
+        reify_stdlib::dynamics_diagnose(name, args),
+        // ISO 286-1 tolerancing: out-of-envelope iso_it_tolerance (grade outside
+        // IT5–IT18 / nominal > 500 mm) — well-typed but unsupported, surfaced as
+        // Severity::Error instead of a silent Undef.
+        reify_stdlib::tolerancing_diagnose(name, args),
+        // Rotation-vector dimension (#6080): `orient_exp` requires Vector3<Angle>,
+        // since log(q) = axis * angle. DIMENSIONLESS used to be the accepted
+        // spelling, so this Severity::Error is the migration mechanism for that
+        // breaking change rather than a silent Undef.
+        reify_stdlib::orientation_diagnose(name, args),
+    ];
+    for diag in classified.into_iter().flatten() {
+        // PRD-5 §7 I5: a dimension rejection records its SPECIFIC cause. This
+        // runs before the generic `OpContractViolation` push in `eval_expr`'s
+        // `FunctionCall` arm, and the engine keeps the first `OpContractFailed`
+        // per cell, so the specific code is the one recorded.
+        if diag.code == Some(DiagnosticCode::DimensionedArgRejected) {
+            push_op_contract_failure(ctx, DiagnosticCode::DimensionedArgRejected);
+        }
+        if let Some(sink) = ctx.diagnostics {
+            sink.borrow_mut().push(diag);
+        }
     }
 }
 
@@ -2898,6 +2916,12 @@ fn push_eval_error(ctx: &EvalContext, msg: &str, code: DiagnosticCode) {
 /// 2. `eval_binop`, after the strict undef-propagation check (both operands
 ///    are determined at that point; an Undef result is a genuine contract failure).
 ///
+/// Both push the generic `OpContractViolation`. The one SPECIFIC cause is
+/// `DimensionedArgRejected` (PRD-5 §7 I5, task 6922), pushed by
+/// `emit_undef_builtin_diagnostics` when a classifier rejects an argument's
+/// dimension; it runs before site 1, and the engine keeps the first
+/// `OpContractFailed` per cell, so the specific code wins.
+///
 /// Uses an **empty placeholder span** (`SourceSpan::default()`) because
 /// `CompiledExpr` carries no span (spans are lost at compile). The engine's
 /// drain boundary (`record_op_contract_failures`) re-stamps the span with the
@@ -3347,156 +3371,15 @@ fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
     }
 }
 
-/// Extract three finite numeric components from a 3-component `Point` or
-/// `Vector` value. Returns `None` for any other shape or a non-finite
-/// component. Mirrors `reify_eval::geometry_ops::point3_components` (which is
-/// `pub(crate)` to reify-eval and so unreachable across the crate boundary).
-fn datum_vec3(v: &Value) -> Option<[f64; 3]> {
-    let comps = match v {
-        Value::Point(c) | Value::Vector(c) if c.len() == 3 => c,
-        _ => return None,
-    };
-    let a = comps[0].as_f64().filter(|f| f.is_finite())?;
-    let b = comps[1].as_f64().filter(|f| f.is_finite())?;
-    let c = comps[2].as_f64().filter(|f| f.is_finite())?;
-    Some([a, b, c])
-}
-
-/// Normalize a 3-vector to unit length. `None` if the magnitude is non-finite
-/// or below the degeneracy floor (a zero/near-zero direction is not a valid
-/// unit `Direction`).
-fn unit3(v: [f64; 3]) -> Option<[f64; 3]> {
-    let mag = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if mag.is_finite() && mag > 1e-12 {
-        Some([v[0] / mag, v[1] / mag, v[2] / mag])
-    } else {
-        None
-    }
-}
-
-/// Project a stored direction/normal `Point`/`Vector` to a unit `Direction`,
-/// or `Undef` if the vector is degenerate or malformed.
-fn vec3_to_direction(v: &Value) -> Value {
-    match datum_vec3(v).and_then(unit3) {
-        Some([x, y, z]) => Value::Direction { x, y, z },
-        None => Value::Undef,
-    }
-}
-
-/// Column `axis` (0=x, 1=y, 2=z) of the rotation matrix for the unit quaternion
-/// `(w, x, y, z)` — i.e. the rotated world basis vector, a unit `Direction`.
-/// The quaternion is normalized first; `None` for a non-finite or zero
-/// quaternion. The column formulas match `reify_stdlib::orientation`'s
-/// row-major `R` (and `quat_rotate`'s active `q·v·q*` convention).
-fn quat_basis_axis(w: f64, x: f64, y: f64, z: f64, axis: usize) -> Option<[f64; 3]> {
-    let n = (w * w + x * x + y * y + z * z).sqrt();
-    if !n.is_finite() || n < 1e-12 {
-        return None;
-    }
-    let (w, x, y, z) = (w / n, x / n, y / n, z / n);
-    let col = match axis {
-        0 => [
-            1.0 - 2.0 * (y * y + z * z),
-            2.0 * (x * y + w * z),
-            2.0 * (x * z - w * y),
-        ],
-        1 => [
-            2.0 * (x * y - w * z),
-            1.0 - 2.0 * (x * x + z * z),
-            2.0 * (y * z + w * x),
-        ],
-        2 => [
-            2.0 * (x * z + w * y),
-            2.0 * (y * z - w * x),
-            1.0 - 2.0 * (x * x + y * y),
-        ],
-        _ => return None,
-    };
-    Some(col)
-}
-
-/// Project a `Frame` basis axis (`.x`/`.y`/`.z`) to a unit `Direction`.
-fn frame_axis_direction(basis: &Value, axis: usize) -> Value {
-    match basis {
-        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, axis) {
-            Some([dx, dy, dz]) => Value::Direction {
-                x: dx,
-                y: dy,
-                z: dz,
-            },
-            None => Value::Undef,
-        },
-        _ => Value::Undef,
-    }
-}
-
-/// Project a `Frame` to its `.xy_plane`: a `Plane` at the frame origin whose
-/// normal is the frame's z-axis.
-fn frame_xy_plane(origin: &Value, basis: &Value) -> Value {
-    match basis {
-        Value::Orientation { w, x, y, z } => match quat_basis_axis(*w, *x, *y, *z, 2) {
-            Some([nx, ny, nz]) => Value::Plane {
-                origin: Box::new(origin.clone()),
-                normal: Box::new(Value::Vector(vec![
-                    Value::Real(nx),
-                    Value::Real(ny),
-                    Value::Real(nz),
-                ])),
-            },
-            None => Value::Undef,
-        },
-        _ => Value::Undef,
-    }
-}
-
-/// Evaluate a datum-projection member access (task 4382 β) on a datum receiver
-/// (`Axis`/`Plane`/`Frame`/`Direction`). Returns `Some(value)` when `obj` is a
-/// datum and `method` is one of that datum's projection members (the projection
-/// is `Undef` if the datum's internals are degenerate/malformed); returns
-/// `None` for any non-datum receiver or unrecognized member, so the regular
-/// collection/tensor method dispatch proceeds unchanged.
-///
-/// The compiler (expr.rs `MemberAccess` datum-projection branch) only lowers
-/// *valid* projections to a `MethodCall`, so the disallowed cases (e.g. the
-/// ambiguous `frame.dir`, or `axis.x`) never reach eval; the `_ => None` arms
-/// are defensive.
-fn eval_datum_projection(obj: &Value, method: &str) -> Option<Value> {
-    match obj {
-        Value::Axis { origin, direction } => match method {
-            "dir" => Some(vec3_to_direction(direction)),
-            "origin" => Some((**origin).clone()),
-            _ => None,
-        },
-        Value::Plane { origin, normal } => match method {
-            "normal" => Some(vec3_to_direction(normal)),
-            "origin" => Some((**origin).clone()),
-            _ => None,
-        },
-        Value::Frame { origin, basis } => match method {
-            "x" => Some(frame_axis_direction(basis, 0)),
-            "y" => Some(frame_axis_direction(basis, 1)),
-            "z" => Some(frame_axis_direction(basis, 2)),
-            "origin" => Some((**origin).clone()),
-            "xy_plane" => Some(frame_xy_plane(origin, basis)),
-            _ => None,
-        },
-        Value::Direction { x, y, z } => match method {
-            "x" => Some(Value::Real(*x)),
-            "y" => Some(Value::Real(*y)),
-            "z" => Some(Value::Real(*z)),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Evaluate a zero-argument member projection (collection, range, complex,
 /// tensor, or datum — see [`eval_datum_projection`]). Reify has no method-call
 /// syntax (GR-040), so the compiler never emits an argument-bearing `MethodCall`,
 /// and the `eval_expr` site refuses one before calling this.
 fn eval_method_call(obj: &Value, method: &str, result_type: &Type) -> Value {
     // Datum-projection member access (task 4382 β): `axis.dir`, `plane.normal`,
-    // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane`, `direction.x/.y/.z`.
+    // `frame.x/.y/.z`, `frame.origin`, `frame.xy_plane/.yz_plane/.zx_plane`,
+    // `direction.x/.y/.z`. (`self.<datum>` is answered before its receiver is
+    // evaluated, by `eval_self_datum_projection` in `eval_expr`.)
     // Dispatched ONLY for datum receivers, so the collection/tensor arms below
     // (including the `"x"|"y"|"z"` Tensor arm) are unaffected for everything
     // else: a non-datum receiver yields `None` here and falls through.
@@ -3793,11 +3676,18 @@ fn scale_components(
     }
 }
 
+/// Int overflow (a `None` from a checked `i64` op) is `Undef`, never a panic
+/// or a wrapped value.
+#[inline]
+fn int_or_undef(checked: Option<i64>) -> Value {
+    checked.map_or(Value::Undef, Value::Int)
+}
+
 /// Negate a scalar (leaf) value: Int, Real, Scalar, or Complex.
 /// Returns `Value::Undef` for non-negatable types or Int overflow.
 fn neg_scalar(v: Value) -> Value {
     match v {
-        Value::Int(i) => i.checked_neg().map(Value::Int).unwrap_or(Value::Undef),
+        Value::Int(i) => int_or_undef(i.checked_neg()),
         Value::Real(r) => Value::Real(-r),
         Value::Scalar {
             si_value,
@@ -3946,7 +3836,7 @@ fn guard_dimensionless_complex(re: f64, im: f64, dimension: DimensionVector) -> 
 
 pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a + b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_add(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a + b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 + b)
@@ -4050,7 +3940,7 @@ pub(crate) fn eval_add(lv: &Value, rv: &Value) -> Value {
 
 pub(crate) fn eval_sub(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a - b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_sub(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a - b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 - b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a - *b as f64),
@@ -4232,7 +4122,7 @@ fn make_components_3(x: f64, y: f64, z: f64, dim: DimensionVector) -> Vec<Value>
 
 pub(crate) fn eval_mul(lv: &Value, rv: &Value) -> Value {
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => Value::Int(a * b),
+        (Value::Int(a), Value::Int(b)) => int_or_undef(a.checked_mul(*b)),
         (Value::Real(a), Value::Real(b)) => Value::Real(a * b),
         (Value::Int(a), Value::Real(b)) | (Value::Real(b), Value::Int(a)) => {
             Value::Real(*a as f64 * b)
@@ -4516,15 +4406,11 @@ pub(crate) fn eval_div(lv: &Value, rv: &Value) -> Value {
     }
 
     match (lv, rv) {
-        (Value::Int(a), Value::Int(b)) => {
-            if *b == 0 {
-                Value::Undef
-            } else if a % b == 0 {
-                Value::Int(a / b)
-            } else {
-                Value::Real(*a as f64 / *b as f64)
-            }
-        }
+        (Value::Int(a), Value::Int(b)) => match a.checked_rem(*b) {
+            Some(0) => int_or_undef(a.checked_div(*b)),
+            Some(_) => Value::Real(*a as f64 / *b as f64),
+            None => Value::Undef,
+        },
         (Value::Real(a), Value::Real(b)) => Value::Real(a / b),
         (Value::Int(a), Value::Real(b)) => Value::Real(*a as f64 / b),
         (Value::Real(a), Value::Int(b)) => Value::Real(a / *b as f64),
@@ -4664,7 +4550,9 @@ pub(crate) fn eval_mod(lv: &Value, rv: &Value) -> Value {
             if *b == 0 {
                 Value::Undef
             } else {
-                Value::Int(a % b)
+                // A remainder always fits an i64; `wrapping_rem` is `%` made total
+                // for `i64::MIN % -1` (exactly 0, but `%` panics on it).
+                Value::Int(a.wrapping_rem(*b))
             }
         }
         (Value::Real(a), Value::Real(b)) => {
@@ -4697,14 +4585,21 @@ pub(crate) fn eval_pow(lv: &Value, rv: &Value) -> Value {
     // so the wrapping is zero-cost for the common case.
     // (task-4106 step-6)
     let result = match (lv, rv) {
+        // Exponent domain is [i32::MIN, u32::MAX]: a non-negative exponent stays
+        // Int (exact, or Undef on overflow), a negative one is a Real reciprocal
+        // power, and anything wider is Undef rather than silently truncated.
         (Value::Int(base), Value::Int(exp)) => {
-            if *exp >= 0 && *exp <= i32::MAX as i64 {
-                Value::Int(base.pow(*exp as u32))
+            if let Ok(e) = u32::try_from(*exp) {
+                int_or_undef(base.checked_pow(e))
+            } else if let Ok(e) = i32::try_from(*exp) {
+                Value::Real((*base as f64).powi(e))
             } else {
-                Value::Real((*base as f64).powi(*exp as i32))
+                Value::Undef
             }
         }
-        (Value::Real(base), Value::Int(exp)) => Value::Real(base.powi(*exp as i32)),
+        (Value::Real(base), Value::Int(exp)) => {
+            i32::try_from(*exp).map_or(Value::Undef, |e| Value::Real(base.powi(e)))
+        }
         (Value::Real(base), Value::Real(exp)) => Value::Real(base.powf(*exp)),
         (Value::Int(base), Value::Real(exp)) => Value::Real((*base as f64).powf(*exp)),
         // Scalar ^ Int: raise value, multiply dimension exponents.

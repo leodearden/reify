@@ -18,11 +18,17 @@
 //! assembly.
 
 use reify_solver_elastic::{
-    ForceDensitySpec, FreeFormError, FreeFormResult, MemberKind, form_find_free_surfaces,
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, MemberKind,
+    form_find_free_surfaces,
 };
+use reify_test_support::tensegrity_fixtures::{
+    TALL_TRIPLEX_BOTTOM_Z, triplex_node_coords, zero_twist_prism_node_coords,
+};
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
-// Fixture — the complete triplex (same as T1b golden)
+// Fixture — the complete triplex topology over the shared TALL prism
+// (bottom z = -1, height 2), not T1b's unit-height one
 // ---------------------------------------------------------------------------
 
 fn triplex_topology() -> (Vec<(usize, usize)>, Vec<MemberKind>) {
@@ -45,21 +51,11 @@ fn triplex_group_ids() -> Vec<usize> {
     vec![0,0,0, 1,1,1,1,1,1, 2,2,2]
 }
 
-/// Canonical symmetric T-prism.
-fn canonical_prism() -> Vec<[f64; 3]> {
-    let s = 3.0_f64.sqrt() / 2.0;
-    let h = 1.0_f64;
-    vec![
-        [ 1.0,  0.0, h],  [ -0.5,  s, h],  [-0.5, -s, h],
-        [-0.5, -s, -h],   [  1.0,  0.0, -h], [-0.5, s, -h],
-    ]
-}
-
-/// Perturbed prism guess, with the fixed `PERTURB` displacement table scaled
-/// by `k` — lets regression tests probe how far off-symmetry a starting guess
-/// can be while still converging. `perturbed_prism_guess()` delegates here at
-/// `k = 1.0`, so the landed GroupRatios golden and step-1's tests are
-/// byte-identical to before this generalisation.
+/// The tall triplex displaced by the fixed `PERTURB` table scaled by `k`, so
+/// regression tests can probe how far off-symmetry a starting guess can be
+/// while still converging. Even at `k = 50` no node moves more than 0.1 from
+/// the triplex equilibrium; `zero_twist_prism_node_coords` is the guess far
+/// from it. `perturbed_prism_guess()` is the `k = 1.0` guess.
 fn perturbed_prism_guess_scaled(k: f64) -> Vec<[f64; 3]> {
     const PERTURB: [[f64; 3]; 6] = [
         [0.0009, -0.0011, 0.0007],
@@ -69,7 +65,7 @@ fn perturbed_prism_guess_scaled(k: f64) -> Vec<[f64; 3]> {
         [0.0010, -0.0008, -0.0013],
         [-0.0011, 0.0013, 0.0006],
     ];
-    canonical_prism()
+    triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z)
         .iter()
         .zip(PERTURB.iter())
         .map(|(p, d)| [p[0] + k * d[0], p[1] + k * d[1], p[2] + k * d[2]])
@@ -258,11 +254,11 @@ const EQUIL_TOL: f64 = 1e-9;
 /// The equilateral prism geometry makes the cotangent-Laplacian a UNIFORM
 /// horizontal-edge reweighting (σ/(2√3) per edge), equivalent to boosting the
 /// horizontal cable densities. Combined D has nullity 4 for any modest σ>0, so
-/// the search finds it and the fixed point converges to ~machine-zero residual.
+/// the search finds it and the fixed point converges to ~machine-zero residual,
+/// from a guess near that equilibrium and from the zero-twist prism far from it.
 #[test]
 fn combined_prism_membrane_golden() {
     let (members, kinds) = triplex_topology();
-    let guess = perturbed_prism_guess();
     let surfaces = prism_surfaces();
     let sigma = 0.2_f64;
     let sigmas = vec![sigma; 2];
@@ -273,36 +269,68 @@ fn combined_prism_membrane_golden() {
         reference_group: 1,
     };
 
-    let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
-        .expect("combined prism+membrane must form-find");
+    for (label, guess) in [
+        ("perturbed", perturbed_prism_guess()),
+        (
+            "zero-twist",
+            zero_twist_prism_node_coords(TALL_TRIPLEX_BOTTOM_Z),
+        ),
+    ] {
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+            .unwrap_or_else(|e| {
+                panic!("[{label}] combined prism+membrane must form-find, got {e:?}")
+            });
 
-    assert!(result.converged, "combined solve must converge");
-    assert_eq!(result.nullity, 4, "combined D must have nullity 4");
+        assert!(result.converged, "[{label}] combined solve must converge");
+        assert_eq!(
+            result.nullity, 4,
+            "[{label}] combined D must have nullity 4"
+        );
 
-    // surface_stresses echo.
-    assert_eq!(result.surface_stresses.len(), 2);
-    for (t, &s) in result.surface_stresses.iter().enumerate() {
+        // surface_stresses echo.
+        assert_eq!(
+            result.surface_stresses.len(),
+            2,
+            "[{label}] surface_stresses length"
+        );
+        for (t, &s) in result.surface_stresses.iter().enumerate() {
+            assert!(
+                (s - sigma).abs() < 1e-12,
+                "[{label}] surface_stresses[{t}] = {s}, expected {sigma}",
+            );
+        }
+
+        // Force signs.
+        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+            match kind {
+                MemberKind::Strut => {
+                    assert!(
+                        n_i < 0.0,
+                        "[{label}] strut {idx} N={n_i} must be compressive"
+                    )
+                }
+                MemberKind::Cable => {
+                    assert!(n_i > 0.0, "[{label}] cable {idx} N={n_i} must be tensile")
+                }
+            }
+        }
+
+        // Primary honest signal: independent reassembly + all-node residual.
+        let d = reassemble_d_combined(
+            6,
+            &members,
+            &result.force_densities,
+            &surfaces,
+            &sigmas,
+            &result.nodes,
+        );
+        let resid = free_residual_scaled(&d, &result.nodes);
         assert!(
-            (s - sigma).abs() < 1e-12,
-            "surface_stresses[{t}] = {s}, expected {sigma}",
+            resid < EQUIL_TOL,
+            "[{label}] combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, \
+             expected < {EQUIL_TOL:.0e}",
         );
     }
-
-    // Force signs.
-    for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
-        match kind {
-            MemberKind::Strut => assert!(n_i < 0.0, "strut {idx} N={n_i} must be compressive"),
-            MemberKind::Cable => assert!(n_i > 0.0, "cable {idx} N={n_i} must be tensile"),
-        }
-    }
-
-    // Primary honest signal: independent reassembly + all-node residual.
-    let d = reassemble_d_combined(6, &members, &result.force_densities, &surfaces, &sigmas, &result.nodes);
-    let resid = free_residual_scaled(&d, &result.nodes);
-    assert!(
-        resid < EQUIL_TOL,
-        "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < {EQUIL_TOL:.0e}",
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -318,9 +346,10 @@ fn combined_prism_membrane_golden() {
 /// stalls" is correct behaviour, not the defect. With σ = 0.2 present, the
 /// membrane already contributes w = σ/(2√3) to every horizontal edge, so the
 /// line-only self-stress leaves D_combined with the wrong nullity — it is not
-/// a combined self-stress. Must fail from BOTH starting guesses, so the fix
-/// covered by the positive-path regression table below does not manufacture
-/// a false positive here.
+/// a combined self-stress. Must fail from every starting guess, near the
+/// triplex equilibrium and far from it, so the fix covered by the
+/// positive-path regression table below does not manufacture a false positive
+/// here.
 #[test]
 fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
     let (members, kinds) = triplex_topology();
@@ -337,14 +366,17 @@ fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
     let spec = ForceDensitySpec::Explicit(line_only_q);
 
     for (label, guess) in [
-        ("canonical", canonical_prism()),
+        ("triplex", triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z)),
         ("perturbed", perturbed_prism_guess()),
+        (
+            "zero-twist",
+            zero_twist_prism_node_coords(TALL_TRIPLEX_BOTTOM_Z),
+        ),
     ] {
-        assert_eq!(
-            form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
-                .unwrap_err(),
-            FreeFormError::SearchDidNotConverge,
-            "line-only q from {label} guess must not converge under σ={sigma} \
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec);
+        assert!(
+            matches!(result, Err(FreeFormError::SearchDidNotConverge { .. })),
+            "line-only q from {label} guess must not converge under σ={sigma}, got {result:?} \
              (the membrane already contributes w=σ/(2√3) to every horizontal \
              edge, so this q leaves D_combined with the wrong nullity)",
         );
@@ -352,10 +384,12 @@ fn combined_explicit_line_only_q_is_not_a_combined_self_stress() {
 }
 
 /// Regression lock (task 6537): the Explicit combined form-find fix must hold
-/// across a range of surface stresses σ and starting-guess perturbation
-/// magnitudes. This is the sole positive-path (feasible-q) coverage for
-/// `Explicit` + surfaces in this file — it subsumes what was originally a
-/// separate single-cell (σ=0.2, perturbed×1) headline test: every cell here
+/// across a range of surface stresses σ and starting guesses: the triplex
+/// equilibrium itself, `PERTURB` displacements of it up to ×50, and the
+/// zero-twist prism, 150° of strut azimuth away from it. This is the sole
+/// positive-path (feasible-q) coverage for `Explicit` + surfaces in this file —
+/// it subsumes what was originally a separate single-cell (σ=0.2, perturbed×1)
+/// headline test: every cell here
 /// additionally asserts the `surface_stresses` echo and that both recovered
 /// membrane triangles are equilateral and non-degenerate (the closed-form
 /// derivation's own premise), not just convergence + residual.
@@ -369,11 +403,15 @@ fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
         let q = analytic_combined_q(sigma);
         let spec = ForceDensitySpec::Explicit(q);
 
-        let guesses: [(&str, Vec<[f64; 3]>); 4] = [
-            ("canonical", canonical_prism()),
+        let guesses: [(&str, Vec<[f64; 3]>); 5] = [
+            ("triplex", triplex_node_coords(TALL_TRIPLEX_BOTTOM_Z)),
             ("scaled x1", perturbed_prism_guess_scaled(1.0)),
             ("scaled x10", perturbed_prism_guess_scaled(10.0)),
             ("scaled x50", perturbed_prism_guess_scaled(50.0)),
+            (
+                "zero-twist",
+                zero_twist_prism_node_coords(TALL_TRIPLEX_BOTTOM_Z),
+            ),
         ];
 
         for (label, guess) in guesses {
@@ -425,4 +463,158 @@ fn combined_explicit_analytic_q_converges_across_sigma_and_perturbation() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Certification of the combined fixed point (task 7801): a model that is not
+// ONE connected structure is never a converged free-standing form. Every
+// fixture starts from the δ golden's own converged state, where a
+// residual-only stop test would report Ok(converged) on it.
+// ---------------------------------------------------------------------------
+
+const DELTA_SIGMA: f64 = 0.2;
+
+fn delta_group_ratios_spec() -> ForceDensitySpec {
+    ForceDensitySpec::GroupRatios {
+        group_ids: triplex_group_ids(),
+        seed_ratios: vec![-1.0, 1.0, 1.0],
+        reference_group: 1,
+    }
+}
+
+/// The δ GroupRatios golden's converged `(x*, q*)`, solved once per test binary.
+fn delta_fixed_point() -> (Vec<[f64; 3]>, Vec<f64>) {
+    static FIXED_POINT: OnceLock<(Vec<[f64; 3]>, Vec<f64>)> = OnceLock::new();
+    FIXED_POINT
+        .get_or_init(|| {
+            let (members, kinds) = triplex_topology();
+            let golden = form_find_free_surfaces(
+                &perturbed_prism_guess(),
+                &members,
+                &kinds,
+                &prism_surfaces(),
+                &[DELTA_SIGMA; 2],
+                &delta_group_ratios_spec(),
+            )
+            .expect("δ GroupRatios golden must form-find");
+            (golden.nodes, golden.force_densities)
+        })
+        .clone()
+}
+
+fn assert_two_piece_non_convergence(result: &Result<FreeFormResult, FreeFormError>) {
+    assert!(
+        matches!(
+            result,
+            Err(FreeFormError::SearchDidNotConverge {
+                defect: Some(FormDefect { components: 2, .. }),
+            })
+        ),
+        "a model of two connected pieces must not converge, got {result:?}",
+    );
+}
+
+#[test]
+fn combined_explicit_isolated_node_is_not_certified() {
+    let (members, kinds) = triplex_topology();
+    let (mut nodes, q_star) = delta_fixed_point();
+    nodes.push([0.3, 0.2, 0.4]);
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &ForceDensitySpec::Explicit(q_star),
+    );
+    assert_two_piece_non_convergence(&result);
+}
+
+#[test]
+fn combined_group_ratios_isolated_node_is_not_certified() {
+    let (members, kinds) = triplex_topology();
+    let (mut nodes, _q_star) = delta_fixed_point();
+    nodes.push([0.3, 0.2, 0.4]);
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &delta_group_ratios_spec(),
+    );
+    assert_two_piece_non_convergence(&result);
+}
+
+#[test]
+fn combined_explicit_disconnected_twin_is_not_certified() {
+    const OFFSET: usize = 6;
+    let (mut members, mut kinds) = triplex_topology();
+    let mut surfaces = prism_surfaces();
+    let (mut nodes, mut q) = delta_fixed_point();
+
+    let twin_nodes: Vec<[f64; 3]> = nodes.iter().map(|p| [p[0] + 5.0, p[1], p[2]]).collect();
+    nodes.extend(twin_nodes);
+    let twin_members: Vec<(usize, usize)> = members
+        .iter()
+        .map(|&(a, b)| (a + OFFSET, b + OFFSET))
+        .collect();
+    members.extend(twin_members);
+    kinds.extend(kinds.clone());
+    let twin_surfaces: Vec<(usize, usize, usize)> = surfaces
+        .iter()
+        .map(|&(a, b, c)| (a + OFFSET, b + OFFSET, c + OFFSET))
+        .collect();
+    surfaces.extend(twin_surfaces);
+    q.extend(q.clone());
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &surfaces,
+        &[DELTA_SIGMA; 4],
+        &ForceDensitySpec::Explicit(q),
+    );
+    // Two exact copies of a nullity-4 form, converged at iteration 0, so the
+    // equilibrium it reached is not a form. The nullity is structural, so it
+    // is pinned along with the piece count.
+    assert_eq!(
+        result.unwrap_err(),
+        FreeFormError::NotAForm(FormDefect {
+            nullity: 8,
+            components: 2,
+        }),
+    );
+}
+
+// A cable pair rather than a twin: under GroupRatios the twin ends in
+// SingularRecovery from the inner search's forced-nullity recovery.
+#[test]
+fn combined_group_ratios_disconnected_cable_pair_is_not_certified() {
+    let (mut members, mut kinds) = triplex_topology();
+    let (mut nodes, _q_star) = delta_fixed_point();
+    nodes.push([0.3, 0.2, 0.4]);
+    nodes.push([0.3, 0.2, 0.9]);
+    members.push((6, 7));
+    kinds.push(MemberKind::Cable);
+    let mut group_ids = triplex_group_ids();
+    group_ids.push(3);
+    let spec = ForceDensitySpec::GroupRatios {
+        group_ids,
+        seed_ratios: vec![-1.0, 1.0, 1.0, 1.0],
+        reference_group: 1,
+    };
+
+    let result = form_find_free_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &prism_surfaces(),
+        &[DELTA_SIGMA; 2],
+        &spec,
+    );
+    assert_two_piece_non_convergence(&result);
 }

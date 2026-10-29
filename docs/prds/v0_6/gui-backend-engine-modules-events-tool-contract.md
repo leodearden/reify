@@ -1,6 +1,6 @@
 # PRD: GUI backend — engine.rs modules, one session event sink, debug writes on the EvalQueue, one AI tool contract
 
-**Milestone:** v0_6 · **Status:** active — authored 2026-10-13/14; decomposed 2026-10-14 (pass 2): α #8937 … τ #8955, ω #8956 close (ids in §10 and the sidecar); rulings OQ1–OQ5 applied (§7) · **Approach:** B + H
+**Milestone:** v0_6 · **Status:** active — authored 2026-10-13/14; decomposed 2026-10-14 (pass 2): α #8937 … τ #8955, ω #8956 close (ids in §10 and the sidecar); rulings OQ1–OQ5 applied (§7); gap-fill 2026-10-16: μ₂ #9278, λ #8947 / ξ #8950 notes · **Approach:** B + H
 
 Authored 2026-10-13 by the S25 `/prd` session of program `review-all-reify-20261010`
 (`plans/review-all-program-reify-20261012.md`, stream **S25 GUI backend**, wave 2, mode spawn,
@@ -94,8 +94,8 @@ skeptic's 25.
 
 ### §2.1 The CLI MCP host is ruled for deletion (#6665)
 
-The ruling says "CLI and Tauri hosts implement the trait only". Task **#6665** (pending, high;
-Leo 2026-08-26, reconfirmed by S27's OQ1-A on 2026-10-12) deletes `reify mcp-server` and
+The ruling says "CLI and Tauri hosts implement the trait only". Task **#6665**
+(Leo 2026-08-26, reconfirmed by S27's OQ1-A on 2026-10-12) deletes `reify mcp-server` and
 `crates/reify-cli/src/mcp_context.rs` (`CliToolContext`) and keeps the reify-mcp crate and the
 GUI's `TauriToolContext`. After it, `TauriToolContext` is the one `ReifyToolContext` host. The
 ruling's substance — one implementation per tool, written over the host trait — is unchanged;
@@ -159,7 +159,7 @@ not touch the literal; a cross-reference asks #5519 to use `dev_stdlib_root` (#8
 
 ### §2.6 Overlapping filed work
 
-- **#7854** (pending, low) is the debug-server→EvalQueue task; subsumed (its `wait_for_idle`
+- **#7854** is the debug-server→EvalQueue task; subsumed (its `wait_for_idle`
   note is stale — #6752 landed `7e0d366f3e` and the inline `with_engine_lock` is gone).
 - **#6964** (pending, medium; #6338 done, so dispatchable) lands debug-server-gating-boundary α
   (`docs/prds/debug-server-gating-boundary.md`, Leo-ruled D3/D5 2026-08-19 and esc-7240-11
@@ -1182,3 +1182,26 @@ does not exist yet is added by the leaf that creates it.
 (`|` inside an ERE is escaped as `\|` only for this Markdown table; the manifest row carries the
 bare `|`. `gui/src-tauri/src/debug_*.rs` matches `debug_server.rs` today and `debug_protocol.rs` /
 `debug_tools.rs` later; `debug.rs` is excluded by the glob.)
+
+## Gap-fill amendments (2026-10-16)
+
+Applied from Leo's 2026-10-16 gap-fill sitting (`plans/gap-fill-deliberation-reify-20261016.md`). The
+capability-manifest pair carries the new delivered checks.
+
+- **K7-D2** (`§K7-D2`): λ #8947 gains one backend-only `design_loaded(canonical_path)` SessionEvents event
+  (no Tauri emit, so no bindings.ts change; sentence-sized under G1). Its consumer, `DesignWatch::reconcile`
+  (re-arms the FS watcher only when the path differs; the explicit `watch_file` calls deleted), is a leaf of
+  the new **gui-engine-admission** stream after λ and ρ #8954, not of this PRD.
+- **K7-D1** (`§K7-D1`, Leo B): GUI admission policy moves to the new **gui-engine-admission** stream
+  (`EngineSession::resolve_target` → `EntryDocument`, `persistable_source`, PreviewState, `WriteTarget::admit`,
+  DesignWatch, `SidecarState::require_ready`), sequenced after ζ #8942, λ #8947 and ξ #8950. ξ #8950 keeps
+  its active-file guard behind one named function, which that stream re-homes onto `resolve_target` and
+  deletes. #8574 and #8471 are to be absorbed by that stream (notes on both; not cancelled now). This
+  PRD's §4.10 placement row 3 stands until that stream lands.
+- **K7-D10 (3)** (`§Uncontested block → K7-D10`): new G1 follow-on leaf **μ₂ #9278** after μ #8948 —
+  `push_serialized_event` moves into `gui_state_schema.rs` and the reify-gui `[diff, gui_state_schema, types]`
+  row leaves `scripts/module-scc-baseline.json` (fk-65db0c1c9ef3, low). Checks `macro-support-out-of-diff`,
+  `macro-support-in-schema`.
+- Cross-reference: K7-D3's standalone **#9279** (the chat sidecar's landlock workspace follows the open
+  design; respawn on change) depends on λ #8947 for `design_loaded`.
+- **2026-10-19, gui-engine-admission** (gap-fill lead, from that stream's cross-reference lines; `docs/prds/v0_6/gui-engine-admission.md`): §4.10 placement row 3 is superseded when that PRD's α #9387 lands, because the host guard is re-homed onto `EntryDocument::resolve_target`. ξ #8950, η #8943 and ο #8951 carry notes.

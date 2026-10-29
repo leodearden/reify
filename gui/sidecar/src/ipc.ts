@@ -1,7 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import type { InboundMessage, OutboundMessage } from './types.js';
 
-const VALID_INBOUND_TYPES = new Set(['send_message', 'abort', 'clear_session', 'tool_result', 'permission_decision']);
+const VALID_INBOUND_TYPES = new Set(['send_message', 'abort', 'clear_session', 'permission_decision']);
 
 /**
  * Parse a JSON line into an InboundMessage.
@@ -21,20 +21,6 @@ export function parseInboundMessage(line: string): InboundMessage {
     }
     if (typeof parsed.text !== 'string') {
       throw new Error('send_message requires a "text" field');
-    }
-  }
-  if (parsed.type === 'tool_result') {
-    if (typeof parsed.id !== 'string' || !parsed.id) {
-      throw new Error('tool_result requires a non-empty "id" field');
-    }
-    if (typeof parsed.tool_name !== 'string') {
-      throw new Error('tool_result requires a "tool_name" field');
-    }
-    if (!('result' in parsed)) {
-      throw new Error('tool_result requires a "result" field');
-    }
-    if (typeof parsed.tool_use_id !== 'string' || !parsed.tool_use_id) {
-      throw new Error('tool_result requires a non-empty "tool_use_id" field');
     }
   }
   if (parsed.type === 'permission_decision') {

@@ -22,6 +22,7 @@ tasks:
     verdict: PASS
 - label: β
   task_id: 8646
+  status: 'subsumed by #8935 (S10 β₁; cancelled with x_subsumed_by=8935 under retro-critic R12, 2026-10-20). The hand-written-cfg-sites-baseline check moved to #8935 as hand-written-cfg-sites-gone; this block keeps it as recorded.'
   title: 'native-dep table β: reify_build_utils::detect(dep) owns rerun, check-cfg and has_<dep>; find() private; 8 build.rs migrated'
   capabilities:
   - name: hand-written-cfg-sites-baseline

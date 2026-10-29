@@ -5,13 +5,14 @@ use std::collections::{HashMap, HashSet};
 use crate::dependent_reads::{CellReads, DependentCellReads};
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
+use reify_core::diagnostics::{BoundSide, UnboundedSide, unbounded_auto_clause};
 use reify_core::{
     ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash,
 };
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult,
-    TAG_CONDITIONAL, Value, ValueMap,
+    TAG_CONDITIONAL, Value, ValueMap, dimension_of,
 };
 
 /// Maximum iterations for Nelder-Mead.
@@ -113,14 +114,6 @@ struct SolveMeta {
 /// the cost combines the objective value with a weighted penalty term.
 pub struct DimensionalSolver;
 
-/// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
-fn dimension_of(ty: &Type) -> DimensionVector {
-    match ty {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    }
-}
-
 /// Build the solved-values HashMap from auto params and their f64 solutions.
 ///
 /// Each param is mapped to a Value::Scalar with the correct SI value
@@ -169,12 +162,60 @@ pub(crate) fn ctx_with<'a>(
     }
 }
 
-/// Build a ValueMap from a base map with trial auto-param values inserted,
-/// then recompute the cluster's dependent cells AT that trial point.
+/// The solve-invariant inputs that turn a trial vector `x` into the
+/// [`ValueMap`] the solver evaluates at.  The solver's own trial-point builder
+/// and [`JacobianModel`](crate::JacobianModel) both read it, so a Jacobian is
+/// taken at the point the solver stands on.
+#[derive(Clone, Copy)]
+pub struct TrialModel<'a> {
+    /// The autos `x` binds, positionally: `x[i]` is `auto_params[i]`.
+    pub auto_params: &'a [AutoParam],
+    /// Every non-auto cell's value, carried through unchanged unless it is a
+    /// dependent cell.
+    pub base_values: &'a ValueMap,
+    /// Cluster cells that must be recomputed at every trial point (task #5189
+    /// β). Empty for every non-clustered solve, which is what keeps the legacy
+    /// cost surface bit-identical.
+    pub dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    /// User-defined functions available to every expression evaluated at the
+    /// trial point.
+    pub functions: &'a [CompiledFunction],
+    /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
+    /// path, which evaluates in a plain `EvalContext::new`. `Some(d)`
+    /// lets an `@optimized` call (e.g. `solve_elastic_static(..)`) resolve to a
+    /// REAL value at every trial point instead of body-evaluating to
+    /// `Value::Undef`.
+    ///
+    /// `reify_ir::ComputeDispatch: Send + Sync`, so a `TrialModel` is
+    /// `Send + Sync`, as argmin's `Executor` requires of the cost function
+    /// holding one.
+    pub dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+}
+
+impl<'a> TrialModel<'a> {
+    /// The trial model of `problem`: its autos, current values, dependent cells
+    /// and functions, evaluated through `dispatch`.
+    pub fn from_problem(
+        problem: &'a ResolutionProblem,
+        dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    ) -> Self {
+        Self {
+            auto_params: &problem.auto_params,
+            base_values: &problem.current_values,
+            dependent_cells: &problem.dependent_cells,
+            functions: &problem.functions,
+            dispatch,
+        }
+    }
+}
+
+/// Build a ValueMap from the model's base map with the trial point `x`
+/// inserted for its autos, then recompute the model's dependent cells AT that
+/// trial point.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
-/// Maps params directly to avoid the intermediate HashMap allocation that
+/// Maps the autos directly to avoid the intermediate HashMap allocation that
 /// `build_solved_values` would create — this is the hot path called on
 /// every Nelder-Mead iteration.
 ///
@@ -183,9 +224,10 @@ pub(crate) fn ctx_with<'a>(
 /// In a whole-model joint drive the objective typically does not read the auto
 /// directly — it reads a DERIVED cell that is a function of the auto (the
 /// stdlib `Costed` trait's `line_cost = unit_cost * quantity_produced` is the
-/// canonical case). Those derived cells are non-auto values living in `base`,
-/// so without this fold every trial point re-reads their STALE base value: the
-/// objective is constant in the auto and Nelder-Mead has no gradient to follow.
+/// canonical case). Those derived cells are non-auto values living in
+/// `base_values`, so without this fold every trial point re-reads their STALE
+/// base value: the objective is constant in the auto and Nelder-Mead has no
+/// gradient to follow.
 ///
 /// `dependent_cells` is consumed IN STORED ORDER, and the `EvalContext` is
 /// rebuilt against the RUNNING map each iteration so an earlier dependent cell
@@ -207,16 +249,20 @@ pub(crate) fn ctx_with<'a>(
 ///   evaluated. A collision is a membership BUG, so debug builds trip a
 ///   `debug_assert!` naming the offending cell; release builds skip the entry
 ///   and keep the trial point intact.
-pub(crate) fn build_trial_values(
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> ValueMap {
-    let mut values = base.clone();
-    for (param, &val) in params.iter().zip(x.iter()) {
+///
+/// # Panics
+///
+/// If `x.len() != model.auto_params.len()`. The mapping is positional, so an
+/// `x` of any other length names no point at all; silently truncating it would
+/// stand the solve at a point it never named.
+pub(crate) fn build_trial_values(model: &TrialModel<'_>, x: &[f64]) -> ValueMap {
+    assert_eq!(
+        model.auto_params.len(),
+        x.len(),
+        "auto_params and x must have the same length — the mapping is positional"
+    );
+    let mut values = model.base_values.clone();
+    for (param, &val) in model.auto_params.iter().zip(x.iter()) {
         values.insert(
             param.id.clone(),
             Value::Scalar {
@@ -230,10 +276,10 @@ pub(crate) fn build_trial_values(
     // expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot path.
     fold_dependent_cells(
         &mut values,
-        dependent_cells,
-        functions,
-        |id| params.iter().any(|p| &p.id == id),
-        dispatch,
+        model.dependent_cells,
+        model.functions,
+        |id| model.auto_params.iter().any(|p| &p.id == id),
+        model.dispatch,
     );
     values
 }
@@ -1289,14 +1335,7 @@ fn constraints_witness(
         .iter()
         .map(|p| values.get(&p.id).and_then(Value::as_f64))
         .collect::<Option<_>>()?;
-    let witness = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        &xs,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let witness = build_trial_values(&TrialModel::from_problem(problem, dispatch), &xs);
     satisfies_target(&witness).then_some(witness)
 }
 
@@ -2209,27 +2248,53 @@ impl DefaultBoundedParam {
         })
     }
 
+    /// The model bounds this param on exactly one side; the other fell back to
+    /// the solver default.
+    fn is_one_sided(&self) -> bool {
+        self.default_lo.is_some() != self.default_hi.is_some()
+    }
+
+    /// The solve put this param ON a default bound it fell back to. `false`
+    /// for a missing or non-numeric solved value.
+    fn solved_on_default_edge(&self, solved: &HashMap<ValueCellId, Value>) -> bool {
+        let Some(value) = solved.get(&self.id).and_then(Value::as_f64) else {
+            return false;
+        };
+        [self.default_lo, self.default_hi]
+            .into_iter()
+            .flatten()
+            .any(|edge| within_uniqueness_tol(value, edge))
+    }
+
     /// The user-facing clause naming this param, each side no constraint
-    /// bounded, and the solver-internal bound used there.
+    /// bounded, and the solver-internal bound used there, in the wording the
+    /// compile-time arm shares ([`unbounded_auto_clause`]).
     ///
-    /// ONE rendering path for one, two or both sides — the invariant above makes
-    /// `sides` non-empty, so there is no empty-list case to special-case. Each
-    /// bound renders through `Value`'s `Display`, the same `Value::Scalar` shape
+    /// The invariant above makes the side list non-empty. Each bound renders
+    /// through `Value`'s `Display`, the same `Value::Scalar` shape
     /// [`build_solved_values`] reports a resolved value in, so the unit label is
     /// the one the user sees on every other value.
     fn clause(&self) -> String {
-        let quantity = |si_value: f64| Value::Scalar {
-            si_value,
-            dimension: self.dimension,
+        let quantity = |si_value: f64| {
+            Value::Scalar {
+                si_value,
+                dimension: self.dimension,
+            }
+            .to_string()
         };
-        let mut sides = Vec::with_capacity(2);
-        if let Some(lo) = self.default_lo {
-            sides.push(format!("below (solver default {})", quantity(lo)));
-        }
-        if let Some(hi) = self.default_hi {
-            sides.push(format!("above (solver default {})", quantity(hi)));
-        }
-        format!("no constraint bounds `{}` {}", self.id, sides.join(" or "))
+        let unbounded: Vec<UnboundedSide> = [
+            (BoundSide::Below, self.default_lo),
+            (BoundSide::Above, self.default_hi),
+        ]
+        .into_iter()
+        .filter_map(|(side, default)| {
+            default.map(|bound| UnboundedSide {
+                side,
+                solver_default: Some(quantity(bound)),
+            })
+        })
+        .collect();
+        unbounded_auto_clause(&self.id, &unbounded)
     }
 }
 
@@ -2245,11 +2310,11 @@ enum Determinedness {
     /// Every listed param is bounded on a side only by a solver-internal
     /// default — genuine non-determinedness, with the measurement to prove it.
     ///
-    /// Reachable ONLY from the γ `cost_robustness_tradeoff` branch, which is the
-    /// only route that computes per-param evidence. That is a statement about
-    /// where the evidence comes from, not a general capability: the perturbation
-    /// path answers §11.6 by re-solving, and a re-solve disagreeing says nothing
-    /// about WHICH bound was responsible.
+    /// Two producers, both of which compute per-param evidence: the γ
+    /// `cost_robustness_tradeoff` bracketing branch, and the synthetic-centrality
+    /// corner-pick screen ([`centrality_corner_picks`], #6692). The perturbation
+    /// path cannot produce it: it answers §11.6 by re-solving, and a re-solve
+    /// disagreeing says nothing about WHICH bound was responsible.
     DefaultBoundsDetermined(Vec<DefaultBoundedParam>),
     /// Non-determinedness with no per-param evidence: the perturbation re-solve
     /// disagreed, or the missing/non-numeric solved-value guard fired.
@@ -2265,6 +2330,8 @@ enum Determinedness {
 /// optimal under the applicable objective") for the γ `cost_robustness_tradeoff`
 /// path, where the perturbation machinery `verify_uniqueness` normally uses is
 /// structurally inapplicable (see that function's doc for the measured ruling).
+/// Its second consumer, [`centrality_corner_picks`] (#6692), projects it onto
+/// the one-sided entries the solve landed on the default edge of.
 ///
 /// - Both sides constraint-derived ⇒ NO entry. The objective's argmin is taken
 ///   over an interval the USER authored, so the resolved value is fixed by the
@@ -2298,11 +2365,11 @@ enum Determinedness {
 ///
 /// MONOTONE in `underivable`: growing that set can only move a param from
 /// "reported" to "abstained", never the reverse, so the returned list can only
-/// SHRINK. `verify_uniqueness` RELIES on this — it evaluates against an empty
-/// set first and only builds the (per-conjunct, eval-heavy) evidence set if that
-/// first answer is NON-EMPTY. Keep the `underivable` filter AHEAD of the
-/// per-param evidence step; a rule that let the evidence set ADD an entry would
-/// silently break that short-circuit.
+/// SHRINK. [`default_bounded_after_abstention`] RELIES on this — it evaluates
+/// against an empty set first and only builds the (per-conjunct, eval-heavy)
+/// evidence set if that first answer is NON-EMPTY. Keep the `underivable`
+/// filter AHEAD of the per-param evidence step; a rule that let the evidence
+/// set ADD an entry would silently break that short-circuit.
 /// `default_bounded_strict_autos_abstains_for_underivable_param` pins both
 /// directions on one fixture.
 ///
@@ -2399,6 +2466,61 @@ fn default_bounded_strict_autos(
             DefaultBoundedParam::new(p, &intervals.get(i).copied().unwrap_or_default())
         })
         .collect()
+}
+
+/// [`default_bounded_strict_autos`] restricted to the entries `keep` accepts,
+/// with the esc-5711-3 abstention ([`params_in_underivable_constraints`])
+/// applied LAZILY.
+///
+/// The abstention set re-runs `derive_from_expr`, and through it `eval_expr`,
+/// once per leaf conjunct, so it is built only when the raw derivation already
+/// reports something. That skip is sound because the detector is MONOTONE in
+/// the abstention set and `keep` judges each entry alone: the second answer can
+/// only shrink the first, so an empty first answer is final.
+fn default_bounded_after_abstention(
+    problem: &ResolutionProblem,
+    intervals: &[DerivedInterval],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+    keep: impl Fn(&DefaultBoundedParam) -> bool,
+) -> Vec<DefaultBoundedParam> {
+    let kept = |underivable: &HashSet<usize>| -> Vec<DefaultBoundedParam> {
+        default_bounded_strict_autos(&problem.auto_params, intervals, underivable)
+            .into_iter()
+            .filter(|param| keep(param))
+            .collect()
+    };
+    let raw = kept(&HashSet::new());
+    if raw.is_empty() {
+        return raw;
+    }
+    kept(&params_in_underivable_constraints(
+        &problem.auto_params,
+        &problem.constraints,
+        &problem.dependent_cells,
+        &problem.current_values,
+        &problem.functions,
+        dispatch,
+    ))
+}
+
+/// The strict autos the synthetic centrality objective CORNER-PICKED (#6692):
+/// bounded by the model on one side only, and solved onto the solver-default
+/// edge of the other. Centrality is monotone in such a param, so its argmax is
+/// that edge — an artifact of [`default_bounds_for`], not a designed value.
+///
+/// A projection of [`default_bounded_strict_autos`], never a second detector.
+/// The on-edge filter is a trust check on the solve RESULT: a param the
+/// syntactic derivation reads as one-sided, but which a derived cell bounds on
+/// the other side (#7727), resolves off the edge and is not reported.
+fn centrality_corner_picks(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+    intervals: &[DerivedInterval],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Vec<DefaultBoundedParam> {
+    default_bounded_after_abstention(problem, intervals, dispatch, |param| {
+        param.is_one_sided() && param.solved_on_default_edge(solved_values)
+    })
 }
 
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
@@ -2521,29 +2643,13 @@ pub fn build_centrality_objective(
 /// Evaluates constraint violations (and optionally an objective) given
 /// a parameter vector of f64 SI values.
 struct ConstraintCostFunction<'a> {
-    auto_params: &'a [AutoParam],
+    trial: TrialModel<'a>,
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
-    base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
-    functions: &'a [CompiledFunction],
-    /// Clamp box, one entry per `auto_params` entry, from [`resolve_bounds`]
-    /// (task #5618). Was `effective_bounds(param)` computed inline, which for a
-    /// dimensionless Real is the useless `(-1e6, 1e6)`.
+    /// Clamp box, one entry per `trial.auto_params` entry, from
+    /// [`resolve_bounds`] (task #5618). Was `effective_bounds(param)` computed
+    /// inline, which for a dimensionless Real is the useless `(-1e6, 1e6)`.
     bounds: &'a [(f64, f64)],
-    /// Cluster cells that must be recomputed at every trial point — see
-    /// [`build_trial_values`]. Empty for every non-clustered solve, which is
-    /// what keeps the legacy cost surface bit-identical.
-    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
-    /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
-    /// path, which makes [`ctx_with`] degenerate to `EvalContext::new` and the
-    /// cost surface byte-identical to pre-#4880. `Some(d)` lets an `@optimized`
-    /// call inside a constraint / objective expression (e.g.
-    /// `solve_elastic_static(..)`) resolve to a REAL value at every Nelder-Mead
-    /// trial point instead of body-evaluating to `Value::Undef`.
-    ///
-    /// `reify_ir::ComputeDispatch: Send + Sync`, so `&dyn ComputeDispatch` keeps
-    /// `ConstraintCostFunction` `Send + Sync` as argmin's `Executor` requires.
-    dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
 /// Why [`eval_objective_set`] could not produce an orderable score.
@@ -2709,22 +2815,20 @@ impl CostFunction for ConstraintCostFunction<'_> {
             clamped.push(cv);
         }
 
-        let values = build_trial_values(
-            self.base_values,
-            self.auto_params,
-            &clamped,
-            self.dependent_cells,
-            self.functions,
-            self.dispatch,
+        let values = build_trial_values(&self.trial, &clamped);
+        let violation = compute_total_violation(
+            self.constraints,
+            &values,
+            self.trial.functions,
+            self.trial.dispatch,
         );
-        let violation =
-            compute_total_violation(self.constraints, &values, self.functions, self.dispatch);
 
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value = eval_objective_set(obj, &values, self.functions, self.dispatch)
-                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                let obj_value =
+                    eval_objective_set(obj, &values, self.trial.functions, self.trial.dispatch)
+                        .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -2966,14 +3070,8 @@ fn solve_core_with_sd_tolerance(
     // fallback objective validation when the optimizer drifts infeasible.
     // Building it here before the floor block eliminates the redundant second
     // call that was previously inside the floor synthesis branch.
-    let trial_values = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        initial,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let trial_model = TrialModel::from_problem(problem, dispatch);
+    let trial_values = build_trial_values(&trial_model, initial);
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
@@ -3174,14 +3272,10 @@ fn solve_core_with_sd_tolerance(
     };
 
     let cost_fn = ConstraintCostFunction {
-        auto_params: &problem.auto_params,
+        trial: trial_model,
         constraints: &effective_constraints,
-        base_values: &problem.current_values,
         objective: effective_objective,
-        functions: &problem.functions,
         bounds: &bounds,
-        dependent_cells: &problem.dependent_cells,
-        dispatch,
     };
 
     // Build simplex from the provided initial point
@@ -3266,14 +3360,7 @@ fn solve_core_with_sd_tolerance(
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        &clamped,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let final_values = build_trial_values(&trial_model, &clamped);
     let final_residual = max_constraint_residual(
         &effective_constraints,
         &final_values,
@@ -4265,31 +4352,10 @@ fn verify_uniqueness(
         // esc-5711-3: a param whose missing side is attributable to a
         // constraint the derivation could not READ abstains rather than
         // reporting non-uniqueness — see `params_in_underivable_constraints`.
-        //
-        // Computed LAZILY (review suggestion 1). The predicate is MONOTONE in
-        // its `underivable` argument — that set can only move a param from
-        // "not bracketed" to "abstain", never the reverse — so when the raw
-        // derivation already brackets every strict auto the evidence set cannot
-        // change the verdict, and the per-conjunct re-derivation (which re-runs
-        // `derive_from_expr`, and through it `eval_expr`, once per leaf
-        // conjunct) is skipped entirely. That is the common case: the γ models
-        // this branch exists to keep green.
-        let mut default_bounded =
-            default_bounded_strict_autos(&problem.auto_params, &intervals, &HashSet::new());
-        if !default_bounded.is_empty() {
-            default_bounded = default_bounded_strict_autos(
-                &problem.auto_params,
-                &intervals,
-                &params_in_underivable_constraints(
-                    &problem.auto_params,
-                    &problem.constraints,
-                    &problem.dependent_cells,
-                    &problem.current_values,
-                    &problem.functions,
-                    dispatch,
-                ),
-            );
-        }
+        // The common case, where the raw derivation already brackets every
+        // strict auto, skips that evidence set entirely (review suggestion 1).
+        let default_bounded =
+            default_bounded_after_abstention(problem, &intervals, dispatch, |_| true);
         // debug!, deliberately NOT warn!: solver_tracing.rs's
         // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
         // assertion must both stay untouched by this branch.
@@ -4304,6 +4370,23 @@ fn verify_uniqueness(
         } else {
             Determinedness::DefaultBoundsDetermined(default_bounded)
         };
+    }
+
+    // #6692: with no explicit objective the solve was steered by the synthetic
+    // centrality objective, which drives a one-sided strict auto onto its
+    // default edge — and a perturbation re-solve lands on the same edge and
+    // calls it unique. An explicit objective governs its own solve and is left
+    // to the perturbation path (#5975 owns the unbounded-objective case).
+    if problem.objective.is_none() {
+        let corner_picks = centrality_corner_picks(problem, solved_values, &intervals, dispatch);
+        // debug!, NOT warn!: solver_tracing.rs pins this module's warn counts.
+        tracing::debug!(
+            corner_picks = corner_picks.len(),
+            "uniqueness check: screening for centrality corner-picks of one-sided strict autos"
+        );
+        if !corner_picks.is_empty() {
+            return Determinedness::DefaultBoundsDetermined(corner_picks);
+        }
     }
 
     tracing::debug!(
@@ -4472,11 +4555,12 @@ fn finalise_uniqueness(
                     .with_code(DiagnosticCode::ConstraintNonUnique),
                 ],
             },
-            // The γ branch DID measure a cause, so report it: which param,
-            // which side no constraint bounded, the bound the solve fell back
-            // to, and the fix. The `not uniquely determined` diagnosis phrase is
-            // shared with the arm above, so the diagnosis is ONE phrase rather
-            // than two dialects.
+            // Both producers (γ bracketing, the centrality corner-pick screen)
+            // measured a cause, so report it: which param, which side no
+            // constraint bounded, the bound the solve fell back to, and the
+            // fix. The `not uniquely determined` diagnosis phrase is shared
+            // with the arm above, so the diagnosis is ONE phrase rather than
+            // two dialects.
             //
             // `reify_core::Diagnostic` has no note/help channel and its
             // `candidates` field carries a bare-FQN-only invariant, so the cause
@@ -4839,6 +4923,22 @@ mod tests {
         (id, params)
     }
 
+    /// A [`super::TrialModel`] with no user functions and no compute dispatch —
+    /// the shape the `build_trial_values` and cost-function tests need.
+    fn trial_model<'a>(
+        base: &'a ValueMap,
+        params: &'a [reify_ir::AutoParam],
+        cells: &'a [(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+    ) -> super::TrialModel<'a> {
+        super::TrialModel {
+            auto_params: params,
+            base_values: base,
+            dependent_cells: cells,
+            functions: &[],
+            dispatch: None,
+        }
+    }
+
     /// The pre-#5618 reflection box: each param's own [`super::effective_bounds`].
     ///
     /// Task #5618 made [`super::build_perturbation_anchors`]' box caller-supplied so
@@ -4964,7 +5064,7 @@ mod tests {
             free: false,
         }];
 
-        let trial = build_trial_values(&base, &params, &[0.005], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
 
         // Auto param should be inserted with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -5028,7 +5128,7 @@ mod tests {
             },
         ];
 
-        let trial = build_trial_values(&base, &params, &[0.005, 1.2], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &params, &[]), &[0.005, 1.2]);
 
         // First auto param: length with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -5516,7 +5616,7 @@ mod tests {
         );
 
         // Empty params slice — should return base unchanged
-        let trial = build_trial_values(&base, &[], &[], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &[], &[]), &[]);
 
         // Base value preserved
         let width = trial.get(&width_id).expect("width should be preserved");
@@ -6892,8 +6992,10 @@ mod tests {
             ConstraintNodeId::new("Part", 0),
             CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
         )];
-        let values =
-            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+        let values = super::build_trial_values(
+            &trial_model(&ValueMap::new(), &params, &cells),
+            &[0.0, 0.0025],
+        );
 
         let intervals =
             super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
@@ -8062,16 +8164,12 @@ mod tests {
         let base_values = ValueMap::new();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base_values, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base_values,
             objective: None,
-            functions: &[],
             // Task #5618: the clamp box is now supplied by the caller
             // (`resolve_bounds`) rather than read from `AutoParam.bounds` inline.
             bounds: &[(0.0, 0.010)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         // In bounds: x=0.005
@@ -8136,14 +8234,10 @@ mod tests {
         let base_values = ValueMap::new();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base_values, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base_values,
             objective: Some(&objective),
-            functions: &[],
             bounds: &[(0.0, 0.010)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         cost_fn
@@ -10164,7 +10258,7 @@ mod tests {
                 },
             );
         }
-        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
+        let values = super::build_trial_values(&trial_model(&prior, &params, cells), &trial);
         super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
     }
 
@@ -11188,8 +11282,8 @@ mod tests {
             joint_drive_dependent_cell_fixture();
 
         // ---- half 1: the helper folds, so the objective moves ----
-        let lo = build_trial_values(&base, &auto_params, &[2.0], &dependent_cells, &[], None);
-        let hi = build_trial_values(&base, &auto_params, &[8.0], &dependent_cells, &[], None);
+        let lo = build_trial_values(&trial_model(&base, &auto_params, &dependent_cells), &[2.0]);
+        let hi = build_trial_values(&trial_model(&base, &auto_params, &dependent_cells), &[8.0]);
 
         let obj_lo = eval_objective_set(&objective, &lo, &[], None)
             .expect("objective must be numeric at q=2 once line_cost is folded");
@@ -11224,19 +11318,15 @@ mod tests {
         // Pinning only the helper would leave `cost()` free to keep calling an
         // unfolded variant, which is precisely the divergence β must prevent.
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base, &auto_params, &dependent_cells),
             constraints: &constraints,
-            base_values: &base,
             objective: Some(&objective),
-            functions: &[],
             // Task #5618: the clamp box is supplied by the caller. This is what
             // `resolve_bounds` yields for the fixture's lone `q >= 1.0` composed
             // against the dimensionless default box — so q=2 and q=8 are both
             // strictly inside it and contribute no bound penalty, keeping the
             // objective the only varying term this test is measuring.
             bounds: &[(1.0, 1e6)],
-            dependent_cells: &dependent_cells,
-            dispatch: None,
         };
         let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
         let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
@@ -11259,6 +11349,159 @@ mod tests {
             cost_lo < UNDEF_OBJECTIVE_PENALTY,
             "cost must not be the Undef sentinel; got {cost_lo}"
         );
+    }
+
+    /// `TrialModel::from_problem` must wire the problem's autos, current values
+    /// and `dependent_cells`: a model that dropped the cells would hand back
+    /// `line_cost`'s stale base value (999.0) at every trial point. The other two
+    /// inputs, `functions` and `dispatch`, are pinned by the next test.
+    #[test]
+    fn trial_model_from_problem_folds_the_problems_dependent_cells_at_the_trial_point() {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
+
+        let (auto_params, constraints, base, dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+        let q_id = auto_params[0].id.clone();
+        let line_cost_id = dependent_cells[0].0.clone();
+        let problem = ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: base.clone(),
+            objective: Some(objective),
+            functions: vec![].into(),
+            dependent_cells,
+        };
+        let model = TrialModel::from_problem(&problem, None);
+
+        let mut line_costs = Vec::new();
+        for q in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&model, &[q]);
+
+            assert_eq!(
+                values.get(&q_id),
+                Some(&Value::Scalar {
+                    si_value: q,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }),
+                "the auto must hold the trial scalar with its declared dimension"
+            );
+            for (id, v) in base.iter() {
+                if id != &line_cost_id {
+                    assert_eq!(
+                        values.get(id),
+                        Some(v),
+                        "base-only cell {id:?} must pass through"
+                    );
+                }
+            }
+            assert_eq!(values.len(), base.len() + 1, "only the auto may be added");
+
+            // line_cost = unit_cost * q, with unit_cost = 0.5 USD in the fixture.
+            let want = 0.5 * q;
+            match values.get(&line_cost_id) {
+                Some(&Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => {
+                    assert!(
+                        (si_value - want).abs() < 1e-12,
+                        "line_cost at q={q} must be recomputed as 0.5*q = {want}, got \
+                         {si_value} (999.0 means `from_problem` dropped the dependent cells)"
+                    );
+                    assert_eq!(dimension, DimensionVector::MONEY);
+                    line_costs.push(si_value);
+                }
+                other => panic!("expected a Scalar at line_cost, got {other:?}"),
+            }
+        }
+        assert_ne!(
+            line_costs[0], line_costs[1],
+            "the dependent cell must differ between the two trial points"
+        );
+    }
+
+    /// `TrialModel::from_problem` must also wire the problem's `functions` and
+    /// the caller's `dispatch`. The dependent cell here is `stress(t)`, an
+    /// `@optimized` stub whose body is `Undef`: it folds to `K / t` only when the
+    /// call finds `stress` among the functions AND the dispatcher answers its
+    /// target. A model that dropped either input folds `Undef` instead.
+    #[test]
+    fn trial_model_from_problem_evaluates_dependent_cells_with_the_problems_functions_and_dispatch()
+    {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, Value};
+        use std::sync::atomic::AtomicUsize;
+
+        let (t_id, mut problem) = fea_binding_problem();
+        let stress_id = ValueCellId::new("Bracket", "stress");
+        problem.current_values.insert(
+            stress_id.clone(),
+            Value::Scalar {
+                si_value: 999.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        problem.dependent_cells = vec![(
+            stress_id.clone(),
+            CompiledExpr::user_function_call(
+                "stress".to_string(),
+                vec![CompiledExpr::value_ref(t_id, Type::length())],
+                Type::dimensionless_scalar(),
+            ),
+        )];
+        let dispatch = CountingDispatch {
+            calls: AtomicUsize::new(0),
+            k: 1.0,
+        };
+        let model = TrialModel::from_problem(&problem, Some(&dispatch));
+
+        for t in [0.25_f64, 0.5_f64] {
+            let want = 1.0 / t;
+            match build_trial_values(&model, &[t]).get(&stress_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - want).abs() < 1e-12,
+                    "stress at t={t} must fold to K/t = {want}, got {si_value} \
+                     (999.0 means `from_problem` dropped the dependent cells)"
+                ),
+                other => panic!(
+                    "stress at t={t} must fold to the dispatched Scalar {want}, got \
+                     {other:?} (Undef means `from_problem` dropped `functions` or \
+                     `dispatch`)"
+                ),
+            }
+        }
+    }
+
+    /// The x ↔ auto_params mapping is positional, so an `x` of the wrong
+    /// length names no point at all: it must be refused, not truncated to
+    /// whichever autos happen to have a coordinate.
+    #[test]
+    #[should_panic(expected = "the mapping is positional")]
+    fn build_trial_values_refuses_an_x_that_does_not_match_auto_params() {
+        use super::build_trial_values;
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
+
+        let params = vec![
+            AutoParam {
+                id: ValueCellId::new("Bracket", "thickness"),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+            AutoParam {
+                id: ValueCellId::new("Bracket", "angle"),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
+            },
+        ];
+        let base = ValueMap::new();
+
+        let _ = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
     }
 
     /// Assert two `ValueMap`s hold exactly the same keys bound to exactly the
@@ -11341,14 +11584,14 @@ mod tests {
         );
 
         assert_same_value_map(
-            &build_trial_values(&base, &params, &[0.005, 1.2], &[], &[], None),
+            &build_trial_values(&trial_model(&base, &params, &[]), &[0.005, 1.2]),
             &expected,
             "multi-param, empty dependent_cells",
         );
 
         // Empty params AND empty dependent_cells: the base map, untouched.
         assert_same_value_map(
-            &build_trial_values(&base, &[], &[], &[], &[], None),
+            &build_trial_values(&trial_model(&base, &[], &[]), &[]),
             &base,
             "empty params, empty dependent_cells",
         );
@@ -11371,17 +11614,13 @@ mod tests {
             joint_drive_dependent_cell_fixture();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base,
             objective: Some(&objective),
-            functions: &[],
             // Task #5618: same clamp box as the sibling test above — see there
             // for why (1.0, 1e6) is the production-faithful value for this
             // fixture, and why it must not clamp q=2 or q=8.
             bounds: &[(1.0, 1e6)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
@@ -11576,7 +11815,7 @@ mod tests {
 
         let (_q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
-        let _ = build_trial_values(&base, &auto_params, &[2.0_f64], &hostile, &[], None);
+        let _ = build_trial_values(&trial_model(&base, &auto_params, &hostile), &[2.0_f64]);
     }
 
     /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
@@ -11606,7 +11845,7 @@ mod tests {
         let (q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
         for trial in [2.0_f64, 8.0_f64] {
-            let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[], None);
+            let values = build_trial_values(&trial_model(&base, &auto_params, &hostile), &[trial]);
             match values.get(&q_id) {
                 Some(&Value::Scalar { si_value, .. }) => assert!(
                     (si_value - trial).abs() < 1e-12,
@@ -11690,8 +11929,10 @@ mod tests {
         )];
 
         for trial in [2.0_f64, 8.0_f64] {
-            let values =
-                build_trial_values(&base, &auto_params, &[trial], &dependent_cells, &[], None);
+            let values = build_trial_values(
+                &trial_model(&base, &auto_params, &dependent_cells),
+                &[trial],
+            );
 
             match values.get(&dispatched_id) {
                 Some(&Value::Scalar { si_value, .. }) => assert!(

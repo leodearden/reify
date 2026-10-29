@@ -84,6 +84,18 @@ impl PortPath {
         self.joined_under(root)
     }
 
+    /// The port name every element's endpoint shares, with an
+    /// [`PortRoot::Element`] root rendered as `coll_sub[var]`, so it never names
+    /// one element. The bracket form keeps the sub-member lookup's indexer
+    /// stripping working. A literal index is rendered as written.
+    pub(crate) fn at_bound_variable(&self, coll_sub: &str, var: &str) -> String {
+        let root = self
+            .root
+            .fixed_segment()
+            .unwrap_or_else(|| format!("{coll_sub}[{var}]"));
+        self.joined_under(root)
+    }
+
     /// The port name, or `None` when the root is the unbound element.
     pub(crate) fn port_name(&self) -> Option<String> {
         Some(self.joined_under(self.root.fixed_segment()?))
@@ -171,6 +183,7 @@ mod tests {
             }
         );
         assert_eq!(path.at_element("vents", 2), "vents[2]");
+        assert_eq!(path.at_bound_variable("vents", "v"), "vents[v]");
         assert_eq!(path.port_name(), None);
     }
 
@@ -195,6 +208,7 @@ mod tests {
         let path = PortPath::parse(&endpoint, Some("v")).unwrap();
 
         assert_eq!(path.at_element("vents", 2), "vents[0].outlet");
+        assert_eq!(path.at_bound_variable("vents", "v"), "vents[0].outlet");
         assert_eq!(path.port_name().as_deref(), Some("vents[0].outlet"));
     }
 

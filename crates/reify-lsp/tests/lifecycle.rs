@@ -39,16 +39,21 @@ async fn full_lifecycle_initialize_open_change_close() {
         })
         .await;
 
-    // Verify diagnostics are computable (no panics) by calling compute_diagnostics directly
-    let diags = reify_lsp::diagnostics::compute_diagnostics(source, &uri);
-    let errors: Vec<_> = diags
-        .iter()
-        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "valid bracket source should have no errors, got: {errors:?}"
-    );
+    // Verify the diagnostics the server published for the opened document
+    {
+        let state = server.state().read().await;
+        let published = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be published after did_open");
+        let errors: Vec<_> = published
+            .iter()
+            .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "valid bracket source should have no errors, got: {errors:?}"
+        );
+    }
 
     // 4. Change to broken source
     let broken = "structure {";
@@ -66,14 +71,19 @@ async fn full_lifecycle_initialize_open_change_close() {
         })
         .await;
 
-    // Verify broken source produces error diagnostics
-    let diags = reify_lsp::diagnostics::compute_diagnostics(broken, &uri);
-    assert!(
-        diags
-            .iter()
-            .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
-        "broken source should produce error diagnostics"
-    );
+    // Verify the server published error diagnostics for the broken source
+    {
+        let state = server.state().read().await;
+        let published = state
+            .last_diagnostics_for(&uri)
+            .expect("diagnostics should be published after did_change");
+        assert!(
+            published
+                .iter()
+                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR)),
+            "broken source should produce error diagnostics, got: {published:?}"
+        );
+    }
 
     // 5. Close
     server

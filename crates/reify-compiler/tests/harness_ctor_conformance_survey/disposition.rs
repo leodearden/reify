@@ -131,15 +131,14 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// conformance violation IS the fixture's content. Each listed fixture's header
 /// records its post-δ state. The `dcr_*` files record, SHA-stamped, that they
 /// evaluated clean at decompose, then a POST-δ block names THIS chokepoint as
-/// the source of their current exit 1. `curvature_rad_literal.ri` differs: it
-/// was already red at decompose on its own `ParamDefaultTypeMismatch`, and its
-/// POST-δ block records THIS chokepoint as a second Error on the same mismatch.
+/// the source of their current exit 1.
 /// How each owning leaf reads its signal instead is recorded once, in
 /// `docs/notes/ctor-conformance-flip-leaf-signals.md`.
 /// `dcr_solver_load_dropped_dimensioned.ri` exists for no other purpose than to
-/// show that the units-CORRECT `force: 1000N` contributes exactly ZERO force to
-/// `solve_elastic_static` while the bare control contributes 1000 N. Dimension
-/// the call site and the measurement it encodes is gone.
+/// show that the units-CORRECT `force: 1000N` contributed exactly ZERO force to
+/// `solve_elastic_static` while the bare control contributed 1000 N (until γ1
+/// #6922 widened the reader). Dimension the call site and the measurement it
+/// encodes is gone.
 ///
 /// So these are NOT un-migrated call sites that nobody got around to. That
 /// distinction is the entire reason this table carries a `why` column.
@@ -148,8 +147,8 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 ///
 /// PRD §4 D9 assigns the per-case judgment — call-site bug, or wrong declared
 /// field type — to γ. γ ruled: two sites were the call site's fault and are
-/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); these eleven
-/// are owned elsewhere and are deferred, per the shape
+/// fixed in this branch (see [`CTOR_CONFORMANCE_PINNED_CLEAN`]); the sites this
+/// table lists are owned elsewhere and are deferred, per the shape
 /// `CTOR_CONFORMANCE_GATE_REMEDY` remedy 3 already mandates on main — *"Add a
 /// per-SITE entry naming the file, the param and the LIVE task that owns
 /// retiring it. Per-site, never per-file, and never without an owner."*
@@ -184,14 +183,6 @@ fn pinned_clean_files_emit_no_ctor_conformance_diagnostic() {
 /// an unexplained site.
 pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] = &[
     (
-        "tests/prd-gate/fixtures/curvature_rad_literal.ri",
-        "kc",
-        "#6179",
-        "angle-completion leaf α, boundary row B1: CURVATURE is m^-1 pre-α, so the \
-         rad·m^-1 initializer mismatches; the fixture's own header calls that \
-         check-time flip α's signal",
-    ),
-    (
         "tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri",
         "force",
         "#6941",
@@ -216,23 +207,26 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "ex",
-        "#6922",
-        "leaf η: `FDMCouponOverride(ex: 2mm)` stores 0.002 m and the dimension-blind \
-         opt_f64 reads it as 0.002 Pa",
+        "#8008",
+        "deliberately-wrong before-image `FDMCouponOverride(ex: 2mm)`, kept failing at \
+         compile (#5306 ArgTypeMismatch); the reader gate landed in #6922 (η), which \
+         rejects a LENGTH ex as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "line_width",
-        "#6922",
-        "leaf η: `AsPrintedOptions(line_width: 0.4)` is read as 0.4 METRES by \
-         field_scalar — a 1000x error on a 0.4mm extrusion",
+        "#8008",
+        "deliberately-wrong before-image `AsPrintedOptions(line_width: 0.4)`, kept \
+         failing at compile (#5306 ArgTypeMismatch); the reader gate landed in #6922 \
+         (η), which rejects a bare line_width as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
         "mass",
-        "#6922",
-        "leaf ε: `MassProperties(mass: 2m)` is read as 2.0 kg by the blind cell_f64 \
-         copy, while the dimension-checking cell_mass_f64 sits unused ~300 lines away",
+        "#8008",
+        "deliberately-wrong before-image `MassProperties(mass: 2m)`, kept failing at \
+         compile (#5306 ArgTypeMismatch); the reader gate landed in #6922 (ε), whose \
+         MassProperties reader rejects a LENGTH mass as DimensionedArgRejected",
     ),
     (
         "tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri",
@@ -251,10 +245,10 @@ pub(crate) const CTOR_CONFORMANCE_CORPUS_RESIDUAL: &[(&str, &str, &str, &str)] =
     (
         "tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri",
         "force",
-        "#6922",
-        "leaf γ1 headline inversion: the units-CORRECT `force: 1000N` contributes \
-         EXACTLY ZERO force to solve_elastic_static (max_von_mises 0, iterations 0) \
-         where the bare control contributes 1000 N",
+        "#6941",
+        "leaf γ2: γ1 #6922 widened the load reader, so a FORCE-dimensioned PointLoad \
+         now applies exactly the bare control's force; the site fails at compile only \
+         because PointLoad.force is still declared `Real`, which γ2 retypes",
     ),
     (
         "tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri",
@@ -340,7 +334,7 @@ pub(crate) const CTOR_CONFORMANCE_SITE_SEVERITY: &str = "Error";
 /// `a_ctor_path_required_by_param_site_is_scoped_out_known_blind_spot` pins the
 /// current classification so the gap is visible rather than silent. The cure is
 /// a structured ctor-vs-fn-call discriminator on the diagnostic itself, not more
-/// prose matching — tracked as a follow-up to #5306.
+/// prose matching — owned by #7870.
 ///
 /// Both prefixes are already this survey's, read here rather than re-spelled:
 /// `epsilon_and_required_by_param_prose_extractors_hold_against_the_live_emitters`
@@ -582,13 +576,14 @@ impl Disposition {
 ///
 /// [`Owner::UnresolvedDef`] means "the anchor named something that is not a
 /// declared `structure def`", which is exactly the non-ctor call shape, and it
-/// does catch the first two. It is not sufficient, and the difference is
+/// does catch the first two. It is not sufficient, and the difference was
 /// MEASURED rather than argued: `raw_lambda`'s site recovers no def at all
-/// ([`Owner::Unknown`]) — and so does a genuine, waived ctor site,
-/// `curvature_rad_literal.ri :: param 'kc'`, whose label anchors at an
-/// initializer rather than at a `Def(` call. Scoping on the owner column would
-/// therefore stale a live [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`] entry, so the
-/// ctor/non-ctor split has to be read off the DIAGNOSTIC, not off the anchor.
+/// ([`Owner::Unknown`]) — and so did a genuine ctor site, then waived,
+/// `curvature_rad_literal.ri :: param 'kc'` (retired by #6179), whose label
+/// anchored at an initializer rather than at a `Def(` call. Scoping on the owner
+/// column would therefore have staled a live [`CTOR_CONFORMANCE_CORPUS_RESIDUAL`]
+/// entry, so the ctor/non-ctor split has to be read off the DIAGNOSTIC, not off
+/// the anchor.
 ///
 /// Stating the scope HERE rather than as a filter at each consumer is what keeps
 /// the artifact's `disposition` column and
@@ -1515,7 +1510,7 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # Cost
 ///
-/// The entries name SEVEN distinct files, so this compiles seven `.ri` members
+/// The entries name SIX distinct files, so this compiles six `.ri` members
 /// plus the cached stdlib prelude — the same order as
 /// [`pinned_clean_files_emit_no_ctor_conformance_diagnostic`], and nowhere near
 /// the 689-member corpus walk that keeps the generator `#[ignore]`d per
@@ -1525,8 +1520,8 @@ fn ctor_conformance_corpus_residual_entries_say_why() {
 ///
 /// # `partial` is tolerated here, unlike the clean pin
 ///
-/// These files are RED before-images, and `curvature_rad_literal.ri` carries
-/// Error-severity diagnostics TODAY (its own header says so) — a partially
+/// These files are RED before-images, and since δ (#5306) the `dcr_*` files carry
+/// Error-severity diagnostics TODAY (their POST-δ headers say so) — a partially
 /// compiled member still contributes its ctor sites. No vacuity follows: this
 /// assertion needs the sites to be PRESENT, so a file that stops contributing them
 /// turns its entries stale and reds this test BY NAME. `not_surveyed` is still

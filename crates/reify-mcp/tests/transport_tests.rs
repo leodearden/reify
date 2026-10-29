@@ -6,14 +6,33 @@ use std::task::{Context, Poll};
 use reify_mcp::context::MockToolContext;
 use reify_mcp::transport::McpServer;
 
+fn reply(server: &McpServer, request: &str) -> serde_json::Value {
+    let response = server
+        .handle_message(request)
+        .expect("a request carrying an id must get a reply");
+    serde_json::from_str(&response).unwrap()
+}
+
+/// Feed `input` through stream mode to EOF and return every line written.
+async fn stream_output_lines(server: &McpServer, input: &[u8]) -> Vec<String> {
+    let reader = tokio::io::BufReader::new(input);
+    let mut out: Vec<u8> = Vec::new();
+    let result = server.run_on_streams(reader, &mut out).await;
+    assert!(result.is_ok(), "stream mode failed: {:?}", result.err());
+    String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
 fn in_process_tools_list_returns_16_tools() {
     let ctx = Arc::new(MockToolContext::default());
     let server = McpServer::new(ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
-    let response_str = server.handle_message(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, request);
 
     let tools = response["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 16, "Expected 16 tools, got {}", tools.len());
@@ -33,8 +52,7 @@ fn in_process_tools_call_missing_params_returns_error() {
             "arguments": {}
         }
     });
-    let response_str = server.handle_message(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, &request.to_string());
 
     assert_eq!(response["result"]["isError"], true);
     let content = response["result"]["content"].as_array().unwrap();
@@ -53,8 +71,7 @@ fn in_process_unknown_method_returns_error() {
     let server = McpServer::new(ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":3,"method":"bogus/method","params":{}}"#;
-    let response_str = server.handle_message(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, request);
 
     assert_eq!(response["error"]["code"], -32601);
 }
@@ -105,8 +122,7 @@ fn integration_initialize_returns_capabilities() {
     let server = McpServer::new(ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#;
-    let response_str = server.handle_message(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, request);
 
     assert_eq!(response["jsonrpc"], "2.0");
     assert!(response["result"]["capabilities"]["tools"].is_object());
@@ -119,8 +135,7 @@ fn integration_tools_list_has_all_16_correct_names() {
     let server = McpServer::new(ctx);
 
     let request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
-    let response_str = server.handle_message(request);
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, request);
 
     let tools = response["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 16);
@@ -163,8 +178,7 @@ fn integration_tools_call_missing_params_error() {
             "arguments": {}
         }
     });
-    let response_str = server.handle_message(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, &request.to_string());
 
     assert_eq!(response["result"]["isError"], true);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -188,8 +202,7 @@ fn integration_tools_call_nonexistent_tool() {
             "arguments": {}
         }
     });
-    let response_str = server.handle_message(&request.to_string());
-    let response: serde_json::Value = serde_json::from_str(&response_str).unwrap();
+    let response = reply(&server, &request.to_string());
 
     assert_eq!(response["result"]["isError"], true);
     let text = response["result"]["content"][0]["text"].as_str().unwrap();
@@ -253,5 +266,47 @@ async fn stream_mode_graceful_eof_returns_ok() {
         result.is_ok(),
         "Expected Ok on graceful EOF, got Err: {:?}",
         result.err()
+    );
+}
+
+// --- B10: notifications produce no reply line ---
+
+#[tokio::test]
+async fn stream_mode_initialize_then_initialized_notification_writes_exactly_one_line() {
+    let ctx = Arc::new(MockToolContext::default());
+    let server = McpServer::new(ctx);
+
+    let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n\
+                  {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
+    let lines = stream_output_lines(&server, input).await;
+
+    assert_eq!(
+        lines.len(),
+        1,
+        "expected exactly one reply line, got {lines:?}"
+    );
+    let response: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(response["id"], 1);
+    assert_eq!(response["result"]["serverInfo"]["name"], "reify-mcp");
+}
+
+#[tokio::test]
+async fn stream_mode_notification_between_requests_keeps_replies_in_order() {
+    let ctx = Arc::new(MockToolContext::default());
+    let server = McpServer::new(ctx);
+
+    let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n\
+                  {\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n\
+                  {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n";
+    let lines = stream_output_lines(&server, input).await;
+
+    let ids: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["id"].clone())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![serde_json::json!(1), serde_json::json!(2)],
+        "expected replies to ids 1 then 2, got {lines:?}"
     );
 }

@@ -203,10 +203,7 @@ fn baseline_is_well_formed() {
 //
 // These hermetic unit tests drive crafted content straight through the SAME
 // `validate_baseline_content` validator, so every grammar/taxonomy/sort rule has
-// real coverage that does not depend on what the committed file contains. They
-// were written while the baseline was empty — when `baseline_is_well_formed`
-// alone would have exercised only the `path.exists()` branch — and they remain
-// the permanent home of that coverage now that it is not.
+// real coverage that does not depend on what the committed file contains.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -805,5 +802,5 @@ fn fixture_commands_remove_every_repo_redirect_var() {
 /// not vacuous.
 #[test]
 fn hook_env_replay_of_generator_scan_evidence_tests() {
-    common::git_env::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 4);
+    common::replay::replay_self_under_hook_git_env(&["generator_emits_scan_evidence"], 4);
 }

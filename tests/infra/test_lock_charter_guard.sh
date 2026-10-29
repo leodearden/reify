@@ -334,10 +334,11 @@ done <<< "$GUARD_OUT"
 # originating symptom: declaring tests/infra/run-all-classification.manifest in
 # a lock charter was REJECTed as a directory.
 #
-# The 12 reify-evidenced extensions below use REAL tracked paths (verified with
-# git ls-files --error-unmatch).  The other 10 are dark-factory-evidenced and
-# use literal path strings — valid inputs because C-P3 forbids any stat, the
-# same property Cycle 1 case E1 relies on.
+# 11 of the 12 reify-evidenced extensions below use REAL tracked paths
+# (verified with git ls-files --error-unmatch).  `.jq` lost reify's only
+# tracked file to task 9269, so it, like the 10 dark-factory-evidenced
+# extensions, uses a literal path string — valid inputs because C-P3 forbids
+# any stat, the same property Cycle 1 case E1 relies on.
 #
 # step-1: verify RED; step-2 GREEN by expanding _EXTS.
 # ---------------------------------------------------------------------------
@@ -353,7 +354,7 @@ for _ext_path in \
     "gui/src/editor/reify.grammar" \
     "gui/src-tauri/icons/icon.icns" \
     "gui/src-tauri/icons/icon.ico" \
-    "scripts/reify-audit-snapshot-filter.jq" \
+    "scripts/example-filter.jq" \
     "tests/infra/run-all-classification.manifest" \
     "tree-sitter-reify/.npmrc" \
     "deploy/systemd/reify-warm-lane-gc.timer" \

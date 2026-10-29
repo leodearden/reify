@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
 import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
-import type { DiagnosticEntry } from '../panels';
+import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
   SAVE_CONFLICT_RELOAD_LABEL,
@@ -14,7 +14,6 @@ import { splitGridTracks } from './test_utils/gridTracks';
 // Real (unmocked) formatter, shared with BucklingPanel.test.tsx case (g), so the
 // App-level buckling assertions pin the rendered payload rather than a literal.
 import { formatEigenvalue } from '../panels/BucklingPanel';
-import { createEditorStore } from '../stores/editorStore';
 import { createViewportStore } from '../stores/viewportStore';
 
 // Mock Tauri APIs before any component imports
@@ -71,12 +70,13 @@ vi.mock('../viewport', () => ({
   },
 }));
 
-// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, and liveContentRef for tests
+// Mock Editor (requires CodeMirror DOM APIs) — capture store, onOpen, scrollToLocation, compileDiagnostics, liveContentRef, and onShowReferences for tests
 let capturedEditorStore: any = null;
 let capturedEditorOnOpen: (() => void) | undefined = undefined;
 let capturedEditorScrollToLocation: (() => any) | undefined = undefined;
 let capturedEditorCompileDiagnostics: any = undefined;
 let capturedEditorLiveContentRef: ((getter: () => string | null) => void) | undefined = undefined;
+let capturedEditorOnShowReferences: ((results: ReferenceResult[]) => void) | undefined = undefined;
 vi.mock('../editor/Editor', () => ({
   Editor: (props: any) => {
     capturedEditorStore = props.store;
@@ -84,6 +84,7 @@ vi.mock('../editor/Editor', () => ({
     capturedEditorScrollToLocation = props.scrollToLocation;
     capturedEditorCompileDiagnostics = props.compileDiagnostics;
     capturedEditorLiveContentRef = props.liveContentRef;
+    capturedEditorOnShowReferences = props.onShowReferences;
     const el = document.createElement('div');
     el.setAttribute('data-testid', 'editor-container');
     el.textContent = 'Editor Mock';
@@ -202,7 +203,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, navigateToDiagnostic, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
+import App, { NEW_FILE_TEMPLATE, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
@@ -225,6 +226,7 @@ beforeEach(() => {
   capturedEditorScrollToLocation = undefined;
   capturedEditorCompileDiagnostics = undefined;
   capturedEditorLiveContentRef = undefined;
+  capturedEditorOnShowReferences = undefined;
   mockFlyToEntity.mockClear();
   // Reset bridge mocks to defaults (clearAllMocks only clears call history, not implementations)
   vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null, meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] }));
@@ -1002,6 +1004,8 @@ describe('App navigation wiring', () => {
       return () => {};
     });
     vi.mocked(bridge.getInitialState).mockResolvedValue(published(testState));
+    // testState opens no files, so the reveal must open the named one first.
+    vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '/project/bracket.ri', content: 'structure Bracket {}' });
 
     await renderAndWaitForReady();
 
@@ -1023,6 +1027,176 @@ describe('App navigation wiring', () => {
         end_column: 9,
       });
     });
+    expect(bridge.openFile).toHaveBeenCalledWith('/project/bracket.ri');
+    expect(capturedEditorStore.state.activeFile).toBe('/project/bracket.ri');
+  });
+
+  function twoFileState(active: string, other: string): GuiState {
+    return {
+      ...emptyState,
+      files: [
+        { path: active, content: '' },
+        { path: other, content: '' },
+      ],
+    };
+  }
+
+  /** Renders App with both files open and `active` the active tab. */
+  async function renderWithTabs(active: string, other: string) {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(twoFileState(active, other)));
+    await renderAndWaitForReady();
+    await waitFor(() => expect(capturedEditorStore?.state.openFiles).toHaveLength(2));
+    capturedEditorStore.setActiveFile(active);
+  }
+
+  it('navigate-to-source for an open, non-active tab activates it without opening it again', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    await renderWithTabs('/project/bracket.ri', '/project/gear.ri');
+
+    capturedNavigateCb!({ file: '/project/gear.ri', line: 3, column: 2, end_line: 5, end_column: 7 });
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/project/gear.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/project/gear.ri', line: 3, column: 2, end_line: 5, end_column: 7,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('viewport click whose source is an open, non-active tab activates it, scrolls, and selects', async () => {
+    const span = { file_path: '/proj/b.ri', line: 4, column: 1, end_line: 9, end_column: 2 };
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue(span);
+    await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+
+    capturedDualViewportProps.onSelect('Bracket');
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/b.ri'));
+    await waitFor(() => expect(capturedEditorScrollToLocation?.()).toEqual(span));
+    expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+  });
+
+  it('viewport click whose source cannot be opened still selects, warns, and raises no toast', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+        file_path: '/proj/missing.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+      });
+      vi.mocked(bridge.openFile).mockRejectedValueOnce(new Error('No such file or directory'));
+      await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+
+      capturedDualViewportProps.onSelect('Bracket');
+
+      await waitFor(() =>
+        expect(warn.mock.calls.some((args) => args.join(' ').includes('missing.ri'))).toBe(true),
+      );
+      expect(capturedDualViewportProps.selectedEntity).toBe('Bracket');
+      expect(
+        screen.queryAllByTestId('toast').filter((t) => t.textContent?.includes('missing.ri')),
+      ).toHaveLength(0);
+      expect(capturedEditorStore.state.activeFile).toBe('/proj/a.ri');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a viewport reveal still opening its file does not override a newer navigate-to-source', async () => {
+    let capturedNavigateCb: ((data: { file: string; line: number; column: number; end_line: number; end_column: number }) => void) | undefined;
+    vi.mocked(bridge.onNavigateToSource).mockImplementation(async (cb) => {
+      capturedNavigateCb = cb;
+      return () => {};
+    });
+    vi.mocked(bridge.getSourceLocation).mockResolvedValue({
+      file_path: '/proj/slow.ri', line: 1, column: 1, end_line: 1, end_column: 5,
+    });
+    const slowOpen = deferred<{ path: string; content: string }>();
+    vi.mocked(bridge.openFile).mockReturnValueOnce(slowOpen.promise);
+    await renderWithTabs('/proj/a.ri', '/proj/b.ri');
+    const bSpan = { file_path: '/proj/b.ri', line: 3, column: 2, end_line: 5, end_column: 7 };
+
+    capturedDualViewportProps.onSelect('Bracket');
+    await waitFor(() => expect(bridge.openFile).toHaveBeenCalledWith('/proj/slow.ri'));
+    capturedNavigateCb!({ file: '/proj/b.ri', line: 3, column: 2, end_line: 5, end_column: 7 });
+    await waitFor(() => expect(capturedEditorScrollToLocation?.()).toEqual(bSpan));
+    slowOpen.resolve({ path: '/proj/slow.ri', content: '' });
+    await flushMacrotasks();
+
+    expect(capturedEditorStore.state.activeFile).toBe('/proj/b.ri');
+    expect(capturedEditorStore.state.openFiles.some((f: { path: string }) => f.path === '/proj/slow.ri')).toBe(false);
+    expect(capturedEditorScrollToLocation?.()).toEqual(bSpan);
+  });
+});
+
+describe('Find-uses panel navigation (task 9203)', () => {
+  const mainOnlyState: GuiState = {
+    ...emptyState,
+    files: [{ path: '/proj/main.ri', content: 'structure Main {}' }],
+  };
+
+  function reference(uri: string): ReferenceResult {
+    return { uri, line: 2, character: 4, endLine: 2, endCharacter: 9 };
+  }
+
+  /** Renders App with main.ri active; the returned function shows `results` and clicks the first row. */
+  async function renderWithReferences(results: ReferenceResult[]): Promise<() => Promise<void>> {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(mainOnlyState));
+    render(() => <App />);
+    await waitFor(() => expect(capturedEditorOnShowReferences).toBeDefined());
+    await waitFor(() => expect(capturedEditorStore?.state.activeFile).toBe('/proj/main.ri'));
+    return async () => {
+      capturedEditorOnShowReferences!(results);
+      fireEvent.click(await waitFor(() => screen.getByTestId('find-use-row')));
+    };
+  }
+
+  it('cross-file, not open: opens the PATH (not the URI), activates it, and scrolls under its key', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/parts.ri')]);
+    vi.mocked(bridge.openFile).mockResolvedValueOnce({ path: '/proj/parts.ri', content: 'structure Part {}' });
+
+    await clickReference();
+
+    await waitFor(() => expect(bridge.openFile).toHaveBeenCalledWith('/proj/parts.ri'));
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/parts.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    await waitFor(() => expect(screen.queryByTestId('find-uses-panel')).toBeNull());
+  });
+
+  it('cross-file, already open: activates the existing tab without opening it again', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/parts.ri')]);
+    capturedEditorStore.openFile({ path: '/proj/parts.ri', content: 'structure Part {}' });
+    capturedEditorStore.setActiveFile('/proj/main.ri');
+
+    await clickReference();
+
+    await waitFor(() => expect(capturedEditorStore.state.activeFile).toBe('/proj/parts.ri'));
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+  });
+
+  it('same-file: scrolls under the path spelling without opening anything', async () => {
+    const clickReference = await renderWithReferences([reference('file:///proj/main.ri')]);
+
+    await clickReference();
+
+    await waitFor(() =>
+      expect(capturedEditorScrollToLocation?.()).toEqual({
+        file_path: '/proj/main.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+      }),
+    );
+    expect(bridge.openFile).not.toHaveBeenCalled();
+    expect(capturedEditorStore.state.activeFile).toBe('/proj/main.ri');
   });
 });
 
@@ -7970,168 +8144,6 @@ describe('App warm-pool debug panel placement (task 4279)', () => {
 
     expect(screen.queryByTestId('warm-pool-debug-panel')).toBeNull();
     expect(screen.queryByTestId('warm-pool-debug-overlay')).toBeNull();
-  });
-});
-
-// ── navigateToDiagnostic unit tests (task-4403 γ) ────────────────────────────
-
-function makeDiagnosticEntry(overrides: Partial<DiagnosticEntry> = {}): DiagnosticEntry {
-  return {
-    file_path: 'main.ri',
-    line: 5, column: 2, end_line: 5, end_column: 10,
-    severity: 'Error', message: 'test error', code: null, source: 'compile',
-    ...overrides,
-  };
-}
-
-describe('navigateToDiagnostic unit tests (task-4403 γ)', () => {
-  it('has_location===false → setScrollToLocation, bridge openFile, and store.setActiveFile are NOT called', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
-
-      const openFileSpy = vi.fn().mockResolvedValue({ path: 'main.ri', content: '' });
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      await navigateToDiagnostic(
-        makeDiagnosticEntry({ file_path: 'main.ri', has_location: false }),
-        { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy },
-      );
-
-      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
-      expect(openFileSpy).not.toHaveBeenCalled();
-      expect(setActiveFileSpy).not.toHaveBeenCalled();
-
-      dispose();
-    });
-  });
-
-  it('same-file diagnostic → setScrollToLocation called once with span; bridge openFile and store.setActiveFile NOT called', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
-
-      const openFileSpy = vi.fn();
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({
-        file_path: 'main.ri',
-        line: 7, column: 4, end_line: 7, end_column: 9,
-      });
-      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-
-      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
-      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
-        file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9,
-      });
-      expect(openFileSpy).not.toHaveBeenCalled();
-      expect(setActiveFileSpy).not.toHaveBeenCalled();
-
-      dispose();
-    });
-  });
-
-  it('cross-file, already open → store.setActiveFile called, bridge openFile NOT called, setScrollToLocation called once', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      // Open main.ri (active) then helper.ri (also open, but not active)
-      store.openFile({ path: 'main.ri', content: '' });
-      store.openFile({ path: 'helper.ri', content: '' });
-      // After openFile helper.ri, activeFile is helper.ri; make main.ri active
-      store.setActiveFile('main.ri');
-      const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
-
-      const openFileSpy = vi.fn();
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({
-        file_path: 'helper.ri',
-        line: 10, column: 3, end_line: 10, end_column: 8,
-      });
-      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-
-      // Active file must have switched to helper.ri (canonical key)
-      expect(store.state.activeFile).toBe('helper.ri');
-      // Bridge openFile must NOT have been called (file was already in openFiles)
-      expect(openFileSpy).not.toHaveBeenCalled();
-      // setScrollToLocation must have been called exactly once with the helper.ri span
-      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
-      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
-        file_path: 'helper.ri', line: 10, column: 3, end_line: 10, end_column: 8,
-      });
-
-      dispose();
-    });
-  });
-
-  it('cross-file, NOT open → bridge openFile called, file loaded into store (active), setScrollToLocation called once', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-      // helper.ri is NOT in openFiles
-
-      const helperFileData = { path: 'helper.ri', content: 'structure Helper {}' };
-      const openFileSpy = vi.fn().mockResolvedValue(helperFileData);
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({
-        file_path: 'helper.ri',
-        line: 2, column: 1, end_line: 2, end_column: 15,
-      });
-      await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-
-      // Bridge openFile must have been called with the diagnostic's file path
-      expect(openFileSpy).toHaveBeenCalledTimes(1);
-      expect(openFileSpy).toHaveBeenCalledWith('helper.ri');
-      // File must now be in the store and active
-      expect(store.state.openFiles.some(f => f.path === 'helper.ri')).toBe(true);
-      expect(store.state.activeFile).toBe('helper.ri');
-      // setScrollToLocation called once AFTER the open
-      expect(setScrollToLocationSpy).toHaveBeenCalledTimes(1);
-      expect(setScrollToLocationSpy).toHaveBeenCalledWith({
-        file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15,
-      });
-
-      dispose();
-    });
-  });
-
-  it('open-failure → showToast called with error, setScrollToLocation NOT called, activeFile unchanged', async () => {
-    await createRoot(async (dispose) => {
-      const store = createEditorStore();
-      store.openFile({ path: 'main.ri', content: '' });
-
-      const diskError = new Error('disk read error');
-      const openFileSpy = vi.fn().mockRejectedValue(diskError);
-      const setScrollToLocationSpy = vi.fn();
-      const showToastSpy = vi.fn();
-
-      const diag = makeDiagnosticEntry({ file_path: 'missing.ri' });
-
-      // In RED state, navigateToDiagnostic propagates the rejection.
-      // Catch it here so assertions can still run.
-      try {
-        await navigateToDiagnostic(diag, { store, openFile: openFileSpy, setScrollToLocation: setScrollToLocationSpy, showToast: showToastSpy });
-      } catch {
-        // Expected in RED state — step-8 wraps in try/catch so it won't throw.
-      }
-
-      expect(showToastSpy).toHaveBeenCalledTimes(1);
-      expect(showToastSpy).toHaveBeenCalledWith(
-        expect.stringContaining('missing.ri'),
-        'error',
-      );
-      expect(setScrollToLocationSpy).not.toHaveBeenCalled();
-      expect(store.state.activeFile).toBe('main.ri');
-
-      dispose();
-    });
   });
 });
 

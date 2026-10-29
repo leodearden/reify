@@ -5983,7 +5983,7 @@ structure {probe} {{
 
 /// An UNKNOWN ctor label is DIAGNOSED — task 5303 (ε) emits
 /// `E_CTOR_UNKNOWN_FIELD` / [`DiagnosticCode::CtorUnknownField`] at the
-/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning pre-δ, Error at δ) — and is
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Error since δ, #5306) — and is
 /// STILL appended as a positional `__arg{i}`, so the param it was meant for
 /// falls back to its default (or stays unbound).
 ///
@@ -5993,12 +5993,11 @@ structure {probe} {{
 /// why (b) and (c) below are unchanged from this pin's pre-ε shape while (a)
 /// is inverted.
 ///
-/// The hazard three example files describe in prose;
-/// pinned here so their wording cannot rot. If the diagnosis moves again,
-/// update this pin AND the binding notes in
-/// `examples/modal/printer_gantry_modes.ri`,
-/// `examples/modal/transient_step_response.ri` and
-/// `examples/trajectory/printer_print_envelope.ri`.
+/// Example fixtures that guard against this hazard (a typo'd label leaving a
+/// load-bearing param such as `element_order` at its default) state only that
+/// local consequence and cite this test by path instead of restating the
+/// diagnosis, so if it moves again — code, severity or lenient fallback —
+/// only this pin needs updating.
 #[test]
 fn misspelled_ctor_label_is_diagnosed_but_still_leniently_appended() {
     // `bta` is a typo for `beta`. ε diagnoses it — at Error since δ, so

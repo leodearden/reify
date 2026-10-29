@@ -40,7 +40,7 @@
 //! "both writers produce the same result" a contract rather than an accident of
 //! scheduling; see the fixture's own header.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use reify_eval::persistent_cache::{
@@ -106,47 +106,16 @@ fn eval_command(cache: &Path, sandbox: &Path) -> Command {
     cmd
 }
 
-/// Every `.bin` under `dir`, recursively, sorted for a stable comparison.
-fn collect_bins(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    collect_bins_into(dir, &mut out);
-    out.sort();
-    out
+/// A committed cache entry: a `.bin` file.
+fn is_bin(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "bin")
 }
 
-fn collect_bins_into(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_bins_into(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("bin") {
-            out.push(path);
-        }
-    }
-}
-
-/// Count `.tmp.*` crashed-writer / in-flight leftovers anywhere under `dir`.
-fn count_tmp_files(dir: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut n = 0;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            n += count_tmp_files(&path);
-        } else if path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .is_some_and(|f| f.starts_with(".tmp."))
-        {
-            n += 1;
-        }
-    }
-    n
+/// A crashed-writer / in-flight leftover: a `.tmp.*` file.
+fn is_tempfile(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|f| f.to_str())
+        .is_some_and(|f| f.starts_with(".tmp."))
 }
 
 /// The 32-hex input hash of a cache entry, taken from its `.bin` file stem.
@@ -238,7 +207,7 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
         "the engine-version subdir must exist after two successful writers",
     );
 
-    let bins = collect_bins(&version_dir);
+    let bins = common::files_under(&version_dir, is_bin);
     assert_eq!(
         bins.len(),
         1,
@@ -251,7 +220,7 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
         "the surviving .bin must have its .meta sidecar beside it: {meta:?}",
     );
     assert_eq!(
-        count_tmp_files(cache.path()),
+        common::files_under(cache.path(), is_tempfile).len(),
         0,
         "no .tmp.* may survive anywhere under the cache root — each writer mints its \
          own tempfile and persist() consumes it via rename(2)",
@@ -301,7 +270,8 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
         "the solitary reference run must exit 0; stderr:\n{reference_stderr}",
     );
 
-    let reference_bins = collect_bins(&reference_cache.path().join(ENGINE_VERSION_HASH));
+    let reference_bins =
+        common::files_under(&reference_cache.path().join(ENGINE_VERSION_HASH), is_bin);
     assert_eq!(
         reference_bins.len(),
         1,
@@ -346,5 +316,27 @@ fn two_concurrent_reify_eval_processes_leave_one_entry_and_no_orphan_tempfiles()
          to rel_err < 1e-10, got {rel_err:e}",
         survivor.max_von_mises,
         reference_result.max_von_mises,
+    );
+}
+
+/// Positive control for [`is_tempfile`] against a tempfile minted the way
+/// `write_entry` stages one (see the module header): without it, the
+/// zero-`.tmp.*` assertion above would also pass for a predicate that never
+/// matches.
+#[test]
+fn is_tempfile_matches_a_store_shaped_tempfile_and_nothing_else() {
+    let root = tempdir().expect("create scratch cache root");
+    let shard = root.path().join("bc");
+    std::fs::create_dir(&shard).expect("create shard dir");
+    std::fs::write(shard.join("bc00.bin"), b"").expect("write .bin decoy");
+    std::fs::write(shard.join("bc00.meta"), b"").expect("write .meta decoy");
+    let staged = tempfile::Builder::new()
+        .prefix(".tmp.")
+        .tempfile_in(&shard)
+        .expect("mint a store-shaped tempfile");
+
+    assert_eq!(
+        common::files_under(root.path(), is_tempfile),
+        vec![staged.path().to_path_buf()],
     );
 }
