@@ -262,7 +262,9 @@ echo "-- prd_gate_probe_set_drop_grammar (hermetic, synthetic probe-sets) --"
 # probe carries a distinct capability/fixture and a non-trivial `expected`
 # (including a nested `match`), so a filter that rebuilt probes field-by-field
 # instead of passing them through whole would be caught by the deep-equality
-# check below rather than passing on a lucky subset of fields.
+# check below rather than passing on a lucky subset of fields. Each `match` is
+# one the real load_probe_set accepts for its kind, because that check loads the
+# kept probes through it; a kind with no entry below fails loudly (KeyError).
 _mk_probe_set() {
     local name="$1"
     shift
@@ -272,11 +274,15 @@ import json, sys
 kinds = [ln.strip() for ln in sys.stdin if ln.strip()]
 probes = []
 for i, kind in enumerate(kinds):
+    match = {
+        "check": {"exit_code": 1, "stderr_contains": f"E_SYNTH_{i}"},
+        "grammar": {},
+    }[kind]
     probes.append({
         "capability": f"{5897 + i} synthetic {kind} capability",
         "probe_kind": kind,
         "fixture": f"tests/prd-gate/fixtures/synthetic_{kind}_{i}.ri",
-        "expected": {"observation": "present", "match": {"stderr": f"E_SYNTH_{i}"}},
+        "expected": {"observation": "present", "match": match},
         "notes": f"row {i}",
     })
 json.dump({"probes": probes}, open(sys.argv[1], "w"), indent=2)

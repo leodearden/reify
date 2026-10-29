@@ -54,13 +54,13 @@ wholesale.
         {
             "capability": "<human name for the capability being probed>",
             "probe_kind": "grammar" | "check" | "ir" | "value",
-            "fixture": "<repo-relative path to the .ri fixture file>",
+            "fixture": "<repo-relative path to the .ri fixture file>",  // non-empty
             "expected": {
                 "observation": "present" | "absent",
-                "match": {
-                    "exit_code": <int>,          // optional
-                    "stderr_contains": "<str>",  // optional
-                    "stdout_contains": "<str>",  // optional
+                "match": {                       // only the keys the kind reads
+                    "exit_code": <int>,          // check only
+                    "stderr_contains": "<str>",  // check, ir
+                    "stdout_contains": "<str>",  // check only
 
                     // value kind ONLY — required there, rejected elsewhere
                     "stdout_value": {
@@ -77,10 +77,24 @@ wholesale.
 }
 ```
 
-**All `match` fields are optional except on a `value` probe.** An empty
-`match: {}` object means "no specific criterion" (used for grammar probes, where
-observation is determined by exit code alone).  A `value` probe is the one kind
-with a mandatory predicate — see [`match` predicate semantics](#match-predicate-semantics).
+`load_probe_set` refuses, as a usage error (exit 64 naming `probe[i]`), any
+probe that would run yet could prove nothing:
+
+1. **Every kind needs a non-empty `fixture`.** A probe with no target proves
+   nothing.
+2. **Every kind accepts only the `match` keys its observation reads** (the
+   per-key comments above): none for `grammar`; `exit_code`, `stderr_contains`
+   and `stdout_contains` for `check`; `stderr_contains` for `ir`;
+   `stdout_value` for `value`. Any other key, misspelt or borrowed from another
+   kind, would be silently ignored, so it is refused.
+3. **A `check` probe needs a constraining key:** an integer `exit_code`, or a
+   non-empty `stderr_contains` / `stdout_contains`. Without one, the predicate
+   holds for every run.
+
+A `grammar` probe's `match` is `{}`: its observation is determined by exit code
+alone. A `value` probe has a mandatory predicate — see
+[`match` predicate semantics](#match-predicate-semantics). The rules are PRD
+`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.3.
 
 ## Probe kinds
 
