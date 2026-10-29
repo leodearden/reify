@@ -85,7 +85,11 @@ fn every_shell_tet_tying_row_satisfies_the_mpc_row_invariant() {
                     pivot != 0.0 && pivot.is_finite(),
                     "{at}: pivot coefficient {pivot} is zero or non-finite"
                 );
-                assert!(row.rhs().is_finite(), "{at}: rhs {} is not finite", row.rhs());
+                assert!(
+                    row.rhs().is_finite(),
+                    "{at}: rhs {} is not finite",
+                    row.rhs()
+                );
             }
         }
     }
