@@ -7447,6 +7447,14 @@ impl EngineSession {
         self.consumed_idents_cache.as_ref()
     }
 
+    /// Return the retained geometry-derived panel values.
+    ///
+    /// Intended only for tests that need to inspect cache state without widening
+    /// the production API.  Mirrors the style of `consumed_idents_cache_for_test`.
+    pub(crate) fn geometry_derived_cache_for_test(&self) -> &HashMap<ValueCellId, Value> {
+        &self.geometry_derived_cache
+    }
+
     /// Replace the consumed-idents cache with `cache`, for testing purposes.
     ///
     /// Used by `get_mechanism_descriptors_reads_from_consumed_idents_cache` to

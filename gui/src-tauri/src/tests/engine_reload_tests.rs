@@ -11,6 +11,9 @@
 //! pipeline records fewer entries, a doubled one more, and the order pins that
 //! state is committed (check finished) before telemetry fires. A rejected
 //! compile records nothing.
+//!
+//! Every commit, injected (`load_from_compiled`) or compiled, resets the
+//! session's caches through the one reset list (§5 B2).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -25,6 +28,7 @@ use reify_test_support::{
 use crate::engine::{
     EngineSession, FeaConvergenceEmitter, FeaDiagnosticsEmitter, SolveCancellationSink,
 };
+use crate::tests::test_helpers::{rigid_mass_props_fixture_path, rigid_mass_props_session};
 use crate::types::{FeaConvergenceInfo, FeaDiagnosticInfo};
 
 /// What one successful reload of a non-FEA design records, in order.
@@ -234,5 +238,73 @@ fn both_compile_helpers_reject_compile_errors_alike() {
     assert!(
         single_file_diags.iter().all(|d| d.severity == "Error"),
         "only error-severity diagnostics reject a compile, got {single_file_diags:?}"
+    );
+}
+
+/// A rigid-body session that has also rejected a live edit and recorded a
+/// reload error, so every reset-list entry has something to clear.
+fn primed_rigid_session() -> EngineSession {
+    let fixture = rigid_mass_props_fixture_path();
+    let mut session = rigid_mass_props_session();
+    session.load_file(&fixture).expect("load rigid fixture");
+    session
+        .update_source(fixture.to_str().unwrap(), UNPARSEABLE_SRC)
+        .expect_err("update_source of unparseable text");
+    session.record_reload_error("stale".into());
+    session
+}
+
+/// The resets a commit performs, as observed through the session's accessors.
+/// Parse-derived caches are left out: `load_from_compiled` commits no source.
+fn observed_resets(session: &EngineSession) -> (Vec<reify_core::ValueCellId>, bool, bool, bool) {
+    let mut retained: Vec<_> = session
+        .geometry_derived_cache_for_test()
+        .keys()
+        .cloned()
+        .collect();
+    retained.sort();
+    (
+        retained,
+        session.compile_failure_for_test().is_none(),
+        session.is_stale(),
+        session.consumed_idents_cache_for_test().is_none(),
+    )
+}
+
+#[test]
+fn load_from_compiled_resets_like_commit_state() {
+    const SRC: &str = "structure Bolt { param mass: Length = 1mm }";
+
+    let mut injected = primed_rigid_session();
+    let mut compiled_from_source = primed_rigid_session();
+    assert!(
+        !injected.geometry_derived_cache_for_test().is_empty(),
+        "precondition: the rigid fixture must leave mass-prop values retained"
+    );
+
+    let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("simple"));
+    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "load_from_compiled requires a diagnostic-free module, got {:?}",
+        compiled.diagnostics
+    );
+
+    injected
+        .load_from_compiled(compiled, "simple")
+        .expect("load_from_compiled");
+    compiled_from_source
+        .load_from_source(SRC, "simple")
+        .expect("load_from_source");
+
+    let leaked: Vec<_> = injected.geometry_derived_cache_for_test().keys().collect();
+    assert!(
+        leaked.is_empty(),
+        "load_from_compiled kept the previous module's geometry-derived values: {leaked:?}"
+    );
+    assert_eq!(
+        observed_resets(&injected),
+        observed_resets(&compiled_from_source),
+        "load_from_compiled and load_from_source must reset the same state"
     );
 }
