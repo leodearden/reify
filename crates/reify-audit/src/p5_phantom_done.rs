@@ -95,6 +95,15 @@ const EMPTY_INTENT_NAME_TOKENS: &[&str] = &[
     "no_",
 ];
 
+/// Gates (a) and (c) of H1, which always apply together: `fn_name` carries a
+/// placeholder marker AND an empty-intent token, so the fn's added lines are
+/// scanned for gate (b). The H1 prefilter and the per-path walk both ask
+/// through here, so the two cannot disagree on which declarations arm H1.
+fn arms_h1(fn_name: &str) -> bool {
+    PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m))
+        && EMPTY_INTENT_NAME_TOKENS.iter().any(|t| fn_name.contains(t))
+}
+
 /// Returns `true` when `line` contains a vacuous empty-assertion pattern
 /// (gate b of the H1 double-gate), with one exception: a `.is_empty()` that is
 /// part of a negated expression (e.g. `assert!(!result.is_empty())`) does NOT
@@ -456,6 +465,12 @@ fn check_task(
 ///
 /// Skipped when `done_provenance.commit` is absent (no commit to diff).
 ///
+/// Prefiltered: one `--no-renames` diff over all the task's test paths
+/// ([`crate::GitOps::try_diff_added_lines_in_commit_no_renames`]) holds every
+/// line any per-path diff adds, so when none of its lines declares a fn that
+/// [`arms_h1`], no per-path walk can fire and none is run. A failed union
+/// diff answers nothing, and the per-path walk decides as before.
+///
 /// # Known limitation
 ///
 /// H1 only fires when the `fn <name>(` declaration line itself appears among
@@ -470,12 +485,27 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
         return vec![];
     };
+    let test_paths: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| crate::is_test_path(p))
+        .cloned()
+        .collect();
+    if test_paths.is_empty() {
+        return vec![];
+    }
+    if let Ok(union) = ctx
+        .git
+        .try_diff_added_lines_in_commit_no_renames(commit, &test_paths)
+        && !union
+            .iter()
+            .any(|(_, line)| extract_fn_name(line).is_some_and(|name| arms_h1(&name)))
+    {
+        return vec![];
+    }
 
     let mut findings = Vec::new();
-    for path in &meta.files {
-        if !crate::is_test_path(path) {
-            continue;
-        }
+    for path in &test_paths {
         let added = ctx.git.diff_added_lines_in_commit(commit, path);
         // Walk added lines tracking the current fn name.
         // State machine: once we see an anchored fn declaration, we record the
@@ -485,8 +515,7 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         // finding. Uses extract_fn_name to anchor detection to declaration lines
         // only, and line_has_empty_assertion to exclude negated .is_empty() calls.
         let mut current_fn_name: Option<String> = None;
-        let mut fn_has_placeholder = false;
-        let mut fn_has_empty_intent = false;
+        let mut fn_armed = false;
         let mut fn_has_empty_assertion = false;
         let mut found_in_file = false;
 
@@ -494,27 +523,22 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
             // Detect a new fn declaration (anchored to declaration start).
             if let Some(fn_name) = extract_fn_name(line) {
                 // Flush the previous fn if it triggered all three gates.
-                if fn_has_placeholder && fn_has_empty_intent && fn_has_empty_assertion {
+                if fn_armed && fn_has_empty_assertion {
                     found_in_file = true;
                 }
-                fn_has_placeholder = PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m));
-                fn_has_empty_intent = EMPTY_INTENT_NAME_TOKENS.iter().any(|t| fn_name.contains(t));
+                fn_armed = arms_h1(&fn_name);
                 fn_has_empty_assertion = false;
                 current_fn_name = Some(fn_name);
             }
 
             // Within a fn, check for vacuous assertions (excluding negated !is_empty()).
-            // Gate c (empty-intent name check) must also pass before we arm gate b.
-            if current_fn_name.is_some()
-                && fn_has_placeholder
-                && fn_has_empty_intent
-                && line_has_empty_assertion(line)
-            {
+            // Gates a and c (the fn name) must pass before we arm gate b.
+            if current_fn_name.is_some() && fn_armed && line_has_empty_assertion(line) {
                 fn_has_empty_assertion = true;
             }
         }
         // Flush the last fn.
-        if fn_has_placeholder && fn_has_empty_intent && fn_has_empty_assertion {
+        if fn_armed && fn_has_empty_assertion {
             found_in_file = true;
         }
 

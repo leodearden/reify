@@ -164,6 +164,26 @@ pub trait GitOps {
     /// `main`, so `git diff M^1..M` recovers the exact task delta.
     fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)>;
 
+    /// The `+` lines of `git diff --no-renames <commit>^1..<commit> -- <paths…>`
+    /// as `(new_side_line_no, content)` pairs, or `Err` when git did not
+    /// answer.
+    ///
+    /// Every line [`GitOps::diff_added_lines_in_commit`] returns for a `p` in
+    /// `paths` is among them: a single-pathspec diff can pair a rename only
+    /// within that pathspec, and `--no-renames` renders any such pair as a
+    /// whole-file add. So a caller asking "could any per-path diff add a line
+    /// like this" asks once. Line numbers are not comparable across the two.
+    fn try_diff_added_lines_in_commit_no_renames(
+        &self,
+        commit: &str,
+        paths: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        Ok(paths
+            .iter()
+            .flat_map(|p| self.diff_added_lines_in_commit(commit, p))
+            .collect())
+    }
+
     /// Returns all lines of `path` at `reference` (e.g. `"main"`, `"HEAD"`) as
     /// `(1-based_line_no, content)` pairs, equivalent to `git show
     /// <reference>:<path>` split on `\n`. Fail-safe: returns an empty vec when
@@ -948,6 +968,28 @@ impl GitOps for RealGitOps {
         parse_added_lines(&stdout)
     }
 
+    fn try_diff_added_lines_in_commit_no_renames(
+        &self,
+        commit: &str,
+        paths: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        // No paths would be an unrestricted diff; the contract is the union of
+        // no per-path diffs, which is empty.
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+        // A multi-file patch carries per-file header lines after its first
+        // hunk, which `parse_added_lines` reads as hunk lines. They only add
+        // entries (`+++ b/<path>` as `++ b/<path>`) and never drop a real `+`
+        // line, so the superset contract holds; line numbers past the first
+        // file are not meaningful, which the contract already disclaims.
+        let range = format!("{commit}^1..{commit}");
+        let mut args = vec!["diff", "--no-renames", range.as_str(), "--"];
+        args.extend(paths.iter().map(String::as_str));
+        self.run_warned("diff --no-renames (commit)", &args)
+            .map(|stdout| parse_added_lines(&stdout))
+    }
+
     fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
         // `git show <reference>:<path>` prints the file at that ref.
         let spec = format!("{}:{}", reference, path);
@@ -1029,6 +1071,9 @@ pub struct MockGitOps {
     is_gitignored_errors: HashMap<String, String>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
+    /// Canned `--no-renames` union diffs keyed by commit; an unseeded commit
+    /// answers the per-path concatenation, as the trait default does.
+    diff_added_lines_in_commit_no_renames: HashMap<String, Result<Vec<(usize, String)>, String>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
     /// Simulated `git ls-tree` FAILURES, keyed like `path_tracked_on`. An
@@ -1136,6 +1181,18 @@ impl MockGitOps {
             .insert((commit.to_string(), path.to_string()), added);
     }
 
+    /// Answer `try_diff_added_lines_in_commit_no_renames(commit, _)` with
+    /// `answer`, whatever the paths.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_diff_added_lines_in_commit_no_renames(
+        &mut self,
+        commit: &str,
+        answer: Result<Vec<(usize, String)>, String>,
+    ) {
+        self.diff_added_lines_in_commit_no_renames
+            .insert(commit.to_string(), answer);
+    }
+
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_changed_paths_in_commit(&mut self, commit: &str, paths: Vec<String>) {
         self.changed_paths_in_commit.insert(commit.to_string(), paths);
@@ -1212,6 +1269,20 @@ impl GitOps for MockGitOps {
             .get(&(commit.to_string(), path.to_string()))
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn try_diff_added_lines_in_commit_no_renames(
+        &self,
+        commit: &str,
+        paths: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        match self.diff_added_lines_in_commit_no_renames.get(commit) {
+            Some(answer) => answer.clone(),
+            None => Ok(paths
+                .iter()
+                .flat_map(|p| self.diff_added_lines_in_commit(commit, p))
+                .collect()),
+        }
     }
 
     fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
