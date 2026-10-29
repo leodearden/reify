@@ -552,7 +552,7 @@ fn loft_four_circles_creates_solid() {
     // (π·r_min²·h_total = π·16·30 ≈ 1508) and the largest-enclosing
     // cylinder (π·r_max²·h_total = π·100·30 ≈ 9425). Expected OCCT result
     // for this four-circle frustum stack is ≈ 4900, comfortably inside.
-    // Pattern mirrors loft_two_different_circles_cone_like (task-383 S4c).
+    // Pattern mirrors loft_two_different_circles_cone_like.
     let vol = kernel.query(&GeometryQuery::Volume(loft_h.id)).unwrap();
     match vol {
         Value::Real(v) => {
@@ -622,7 +622,7 @@ fn new_ops_tessellate() {
     );
 }
 
-// --- Extrude kernel-path volume tests (task-308 step-14) ---
+// --- Extrude kernel-path volume tests ---
 // These exercise the full OcctKernel::execute() + query() path on circle
 // faces stored as kernel handles by the `store_circle_face_for_test` fixture.
 
@@ -695,7 +695,7 @@ fn extrude_negative_distance_through_kernel() {
     );
 }
 
-// --- Revolve kernel volume tests (task-309 step-7) ---
+// --- Revolve kernel volume tests ---
 
 #[test]
 fn revolve_circle_face_full_volume() {
@@ -783,7 +783,8 @@ fn sweep_solid_path_returns_error() {
         profile: profile_id,
         path: box_h.id,
     });
-    assert!(result.is_err(), "sweep with a solid as path should fail");
+    // `make_pipe` downcasts only the path to a wire, so this names the path.
+    assert_operation_fails_with(result, "TopoDS::Wire");
 }
 
 #[test]
@@ -805,7 +806,7 @@ fn revolve_rect_face_torus_volume() {
     assert_volume_near(&mut kernel, result.id, expected, 0.02, "rect torus full");
 }
 
-// --- Revolve positive boundary tests (task-574) ---
+// --- Revolve positive boundary tests ---
 
 #[test]
 fn revolve_just_above_axis_threshold_accepted() {

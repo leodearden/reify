@@ -119,11 +119,9 @@ fn get_shape_rejects_null_topology_and_queries_return_err() {
     let good_box = make_box_20_10_5(&mut kernel);
 
     // Structural chokepoint: get_shape refuses null/empty topology loudly.
-    // Translate's first statement is `get_shape(target)?`, so it surfaces
-    // get_shape's own cause.
     let cause = match kernel.execute(&GeometryOp::Translate {
         target: h,
-        dx: 0.0,
+        dx: 1.0,
         dy: 0.0,
         dz: 0.0,
     }) {
