@@ -49,7 +49,8 @@ fn mpc_row_accessors_return_the_constructed_values() {
 }
 
 /// Axis-aligned normals reach the drilling-axis fallback and the two-term
-/// rotation row; oblique normals reach the four-term rotation row.
+/// rotation row; oblique normals reach the four-term rotation row. Each row
+/// is re-checked by `MpcRow::new`, the invariant's one definition.
 #[test]
 fn every_shell_tet_tying_row_satisfies_the_mpc_row_invariant() {
     let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
@@ -73,22 +74,13 @@ fn every_shell_tet_tying_row_satisfies_the_mpc_row_invariant() {
                 thickness,
             );
             for (index, row) in rows.iter().enumerate() {
-                let at = format!("normal {normal:?}, thickness {thickness}, row {index}");
-                assert_eq!(
-                    row.dofs().len(),
-                    row.coeffs().len(),
-                    "{at}: dofs and coeffs differ in length"
-                );
-                assert!(!row.dofs().is_empty(), "{at}: no DOFs");
-                let pivot = row.coeffs()[0];
+                let recheck = std::panic::catch_unwind(|| {
+                    MpcRow::new(row.dofs().to_vec(), row.coeffs().to_vec(), row.rhs())
+                });
                 assert!(
-                    pivot != 0.0 && pivot.is_finite(),
-                    "{at}: pivot coefficient {pivot} is zero or non-finite"
-                );
-                assert!(
-                    row.rhs().is_finite(),
-                    "{at}: rhs {} is not finite",
-                    row.rhs()
+                    recheck.is_ok(),
+                    "normal {normal:?}, thickness {thickness}, row {index}: \
+                     MpcRow::new rejects {row:?}"
                 );
             }
         }

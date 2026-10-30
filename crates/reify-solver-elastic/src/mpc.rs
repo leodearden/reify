@@ -24,8 +24,7 @@
 //!
 //! MPCs are applied after assembly; `assemble_global_stiffness` never takes
 //! them as input. The buckling kernel consumes the same rows by master-slave
-//! reduction ([`crate::buckling_kernel`]), and the reify-eval mixed-region
-//! build emits them for each shell/tet interface.
+//! reduction ([`crate::buckling_kernel`]).
 //!
 //! # PRD reference
 //!
