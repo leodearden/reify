@@ -1,0 +1,6 @@
+// #8740 (compiler-declaration-passes B12): the control — the same joint shape
+// with no gate tripped draws the joint DOF verdict.
+
+module joint_dof_gate_mismatch_control
+
+joint j(a: Axis, b: Axis) with angle: Angle = concentric(a, b)

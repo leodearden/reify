@@ -65,6 +65,8 @@ mod cli_check_connect_direction;
 mod cli_check_connect_undeclared_member;
 #[path = "harness_cli/cli_check_driver_parity.rs"]
 mod cli_check_driver_parity;
+#[path = "harness_cli/cli_check_joint_dof_gates.rs"]
+mod cli_check_joint_dof_gates;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
