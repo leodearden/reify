@@ -1,6 +1,7 @@
 use super::*;
 use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences, parse_one_clean, span_of};
 use crate::convert::offset_to_position;
+use crate::references::test_support::apply_edits;
 use reify_ast::MemberDecl;
 use reify_core::ModulePath;
 
@@ -1007,28 +1008,6 @@ fn cross_file_path_agrees_with_same_file_on_a_purpose_nested_structure() {
 }
 
 // --- κ step-9 (task 4210): cross-file rename WorkspaceEdit (Invariant 5) ---
-
-/// Apply LSP `TextEdit`s to `source`, splicing in DESCENDING start order so
-/// earlier byte offsets stay valid as later ones are replaced (mirrors
-/// `compute_rename_edit_is_valid_and_reparses_clean`).
-fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
-    let mut to_apply: Vec<(usize, usize, &str)> = edits
-        .iter()
-        .map(|e| {
-            (
-                position_to_offset(source, e.range.start),
-                position_to_offset(source, e.range.end),
-                e.new_text.as_str(),
-            )
-        })
-        .collect();
-    to_apply.sort_by_key(|e| std::cmp::Reverse(e.0));
-    let mut buffer = source.to_string();
-    for (start, end, text) in &to_apply {
-        buffer.replace_range(*start..*end, text);
-    }
-    buffer
-}
 
 #[test]
 fn compute_rename_cross_file_two_file_workspace_edit_reparses_clean() {

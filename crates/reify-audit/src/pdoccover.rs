@@ -68,8 +68,8 @@
 //! 2. **`@` left delimiter** — `pipe@region(outer)` is an ad-hoc port/region
 //!    designator on a value (connect.md:52; docs/reify-language-spec.md:1488,
 //!    §D5); the same rule as (1), a different delimiter for the same shape.
-//! 3. **[`RI_KEYWORDS`] membership** — the language's full reserved-word set
-//!    (spec §2.10), not just declaration keywords: `Trait::fn(args)` reads
+//! 3. **[`reify_syntax::KEYWORDS`] membership** — the language's full keyword
+//!    table (spec §2.10), not just declaration keywords: `Trait::fn(args)` reads
 //!    as a call to `fn`, `auto(free)` reads as a call to `auto`; no keyword
 //!    is ever a builtin.
 //! 4. **file-scoped [`ri_declared_name`]** — a name this chunk's own
@@ -113,15 +113,15 @@
 //! - a "single-character argument" metavariable rule (to catch
 //!   `predicate(x)` specifically) was measured to ALSO drop `determined`,
 //!   `constrained`, `undetermined` and `partially_determined` — FOUR names,
-//!   exactly those of spec §2.10:221's ten-name carve-out that this corpus
+//!   exactly those of spec §2.10's ten-name carve-out that this corpus
 //!   documents in the `f(x)` shape, and every one of them a standard
 //!   library FUNCTION the spec is explicit is not a keyword, so filter 3
 //!   deliberately leaves all four claimable. Blinding the lane to four real
 //!   builtins to win one metavariable is the wrong trade. (`some(spec)` is
 //!   dropped by the rejected rule too, but is NOT part of that cost and
-//!   must not be counted as a fifth: `some` is a §2.10:212 value-literal
+//!   must not be counted as a fifth: `some` is a §2.10 value-literal
 //!   KEYWORD, filter 3 already drops it unconditionally, and
-//!   `ri_keywords_excludes_the_spec_carve_outs` omits it from the carve-out
+//!   `keyword_filter_excludes_the_spec_carve_outs` omits it from the carve-out
 //!   list for exactly that reason.)
 //!
 //! Do not add a context-modelling filter to [`chunk_call_mentions`] without
@@ -212,7 +212,7 @@
 //! itself (the `.`/`@` left delimiter, the `(...)` elision) or a whole-
 //! `content` set built from the SAME line-level [`ri_declared_name`] grammar
 //! the oracle already uses (the file-scoped declaration filter), or a static
-//! set membership test ([`RI_KEYWORDS`]). None inspects a heading, a fence
+//! set membership test ([`reify_syntax::KEYWORDS`]). None inspects a heading, a fence
 //! tag, a table pipe or any other markdown structure, so a chunk reformat
 //! still cannot break extraction — only a change to the `.ri` grammar these
 //! filters key on could.
@@ -871,6 +871,18 @@ fn leading_ident(tok: &str) -> &str {
 ///
 /// `structure` and `occurrence` are the two-word forms (`structure def X`) and
 /// are handled by consuming the `def` token before the name.
+///
+/// ## Deliberately narrower than [`reify_syntax::KEYWORDS`]
+///
+/// This list drives [`ri_declared_name`], which feeds the existence ORACLE
+/// ([`known_name_index`]) for `.ri` stdlib sources. Widening it to the full
+/// keyword table would make `let foo`, `param foo`, `port foo` and `sub foo`
+/// parse as declarations of `foo`, admitting local bindings into the oracle
+/// and vouching for names the compiler never provides — turning the
+/// fabrication lane into a false-negative machine. The mention side has the
+/// opposite polarity (a keyword before `(` is grammar, never a claim), so
+/// [`chunk_call_mentions`] filters on the full table, and ONLY there. Do not
+/// fold the two together.
 const RI_DECL_KEYWORDS: &[&str] = &[
     "fn",
     "unit",
@@ -882,60 +894,6 @@ const RI_DECL_KEYWORDS: &[&str] = &[
     "joint",
     "structure",
     "occurrence",
-];
-
-/// Every reserved word in the language grammar — mention-side only.
-///
-/// = docs/reify-language-spec.md §2.10 "Keywords (Complete Post-Review List)"
-/// (:191-219) / §17 alphabetical appendix (:2880-2897, "Total: 46 keywords" —
-/// the two forms agree exactly) UNION [`RI_DECL_KEYWORDS`]. `joint` is a
-/// grammar-only keyword that post-dates the spec table.
-///
-/// The superset-of-[`RI_DECL_KEYWORDS`] property is what makes widening the
-/// mention-side filter unable to regress the narrower filter a63c892eea
-/// already shipped — but it is ENFORCED BY TEST, not by construction. This
-/// is a hand-maintained flat literal in which the declaration keywords are
-/// re-typed inline rather than spliced in, so
-/// `ri_keywords_is_a_superset_of_ri_decl_keywords` is the only thing that
-/// will notice a new `RI_DECL_KEYWORDS` entry which was not also added here.
-/// Add to both; do not read the "UNION" above as a mechanism.
-///
-/// DELIBERATELY EXCLUDED, both pinned by tests:
-/// - the spec's "Removed keywords (not part of v0.1)" (`derived`, `require`,
-///   `dimension`, :219) — none is part of the language at all;
-/// - the spec's "Not keywords (standard library functions)" (`determined`,
-///   `constrained`, `undetermined`, `partially_determined`, `point3`,
-///   `vec3`, `point2`, `vec2`, `project`, `geo_equiv`, :221) — these are real
-///   builtins, and admitting them here would silently drop every chunk claim
-///   naming one (`ri_keywords_excludes_the_spec_carve_outs`, and against the
-///   real `units.rs` census, `ri_keywords_never_collides_with_the_real_registry_census`
-///   in tests/pdoccover.rs).
-///
-/// ## A separate const from `RI_DECL_KEYWORDS`, deliberately not unified
-///
-/// `RI_DECL_KEYWORDS` also drives [`ri_declared_name`], which feeds the
-/// existence ORACLE ([`known_name_index`]) for `.ri` stdlib sources. Widening
-/// *that* function to the full reserved-word set would make `let foo`,
-/// `param foo`, `port foo` and `sub foo` parse as declarations of `foo`,
-/// admitting local bindings into the oracle and vouching for names the
-/// compiler never provides — turning the fabrication lane into a
-/// false-negative machine. The mention side has the opposite polarity (a
-/// keyword before `(` is grammar, never a claim), so the wider set is
-/// correct there, and ONLY there. Do not fold the two consts together.
-// G-allow: consumed by chunk_call_mentions in-module, and by the
-// keyword-vs-builtin collision guard in tests/pdoccover.rs — a separate
-// crate, so pub is required.
-pub const RI_KEYWORDS: &[&str] = &[
-    "and", "as", "auto", "chain", "connect", "constraint", "def", "else", "enum", "exists",
-    "false", "field", "fn", "forall", "if", "implies", "import", "in", "let", "map", "match",
-    "maximize", "meta", "minimize", "module", "none", "not", "occurrence", "or", "out", "param",
-    "port", "pub", "purpose", "self", "set", "some", "structure", "sub", "then", "trait", "true",
-    "type", "undef", "unit", "where",
-    // From RI_DECL_KEYWORDS only — a grammar-only keyword that post-dates
-    // the spec table (kept so this const stays a superset; the superset
-    // property is enforced by ri_keywords_is_a_superset_of_ri_decl_keywords,
-    // not by how this literal is written).
-    "joint",
 ];
 
 /// Name declared by a `.ri` line, if it is a declaration at all.
@@ -1073,8 +1031,8 @@ fn in_oracle_scope(path: &str) -> bool {
 ///
 /// 1. **`.` left delimiter** and 2. **`@` left delimiter** — one rule with
 ///    two delimiters, described above.
-/// 3. **[`RI_KEYWORDS`] membership** — the language's FULL reserved-word set
-///    (spec §2.10), not just the declaration keywords [`ri_declared_name`]
+/// 3. **[`reify_syntax::KEYWORDS`] membership** — the language's FULL keyword
+///    table (spec §2.10), not just the declaration keywords [`ri_declared_name`]
 ///    parses with: `Trait::fn(args)` in prose about static dispatch reads as
 ///    a call to `fn`, and `auto(free)` reads as a call to `auto`; no keyword
 ///    is ever a builtin.
@@ -1144,11 +1102,11 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
             if start > 0 && matches!(bytes[start - 1], b'.' | b'@') {
                 continue;
             }
-            // A reserved word is never a builtin (`Trait::fn(args)`,
+            // A keyword is never a builtin (`Trait::fn(args)`,
             // `auto(free)`), and a name this CHUNK declares anywhere is
             // defined by its own example source, not claimed of the
             // compiler.
-            if RI_KEYWORDS.contains(&name) || declared_names.contains(name) {
+            if reify_syntax::lookup_keyword(name).is_some() || declared_names.contains(name) {
                 continue;
             }
             // An argument list that is literally `(...)` is a schematic
@@ -3251,7 +3209,7 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
 
     /// Non-function call-shaped syntax that reads like a call but is grammar,
     /// not an API claim. `auto(free)` is the real `parameters.md:13` shape (a
-    /// value literal/keyword, spec §2.10:207); `some(...)` is a language-level
+    /// value literal/keyword, spec §2.10); `some(...)` is a language-level
     /// `Option` constructor intercepted before general function resolution
     /// (crates/reify-compiler/src/expr.rs:2222-2223, "some() is a
     /// language-level constructor, not a user-defined function" — `none` gets
@@ -3276,16 +3234,16 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
         );
     }
 
-    /// The carve-out that stops [`RI_KEYWORDS`] rotting into a false-negative
-    /// machine. docs/reify-language-spec.md:221 explicitly lists these as
-    /// "Not keywords (standard library functions)" — every one must still be
-    /// extracted as a claim when written call-shaped, and none may be a
-    /// `RI_KEYWORDS` member. The spec's "Removed keywords" (`derived`,
-    /// `require`, `dimension`, :219) are likewise absent — they are not part
-    /// of v0.1 at all, so admitting them as keywords would silently disarm a
-    /// chunk that (incorrectly) still calls them.
+    /// The carve-out that stops the keyword filter rotting into a
+    /// false-negative machine. docs/reify-language-spec.md §2.10 explicitly
+    /// lists these as "Not keywords (standard library functions)" — every one
+    /// must still be extracted as a claim when written call-shaped, and none
+    /// may be a [`reify_syntax::KEYWORDS`] row. The spec's "Removed keywords"
+    /// (`derived`, `require`, `dimension`) are likewise absent — they are not
+    /// part of v0.1 at all, so admitting them as keywords would silently
+    /// disarm a chunk that (incorrectly) still calls them.
     #[test]
-    fn ri_keywords_excludes_the_spec_carve_outs() {
+    fn keyword_filter_excludes_the_spec_carve_outs() {
         for name in [
             "determined",
             "constrained",
@@ -3299,9 +3257,9 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
             "geo_equiv",
         ] {
             assert!(
-                !RI_KEYWORDS.contains(&name),
+                reify_syntax::lookup_keyword(name).is_none(),
                 "{name:?} is a spec §2.10 standard-library function, not a \
-                 keyword — it must not be in RI_KEYWORDS"
+                 keyword — it must not be a reify_syntax::KEYWORDS row"
             );
             let hits = chunk_call_mentions(&format!("`{name}(x)`\n"));
             assert_eq!(
@@ -3314,24 +3272,24 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
 
         for removed in ["derived", "require", "dimension"] {
             assert!(
-                !RI_KEYWORDS.contains(&removed),
-                "{removed:?} is a REMOVED keyword (spec :219, not part of \
-                 v0.1) — it must not be in RI_KEYWORDS"
+                reify_syntax::lookup_keyword(removed).is_none(),
+                "{removed:?} is a REMOVED keyword (spec §2.10, not part of \
+                 v0.1) — it must not be a reify_syntax::KEYWORDS row"
             );
         }
     }
 
-    /// `RI_KEYWORDS` must be a strict superset of [`RI_DECL_KEYWORDS`], so
-    /// widening the mention-side filter can never regress the declaration-
+    /// Every [`RI_DECL_KEYWORDS`] word is a [`reify_syntax::KEYWORDS`] row,
+    /// so the mention-side keyword filter can never regress the declaration-
     /// keyword filter a63c892eea already shipped.
     #[test]
-    fn ri_keywords_is_a_superset_of_ri_decl_keywords() {
+    fn every_ri_decl_keyword_is_a_keyword_table_row() {
         for kw in RI_DECL_KEYWORDS {
             assert!(
-                RI_KEYWORDS.contains(kw),
-                "{kw:?} is in RI_DECL_KEYWORDS but not RI_KEYWORDS — the \
-                 widening must never lose a keyword the narrower filter \
-                 already had"
+                reify_syntax::lookup_keyword(kw).is_some(),
+                "{kw:?} is in RI_DECL_KEYWORDS but is not a \
+                 reify_syntax::KEYWORDS row — the mention filter must never \
+                 lose a keyword the narrower filter already had"
             );
         }
     }

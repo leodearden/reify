@@ -1167,6 +1167,23 @@ mod tests {
         // (a top-level keyword) is not expected here after position-aware narrowing.
     }
 
+    /// The completion lists are UX tables over the language's keywords: every
+    /// word they offer is a `reify_syntax::KEYWORDS` row. Membership only — the
+    /// lists may offer rename-accepted words, so rename policy is not checked.
+    #[test]
+    fn completion_keywords_are_keyword_table_rows() {
+        for w in TOP_LEVEL_KEYWORDS
+            .iter()
+            .chain(BODY_KEYWORDS)
+            .chain(EXPR_KEYWORDS)
+        {
+            assert!(
+                reify_syntax::lookup_keyword(w).is_some(),
+                "completion offers {w:?}, which is not a reify_syntax::KEYWORDS row"
+            );
+        }
+    }
+
     #[test]
     fn completions_include_scope_identifiers() {
         let source = reify_test_support::bracket_source();
