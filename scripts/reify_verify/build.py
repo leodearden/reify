@@ -39,6 +39,7 @@ from reify_verify.plan import (
     Phase,
     Plan,
     PlanHeader,
+    RetryMarker,
     Script,
     Selector,
     Step,
@@ -90,6 +91,19 @@ def plan_invocation(
     )
     families = Families.of(invocation.action)
     vitest, vitest_warnings = VitestArm.of(families, narrowed, planning)
+    inputs = PlanInputs(
+        families=families,
+        include_infra=invocation.include_infra,
+        decision=decision,
+        narrowing=narrowed,
+        selection=selected,
+        role_policy=role_policy,
+        cargo_prio=prio.prefix,
+        walls=Walls.resolve(env),
+        node_lane=NodeLane.compose(families, decision, vitest),
+        infra_suite_active=knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value,
+        git_env_scrub_prefix=lambda: _git_env_scrub_prefix(repo_root, planning),
+    )
     profile_selection = invocation.profile_arg or role_policy.default_profile
     header = PlanHeader(
         action=invocation.action,
@@ -100,8 +114,9 @@ def plan_invocation(
         nextest=_nextest_available(planning, repo_root),
         role=invocation.role,
     )
+    steps = build_steps(inputs)
     plan = Plan(
-        retry_marker=None,
+        retry_marker=_retry_marker(inputs.node_lane, TEST_REGION_UNPLANNED, planning, repo_root),
         header=header,
         selective_infra_note=invocation.include_infra
         and role_policy.infra_tier is InfraTier.SELECTIVE,
@@ -109,21 +124,7 @@ def plan_invocation(
         narrowing=narrowed,
         heavy_partition=None,
         environment=step_env.lines,
-        steps=build_steps(
-            PlanInputs(
-                families=families,
-                include_infra=invocation.include_infra,
-                decision=decision,
-                narrowing=narrowed,
-                selection=selected,
-                role_policy=role_policy,
-                cargo_prio=prio.prefix,
-                walls=Walls.resolve(env),
-                node_lane=NodeLane.compose(families, decision, vitest),
-                infra_suite_active=knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value,
-                git_env_scrub_prefix=lambda: _git_env_scrub_prefix(repo_root, planning),
-            )
-        ),
+        steps=steps,
     )
     diagnostics = (
         *filter(None, (prio.warning,)),
@@ -154,6 +155,65 @@ def _test_region_refusal(action: Action) -> Refused:
 
 def _nextest_available(env: Mapping[str, str], repo_root: Path) -> bool:
     return childproc.run(["cargo", "nextest", "--version"], repo_root, env).returncode == 0
+
+
+@dataclass(frozen=True)
+class NextestSubsetsApplied:
+    """The within-ceiling nextest subset sizes the test region applied, per profile."""
+
+    debug: int
+    release: int
+
+
+TEST_REGION_UNPLANNED = NextestSubsetsApplied(debug=0, release=0)
+RETRY_SCOPE_NARROWED = "failed_only"
+RUN_ALL_SUBSET_MATCHED = re.compile(r"@@REIFY_RUN_ALL_SUBSET_MATCHED=([0-9]+)@@")
+IFS_WORDS = re.compile(r"[^ \t\n]+")
+
+
+def _retry_marker(
+    node_lane: "NodeLane | None",
+    nextest: NextestSubsetsApplied,
+    env: Mapping[str, str],
+    repo_root: Path,
+) -> RetryMarker | None:
+    """The failed_only retry's applied subset sizes; None unless at least one suite really narrowed.
+
+    `nextest` comes from the test region, which γ2 (#9099) ports; until then
+    it is TEST_REGION_UNPLANNED.
+    """
+    if knobs.resolve(knobs.RETRY_SCOPE, env).value != RETRY_SCOPE_NARROWED:
+        return None
+    marker = RetryMarker(
+        nextest_debug=nextest.debug,
+        nextest_release=nextest.release,
+        run_all=_run_all_subset_size(env, repo_root),
+        gui=node_lane.gui_specs_applied if node_lane else 0,
+    )
+    narrowed = (marker.nextest_debug, marker.nextest_release, marker.run_all, marker.gui)
+    return marker if any(narrowed) else None
+
+
+def _run_all_subset_size(env: Mapping[str, str], repo_root: Path) -> int:
+    """How many REIFY_RUN_ALL_MEMBER_SUBSET members run_all.sh's count-only probe matches.
+
+    run_all.sh owns the member-skip predicate, so its count is the truth. Its
+    stderr is dropped. Without the script, or without the count in its
+    stdout, the subset's word count stands in; the words are never globbed.
+    """
+    subset = knobs.resolve(knobs.RUN_ALL_MEMBER_SUBSET, env).value
+    if not subset:
+        return 0
+    if RUN_ALL.is_file(repo_root):
+        probe = childproc.run(
+            ["bash", RUN_ALL.path],
+            repo_root,
+            {**env, "REIFY_RUN_ALL_SUBSET_COUNT_ONLY": "1", knobs.RUN_ALL_MEMBER_SUBSET.name: subset},
+        )
+        matched = RUN_ALL_SUBSET_MATCHED.search(probe.stdout)
+        if matched:
+            return int(matched.group(1))
+    return len(IFS_WORDS.findall(subset))
 
 
 def _git_env_scrub_prefix(repo_root: Path, env: Mapping[str, str]) -> str:
