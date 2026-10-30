@@ -13,9 +13,7 @@ module driver_contract_allow_indeterminate
 @test
 @allow_indeterminate
 structure TestToleratedIndeterminate {
-    // The test runner resolves autos, so the Indeterminate comes from a
-    // run-dependent Undef (`divisor` is zero) and this file must contain no
-    // auto param.
+    // Indeterminate via a run-dependent Undef, not an auto: `reify test` solves autos.
     param divisor : Int = 0
     let w = 10mm / divisor
     constraint w > 0mm && w < 10mm

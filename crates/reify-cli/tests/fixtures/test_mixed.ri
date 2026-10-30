@@ -2,12 +2,6 @@
 //   TestPass     — satisfied constraint      (PASS)
 //   TestFail     — violated constraint       (FAIL)
 //   TestIndet    — run-dependent Undef input (INDETERMINATE)
-// TestIndet's `z` is Undef because `divisor` is zero; change `divisor` and
-// the constraint resolves.
-//
-// This file must contain no `auto` param. `reify test` resolves autos, so an
-// auto in TestIndet would be solved and its verdict would stop being
-// Indeterminate.
 // Used by test_command_on_mixed_file_shows_summary.
 
 @test structure TestPass {
