@@ -13,11 +13,10 @@
 //! (invariant I3); the file keeps its original stem, so its post-consolidation selector
 //! is `torque_unit_tests::<test>`.
 //!
-//! This is also the pre-registered home for task μ (#5789)'s round-trip property test —
-//! `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md` §C3 already
-//! bound μ to `crates/reify-compiler/tests/harness_units/unit_label_round_trip.rs` behind
-//! this same `harness_units.rs` root, so μ should add its module here rather than create
-//! a second unit-subsystem harness.
+//! This root also hosts task μ's Invariant R gate, `unit_label_round_trip` (introduced by
+//! #5789), which `docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md`
+//! §C3 binds to `crates/reify-compiler/tests/harness_units/unit_label_round_trip.rs` behind
+//! this same `harness_units.rs` root.
 //!
 //! Routing vs. the sibling `harness_units_materials.rs` root — read this before adding a
 //! unit test. The two unit-flavoured roots exist by concurrent construction, not by design:
@@ -30,10 +29,8 @@
 //! that file's header; do not fold the two roots together — PRD §C3 and the `harness_units`
 //! delivered_check require this file to keep existing.
 //!
-//! The "μ should add its module here rather than create a second unit-subsystem harness"
-//! steer above is scoped to #5789's angle-units work only — it is NOT an invitation to move
-//! `unit_declaration_tests.rs` / `unit_registry_tests.rs` (or any future compiler-machinery
-//! test) here.
+//! Hosting μ's gate here is NOT an invitation to move `unit_declaration_tests.rs` /
+//! `unit_registry_tests.rs` (or any future compiler-machinery test) into this root.
 //!
 //! Explicit `#[path]` is required: this harness root is an integration-test crate root,
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
