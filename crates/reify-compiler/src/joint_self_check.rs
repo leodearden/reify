@@ -4,49 +4,37 @@
 //! At definition time (before any solve) a
 //! `joint NAME(datums) with <declared free DOF> = <relation body>` declaration
 //! asserts that its **declared** free DOF matches the **geometric residual** the
-//! relation body leaves — by COUNT and by KIND. This module holds the pure,
-//! independently-unit-testable pieces of that law:
+//! relation body leaves — by COUNT and by KIND.
 //!
-//! - [`residual_kinds`] — the body's residual `(rot, trans)` freedoms. A
-//!   mechanism nominally has 6 spatial DOF = 3 rotational + 3 translational
-//!   (PRD §7.1.2); each body relation removes a curated `(rot, trans)`
-//!   codimension split (via [`crate::relation_signatures::relation_delta_dof_kinds`]),
-//!   so the residual is `(3 − Σrot, 3 − Σtrans)`, saturating at 0.
-//! - [`declared_kinds`] — the kinds the declared DOF fields contribute
-//!   (`Angle` → rotational, `Length` → translational, `Orientation(3)` → 3
-//!   rotational).
-//! - [`check_joint_dof`] — compares the two `(rot, trans)` pairs by exact
-//!   integer equality (no tolerance; PRD §12 G6 numeric-floor is N/A) and, on
-//!   mismatch, builds the geometric `E_JOINT_DOF_MISMATCH` diagnostic.
+//! [`joint_dof_diagnostics`] is the module's single entry point
+//! (docs/prds/v0_6/compiler-declaration-passes.md D8). It owns the verdict and
+//! both gradualism gates that suppress it (docs/prds/v0_6/geometric-joints.md
+//! §7.1): (a) a declared DOF with no joint-DOF kind, and (b) a body relation
+//! whose DOF count is curated but whose rot/trans split is not. Its caller in
+//! `compile_builder/entities_phase.rs` only resolves the DOF types and compiles
+//! the body.
 //!
-//! The compile-time wiring (building a param scope, compiling the body, running
-//! the check) lives in `compile_builder/entities_phase.rs`; this module stays a
-//! pure function library so the residual/declared/match/message logic is
-//! testable without a full compile (mirroring the
-//! `relation_signatures.rs` / `joint_signatures.rs` convention).
+//! Behind it: [`residual_kinds`] (the body's residual out of the nominal
+//! 3 rot + 3 trans), [`declared_kinds`] (the declared fields' kinds, via
+//! [`dof_kind_of`]) and [`check_joint_dof`] (exact-integer comparison — no
+//! tolerance, PRD §12 G6 numeric-floor is N/A — and the `E_JOINT_DOF_MISMATCH`
+//! message).
 
 use crate::relation_signatures::{relation_delta_dof, relation_delta_dof_kinds};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
 /// A rotational/translational DOF split. `rot + trans` is the total DOF count.
-///
-/// Used three ways in the self-check: the body's residual (via
-/// [`residual_kinds`]), the declared DOF fields' contribution (via
-/// [`declared_kinds`]), and the two operands of the match law (via
-/// `check_joint_dof`). Exact-integer — there is no tolerance (PRD §12 G6
-/// numeric-floor is N/A).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DofKinds {
+struct DofKinds {
     /// Rotational (angular) free DOF.
-    pub(crate) rot: u32,
+    rot: u32,
     /// Translational free DOF.
-    pub(crate) trans: u32,
+    trans: u32,
 }
 
 impl DofKinds {
-    /// Construct a `(rot, trans)` split.
-    pub(crate) const fn new(rot: u32, trans: u32) -> Self {
+    const fn new(rot: u32, trans: u32) -> Self {
         Self { rot, trans }
     }
 }
@@ -65,19 +53,11 @@ const NOMINAL_TRANS: u32 = 3;
 /// residual is `(3 − Σrot, 3 − Σtrans)`, saturating at 0 so an over-constrained
 /// body reports `(0, 0)` rather than underflowing.
 ///
-/// GRADUALISM (per-member only): a body member that is not a `FunctionCall`, or
-/// whose relation has no curated kind split (`None` — e.g. `tangent`, or an
-/// unknown name), contributes nothing to THIS function's residual.
-///
-/// This is a per-member skip, NOT a whole-check guarantee. A member with a
-/// curated DOF COUNT but no kind split — `tangent`, where [`relation_delta_dof`]
-/// is `Some(1)` or `Some(2)` depending on the operand combo (task 5540) yet
-/// [`relation_delta_dof_kinds`] is `None` — removes DOF the
-/// kind table cannot attribute, so omitting it here INFLATES the residual above
-/// the true geometry. Suppressing the resulting spurious mismatch is the
-/// caller's responsibility: it gates the verdict off via
-/// [`body_has_undecidable_kind_split`] whenever such a member is present.
-pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
+/// A body member that is not a `FunctionCall`, or whose relation has no curated
+/// kind split (`None` — e.g. `tangent`, or an unknown name), contributes
+/// nothing. For a member with a curated COUNT but no split, that skip INFLATES
+/// the residual, which is why [`body_has_undecidable_kind_split`] gates the verdict.
+fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
     let mut sum_rot: u32 = 0;
     let mut sum_trans: u32 = 0;
     for member in body {
@@ -104,16 +84,15 @@ pub(crate) fn residual_kinds(body: &[CompiledExpr]) -> DofKinds {
 /// omits such a member (it has no kind to attribute), which INFLATES the residual
 /// above the true geometry — so a declaration written to match the *true*
 /// residual would draw a spurious `E_JOINT_DOF_MISMATCH`. When this returns
-/// `true` the caller suppresses the count/kind verdict entirely (PRD §7.1
-/// gradualism): a residual the kind table cannot fully account for must not force
-/// a verdict.
+/// `true` the count/kind verdict is suppressed entirely (PRD §7.1 gradualism): a
+/// residual the kind table cannot fully account for must not force a verdict.
 ///
 /// A purely uncurated member (unknown name, or an operand shape outside the
 /// vocabulary) has `relation_delta_dof` = `None` too, so it does NOT trip this
 /// gate — its DOF removal is wholly unknown rather than known-count/unknown-kind,
 /// and `residual_kinds` already treats it as removing nothing under the same
 /// gradualism.
-pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
+fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
     body.iter().any(|member| {
         if let CompiledExprKind::FunctionCall { function, args } = &member.kind {
             relation_delta_dof(&function.name, args).is_some()
@@ -146,12 +125,8 @@ pub(crate) fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
 /// only by internally-constructed `Type` values (e.g. this module's own
 /// tests).
 ///
-/// The single source of truth for DOF-kind classification, shared by
-/// [`declared_kinds`] (which sums the classifiable contributions) and the
-/// compile-time wiring in `compile_builder/entities_phase.rs` (which surfaces
-/// each `None` as a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
-/// rather than silently folding it into a confusing `E_JOINT_DOF_MISMATCH`).
-pub(crate) fn dof_kind_of(ty: &Type) -> Option<DofKinds> {
+/// The single source of truth for DOF-kind classification.
+fn dof_kind_of(ty: &Type) -> Option<DofKinds> {
     match ty {
         Type::Scalar { dimension } if *dimension == DimensionVector::ANGLE => {
             Some(DofKinds::new(1, 0))
@@ -162,27 +137,6 @@ pub(crate) fn dof_kind_of(ty: &Type) -> Option<DofKinds> {
         Type::Orientation(3) => Some(DofKinds::new(3, 0)),
         _ => None,
     }
-}
-
-/// Sum the declared DOF field types' `(rot, trans)` kind contributions via
-/// [`dof_kind_of`].
-///
-/// Unclassifiable types (those for which [`dof_kind_of`] is `None`) contribute
-/// nothing here; they are surfaced separately, per-field, by the caller (which
-/// holds the field name and span). The caller also GATES the count/kind verdict
-/// on every DOF being classifiable — an unclassifiable `(0, 0)` contribution
-/// would otherwise make the residual comparison meaningless — so this function
-/// stays a pure sum with no diagnostic responsibility.
-pub(crate) fn declared_kinds(declared: &[Type]) -> DofKinds {
-    let mut rot: u32 = 0;
-    let mut trans: u32 = 0;
-    for ty in declared {
-        if let Some(k) = dof_kind_of(ty) {
-            rot += k.rot;
-            trans += k.trans;
-        }
-    }
-    DofKinds::new(rot, trans)
 }
 
 /// Render a `DofKinds` as the human-readable declared-DOF phrase used in the
@@ -213,7 +167,7 @@ fn describe_declared(d: DofKinds) -> String {
 /// Pure-integer — there is no tolerance (PRD §12 G6 numeric-floor is N/A). An
 /// empty body has residual `(3, 3)`, so it can never match a sane declaration
 /// and falls out here as a mismatch (no bespoke empty-body code needed).
-pub(crate) fn check_joint_dof(
+fn check_joint_dof(
     joint_name: &str,
     declared: DofKinds,
     residual: DofKinds,
@@ -258,14 +212,19 @@ pub(crate) fn check_joint_dof(
 /// The declared DOF's summed `(rot, trans)` kinds, or `None` as soon as any
 /// field has no joint-DOF kind (a `Type::Error` or a non-kind type), since a
 /// partially-classified declaration cannot be compared against the residual.
-fn declared_dof_kinds(dof: &[(&str, Type, SourceSpan)]) -> Option<DofKinds> {
+fn declared_kinds(dof: &[(&str, Type, SourceSpan)]) -> Option<DofKinds> {
     dof.iter().try_fold(DofKinds::new(0, 0), |sum, (_, ty, _)| {
         let kind = dof_kind_of(ty)?;
         Some(DofKinds::new(sum.rot + kind.rot, sum.trans + kind.trans))
     })
 }
 
-fn non_kind_dof_diagnostic(joint_name: &str, field: &str, ty: &Type, span: SourceSpan) -> Diagnostic {
+fn non_kind_dof_diagnostic(
+    joint_name: &str,
+    field: &str,
+    ty: &Type,
+    span: SourceSpan,
+) -> Diagnostic {
     Diagnostic::error(format!(
         "joint `{joint_name}` DOF `{field}`: type `{ty}` is not a valid joint DOF kind \
          (expected Angle, Length, or Orientation)"
@@ -295,10 +254,15 @@ pub(crate) fn joint_dof_diagnostics(
         .filter(|(_, ty, _)| *ty != Type::Error && dof_kind_of(ty).is_none())
         .map(|(field, ty, field_span)| non_kind_dof_diagnostic(joint_name, field, ty, *field_span))
         .collect();
-    if let Some(declared) = declared_dof_kinds(dof)
+    if let Some(declared) = declared_kinds(dof)
         && !body_has_undecidable_kind_split(body)
     {
-        diagnostics.extend(check_joint_dof(joint_name, declared, residual_kinds(body), span));
+        diagnostics.extend(check_joint_dof(
+            joint_name,
+            declared,
+            residual_kinds(body),
+            span,
+        ));
     }
     diagnostics
 }
@@ -383,7 +347,11 @@ mod tests {
     /// The whole result is exactly one `E_JOINT_DOF_MISMATCH` error, labelled
     /// at the joint span, whose message contains every phrase.
     fn assert_single_mismatch(diags: &[Diagnostic], phrases: &[&str]) {
-        assert_eq!(diags.len(), 1, "expected exactly one diagnostic, got {diags:#?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly one diagnostic, got {diags:#?}"
+        );
         let d = &diags[0];
         assert_eq!(d.code, Some(DiagnosticCode::JointDofMismatch));
         assert_eq!(d.severity, Severity::Error);
@@ -401,16 +369,31 @@ mod tests {
     /// The whole result is one `E_ARG_TYPE_MISMATCH` error per named field (in
     /// order), each labelled at the field span and naming the joint and field.
     fn assert_kind_errors_for(diags: &[Diagnostic], fields: &[&str]) {
-        assert!(mismatches(diags).is_empty(), "no verdict expected: {diags:#?}");
+        assert!(
+            mismatches(diags).is_empty(),
+            "no verdict expected: {diags:#?}"
+        );
         let errors = kind_errors(diags);
-        assert_eq!(errors.len(), diags.len(), "only kind errors expected: {diags:#?}");
-        assert_eq!(errors.len(), fields.len(), "one kind error per field: {diags:#?}");
+        assert_eq!(
+            errors.len(),
+            diags.len(),
+            "only kind errors expected: {diags:#?}"
+        );
+        assert_eq!(
+            errors.len(),
+            fields.len(),
+            "one kind error per field: {diags:#?}"
+        );
         for (d, name) in errors.iter().zip(fields) {
             assert_eq!(d.severity, Severity::Error);
             assert_eq!(d.labels.len(), 1);
             assert_eq!(d.labels[0].span, FIELD_SPAN);
             let dof_phrase = format!("DOF `{name}`");
-            for phrase in ["joint `j`", dof_phrase.as_str(), "not a valid joint DOF kind"] {
+            for phrase in [
+                "joint `j`",
+                dof_phrase.as_str(),
+                "not a valid joint DOF kind",
+            ] {
                 assert!(
                     d.message.contains(phrase),
                     "kind error must contain {phrase:?}: {}",
@@ -430,7 +413,12 @@ mod tests {
         assert_no_diagnostics(&run(&[angle(), travel()], &[concentric()]));
         assert_single_mismatch(
             &run(&[angle()], &[concentric()]),
-            &["declared 1 rotational", "leaves 1 rot + 1 trans", "declare", "Length"],
+            &[
+                "declared 1 rotational",
+                "leaves 1 rot + 1 trans",
+                "declare",
+                "Length",
+            ],
         );
     }
 
@@ -446,7 +434,10 @@ mod tests {
     /// `parallel(Direction, Direction)` removes (2, 0), leaving (1, 3).
     #[test]
     fn parallel_leaves_one_rot_three_trans() {
-        let body = [rel("parallel", vec![arg(Type::Direction), arg(Type::Direction)])];
+        let body = [rel(
+            "parallel",
+            vec![arg(Type::Direction), arg(Type::Direction)],
+        )];
         let x = field("x", Type::length());
         let y = field("y", Type::length());
         let z = field("z", Type::length());
@@ -467,7 +458,10 @@ mod tests {
     fn over_removal_saturates_at_zero() {
         let body = [
             rel("coincident", vec![arg(Type::Frame(3)), arg(Type::Frame(3))]),
-            rel("perpendicular", vec![arg(Type::Direction), arg(Type::Direction)]),
+            rel(
+                "perpendicular",
+                vec![arg(Type::Direction), arg(Type::Direction)],
+            ),
         ];
         assert_no_diagnostics(&run(&[], &body));
         assert_single_mismatch(
@@ -536,7 +530,10 @@ mod tests {
 
     #[test]
     fn kind_errors_are_per_non_kind_field() {
-        let dof = [field("foo", Type::Axis), field("bar", Type::dimensionless_scalar())];
+        let dof = [
+            field("foo", Type::Axis),
+            field("bar", Type::dimensionless_scalar()),
+        ];
         assert_kind_errors_for(&run(&dof, &[concentric()]), &["foo", "bar"]);
         let dof = [field("foo", Type::Axis), field("x", Type::Error)];
         assert_kind_errors_for(&run(&dof, &[concentric()]), &["foo"]);
@@ -550,7 +547,7 @@ mod tests {
     fn orientation_three_is_three_rotational() {
         let body = [rel("coincident", vec![pt(), pt()])];
         let orientation = field("orientation", Type::Orientation(3));
-        assert_no_diagnostics(&run(&[orientation.clone()], &body));
+        assert_no_diagnostics(&run(std::slice::from_ref(&orientation), &body));
         assert_single_mismatch(
             &run(&[orientation, angle()], &body),
             &["declared 4 rotational free DOF"],

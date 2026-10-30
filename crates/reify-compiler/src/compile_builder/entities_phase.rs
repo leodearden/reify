@@ -606,13 +606,9 @@ fn resolve_ambient_default(
 ///      compiled members feed the residual.
 ///   3. Resolve each `JointDofField.type_expr` (`Angle` → `Scalar<ANGLE>`,
 ///      `Length` → `Scalar<LENGTH>`, `Orientation` → `Orientation(n)`).
-///   4. Compare the body's geometric residual against the declared free DOF by
-///      exact-integer COUNT and KIND via [`crate::joint_self_check`]; push any
-///      returned `E_JOINT_DOF_MISMATCH` diagnostic.
-///
-/// An empty body removes no DOF, so its residual is the full nominal (3, 3),
-/// which cannot match any sane declaration — caught here as a mismatch (the α
-/// empty-`{ }`-body lowering case), with no bespoke empty-body code.
+///   4. Push the diagnostics of
+///      [`crate::joint_self_check::joint_dof_diagnostics`], which owns the
+///      COUNT/KIND verdict and both of its gradualism gates.
 fn compile_joint_self_check(
     joint: &reify_ast::JointDef,
     structure_names: &HashSet<String>,
@@ -661,11 +657,11 @@ fn compile_joint_self_check(
     }
 
     // (3) Resolve each declared DOF field type.
-    let declared_types: Vec<Type> = joint
+    let declared_dof: Vec<(&str, Type, SourceSpan)> = joint
         .dof
         .iter()
         .map(|f| {
-            resolve_type_expr_with_aliases(
+            let ty = resolve_type_expr_with_aliases(
                 &f.type_expr,
                 &type_param_names,
                 alias_registry,
@@ -673,7 +669,8 @@ fn compile_joint_self_check(
                 structure_names,
                 trait_names,
             )
-            .unwrap_or(Type::Error)
+            .unwrap_or(Type::Error);
+            (f.name.as_str(), ty, f.span)
         })
         .collect();
 
@@ -682,9 +679,9 @@ fn compile_joint_self_check(
     // DOF (`Angle`/`Length`) carrying an `in <range>` bound, compile the range
     // against the param scope and require its element dimension to equal the
     // declared DOF's. Orientation DOFs (no scalar range) and absent ranges are
-    // skipped. Indexed against `declared_types` so each field is paired with its
+    // skipped. Zipped with `declared_dof` so each field is paired with its
     // already-resolved type.
-    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+    for (field, (_, declared_ty, _)) in joint.dof.iter().zip(declared_dof.iter()) {
         let Type::Scalar { dimension: dof_dim } = declared_ty else {
             continue; // non-Scalar DOF (Orientation / unresolved Error) — no scalar range
         };
@@ -716,52 +713,13 @@ fn compile_joint_self_check(
         }
     }
 
-    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). Two gradualism gates
-    // stand in front of it; either leaves the residual comparison unable to
-    // substantiate a verdict, so it is skipped rather than emit a spurious
-    // `E_JOINT_DOF_MISMATCH`:
-    //
-    //   (a) a declared DOF field whose resolved type has no geometric kind
-    //       (neither Angle, Length, nor Orientation) — surfaced here, per-field,
-    //       with a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
-    //       since its `(0, 0)` contribution would otherwise emit a confusing
-    //       `E_JOINT_DOF_MISMATCH` that never names the real problem. A
-    //       `Type::Error` DOF (already diagnosed by the resolver) gates the
-    //       verdict too, but draws no second diagnostic (anti-cascade).
-    //   (b) a body relation whose DOF COUNT is curated but whose rot/trans split
-    //       is not (e.g. `tangent`): `residual_kinds` omits it, INFLATING the
-    //       residual above the true geometry, so the verdict could fire
-    //       spuriously (see `joint_self_check::body_has_undecidable_kind_split`).
-    let mut skip_verdict = false;
-    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
-        if *declared_ty == Type::Error {
-            skip_verdict = true; // resolver already diagnosed — no second diagnostic
-        } else if crate::joint_self_check::dof_kind_of(declared_ty).is_none() {
-            skip_verdict = true;
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "joint `{}` DOF `{}`: type `{}` is not a valid joint DOF kind \
-                     (expected Angle, Length, or Orientation)",
-                    joint.name, field.name, declared_ty
-                ))
-                .with_code(DiagnosticCode::ArgTypeMismatch)
-                .with_label(DiagnosticLabel::new(field.span, "not a joint DOF kind")),
-            );
-        }
-    }
-    if crate::joint_self_check::body_has_undecidable_kind_split(&compiled_body) {
-        skip_verdict = true;
-    }
-
-    if !skip_verdict {
-        let residual = crate::joint_self_check::residual_kinds(&compiled_body);
-        let declared = crate::joint_self_check::declared_kinds(&declared_types);
-        if let Some(diag) =
-            crate::joint_self_check::check_joint_dof(&joint.name, declared, residual, joint.span)
-        {
-            diagnostics.push(diag);
-        }
-    }
+    // (4) Definition-time COUNT/KIND verdict, behind its gradualism gates (PRD §7.1).
+    diagnostics.extend(crate::joint_self_check::joint_dof_diagnostics(
+        &joint.name,
+        &declared_dof,
+        &compiled_body,
+        joint.span,
+    ));
 }
 
 /// Compile a single `structure` or `occurrence` declaration, pushing the
