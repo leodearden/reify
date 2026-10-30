@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from reify_verify import bashcall, knobs, queries
+from reify_verify import bashcall, build, knobs, queries, render
 from reify_verify.invocation import Action, Invocation, Query, Scope
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
@@ -309,6 +309,8 @@ def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
             return _emit(output)
         case ActionFreeReport(report=report):
             return _emit(report(env))
+    if invocation.print_plan and not invocation.confirm_failed:
+        return _print_plan(invocation, env)
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
@@ -317,6 +319,22 @@ def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
         )
     )
     return EX_UNAVAILABLE
+
+
+def _print_plan(invocation: Invocation, env: dict[str, str]) -> int:
+    try:
+        outcome = build.plan_invocation(invocation, env, REPO_ROOT)
+    except bashcall.BashCallError as err:
+        _diagnose((f"{ERROR}{err}",))
+        return 1
+    match outcome:
+        case build.Refused(lines=lines, exit_code=exit_code):
+            _diagnose(lines)
+            return exit_code
+        case build.Planned(plan=plan, diagnostics=diagnostics):
+            _diagnose(diagnostics)
+            _print(render.render_text(plan))
+            return 0
 
 
 def _emit(output: queries.QueryOutput) -> int:

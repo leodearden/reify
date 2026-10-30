@@ -5,7 +5,8 @@ effective scope, gather_changed reads the changed paths, gather_facts reads
 what the classifier needs to know about them, and the pure decide_scope maps
 those facts to check families. decide runs the stages and returns the
 ScopeDecision and the scope stage's stderr lines, in the order bash prints
-them.
+them. decide_resolved runs every stage after resolve_scope, for a planner that
+must print other lines between the scope notices and the gather warnings.
 
 A changed-path git call that fails returns git's own stderr with its warning,
 as bash leaves it on the terminal; resolve_scope drops it, as bash's
@@ -431,14 +432,20 @@ def _seeds_an_occt_crate(path: str, path_facts: PathFacts, facts: ScopeFacts) ->
 def decide(
     invocation: Invocation, repo_root: Path, env: Mapping[str, str]
 ) -> tuple[ScopeDecision, tuple[str, ...]]:
+    """resolve_scope, then decide_resolved; the notices precede the gather warnings."""
     resolved = resolve_scope(invocation, repo_root, env)
+    decision, warnings = decide_resolved(resolved, repo_root, env)
+    return decision, (*resolved.notices, *warnings)
+
+
+def decide_resolved(
+    resolved: ResolvedScope, repo_root: Path, env: Mapping[str, str]
+) -> tuple[ScopeDecision, tuple[str, ...]]:
+    """The decision for a resolved scope, and the gather stage's warnings (not the notices)."""
     if resolved.mode is Scope.ALL:
-        return ScopeDecision.wide(resolved, resolved.widened), resolved.notices
+        return ScopeDecision.wide(resolved, resolved.widened), ()
     changed = gather_changed(resolved, repo_root, env)
     if isinstance(changed, GatherFailure):
-        return ScopeDecision.wide(resolved, Widening.CHANGED_PATHS_UNREAD), (
-            *resolved.notices,
-            *changed.warnings,
-        )
+        return ScopeDecision.wide(resolved, Widening.CHANGED_PATHS_UNREAD), changed.warnings
     facts, warnings = gather_facts(resolved.mode, changed, repo_root, env)
-    return decide_scope(resolved, changed, facts), (*resolved.notices, *warnings)
+    return decide_scope(resolved, changed, facts), warnings
