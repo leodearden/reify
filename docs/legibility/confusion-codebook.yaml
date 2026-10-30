@@ -472,6 +472,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'turn 165: grep -n ... /tmp/7274-amend-vitest.log | head -30 exits 2; exit code 2 from grep signals path/IO error (not pattern-not-found=1)'
+  - date: '2026-10-29'
+    project: reify
+    session: e4a5d05e-0344-4bc2-8866-d35ff2b51615
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 390 runs grep over a glob (crates/reify-solver-elastic/src/constitutive/*.rs) that does not match, and the Bash call exits 2, a path/IO error. The digest shows several later 'not found' signals, but it does not show whether the agent treated exit 2 as a pattern miss or retried by varying only the search string, so this match is partial.
 - id: entry-cand-20260725-1
   title: Escalation-watcher script location unknown for non-dark-factory target projects
   severity: medium
@@ -1304,6 +1310,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The same background-task output file was Read 4 times in a row, which fits the repeated-Read retry loop after a poll is blocked. The digest shows no guard hit, so this match is tentative. The three not-found hits have no detail and cannot be attributed.
+  - date: '2026-10-29'
+    project: reify
+    session: d64f9318-ac25-4bdf-9824-e65a523a34fc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Partial match. The digest shows four consecutive Read calls on the same background task output file (tasks/bro6dv1re.output), which fits the repeated-Read retry loop in this entry. The digest does not show the sleep+tail poll being blocked, so that part of the entry is unconfirmed.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260729-3
@@ -3677,6 +3689,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Turn 1119: a foreground bounded wait (`timeout 1380 tail --pid=516972 -f /dev/null`) exited 137. The digest shows no retry, so this is a weak match to the watcher re-arm exit-137 entry; the entry''s retry-versus-background-switch behaviour is not evidenced here.'
+  - date: '2026-10-29'
+    project: reify
+    session: 3b494f6b-be2b-405a-b026-2cfdc343c810
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The foreground watcher-rearm.sh invocation exited 137 (SIGKILL) at turn 110, and the session then continued retrying the same foreground bounded-wait form instead of switching to a background watcher.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260722-3
@@ -4608,6 +4626,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: The Bash watcher-rearm.sh bounded wait (--timeout 3600) was re-issued with an identical command 5 times in the retry loop, after each run hit its own ceiling. The digest does not show the exit code, so the match rests on the identical re-issue pattern.
+  - date: '2026-10-29'
+    project: reify
+    session: 3b494f6b-be2b-405a-b026-2cfdc343c810
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Bash x3 re-issued the identical watcher-rearm.sh command (--level 1 --timeout 3600) after each run hit the script''s own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING), matching the bounded-rearm-re-issued-after-ceiling pattern.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260726-8
@@ -9461,6 +9485,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Turn 115 runs cargo clippy and cargo test with timeout 1700 inside an 1800000 ms harness timeout, and the output is piped through tail. The command exits 137 (SIGKILL) and no real error is visible. The digest does not confirm whether the kill came from the harness, OOM, or another source, so the match is tentative.
+  - date: '2026-10-29'
+    project: reify
+    session: e4a5d05e-0344-4bc2-8866-d35ff2b51615
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 1182 runs a cargo doc build with output redirected to a log, and the tool call ends with exit 137 while the echoed output shows 'doc rc=0'. This is consistent with a foreground build being killed by the harness timeout, but the digest does not confirm the timeout cause, so the match is tentative.
 - id: entry-cand-20260807-1
   title: Dependency edge added 'for bookkeeping' renders the new task self-blocking by construction
   severity: medium
@@ -9552,6 +9582,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: mcp__escalation__get_pending_escalations returned a bare 'The operation timed out.' with no diagnostic detail, and the identical call {compact:true, level:1} was re-issued 3x without adapting.
+  - date: '2026-10-29'
+    project: reify
+    session: a372b675-c672-4852-8efc-ba0fbf60ea3f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: A fused-memory MCP call (resolve_ticket) returned only 'The operation timed out.' with no diagnostic detail. The entry describes a timeout with no diagnostic detail on a fused-memory call. The digest shows a single occurrence, not repeated retries, and the entry concerns get_task rather than resolve_ticket, so this is a partial match.
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -30799,6 +30835,58 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: the diagnostic is a bare "invalid connect" naming the whole statement, with no span or hint pointing at the offending literal
+- id: cand-20261029-1
+  title: Fleet decision-record glob also matches sibling .lock files, which fail JSON parsing
+  cause: The decisions directory stores each decision as a .json record with a sibling .json.lock file. A glob such as *plan-deviation-census* matches both, so an agent that parses every match as JSON hits JSONDecodeError on the lock files. Nothing in the layout or the lookup path distinguishes them, which adds a parse-failure detour to every future lookup.
+  area: fleet decision store / escalation tooling
+  first_seen: '2026-10-29'
+  disposition: pending
+  sightings:
+  - date: '2026-10-29'
+    project: reify
+    session: a372b675-c672-4852-8efc-ba0fbf60ea3f
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: '/home/leo/.claude/fleet/decisions/reify-esc-plan-deviation-census-reify-3.json.lock followed by json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)'
+- id: cand-20261029-2
+  title: RED test asserts a numeric bound copied from an unverified driver-doc claim, and the bound is off by about 13.8x
+  cause: A committed RED test takes its expected magnitude from a prose claim in a driver doc (MITC3+ within ~30% of the analytic value) rather than from a measurement. The claim is false, so the test fails for the wrong reason and gives the next implementer a misleading target. The downstream premise (stiffness studies via k = F/δ) also rests on this unchecked number.
+  area: testing / numerical validation oracles
+  first_seen: '2026-10-29'
+  disposition: pending
+  sightings:
+  - date: '2026-10-29'
+    project: reify
+    session: 36e70a89-57ad-4501-9351-30e6f8ab7b60
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: Its stated basis is "MITC3+ lands within ~30% of it on this fixture (see the driver doc)". ... max |u| 3.3768e-2 m outside one-OOM band around δ_EB = 2.4390e-3 m, which is 13.8× δ_EB.
+- id: cand-20261029-3
+  title: Unbounded fused-memory list query returns a response over the 16MB MCP cap, leaving the agent without data and unsure whether the call ran
+  cause: An unfiltered-by-limit get_tasks call against a project with many tasks produced a response larger than the MCP tool's 16MB cap, so the result was discarded. The tool's error text says the call may have run and should not be repeated as-is, which leaves the agent unsure of side effects and without the task list it needed.
+  area: tooling
+  first_seen: '2026-10-29'
+  disposition: pending
+  sightings:
+  - date: '2026-10-29'
+    project: reify
+    session: 83457aa0-1d7f-4986-843c-f81f76367183
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'The response from MCP server "fused-memory" for tool "get_tasks" was larger than 16MB, so it was not read. The tool may have run: check whether it did before running it again, and when you run it again, ask for less data.'
+- id: cand-20261029-4
+  title: Acceptance criterion assumes one verdict relation across fn-call, struct-ctor and default sites, but concrete fn params dispatch through a separate overload resolver
+  cause: A PRD test premise (B11) and its design rationale (D7) assume that fn-call, struct-ctor and param-default sites all reach acceptance through the same walker relation, so they cannot disagree. For concrete (non-trait-object) fn params, the verdict instead comes from resolve_function_overload / slot_matches_wildcard_tier, which lies outside the modules the premise covers. The spec therefore encodes a false uniformity claim, and the test it drives is red on main for bare fn params.
+  area: type-checking / overload resolution (reify-compiler entities_phase, type_compat, reify-core overload)
+  first_seen: '2026-10-29'
+  disposition: pending
+  sightings:
+  - date: '2026-10-29'
+    project: reify
+    session: 6aaa49f8-e20a-4e9b-83a0-6cd7fa5ddf57
+    origin_phase: unknown
+    manifested_phase: architect
+    evidence_quote: Fn-call, struct-ctor and default sites all reach acceptance through the relation, so they cannot disagree
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
