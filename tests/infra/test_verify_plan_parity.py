@@ -20,9 +20,13 @@ thin wrapper tests/infra/test_verify_plan_parity.sh.
 
 import itertools
 import os
+import re
+import shlex
+import shutil
 import sys
 import tempfile
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
@@ -75,6 +79,32 @@ FAILED_ONLY = {"REIFY_VERIFY_RETRY_SCOPE": "failed_only"}
 RETRY_MARKER = "@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=0 nextest_release=0 "
 PLAN_HEADER = "# verify.sh plan — "
 RUN_ALL = "tests/infra/run_all.sh"
+LINT_ALL = ("lint", "--scope", "all", "--print-plan")
+# _resolve_timeout_knob's call order in scripts/verify.sh.
+TIMEOUT_KNOBS = (
+    "REIFY_VERIFY_TEST_TIMEOUT",
+    "REIFY_VERIFY_TEST_TIMEOUT_RELEASE",
+    "REIFY_VERIFY_PREBUILD_TIMEOUT",
+    "REIFY_VERIFY_CLIPPY_TIMEOUT",
+    "REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT",
+    "REIFY_VERIFY_CHECK_TIMEOUT",
+)
+SYSTEM_BIN_DIRS = (Path("/usr/bin"), Path("/bin"))
+NEXTEST_ABSENT = " nextest=0 "
+NEXTEST_PRESENT = " nextest=1 "
+# The present-but-failing stub prints these lines, then a blank one that $(…) strips.
+STUB_PROBE_LINES = ("error: the B1 stub nextest probe failed", "  caused by: a stub")
+PROBE_EXHAUSTED = (
+    "cargo-nextest is present on PATH but the availability probe (`cargo nextest --version`) "
+    "failed persistently across 3/3 retries (4 probes total, including the initial attempt; "
+    "last retry rc=101)"
+)
+REAPER_LIB = "scripts/lib_proc_reaper.sh"
+HEAVY_FILTER_LIB = "scripts/heavy-test-filter-lib.sh"
+HEAVY_FILTER_EXPORT = re.compile(r"^export REIFY_HEAVY_NEXTEST_FILTER=.*$", re.MULTILINE)
+EMPTY_HEAVY_FILTER = (
+    "verify.sh: ERROR — REIFY_HEAVY_NEXTEST_FILTER empty after sourcing heavy-test-filter-lib.sh"
+)
 # The changed paths tests/infra/test_verify_scope.sh plans one at a time with
 # `plan_for staged` (S22 B14); each is written as 'x\n' and staged, as plan_for does.
 CHANGED_PATH_FIXTURES = (
@@ -435,6 +465,195 @@ class TestPlanParityRetryMarker(FullPlanParity):
             ("run_all.sh missing", ("lint", "--scope", "all"),
              {"REIFY_RUN_ALL_MEMBER_SUBSET": "first.sh second.sh"}, f"{RETRY_MARKER}run_all=2 gui=0"),
         ))
+
+
+@dataclass(frozen=True)
+class Expect:
+    """A scenario and its premise: bash's exit code, texts its stderr holds in this order, texts its stdout holds."""
+
+    scenario: Scenario
+    exit_code: int = 0
+    stderr: tuple[str, ...] = ()
+    stdout: tuple[str, ...] = ()
+
+
+def lint_all(label, env=(), argv=LINT_ALL) -> Scenario:
+    return Scenario(label, argv, dict(env))
+
+
+def prio_warning(role, has_nice):
+    """The CARGO_PRIO warning bash prints for `role` on a host without ionice (and, unless has_nice, without nice)."""
+    if has_nice:
+        return None if role == "merge" else f"WARNING — ionice not found; {role} role using nice only"
+    missing = "nice" if role == "merge" else "nice/ionice"
+    return f"WARNING — {missing} not found; {role} role running at normal priority"
+
+
+class TestPlanParityStartup(InParityClone):
+    """Full stdout, stderr and exit code of what verify does before it plans: knob and priority warnings,
+    scope notices, the nextest availability probe, and the load-time refusals."""
+
+    def setUp(self):
+        super().setUp()
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.scratch = Path(scratch.name)
+
+    def check(self, *expects: Expect):
+        for expect, (scenario, pair) in zip(expects, run_many(self.clone, (e.scenario for e in expects))):
+            with self.subTest(scenario.label):
+                self.assertEqual(
+                    pair.bash.returncode, expect.exit_code,
+                    f"premise: bash's exit code [{scenario.label}]\n{pair.bash.stderr}",
+                )
+                position = 0
+                for text in expect.stderr:
+                    found = pair.bash.stderr.find(text, position)
+                    self.assertNotEqual(found, -1, f"premise: bash's stderr holds {text!r}, in order")
+                    position = found + len(text)
+                for text in expect.stdout:
+                    self.assertIn(text, pair.bash.stdout, "premise")
+                self.assert_parity(scenario, pair)
+
+    def path_farm(self, *without: str) -> str:
+        """A PATH directory linking every /usr/bin and /bin entry except `without`."""
+        farm = self.scratch / "-".join(("farm-without", *without))
+        farm.mkdir()
+        for directory in SYSTEM_BIN_DIRS:
+            for entry in directory.iterdir():
+                link = farm / entry.name
+                if entry.name not in without and not os.path.lexists(link):
+                    link.symlink_to(entry)
+        for tool in without:
+            self.assertIsNone(shutil.which(tool, path=str(farm)), f"premise: {tool} is off the farm")
+        return str(farm)
+
+    def nextest_env(self, name, nextest_probe, cargo_nextest=False) -> dict:
+        """A scratch HOME without ~/.cargo/env, and PATH = a stub cargo whose `nextest --version` runs
+        `nextest_probe` (every other cargo call execs the real one), then /usr/bin and /bin."""
+        stubs = self.scratch / name
+        stubs.mkdir()
+        real_cargo = shutil.which("cargo", path=base_env()["PATH"])
+        self.write_stub(
+            stubs / "cargo",
+            'if [ "$1" = nextest ] && [ "$2" = --version ]; then\n'
+            f"{nextest_probe}"
+            "fi\n"
+            f'exec "{real_cargo}" "$@"\n',
+        )
+        if cargo_nextest:
+            self.write_stub(stubs / "cargo-nextest", "exit 0\n")
+        path = os.pathsep.join((str(stubs), *map(str, SYSTEM_BIN_DIRS)))
+        self.assertEqual(
+            shutil.which("cargo-nextest", path=path) is not None, cargo_nextest,
+            "premise: cargo-nextest is on PATH iff the scenario stubs it",
+        )
+        home = self.scratch / f"{name}-home"
+        home.mkdir()
+        return {"HOME": str(home), "PATH": path, **toolchain_env()}
+
+    @staticmethod
+    def write_stub(path: Path, body: str):
+        path.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+        path.chmod(0o755)
+
+    def test_bogus_timeout_knobs(self):
+        expects = []
+        for role in ("task", "merge"):
+            for knob in TIMEOUT_KNOBS:
+                expects.append(Expect(
+                    lint_all(f"{knob}=bogus role={role}", {"DF_VERIFY_ROLE": role, knob: "bogus"}),
+                    stderr=(f"WARNING: invalid {knob}=bogus; using default ",),
+                ))
+            expects.append(Expect(
+                lint_all(f"all six knobs bogus role={role}",
+                         {"DF_VERIFY_ROLE": role, **dict.fromkeys(TIMEOUT_KNOBS, "bogus")}),
+                stderr=tuple(f"WARNING: invalid {knob}=bogus; using default " for knob in TIMEOUT_KNOBS),
+            ))
+        self.check(*expects)
+
+    def test_priority_without_ionice_or_nice(self):
+        farms = {True: self.path_farm("ionice"), False: self.path_farm("ionice", "nice")}
+        expects = []
+        for role, has_nice in itertools.product(ROLES, (True, False)):
+            named = role or "task"
+            warning = prio_warning(named, has_nice)
+            expects.append(Expect(
+                lint_all(f"no ionice{'' if has_nice else ', no nice'} role={named}",
+                         {"DF_VERIFY_ROLE": role, "PATH": farms[has_nice]}),
+                stderr=(warning,) if warning else (),
+            ))
+        self.check(*expects)
+
+    def test_merge_head_forces_scope_all(self):
+        self.clone.merge_head().write_text(f"{self.clone.base}\n", encoding="utf-8")
+        self.check(Expect(
+            lint_all("MERGE_HEAD present", argv=("lint", "--scope", "staged", "--print-plan")),
+            stderr=("MERGE_HEAD present — forcing --scope all",),
+        ))
+
+    def test_merge_role_forces_scope_all(self):
+        self.check(Expect(
+            lint_all("merge role, --scope staged", role_env("merge"), ("lint", "--scope", "staged", "--print-plan")),
+            stderr=("DF_VERIFY_ROLE=merge — forcing --scope all",),
+        ))
+
+    def test_branch_without_main_fails_wide(self):
+        self.clone.git("branch", "-D", "main")
+        self.check(Expect(
+            lint_all("no local main", argv=("lint", "--scope", "branch", "--print-plan")),
+            stderr=("could not resolve 'git merge-base main HEAD'",),
+        ))
+
+    def test_nextest_probe(self):
+        absent = self.nextest_env(
+            "absent", "    echo 'error: no such command: `nextest`' >&2\n    exit 101\n"
+        )
+        failing = self.nextest_env(
+            "failing", f"    printf '%s\\n' {shlex.join(STUB_PROBE_LINES)} '' >&2\n    exit 101\n",
+            cargo_nextest=True,
+        )
+        counter = self.scratch / "probe-count"
+        flaky = self.nextest_env(
+            "flaky",
+            f'    n=$(($(cat "{counter}" 2>/dev/null || echo 0) + 1))\n'
+            f'    echo "$n" > "{counter}"\n'
+            '    if [ $((n % 3)) -ne 0 ]; then echo "error: flaky probe $n" >&2; exit 101; fi\n'
+            "    echo 'cargo-nextest 0.9.0'\n    exit 0\n",
+            cargo_nextest=True,
+        )
+        self.check(
+            Expect(lint_all("nextest absent", absent), stdout=(NEXTEST_ABSENT,)),
+            Expect(
+                lint_all("nextest present but failing", failing), exit_code=1,
+                stderr=(PROBE_EXHAUSTED, "Last probe stderr: " + "\n".join(STUB_PROBE_LINES) + "\n"),
+            ),
+            Expect(lint_all("nextest flaky", flaky), stdout=(NEXTEST_PRESENT,)),
+        )
+        self.assertEqual(
+            counter.read_text(encoding="utf-8").strip(), "6",
+            "premise: each side probed three times, failing twice",
+        )
+
+    def test_missing_lib_is_refused(self):
+        (self.clone.root / REAPER_LIB).unlink()
+        self.check(Expect(
+            lint_all(f"{REAPER_LIB} deleted"), exit_code=1,
+            stderr=(f"verify.sh: ERROR — {REAPER_LIB} not found next to verify.sh",),
+        ))
+
+    def test_empty_heavy_filter_is_refused(self):
+        lib = self.clone.root / HEAVY_FILTER_LIB
+        source, edits = HEAVY_FILTER_EXPORT.subn("export REIFY_HEAVY_NEXTEST_FILTER=''", lib.read_text(encoding="utf-8"))
+        self.assertEqual(edits, 1, f"premise: {HEAVY_FILTER_LIB} exports the filter on one line")
+        lib.write_text(source, encoding="utf-8")
+        self.check(Expect(lint_all("empty heavy filter"), exit_code=1, stderr=(EMPTY_HEAVY_FILTER,)))
+
+    def test_c_locale_and_empty_role(self):
+        self.check(
+            Expect(lint_all("LC_ALL=C", {"LC_ALL": "C"})),
+            Expect(lint_all("DF_VERIFY_ROLE=''", {"DF_VERIFY_ROLE": ""}), stdout=(" role=task",)),
+        )
 
 
 class TestTestRegionNotYetPlanned(InParityClone):
