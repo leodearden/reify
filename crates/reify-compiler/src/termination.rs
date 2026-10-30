@@ -129,7 +129,7 @@ pub(crate) fn check_recursive_termination(
 /// Only args whose parameter name is in `guard_param_names` are checked.
 /// Args for params not referenced by the guard are termination-irrelevant and
 /// may legally contain undef (e.g., `label: undef` when the guard only mentions `n`).
-pub(crate) fn termination_args_contain_undef(
+fn termination_args_contain_undef(
     sub: &SubComponentDecl,
     guard_param_names: &HashSet<String>,
 ) -> bool {
@@ -148,7 +148,7 @@ pub(crate) fn termination_args_contain_undef(
 }
 
 /// Collect all ValueCellIds referenced in an expression (for guard analysis).
-pub(crate) fn termination_collect_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
+fn termination_collect_refs(expr: &CompiledExpr) -> HashSet<ValueCellId> {
     let mut refs = HashSet::new();
     expr.walk(&mut |e| {
         if let CompiledExprKind::ValueRef(id) = &e.kind {
@@ -167,7 +167,7 @@ pub(crate) fn termination_collect_refs(expr: &CompiledExpr) -> HashSet<ValueCell
 /// Note: BinOp::Add is intentionally excluded. `n + 1` with guard `n > 0` diverges —
 /// the value increases and never reaches the base case. Users should write `n - 1`
 /// (BinOp::Sub) for the canonical decrementing pattern.
-pub(crate) fn termination_is_modifying(expr: &CompiledExpr, param_id: &ValueCellId) -> bool {
+fn termination_is_modifying(expr: &CompiledExpr, param_id: &ValueCellId) -> bool {
     // If the expression is just the param unchanged, not modifying.
     if matches!(&expr.kind, CompiledExprKind::ValueRef(id) if id == param_id) {
         return false;
