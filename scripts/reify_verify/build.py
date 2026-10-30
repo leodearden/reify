@@ -1,14 +1,18 @@
 """build — one gate invocation planned: the stages, in scripts/verify.sh's order (PRD D1, D2).
 
-plan_invocation runs every planning stage and returns either the Plan and the
+plan_invocation runs the planning stages and returns either the Plan and the
 diagnostics bash prints on its way there, in bash's order, or a refusal: the
 lines bash would print instead and the exit code. It prints nothing itself.
+Each stage returns its value with the diagnostics it adds, or a Refused, and
+plan_invocation joins the diagnostics in stage order:
 
-Its startup stages are bash's load-time ones, run after argv is parsed (a D8
-listed divergence): the libs verify.sh sources must exist, the heavy filterset
-must be non-empty, and each timeout knob resolves with its warning. The
-nextest availability probe runs after the scope, selection and narrowing
-stages, under the planning env, as bash's does.
+- start: bash's load-time checks, run after argv is parsed (a D8 listed
+  divergence): the libs verify.sh sources must exist and the heavy filterset
+  must be non-empty; then each timeout knob and the priority, with warnings;
+- decide: the scope and the step environment, the test-region refusal, then
+  the selection and the narrowing;
+- probe: nextest availability, under the planning env, as bash's probe runs;
+- compose: the plan's inputs, header and steps.
 
 γ1 plans every action whose plan has no test region. A test or all plan that
 runs the Rust families has one (bash's _plan_has_test_passes); it is refused
@@ -29,7 +33,12 @@ from pathlib import Path
 
 from reify_verify import bashcall, childproc, environment, knobs, narrowing, scope, selection
 from reify_verify.bashcall import BashCall, BashExport, DataFile
-from reify_verify.environment import NextestAvailable, NextestBroken, ProbeSleepFailed
+from reify_verify.environment import (
+    NextestAvailable,
+    NextestBroken,
+    ProbeSleepFailed,
+    StepEnvironment,
+)
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
@@ -53,13 +62,20 @@ from reify_verify.plan import (
     StepKind,
     Workspace,
 )
-from reify_verify.policy import ROLE_TABLE, InfraTier, Profile, RolePolicy, resolve_prio, test_wall
+from reify_verify.policy import (
+    ROLE_TABLE,
+    InfraTier,
+    PrioResolution,
+    Profile,
+    RolePolicy,
+    resolve_prio,
+    test_wall,
+)
 from reify_verify.scope import ScopeDecision
 from reify_verify.selection import Selection
 
 ERROR = "verify.sh: ERROR — "
 CUTOVER = "the S18 cutover (docs/prds/v0_6/verify-structured-plan-and-role-table.md)"
-TEST_ACTIONS = (Action.TEST, Action.ALL)
 GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
 RUN_ALL = DataFile("tests/infra/run_all.sh")
 HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTEST_FILTER")
@@ -97,9 +113,54 @@ class Refused:
 def plan_invocation(
     invocation: Invocation, env: Mapping[str, str], repo_root: Path
 ) -> Planned | Refused:
-    loaded = _load(repo_root, env)
-    if isinstance(loaded, Refused):
-        return loaded
+    action = invocation.action
+    if action is None:
+        raise ValueError("plan_invocation: an invocation without an action has no plan")
+    started = _start(invocation, env, repo_root)
+    if isinstance(started, Refused):
+        return started
+    decided = _decide(invocation, action, started.role_policy, env, repo_root)
+    if isinstance(decided, Refused):
+        return decided
+    diagnostics = (*started.diagnostics, *decided.diagnostics)
+    nextest = _probe(decided.step_env.planning, repo_root)
+    if isinstance(nextest, Refused):
+        return Refused((*diagnostics, *nextest.lines), nextest.exit_code)
+    composed = _compose(invocation, action, started, decided, nextest, repo_root)
+    return Planned(composed.plan, (*diagnostics, *composed.diagnostics))
+
+
+@dataclass(frozen=True)
+class Started:
+    """verify.sh loaded: its heavy filterset, and the role's walls and priority."""
+
+    role_policy: RolePolicy
+    heavy_filter: str
+    walls: "Walls"
+    prio: PrioResolution
+    diagnostics: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Decided:
+    """What the run covers, decided under the step environment."""
+
+    families: "Families"
+    decision: ScopeDecision
+    step_env: StepEnvironment
+    selection: Selection
+    narrowing: Narrowing
+    diagnostics: tuple[str, ...]
+
+
+def _start(invocation: Invocation, env: Mapping[str, str], repo_root: Path) -> Started | Refused:
+    """bash's load-time checks, then the timeout knobs and the priority, under the raw env."""
+    for lib in LOAD_TIME_LIBS:
+        if not os.path.isfile(repo_root / lib):
+            return Refused((f"{ERROR}{lib} not found next to verify.sh",), 1)
+    heavy_filter = bashcall.read_export(HEAVY_FILTER, repo_root, env)
+    if not heavy_filter:
+        return Refused((EMPTY_HEAVY_FILTER,), 1)
     role_policy = ROLE_TABLE[invocation.role]
     walls, wall_warnings = Walls.resolve(role_policy, env)
     prio = resolve_prio(
@@ -108,92 +169,115 @@ def plan_invocation(
         shutil.which("nice", path=env.get("PATH")) is not None,
         shutil.which("ionice", path=env.get("PATH")) is not None,
     )
+    return Started(
+        role_policy, heavy_filter, walls, prio, (*wall_warnings, *filter(None, (prio.warning,)))
+    )
+
+
+def _decide(
+    invocation: Invocation,
+    action: Action,
+    role_policy: RolePolicy,
+    env: Mapping[str, str],
+    repo_root: Path,
+) -> Decided | Refused:
+    """The scope (MERGE_HEAD and the merge base under the raw env), then everything else under
+    the planning env. A plan with a test region is refused before selection and narrowing run,
+    and a refused run prints only its refusal."""
     resolved = scope.resolve_scope(invocation, repo_root, env)
     step_env = environment.build(invocation.role, role_policy, env, repo_root)
     planning = step_env.planning
     decision, gather_warnings = scope.decide_resolved(resolved, repo_root, planning)
-    if _has_test_region(invocation.action, decision):
-        return _test_region_refusal(invocation.action)
+    families = Families.of(action)
+    if _has_test_region(families, decision):
+        return _test_region_refusal(action)
     selected, selection_warnings = selection.select_infra(decision, repo_root, planning)
     narrowed, narrowing_warnings = narrowing.narrow(
         decision, invocation.narrow, repo_root, planning
     )
-    diagnostics = (
-        *wall_warnings,
-        *filter(None, (prio.warning,)),
-        *resolved.notices,
-        *step_env.warnings,
-        *gather_warnings,
-        *selection_warnings,
-        *narrowing_warnings,
+    return Decided(
+        families,
+        decision,
+        step_env,
+        selected,
+        narrowed,
+        (
+            *resolved.notices,
+            *step_env.warnings,
+            *gather_warnings,
+            *selection_warnings,
+            *narrowing_warnings,
+        ),
     )
+
+
+def _probe(planning: Mapping[str, str], repo_root: Path) -> bool | Refused:
+    """Whether the plan runs nextest; a cargo-nextest that is installed yet never runs refuses."""
     match environment.nextest_probe(planning, repo_root):
         case NextestBroken() as broken:
-            return Refused((*diagnostics, broken.error), 1)
+            return Refused((broken.error,), 1)
         case ProbeSleepFailed(result=result) as failed:
-            return Refused((*diagnostics, *result.stderr_lines), failed.exit_code)
+            return Refused(result.stderr_lines, failed.exit_code)
         case probe:
-            nextest = isinstance(probe, NextestAvailable)
-    families = Families.of(invocation.action)
-    vitest, vitest_warnings = VitestArm.of(families, narrowed, planning)
+            return isinstance(probe, NextestAvailable)
+
+
+def _compose(
+    invocation: Invocation,
+    action: Action,
+    started: Started,
+    decided: Decided,
+    nextest: bool,
+    repo_root: Path,
+) -> Planned:
+    """The plan; its diagnostics are the warnings composing its steps prints."""
+    planning = decided.step_env.planning
+    families, role_policy = decided.families, started.role_policy
+    vitest, vitest_warnings = VitestArm.of(families, decided.narrowing, planning)
+    node_lane = NodeLane.compose(families, decided.decision, vitest)
+    infra_suite_active = knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value
+    runs_selective = _runs_selective_infra(
+        families, role_policy, decided.selection, infra_suite_active
+    )
     inputs = PlanInputs(
         families=families,
         include_infra=invocation.include_infra,
-        decision=decision,
-        narrowing=narrowed,
-        selection=selected,
+        decision=decided.decision,
+        narrowing=decided.narrowing,
+        selection=decided.selection,
         role_policy=role_policy,
-        cargo_prio=prio.prefix,
-        walls=walls,
-        heavy_filter=loaded.heavy_filter,
-        node_lane=NodeLane.compose(families, decision, vitest),
-        infra_suite_active=knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value,
-        git_env_scrub_prefix=lambda: _git_env_scrub_prefix(repo_root, planning),
+        cargo_prio=started.prio.prefix,
+        walls=started.walls,
+        heavy_filter=started.heavy_filter,
+        node_lane=node_lane,
+        infra_suite_active=infra_suite_active,
+        git_env_scrub_prefix=_git_env_scrub_prefix(repo_root, planning) if runs_selective else None,
     )
-    profile_selection = invocation.profile_arg or role_policy.default_profile
     header = PlanHeader(
-        action=invocation.action,
-        profile_selection=profile_selection,
-        profiles=profile_selection.profiles,
-        scope=decision.mode,
+        action=action,
+        profile_selection=invocation.profile_arg or role_policy.default_profile,
+        scope=decided.decision.mode,
         include_infra=invocation.include_infra,
         nextest=nextest,
         role=invocation.role,
     )
     plan = Plan(
-        retry_marker=_retry_marker(inputs.node_lane, TEST_REGION_UNPLANNED, planning, repo_root),
+        retry_marker=_retry_marker(node_lane, TEST_REGION_UNPLANNED, planning, repo_root),
         header=header,
         selective_infra_note=invocation.include_infra
         and role_policy.infra_tier is InfraTier.SELECTIVE,
-        scope=decision,
-        narrowing=narrowed,
+        scope=decided.decision,
+        narrowing=decided.narrowing,
         heavy_partition=None,
-        environment=step_env.lines,
+        environment=decided.step_env.lines,
         steps=build_steps(inputs),
     )
-    return Planned(plan, (*diagnostics, *vitest_warnings))
+    return Planned(plan, vitest_warnings)
 
 
-@dataclass(frozen=True)
-class Loaded:
-    """What verify.sh reads as it loads: the heavy filterset its libs export."""
-
-    heavy_filter: str
-
-
-def _load(repo_root: Path, env: Mapping[str, str]) -> Loaded | Refused:
-    """bash's load-time checks: every sourced lib exists, and the heavy filterset is non-empty."""
-    for lib in LOAD_TIME_LIBS:
-        if not os.path.isfile(repo_root / lib):
-            return Refused((f"{ERROR}{lib} not found next to verify.sh",), 1)
-    heavy_filter = bashcall.read_export(HEAVY_FILTER, repo_root, env)
-    if not heavy_filter:
-        return Refused((EMPTY_HEAVY_FILTER,), 1)
-    return Loaded(heavy_filter)
-
-
-def _has_test_region(action: Action, decision: ScopeDecision) -> bool:
-    return action in TEST_ACTIONS and decision.run_rust
+def _has_test_region(families: "Families", decision: ScopeDecision) -> bool:
+    """bash's _plan_has_test_passes: the test family over the Rust crates."""
+    return families.test and decision.run_rust
 
 
 def _test_region_refusal(action: Action) -> Refused:
@@ -403,8 +487,26 @@ class NodeLane:
         )
 
 
+def _runs_selective_infra(
+    families: Families, role_policy: RolePolicy, selection: Selection, infra_suite_active: bool
+) -> bool:
+    """A SELECTIVE role's test side runs its selected leaves, unless the infra suite is running."""
+    return (
+        role_policy.infra_tier is InfraTier.SELECTIVE
+        and families.test
+        and bool(selection.leaves)
+        and not infra_suite_active
+    )
+
+
 @dataclass(frozen=True)
 class PlanInputs:
+    """Everything the emitters read, already resolved: a plan's steps are a function of it.
+
+    git_env_scrub_prefix is the `env -u …` text bash's `$(reify_git_env_scrub_prefix)`
+    captures, held exactly when selective infra runs: bash forks for it only then.
+    """
+
     families: Families
     include_infra: bool
     decision: ScopeDecision
@@ -416,7 +518,17 @@ class PlanInputs:
     heavy_filter: str
     node_lane: NodeLane | None
     infra_suite_active: bool
-    git_env_scrub_prefix: Callable[[], str]
+    git_env_scrub_prefix: str | None
+
+    def __post_init__(self):
+        runs = _runs_selective_infra(
+            self.families, self.role_policy, self.selection, self.infra_suite_active
+        )
+        if runs != (self.git_env_scrub_prefix is not None):
+            raise ValueError(
+                "PlanInputs: the git-env scrub prefix is held exactly when selective infra runs "
+                f"(runs={runs}, git_env_scrub_prefix={self.git_env_scrub_prefix!r})"
+            )
 
     @property
     def selector(self) -> Selector:
@@ -609,22 +721,19 @@ def _infra_pool(inputs: PlanInputs) -> tuple[Step, ...]:
 
 
 def _selective_infra(inputs: PlanInputs) -> tuple[Step, ...]:
-    """One loop per selected leaf glob, each member under the git-env scrub."""
-    leaves = inputs.selection.leaves
-    if not (
-        inputs.role_policy.infra_tier is InfraTier.SELECTIVE
-        and inputs.families.test
-        and leaves
-        and not inputs.infra_suite_active
-    ):
+    """One loop per selected leaf glob, each member under the git-env scrub.
+
+    PlanInputs holds the scrub prefix exactly when selective infra runs.
+    """
+    scrub_prefix = inputs.git_env_scrub_prefix
+    if scrub_prefix is None:
         return ()
-    scrub_prefix = inputs.git_env_scrub_prefix()
     return tuple(
         _tool(
             Phase.INFRA_SELECTIVE,
             InfraLeafLoop(leaf.glob, leaf.env, INFRA_LEAF_WALL, scrub_prefix, INFRA_LEAF_UNSET),
         )
-        for leaf in leaves
+        for leaf in inputs.selection.leaves
     )
 
 

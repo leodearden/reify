@@ -31,6 +31,15 @@ from types import MappingProxyType
 from reify_verify import bashcall, childproc, knobs
 from reify_verify.bashcall import BashCall, SourcedFile
 from reify_verify.childproc import CallResult
+from reify_verify.plan import (
+    JOBSERVER_VAR,
+    CargoEnvMissing,
+    CargoEnvSourced,
+    EnvLine,
+    Exported,
+    JobserverUnset,
+    UnsetCause,
+)
 from reify_verify.policy import Role, RolePolicy, jobserver_fifo
 
 CARGO_ENV = SourcedFile(".cargo/env")
@@ -40,45 +49,11 @@ BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 PROC = Path("/proc")
 UNKNOWN_BOOT = "-"
 STEP_DROPPED_ENV = ("BASH_ENV", "ENV")
-JOBSERVER_VAR = "CARGO_MAKEFLAGS"
 NEXTEST_PROBE = ("cargo", "nextest", "--version")
 NEXTEST_PROBE_RETRIES = 3
 SIGNALLED = 128
 _DIGITS = re.compile(r"[0-9]+", re.ASCII)
 _IFS_WHITESPACE = " \t\n"
-
-
-@dataclass(frozen=True)
-class CargoEnvSourced:
-    path: str
-
-
-@dataclass(frozen=True)
-class CargoEnvMissing:
-    pass
-
-
-@dataclass(frozen=True)
-class Exported:
-    name: str
-    value: str
-
-
-class UnsetCause(Enum):
-    OFFLINE = "offline"
-    STALE = "stale"
-    MISSING = "missing"
-
-
-@dataclass(frozen=True)
-class JobserverUnset:
-    """JOBSERVER_VAR left unset; fifo is None only when the role has no jobserver pool."""
-
-    cause: UnsetCause
-    fifo: str | None
-
-
-EnvLine = CargoEnvSourced | CargoEnvMissing | Exported | JobserverUnset
 
 
 @dataclass(frozen=True)
@@ -282,11 +257,12 @@ def nextest_probe(env: Mapping[str, str], repo_root: Path) -> NextestProbe:
         retry = childproc.run(NEXTEST_PROBE, repo_root, env)
         if retry.returncode == 0:
             return NextestAvailable()
-        if attempt < NEXTEST_PROBE_RETRIES:
-            slept = childproc.run(("sleep", pause), repo_root, env)
-            if slept.returncode != 0:
-                return ProbeSleepFailed(slept)
-    return NextestBroken(NEXTEST_PROBE_RETRIES, _shell_status(retry.returncode), retry.stderr.rstrip("\n"))
+        if attempt == NEXTEST_PROBE_RETRIES:
+            return NextestBroken(attempt, _shell_status(retry.returncode), retry.stderr.rstrip("\n"))
+        slept = childproc.run(("sleep", pause), repo_root, env)
+        if slept.returncode != 0:
+            return ProbeSleepFailed(slept)
+    raise ValueError(f"nextest_probe: NEXTEST_PROBE_RETRIES is {NEXTEST_PROBE_RETRIES}, not >= 1")
 
 
 def _shell_status(returncode: int) -> int:

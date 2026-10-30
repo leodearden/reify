@@ -335,19 +335,21 @@ def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
             return _emit(output)
         case ActionFreeReport(report=report):
             return _emit(report(env))
-    if invocation.plan_format is not None and not invocation.confirm_failed:
-        return _print_plan(invocation, env)
+    plan_format = invocation.plan_format
+    if plan_format is not None and not invocation.confirm_failed:
+        return _print_plan(invocation, plan_format, env)
+    action = invocation.action.value if invocation.action else ""
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
-            f"'{invocation.action.value}' yet; scripts/verify.sh remains the gate "
+            f"'{action}' yet; scripts/verify.sh remains the gate "
             f"until the S18 cutover ({PRD})",
         )
     )
     return EX_UNAVAILABLE
 
 
-def _print_plan(invocation: Invocation, env: dict[str, str]) -> int:
+def _print_plan(invocation: Invocation, plan_format: PlanFormat, env: dict[str, str]) -> int:
     try:
         outcome = build.plan_invocation(invocation, env, REPO_ROOT)
     except bashcall.BashCallError as err:
@@ -359,7 +361,7 @@ def _print_plan(invocation: Invocation, env: dict[str, str]) -> int:
             return exit_code
         case build.Planned(plan=plan, diagnostics=diagnostics):
             _diagnose(diagnostics)
-            _print(PROJECTIONS[invocation.plan_format](plan))
+            _print(PROJECTIONS[plan_format](plan))
             return 0
 
 

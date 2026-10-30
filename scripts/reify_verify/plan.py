@@ -5,17 +5,65 @@ text and JSON projections. A step's kind decides how the executor runs it
 (StepKind.execution) and whether its render carries the loader-path scrub
 (StepKind.scrubs); KIND_COMMANDS is the one statement of which command
 records each kind may hold, checked whenever a Step is built.
+
+The environment section's lines are records here too (EnvLine); environment
+builds them, so it imports this module, never the other way round.
+
+A record whose text render puts inside single quotes refuses a single quote,
+since the rendered shell line would otherwise break.
 """
 
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
-from reify_verify.environment import EnvLine
 from reify_verify.invocation import Action, Scope
 from reify_verify.narrowing import Narrowing
 from reify_verify.policy import HeavyPartition, Profile, ProfileSelection, Role
 from reify_verify.scope import ScopeDecision
+
+
+JOBSERVER_VAR = "CARGO_MAKEFLAGS"
+
+
+@dataclass(frozen=True)
+class CargoEnvSourced:
+    path: str
+
+
+@dataclass(frozen=True)
+class CargoEnvMissing:
+    pass
+
+
+@dataclass(frozen=True)
+class Exported:
+    name: str
+    value: str
+
+
+class UnsetCause(Enum):
+    OFFLINE = "offline"
+    STALE = "stale"
+    MISSING = "missing"
+
+
+@dataclass(frozen=True)
+class JobserverUnset:
+    """JOBSERVER_VAR left unset; fifo is None only when the role has no jobserver pool."""
+
+    cause: UnsetCause
+    fifo: str | None
+
+
+EnvLine = CargoEnvSourced | CargoEnvMissing | Exported | JobserverUnset
+
+
+def _refuse_single_quote(record: str, field: str, text: str | None) -> None:
+    if text is not None and "'" in text:
+        raise ValueError(
+            f"{record}: {field} renders inside single quotes, so it cannot hold one ({text!r})"
+        )
 
 
 class Execution(Enum):
@@ -138,6 +186,7 @@ class Guarded:
     def __post_init__(self):
         if self.test_flag not in ("-f", "-d"):
             raise ValueError(f"Guarded: test flag {self.test_flag!r} is not -f or -d")
+        _refuse_single_quote("Guarded", "else_warning", self.else_warning)
 
 
 @dataclass(frozen=True)
@@ -149,6 +198,15 @@ class NodeProject:
     dir: str
     minutes: int
     commands: tuple[str, ...]
+
+    def __post_init__(self):
+        """Each command is one simple command: the tuple, not the text, says when it is a compound."""
+        if not self.commands:
+            raise ValueError(f"NodeProject: {self.dir} runs no command")
+        for command in self.commands:
+            if "&&" in command:
+                raise ValueError(f"NodeProject: command {command!r} is a compound; list its parts")
+            _refuse_single_quote("NodeProject", "a command", command)
 
 
 @dataclass(frozen=True)
@@ -177,6 +235,9 @@ class ArtifactAssertion:
     manifest: str
     artifact: str
     error: str
+
+    def __post_init__(self):
+        _refuse_single_quote("ArtifactAssertion", "error", self.error)
 
 
 @dataclass(frozen=True)
@@ -241,11 +302,14 @@ class Step:
 class PlanHeader:
     action: Action
     profile_selection: ProfileSelection
-    profiles: tuple[Profile, ...]
     scope: Scope
     include_infra: bool
     nextest: bool
     role: Role
+
+    @property
+    def profiles(self) -> tuple[Profile, ...]:
+        return self.profile_selection.profiles
 
 
 @dataclass(frozen=True)

@@ -22,7 +22,10 @@ from reify_verify.childproc import CallResult
 
 _SOURCE_AND_CALL = 'source "$1" || exit; shift; "$@"'
 _SOURCE_AND_PRINT = 'source "$1" || exit; printenv -- "$2" || exit 0'
-_ENV_AROUND_SOURCE = 'env -0; printf "\\0"; . "$1" || exit; env -0; exit "$?"'
+_ENV_AROUND_SOURCE_END = "@@source_delta:end@@"
+_ENV_AROUND_SOURCE = (
+    f'env -0 || exit; printf "\\0"; . "$1" >&2 || exit; env -0 || exit; printf "{_ENV_AROUND_SOURCE_END}\\0"'
+)
 _DROPPED_ENV = ("BASH_ENV", "ENV")
 
 
@@ -103,8 +106,13 @@ class DataFileUnreadable(Exception):
 
 
 class BashCallError(Exception):
-    def __init__(self, call: "BashCall | BashExport | SourcedFile", result: CallResult):
-        super().__init__(result.exit_summary(str(call)))
+    """A seam's bash failed: it exited non-zero, or `reason` says what its output lacked."""
+
+    def __init__(
+        self, call: "BashCall | BashExport | SourcedFile", result: CallResult, reason: str | None = None
+    ):
+        summary = result.exit_summary(str(call))
+        super().__init__(f"{summary}: {reason}" if reason else summary)
         self.call = call
         self.result = result
 
@@ -146,9 +154,12 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
     """Every exported name `file` sets, changes or removes when sourced under `env`.
 
     One fork prints `env -0` before and after the `.`, split by an empty NUL
-    record (no NAME=VALUE record is empty). The trailing `exit` keeps bash from
-    exec'ing the last `env`, which would lower its SHLVL into the delta. A
-    failed `.` raises BashCallError.
+    record (no NAME=VALUE record is empty), then an end record. The file's own
+    stdout goes to stderr, so it cannot fuse into a record. A failed `.`
+    raises BashCallError, as does output without the end record: a file that
+    ends the shell would otherwise read as removing every name. The end
+    record, a builtin's output, also keeps bash from exec'ing the last `env`,
+    which would lower its SHLVL into the delta.
     """
     result = childproc.run(
         ["bash", "-c", _ENV_AROUND_SOURCE, "bashcall", file.path(env)],
@@ -157,7 +168,10 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
     )
     if result.returncode != 0:
         raise BashCallError(file, result)
-    records = result.stdout.split("\0")
+    body, ended, rest = result.stdout.rpartition(f"\0{_ENV_AROUND_SOURCE_END}\0")
+    if not ended or rest:
+        raise BashCallError(file, result, "the shell ended before the environment after the source was printed")
+    records = f"{body}\0".split("\0")
     boundary = records.index("")
     before = _environ(records[:boundary])
     after = _environ(records[boundary + 1:])

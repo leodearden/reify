@@ -21,11 +21,16 @@ def to_data(value, *, tagged: bool = False):
     if isinstance(value, knobs.Knob):
         return value.name
     if dataclasses.is_dataclass(value):
-        fields = {
-            field.name: to_data(getattr(value, field.name), tagged=tagged)
-            for field in dataclasses.fields(value)
-        }
-        return {TYPE_KEY: type(value).__name__, **fields} if tagged else fields
+        return record_data(value, tagged=tagged)
     if isinstance(value, tuple):
         return [to_data(item, tagged=tagged) for item in value]
     return value
+
+
+def record_data(record, *, tagged: bool = False) -> dict:
+    """A dataclass record as a JSON object: its fields, and its type under TYPE_KEY when tagged."""
+    fields = {
+        field.name: to_data(getattr(record, field.name), tagged=tagged)
+        for field in dataclasses.fields(record)
+    }
+    return {TYPE_KEY: type(record).__name__, **fields} if tagged else fields

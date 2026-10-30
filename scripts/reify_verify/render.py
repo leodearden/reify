@@ -14,24 +14,21 @@ step's never does, and the node lane carries it inside its own braces.
 
 import json
 
-from reify_verify.environment import (
-    JOBSERVER_VAR,
-    CargoEnvMissing,
-    CargoEnvSourced,
-    EnvLine,
-    Exported,
-    JobserverUnset,
-    UnsetCause,
-)
-from reify_verify.jsondata import to_data
+from reify_verify.jsondata import record_data, to_data
 from reify_verify.plan import (
+    JOBSERVER_VAR,
     ArtifactAssertion,
     Cargo,
+    CargoEnvMissing,
+    CargoEnvSourced,
     Chain,
     Command,
+    EnvLine,
+    Exported,
     Guarded,
     HeadStamp,
     InfraLeafLoop,
+    JobserverUnset,
     NodeLaneJoin,
     NodeLaneStart,
     NodeProject,
@@ -42,6 +39,7 @@ from reify_verify.plan import (
     Script,
     Step,
     StepKind,
+    UnsetCause,
     Workspace,
 )
 
@@ -71,7 +69,7 @@ def render_text(plan: Plan) -> tuple[str, ...]:
 
 def render_json(plan: Plan) -> tuple[str, ...]:
     records = (
-        *(("retry_scope", to_data(marker)) for marker in _present(plan.retry_marker)),
+        *(("retry_scope", record_data(marker)) for marker in _present(plan.retry_marker)),
         ("header", _header_data(plan.header)),
         ("scope", plan.scope.to_json()),
         ("narrowing", plan.narrowing.to_json()),
@@ -210,9 +208,9 @@ def _infra_leaf_loop(leaf: InfraLeafLoop) -> str:
 
 
 def _subshell(project: NodeProject) -> str:
-    """bash's wrap_subshell: `bash -c '…'` only when the inner text is a compound."""
+    """bash's wrap_subshell: `bash -c '…'` only when the project runs more than one command."""
     inner = " && ".join(project.commands)
-    if "&&" in inner:
+    if len(project.commands) > 1:
         inner = f"bash -c '{inner}'"
     return f"(cd {project.dir} && {KILL_AFTER} {project.minutes}m {inner})"
 
