@@ -108,8 +108,7 @@ use crate::fea_design_loop_support::{
     INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
 };
 use reify_core::ValueCellId;
-use reify_ir::Value;
-use reify_test_support::{collect_errors, compile_source_with_stdlib};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, scalar_si};
 
 /// Inline bracket-minimize-mass fixture. Small geometry (50mm x 30mm footprint) and a
 /// modest tip load (50 N) keep the per-candidate FEA solve cheap (coarse default mesh)
@@ -179,19 +178,10 @@ fn solve_elastic_static_dispatches_real_result_inside_minimize_where_loop() {
         .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
-    let thickness_si = match thickness_val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for FeaOptimizedBracket.thickness once the FEA \
-             stress constraint is real and binding; got {:?}. On the base (pre-#4880 \
-             compute-dispatch-wiring) code, `solve_elastic_static` body-evals to Undef for \
-             every trial thickness inside the cost loop, so the stress constraint never \
-             decomposes to a satisfiable numeric residual, the auto-resolution reports \
-             SolveResult::Infeasible, and `thickness` never advances past its unresolved \
-             Undef placeholder — see module doc for the full RED/GREEN mechanics.",
-            other
-        ),
-    };
+    // An Undef here is the RED state: without the compute-dispatch hook the
+    // auto-resolution reports Infeasible and never writes `thickness`. See the
+    // module doc's RED/GREEN section.
+    let thickness_si = scalar_si(thickness_val, "FeaOptimizedBracket.thickness");
 
     assert!(
         thickness_si.is_finite(),

@@ -69,8 +69,7 @@ use crate::fea_design_loop_support::{
     INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
 };
 use reify_core::ValueCellId;
-use reify_ir::Value;
-use reify_test_support::{collect_errors, compile_source_with_stdlib};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, scalar_si};
 
 /// The shipped example under test, resolved from `CARGO_MANIFEST_DIR` so it works
 /// in any worktree.
@@ -128,12 +127,11 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
     // naming the cell. Used below for the example's own fixed dimensions, so the
     // mass-coherence check reads them from the design rather than restating them.
     let resolved_si = |member: &str| -> f64 {
-        match result.values.get(&ValueCellId::new(TEMPLATE_NAME, member)) {
-            Some(Value::Scalar { si_value, .. }) => *si_value,
-            other => {
-                panic!("expected a resolved Scalar for {TEMPLATE_NAME}.{member}, got {other:?}")
-            }
-        }
+        let value = result
+            .values
+            .get(&ValueCellId::new(TEMPLATE_NAME, member))
+            .unwrap_or_else(|| panic!("{TEMPLATE_NAME}.{member} missing from result.values"));
+        scalar_si(value, &format!("{TEMPLATE_NAME}.{member}"))
     };
 
     // Reported so a future failure of this slow test can be diagnosed from the
@@ -152,15 +150,9 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
-    let thickness_si = match thickness_val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {TEMPLATE_NAME}.thickness, got {other:?}. \
-             An Undef here means the auto-resolution reported Infeasible and never \
-             wrote a value: the stress constraint never decomposed into a satisfiable \
-             numeric residual. See the module doc for the failure modes."
-        ),
-    };
+    // An Undef here means the auto-resolution reported Infeasible and never
+    // wrote a value. See the module doc for the failure modes.
+    let thickness_si = scalar_si(thickness_val, &format!("{TEMPLATE_NAME}.thickness"));
 
     // ── (c) Finite ───────────────────────────────────────────────────────────
 
@@ -200,14 +192,7 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         .get(&mass_id)
         .expect("mass should be in values after eval — it is the compiled objective");
 
-    let mass_si = match mass_val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {TEMPLATE_NAME}.mass (the minimize \
-             objective), got {other:?}. An Undef objective would leave the optimiser \
-             with no gradient to descend."
-        ),
-    };
+    let mass_si = scalar_si(mass_val, &format!("{TEMPLATE_NAME}.mass"));
     assert!(
         mass_si.is_finite() && mass_si > 0.0,
         "mass must be finite and positive, got {mass_si:?}"

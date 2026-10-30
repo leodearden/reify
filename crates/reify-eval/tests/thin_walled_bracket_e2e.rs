@@ -38,13 +38,6 @@ fn struct_field(val: &Value, key: &str) -> Option<Value> {
     }
 }
 
-fn scalar_si(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Value::Scalar, got {other:?}"),
-    }
-}
-
 // ── test ───────────────────────────────────────────────────────────────────────
 
 /// The thin-walled bracket fixture solves end-to-end and surfaces a `ShellStress`
@@ -95,7 +88,7 @@ fn thin_walled_bracket_surfaces_shell_stress_with_in_band_max_von_mises() {
         .get(&mvm_cell)
         .unwrap_or_else(|| panic!("cell ThinWalledBracket.max_von_mises not found"));
 
-    let mvm = scalar_si(mvm_val);
+    let mvm = reify_test_support::scalar_si(mvm_val, "ThinWalledBracket.max_von_mises");
     assert!(
         mvm.is_finite() && mvm > 0.0,
         "max_von_mises must be finite and > 0, got {mvm}"

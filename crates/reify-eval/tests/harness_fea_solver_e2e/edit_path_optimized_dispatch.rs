@@ -78,7 +78,7 @@ use crate::fea_design_loop_support::fea_loop_engine;
 use reify_core::{Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, Engine, RealizationReadHandle};
 use reify_ir::{OpaqueState, Value};
-use reify_test_support::{collect_errors, compile_source_with_stdlib, mm};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, mm, scalar_si};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Edit-path coverage (task #5025) — see the module doc's "Edit-path coverage"
@@ -310,13 +310,10 @@ fn assert_edit_path_thickness_resolved(
          got {:?}",
         thickness_value
     );
-    let thickness_si = match thickness_value {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected values[thickness] to be a resolved Scalar after {path_label}, got {:?}",
-            other
-        ),
-    };
+    let thickness_si = scalar_si(
+        thickness_value,
+        &format!("values[thickness] after {path_label}"),
+    );
     assert!(
         thickness_si.is_finite(),
         "resolved thickness must be finite after {path_label}, got {:?}",
