@@ -219,7 +219,7 @@ fn reset_clears_the_shape_table_and_every_derived_cache() {
 /// `reset()` part (b): `next_id` stays MONOTONIC across a reset — it is
 /// deliberately NOT rewound to 1. A stale handle that outlives a reload
 /// (e.g. a lingering realization-cache entry) must resolve to a clean
-/// InvalidReference via the 5211 `get_shape` guard, never alias a
+/// InvalidReference via the `ShapeStore::get` guard, never alias a
 /// freshly-minted shape. See `reset()`'s doc comment and INV-BUILD-1.
 #[test]
 fn reset_keeps_next_id_monotonic() {

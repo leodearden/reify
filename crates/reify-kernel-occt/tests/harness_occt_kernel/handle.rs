@@ -68,8 +68,8 @@ fn query_invalid_handle_returns_error() {
 }
 
 /// Channel-routed `reset()` on `OcctKernelHandle`: evicts the underlying
-/// shape on the dedicated kernel thread (old handle → error via the #5211
-/// `get_shape` guard, never a panic or stale value) and a subsequent
+/// shape on the dedicated kernel thread (old handle → error via the
+/// `ShapeStore::get` guard, never a panic or stale value) and a subsequent
 /// execute mints a strictly-greater (monotonic) id. Also exercises the
 /// polymorphic trait path (`&mut dyn GeometryKernel`) so the engine's
 /// `Box<dyn GeometryKernel>` reset call is covered.
@@ -91,7 +91,7 @@ fn reset_evicts_shape_and_keeps_next_id_monotonic() {
     // Reset over the actor channel — evicts the resident shape.
     handle.reset();
 
-    // The old handle is now absent from the shape table, so `get_shape`
+    // The old handle is now absent from the shape table, so `ShapeStore::get`
     // surfaces InvalidHandle (a clean error, not a crash or a stale read).
     let after = handle.query(&GeometryQuery::Volume(box_h.id));
     assert!(
