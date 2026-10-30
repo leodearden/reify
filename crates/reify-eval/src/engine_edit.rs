@@ -1357,8 +1357,8 @@ impl Engine {
                 }
 
                 // Commit via the cell-commit primitive (task δ #5056): atomically
-                // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
-                // edit-reeval provenance slug on the journal's Started event. The
+                // writes values/snapshot/cache/journal (INV-EVAL-1), recording an
+                // EditReeval commit tag on the journal's Started event. The
                 // primitive's own Instant::now() supersedes the Started timestamp
                 // this loop used to capture before eval_expr — the Started/
                 // Completed pair now brackets the commit itself rather than the
@@ -1525,8 +1525,8 @@ impl Engine {
                 Some(&runtime_sink),
             );
             // Commit via the cell-commit primitive (task δ #5056): atomically
-            // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
-            // edit-reeval provenance slug on the journal's Started event (see
+            // writes values/snapshot/cache/journal (INV-EVAL-1), recording an
+            // EditReeval commit tag on the journal's Started event (see
             // T2's commit above for the full rationale). Records the static
             // dependency trace (matching the cold-start contract) rather than
             // `DependencyTrace::default()` — without this,
@@ -2119,7 +2119,7 @@ impl Engine {
                                 // on Skip was considered and rejected: it would
                                 // reopen the silent-provenance gap INV-EVAL-1 /
                                 // commit_cell_result exists to close, and the
-                                // `cache-skip=<reason>` marker it produces is
+                                // `CacheLegKind::Skipped` tag it records is
                                 // itself a tested, already-landed done-criterion
                                 // of this task (step-5/6's
                                 // `edit_param_unrecorded_sites_skip_cache_via_
@@ -3658,8 +3658,8 @@ impl Engine {
 
                 // Commit via the cell-commit primitive (task #6998): atomically
                 // writes values/snapshot/cache/journal (INV-EVAL-1), recording
-                // the edit-reeval provenance slug on the journal's Started
-                // event (previously `payload: None`). This is the third and
+                // an EditReeval commit tag on the journal's Started event
+                // (previously untagged). This is the third and
                 // last edit_source write-back site to migrate, after the
                 // `SolveResult::Solved` resolution arm (#6373) and the wave2
                 // dependent-re-eval loop (#6423) above.

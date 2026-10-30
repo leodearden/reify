@@ -25,7 +25,7 @@ use reify_core::ValueCellId;
 use reify_ir::{DeterminacyState, PersistentMap, Value};
 
 use crate::cache::{CacheStore, CachedResult, NodeId};
-use crate::journal::{EventJournal, EventKind, EventPayload};
+use crate::journal::{CacheLegKind, CommitTag, EventJournal, EventKind};
 
 /// A single snapshot↔cache content-hash divergence: `cell`'s snapshot value
 /// disagrees, by content-hash, with its PRESENT (and non-Skip-exempt) cache
@@ -53,7 +53,7 @@ pub struct SnapshotCacheDivergence {
 /// - `Some(entry)` whose stored `entry.result_hash` differs from the snapshot
 ///   side's recomputed `CachedResult::Value(val.clone(), *det).content_hash()`
 ///   ⇒ a divergence, UNLESS the cell is Skip-exempt — its latest `Started`
-///   journal event carries a `cache-skip=` marker (see
+///   journal event carries a [`CacheLegKind::Skipped`] commit tag (see
 ///   [`cell_latest_commit_was_skip`]). `result_hash` is the authoritative content
 ///   identity the CacheStore keyed the entry on; the snapshot side is
 ///   recomputed because `DeterminacyState` is `Copy` (so `*det` is cheap) and
@@ -78,8 +78,8 @@ pub fn check_snapshot_cache_divergence(
             // annotation-args post-pass overwrites task γ migrated)
             // deliberately leaves the cache entry un-updated relative
             // to the snapshot value it just wrote, flagging the divergence as
-            // intentional via a `cache-skip=` marker on the cell's latest
-            // `Started` event. Such a cell is exempt by construction.
+            // intentional via the `CacheLegKind::Skipped` tag on the cell's
+            // latest `Started` event. Such a cell is exempt by construction.
             if cell_latest_commit_was_skip(journal, &node) {
                 continue;
             }
@@ -117,30 +117,38 @@ impl crate::Engine {
 }
 
 /// `true` iff `node`'s LATEST `EventKind::Started` journal event carries a
-/// `cache-skip=` marker in its `EventPayload::Custom` payload — the exact
-/// `<trace-slug>|cache-skip=<reason>` shape `commit_cell_result` writes onto
-/// the `Started` event for every `CacheLeg::Skip` commit (`cell_commit.rs`).
+/// [`CacheLegKind::Skipped`] commit tag — what `commit_cell_result` records
+/// for every `CacheLeg::Skip` commit (`cell_commit.rs`).
 ///
 /// LATEST-`Started` (not ANY-`Started`) is the faithful predicate: the
 /// post-pass overwrites task γ migrated (structural-query, annotation-args)
-/// are Record-then-Skip, so the cell's most-recent `Started`
-/// event carries the marker and the current snapshot value reflects that Skip.
-/// An earlier Record `Started` (no marker) must not mask a later Skip, nor a
-/// later plain Record mask an earlier Skip.
+/// are Record-then-Skip, so the cell's most-recent `Started` event carries
+/// the Skipped tag and the current snapshot value reflects that Skip. An
+/// earlier Recorded commit must not mask a later Skip, nor a later Recorded
+/// commit mask an earlier Skip.
 ///
 /// The journal is consulted ONLY for this exemption — it is NOT a complete
 /// authority on cache writes (some `engine_eval.rs` cache writes emit no
-/// journal event at all — `engine_eval.rs:5380`), so absence-of-marker never
-/// implies anything about the cache itself; it just means "not Skip-exempt".
+/// journal event at all, e.g. `write_solved_pinned_connector_autos` and
+/// hand-rolled solve write-backs), so the
+/// absence of a Skipped tag never implies anything about the cache itself;
+/// it just means "not Skip-exempt".
 fn cell_latest_commit_was_skip(journal: &EventJournal, node: &NodeId) -> bool {
-    journal
+    let latest_commit = journal
         .events_for_node(node)
         .iter()
         .rev()
-        .find(|event| matches!(event.kind, EventKind::Started { .. }))
-        .is_some_and(|event| {
-            matches!(&event.payload, Some(EventPayload::Custom(s)) if s.contains("cache-skip="))
-        })
+        .find_map(|event| match &event.kind {
+            EventKind::Started { commit } => Some(commit),
+            _ => None,
+        });
+    matches!(
+        latest_commit,
+        Some(Some(CommitTag {
+            cache: CacheLegKind::Skipped { .. },
+            ..
+        }))
+    )
 }
 
 #[cfg(test)]

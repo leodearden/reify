@@ -4,9 +4,10 @@
 //!
 //! Defines [`commit_cell_result`], the primitive that performs the four legs
 //! of a per-cell eval commit (values, snapshot, cache, journal) atomically —
-//! no call path can write a subset of the legs by omission — plus the three
-//! enums that make today's implicit choices explicit and typed:
-//! [`DeterminacyRule`], [`TraceSource`], and [`CacheLeg`].
+//! no call path can write a subset of the legs by omission — plus the enums
+//! that make today's implicit choices explicit and typed: [`DeterminacyRule`]
+//! and [`CacheLeg`]. The commit records its [`TraceSource`] and the cache
+//! leg's fate on the journal as a [`CommitTag`].
 //!
 //! This module introduces the primitive and its unit tests only. Migrating
 //! existing call sites (`engine_eval.rs`, `engine_edit.rs`, ...) onto this
@@ -14,10 +15,13 @@
 //!
 //! ## Known scope gaps for migration leaves (γ/δ/ε/ι)
 //!
-//! The freshness gap below is now **CLOSED** (task #5238); two gaps remain
-//! OPEN — the determinacy dimension and the failure-path commit shape. Each is deliberately left as a documented
-//! limitation rather than closed by widening this module's enums or by
-//! changing `journal.rs`'s `EventKind` shape. A migration leaf that hits one
+//! The freshness gap below is now **CLOSED** (task #5238), and so is the
+//! former `Skip`-outcome placeholder (task #8859: `Completed.outcome` is
+//! `None` on a Skip commit and the leg rides on [`CommitTag`]). Two gaps
+//! remain OPEN — the determinacy dimension and the failure-path commit
+//! shape. Each is deliberately left as a documented limitation rather than
+//! closed by widening this module's enums or by changing `journal.rs`'s
+//! `EventKind` shape. A migration leaf that hits one
 //! of them must address it explicitly (extend the enum, or document why the
 //! site is left unmigrated) — not silently paper over it by routing through
 //! the existing variants as-is.
@@ -163,8 +167,8 @@ impl DeterminacyRule {
 /// trace (arch §7.2); [`CacheLeg::RecordWithFreshness`] writes an EXPLICIT
 /// caller-supplied freshness. Because `reify_ir::Freshness` is not `Copy`,
 /// this enum is `Clone` but deliberately NOT `Copy` — `commit_cell_result`
-/// borrows the leg for the `Started`-payload match and consumes it for the
-/// cache-write match.
+/// borrows the leg to build the `Started` event's [`CommitTag`] and consumes
+/// it for the cache-write match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheLeg {
     /// Write the cache leg via [`CacheStore::record_evaluation`], which is a
@@ -316,15 +320,6 @@ pub(crate) fn commit_cell_result_at(
     // brackets the caller's work, not just this commit.
     let start = started_at;
 
-    // Transitional string form of the commit tag, still written until every
-    // consumer reads the tag.
-    let started_payload = match &cache_leg {
-        CacheLeg::Record
-        | CacheLeg::RecordPropagating { .. }
-        | CacheLeg::RecordWithFreshness(_) => trace.as_str().to_string(),
-        CacheLeg::Skip(reason) => format!("{}|cache-skip={reason}", trace.as_str()),
-    };
-
     journal.record(EvalEvent {
         timestamp: start,
         node_id: node_id.clone(),
@@ -335,7 +330,7 @@ pub(crate) fn commit_cell_result_at(
             }),
         },
         version,
-        payload: Some(EventPayload::Custom(started_payload)),
+        payload: None,
     });
 
     // A cache-writing commit needs exactly 3 independently-owned copies of

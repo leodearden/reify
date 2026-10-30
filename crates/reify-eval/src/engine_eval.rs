@@ -512,11 +512,11 @@ fn record_eval_completed(
 ///
 /// task #5238: both let evaluators (`evaluate_params_and_lets_unified`'s Let
 /// arm and `evaluate_let_bindings`) used to emit one shared
-/// `Started(payload: None)` at the TOP of the loop body, covering every exit.
+/// untagged `Started` at the TOP of the loop body, covering every exit.
 /// Migrating the main success-path commit onto `commit_cell_result` — which
-/// emits its own `Started(Custom(<provenance slug>))` — meant that shared
-/// event had to go, or it would be the FIRST `Started` observed for the cell
-/// and would mask the migrated commit's slug (§2.6).
+/// emits its own `Started` carrying a `CommitTag` — meant that shared event
+/// had to go, or it would be the FIRST `Started` observed for the cell and
+/// would mask the migrated commit's tag (§2.6).
 ///
 /// Deleting it outright, however, would leave every OTHER exit from the loop
 /// body emitting a terminal event with no paired `Started` — silently breaking
@@ -4123,13 +4123,13 @@ fn emit_param_override_rejection_warning(
 ///
 /// **Cache / journal**: every value-write path in this helper funnels through
 /// [`commit_cell_result`] (task γ #5053), which writes the values/snapshot/
-/// cache/journal legs atomically and tags the `Started` event with the
-/// `guarded-group` [`TraceSource`] slug. Task-2195 first added journal+cache
+/// cache/journal legs atomically and tags the `Started` event with
+/// [`TraceSource::GuardedGroup`]. Task-2195 first added journal+cache
 /// recording here — mirroring the top-level Param branch in `Engine::eval`'s
 /// first pass, including the symmetric `REJECTED-OVERRIDE-NO-DEFAULT` arm — to
 /// make guarded-group Param evals visible to tooling that joins journal events
 /// against cache state; the γ migration preserves that visibility (identical
-/// values/snapshot/cache writes) while making the provenance slug explicit.
+/// values/snapshot/cache writes) while making the provenance explicit.
 ///
 /// **Journal-timing delta (γ #5053, non-load-bearing).** The pre-migration
 /// contract emitted the `Started` event *before* resolution and computed the
@@ -8424,8 +8424,8 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-reuse`
-                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // typed Started/Completed pair carrying a `CachedReuse`
+                            // commit tag in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
                             // (Freshness dimension — CLOSED) + PRD §2.4/§7.2. (The Auto-cell
@@ -8663,8 +8663,8 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-reuse`
-                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // typed Started/Completed pair carrying a `CachedReuse`
+                            // commit tag in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
                             // (Freshness dimension — CLOSED) + PRD §2.4/§7.2.
@@ -8810,7 +8810,7 @@ impl Engine {
                             // to `start.elapsed()`, spanning the eval. `commit_cell_result`
                             // captures its own `start` at the top of the commit — after the eval
                             // — so `Started` is now post-eval and the `Completed` `Duration`
-                            // covers only the four-leg commit. The added `cached-serve` slug is
+                            // covers only the four-leg commit. The added `CachedServe` tag is
                             // additive; the `Duration` magnitude is unconsumed (all journal
                             // consumers match `Duration(_)` for presence only).
                             let commit_outcome = commit_cell_result(
@@ -8826,21 +8826,20 @@ impl Engine {
                                 // `CachedServe` denotes eval_cached-PASS provenance, not a cache
                                 // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
                                 // a cold eval within the cached-serve pass. Kept as CachedServe
-                                // (not ColdEval) per the frozen γ plan; `TraceSource::as_str`
-                                // declares these strings stable once shipped.
+                                // (not ColdEval) per the frozen γ plan.
                                 //
-                                // task #5238: `cached-serve` identifies THIS arm uniquely. The
+                                // task #5238: `CachedServe` identifies THIS arm uniquely. The
                                 // two migrated preserve-freshness re-serves earlier in this
                                 // function stamp the distinct `TraceSource::CachedReuse`
-                                // (`cached-reuse`) instead, precisely so a §2.6 divergence
-                                // audit can separate a re-serve from a miss FROM THE JOURNAL
-                                // ALONE — neither the commit's `CacheLeg` (consumed inside
-                                // commit_cell_result, never recorded) nor `stats.cache_hits`/
+                                // instead, precisely so a §2.6 divergence audit can separate
+                                // a re-serve from a miss FROM THE JOURNAL ALONE — neither the
+                                // commit's `CacheLeg` variant (its tag records only Recorded
+                                // vs Skipped) nor `stats.cache_hits`/
                                 // `cache_misses` (per-pass, not per-node) is reachable from a
                                 // journal event.
                                 //
                                 // Still true: the Auto-cell pre-seed re-serve does NOT route
-                                // through commit_cell_result and emits no slug at all — see its
+                                // through commit_cell_result and records no tag at all — see its
                                 // own note for why it stays unmigrated.
                                 TraceSource::CachedServe,
                                 trace,
@@ -9759,7 +9758,7 @@ impl Engine {
                     // preserved -- caller-supplied `version`,
                     // `DependencyTrace::default()`, `CacheLeg::Record` -- and
                     // `TraceSource::CachedServe` records the warm-serve
-                    // provenance slug (any `EventPayload::Custom` slug proves
+                    // provenance (any commit tag on the Started event proves
                     // the routing to the §2.6 divergence audit).
                     commit_cell_result(
                         CommitLegs {
@@ -10385,10 +10384,10 @@ impl Engine {
 
                     // task #5238: the main success-path commit below is now
                     // routed through `commit_cell_result`, which emits its OWN
-                    // Started(Custom slug)+Completed pair. No SHARED
-                    // Started(payload:None) is emitted here — it would be the
-                    // FIRST Started observed for the cell and would mask the
-                    // migrated commit's `cold-eval` provenance slug (§2.6).
+                    // tagged Started+Completed pair. No SHARED untagged
+                    // Started is emitted here — it would be the FIRST Started
+                    // observed for the cell and would mask the migrated
+                    // commit's `ColdEval` tag (§2.6).
                     //
                     // The sibling sub-paths in this arm (pre-eval Pending gate,
                     // @optimized Final-gate reuse, the three compute-dispatch
@@ -10876,7 +10875,7 @@ impl Engine {
                     // false` + `UnconditionalDetermined` byte-match the pre-migration
                     // `record_evaluation_propagating_freshness(val, Determined, false)`,
                     // so value/determinacy/freshness are all preserved; the added
-                    // `cold-eval` Started slug is the only observable delta.
+                    // `ColdEval` Started tag is the only observable delta.
                     // `&mut *values` reborrows the &mut param (this commit is inside
                     // the topo loop; `values` is reused by later iterations and by
                     // `re_eval_consumers_of_in_walk_mints` after the loop).
@@ -11316,11 +11315,10 @@ impl Engine {
             };
 
             // task #5238: the main success-path commit below is now routed
-            // through `commit_cell_result`, which emits its OWN
-            // Started(Custom slug)+Completed pair. No SHARED Started(payload:None)
-            // is emitted here — it would be the FIRST Started observed for the
-            // cell and would mask the migrated commit's `cold-eval` provenance
-            // slug (§2.6).
+            // through `commit_cell_result`, which emits its OWN tagged
+            // Started+Completed pair. No SHARED untagged Started is emitted
+            // here — it would be the FIRST Started observed for the cell and
+            // would mask the migrated commit's `ColdEval` tag (§2.6).
             //
             // The sibling sub-paths in this loop body (pre-eval Pending gate,
             // @optimized Final-gate reuse, the three compute-dispatch outcomes,
@@ -11977,7 +11975,7 @@ impl Engine {
             // `still_refining: false` + `UnconditionalDetermined` byte-match the
             // pre-migration `record_evaluation_propagating_freshness(val,
             // Determined, false)`, so value/determinacy/freshness are all
-            // preserved; the added `cold-eval` Started slug is the only
+            // preserved; the added `ColdEval` Started tag is the only
             // observable delta. Uses the freshly-computed `trace` (not the old
             // cached trace) so derivation is keyed off the current reads;
             // sorted_lets and let_traces share a key set, so take_trace cannot

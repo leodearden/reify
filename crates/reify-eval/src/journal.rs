@@ -103,10 +103,10 @@ pub enum CacheLegKind {
     },
 }
 
-/// Provenance tag recorded on a commit's journal `Started` event: which
-/// call-path produced this value. Makes the journal self-describing so the
-/// §2.6 divergence audit (a later leaf) can attribute a mismatch to its
-/// producing path.
+/// Which call-path produced a committed value, carried on the journal as
+/// [`CommitTag::trace`]. Makes the journal self-describing so the §2.6
+/// divergence audit can attribute a mismatch to its producing path by
+/// variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceSource {
     /// First-time (cold) evaluation of a node with no prior cache entry.
@@ -121,18 +121,14 @@ pub enum TraceSource {
     /// reproduce the stored `(value, determinacy)` pair and carry the entry's
     /// own freshness forward via `CacheLeg::RecordWithFreshness`. Split out
     /// from [`TraceSource::CachedServe`] (task #5238) so the journal alone
-    /// separates a re-serve from a miss — a §2.6 divergence audit reading the
-    /// slug must not have to reach for the in-memory `CacheLeg`, which
-    /// `commit_cell_result` consumes and never records.
+    /// separates a re-serve from a miss.
     ///
-    /// Named `CachedReuse`/`"cached-reuse"`, NOT `CachedReserve`/
-    /// `"cached-reserve"`: sitting directly beside [`TraceSource::CachedServe`]
-    /// / `"cached-serve"`, a one-letter difference would have carried the whole
-    /// semantic load, and "reserve" (to set aside) is a different English word
-    /// from "re-serve" (to serve again) — the intended sense. "Reuse" is also
-    /// what the producing blocks in `engine_eval.rs` already call themselves
-    /// (`// Cache-reuse: not dirty + entry exists`). Renamed before the slug
-    /// shipped; [`TraceSource::as_str`]'s freeze rule now applies to it.
+    /// Named `CachedReuse`, NOT `CachedReserve`: sitting directly beside
+    /// [`TraceSource::CachedServe`], a one-letter difference would have
+    /// carried the whole semantic load, and "reserve" (to set aside) is a
+    /// different English word from "re-serve" (to serve again) — the intended
+    /// sense. "Reuse" is also what the producing blocks in `engine_eval.rs`
+    /// already call themselves (`// Cache-reuse: not dirty + entry exists`).
     CachedReuse,
     /// Re-evaluation triggered by an edit to an upstream cell.
     EditReeval,
@@ -142,33 +138,6 @@ pub enum TraceSource {
     PostPassOverwrite,
     /// The `reeval_cone_cell` re-propagation pass.
     ConeReeval,
-}
-
-impl TraceSource {
-    /// A stable, kebab-case slug identifying this provenance path. Recorded
-    /// on the journal `Started` event's [`EventPayload::Custom`] payload —
-    /// verbatim on every cache-WRITING `CacheLeg` (`Record`,
-    /// `RecordPropagating`, `RecordWithFreshness`), or with a
-    /// `|cache-skip=<reason>` suffix appended on `CacheLeg::Skip` (see
-    /// `commit_cell_result`) — and
-    /// intended as the stable key a future divergence audit attributes a
-    /// mismatch to, so these strings, once shipped, should not be renamed.
-    ///
-    /// Every variant's slug is pinned — for uniqueness AND for its exact
-    /// frozen string — by `trace_source_provenance_is_recorded_on_started_event`
-    /// in `cell_commit`'s tests, over the `ALL_TRACE_SOURCES` array that
-    /// `trace_source_enumeration_is_exhaustive` forces to stay exhaustive.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TraceSource::ColdEval => "cold-eval",
-            TraceSource::CachedServe => "cached-serve",
-            TraceSource::CachedReuse => "cached-reuse",
-            TraceSource::EditReeval => "edit-reeval",
-            TraceSource::GuardedGroup => "guarded-group",
-            TraceSource::PostPassOverwrite => "post-pass-overwrite",
-            TraceSource::ConeReeval => "cone-reeval",
-        }
-    }
 }
 
 /// Append-only event journal dual-indexed by time and node.
