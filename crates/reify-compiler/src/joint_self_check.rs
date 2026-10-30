@@ -255,6 +255,54 @@ pub(crate) fn check_joint_dof(
     )
 }
 
+/// The declared DOF's summed `(rot, trans)` kinds, or `None` as soon as any
+/// field has no joint-DOF kind (a `Type::Error` or a non-kind type), since a
+/// partially-classified declaration cannot be compared against the residual.
+fn declared_dof_kinds(dof: &[(&str, Type, SourceSpan)]) -> Option<DofKinds> {
+    dof.iter().try_fold(DofKinds::new(0, 0), |sum, (_, ty, _)| {
+        let kind = dof_kind_of(ty)?;
+        Some(DofKinds::new(sum.rot + kind.rot, sum.trans + kind.trans))
+    })
+}
+
+fn non_kind_dof_diagnostic(joint_name: &str, field: &str, ty: &Type, span: SourceSpan) -> Diagnostic {
+    Diagnostic::error(format!(
+        "joint `{joint_name}` DOF `{field}`: type `{ty}` is not a valid joint DOF kind \
+         (expected Angle, Length, or Orientation)"
+    ))
+    .with_code(DiagnosticCode::ArgTypeMismatch)
+    .with_label(DiagnosticLabel::new(span, "not a joint DOF kind"))
+}
+
+/// The definition-time DOF diagnostics for `joint joint_name … with dof = body`
+/// (PRD geometric-joints §7.1): the COUNT/KIND verdict behind its two
+/// gradualism gates, each of which suppresses the verdict rather than let it
+/// fire spuriously.
+///
+/// - Gate (a), kind-less DOF: a field whose type is not `Angle`, `Length` or
+///   `Orientation` draws one `E_ARG_TYPE_MISMATCH` at its span; a
+///   `Type::Error` field was already diagnosed upstream and draws nothing.
+/// - Gate (b), undecidable split: a body relation with a curated DOF count but
+///   no rot/trans split ([`body_has_undecidable_kind_split`]).
+pub(crate) fn joint_dof_diagnostics(
+    joint_name: &str,
+    dof: &[(&str, Type, SourceSpan)],
+    body: &[CompiledExpr],
+    span: SourceSpan,
+) -> Vec<Diagnostic> {
+    let mut diagnostics: Vec<Diagnostic> = dof
+        .iter()
+        .filter(|(_, ty, _)| *ty != Type::Error && dof_kind_of(ty).is_none())
+        .map(|(field, ty, field_span)| non_kind_dof_diagnostic(joint_name, field, ty, *field_span))
+        .collect();
+    if let Some(declared) = declared_dof_kinds(dof)
+        && !body_has_undecidable_kind_split(body)
+    {
+        diagnostics.extend(check_joint_dof(joint_name, declared, residual_kinds(body), span));
+    }
+    diagnostics
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
