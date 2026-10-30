@@ -171,20 +171,27 @@ fn test_command_on_mixed_file_shows_summary() {
     );
 }
 
-// Step 11: no-tests file exits success (vacuously passing)
+// A file with no @test entities exits success, but its summary says no tests
+// ran rather than reading like a passing suite.
 #[test]
 fn test_command_on_no_tests_file_exits_success() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("test", &common::fixture_path("test_none.ri"));
+    let path = common::fixture_path("test_none.ri");
+    let (status, stdout, stderr) = common::run_subcommand("test", &path);
 
     assert!(
         status.success(),
         "reify test should exit 0 when there are no @test entities.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    // Should indicate zero tests ran
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [format!(
+            "test result: no tests. {path} declares no @test structures"
+        )],
+        "stderr: {stderr}"
+    );
     assert!(
-        stdout.contains("0 passed") || stdout.contains("no tests"),
-        "stdout should mention 0 tests or 'no tests', got: {stdout}"
+        !stdout.contains("test result: ok."),
+        "a zero-test run must not read like a passing suite, got: {stdout}"
     );
 }
 

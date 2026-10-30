@@ -1,5 +1,6 @@
 // CLI test fixture: a file with no @test annotations at all.
-// The test runner should return an empty result set (vacuously passing).
+// The test runner returns an empty result set, and `reify test` reports that
+// no tests ran instead of a passing summary.
 // Used by test_command_on_no_tests_file_exits_success.
 
 structure def Bracket {
