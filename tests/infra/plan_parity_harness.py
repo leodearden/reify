@@ -127,14 +127,14 @@ class Divergence:
     message: str
 
 
-def shared_env(clone: Clone, overrides: Mapping[str, str | None] = ()) -> dict:
+def shared_env(clone: Clone, overrides: Mapping[str, str | None] | None = None) -> dict:
     """The one env both sides of a scenario run under."""
     unpinned = clone.root.parent / "no-jobserver-fifo"
     env = base_env(
         REIFY_NEXTEST_PROBE_RETRY_SLEEP="0",
         **{knob: str(unpinned / knob.lower()) for knob in JOBSERVER_FIFO_KNOBS},
     )
-    for name, value in dict(overrides).items():
+    for name, value in dict(overrides or {}).items():
         if value is None:
             env.pop(name, None)
         else:

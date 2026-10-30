@@ -813,7 +813,8 @@ class TestPlanParitySelfTest(InParityClone):
         with tempfile.TemporaryDirectory() as scratch:
             pair = run_both(self.nested(scratch), SELF_TEST_PLAN)
         divergence = compare(pair.bash, pair.py)
-        self.assertIsNotNone(divergence, "the edited render.py did not reach B1's plan")
+        if divergence is None:
+            self.fail("the edited render.py did not reach B1's plan")
         self.assertIn(PORT_WINDOW_RULE, divergence.message)
         self.assertIn("render.py", divergence.message)
 

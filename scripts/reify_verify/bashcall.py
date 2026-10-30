@@ -168,4 +168,4 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
 
 
 def _environ(records: list[str]) -> dict[str, str]:
-    return dict(record.partition("=")[::2] for record in records if record)
+    return {name: value for name, _, value in (record.partition("=") for record in records if record)}
