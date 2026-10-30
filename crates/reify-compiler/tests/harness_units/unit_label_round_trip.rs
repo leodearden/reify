@@ -79,9 +79,24 @@ impl fmt::Display for Violation {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "{} emission(s) fail Invariant R:", self.unexpected.len())?;
+        writeln!(
+            f,
+            "{} emission(s) fail Invariant R; {} KNOWN_BLOCKS row(s) are stale:",
+            self.unexpected.len(),
+            self.stale_blocks.len()
+        )?;
         for violation in &self.unexpected {
             writeln!(f, "  {violation}")?;
+        }
+        let stale_rows = KNOWN_BLOCKS
+            .iter()
+            .filter(|block| self.stale_blocks.contains(&block.dimension));
+        for block in stale_rows {
+            writeln!(
+                f,
+                "  {} (owner {}): no emission it blocks fails any more; delete this KNOWN_BLOCKS row",
+                block.dimension, block.owner
+            )?;
         }
         Ok(())
     }
@@ -151,9 +166,9 @@ fn first_breach(emission: &Emission, read_back: &ReadBack) -> Option<Breach> {
     }
 }
 
-fn invariant_r_report(emissions: &[Emission]) -> Report {
+fn violations(emissions: &[Emission]) -> Vec<Violation> {
     let mut read_backs: HashMap<&str, ReadBack> = HashMap::new();
-    let unexpected = emissions
+    emissions
         .iter()
         .filter_map(|emission| {
             let read_back = read_backs
@@ -164,10 +179,42 @@ fn invariant_r_report(emissions: &[Emission]) -> Report {
                 breach,
             })
         })
+        .collect()
+}
+
+/// A violation that is known and owned, so it does not fail the gate.
+struct KnownBlock {
+    dimension: DimensionVector,
+    owner: &'static str,
+}
+
+impl KnownBlock {
+    /// Keyed on the composed Display spelling as well as the dimension, so a curated rung or
+    /// `dimension_unit_label` for the same dimension stays gated.
+    fn absorbs(&self, violation: &Violation) -> bool {
+        violation.emission.dimension == self.dimension
+            && violation.emission.label == self.dimension.to_string()
+    }
+}
+
+/// Rational-exponent Display spelling, blocked on #9236, which deletes this row.
+const KNOWN_BLOCKS: &[KnownBlock] = &[KnownBlock {
+    dimension: DimensionVector::FRACTURE_TOUGHNESS,
+    owner: "#9236",
+}];
+
+fn invariant_r_report(emissions: &[Emission]) -> Report {
+    let (blocked, unexpected): (Vec<Violation>, Vec<Violation>) = violations(emissions)
+        .into_iter()
+        .partition(|violation| KNOWN_BLOCKS.iter().any(|block| block.absorbs(violation)));
+    let stale_blocks = KNOWN_BLOCKS
+        .iter()
+        .filter(|block| !blocked.iter().any(|violation| block.absorbs(violation)))
+        .map(|block| block.dimension)
         .collect();
     Report {
         unexpected,
-        stale_blocks: Vec::new(),
+        stale_blocks,
     }
 }
 
@@ -269,6 +316,23 @@ fn a_known_blocked_label_is_not_reported_as_unexpected() {
         "FractureToughness's composed Display label is a known block, so it is neither an \
          unexpected violation nor evidence of a stale block; got:\n{report}"
     );
+}
+
+#[test]
+fn a_known_block_does_not_absorb_another_label_of_its_dimension() {
+    let corpus = [injected_rung(
+        "FractureToughness",
+        DimensionVector::FRACTURE_TOUGHNESS,
+        "qq",
+        1.0,
+    )];
+
+    let report = invariant_r_report(&corpus);
+
+    let [violation] = report.unexpected.as_slice() else {
+        panic!("a curated label of a blocked dimension must stay gated; got:\n{report}");
+    };
+    assert_eq!(violation.emission.label, "qq");
 }
 
 #[test]
