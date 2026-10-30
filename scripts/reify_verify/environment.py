@@ -40,6 +40,7 @@ BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 PROC = Path("/proc")
 UNKNOWN_BOOT = "-"
 STEP_DROPPED_ENV = ("BASH_ENV", "ENV")
+JOBSERVER_VAR = "CARGO_MAKEFLAGS"
 NEXTEST_PROBE = ("cargo", "nextest", "--version")
 NEXTEST_PROBE_RETRIES = 3
 SIGNALLED = 128
@@ -71,7 +72,7 @@ class UnsetCause(Enum):
 
 @dataclass(frozen=True)
 class JobserverUnset:
-    """CARGO_MAKEFLAGS left unset; fifo is None only when the role has no jobserver pool."""
+    """JOBSERVER_VAR left unset; fifo is None only when the role has no jobserver pool."""
 
     cause: UnsetCause
     fifo: str | None
@@ -150,7 +151,7 @@ def _jobserver(role_policy: RolePolicy, env: Mapping[str, str]) -> tuple[EnvLine
             "not alive / boot mismatch; balancer appears down) — falling back to plain cargo -j"
         )
         return JobserverUnset(UnsetCause.STALE, fifo), warning
-    return Exported("CARGO_MAKEFLAGS", f"--jobserver-auth=fifo:{fifo}"), None
+    return Exported(JOBSERVER_VAR, f"--jobserver-auth=fifo:{fifo}"), None
 
 
 def _is_fifo(path: str) -> bool:

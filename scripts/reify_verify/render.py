@@ -1,7 +1,9 @@
 """render — the plan's projections; the only producer of plan text (PRD D2, D7, D8).
 
 render_text is `--print-plan`: byte-identical to scripts/verify.sh's print
-loop. Every line it returns is printed with a trailing newline; the narrowing
+loop. render_json is `--print-plan=json`: one JSON record per text section
+item, each with "v": 1, and each env and step record's `render` the exact text
+line render_text prints for it. Every line it returns is printed with a trailing newline; the narrowing
 header keeps the closure's text verbatim, so it spans several physical lines
 when affected_crates printed one crate per line (PRD §2.4 defect 7).
 
@@ -10,7 +12,10 @@ loader-path scrub: a TOOL step's text starts with it, a CARGO or BUILTIN
 step's never does, and the node lane carries it inside its own braces.
 """
 
+import json
+
 from reify_verify.environment import (
+    JOBSERVER_VAR,
     CargoEnvMissing,
     CargoEnvSourced,
     EnvLine,
@@ -18,6 +23,7 @@ from reify_verify.environment import (
     JobserverUnset,
     UnsetCause,
 )
+from reify_verify.jsondata import to_data
 from reify_verify.plan import (
     ArtifactAssertion,
     Cargo,
@@ -31,6 +37,7 @@ from reify_verify.plan import (
     NodeProject,
     Packages,
     Plan,
+    PlanHeader,
     RetryMarker,
     Script,
     Step,
@@ -47,6 +54,7 @@ EMPTY_PLAN = "# (no commands — nothing to verify for this action/scope)"
 LD_SCRUB = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
 KILL_AFTER = "timeout --kill-after=60"
 NODE_BG_PID = "_VERIFY_NODE_BG_PID"
+JSON_VERSION = 1
 
 
 def render_text(plan: Plan) -> tuple[str, ...]:
@@ -54,11 +62,71 @@ def render_text(plan: Plan) -> tuple[str, ...]:
         *_retry_marker(plan.retry_marker),
         *_header(plan),
         ENVIRONMENT_MARKER,
-        *(f"# {render_env_line(line)}" for line in plan.environment),
+        *map(_env_text, plan.environment),
         COMMANDS_MARKER,
         *(() if plan.steps else (EMPTY_PLAN,)),
         *(line for step in plan.steps for line in _step_lines(step)),
     )
+
+
+def render_json(plan: Plan) -> tuple[str, ...]:
+    records = (
+        *(("retry_scope", to_data(marker)) for marker in _present(plan.retry_marker)),
+        ("header", _header_data(plan.header)),
+        ("scope", plan.scope.to_json()),
+        ("narrowing", plan.narrowing.to_json()),
+        *(("heavy_partition", {"heavy": heavy.value}) for heavy in _present(plan.heavy_partition)),
+        *(("env", _env_data(line)) for line in plan.environment),
+        *(("step", _step_data(index, step)) for index, step in enumerate(plan.steps)),
+    )
+    return tuple(json.dumps({"v": JSON_VERSION, "record": name, **data}) for name, data in records)
+
+
+def _present(value) -> tuple:
+    return () if value is None else (value,)
+
+
+def _header_data(header: PlanHeader) -> dict:
+    return {
+        "action": header.action.value,
+        "profile": header.profile_selection.value,
+        "profiles": [profile.value for profile in header.profiles],
+        "scope": header.scope.value,
+        "include_infra": int(header.include_infra),
+        "nextest": int(header.nextest),
+        "role": header.role.value,
+    }
+
+
+def _env_data(line: EnvLine) -> dict:
+    """name and value, or the cause when a variable is left unset; `render` is the text line."""
+    match line:
+        case CargoEnvSourced(path=path):
+            kind, name, value, cause = "source", None, path, None
+        case CargoEnvMissing():
+            kind, name, value, cause = "source_missing", None, None, None
+        case Exported(name=name, value=value):
+            kind, cause = "export", None
+        case JobserverUnset(cause=unset_cause):
+            kind, name, value, cause = "unset", JOBSERVER_VAR, None, unset_cause.value
+        case _:
+            raise TypeError(f"_env_data: not an EnvLine: {line!r}")
+    return {"kind": kind, "name": name, "value": value, "cause": cause, "render": _env_text(line)}
+
+
+def _step_data(index: int, step: Step) -> dict:
+    return {
+        "index": index,
+        "kind": step.kind.value,
+        "phase": step.phase.value,
+        "gate_path": step.gate_path,
+        "guard_file": step.guard_file,
+        "scrub": step.kind.scrubs,
+        "executes": step.kind.execution.value,
+        "command": to_data(step.command, tagged=True),
+        "annotation": list(step.annotation),
+        "render": render_step(step),
+    }
 
 
 def _step_lines(step: Step) -> tuple[str, ...]:
@@ -69,7 +137,7 @@ def _step_lines(step: Step) -> tuple[str, ...]:
 
 def render_step(step: Step) -> str:
     text = render_command(step.command)
-    return f"{LD_SCRUB}{text}" if step.kind is StepKind.TOOL else text
+    return f"{LD_SCRUB}{text}" if step.kind.scrubs else text
 
 
 def render_command(command: Command) -> str:
@@ -147,6 +215,10 @@ def _subshell(project: NodeProject) -> str:
     if "&&" in inner:
         inner = f"bash -c '{inner}'"
     return f"(cd {project.dir} && {KILL_AFTER} {project.minutes}m {inner})"
+
+
+def _env_text(line: EnvLine) -> str:
+    return f"# {render_env_line(line)}"
 
 
 def render_env_line(line: EnvLine) -> str:

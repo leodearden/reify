@@ -1,10 +1,10 @@
 """plan — the typed verify plan: its steps, their kinds and phases, and its header (PRD D2).
 
 Records only. build composes a Plan, and render is the one producer of its
-text and JSON projections. A step's kind decides how the executor runs it and
-whether its render carries the loader-path scrub; KIND_COMMANDS is the one
-statement of which command records each kind may hold, checked whenever a
-Step is built.
+text and JSON projections. A step's kind decides how the executor runs it
+(StepKind.execution) and whether its render carries the loader-path scrub
+(StepKind.scrubs); KIND_COMMANDS is the one statement of which command
+records each kind may hold, checked whenever a Step is built.
 """
 
 from dataclasses import dataclass
@@ -18,12 +18,31 @@ from reify_verify.policy import HeavyPartition, Profile, ProfileSelection, Role
 from reify_verify.scope import ScopeDecision
 
 
+class Execution(Enum):
+    """How the executor runs a step: its render through bash, or by the step's own structure."""
+
+    RENDER = "render"
+    STRUCTURAL = "structural"
+
+
 class StepKind(Enum):
     CARGO = "cargo"
     TOOL = "tool"
     BUILTIN = "builtin"
     MAIN_SHELL = "main_shell"
     SENTINEL = "sentinel"
+
+    @property
+    def scrubs(self) -> bool:
+        """A TOOL step's render starts with the loader-path scrub; no other kind's does."""
+        return self is StepKind.TOOL
+
+    @property
+    def execution(self) -> Execution:
+        """The main shell's own steps (the node lane, the semaphore sentinels) are structural."""
+        if self in (StepKind.MAIN_SHELL, StepKind.SENTINEL):
+            return Execution.STRUCTURAL
+        return Execution.RENDER
 
 
 class Phase(Enum):
