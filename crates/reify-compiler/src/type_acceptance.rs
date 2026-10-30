@@ -1,3 +1,243 @@
+//! The leaf acceptance relation the conformance walker consults, beside `type_compatible`:
+//! one verdict per param/arg type pair. Wrapper recursion and trait conformance belong to
+//! the caller. Contract: docs/prds/v0_6/compiler-declaration-passes.md D7 and
+//! docs/reify-language-spec.md §4.9.
+
+use reify_core::{DimensionVector, Type};
+use reify_ir::EnumDef;
+
+use crate::type_compat::{base_enum_name, type_compatible};
+
+/// What [`conformance_accepts`] decides for one param/arg type pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArgVerdict<'t> {
+    /// The arg conforms: the caller stays silent.
+    Accept,
+    /// The arg does not conform: the caller emits its param family's mismatch.
+    Reject,
+    /// Not judged here: the caller stays silent, or recurses into the wrapper pair.
+    Unverifiable,
+    /// The shapes agree but the quantity slots conflict: the caller emits the quantity mismatch.
+    QuantityConflict { param_q: &'t Type, arg_q: &'t Type },
+    /// A trait-object param: the caller checks the arg's conformance to the named trait.
+    RequiresTraitConformance(&'t str),
+}
+
+/// Judges `arg` against `param`; `enum_defs` tells an applied enum from an applied structure.
+pub(crate) fn conformance_accepts<'t>(
+    param: &'t Type,
+    arg: &'t Type,
+    enum_defs: &[EnumDef],
+) -> ArgVerdict<'t> {
+    if let Type::TraitObject(required_trait) = param {
+        return ArgVerdict::RequiresTraitConformance(required_trait);
+    }
+    if param.is_error() || arg.is_error() {
+        return ArgVerdict::Unverifiable;
+    }
+    if matches!(
+        param,
+        Type::Option(_) | Type::List(_) | Type::Set(_) | Type::Map(..)
+    ) {
+        return wrapper_shape_verdict(param, arg);
+    }
+    if arg_type_is_unverifiable(arg) {
+        return ArgVerdict::Unverifiable;
+    }
+    match param {
+        Type::StructureRef(_) | Type::Selector(_) | Type::AnySelector => {
+            by_type_compatible(param, arg)
+        }
+        Type::Vector { .. } => vector_verdict(param, arg),
+        Type::Point { .. } => point_verdict(param, arg),
+        Type::Matrix { .. } | Type::Tensor { .. } => matrix_tensor_verdict(param, arg),
+        Type::Field { .. } => field_verdict(arg),
+        // Spec §4.9 Known limitation (#8101): a Geometry field accepts any argument.
+        Type::Geometry => ArgVerdict::Unverifiable,
+        _ => match base_enum_name(param, enum_defs) {
+            Some(param_enum) => enum_verdict(param, param_enum, arg, enum_defs),
+            None => scalar_family_or_unexamined(param, arg),
+        },
+    }
+}
+
+/// `Option` and same-constructor collection pairs are the caller's to recurse; any other arg
+/// at a collection param is a wrapper-shape mismatch (spec §4.9 collection rows).
+fn wrapper_shape_verdict(param: &Type, arg: &Type) -> ArgVerdict<'static> {
+    match (param, arg) {
+        (Type::Option(_), _)
+        | (Type::List(_), Type::List(_))
+        | (Type::Set(_), Type::Set(_))
+        | (Type::Map(..), Type::Map(..)) => ArgVerdict::Unverifiable,
+        _ => ArgVerdict::Reject,
+    }
+}
+
+fn vector_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
+    match (param, arg) {
+        (Type::Vector { n: param_n, .. }, Type::Vector { n: arg_n, .. }) if param_n == arg_n => {
+            quantity_verdict(param, arg)
+        }
+        // Spec §4.9 VectorN row: a rank-1 tensor is legal whatever its element count.
+        (_, Type::Tensor { rank: 1, .. }) => quantity_verdict(param, arg),
+        _ => ArgVerdict::Reject,
+    }
+}
+
+fn point_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
+    match (param, arg) {
+        (Type::Point { n: param_n, .. }, Type::Point { n: arg_n, .. }) if param_n == arg_n => {
+            quantity_verdict(param, arg)
+        }
+        // Spec §4.9 Known limitation (#8121): a scalar at a Point field is not rejected.
+        _ if is_numeric_placeholder_leaf(arg) => ArgVerdict::Accept,
+        _ => ArgVerdict::Reject,
+    }
+}
+
+fn matrix_tensor_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
+    match arg {
+        Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => {
+            quantity_verdict(param, arg)
+        }
+        // Nested-list erasure: Unverifiable until #9570 (PRD esc-8739-2 amendment).
+        Type::List(_) if list_bottoms_out_numeric(arg) => ArgVerdict::Unverifiable,
+        Type::List(_) => ArgVerdict::Reject,
+        // Spec §4.9 Matrix/Tensor row lists "a scalar"; #8317 narrows it to a rank-0 match.
+        _ if is_numeric_placeholder_leaf(arg) => ArgVerdict::Accept,
+        _ => ArgVerdict::Reject,
+    }
+}
+
+/// Field slots erase to `Field<Real, Real>`, so a field or lambda arg is Unverifiable until
+/// #9569 (PRD esc-8739-2 amendment); anything else is rejected (spec §4.9 Field row).
+fn field_verdict(arg: &Type) -> ArgVerdict<'static> {
+    match arg {
+        Type::Field { .. } | Type::Function { .. } => ArgVerdict::Unverifiable,
+        _ => ArgVerdict::Reject,
+    }
+}
+
+/// Spec §4.9 enum row: generic arguments are not compared, so the same base enum is accepted.
+fn enum_verdict(
+    param: &Type,
+    param_enum: &str,
+    arg: &Type,
+    enum_defs: &[EnumDef],
+) -> ArgVerdict<'static> {
+    if base_enum_name(arg, enum_defs) == Some(param_enum) {
+        ArgVerdict::Accept
+    } else {
+        by_type_compatible(param, arg)
+    }
+}
+
+fn scalar_family_or_unexamined(param: &Type, arg: &Type) -> ArgVerdict<'static> {
+    if scalar_param_arg_defers_at_scalar_slot(param, arg) {
+        ArgVerdict::Unverifiable
+    } else if general_leaf_param_family_is_validated(param) {
+        by_type_compatible(param, arg)
+    } else {
+        // Spec §4.9 Known limitation (#7958): this field type is not yet checked.
+        ArgVerdict::Unverifiable
+    }
+}
+
+/// The quantity-slot rule of crates/reify-core/src/ty.rs ("Point / Vector quantity-slot
+/// convention"): param side strict, arg side tolerant (owner #9568 for the arg side).
+fn quantity_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
+    let (Some(param_q), Some(arg_q)) = (quantity_slot(param), quantity_slot(arg)) else {
+        return ArgVerdict::Accept;
+    };
+    match (
+        param_quantity_slot_dimension(param_q),
+        arg_quantity_slot_dimension(arg_q),
+    ) {
+        (Some(param_dim), Some(arg_dim)) if param_dim != arg_dim => {
+            ArgVerdict::QuantityConflict { param_q, arg_q }
+        }
+        _ => ArgVerdict::Accept,
+    }
+}
+
+fn by_type_compatible(param: &Type, arg: &Type) -> ArgVerdict<'static> {
+    if type_compatible(param, arg) {
+        ArgVerdict::Accept
+    } else {
+        ArgVerdict::Reject
+    }
+}
+
+/// Arg kinds whose conformance is unknown here and so never judged (spec §4.9 "skipped"
+/// row): an earlier error, an unresolved generic, a geometry value, a trait-typed value.
+fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
+    matches!(
+        arg_ty,
+        Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
+    )
+}
+
+/// The scalar-family args the Point and Matrix/Tensor arms tolerate (#8121, #8317): `Int`,
+/// any `Scalar` whatever its dimension, and a dimension-generic `ScalarParam`.
+fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
+}
+
+/// A dimension-generic `Scalar<Q>` arg at a `Scalar` slot is judged at instantiation
+/// (docs/prds/v0_6/dimensioned-construction-strictness.md D4-5).
+fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> bool {
+    matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
+}
+
+/// Arg side of the quantity rule, tolerant: a dimensionless `Scalar` names no dimension
+/// (crates/reify-core/src/ty.rs, "Point / Vector quantity-slot convention").
+fn arg_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
+    match quantity {
+        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
+        _ => None,
+    }
+}
+
+/// Param side of the quantity rule, strict: every `Scalar` names its dimension
+/// (crates/reify-core/src/ty.rs, "Point / Vector quantity-slot convention").
+fn param_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
+    match quantity {
+        Type::Scalar { dimension } => Some(*dimension),
+        _ => None,
+    }
+}
+
+/// The quantity slot of a Vector, Point, Matrix or Tensor; `None` for every other shape.
+fn quantity_slot(ty: &Type) -> Option<&Type> {
+    match ty {
+        Type::Vector { quantity, .. }
+        | Type::Point { quantity, .. }
+        | Type::Matrix { quantity, .. }
+        | Type::Tensor { quantity, .. } => Some(quantity),
+        _ => None,
+    }
+}
+
+/// Whether a `List` arg is plausibly a nested numeric matrix literal; unknown (`Error`,
+/// `TypeParam`) elements count as numeric.
+fn list_bottoms_out_numeric(ty: &Type) -> bool {
+    match ty {
+        Type::List(inner) => list_bottoms_out_numeric(inner),
+        Type::Vector { .. } | Type::Matrix { .. } | Type::Tensor { .. } => true,
+        Type::Error | Type::TypeParam(_) => true,
+        other => is_numeric_placeholder_leaf(other),
+    }
+}
+
+/// The scalar-family params judged by `type_compatible` (spec §4.9 scalar and
+/// `String` / `Int` / `Bool` rows).
+fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
+    matches!(
+        param_type,
+        Type::Bool | Type::Int | Type::String | Type::Scalar { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
