@@ -53,6 +53,7 @@ struct Violation {
 #[derive(Debug, Default)]
 struct Report {
     unexpected: Vec<Violation>,
+    stale_blocks: Vec<DimensionVector>,
 }
 
 impl fmt::Display for Violation {
@@ -164,7 +165,10 @@ fn invariant_r_report(emissions: &[Emission]) -> Report {
             })
         })
         .collect();
-    Report { unexpected }
+    Report {
+        unexpected,
+        stale_blocks: Vec::new(),
+    }
 }
 
 fn injected_rung(
@@ -244,5 +248,45 @@ fn each_conjunct_of_invariant_r_fails_the_gate_on_its_own() {
         "a readable label of the right dimension and the wrong scale must fail the third \
          conjunct; got {:?}",
         wrong_scale.breach
+    );
+}
+
+#[test]
+fn a_known_blocked_label_is_not_reported_as_unexpected() {
+    let fracture_toughness = DimensionVector::FRACTURE_TOUGHNESS;
+    let corpus = [Emission {
+        surface: Surface::DimensionDisplay,
+        dimension_name: "FractureToughness",
+        dimension: fracture_toughness,
+        label: fracture_toughness.to_string(),
+        si_scale: 1.0,
+    }];
+
+    let report = invariant_r_report(&corpus);
+
+    assert!(
+        report.unexpected.is_empty() && report.stale_blocks.is_empty(),
+        "FractureToughness's composed Display label is a known block, so it is neither an \
+         unexpected violation nor evidence of a stale block; got:\n{report}"
+    );
+}
+
+#[test]
+fn a_known_block_whose_label_no_longer_fails_is_reported_stale() {
+    let corpus: Vec<Emission> = surface_emissions()
+        .into_iter()
+        .filter(|emission| emission.dimension != DimensionVector::FRACTURE_TOUGHNESS)
+        .collect();
+
+    let report = invariant_r_report(&corpus);
+
+    assert_eq!(
+        report.stale_blocks,
+        [DimensionVector::FRACTURE_TOUGHNESS],
+        "a block with no failing emission must be reported stale"
+    );
+    assert!(
+        report.unexpected.is_empty(),
+        "removing FractureToughness from the corpus must leave nothing unexpected; got:\n{report}"
     );
 }
