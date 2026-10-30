@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from reify_verify import childproc, narrowing, scope, selection
+from reify_verify import childproc, environment, narrowing, scope, selection
 from reify_verify.invocation import Action, Invocation
 from reify_verify.plan import Plan, PlanHeader
 from reify_verify.policy import ROLE_TABLE, InfraTier
@@ -42,11 +42,15 @@ def plan_invocation(
 ) -> Planned | Refused:
     role_policy = ROLE_TABLE[invocation.role]
     resolved = scope.resolve_scope(invocation, repo_root, env)
-    decision, gather_warnings = scope.decide_resolved(resolved, repo_root, env)
+    step_env = environment.build(invocation.role, role_policy, env, repo_root)
+    planning = step_env.planning
+    decision, gather_warnings = scope.decide_resolved(resolved, repo_root, planning)
     if _has_test_region(invocation.action, decision):
         return _test_region_refusal(invocation.action)
-    _selected, selection_warnings = selection.select_infra(decision, repo_root, env)
-    narrowed, narrowing_warnings = narrowing.narrow(decision, invocation.narrow, repo_root, env)
+    _selected, selection_warnings = selection.select_infra(decision, repo_root, planning)
+    narrowed, narrowing_warnings = narrowing.narrow(
+        decision, invocation.narrow, repo_root, planning
+    )
     profile_selection = invocation.profile_arg or role_policy.default_profile
     header = PlanHeader(
         action=invocation.action,
@@ -54,7 +58,7 @@ def plan_invocation(
         profiles=profile_selection.profiles,
         scope=decision.mode,
         include_infra=invocation.include_infra,
-        nextest=_nextest_available(env, repo_root),
+        nextest=_nextest_available(planning, repo_root),
         role=invocation.role,
     )
     plan = Plan(
@@ -65,9 +69,11 @@ def plan_invocation(
         scope=decision,
         narrowing=narrowed,
         heavy_partition=None,
+        environment=step_env.lines,
     )
     diagnostics = (
         *resolved.notices,
+        *step_env.warnings,
         *gather_warnings,
         *selection_warnings,
         *narrowing_warnings,

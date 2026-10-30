@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
 
+from reify_verify.environment import EnvLine
 from reify_verify.invocation import Action, Scope
 from reify_verify.narrowing import Narrowing
 from reify_verify.policy import HeavyPartition, Profile, ProfileSelection, Role
@@ -107,5 +108,5 @@ class Plan:
     scope: ScopeDecision
     narrowing: Narrowing
     heavy_partition: HeavyPartition | None
-    environment: tuple = ()
+    environment: tuple[EnvLine, ...] = ()
     steps: tuple[Step, ...] = ()

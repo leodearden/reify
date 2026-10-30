@@ -6,6 +6,14 @@ header keeps the closure's text verbatim, so it spans several physical lines
 when affected_crates printed one crate per line (PRD §2.4 defect 7).
 """
 
+from reify_verify.environment import (
+    CargoEnvMissing,
+    CargoEnvSourced,
+    EnvLine,
+    Exported,
+    JobserverUnset,
+    UnsetCause,
+)
 from reify_verify.plan import Plan, RetryMarker
 
 ENVIRONMENT_MARKER = (
@@ -21,10 +29,34 @@ def render_text(plan: Plan) -> tuple[str, ...]:
         *_retry_marker(plan.retry_marker),
         *_header(plan),
         ENVIRONMENT_MARKER,
-        *(f"# {line}" for line in plan.environment),
+        *(f"# {render_env_line(line)}" for line in plan.environment),
         COMMANDS_MARKER,
         *(() if plan.steps else (EMPTY_PLAN,)),
     )
+
+
+def render_env_line(line: EnvLine) -> str:
+    """bash's ENV_LINES entry; a comment-form entry starts `# `, so it prints as `# # …`."""
+    match line:
+        case CargoEnvSourced(path=path):
+            return f". {path}"
+        case CargoEnvMissing():
+            return "# ~/.cargo/env not found — relying on ambient PATH for cargo"
+        case Exported(name=name, value=value):
+            return f"export {name}={value}"
+        case JobserverUnset(cause=UnsetCause.OFFLINE):
+            return (
+                "# CARGO_MAKEFLAGS left unset (offline role — off the merge jobserver, draws "
+                "from neither task nor merge FIFO)"
+            )
+        case JobserverUnset(cause=UnsetCause.STALE, fifo=fifo):
+            return (
+                f"# CARGO_MAKEFLAGS left unset (stale FIFO {fifo} — jobserver balancer down) — "
+                "cargo uses its own job pool"
+            )
+        case JobserverUnset(cause=UnsetCause.MISSING, fifo=fifo):
+            return f"# CARGO_MAKEFLAGS left unset (no {fifo} FIFO) — cargo uses its own job pool"
+    raise TypeError(f"render_env_line: not an EnvLine: {line!r}")
 
 
 def _retry_marker(marker: RetryMarker | None) -> tuple[str, ...]:

@@ -32,6 +32,7 @@ from plan_parity_harness import (  # noqa: E402
     Clone,
     InParityClone,
     Scenario,
+    base_env,
     compare,
     discard_clone,
     run_both,
@@ -65,6 +66,16 @@ def host_boot_id() -> str:
     return BOOT_ID.read_text(encoding="utf-8").strip()
 
 
+def toolchain_env() -> dict:
+    """RUSTUP_HOME and CARGO_HOME as the real HOME resolves them, so a scratch HOME keeps cargo working."""
+    env = base_env()
+    home = env["HOME"]
+    return {
+        "RUSTUP_HOME": env.get("RUSTUP_HOME", f"{home}/.rustup"),
+        "CARGO_HOME": env.get("CARGO_HOME", f"{home}/.cargo"),
+    }
+
+
 def dead_pid() -> int:
     """A pid no process can hold: one above the kernel's pid_max."""
     return int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8")) + 1
@@ -96,7 +107,8 @@ class TestPlanParityEnvironment(InParityClone):
         self.addCleanup(scratch.cleanup)
         self.scratch = Path(scratch.name)
 
-    def check(self, label, env=()):
+    def check(self, label, env=(), expect=()):
+        """Both actions agree; bash's output holds each `expect` text (the scenario's premise)."""
         scenarios = [
             Scenario(f"{label} ({action})", (action, "--scope", "all", "--print-plan"), dict(env))
             for action in PLAN_ACTIONS
@@ -104,15 +116,18 @@ class TestPlanParityEnvironment(InParityClone):
         for scenario, pair in run_many(self.clone, scenarios):
             with self.subTest(scenario.label):
                 self.assert_bash_plans(scenario, pair)
+                for text in expect:
+                    self.assertIn(text, pair.bash.stdout + pair.bash.stderr, "premise")
                 self.assert_parity(scenario, pair, ENVIRONMENT_SECTIONS)
 
-    def home(self, name, cargo_env=None) -> str:
+    def home(self, name, cargo_env=None) -> dict:
+        """A scratch HOME, with `cargo_env` as its ~/.cargo/env, and the real toolchain."""
         home = self.scratch / name
         home.mkdir()
         if cargo_env is not None:
             (home / ".cargo").mkdir()
             (home / ".cargo" / "env").write_text(cargo_env, encoding="utf-8")
-        return str(home)
+        return {"HOME": str(home), **toolchain_env()}
 
     def fifo(self, name, stamp=None) -> str:
         fifo = self.scratch / name
@@ -122,10 +137,10 @@ class TestPlanParityEnvironment(InParityClone):
         return str(fifo)
 
     def test_pinned_missing_fifo(self):
-        self.check("FIFO knobs pinned to a missing path")
+        self.check("FIFO knobs pinned to a missing path", expect=(" FIFO) — cargo uses its own job pool",))
 
     def test_home_without_cargo_env(self):
-        self.check("no ~/.cargo/env", {"HOME": self.home("bare")})
+        self.check("no ~/.cargo/env", self.home("bare"), ("# # ~/.cargo/env not found",))
 
     def test_cargo_env_delta_reaches_the_plan(self):
         bin_dir = self.scratch / "cargo-env-bin"
@@ -135,37 +150,48 @@ class TestPlanParityEnvironment(InParityClone):
             f"export PATH=\"{bin_dir}:$PATH\"\n"
             f"export LD_LIBRARY_PATH=\"{self.scratch}/from-cargo-env\"\n"
         )
-        self.check("~/.cargo/env sourced", {"HOME": self.home("cargo", cargo_env)})
+        env = self.home("cargo", cargo_env)
+        self.check(
+            "~/.cargo/env sourced",
+            env,
+            (f"# . {env['HOME']}/.cargo/env", f"AMBIENT_LD_LIBRARY_PATH={self.scratch}/from-cargo-env"),
+        )
 
     def test_ambient_loader_path(self):
-        self.check("ambient LD_LIBRARY_PATH", {"LD_LIBRARY_PATH": f"{self.scratch}/ambient"})
+        ambient = f"{self.scratch}/ambient"
+        self.check("ambient LD_LIBRARY_PATH", {"LD_LIBRARY_PATH": ambient}, (f":{ambient}\n",))
 
     def test_fifo_owner_stamps(self):
         boot = host_boot_id()
         live = os.getpid()
+        exported, stale = "export CARGO_MAKEFLAGS=", "WARNING — stale jobserver FIFO"
         cases = (
-            ("no owner stamp", None, {}),
-            ("live owner", f"{live} {boot}\n", {}),
-            ("dead owner", f"{dead_pid()} {boot}\n", {}),
-            ("live owner of another boot", f"{live} {FOREIGN_BOOT_ID}\n", {}),
-            ("malformed pid", f"12x {boot}\n", {}),
-            ("stamp without a newline", f"{dead_pid()} {boot}", {}),
+            ("no owner stamp", None, {}, exported),
+            ("live owner", f"{live} {boot}\n", {}, exported),
+            ("dead owner", f"{dead_pid()} {boot}\n", {}, stale),
+            ("live owner of another boot", f"{live} {FOREIGN_BOOT_ID}\n", {}, stale),
+            ("malformed pid", f"12x {boot}\n", {}, exported),
+            ("stamp without a newline", f"{dead_pid()} {boot}", {}, exported),
             ("stale stamp, probe skipped", f"{dead_pid()} {boot}\n",
-             {"REIFY_JOBSERVER_SKIP_LIVENESS_PROBE": "1"}),
+             {"REIFY_JOBSERVER_SKIP_LIVENESS_PROBE": "1"}, exported),
         )
-        for n, (label, stamp, extra) in enumerate(cases):
+        for n, (label, stamp, extra, premise) in enumerate(cases):
             fifo = self.fifo(f"fifo-{n}", stamp)
-            self.check(f"task FIFO: {label}", {TASK_FIFO: fifo, **extra})
+            self.check(f"task FIFO: {label}", {TASK_FIFO: fifo, **extra}, (premise,))
 
     def test_merge_role_live_fifo(self):
         fifo = self.fifo("merge-fifo", f"{os.getpid()} {host_boot_id()}\n")
-        self.check("merge FIFO live", {"DF_VERIFY_ROLE": "merge", MERGE_FIFO: fifo})
+        self.check(
+            "merge FIFO live",
+            {"DF_VERIFY_ROLE": "merge", MERGE_FIFO: fifo},
+            (f"export CARGO_MAKEFLAGS=--jobserver-auth=fifo:{fifo}",),
+        )
 
     def test_offline_role(self):
-        self.check("offline role", {"DF_VERIFY_ROLE": "offline"})
+        self.check("offline role", {"DF_VERIFY_ROLE": "offline"}, ("(offline role — ",))
 
     def test_host_default_fifo(self):
-        self.check("host default FIFO", {TASK_FIFO: None, MERGE_FIFO: None})
+        self.check("host default FIFO", {TASK_FIFO: None, MERGE_FIFO: None}, ("/tmp/reify-jobserver-task",))
 
 
 class TestPlanParitySelfTest(InParityClone):

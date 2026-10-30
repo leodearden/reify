@@ -892,3 +892,5 @@ scripts/reify_verify/render.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/render.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/build.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/build.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/environment.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/environment.py    tests/infra/test_verify_policy.sh
