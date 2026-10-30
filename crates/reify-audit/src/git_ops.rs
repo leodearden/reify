@@ -170,7 +170,7 @@ pub trait GitOps {
     /// per-path diff add a line like this" asks once. Line numbers are not
     /// comparable with the per-path answers'.
     ///
-    /// The default concatenates the per-path answers ([`per_path_added_lines`]).
+    /// The default concatenates the per-path answers.
     /// [`RealGitOps`] makes one `git diff --no-renames <commit>^1..<commit> --
     /// <paths…>`: a single-pathspec diff can pair a rename only within that
     /// pathspec, and `--no-renames` renders any such pair as a whole-file add,
