@@ -2,9 +2,9 @@
 //!
 //! Cases here pin the `parse_klipper` entry point's behavior on
 //! Klipper-specific directives (`SET_VELOCITY_LIMIT`, `INPUT_SHAPER`).
-//! The `INPUT_SHAPER` AST identity is the only
-//! signal this task ships — `W_GcodeDialectShaperConflict` emission is
-//! deferred to consumer task ο (`gcode_import`).
+//! The `INPUT_SHAPER` AST identity is the only signal this task ships —
+//! `W_GcodeDialectShaperConflict` emission is deferred to consumer task
+//! ο (`gcode_import`).
 
 use reify_gcode::ast::{
     ArcDirection, ArcMove, GcodeCommand, IgnoredMCode, InputShaper, LinearMove, SetPosition,
@@ -237,10 +237,11 @@ fn input_shaper_malformed_kv_no_equals_is_invalid_parameter() {
 }
 
 // Klipper directives are matched **uppercase-only** here — see the
-// module-level doc in `src/klipper.rs`. Lowercase / mixed-case variants fall through to
-// `marlin::parse_line`, which surfaces `UnknownCommand` on the raw
-// token. Pinning this lets any future relaxation be a deliberate
-// contract change rather than an accidental drift.
+// module-level doc in `src/klipper.rs`. Lowercase / mixed-case
+// variants fall through to `marlin::parse_line`, which surfaces
+// `UnknownCommand` on the raw token. Pinning this lets any future
+// relaxation be a deliberate contract change rather than an
+// accidental drift.
 #[test]
 fn lowercase_directive_routes_through_marlin_unknown_command() {
     let err = parse_klipper("set_velocity_limit FOO=1").unwrap_err();

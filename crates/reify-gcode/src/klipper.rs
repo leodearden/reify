@@ -8,7 +8,10 @@
 //! is shared (not duplicated).
 //!
 //! Klipper directive names are matched **uppercase-only**; mixed/lowercase
-//! variants fall through to marlin and produce `UnknownCommand`.
+//! variants fall through to marlin and produce `UnknownCommand`. This
+//! mirrors `marlin::parse_line`, whose command arms (`G0`…`G92`, the
+//! M-code allowlist) are matched case-sensitively too, so both dialects
+//! share one case rule rather than folding case per arm.
 
 use crate::ast::{GcodeCommand, InputShaper, SetVelocityLimit};
 use crate::error::{ParseError, ParseErrorKind};
@@ -22,8 +25,7 @@ use crate::marlin;
 /// (blank/comment lines counted), short-circuit on first failure.
 /// Malformed KEY=VALUE tokens are surfaced as
 /// [`ParseErrorKind::InvalidParameter`] with `letter: '='` — a semantic
-/// approximation; the offending raw token is
-/// preserved in `value`.
+/// approximation; the offending raw token is preserved in `value`.
 pub fn parse_klipper(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
     let mut out = Vec::new();
     for (idx, raw) in src.split('\n').enumerate() {
@@ -107,10 +109,10 @@ fn parse_klipper_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseE
 /// There is no dedicated `MalformedDirectiveParam` variant in
 /// `error.rs` because that module is shared with the Marlin dialect
 /// (touched by every dialect's scope-lock) and is out of scope for
-/// task ν. When error-rendering needs
-/// to distinguish KV-malformation from axis-letter malformation, the
-/// fix is to add a dedicated variant in `error.rs` rather than to
-/// reinterpret the `letter: '='` sentinel here.
+/// task ν. When error-rendering needs to distinguish KV-malformation
+/// from axis-letter malformation, the fix is to add a dedicated variant
+/// in `error.rs` rather than to reinterpret the `letter: '='` sentinel
+/// here.
 fn parse_kv_params<'a>(
     line_no: usize,
     tokens: impl Iterator<Item = &'a str>,
