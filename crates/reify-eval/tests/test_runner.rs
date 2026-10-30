@@ -249,9 +249,10 @@ fn run_tests_with_constraint_def_reference_violated_returns_fail() {
     );
 }
 
-// Step 3: @test with auto param — actual Indeterminate (no mock, real SimpleConstraintChecker)
+// The runner solves the two-sided auto `x` to an interior point, so the
+// constraint reading it gets a real verdict instead of Indeterminate.
 #[test]
-fn run_tests_with_auto_param_returns_indeterminate() {
+fn run_tests_resolves_a_two_sided_auto_to_a_real_verdict() {
     let compiled = parse_and_compile(
         "@test structure TestAuto { param x : Length = auto\n constraint x > 0 && x < 1m }",
     );
@@ -260,8 +261,47 @@ fn run_tests_with_auto_param_returns_indeterminate() {
     assert_eq!(results[0].name, "TestAuto");
     assert_eq!(
         results[0].status,
+        reify_eval::TestStatus::Pass,
+        "the runner should solve the auto and satisfy its constraint; diagnostics: {:?}",
+        results[0].diagnostics
+    );
+    assert!(
+        !results[0].constraint_results.is_empty(),
+        "expected at least one constraint result"
+    );
+    for entry in &results[0].constraint_results {
+        assert_eq!(
+            entry.satisfaction,
+            Satisfaction::Satisfied,
+            "expected every constraint Satisfied; diagnostics: {:?}",
+            results[0].diagnostics
+        );
+    }
+}
+
+// `tolerance` is Undef because `divisor` is zero, a run-dependent value no
+// solve can change: solving autos must not turn this Indeterminate into Pass.
+#[test]
+fn run_tests_keeps_a_run_dependent_undef_indeterminate() {
+    let compiled = parse_and_compile(
+        "@test structure TestUndef { param divisor : Int = 0\n let tolerance = 1mm / divisor\n constraint tolerance > 0.1mm && tolerance < 1mm }",
+    );
+    let results = run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].name, "TestUndef");
+    assert_eq!(
+        results[0].status,
         reify_eval::TestStatus::Indeterminate,
-        "auto param should produce Indeterminate via real SimpleConstraintChecker"
+        "a run-dependent Undef must stay Indeterminate; diagnostics: {:?}",
+        results[0].diagnostics
+    );
+    assert_eq!(results[0].constraint_results.len(), 1);
+    assert!(
+        results[0].constraint_results[0]
+            .indeterminate_reason
+            .is_some(),
+        "the Indeterminate entry should carry its reason, got: {:?}",
+        results[0].constraint_results[0]
     );
 }
 

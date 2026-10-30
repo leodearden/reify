@@ -56,6 +56,33 @@ fn test_command_on_indeterminate_file_exits_success() {
     );
 }
 
+// Solver-driver parity B8: `reify test` resolves autos, so a test whose
+// constraint reads a two-sided auto gets a real verdict, not Indeterminate.
+#[test]
+fn test_command_reports_a_real_verdict_for_a_test_reading_an_auto() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_auto_resolves.ri"));
+
+    assert!(
+        status.success(),
+        "reify test should exit 0 when the auto resolves and its constraint holds.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.lines().any(|line| line == "  PASS  TestSolvedAuto"),
+        "stdout should report TestSolvedAuto as PASS, got: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "test result: ok. 1 passed; 0 failed; 0 indeterminate"),
+        "stdout should summarise one passing test, got: {stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.contains("INDETERMINATE")),
+        "a solved auto must not leave any INDETERMINATE line, got: {stdout}"
+    );
+}
+
 // Step 10: mixed file — exits failure (has FAIL), shows all three statuses and summary counts
 #[test]
 fn test_command_on_mixed_file_shows_summary() {

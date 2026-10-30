@@ -570,4 +570,21 @@ constraint def Positive {
             "Unavailable arm must not install a mesh-morph producer"
         );
     }
+
+    #[test]
+    fn build_test_engine_solves_under_the_fresh_profile() {
+        use reify_constraints::SimpleConstraintChecker;
+
+        let engine = super::build_test_engine(Box::new(SimpleConstraintChecker));
+
+        assert_eq!(
+            engine.solver_posture(),
+            crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            "test must resolve autos with the full budget and serve nothing persisted"
+        );
+        assert!(
+            engine.persistent_cache_dir().is_none(),
+            "test must not attach the persistent cache"
+        );
+    }
 }
