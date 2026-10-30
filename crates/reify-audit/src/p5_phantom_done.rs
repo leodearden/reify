@@ -277,6 +277,9 @@ pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
     let Some(meta) = ctx.task_metadata.get(task_id) else {
         return vec![];
     };
+    if let Some(msg) = h2_inert_skip_breadcrumb(ctx, &[meta]) {
+        eprintln!("{msg}");
+    }
     check_task(ctx, meta, CheckMode::PreDone, &SweepPrefetch::none())
 }
 
@@ -1774,10 +1777,11 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
 /// via [`h2_vacuous_breadcrumb`] (task 4144).
 ///
-/// An inert seam ([`crate::JCodemunchOps::is_inert`], e.g. `--no-jcodemunch`)
-/// is not queried at all: every task is skipped here, and the sweep instead
-/// prints ONE line naming how many cross-crate tasks went unexamined
-/// ([`h2_inert_skip_breadcrumb`]) rather than one vacuous line per task.
+/// An inert seam ([`crate::JCodemunchOps::is_inert`], e.g. `--no-jcodemunch`,
+/// and always at pre-done) is not queried at all: every task is skipped here,
+/// and each entry point instead prints ONE line naming how many cross-crate
+/// tasks went unexamined ([`h2_inert_skip_breadcrumb`]) rather than one
+/// vacuous line per task.
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
     if ctx.jcodemunch.is_inert() {
         return vec![];
@@ -1942,9 +1946,10 @@ pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Find
     })
 }
 
-/// The one stderr line a sweep prints when H2 skipped every task because the
-/// seam is inert, or `None` when the seam is live or no audited task is one H2
-/// would have queried.
+/// The one stderr line an entry point prints when H2 skipped its `audited`
+/// tasks because the seam is inert — a sweep's whole corpus, or the pre-done
+/// hook's one task — or `None` when the seam is live or no audited task is one
+/// H2 would have queried.
 fn h2_inert_skip_breadcrumb(ctx: &AuditContext, audited: &[&TaskMetadata]) -> Option<String> {
     if !ctx.jcodemunch.is_inert() {
         return None;
@@ -1955,7 +1960,7 @@ fn h2_inert_skip_breadcrumb(ctx: &AuditContext, audited: &[&TaskMetadata]) -> Op
         .count();
     (skipped > 0).then(|| {
         format!(
-            "reify-audit: H2 (live-path-stranded) skipped for {skipped} cross-crate done \
+            "reify-audit: H2 (live-path-stranded) skipped for {skipped} cross-crate \
              task(s): the jcodemunch seam is inert, so none was queried — zero \
              live-path-stranded findings are not a clean result"
         )
@@ -2175,6 +2180,78 @@ mod tests {
             "vacuous H2 sweep (empty get_changed_symbols, >=2 crate roots) \
              must yield no findings; got {findings:?}"
         );
+    }
+
+    /// A cross-crate task with a provenance commit: one H2 would query.
+    fn cross_crate_meta(task_id: &str) -> TaskMetadata {
+        TaskMetadata {
+            task_id: task_id.to_string(),
+            status: "done".to_string(),
+            files: vec![
+                "crates/reify-eval/src/lib.rs".to_string(),
+                "crates/reify-compiler/src/compile.rs".to_string(),
+            ],
+            done_provenance: Some(DoneProvenance {
+                kind: Some("merged".to_string()),
+                commit: Some("deadbeef".to_string()),
+                note: None,
+            }),
+            title: "cross-crate task".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        }
+    }
+
+    /// The inert-skip line counts exactly the audited tasks H2 would have
+    /// queried, for the pre-done hook's one task as for a sweep, and is
+    /// silent under a live seam or when no audited task is one H2 queries.
+    #[test]
+    fn h2_inert_skip_breadcrumb_counts_the_tasks_h2_would_have_queried() {
+        let conn = Connection::open_in_memory().expect("open in-memory runs.db");
+        let git = MockGitOps::new();
+        let inert_jc = crate::NoopJCodemunchOps;
+        let live_jc = MockJCodemunchOps::new();
+        let context_over = |jcodemunch| AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+        let inert = context_over(&inert_jc);
+        let live = context_over(&live_jc);
+        let cross = cross_crate_meta("1");
+        let single_crate = TaskMetadata {
+            files: vec!["crates/reify-eval/src/lib.rs".to_string()],
+            ..cross_crate_meta("2")
+        };
+        let no_commit = TaskMetadata {
+            done_provenance: None,
+            ..cross_crate_meta("3")
+        };
+
+        let msg = h2_inert_skip_breadcrumb(&inert, &[&cross])
+            .expect("the pre-done hook's one cross-crate task is reported");
+        assert!(
+            msg.contains("skipped for 1 cross-crate task(s)") && msg.contains("not a clean result"),
+            "got {msg:?}",
+        );
+        assert!(
+            h2_inert_skip_breadcrumb(&inert, &[&cross, &single_crate, &no_commit, &cross])
+                .expect("a sweep with cross-crate tasks is reported")
+                .contains("skipped for 2 cross-crate task(s)"),
+        );
+        assert_eq!(
+            h2_inert_skip_breadcrumb(&inert, &[&single_crate, &no_commit]),
+            None
+        );
+        assert_eq!(h2_inert_skip_breadcrumb(&live, &[&cross]), None);
     }
 
     /// Pins the empty-files short-circuit at `p5_phantom_done.rs:215`.
