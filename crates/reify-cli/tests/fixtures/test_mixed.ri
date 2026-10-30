@@ -1,7 +1,13 @@
 // CLI test fixture: three @test structures with mixed outcomes.
-//   TestPass     — satisfied constraint (PASS)
-//   TestFail     — violated constraint  (FAIL)
-//   TestIndet    — auto param           (INDETERMINATE)
+//   TestPass     — satisfied constraint      (PASS)
+//   TestFail     — violated constraint       (FAIL)
+//   TestIndet    — run-dependent Undef input (INDETERMINATE)
+// TestIndet's `z` is Undef because `divisor` is zero; change `divisor` and
+// the constraint resolves.
+//
+// This file must contain no `auto` param. `reify test` resolves autos, so an
+// auto in TestIndet would be solved and its verdict would stop being
+// Indeterminate.
 // Used by test_command_on_mixed_file_shows_summary.
 
 @test structure TestPass {
@@ -15,6 +21,7 @@
 }
 
 @test structure TestIndet {
-    param z: Length = auto
-    constraint z > 0 && z < 10mm
+    param divisor: Int = 0
+    let z = 1mm / divisor
+    constraint z > 0.1mm && z < 1mm
 }
