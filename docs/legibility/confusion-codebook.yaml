@@ -2710,8 +2710,15 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: After each CEILING outcome the session fell back to computing remaining rotation seconds with repeated Bash calls (x4) rather than a different wait strategy, which is the redundant manual-polling pattern this entry describes.
+  - date: '2026-10-13'
+    project: reify
+    session: 3c763f58-48b2-40d4-95ec-e1902b469cce
+    origin_phase: ops
+    manifested_phase: ops
+    note: watcher-rearm.sh hit its bounded CEILING (exit 124) three times. Around those waits the agent re-polled get_pending_escalations x4 and recomputed remaining seconds with a separate `date` Bash x4. Only the last re-arm was adapted to the remaining time. The 124 outcomes were declared designed outcomes, so the match is moderate.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260730-5
   title: Cross-repo escalation adjudicated together but attribution diverged, needing later correction
   severity: medium
@@ -3695,8 +3702,15 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The foreground watcher-rearm.sh invocation exited 137 (SIGKILL) at turn 110, and the session then continued retrying the same foreground bounded-wait form instead of switching to a background watcher.
+  - date: '2026-10-03'
+    project: reify
+    session: d10c5d20-b6cd-41e7-b712-3803ed00d48e
+    origin_phase: ops
+    manifested_phase: ops
+    note: Foreground watcher-rearm.sh with --timeout 1200 and a 1260000ms Bash timeout exited 137, the same signature as the entry. The digest does not show whether the agent then switched to a background wait.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260722-3
   title: Watcher script path resolved relative to target project cwd instead of dark-factory tooling root
   severity: medium
@@ -4632,8 +4646,15 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Bash x3 re-issued the identical watcher-rearm.sh command (--level 1 --timeout 3600) after each run hit the script''s own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING), matching the bounded-rearm-re-issued-after-ceiling pattern.'
+  - date: '2026-10-10'
+    project: reify
+    session: f2a54ad9-0b8e-44d7-a10e-01bc2dc963ff
+    origin_phase: ops
+    manifested_phase: ops
+    note: 'The identical watcher-rearm.sh --level 1 --timeout 3600 command was issued 4 times. The first returned exit 124 with WATCHER_REARM_OUTCOME: CEILING, and a later call ended in exit 144. No change of approach is visible between calls. The evidence does not show whether the repeats were an intended re-arm loop or a blind retry.'
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260726-8
   title: Warm-lane .task/plan.json symlink resolves to empty/unreadable target with no error surfaced
   severity: medium
@@ -9801,8 +9822,21 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Agent called nonexistent tools read_file and glob_search instead of Read/Glob, producing 'No such tool available' errors.
+  - date: '2026-10-04'
+    project: reify
+    session: 94f2d737-155a-40f1-85de-f9c07451ee36
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called non-existent grep_search tool twice (turns 17 and 19) instead of the harness's Grep tool, getting 'No such tool available'.
+  - date: '2026-10-04'
+    project: reify
+    session: b1a6047f-8b0f-4760-b652-d083a233bfc1
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called grep_search (nonexistent tool) at turns 17, 19 and again embedded it in StructuredOutput tool_calls at turn 54, instead of the harness's Grep tool.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260918-12
   title: add_memory MCP call times out and is retried with an identical payload, risking a duplicate write
   severity: medium
@@ -9842,6 +9876,7 @@ entries:
     note: 'mcp__escalation__get_pending_escalations({compact: true, level: 2}) timed out and was re-issued 4x with an identical payload, with no change of strategy.'
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260901-15
   title: add_memory content rejected because the model's own tool-call envelope markup leaked into the payload string
   severity: medium
@@ -9948,8 +9983,21 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'The escalation watcher sent mcp__escalation__get_task_escalations with an empty value ("status": ,). The tool input failed JSON parsing, the same class as the earlier malformed-JSON tool call, though on an MCP tool instead of Read.'
+  - date: '2026-10-28'
+    project: reify
+    session: 8720d473-4314-4ebd-bae6-4a7870ac956c
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Same malformed-JSON tool-call class: the escalation get_task_escalations call was sent with an empty value for the `status` key (`"status": ,`), so the input failed to parse. The Read-limit entry involved a different tool and a different malformed field.'
+  - date: '2026-10-25'
+    project: reify
+    session: eb63e51e-67dc-4799-93f4-00e43f321245
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'The watcher sent mcp__escalation__get_task_escalations with an empty value for an optional field ("status": ,). The input was invalid JSON and failed InputValidationError. This is the same class as the Read call with a malformed argument: an argument was dropped or left blank while the JSON was being built. The fit is partial, since that entry concerns the Read tool''s limit parameter. A later retry is not shown in the digest.'
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -10083,7 +10131,7 @@ entries:
 - id: entry-cand-20260901-16
   title: Background Bash wait command for async merge-status polling is killed, then replacement Monitor watch needs repeated manual re-arms for the same event
   severity: medium
-  status: open
+  status: fixed
   origin_phase: unknown
   manifested_phase: merge
   sightings:
@@ -10136,6 +10184,7 @@ entries:
     run_id: census-reify-20261022
     as_of_sha: null
     ticket: tkt_0RW309CQ46Y4XMV82SNCC58XRQ
+  fixed_at_sha: 77df97265253c514ebd4fa0ef77361aafebeb929
 - id: entry-cand-20260803-1
   title: Background grep over warm-lane tree runs away unbounded, requires manual pkill
   severity: medium
@@ -10326,8 +10375,21 @@ entries:
     origin_phase: unknown
     manifested_phase: review
     note: Agent called hallucinated generic tool names read_file and git_log, which are absent from its toolset (both returned 'No such tool available'), during a verification request on mcp_wire.rs.
+  - date: '2026-10-08'
+    project: reify
+    session: b2c5f99e-7763-4164-a203-62b9bbec770d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Hallucinated generic tool names grep_search and git_log, absent from the actual toolset, produced 'No such tool available' errors.
+  - date: '2026-10-04'
+    project: reify
+    session: aa67e91a-ead1-4861-b8de-725b2034f42d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Agent invoked grep_search and git_log, tool names absent from its actual toolset (tool_use_error: No such tool available), instead of Grep/Bash git log.'
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260914-18
   title: Safety justification for a timeout ceiling bump assumes a guard env var applies uniformly across roles, missing role-scoped gating logic
   severity: medium
@@ -10636,8 +10698,15 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: A Grep at turn 29 targeted an assumed test-file path under crates/reify-compiler/tests/ that does not exist. The turn-346 self-correction places the file under tests/harness_type_checking/, so the wrong assumed subdirectory was corrected much later. The entry describes two consecutive not-found errors, but this digest shows only one, so the match is partial. The digest has no phase cues, so both phases are unknown.
+  - date: '2026-10-05'
+    project: reify
+    session: 1bdc9d7c-87ec-42d4-beb8-73bf95e834f4
+    origin_phase: implement
+    manifested_phase: implement
+    note: At turn 49 the agent ran Grep on a guessed test file, crates/reify-compiler/tests/money_arithmetic_tests.rs, which does not exist. Further not-found signals at turns 34, 69 and 82 suggest repeated wrong path guesses, but the digest does not show their content, so the match is tentative.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -10925,8 +10994,15 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The digest lists the supervisor's injected watcher briefing (rotation limits, DARK_FACTORY_ROOT, rearm command) under 'User Corrections' although it is not a user correction.
+  - date: '2026-10-29'
+    project: reify
+    session: 0360cc5b-fe4c-409d-b286-80af0b92dd4f
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The digest lists the injected /team spawn command (turn 3) and the esc-8739-2 handoff message (turn 285) under User Corrections. Neither is a correction of the agent's behavior. They are injected task context, the same kind of mislabeling as the injected escalation notification in this entry.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260813-11
   title: Agent assumes earlier &&-chained command executed despite the whole chain being rejected upfront by an eval syntax error
   severity: medium
@@ -11164,6 +11240,7 @@ entries:
     note: 'Path guesses under .worktrees/8363 and reify/crates/reify-audit/src returned not-found repeatedly (turns 35, 117, 121), while the real worktrees were at warm-lanes/worktrees/_lane-29 and reify-adhoc/8363. Partial match: the digest shows path guessing against an unexpected worktree layout, not the same nesting. Moderate confidence.'
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -11726,8 +11803,33 @@ entries:
     origin_phase: unknown
     manifested_phase: implement
     note: Agent called glob_search, grep_search and read_file, none of which exist in the harness, instead of Glob/Grep/Read. Same hallucinated-tool-name pattern as this entry.
+  - date: '2026-10-08'
+    project: reify
+    session: b2c5f99e-7763-4164-a203-62b9bbec770d
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Agent called non-existent grep_search (twice) instead of the harness''s Grep tool; also called non-existent git_log. Tool errors: ''No such tool available''.'
+  - date: '2026-10-02'
+    project: reify
+    session: 7f1d2e80-56f0-4c0d-87ee-6a7cd1720e5a
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called non-existent grep_search and git_log tools (turns 17, 19, 21, 23) instead of the harness's Grep tool and Bash git; verification_complete at turn 76 is also an unavailable tool name.
+  - date: '2026-10-04'
+    project: reify
+    session: f8ce5916-97bd-4b1a-9fbe-3ad805818fa8
+    origin_phase: unknown
+    manifested_phase: implement
+    note: Agent called grep_search and git_log, tools that do not exist in the harness, instead of Grep and Bash git. The calls failed with 'No such tool available' and the failures repeated across turns 17, 19, 21 and 23.
+  - date: '2026-10-04'
+    project: reify
+    session: 01b76bb9-bf51-4950-8c38-fdc9309e1b40
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Agent called non-existent tools grep_search and git_log instead of the harness's Grep and Bash/git tools; both returned 'No such tool available' during a verification request.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260812-11
   title: fused-memory resolve_ticket times out repeatedly, retried with varying ticket IDs instead of diagnosing a systemic failure
   severity: medium
@@ -11819,8 +11921,15 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Same failure family: fused-memory resolve_ticket times out repeatedly and is retried without diagnosing the failure (turns 90 and 97). It differs from the entry, which describes varying ticket IDs; this digest reuses the same ticket ID and only adds a timeout_seconds parameter. The session has no phase evidence, so phases are unknown.'
+  - date: '2026-10-28'
+    project: reify
+    session: 587ce167-9900-4787-9c9e-36812fe30f4c
+    origin_phase: unknown
+    manifested_phase: ops
+    note: mcp__fused-memory__resolve_ticket timed out with 'The operation timed out.' This digest shows only one timeout, so the repeated-retry behaviour in the entry is not evidenced here.
   last_seen_runs:
   - census-reify-20261022
+  - census-reify-20261030
 - id: entry-cand-20260906-9
   title: add_memory content payload leaks raw MCP tool-call envelope markup, triggering rejection
   severity: medium
@@ -12155,6 +12264,30 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The first error (turn 204) is a python3 read of .task/plan.json, which does not exist at the path the command resolved to. The digest does not show the phase where the bootstrap artifact went missing.
+  - date: '2026-07-30'
+    project: reify
+    session: 17d028ae-a9be-4a51-9332-f6b32a8f6a66
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'ls -la /home/leo/src/warm-lanes/.task-meta/_lane-48/ ... cat .../iterations.jsonl -> Exit code 2; turn 30: ''no such file or directory'' / ''does not exist''; turn 49: ''no such file or directory'''
+  - date: '2026-08-01'
+    project: reify
+    session: 9069f552-8389-44fb-9fe4-39a9a3050691
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'Bash("ls /home/leo/src/warm-lanes/.task-meta/_lane-45/ ...") -> Exit code 1; Bash("ls -la /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-45/; ... wc -l .../iterations.jsonl") -> Exit code 1, then LS: 6 entries (agent_session.json, metadata.json, plan.json, plan.lock, reviews, verdicts)'
+  - date: '2026-07-22'
+    project: reify
+    session: 4e6ca5c8-6510-4bc0-9384-c5440a230ef2
+    origin_phase: unknown
+    manifested_phase: implement
+    evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/.task-meta/_lane-40/iterations.jsonl"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-40.'
+  - date: '2026-09-02'
+    project: reify
+    session: 1930e554-9669-4a0f-b464-709b16bbda62
+    origin_phase: merge
+    manifested_phase: ops
+    evidence_quote: Read(.../worktrees/_lane-13/.task/metadata.json) -> File does not exist; Bash(tail .../worktrees/_lane-13/.task/iterations.jsonl) -> No such file or directory; Bash(ls .../worktrees/_lane-13/.task/reviews/) -> exit 2
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -12385,6 +12518,173 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory'
+- id: entry-cand-20261010-3
+  title: Skill location guessed under user-level ~/.claude/skills when the skill is project-scoped or elsewhere
+  severity: low
+  severity_reason: 'The cost is contained: one failed lookup, after which the agent can fall back on the named `scripts/land.sh` and `/merge-queue` mechanisms.'
+  status: open
+  origin_phase: ops
+  manifested_phase: ops
+  first_seen_run: census-reify-20261030
+  last_seen_runs:
+  - census-reify-20261030
+  finding_key: fk-9c36e1e93a30
+  finding_area: repo
+  finding_anchor: CLAUDE.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-10-10'
+    project: reify
+    session: 24720787-f969-4d31-80bb-9f212533b2ac
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'ls /home/leo/.claude/skills/merge-queue/ && sed -n 1,140p /home/leo/.claude/skills/merge-queue/SKILL.md -> [exit 2] ls: cannot access ''/home/leo/.claude/skills/merge-queue/'': No such file or directory'
+  filed_tickets:
+  - ticket: tkt_0RWCTNTDD53A2NJ735C8EB501K
+    project_root: /home/leo/src/reify
+    run_id: census-reify-20261030
+    finding_key: fk-9c36e1e93a30
+    task_id: 9587
+    resolution: created
+    step: curator
+- id: entry-cand-20260726-13
+  title: Escalation-watcher rotation script lives outside the target project root and requires an explicit env var, not cwd inference
+  severity: low
+  severity_reason: The cost is wasted search turns for a watcher agent, and the fix sits in dark-factory's rotation prompt or the script, outside this tree.
+  status: open
+  origin_phase: ops
+  manifested_phase: ops
+  first_seen_run: census-reify-20261030
+  last_seen_runs:
+  - census-reify-20261030
+  finding_key: fk-eaa27e3e892f
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-cross-repo-invocation
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-07-26'
+    project: reify
+    session: 0f47ba75-4134-4691-a92c-b55103dab229
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory'
+  - date: '2026-07-22'
+    project: reify
+    session: 6bdbd840-a2c1-4cc1-8f97-17ea5033632d
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'turn 61: head: cannot open ''/home/leo/src/reify/scripts/watcher-rearm.sh'' for reading: No such file or directory | turn 65: echo "DARK_FACTORY_ROOT=$DARK_FACTORY_ROOT" -> DARK_FACTORY_ROOT= (empty), followed by a 2-minute timed-out root find that only turned up /tmp/wt-step11-check and /tmp/wt-base-check copies'
+  - date: '2026-07-22'
+    project: reify
+    session: 5adc47e7-acf0-4b4b-957c-e7623a5733b5
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'ls: cannot access ''/home/leo/dark-factory/scripts/watcher-rearm.sh'': No such file or directory'
+  - date: '2026-07-16'
+    project: reify
+    session: 618909a5-94dc-46ba-94a2-e04c3237ae7d
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600 -> Exit code 127
+
+      /bin/bash: line 1: scripts/watcher-rearm.sh: No such file or directory'
+  filed_tickets:
+  - ticket: null
+    project_root: /home/leo/src/reify
+    run_id: census-reify-20261030
+    finding_key: fk-eaa27e3e892f
+    task_id: 9432
+    resolution: existing
+    step: semantic
+- id: entry-cand-20260716-5
+  title: Write tool unavailable in autonomous escalation-watcher session — memory-write attempt lost
+  severity: low
+  severity_reason: 'The cost is contained: a distilled lesson can be lost, but task code and merges are unaffected.'
+  status: open
+  origin_phase: ops
+  manifested_phase: ops
+  first_seen_run: census-reify-20261030
+  last_seen_runs:
+  - census-reify-20261030
+  finding_key: fk-008cb070280b
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-not-provisioned
+  finding_tags:
+  - h10
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-07-16'
+    project: reify
+    session: 66f21483-9eda-4adc-b83b-b528b0af702d
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.'
+  - date: '2026-07-05'
+    project: reify
+    session: b5a9cf5f-9acd-4bf9-8a6c-5b401ac9e9b2
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'Write({"content": "---\nname: feedback_blocked_status_can_lag_actual_landing..."}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>'
+  - date: '2026-07-12'
+    project: reify
+    session: b8c95b4a-8efb-459e-9433-19717d995f50
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'Write({"content": "---\nname: procedural_escalation_watcher_exclude_id_prevents_initial_scan_busyloop..."}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>'
+- id: entry-cand-20260705-4
+  title: StructuredOutput double-wraps array under a key matching the schema's field name
+  severity: low
+  severity_reason: The schema validator rejects the malformed output at tool-call time, so the model can retry. The cost is a wasted turn, not a wrong change landing.
+  status: open
+  origin_phase: decompose
+  manifested_phase: decompose
+  first_seen_run: census-reify-20261030
+  last_seen_runs:
+  - census-reify-20261030
+  finding_key: fk-7fb018091f5a
+  finding_area: repo
+  finding_anchor: slug:structuredoutput-array-field-double-wrap
+  finding_tags:
+  - h10
+  - h12
+  - kind:confusion
+  supersedes: []
+  sightings:
+  - date: '2026-07-05'
+    project: reify
+    session: 3b5f3598-706c-4ab5-bc92-e4508f3b5b45
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: 'StructuredOutput({"tasks": {"tasks": [{"files": [], "id": "4834"}, {"files": [], "id": "4993"}]}}) -> Output does not match required schema: /tasks: must be array'
+  - date: '2026-07-04'
+    project: reify
+    session: f537786c-9114-4fb5-a104-6fea1ba670bf
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: 'StructuredOutput({"tasks": {"tasks": [{"files": [], "id": "4834"}]}}) -> Output does not match required schema: /tasks: must be array'
+  - date: '2026-07-12'
+    project: reify
+    session: 9b42a6f6-a5c3-4d04-9c45-472def0003a4
+    origin_phase: decompose
+    manifested_phase: decompose
+    evidence_quote: 'StructuredOutput({"tasks": {"tasks": [{"files": [], "id": "5023"}, ...]}}) -> Output does not match required schema: /tasks: must be array'
+  filed_tickets:
+  - ticket: tkt_0RWCTNTZB5BJ3A0K7BEGWKXJB4
+    project_root: /home/leo/src/reify
+    run_id: census-reify-20261030
+    finding_key: fk-7fb018091f5a
+    task_id: 9588
+    resolution: created
+    step: curator
 candidates:
 - id: cand-20260715-1
   title: Autonomous escalation watcher in non-DF project loses script context and env setup
@@ -14725,7 +15025,7 @@ candidates:
   cause: 'When asked to tag a batch of items (here, tasks) with a schema whose top-level array field is itself named "tasks", the model reifies the batch concept twice, emitting {"tasks": {"tasks": [...]}} instead of {"tasks": [...]} — the field name collides with the natural noun for the collection being processed, producing a spurious extra wrapper object that fails schema validation (`/tasks: must be array`).'
   area: structured-output/tool-schema
   first_seen: '2026-07-05'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-05'
     project: reify
@@ -14733,12 +15033,20 @@ candidates:
     origin_phase: decompose
     manifested_phase: decompose
     evidence_quote: 'StructuredOutput({"tasks": {"tasks": [{"files": [], "id": "4834"}, {"files": [], "id": "4993"}]}}) -> Output does not match required schema: /tasks: must be array'
+  finding_key: fk-7fb018091f5a
+  finding_area: repo
+  finding_anchor: slug:structuredoutput-array-field-double-wrap
+  finding_tags:
+  - h10
+  - h12
+  - kind:confusion
+  promoted_to: entry-cand-20260705-4
 - id: cand-20260705-5
   title: Escalation-watcher session calls Write tool that isn't enabled in its context
   cause: The autonomous escalation-watcher role runs with a restricted tool set that excludes Write, but the agent's learned memory-write workflow (Write a feedback/*.md file) doesn't check role-capability before invoking it, so the mismatch only surfaces as a tool_error at call time rather than being anticipated from the dispatched role's declared toolset.
   area: escalation-watcher/memory-write
   first_seen: '2026-07-05'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-05'
     project: reify
@@ -14746,6 +15054,14 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Write({"content": "---\nname: feedback_blocked_status_can_lag_actual_landing..."}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>'
+  finding_key: fk-008cb070280b
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-not-provisioned
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260716-5
+  promoted_to: entry-cand-20260716-5
 - id: cand-20260723-11
   title: Bash tool flattens multi-line heredoc-style script and injects wrapper text before eval, producing misleading syntax errors
   cause: 'The agent wrote a valid multi-line bash script (variable assignment, guard clause with `||{...}`, then several `echo`/`sqlite3` lines). When executed, the underlying shell wrapper appears to join the lines via `eval` without preserving line/statement separators, and an unrelated instrumentation token (''skim file'') is spliced into the middle of the `ls -la "$DB"` invocation. The resulting flattened one-liner has a `}` immediately followed by `echo` with no `;` or newline between them, which bash''s reserved-word parsing rejects. The surfaced error (''eval: line 1: syntax error near unexpected token `echo`'') looks like the agent''s own bash syntax is wrong, when the actual defect is in how the harness serializes/executes multi-line Bash tool commands — a tooling artifact indistinguishable from an authored bug from the agent''s vantage point.'
@@ -14799,7 +15115,7 @@ candidates:
   cause: 'The rotation prompt for an autonomous L1 escalation watcher states only the target project''s root and queue dir (e.g. "Project root: /home/leo/src/reify ... Escalation queue: /home/leo/src/reify/data/escalations") with no pointer to where the watcher-rearm tooling itself lives. The agent first hit ''no such file or directory'' assuming the script was relative to the stated project root, then had to brute-force search common dark-factory install locations plus a full filesystem `find /`, which timed out after 2 minutes. After finally locating scripts/watcher-rearm.sh under /home/leo/src/dark-factory, `cd`-ing into that directory before invoking it was still insufficient — the script hard-requires the DARK_FACTORY_ROOT env var to be explicitly exported rather than inferring it from cwd, producing a second failure before the agent corrected the invocation on a later retry.'
   area: escalation-watcher tooling / cross-repo script invocation contract
   first_seen: '2026-07-26'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-26'
     project: reify
@@ -14807,6 +15123,14 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'watcher-rearm.sh: DARK_FACTORY_ROOT must be set to a valid directory'
+  finding_key: fk-eaa27e3e892f
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-cross-repo-invocation
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  promoted_to: entry-cand-20260726-13
 - id: cand-20260707-5
   title: Restricted-context agent uses Write to persist a memory entry instead of add_memory
   cause: Running in a toolset-restricted context (autonomous escalation-watcher) where the Write tool is disabled, the agent still attempted to persist a distilled memory finding by constructing a markdown file with auto-memory-style frontmatter (name/description/metadata) and calling Write, rather than using the fused-memory MCP add_memory tool that is actually available in this context. The agent appears to have pattern-matched on the auto-memory file-based persistence convention without checking which persistence tool is actually enabled for its current role/toolset.
@@ -15191,7 +15515,7 @@ candidates:
   cause: The rotation-injected system prompt tells the agent to run as an autonomous escalation watcher for a target project (reify) and gives the project root and escalation queue path, but never supplies DARK_FACTORY_ROOT or the location of the harness tooling (watcher-rearm.sh). The agent assumed the script was co-located with the target project's own scripts/ dir, got 'No such file or directory', then had to run an unbounded filesystem-wide `find` (which itself timed out at 2 minutes) before discovering the script only exists in worktree checkouts and the dark-factory repo proper.
   area: escalation-watcher / cross-repo tooling
   first_seen: '2026-07-22'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-22'
     project: reify
@@ -15199,6 +15523,15 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'turn 61: head: cannot open ''/home/leo/src/reify/scripts/watcher-rearm.sh'' for reading: No such file or directory | turn 65: echo "DARK_FACTORY_ROOT=$DARK_FACTORY_ROOT" -> DARK_FACTORY_ROOT= (empty), followed by a 2-minute timed-out root find that only turned up /tmp/wt-step11-check and /tmp/wt-base-check copies'
+  finding_key: fk-eaa27e3e892f
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-cross-repo-invocation
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260726-13
+  promoted_to: entry-cand-20260726-13
 - id: cand-20260712-1
   title: Escalation watcher re-arm loop repeatedly refires on an already-seen pending escalation until --exclude-id is added
   cause: The bounded L1 escalation watcher was re-armed 12 times without an --exclude-id filter, consistent with it waking instantly on a pending escalation (esc-5179-2) it had already surfaced rather than waiting out its 540s window; the agent then switched to passing --exclude-id esc-5179-2 for the remaining 13 re-arms to suppress the repeat wake.
@@ -15943,7 +16276,7 @@ candidates:
   cause: Task agent dispatched into a pre-warmed lane worktree (/warm-lanes/worktrees/_lane-N) expects .task/plan.json to exist at a fixed path, but warm-lane worktrees are provisioned ahead of task assignment and the plan file isn't seeded into them before/at claim, so the agent's read fails with file-not-found.
   area: warm-lane worktree provisioning / task dispatch
   first_seen: '2026-07-20'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-20'
     project: reify
@@ -15951,6 +16284,13 @@ candidates:
     origin_phase: ops
     manifested_phase: implement
     evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-12/.task/plan.json"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-12.'
+  finding_key: fk-15bcb91dea2a
+  finding_area: repo
+  finding_anchor: slug:warm-lane-missing-task-plan-json
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260728-52
 - id: cand-20260731-12
   title: Prior-round suggestion list conflated with resolved list
   cause: When adjudicating whether a current review suggestion duplicates a concern from an earlier amendment round, an agent can wrongly treat mere presence in the 'prior suggestions raised' list as proof the concern was settled. That list records everything raised, including items that were only deferred to a follow-up task and remain open — so without an explicit instruction to distinguish 'actually resolved' from 'merely raised before', the agent risks suppressing a still-valid suggestion as already-handled.
@@ -16015,7 +16355,7 @@ candidates:
   cause: The rotation-watcher system prompt directs the agent to operate on a target project's escalation queue (reify) but never supplies the path to the dark-factory helper script (watcher-rearm.sh) needed to service it, forcing the agent to blind-guess across plausible dark-factory install locations (/home/leo/dark-factory, /home/leo/src/dark_factory, /home/leo/src/dark-factory) before finding the right one.
   area: escalation-watcher tooling / cross-project script discovery
   first_seen: '2026-07-22'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-22'
     project: reify
@@ -16023,6 +16363,15 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'ls: cannot access ''/home/leo/dark-factory/scripts/watcher-rearm.sh'': No such file or directory'
+  finding_key: fk-eaa27e3e892f
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-cross-repo-invocation
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260726-13
+  promoted_to: entry-cand-20260726-13
 - id: cand-20260722-16
   title: watcher-rearm.sh requires DARK_FACTORY_ROOT with no upfront guidance
   cause: watcher-rearm.sh silently depends on the DARK_FACTORY_ROOT env var being pre-set, but nothing in the injected rotation-supervisor prompt or the script's own usage hints states this requirement — the agent only discovers it after a failed invocation (exit 2) and then has to infer the correct value from the script path it had just located by trial and error.
@@ -16185,7 +16534,7 @@ candidates:
   cause: Agent operating inside a warm-lane worktree (_lane-48) repeatedly probes for `.task-meta/<lane>/iterations.jsonl` and related files that don't exist at the assumed location, taking a tool error plus three separate 'not found' hits across turns 13, 30, and 49 before apparently giving up or working around it — consistent with task-meta being lane-keyed in a location the agent's path assumptions don't account for.
   area: warm-lanes/task-meta
   first_seen: '2026-07-30'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-30'
     project: reify
@@ -16193,6 +16542,15 @@ candidates:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'ls -la /home/leo/src/warm-lanes/.task-meta/_lane-48/ ... cat .../iterations.jsonl -> Exit code 2; turn 30: ''no such file or directory'' / ''does not exist''; turn 49: ''no such file or directory'''
+  finding_key: fk-e536a9dd5f09
+  finding_area: repo
+  finding_anchor: docs/notes/warm-lane-audit-runbook.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  adjudicated_with: cand-20260924-7
+  promoted_to: entry-cand-20260924-8
 - id: cand-20260728-21
   title: Task description cites stale component directory path
   cause: Task metadata referenced a component's file path (gui/src/components/FeaModeToolbar.tsx) that had since moved to a different directory (gui/src/viewport/FeaModeToolbar.tsx); the path was never updated after the file moved, causing the implementing agent to hit a file-not-found error during initial repo scoping before self-correcting to the real location.
@@ -16257,7 +16615,7 @@ candidates:
   cause: Resumed orchestrated-task agent (post usage-limit interruption) tried multiple candidate paths for the lane's task-meta directory (`/home/leo/src/warm-lanes/.task-meta/_lane-45/`, then `/home/leo/src/warm-lanes/worktrees/.task-meta/_lane-45/`) and got exit code 1/not-found before locating the actual metadata (agent_session.json, plan.json, iterations.jsonl, reviews, verdicts) — the mapping from a lane worktree's cwd to its task-meta directory isn't derivable from inside the worktree itself, forcing guess-and-check.
   area: warm-lanes-worktree-layout
   first_seen: '2026-08-01'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-08-01'
     project: reify
@@ -16265,6 +16623,15 @@ candidates:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'Bash("ls /home/leo/src/warm-lanes/.task-meta/_lane-45/ ...") -> Exit code 1; Bash("ls -la /home/leo/src/warm-lanes/worktrees/.task-meta/_lane-45/; ... wc -l .../iterations.jsonl") -> Exit code 1, then LS: 6 entries (agent_session.json, metadata.json, plan.json, plan.lock, reviews, verdicts)'
+  finding_key: fk-e536a9dd5f09
+  finding_area: repo
+  finding_anchor: docs/notes/warm-lane-audit-runbook.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  adjudicated_with: cand-20260924-7
+  promoted_to: entry-cand-20260924-8
 - id: cand-20260730-18
   title: watcher-rearm.sh fails without inherited DARK_FACTORY_ROOT
   cause: The escalation-watcher session's shell environment does not have DARK_FACTORY_ROOT set by default, so the first invocation of watcher-rearm.sh exits 2 purely on a missing env var; the agent must discover this via a failed run before exporting it manually and retrying.
@@ -16744,7 +17111,7 @@ candidates:
   cause: Agent operating under an injected 'autonomous escalation watcher' system role has a restricted toolset that excludes the Write tool, but attempts to persist a memory-shaped document (frontmatter name/description) via Write anyway instead of using the provisioned mcp__fused-memory__add_memory tool, producing a hard tool-not-available error mid-loop
   area: tooling
   first_seen: '2026-07-09'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-09'
     project: reify
@@ -16752,6 +17119,13 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.'
+  finding_key: fk-28a44f8e0ef2
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-disabled
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260709-8
 - id: cand-20260728-25
   title: Agent runs full-scope/full-profile verify instead of task-scoped verify
   cause: Orchestrated task agent invoked scripts/verify.sh with unscoped flags ('all --profile both --scope all', 3600s timeout) rather than limiting verification to the task's touched files/packages, prompting a human to reject the tool call mid-run and tell the agent to stop and wait for guidance.
@@ -17634,7 +18008,7 @@ candidates:
   cause: 'When asked to emit a structured result whose top-level schema key is a plural noun matching the semantic collection being produced (e.g. a `tasks` array), the agent sometimes wraps the array one level too deep as `{"tasks": {"tasks": [...]}}` instead of `{"tasks": [...]}`, failing schema validation (`/tasks: must be array`) and forcing a retry.'
   area: structured-output
   first_seen: '2026-07-04'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-04'
     project: reify
@@ -17648,12 +18022,21 @@ candidates:
     origin_phase: decompose
     manifested_phase: decompose
     evidence_quote: 'StructuredOutput({"tasks": {"tasks": [{"files": [], "id": "5023"}, ...]}}) -> Output does not match required schema: /tasks: must be array'
+  finding_key: fk-7fb018091f5a
+  finding_area: repo
+  finding_anchor: slug:structuredoutput-array-field-double-wrap
+  finding_tags:
+  - h10
+  - h12
+  - kind:confusion
+  adjudicated_with: cand-20260705-4
+  promoted_to: entry-cand-20260705-4
 - id: cand-20260707-7
   title: Escalation-watcher falls back to filesystem Write when persisting a memory finding, tool disabled in role's context
   cause: Agent running as an autonomous escalation watcher (restricted tool set) tried to persist a distilled finding (a pool-storage L2/L1 orphan note formatted with memory-entry frontmatter) via the generic `Write` tool instead of the fused-memory `add_memory`/`add_episode` API. The role's context does not enable `Write`, producing a hard tool-not-available error mid-task — indicating the agent conflated 'persist this insight' with 'write a file to disk' rather than routing through the memory MCP surface its role is scoped to.
   area: tooling / memory-write-routing
   first_seen: '2026-07-07'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-07'
     project: reify
@@ -17661,6 +18044,13 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Write({"content": "---\nname: project_pool_storage_L2_promotion_orphans_after_L1_autoresolve..."}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>'
+  finding_key: fk-28a44f8e0ef2
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-disabled
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260709-8
 - id: cand-20260707-8
   title: Foreground Bash tool timeout kills escalation-watcher before its internal --timeout elapses
   cause: Agent launched the L1 escalation watcher subprocess with --timeout 540 via a foreground Bash call; the harness's own short default tool timeout fires first, killing the watcher (exit 124) long before its designed wait-slice completes, so the watcher never gets a chance to observe or report escalations.
@@ -17800,7 +18190,7 @@ candidates:
   cause: Lane/worktree provisioning does not carry the task's plan.json (or any task-meta) into the worktree path the dispatched agent probes; the agent finds .task/ and the sibling .task-meta/<lane>/ both empty and has no artifact to bootstrap from.
   area: warm-lane task-meta provisioning
   first_seen: '2026-07-20'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-20'
     project: reify
@@ -17808,6 +18198,13 @@ candidates:
     origin_phase: ops
     manifested_phase: implement
     evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-9/.task/plan.json"}) -> File does not exist. ... ls -la .task/ ... ---TASK-META--- ---PARENT--- (all empty except claude-config-5260)'
+  finding_key: fk-15bcb91dea2a
+  finding_area: repo
+  finding_anchor: slug:warm-lane-missing-task-plan-json
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260728-52
 - id: cand-20260728-32
   title: Unverified subagent claim about tool semantics nearly entered downstream spec
   cause: A background/sub-agent asserted API behavior (that eval returns undef) without empirical verification; the false claim was caught only because a second agent independently probed the tool and cross-checked against source, then flagged it as refuted before it could propagate to the implementer.
@@ -17878,7 +18275,7 @@ candidates:
   cause: Agent conflated the interactive Claude Code auto-memory system (file-based Write to a memory directory) with the fused-memory MCP tool surface that autonomous/dispatched escalation-watcher agents actually have. Nothing in the supervisor-injected role prompt ('You are running as an autonomous escalation watcher...') flagged that Write is disabled in this context, so the agent reached for the wrong persistence mechanism when trying to record a note about a pending L2 escalation.
   area: memory/tooling
   first_seen: '2026-07-09'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-09'
     project: reify
@@ -17886,6 +18283,12 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.'
+  finding_key: fk-28a44f8e0ef2
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-disabled
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260715-7
   title: watcher-rearm.sh requires DARK_FACTORY_ROOT as an explicit env var, not inferred from cwd
   cause: Agent assumed `cd "$DARK_FACTORY_ROOT"` (or cd'ing to the dark-factory checkout) was sufficient context for scripts/watcher-rearm.sh to run; the script instead validates DARK_FACTORY_ROOT as a separately-required env var independent of cwd, and $DARK_FACTORY_ROOT wasn't actually set in the shell, so the first attempt resolved the relative script path against the wrong directory (exit 127) and the second attempt (correct cwd, still no env var) hit the script's own explicit guard (exit 2). Only the third attempt, passing DARK_FACTORY_ROOT= inline, succeeded.
@@ -17952,7 +18355,7 @@ candidates:
   cause: Orchestrated-task agent is placed in a warm-lane worktree whose .task/plan.json was not carried over from provisioning, so the agent's own working directory contains no task metadata to read even though cwd is correct
   area: warm-lane-provisioning
   first_seen: '2026-07-25'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-25'
     project: reify
@@ -17960,6 +18363,13 @@ candidates:
     origin_phase: ops
     manifested_phase: implement
     evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-7/.task/plan.json"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-7.'
+  finding_key: fk-15bcb91dea2a
+  finding_area: repo
+  finding_anchor: slug:warm-lane-missing-task-plan-json
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260728-52
 - id: cand-20260727-27
   title: Heredoc commit-message body mangled by eval-wrapped Bash execution
   cause: The Bash tool appears to route the command through an `eval`-style re-parse before the shell executes it, so a `git commit -m "$(cat <<'EOF' ... EOF)"` heredoc — valid as literal bash — gets flattened/re-tokenized first and fails with exit 127 and a generic '`(` unexpected' syntax error. The agent has no direct signal that the wrapper (not its own command) is the fault, so it reads as a bash-syntax mistake rather than an execution-environment quirk.
@@ -18216,7 +18626,7 @@ candidates:
   cause: The autonomous escalation-watcher role (injected via rotation-limit system prompt) does not have the Write tool enabled, but the agent — mid-loop, trying to save a procedural_knowledge memory entry it had drafted about its own exclude-id workaround — called Write anyway and got a hard tool-use error, losing the drafted insight instead of persisting it through an enabled channel (e.g. add_memory).
   area: tool-availability / role-scoped tool restriction
   first_seen: '2026-07-12'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-12'
     project: reify
@@ -18224,6 +18634,14 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: 'Write({"content": "---\nname: procedural_escalation_watcher_exclude_id_prevents_initial_scan_busyloop..."}) -> <tool_use_error>Error: No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.</tool_use_error>'
+  finding_key: fk-008cb070280b
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-not-provisioned
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260716-5
+  promoted_to: entry-cand-20260716-5
 - id: cand-20260712-4
   title: Escalation watcher instant-fires on already-promoted L1 items, forcing manual exclude-id accumulation across repeated bounded-wait restarts
   cause: mcp__escalation__get_pending_escalations at level 1/2 kept returning already-promoted/permanently-pending escalations (called 8x and 7x), so each bounded-wait `escalation.watcher --level 1 --timeout 540` restart busyloop-exits instantly unless every previously-seen id is re-passed via --exclude-id; the agent had to hand-track and grow the exclude list across at least 3 separate invocations (4 ids -> 5 ids -> a different 3-id set), burning turns on bookkeeping the tool should have handled itself.
@@ -18451,7 +18869,7 @@ candidates:
   cause: Agent dispatched into a warm-lane worktree (/worktrees/_lane-42) attempted to Read .task/plan.json, an architect-phase artifact, but the file does not exist in that worktree despite memory context surfacing multiple other tasks' architect plan.json references, suggesting the warm-lane claim/provisioning path does not carry the task's plan.json into the claimed worktree.
   area: warm-lane worktree provisioning / task metadata handoff
   first_seen: '2026-07-19'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-19'
     project: reify
@@ -18459,6 +18877,13 @@ candidates:
     origin_phase: architect
     manifested_phase: unknown
     evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/_lane-42/.task/plan.json"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-42.'
+  finding_key: fk-15bcb91dea2a
+  finding_area: repo
+  finding_anchor: slug:warm-lane-missing-task-plan-json
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260728-52
 - id: cand-20260703-17
   title: Foreground deadline-check SIGKILL'd mid rotation-loop with no state checkpoint
   cause: The escalation-watcher's self-monitoring Bash command (computing remaining time against its own ROTATION_HOURS deadline) was killed with exit 137 partway through a long-running polling loop. Because the elapsed/handled counters live only in the agent's turn history and not in any external checkpoint, a mid-loop kill risks losing track of how much rotation budget has been consumed, and the agent has no signal distinguishing 'my deadline-check command was slow' from 'something external terminated my process out from under me'.
@@ -19800,7 +20225,7 @@ candidates:
   cause: Agent constructs a task-metadata path (.task-meta/<lane>/iterations.jsonl) assuming a directory layout adjacent to the worktrees root, but the actual cwd is the lane worktree itself and no such file/layout exists there — leading to repeated not-found lookups (4 in one session) rather than a single corrected read
   area: warm-lanes worktree task-meta path resolution
   first_seen: '2026-07-22'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-22'
     project: reify
@@ -19808,6 +20233,15 @@ candidates:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'Read({"file_path": "/home/leo/src/warm-lanes/worktrees/.task-meta/_lane-40/iterations.jsonl"}) -> File does not exist. Note: your current working directory is /home/leo/src/warm-lanes/worktrees/_lane-40.'
+  finding_key: fk-e536a9dd5f09
+  finding_area: repo
+  finding_anchor: docs/notes/warm-lane-audit-runbook.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  adjudicated_with: cand-20260924-7
+  promoted_to: entry-cand-20260924-8
 - id: cand-20260721-19
   title: Resolved-vs-deferred conflation in review-suggestion re-flag adjudication
   cause: When adjudicating whether a current review suggestion duplicates a prior-round one, the agent's default heuristic conflates 'appeared in a prior round' with 'was resolved' — but some prior suggestions were only deferred to a follow-up task and remain open, so matching on resemblance alone wrongly suppresses a suggestion that must still be emitted.
@@ -19903,7 +20337,7 @@ candidates:
   cause: Agent tried to persist a distilled feedback lesson (a warm-lane merge-verify lock-divergence finding) using the Write tool, following the interactive-session auto-memory convention of writing a markdown file with frontmatter, but the autonomous escalation-watcher agent class does not have the Write tool enabled in this context. The write failed outright and the finding was not captured through any fallback (e.g. add_memory), risking silent loss of a discovery right before the session's rotation-limit exit.
   area: memory persistence / agent-class tool provisioning
   first_seen: '2026-07-16'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-16'
     project: reify
@@ -19911,6 +20345,13 @@ candidates:
     origin_phase: unknown
     manifested_phase: ops
     evidence_quote: 'No such tool available: Write. Write exists but is not enabled in this context. Use one of the available tools instead.'
+  finding_key: fk-008cb070280b
+  finding_area: repo
+  finding_anchor: slug:escalation-watcher-write-tool-not-provisioned
+  finding_tags:
+  - h10
+  - kind:confusion
+  promoted_to: entry-cand-20260716-5
 - id: cand-20260728-47
   title: verify.sh scope-argument guesswork triggers repeated failed background launches
   cause: Agent invoked reify's scripts/verify.sh with a guessed CLI shape (--scope branch) inside a setsid/nohup background launch rather than confirming the script's accepted argument order; the job exited 64, forcing a second background launch attempt with a different argument arrangement before verify actually ran.
@@ -20081,7 +20522,7 @@ candidates:
   cause: Orchestrator's warm-lane worktree assignment/handoff does not guarantee .task/plan.json is present in the claimed worktree before the task agent starts, so the agent's own read of its task metadata (task_id, title, confirmation criteria) fails with FileNotFoundError, and the agent then thrashes rereading a task output file trying to recover its context.
   area: warm-lane worktree provisioning / orchestrator dispatch
   first_seen: '2026-07-28'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-07-28'
     project: reify
@@ -20089,12 +20530,18 @@ candidates:
     origin_phase: ops
     manifested_phase: implement
     evidence_quote: 'FileNotFoundError: [Errno 2] No such file or directory: ''.task/plan.json'''
+  finding_key: fk-15bcb91dea2a
+  finding_area: repo
+  finding_anchor: slug:warm-lane-missing-task-plan-json
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260716-6
   title: escalation-watcher assumes $DARK_FACTORY_ROOT is set in the Bash shell instead of using an explicit absolute path
   cause: 'The watcher rotation prompt supplies project context as prose (''Project root: /home/leo/src/reify'') without actually exporting a $DARK_FACTORY_ROOT variable into the Bash tool''s shell. The agent ran `cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh ...` assuming the var was pre-set by the supervisor, got exit 127 ''No such file or directory'' because the cd target was empty/wrong and the relative path never resolved. Recovery only came after switching to an explicit `DARK_FACTORY_ROOT=/home/leo/src/dark-factory <absolute path to script>` invocation.'
   area: escalation-watcher ops tooling / env-var assumptions
   first_seen: '2026-07-16'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-07-16'
     project: reify
@@ -20104,6 +20551,15 @@ candidates:
     evidence_quote: 'cd $DARK_FACTORY_ROOT && scripts/watcher-rearm.sh --queue-dir /home/leo/src/reify/data/escalations --level 1 --timeout 3600 -> Exit code 127
 
       /bin/bash: line 1: scripts/watcher-rearm.sh: No such file or directory'
+  finding_key: fk-eaa27e3e892f
+  finding_area: repo
+  finding_anchor: slug:watcher-rearm-cross-repo-invocation
+  finding_tags:
+  - h11
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260726-13
+  promoted_to: entry-cand-20260726-13
 - id: cand-20260727-38
   title: Path doubled by prepending known subdir while cwd is already inside it
   cause: Agent operating in a worktree already rooted at (or containing) `gui/src-tauri` re-prefixed a path with `gui/src-tauri/` when staging a file, producing `gui/src-tauri/gui/src-tauri/src/tests/watcher_tests.rs`. The agent's mental model of the path was relative to repo root rather than the actual cwd, causing `git add` to fail with a doubled, non-existent path.
@@ -21931,7 +22387,7 @@ candidates:
   cause: 'Agent attempted to write procedural_knowledge via add_memory with raw MCP envelope markup (`</content>`) embedded in the content field; harness detected malformed serialization and rejected the call. Root cause unconfirmed: may be context injection from prior transcript extraction or confusion about memory content formatting.'
   area: Memory operations / tool serialization
   first_seen: '2026-08-24'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-08-24'
     project: reify
@@ -21939,6 +22395,13 @@ candidates:
     origin_phase: unknown
     manifested_phase: unknown
     evidence_quote: 'Turn 335: add_memory tool error — ''it carries raw MCP envelope markup in content, which means the caller serialized part of its own tool-call envelope into the payload''; matched_pattern `</content>`; harness auto-repaired but rejection signals agent confusion about payload construction'
+  finding_key: fk-015c0a59e6d9
+  finding_area: repo
+  finding_anchor: slug:add-memory-mcp-envelope-markup-in-content
+  finding_tags:
+  - h10
+  - kind:confusion
+  adjudicated_with: cand-20260920-6
 - id: cand-20260824-7
   title: Host-exclusive test added to inline-run verification map without enforcement
   cause: No validation prevents adding host-exclusive tests (requiring serialization and isolated resource access) to scripts/verify-pipeline-infra-tests.txt, which executes tests inline and concurrently in task-scope verify. The developer added test_cpu_load_governance.sh (classified host-exclusive in run-all-classification.manifest) without understanding that verify.sh's selective-infra block lacks the serialization machinery that run_all.sh provides.
@@ -22701,7 +23164,7 @@ candidates:
   cause: Agent formats multiple Python statements into bash -c command without semicolons between them (e.g., `import json p=json.load(...)` instead of `import json; p=json.load(...)`), triggering IndentationError at parse time.
   area: agent-bash-command-formatting
   first_seen: '2026-08-26'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-08-26'
     project: reify
@@ -22709,6 +23172,13 @@ candidates:
     origin_phase: architect
     manifested_phase: review
     evidence_quote: 'python3 -c "import json p=json.load(open(''.task/plan.json'')) print(''steps:''...) -> IndentationError: unexpected indent. Multiple statements compressed into one line without separators.'
+  finding_key: fk-a5c82316f84b
+  finding_area: repo
+  finding_anchor: slug:python-oneliner-missing-statement-separators
+  finding_tags:
+  - h12
+  - kind:confusion
+  adjudicated_with: cand-20260916-15
 - id: cand-20260826-31
   title: Incomplete amendment application across identical code surfaces
   cause: An amendment enforcing an invariant was applied to some code paths via shared implementation but not to other structurally identical code paths with the same vulnerability, leaving a gap in coverage
@@ -23948,7 +24418,7 @@ candidates:
   cause: Agent assumes .task/ subdirectory at worktree root contains task metadata (metadata.json, iterations.jsonl, reviews/), but these do not exist in warm-lane worktrees. Suggests confusion about whether task-meta lives at the lane/worktree level, at the project root, or in fused-memory MCP only.
   area: warm-lanes task infrastructure
   first_seen: '2026-09-02'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-09-02'
     project: reify
@@ -23956,6 +24426,15 @@ candidates:
     origin_phase: merge
     manifested_phase: ops
     evidence_quote: Read(.../worktrees/_lane-13/.task/metadata.json) -> File does not exist; Bash(tail .../worktrees/_lane-13/.task/iterations.jsonl) -> No such file or directory; Bash(ls .../worktrees/_lane-13/.task/reviews/) -> exit 2
+  finding_key: fk-e536a9dd5f09
+  finding_area: repo
+  finding_anchor: docs/notes/warm-lane-audit-runbook.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  adjudicated_with: cand-20260924-7
+  promoted_to: entry-cand-20260924-8
 - id: cand-20260902-3
   title: Cross-project dark-factory search from warm-lanes worktree unvalidates path accessibility
   cause: Autonomous agent in warm-lanes worktree (/home/leo/src/warm-lanes/worktrees/_lane-13) searches dark-factory paths without confirming they are accessible from that cwd. Exit code 2 (IO/path error) misinterpreted as pattern-not-found, triggering retry loop.
@@ -26441,7 +26920,7 @@ candidates:
   cause: Agent constructs inline Python with multiple statements on one line but omits semicolons between completed expressions (after json.load() call), producing Python IndentationError during shell execution
   area: tooling
   first_seen: '2026-09-16'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-09-16'
     project: reify
@@ -26449,6 +26928,12 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'import json;d=json.load(open(''.task/plan.json'')) print(''steps:'',...) [missing semicolon after closing paren] -> IndentationError: unexpected indent'
+  finding_key: fk-a5c82316f84b
+  finding_area: repo
+  finding_anchor: slug:python-oneliner-missing-statement-separators
+  finding_tags:
+  - h12
+  - kind:confusion
 - id: cand-20260916-16
   title: Python multiline code passed to bash -c loses newline formatting
   cause: Bash tool command constructs a multi-line Python script with `\n` escape sequences in a string literal, but the shell/Python integration doesn't interpret those escapes as actual newlines, causing Python to receive the entire program on a single line with unexpected leading indentation
@@ -27050,7 +27535,7 @@ candidates:
   cause: Agent's string/template construction for add_memory content field includes raw XML wrapper tags (specifically `</content>`) that belong only in the MCP envelope layer, not the serialized content value
   area: memory operations, tool envelope serialization
   first_seen: '2026-09-20'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-09-20'
     project: reify
@@ -27058,6 +27543,12 @@ candidates:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'turns 206, 212, 217: three consecutive add_memory calls all rejected with error_type=''mcp_markup_detected'', matched_pattern=''</content>'', agent resubmits with only cosmetic truncation of the same broken content, never addresses underlying serialization defect'
+  finding_key: fk-015c0a59e6d9
+  finding_area: repo
+  finding_anchor: slug:add-memory-mcp-envelope-markup-in-content
+  finding_tags:
+  - h10
+  - kind:confusion
 - id: cand-20260920-7
   title: Agent serializes MCP envelope closing tag into tool call parameter
   cause: Agent copied content containing XML-style closing tags (e.g. `</decision>`) from a tool definition, error message, or prior tool result and embedded it directly as a parameter value, conflating the transport envelope with the semantic payload
@@ -27576,7 +28067,7 @@ candidates:
   cause: 'Agent probing .task-meta path with conflicting assumptions: directory structure may be under worktrees/ vs at lane root, or path resolution failing when worktree context expected vs provided'
   area: warm-lanes task bootstrap
   first_seen: '2026-09-24'
-  disposition: pending
+  disposition: promoted
   sightings:
   - date: '2026-09-24'
     project: reify
@@ -27584,6 +28075,17 @@ candidates:
     origin_phase: architect
     manifested_phase: unknown
     evidence_quote: orchestrated-task session in worktrees/_lane-25 with 6 not-found signals across turns 50, 79, 224, 236, 254, 464; no specifics on target paths
+  finding_key: fk-e536a9dd5f09
+  finding_area: repo
+  finding_anchor: docs/notes/warm-lane-audit-runbook.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  attached_by:
+    method: key
+    run_id: census-reify-20261030
+  promoted_to: entry-cand-20260924-8
 - id: cand-20260924-8
   title: Plan.json or task-meta iteration artifact missing at bootstrap
   cause: Warm-lane task worktree initialized without expected plan.json or iterations.jsonl artifacts, or agent searching wrong path structure (sibling vs nested under worktrees/)
@@ -29847,7 +30349,7 @@ candidates:
   cause: Agent calls plan-tools MCP with incorrect parameter names—add_plan_step uses {task_id, type} instead of expected {step_id, step_type}; mark_step_committed uses {commit_sha} instead of expected {sha}—indicating schema unavailability or outdated parameter mapping
   area: plan-tools MCP interface
   first_seen: '2026-10-06'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-10-06'
     project: reify
@@ -29855,6 +30357,13 @@ candidates:
     origin_phase: unknown
     manifested_phase: implement
     evidence_quote: 'add_plan_step(task_id=''7103'', type=''impl'', description=''...'') validation errors: step_id missing, step_type missing, task_id unexpected, type unexpected; mark_step_committed(commit_sha=''b663fa28e0'', step_id=''step-1'') validation errors: sha missing, commit_sha unexpected'
+  finding_key: fk-ff4d341071ac
+  finding_area: repo
+  finding_anchor: slug:plan-tools-guessed-argument-names
+  finding_tags:
+  - h1
+  - kind:confusion
+  adjudicated_with: cand-20261027-1
 - id: cand-20261006-6
   title: Escalation MCP get_escalation call times out without retry context
   cause: Escalation MCP server unavailable, timeout, or systematic connectivity failure preventing escalation lookups for valid IDs
@@ -29939,7 +30448,7 @@ candidates:
   cause: Parking an info-level escalation is assumed to keep its task out of the scheduler's stranded-task sweep. The sweep re-pends the task regardless, so the park silently fails to hold and the task can dispatch or be re-pended unexpectedly until it is set to deferred.
   area: escalation / orchestrator scheduling
   first_seen: '2026-10-08'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-10-08'
     project: reify
@@ -29947,6 +30456,12 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: Parking an info-level escalation doesn't stop the scheduler's stranded-task sweep, which re-pended it. That's a known trap with a memory entry, and I missed it.
+  finding_key: fk-d8684a864f9a
+  finding_area: repo
+  finding_anchor: slug:info-escalation-park-vs-stranded-sweep
+  finding_tags:
+  - h11
+  - kind:confusion
 - id: cand-20261008-2
   title: Generated ESM script contains top-level return, failing node syntax check
   cause: A script generated for PRD decomposition verification places a bare `return` at module top level in a .mjs file. Node's ES module parser rejects this with 'Illegal return statement', so the script must be rewritten before it can run.
@@ -30640,7 +31155,7 @@ candidates:
   cause: The agent parked escalation esc for task 5470 on the assumption that this would stop dispatch. The scheduler's stranded-task sweep re-pended the task anyway, so the park did not hold. Only setting the task status to 'deferred' held it. The semantics of 'park' versus 'defer' are not discoverable from the escalation or task interface, so the agent relied on a memory entry it had missed.
   area: escalation-watcher / scheduler task-hold semantics
   first_seen: '2026-10-05'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-10-05'
     project: reify
@@ -30648,6 +31163,13 @@ candidates:
     origin_phase: ops
     manifested_phase: ops
     evidence_quote: my 18:42Z park did not hold 5470. Parking an info-level escalation doesn't stop the scheduler's stranded-task sweep, which re-pended it. That's a known trap with a memory entry, and I missed it.
+  finding_key: fk-d8684a864f9a
+  finding_area: repo
+  finding_anchor: slug:info-escalation-park-vs-stranded-sweep
+  finding_tags:
+  - h11
+  - kind:confusion
+  adjudicated_with: cand-20261008-1
 - id: cand-20260924-11
   title: Escalation MCP calls time out and are re-issued identically without a diagnostic or fallback
   cause: The escalation MCP server (promote_to_l2, get_pending_escalations) returns a bare 'The operation timed out.' with no detail on whether the server is down, slow, or the write partially applied. The watcher retries the same compact level-2 query unchanged, then switches to a task_id filter. It has no guidance on whether promote_to_l2 took effect, so it risks a duplicate promotion or a wrong state assumption.
@@ -30814,7 +31336,7 @@ candidates:
   cause: The agent called mcp__plan-tools__add_plan_step with keyword arguments task_id and type, which the schema does not declare, and omitted the required step_id and step_type. It then called mark_step_committed with commit_sha instead of the declared sha. Each call was rejected at argument validation before running, so the agent had to re-issue it with corrected arguments.
   area: agent-tooling
   first_seen: '2026-10-27'
-  disposition: pending
+  disposition: rejected
   sightings:
   - date: '2026-10-27'
     project: reify
@@ -30822,6 +31344,12 @@ candidates:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'add_plan_step was called without required argument(s): step_id, step_type ... "other_errors": [{"type": "unexpected_keyword_argument", "loc": ["task_id"], "msg": "Unexpected keyword argument"}'
+  finding_key: fk-ff4d341071ac
+  finding_area: repo
+  finding_anchor: slug:plan-tools-guessed-argument-names
+  finding_tags:
+  - h1
+  - kind:confusion
 - id: cand-20261027-2
   title: connect connector-param parse error names the whole statement with no span on the offending unit literal
   cause: The connect-specific parser rejects a space between a number and its unit (`1000.0 N/m`) inside a connector-param block, while the same literal is accepted without the space and in ordinary param positions. The resulting 'invalid connect' diagnostic names the entire statement with no span or hint pointing at the offending literal, so a reader must reduce the statement by hand to find the fault.
@@ -30887,6 +31415,182 @@ candidates:
     origin_phase: unknown
     manifested_phase: architect
     evidence_quote: Fn-call, struct-ctor and default sites all reach acceptance through the relation, so they cannot disagree
+- id: cand-20261003-8
+  title: Search tool timeout returns an empty results list, indistinguishable from a genuine no-match during verification
+  cause: 'The search tool reports a timeout as {"results": [], "error": "timeout"}. Other searches for symbols that exist (dev_url, retarget_to_vite_port) also came back empty. A verifier can read this as the code being absent, and it has to cross-check by reading the file directly to tell the cases apart.'
+  area: agent tooling / verification
+  first_seen: '2026-10-03'
+  disposition: pending
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 8077e4f0-8bbd-4e66-b6f6-58ed343972c1
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: '{"pattern": "REIFY_VITE_PORT|TEST-ONLY KNOB", "results": [], "error": "timeout"}'
+- id: cand-20261010-3
+  title: Skill location guessed under user-level ~/.claude/skills when the skill is project-scoped or elsewhere
+  cause: The agent assumed the merge-queue skill lives at /home/leo/.claude/skills/merge-queue/. The project instructions only name `/merge-queue` as a command and give no on-disk location for the skill. The guess failed with exit 2, so the agent had no discoverable pointer to where project skills are kept (for example the repo's .claude/skills/).
+  area: skill and tooling discovery
+  first_seen: '2026-10-10'
+  disposition: promoted
+  sightings:
+  - date: '2026-10-10'
+    project: reify
+    session: 24720787-f969-4d31-80bb-9f212533b2ac
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: 'ls /home/leo/.claude/skills/merge-queue/ && sed -n 1,140p /home/leo/.claude/skills/merge-queue/SKILL.md -> [exit 2] ls: cannot access ''/home/leo/.claude/skills/merge-queue/'': No such file or directory'
+  finding_key: fk-9c36e1e93a30
+  finding_area: repo
+  finding_anchor: CLAUDE.md
+  finding_tags:
+  - h11
+  - h13
+  - kind:confusion
+  promoted_to: entry-cand-20261010-3
+- id: cand-20261012-5
+  title: ListAgents re-issued six times with identical empty arguments
+  cause: The agent repeatedly calls ListAgents with no arguments, apparently polling for sub-agent state without varying the call or switching to a completion-notification mechanism. The digest does not show what the agent expected to learn, so the root cause is only inferred.
+  area: agent tool-use / polling of sub-agent state
+  first_seen: '2026-10-12'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-12'
+    project: reify
+    session: 71e5606b-7d82-4315-ad5b-c0fe0915b65e
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'ListAgents x6: {}'
+  finding_key: fk-7eb97b7eaa24
+  finding_area: repo
+  finding_anchor: slug:listagents-repeated-polling
+  finding_tags:
+  - kind:confusion
+- id: cand-20261003-9
+  title: mcp__escalation__get_pending_escalations times out and is re-issued without diagnosing the failure
+  cause: The escalation MCP call timed out with no diagnostic detail. The agent then called it three more times with near-identical arguments (level 1, compact true) instead of treating the timeout as a systemic failure or falling back to the queue directory on disk.
+  area: escalation watcher / MCP tool reliability
+  first_seen: '2026-10-03'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: d10c5d20-b6cd-41e7-b712-3803ed00d48e
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'mcp__escalation__get_pending_escalations({"level": 1}) -> The operation timed out.'
+  finding_key: fk-3a54e86a1a41
+  finding_area: repo
+  finding_anchor: slug:escalation-mcp-timeout-retry
+  finding_tags:
+  - h10
+  - kind:confusion
+- id: cand-20261029-5
+  title: t3_thread_read called with a bare thread UUID instead of the required 'mcp:'-prefixed thread id
+  cause: The watcher passed a raw thread UUID to mcp__t3-code__t3_thread_read. The tool only resolves ids in the 'mcp:<uuid>' form, so the call failed with thread_not_found. The id format is not documented where the watcher gets thread ids, so the next agent making this call can repeat the mistake. Fixing the id format or documenting it in the tool description would stop that.
+  area: t3-code MCP thread id format
+  first_seen: '2026-10-29'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-29'
+    project: reify
+    session: 2eccc7cd-c98d-4af2-803e-2244b49bf9b5
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: '{"_tag":"OrchestratorMcpFailure","code":"thread_not_found","message":"Thread 9045d7e0-c2aa-4433-8501-d466f80dc3d6 is no longer available. Did you mean `mcp:9045d7e0-c2aa-4433-8501-d466f80dc3d6`?"}'
+  finding_key: fk-42aec6801130
+  finding_area: repo
+  finding_anchor: slug:t3-code-mcp-thread-id-format
+  finding_tags:
+  - h10
+  - kind:confusion
+- id: cand-20261004-7
+  title: Verification agent's grep over a path returns empty results and a timeout error that is read as a no-match signal
+  cause: 'The search tool reports an ''error: timeout'' inside an (OK) result alongside an empty results list, and empty results for patterns known to exist (finalise_uniqueness exists in solver.rs) are consistent with a failed or truncated search. The agent can mistake this for absence of citations, producing an inconclusive verdict. The tool result status is OK, so the failure is easy to overlook.'
+  area: search tool result semantics
+  first_seen: '2026-10-04'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-04'
+    project: reify
+    session: b1a6047f-8b0f-4760-b652-d083a233bfc1
+    origin_phase: verify
+    manifested_phase: verify
+    evidence_quote: '{"pattern": "finalise_uniqueness", "results": [], "error": "timeout"}'
+  finding_key: fk-71d54d882bfb
+  finding_area: repo
+  finding_anchor: slug:search-tool-timeout-reported-as-empty-ok-result
+  finding_tags:
+  - h10
+  - kind:confusion
+- id: cand-20261028-1
+  title: Escalation MCP call emitted with an empty value for an optional filter parameter, producing unparseable JSON
+  cause: 'The agent built a get_task_escalations call with `"status": ,` (a key with no value), probably from an unset optional filter, so the harness rejected the whole input as unparseable JSON. The agent has no schema-level guard that omits unset optional parameters, and the error names only generic causes (backslashes, control characters, truncation) rather than the real defect, an empty value. This costs a wasted turn and a risk of repeat for anyone calling the tool with optional filters.'
+  area: escalation MCP tool-call construction
+  first_seen: '2026-10-28'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-28'
+    project: reify
+    session: 587ce167-9900-4787-9c9e-36812fe30f4c
+    origin_phase: unknown
+    manifested_phase: ops
+    evidence_quote: '{"task_id": "7528", "level": 2, "status": , "compact": true}'
+  finding_key: fk-0a000661d478
+  finding_area: repo
+  finding_anchor: slug:escalation-mcp-empty-optional-param
+  finding_tags:
+  - h10
+  - kind:confusion
+- id: cand-20261027-3
+  title: git grep invoked with context flag -A8 placed after the pattern, rejected with exit 128
+  cause: The agent appended a context option (-A8) after the pattern and path arguments in a `git grep` call, so git rejected it with 'option must come before non-option arguments'. git grep requires options before the pattern, unlike GNU grep, which accepts them anywhere. The same compound command also ran a `sed -n` dump, so the output was mostly source text and the real error was one trailing line, which is easy to miss. The intended struct lookup produced nothing and had to be reissued.
+  area: tool-usage / git grep argument ordering in compound inspection commands
+  first_seen: '2026-10-27'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-27'
+    project: reify
+    session: cf20070b-dcfc-42bc-a3c3-439c2f48f8df
+    origin_phase: unknown
+    manifested_phase: unknown
+    evidence_quote: 'git grep -n "struct TaskCite" -A8 crates/reify-eval/tests/harness_geometry/ ... fatal: option ''-A8'' must come before non-option arguments'
+  finding_key: fk-22a8cad4e2fb
+  finding_area: repo
+  finding_anchor: slug:git-grep-option-ordering
+  finding_tags:
+  - comments
+  - kind:confusion
+- id: cand-20261003-10
+  title: Determinism diff of --nocapture test output flags thread-interleaving order as a mismatch
+  cause: The agent diffed the captured --nocapture output of two cargo test runs to check run-to-run determinism. Tests in the same binary run in parallel, so their stdout lines interleave in a different order each run. The diff therefore exits 1 with only line-order hunks, even though cargo test returned rc=0 and every test passed. The compound command's exit code (diff's status) cannot tell an ordering artifact from a real numeric divergence, so the agent has to read the hunks to find out the run was actually clean. The next agent may chase a phantom nondeterminism or distrust a green result.
+  area: test-verification / output-comparison
+  first_seen: '2026-10-03'
+  disposition: rejected
+  sightings:
+  - date: '2026-10-03'
+    project: reify
+    session: 55afbcde-520a-4911-a280-4168f166e6f9
+    origin_phase: implement
+    manifested_phase: implement
+    evidence_quote: '3d2
+
+      < [ISO] λ=9.5367431640625e-7 base.converged=true scaled.converged=true
+
+      5c4
+
+      < [ANISO] λ=9.5367431640625e-7 base.converged=true scaled.converged=true
+
+      ---
+
+      > [ISO] λ=9.5367431640625e-7 base.converged=true scaled.converged=true'
+  finding_key: fk-954b6f4ed613
+  finding_area: repo
+  finding_anchor: slug:nocapture-diff-interleaving
+  finding_tags:
+  - tests
+  - kind:confusion
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
