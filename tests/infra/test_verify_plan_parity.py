@@ -52,6 +52,33 @@ TASK_FIFO = "REIFY_JOBSERVER_TASK_FIFO"
 MERGE_FIFO = "REIFY_JOBSERVER_MERGE_FIFO"
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 FOREIGN_BOOT_ID = "00000000-0000-0000-0000-000000000000"
+RUST_CHANGE = "crates/reify-doc/src/lib.rs"
+GUI_CHANGE = "gui/src/editor/foo.ts"
+DOCS_CHANGE = "docs/note.md"
+EMPTY_PLAN = "# (no commands — nothing to verify for this action/scope)"
+# The changed paths tests/infra/test_verify_scope.sh plans one at a time with
+# `plan_for staged` (S22 B14); each is written as 'x\n' and staged, as plan_for does.
+CHANGED_PATH_FIXTURES = (
+    "Cargo.lock",
+    "crates/reify-doc/src/lib.rs",
+    "crates/reify-eval/src/cache.rs",
+    "dark-factory-orchestrator.yaml",
+    "docs/gui-event-channels.md",
+    "docs/gui-event-channels/solver-progress.md",
+    "docs/note.md",
+    "docs/prds/v0_6/foo.md",
+    "examples/foo.ri",
+    "examples/foo/bar.ri",
+    "examples/auto/probe.ri",
+    "gui/src/editor/foo.ts",
+    "gui/src-tauri/src/main.rs",
+    "scripts/prd-capability-check.py",
+    "some_unrecognised_file",
+    "tests/prd-gate/corpus-probe-set.json",
+    "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri",
+    "tests/prd-gate/fixtures/new_prd_fixture.ri",
+    "tests/prd-gate/fixtures/Probe.RI",
+)
 
 
 def tearDownModule():
@@ -192,6 +219,90 @@ class TestPlanParityEnvironment(InParityClone):
 
     def test_host_default_fifo(self):
         self.check("host default FIFO", {TASK_FIFO: None, MERGE_FIFO: None}, ("/tmp/reify-jobserver-task",))
+
+
+class TestPlanParityCommands(InParityClone):
+    """Full stdout, stderr and exit code of lint and typecheck plans."""
+
+    def check(self, label, argv, env=(), expect=(), actions=PLAN_ACTIONS):
+        """Each action agrees; bash's stdout holds each `expect` text (the scenario's premise)."""
+        scenarios = [
+            Scenario(f"{label} ({action})", (action, *argv, "--print-plan"), dict(env))
+            for action in actions
+        ]
+        pairs = run_many(self.clone, scenarios)
+        for scenario, pair in pairs:
+            with self.subTest(scenario.label):
+                self.assert_bash_plans(scenario, pair)
+                for text in expect:
+                    self.assertIn(text, pair.bash.stdout, "premise")
+                self.assert_parity(scenario, pair)
+        return pairs
+
+    def stage_written(self, path):
+        """plan_for's fixture: `path` holds exactly 'x\\n', staged."""
+        target = self.clone.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x\n", encoding="utf-8")
+        self.clone.git("add", "--", path)
+
+    def test_scope_all_under_each_role(self):
+        for role in ROLES:
+            self.check(f"--scope all role={role}", ("--scope", "all", "--include-infra"), role_env(role))
+
+    def test_staged_rust_change(self):
+        self.clone.stage(RUST_CHANGE)
+        self.check("staged rust change", ("--scope", "staged"), expect=("NARROW_ACTIVE=0",))
+        self.check(
+            "staged rust change --narrow", ("--scope", "staged", "--narrow"),
+            expect=("NARROW_ACTIVE=1", " -p reify-doc"),
+        )
+
+    def test_branch_rust_change(self):
+        self.clone.start_branch()
+        self.clone.stage(RUST_CHANGE)
+        self.check("branch rust change", ("--scope", "branch"), expect=("NARROW_ACTIVE=1",))
+
+    def test_affected_crates_overrides(self):
+        self.clone.stage(RUST_CHANGE)
+        for value in ("reify-cli reify-eval", "ALL", "bad*name", "  "):
+            self.check(
+                f"REIFY_AFFECTED_CRATES_OVERRIDE={value!r}",
+                ("--scope", "staged", "--narrow"),
+                {"REIFY_AFFECTED_CRATES_OVERRIDE": value},
+                expect=(f"closure={value} ",),
+            )
+
+    def test_gui_only_change(self):
+        self.clone.stage(GUI_CHANGE)
+        self.check("gui-only change", ("--scope", "staged"), expect=("RUN_RUST=0 RUN_GUI=1",))
+
+    def test_docs_only_change(self):
+        self.clone.stage(DOCS_CHANGE)
+        self.check("docs-only change", ("--scope", "staged"), expect=(EMPTY_PLAN,))
+
+    def test_valid_timeout_knobs(self):
+        self.check(
+            "valid timeout knobs", ("--scope", "all"),
+            {"REIFY_VERIFY_CLIPPY_TIMEOUT": "7m", "REIFY_VERIFY_CHECK_TIMEOUT": "11m"},
+        )
+
+    def test_test_only_knobs_leave_lint_unchanged(self):
+        (_, plain), = self.check("plain lint", ("--scope", "all"), actions=("lint",))
+        (_, heavy), = self.check(
+            "lint, heavy excluded", ("--scope", "all"), {"REIFY_GATE_EXCLUDE_HEAVY": "1"},
+            actions=("lint",),
+        )
+        (_, threads), = self.check("lint --test-threads=3", ("--scope", "all", "--test-threads=3"),
+                                   actions=("lint",))
+        self.assertEqual(heavy.bash.stdout, plain.bash.stdout, "premise: the heavy knob leaves lint alone")
+        self.assertEqual(threads.bash.stdout, plain.bash.stdout, "premise: --test-threads leaves lint alone")
+
+    def test_changed_path_fixtures(self):
+        for path in CHANGED_PATH_FIXTURES:
+            self.clone.reset()
+            self.stage_written(path)
+            self.check(f"staged {path}", ("--scope", "staged", "--include-infra"), actions=("lint",))
 
 
 class TestPlanParitySelfTest(InParityClone):
