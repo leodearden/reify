@@ -886,6 +886,7 @@ tests/infra/plan_parity_harness.py    tests/infra/test_verify_plan_parity.sh
 tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity.sh
 tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_parity.sh
+scripts/verify-ledger.py    tests/infra/test_verify_plan_parity.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/plan.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/render.py    tests/infra/test_verify_*.sh

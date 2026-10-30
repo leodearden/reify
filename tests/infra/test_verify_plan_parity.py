@@ -19,10 +19,12 @@ thin wrapper tests/infra/test_verify_plan_parity.sh.
 """
 
 import itertools
+import json
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -39,9 +41,11 @@ from plan_parity_harness import (  # noqa: E402
     base_env,
     compare,
     discard_clone,
+    plan_sections,
     run_both,
     run_many,
     shared_clone,
+    shared_env,
 )
 
 PLAN_ACTIONS = ("lint", "typecheck")
@@ -104,6 +108,19 @@ HEAVY_FILTER_LIB = "scripts/heavy-test-filter-lib.sh"
 HEAVY_FILTER_EXPORT = re.compile(r"^export REIFY_HEAVY_NEXTEST_FILTER=.*$", re.MULTILINE)
 EMPTY_HEAVY_FILTER = (
     "verify.sh: ERROR — REIFY_HEAVY_NEXTEST_FILTER empty after sourcing heavy-test-filter-lib.sh"
+)
+JSON_PLAN = "--print-plan=json"
+VERIFY_LEDGER = "scripts/verify-ledger.py"
+RECORD_SEQUENCE = re.compile(r"(retry_scope )?header scope narrowing (heavy_partition )?(env )*(step )*")
+NOT_RECORD_FIELDS = ("v", "record")
+# label, the path staged first (None: none), argv before the plan flag, env.
+JSON_CASES = (
+    ("lint merge all", None, ("lint", "--scope", "all"), {"DF_VERIFY_ROLE": "merge"}),
+    ("lint task staged --narrow, crate change", RUST_CHANGE, ("lint", "--scope", "staged", "--narrow"), {}),
+    ("typecheck task all", None, ("typecheck", "--scope", "all"), {}),
+    ("test gui-only staged, retry specs", GUI_CHANGE, ("test", "--scope", "staged"),
+     {**FAILED_ONLY, "REIFY_GUI_RETRY_SPECS": VALID_GUI_SPECS}),
+    ("lint docs-only, empty plan", DOCS_CHANGE, ("lint", "--scope", "staged"), {}),
 )
 # The changed paths tests/infra/test_verify_scope.sh plans one at a time with
 # `plan_for staged` (S22 B14); each is written as 'x\n' and staged, as plan_for does.
@@ -654,6 +671,85 @@ class TestPlanParityStartup(InParityClone):
             Expect(lint_all("LC_ALL=C", {"LC_ALL": "C"})),
             Expect(lint_all("DF_VERIFY_ROLE=''", {"DF_VERIFY_ROLE": ""}), stdout=(" role=task",)),
         )
+
+
+class TestJsonPlanParity(InParityClone):
+    """`--print-plan=json` (PRD D7) is the text plan's typed twin: its records carry what the text says."""
+
+    def py(self, argv, env):
+        outcome = self.clone.py(argv, shared_env(self.clone, env))
+        self.assertEqual(outcome.returncode, 0, f"verify.py {' '.join(argv)}\n{outcome.stderr}")
+        return outcome.stdout
+
+    def classified_phases(self, renders):
+        proc = subprocess.run(
+            [sys.executable, "-I", "-B", str(self.clone.root / VERIFY_LEDGER), "classify"],
+            input="".join(f"{render}\0" for render in renders).encode("utf-8"),
+            cwd=self.clone.root, env=base_env(), capture_output=True, check=True,
+        )
+        return [entry["phase"] for entry in json.loads(proc.stdout)]
+
+    def test_json_records_match_the_text_plan(self):
+        for label, staged, argv, env in JSON_CASES:
+            with self.subTest(label):
+                self.clone.reset()
+                if staged is not None:
+                    self.clone.stage(staged)
+                records = [json.loads(line) for line in self.py((*argv, JSON_PLAN), env).splitlines()]
+                text = plan_sections(self.py((*argv, "--print-plan"), env))
+                scope_record = json.loads(self.py((*argv, "--print-scope"), env))
+                self.check_records(label, records, text, scope_record)
+
+    def check_records(self, label, records, text, scope_record):
+        self.assertTrue(all(record.get("v") == 1 for record in records), records)
+        names = [record["record"] for record in records]
+        self.assertRegex(f"{' '.join(names)} ", f"^{RECORD_SEQUENCE.pattern}$")
+        by_name = {record["record"]: record for record in records}
+        if "retry_scope" in by_name:
+            self.assertEqual(text["header"][0].split()[0], "@@REIFY_RETRY_SCOPE=failed_only@@")
+        self.check_header(by_name["header"], text["header"])
+        for name in ("scope", "narrowing"):
+            self.assertEqual(fields_of(by_name[name]), scope_record[name], f"{label}: {name}")
+        envs = [record for record in records if record["record"] == "env"]
+        self.assertEqual([record["render"] for record in envs], text["environment"][1:])
+        steps = [record for record in records if record["record"] == "step"]
+        self.check_steps(label, steps, text["commands"])
+
+    def check_header(self, header, text_header):
+        line = next(line for line in text_header if line.startswith(PLAN_HEADER))
+        tokens = dict(token.split("=", 1) for token in line[len(PLAN_HEADER):].split())
+        fields = fields_of(header)
+        profiles = fields.pop("profiles")
+        self.assertEqual({name: str(value) for name, value in fields.items()}, tokens)
+        both = tokens["profile"] == "both"
+        self.assertEqual(profiles, ["debug", "release"] if both else [tokens["profile"]])
+
+    def check_steps(self, label, steps, text_commands):
+        renders = [step["render"] for step in steps]
+        self.assertEqual(renders, [line for line in text_commands[1:] if not line.startswith("#")])
+        self.assertEqual([step["index"] for step in steps], list(range(len(steps))))
+        self.assertEqual([step["phase"] for step in steps], self.classified_phases(renders))
+        for step in steps:
+            self.assertIn("type", step["command"])
+            self.assertEqual(step["scrub"], step["kind"] == "tool", step)
+            self.assertEqual(step["render"].startswith(LD_SCRUB), step["scrub"], step)
+            executes = "structural" if step["kind"] == "main_shell" else "render"
+            self.assertEqual(step["executes"], executes, step)
+        gate_paths = sorted({step["gate_path"] for step in steps if step["gate_path"] is not None})
+        if gate_paths:
+            tracked = self.clone.git("ls-files", "--", *gate_paths).splitlines()
+            self.assertEqual(sorted(tracked), gate_paths, f"{label}: every gate path is a tracked file")
+
+    def test_bash_refuses_the_json_flag(self):
+        """D8 listed divergence: the new query flag is accepted, where bash exits 64 on it."""
+        (scenario, pair), = run_many(self.clone, (lint_all("json plan", argv=("lint", "--scope", "all", JSON_PLAN)),))
+        self.assertEqual(pair.bash.returncode, 64, pair.bash.stderr)
+        self.assertIn(f"unknown argument '{JSON_PLAN}'", pair.bash.stderr)
+        self.assertEqual(pair.py.returncode, 0, pair.py.stderr)
+
+
+def fields_of(record) -> dict:
+    return {name: value for name, value in record.items() if name not in NOT_RECORD_FIELDS}
 
 
 class TestTestRegionNotYetPlanned(InParityClone):

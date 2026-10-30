@@ -53,6 +53,7 @@ __all__ = (
     "run_both",
     "run_many",
     "shared_clone",
+    "shared_env",
     "the_clone",
 )
 
