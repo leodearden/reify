@@ -738,13 +738,9 @@ const PATH_SLOT: ProfileSlot = ProfileSlot {
 };
 
 /// `true` iff `t` violates the Surface-profile precondition: a profile must be a
-/// 2-D `Surface` that is both `Closed` and `Planar`.
-///
-/// For task α no producer is a `Surface` (closed/planar are `false` everywhere),
-/// so the `dimension != Surface` clause already rejects every statically-known
-/// task-α producer; the full `Surface ∧ Closed ∧ Planar` conjunction is wired
-/// now so tasks ζ/η's Surface constructors (which set closed=planar=true) slot
-/// in with no consumer change.
+/// 2-D `Surface` that is both `Closed` and `Planar`. A non-profile Surface (a
+/// free-form `nurbs_surface`, or a swept curve, see `combine_sweep`) is refused
+/// by the Closed/Planar clauses, not by the dimension clause.
 fn violates_profile_requirement(t: &crate::geometry_traits_inference::InferredTraits) -> bool {
     use crate::geometry_traits_inference::GeomDim;
     t.dimension != GeomDim::Surface || !t.closed || !t.planar
