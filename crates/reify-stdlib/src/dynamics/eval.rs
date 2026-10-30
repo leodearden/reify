@@ -29,14 +29,16 @@
 //!   * `inverse_dynamics_at_snapshot_lower`  — open-chain snapshot RNEA (step-6)
 //!   * `inverse_dynamics_lower`              — trajectory variant (step-8)
 
-use crate::dynamics::closed_chain::{reduce_constraint_rank, solve_closed_chain, DEFAULT_PIVOT_EPS};
+use crate::dynamics::closed_chain::{DEFAULT_PIVOT_EPS, loop_constraint_rows, solve_closed_chain};
 use crate::dynamics::rnea::{
     assemble_joint_space_inertia, default_gravity, inverse_dynamics_open_chain, JointCompliance,
     RneaLink,
 };
 use crate::dynamics::spatial::{Frame3, SpatialTransform6, SpatialVector6};
 use crate::joints::motion_subspace_columns;
-use crate::loop_closure::{extract_loop_closure_chains, loop_residual_jacobian_by_joint};
+use crate::loop_closure::{
+    DEFAULT_LOOP_JACOBIAN_FD_STEP, extract_loop_closure_chains, loop_residual_jacobian_by_joint,
+};
 use crate::mechanism::is_world;
 use reify_core::diagnostics::{Diagnostic, DiagnosticCode};
 use reify_core::dimension::DimensionVector;
@@ -729,15 +731,16 @@ fn snapshot_inverse_dynamics(
         return None;
     }
 
-    // ── closed-chain guard: deferred to task 4146 ──────────────────────────────
-    // A mechanism with a non-empty `loop_closures` list is a closed chain.
-    // Silently routing it through the open-chain RNEA would produce finite but
-    // physically-incorrect torques (the spanning-tree RNEA ignores the loop
-    // constraints) — a plausible-but-wrong number rather than the `Undef` the
-    // caller would expect for unsupported input. Return `None` (→ `Value::Undef`)
-    // so closed mechanisms fail loudly until task 4146 wires the closed-chain path.
-    // This guard is placed before the bodies.is_empty() early-return so it fires
-    // regardless of body count.
+    // ── closed-chain guard (design decision esc-3836-226) ──────────────────────
+    // A mechanism with a non-empty `loop_closures` list is a closed chain, and
+    // returns `None` (→ `Value::Undef`) HERE by design: a snapshot carries no
+    // spanning-tree q to extract the loop-closure chains from. Routing it
+    // through the open-chain RNEA instead would yield finite but physically
+    // wrong torques (the spanning-tree RNEA ignores the loop constraints). The
+    // supported closed-chain entry is the trajectory variant `inverse_dynamics`,
+    // which routes through `closed_chain_inverse_dynamics` via
+    // `inverse_dynamics_sample`. This guard is placed before the
+    // bodies.is_empty() early-return so it fires regardless of body count.
     if let Some(Value::List(lc)) = map_get(mech, "loop_closures")
         && !lc.is_empty()
     {
@@ -1526,29 +1529,17 @@ fn closed_chain_inverse_dynamics(
         let (chain_a, vals_a, chain_b, vals_b, _free_b) =
             extract_loop_closure_chains(record, bindings)?;
 
-        // Raw 6×n Jacobian via central FD over all spanning-tree joints.
-        let raw_cols =
-            loop_residual_jacobian_by_joint(&chain_a, &vals_a, &chain_b, &vals_b, &ordered_joints, 1e-7)?;
-
-        // raw_cols: one [f64;6] column per spanning-tree DOF in topo order.
-        // Convert to 6×n row-major.
-        let mut a_raw = vec![0.0f64; 6 * n];
-        for (col_idx, col) in raw_cols.iter().enumerate() {
-            for row_idx in 0..6 {
-                a_raw[row_idx * n + col_idx] = col[row_idx];
-            }
-        }
-
-        // Closing joint's motion subspace (for rank-reduction projection).
-        let closing_joint = match record {
-            Value::Map(m) => m.get(&Value::String("closing_joint".to_string()))?,
-            _ => return None,
-        };
-        let closing_sv: Vec<SpatialVector6> = motion_subspace_columns(closing_joint)?;
-        let closing_sub: Vec<[f64; 6]> = closing_sv.iter().map(|sv| sv.as_array()).collect();
-
-        // Project out the closing joint's absorbed directions and row-reduce.
-        let (a_red, m_eff) = reduce_constraint_rank(&a_raw, 6, n, &closing_sub, 1e-10);
+        // One residual-twist column per spanning-tree DOF, in topo order,
+        // reduced to full row rank without dropping any live row.
+        let raw_cols = loop_residual_jacobian_by_joint(
+            &chain_a,
+            &vals_a,
+            &chain_b,
+            &vals_b,
+            &ordered_joints,
+            DEFAULT_LOOP_JACOBIAN_FD_STEP,
+        )?;
+        let (a_red, m_eff) = loop_constraint_rows(&raw_cols);
 
         // b = −Ȧ·q̇.  For the cases exercised here (q̇=0 smoke test; 4-bar
         // power-identity e2e where τ·q̇ = τ_open·q̇ for any consistent q̇) b=0
@@ -2146,7 +2137,8 @@ mod tests {
 
     /// `snapshot_inverse_dynamics` must return `Value::Undef` for a mechanism
     /// with a non-empty `loop_closures` list instead of silently computing
-    /// physically-incorrect open-chain torques (task 4146 deferred).
+    /// physically-incorrect open-chain torques (design decision esc-3836-226:
+    /// a snapshot carries no spanning-tree q).
     #[test]
     fn snapshot_inverse_dynamics_rejects_closed_mechanism() {
         // Build a minimal mechanism Map that passes kind/error validation but has
@@ -2185,7 +2177,7 @@ mod tests {
         assert_eq!(
             result,
             Value::Undef,
-            "closed mechanism (non-empty loop_closures) must return Value::Undef until task 4146"
+            "closed mechanism (non-empty loop_closures) must return Value::Undef at the snapshot entry (esc-3836-226)"
         );
     }
 
@@ -2761,9 +2753,10 @@ mod tests {
         );
 
         // ── 1-sample MotionTrajectory ─────────────────────────────────────────
-        // values[0] = j_a driver (0.5m); values[1] = spanning-tree j_b (1.0m);
-        // values[2] = closing j_b initial guess (0.5m).
-        // Closure identity: spanning(j_b) = j_a + free(j_b) → 1.0 = 0.5 + 0.5. ✓
+        // One value per body. The loop's closure is q_b == q_a, so the sample
+        // sits ON closure at q_a = q_b = 0.5 m. values[2] (the closing body's
+        // `at`, j_b again) is structurally required and inert for chain
+        // extraction, which reads the FIRST j_b binding.
         let sample = mint_instance(
             "TrajectorySample",
             vec![
@@ -2777,9 +2770,9 @@ mod tests {
                 (
                     "values".to_string(),
                     Value::List(vec![
-                        Value::length(0.5), // m1@j_a: driver = 0.5 m
-                        Value::length(1.0), // m2@j_b: spanning-tree position = 1.0 m
-                        Value::length(0.5), // m3@j_b: closing-edge initial guess = 0.5 m
+                        Value::length(0.5), // m1@j_a: q_a = 0.5 m
+                        Value::length(0.5), // m2@j_b: q_b = 0.5 m (closure q_b == q_a)
+                        Value::length(0.5), // m3@j_b: closing body, inert for chains
                     ]),
                 ),
                 (
@@ -2881,16 +2874,19 @@ mod tests {
     /// (identity-pose) form, so that combination was previously inferred rather
     /// than exercised.
     ///
-    /// Fixture — `j_a` prismatic +x and `j_b` prismatic +z, both parented to
-    /// world, closed by a third body that re-parents `j_b` onto `j_a` carrying
-    /// a pose of `translate(0, 0, 0.5 m)`:
+    /// Fixture — `j_a` and `j_b` both prismatic +z (distinct ranges keep the
+    /// joint Maps distinct), both parented to world, closed by a third body
+    /// that re-parents `j_b` onto `j_a` carrying a pose of
+    /// `translate(0, 0, 0.5 m)`:
     ///
     ///     path_a = [world, j_b]                  T_a = translate(0, 0, q_b)
-    ///     path_b = [world, j_a, fixed(pose)]     T_b = translate(q_a, 0, 0.5)
+    ///     path_b = [world, j_a, fixed(pose)]     T_b = translate(0, 0, q_a + 0.5)
     ///
-    /// At `q_a = 0, q_b = 0.5` the closure is EXACTLY satisfied, and the pose is
-    /// what satisfies it — a pose link dropped anywhere on this path surfaces as
-    /// a 0.5 m residual rather than as a silently different answer.
+    /// The closure is `q_b = q_a + 0.5`: one live constraint row v_z = [1, −1]
+    /// and one degree of mobility along q̇ = [1, 1]. At `q_a = 0, q_b = 0.5`
+    /// the closure is EXACTLY satisfied, and the pose is what satisfies it — a
+    /// pose link dropped anywhere on this path surfaces as a 0.5 m residual
+    /// rather than as a silently different answer.
     ///
     /// The workless-constraint identity is checked against a τ_open measured on
     /// the same two spanning-tree bodies with the closing call dropped. That
@@ -2913,7 +2909,7 @@ mod tests {
             lower_inclusive: true,
             upper_inclusive: true,
         };
-        let j_a = eval_builtin("prismatic", &[unit(1.0, 0.0, 0.0), len_range(1.0)]);
+        let j_a = eval_builtin("prismatic", &[unit(0.0, 0.0, 1.0), len_range(1.0)]);
         let j_b = eval_builtin("prismatic", &[unit(0.0, 0.0, 1.0), len_range(2.0)]);
 
         let mp_a = mass_properties_fixture(
@@ -3027,7 +3023,7 @@ mod tests {
             &chain_b,
             &vals_b,
             &ordered_joints,
-            1e-7,
+            DEFAULT_LOOP_JACOBIAN_FD_STEP,
         )
         .expect("FD Jacobian must resolve with a 0-DOF link in chain_b");
         assert_eq!(
@@ -3036,6 +3032,20 @@ mod tests {
             "one column per spanning-tree DOF, even though chain_b holds {} entries",
             chain_b.len()
         );
+
+        // The reduced constraint is the single live v_z row [1, −1] — the row a
+        // closing-joint (+z) projection would delete.
+        let (a_red, m_eff) = loop_constraint_rows(&raw_cols);
+        assert_eq!(
+            m_eff, 1,
+            "the closure q_b = q_a + 0.5 is one live constraint row"
+        );
+        for (i, (got, want)) in a_red.iter().zip([1.0, -1.0]).enumerate() {
+            assert!(
+                (got - want).abs() <= 1e-6,
+                "reduced row[{i}]: got {got:.6e}, want {want:.6e} (the v_z row [1, −1])"
+            );
+        }
 
         // (d) End-to-end: the closed path returns finite torques.
         let sample = |values: Vec<Value>| {
@@ -3098,24 +3108,23 @@ mod tests {
             assert!(t.is_finite(), "tau_closed[{i}] must be finite, got {t}");
         }
 
-        // (e) Workless constraints: the reduced constraint row is [1, 0] (the
-        // v_z row is absorbed by the closing +z prismatic — see
-        // `closed_chain::tests::reduce_constraint_rank_on_builder_produced_closed_chain`),
-        // so q̇ = [0, 1] lies in its null space and τ·q̇ must equal τ_open·q̇:
-        // λ does no work along it. Non-vacuous — j_b carries its 2 kg link
-        // against gravity, so the shared value is ≈ 19.62 N, not 0.
+        // (e) Workless constraints: the tangent virtual velocity q̇ = [1, 1]
+        // satisfies A·q̇ = 0, so Σ τ_closed·q̇ must equal Σ τ_open·q̇ — λ does
+        // no work along it. Non-vacuous: both sliders carry their links against
+        // gravity, so Σ τ_open·q̇ ≈ (1 + 2)·9.81 = 29.43 N, not 0. The
+        // difference λ·(A·q̇) is a product of two FD-roundoff terms, far below 1e-9.
+        let q_dot = [1.0, 1.0];
+        let power = |tau: &[f64]| -> f64 { tau.iter().zip(q_dot).map(|(t, qd)| t * qd).sum() };
+        let (power_closed, power_open) = (power(&tau_closed), power(&tau_open));
         assert!(
-            tau_open[1].abs() > 1.0,
-            "the +z prismatic must carry a real gravity load for this identity to \
-             discriminate, got {}",
-            tau_open[1]
+            power_open.abs() > 1.0,
+            "both +z sliders must carry a real gravity load for this identity to \
+             discriminate, got Σ τ_open·q̇ = {power_open}"
         );
         assert!(
-            (tau_closed[1] - tau_open[1]).abs() < 1e-9,
-            "virtual work along the null-space direction q̇ = [0, 1]: τ_closed[1] = {}, \
-             τ_open[1] = {} — constraint forces must do no work along it",
-            tau_closed[1],
-            tau_open[1]
+            (power_closed - power_open).abs() < 1e-9,
+            "virtual work along the tangent q̇ = [1, 1]: Σ τ_closed·q̇ = {power_closed}, \
+             Σ τ_open·q̇ = {power_open} — constraint forces must do no work along it"
         );
     }
 
