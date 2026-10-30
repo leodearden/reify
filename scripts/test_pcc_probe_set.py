@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
 test_pcc_probe_set.py — probe-set loading in scripts/prd-capability-check.py:
-the scaffold, the JSON round-trip, the "value" kind's load-time schema and the
-pure stdout value predicate.  Shared loader and helpers:
+the scaffold, the JSON round-trip, the "value" kind's load-time schema, the
+load-time non-vacuity rules every kind shares, and the pure stdout value
+predicate.  Shared loader and helpers:
 scripts/_pcc_test_support.py; runner: tests/infra/test_prd_capability_check.sh.
 """
 
+import copy
+import glob
 import json
 import os
 import unittest
@@ -579,6 +582,155 @@ class TestValueProbeSchema(unittest.TestCase):
         for probe in probes:
             self.assertNotEqual(probe.probe_kind, "value")
             self.assertNotIn("stdout_value", probe.expected.get("match", {}))
+
+
+# ---------------------------------------------------------------------------
+# #8644 (S22 δ): load-time non-vacuity for every kind — a target to probe, only
+# the match keys the kind consults, and a check probe that constrains its run.
+# ---------------------------------------------------------------------------
+
+_PRD_GATE_DIR = os.path.join(_REPO_ROOT, "tests", "prd-gate")
+
+
+def _committed_prd_gate_json():
+    """(basename, decoded object) for every committed tests/prd-gate/*.json."""
+    documents = []
+    for path in sorted(glob.glob(os.path.join(_PRD_GATE_DIR, "*.json"))):
+        with open(path) as fh:
+            documents.append((os.path.basename(path), json.load(fh)))
+    return documents
+
+
+class TestProbeSetNonVacuity(unittest.TestCase):
+    """load_probe_set refuses a probe that would run yet could prove nothing.
+
+    Each refusal case is the SECOND probe of a set whose first probe is valid,
+    so a message naming probe[1] is what shows the index is the offender's.
+    """
+
+    _VALID_MATCH_BY_KIND = {
+        "grammar": {},
+        "check": {"exit_code": 1},
+        "ir": {"stderr_contains": "E"},
+        "value": {"stdout_value": {"pattern": r"X = ([0-9.]+)", "min": 0}},
+    }
+
+    def _probe(self, kind, match, fixture="tests/prd-gate/fixtures/arrow_type.ri",
+               observation="present"):
+        return {
+            "capability": f"a {kind} probe",
+            "probe_kind": kind,
+            "fixture": fixture,
+            "expected": {"observation": observation, "match": copy.deepcopy(match)},
+        }
+
+    def _load(self, *probes):
+        return pcc.load_probe_set(json.dumps({"probes": list(probes)}))
+
+    def _assert_second_probe_rejected(self, bad_probe, *needles):
+        valid_first = self._probe("check", {"exit_code": 1})
+        with self.assertRaises(ValueError) as ctx:
+            self._load(valid_first, bad_probe)
+        message = str(ctx.exception)
+        for needle in ("probe[1]",) + needles:
+            self.assertIn(needle, message)
+        return message
+
+    # ── fixture: every kind needs a target (R14 M1) ───────────────────────────
+
+    def test_refuses_a_probe_with_no_fixture_for_every_kind(self):
+        for kind, match in self._VALID_MATCH_BY_KIND.items():
+            for fixture in ("", "   ", None, 5):
+                with self.subTest(kind=kind, fixture=fixture):
+                    self._assert_second_probe_rejected(
+                        self._probe(kind, match, fixture=fixture), "fixture"
+                    )
+
+    # ── check: at least one key that constrains the run (D4 / M2) ─────────────
+
+    def test_refuses_a_check_probe_with_no_constraining_key(self):
+        for match in (
+            {},
+            {"stderr_contains": ""},
+            {"stdout_contains": ""},
+            {"exit_code": True},
+        ):
+            with self.subTest(match=match):
+                self._assert_second_probe_rejected(self._probe("check", match))
+
+    def test_accepts_a_check_probe_with_one_constraining_key(self):
+        for match in (
+            {"exit_code": 0},
+            {"exit_code": 1},
+            {"stderr_contains": "x"},
+            {"stdout_contains": "x"},
+        ):
+            with self.subTest(match=match):
+                probes = self._load(self._probe("check", match))
+                self.assertEqual(len(probes), 1)
+                self.assertEqual(probes[0].expected["match"], match)
+
+    # ── ir expecting present: a signature for the error to carry ──────────────
+
+    def test_refuses_an_ir_probe_expecting_present_with_no_signature(self):
+        """Exit 0 reads ABSENT and an unsigned error INDETERMINATE: it can never pass."""
+        for match in ({}, {"stderr_contains": ""}):
+            with self.subTest(match=match):
+                self._assert_second_probe_rejected(
+                    self._probe("ir", match), "stderr_contains"
+                )
+
+    def test_accepts_an_ir_probe_that_names_a_signature_or_expects_absent(self):
+        for observation, match in (
+            ("present", {"stderr_contains": "EvalError"}),
+            ("absent", {"stderr_contains": "EvalError"}),
+            ("absent", {}),
+        ):
+            with self.subTest(observation=observation, match=match):
+                probes = self._load(
+                    self._probe("ir", match, observation=observation)
+                )
+                self.assertEqual(probes[0].expected["match"], match)
+
+    # ── every kind: no match key its observation ignores ──────────────────────
+
+    def test_refuses_a_match_key_the_kind_does_not_consult(self):
+        value_spec = self._VALID_MATCH_BY_KIND["value"]["stdout_value"]
+        cases = (
+            ("check", {"exit_code": 0, "stderr_pattern": "x"}, "stderr_pattern"),
+            ("check", {"exit_code": 1, "stderr_not_contains": "x"}, "stderr_not_contains"),
+            ("grammar", {"exit_code": 0}, "exit_code"),
+            ("ir", {"exit_code": 1, "stderr_contains": "E"}, "exit_code"),
+            ("value", {"stdout_value": value_spec, "foo": 1}, "foo"),
+        )
+        for kind, match, key in cases:
+            with self.subTest(kind=kind, key=key):
+                message = self._assert_second_probe_rejected(
+                    self._probe(kind, match), key
+                )
+                self.assertRegex(message, rf"\b{kind}\b")
+
+    # ── the committed sets stay loadable ──────────────────────────────────────
+
+    def test_every_committed_probe_set_loads(self):
+        probe_sets = [
+            (name, doc) for name, doc in _committed_prd_gate_json()
+            if isinstance(doc, dict) and "probes" in doc
+        ]
+        self.assertTrue(probe_sets, f"no probe set found under {_PRD_GATE_DIR}")
+        for name, doc in probe_sets:
+            with self.subTest(probe_set=name):
+                self.assertTrue(pcc.load_probe_set(json.dumps(doc)))
+
+    def test_every_committed_prd_gate_json_is_a_probe_set_or_premises_file(self):
+        """A file that is neither escapes both loaders, and so every check above."""
+        for name, doc in _committed_prd_gate_json():
+            with self.subTest(file=name):
+                self.assertIsInstance(doc, dict)
+                self.assertTrue(
+                    "probes" in doc or "premises" in doc,
+                    f"{name} has neither a 'probes' nor a 'premises' key",
+                )
 
 
 # ---------------------------------------------------------------------------

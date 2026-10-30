@@ -11,10 +11,10 @@ Committed-probe-set format (JSON):
                 "fixture": "<repo-relative path to the .ri fixture file>",
                 "expected": {
                     "observation": "present" | "absent",
-                    "match": {
-                        "exit_code": <int>,          // optional
-                        "stderr_contains": "<str>",  // optional
-                        "stdout_contains": "<str>",  // optional
+                    "match": {                       // per kind: _MATCH_KEYS_BY_KIND
+                        "exit_code": <int>,
+                        "stderr_contains": "<str>",
+                        "stdout_contains": "<str>",
                         "stdout_value": {            // value kind ONLY, required there
                             "pattern": "<regex with >=1 capture group>",
                             "group": <int|str>,      // optional, default 1
@@ -28,6 +28,11 @@ Committed-probe-set format (JSON):
             ...
         ]
     }
+
+load_probe_set() is the single validation site.  Beyond the shape above it
+refuses any probe that would run yet could prove nothing.  Those rules are
+stated once, in tests/prd-gate/README.md, and each is one validator that
+load_probe_set() calls.
 
 Probe kinds and dispatch:
     grammar  — `tree-sitter parse --quiet <fixture>` (CWD = tree-sitter-reify/)
@@ -86,7 +91,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +112,6 @@ UNPROVABLE = "UNPROVABLE"
 # Valid constants for validation
 # ---------------------------------------------------------------------------
 
-_VALID_PROBE_KINDS = frozenset({"grammar", "check", "ir", "value"})
 _VALID_OBSERVATIONS = frozenset({"present", "absent"})
 
 # ---------------------------------------------------------------------------
@@ -124,12 +128,29 @@ _VALUE_LOCATOR_KEYS = frozenset({"pattern", "group"})
 # probe carrying none of them locates a number and asserts nothing about it.
 _VALUE_CONSTRAINT_KEYS = frozenset({"min", "max", "finite"})
 
-# match keys a value probe may NOT carry.  exit 0 is structural to the kind, so
-# a second spelling of it could contradict the arm that enforces it; stdout and
-# stderr assertions belong in `pattern`, which is the half that gets checked.
-_VALUE_FORBIDDEN_MATCH_KEYS = frozenset(
-    {"exit_code", "stderr_contains", "stdout_contains"}
-)
+# ---------------------------------------------------------------------------
+# Match keys — the ones each kind's observation actually reads
+# ---------------------------------------------------------------------------
+
+_EXIT_CODE_KEY = "exit_code"
+_STDERR_SIGNATURE_KEY = "stderr_contains"
+_SIGNATURE_KEYS = frozenset({_STDERR_SIGNATURE_KEY, "stdout_contains"})
+
+# Exactly the match keys each kind's arm of observe_with_evidence() reads.  Any
+# other key would be silently ignored, leaving the probe armed but vacuous, so
+# load_probe_set() refuses it.  This table is also the probe-kind vocabulary.
+_MATCH_KEYS_BY_KIND: Dict[str, FrozenSet[str]] = {
+    "grammar": frozenset(),
+    "check": frozenset({_EXIT_CODE_KEY}) | _SIGNATURE_KEYS,
+    # ir tests only exit ≠ 0, so an exit_code here would never be compared.
+    "ir": frozenset({_STDERR_SIGNATURE_KEY}),
+    # exit 0 is structural to the kind, so a second spelling of it could
+    # contradict the arm that enforces it; stdout and stderr assertions belong
+    # in the predicate's `pattern`, which is the half that gets checked.
+    "value": frozenset({_VALUE_PREDICATE_KEY}),
+}
+
+_VALID_PROBE_KINDS = frozenset(_MATCH_KEYS_BY_KIND)
 
 # Kinds that ask `reify eval <fixture>` and differ only in what they read off
 # the result: `ir` looks at the exit code and stderr signature, `value` at the
@@ -444,6 +465,83 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _validate_fixture(index: int, fixture: Any) -> None:
+    """Reject a probe with no target: it runs against nothing and proves nothing."""
+    if not isinstance(fixture, str) or not fixture.strip():
+        raise ValueError(
+            f"probe[{index}] has fixture {fixture!r}; every probe needs a "
+            "non-empty path to the .ri file it runs against, and a probe with "
+            "no target can prove nothing"
+        )
+
+
+def _refuse_unconsulted_match_keys(
+    index: int, probe_kind: str, match: Dict[str, Any]
+) -> None:
+    """Reject a match key that probe_kind's observation never reads.
+
+    observe_with_evidence() ignores such a key, so a misspelt constraint
+    (stderr_pattern for stderr_contains) or one borrowed from another kind would
+    leave the probe armed but vacuous instead of failing where it was written.
+    """
+    accepted = _MATCH_KEYS_BY_KIND[probe_kind]
+    unconsulted = sorted(set(match) - accepted)
+    if unconsulted:
+        raise ValueError(
+            f"probe[{index}] is a '{probe_kind}' probe carrying "
+            f"match.{unconsulted[0]}, which that kind never consults; it would "
+            "be silently ignored, leaving the probe armed but vacuous.  A "
+            f"'{probe_kind}' probe accepts "
+            f"{sorted(accepted) if accepted else 'no match keys'}"
+        )
+
+
+def _is_signature(value: Any) -> bool:
+    """True for a stderr/stdout signature that can be missing from some output.
+
+    The empty string is in every output, so it constrains nothing.
+    """
+    return isinstance(value, str) and bool(value)
+
+
+def _validate_check_predicate(index: int, match: Dict[str, Any]) -> None:
+    """Reject a check probe whose match constrains nothing about the run.
+
+    match_predicate() holds for every run when no key constrains it, so such a
+    probe observes PRESENT whatever reify does.  A constraining key is an integer
+    exit_code (a bool is not one, though Python calls it an int) or a
+    stderr_contains / stdout_contains that _is_signature().  Only the absence of
+    any constraining key is refused here; a key that sits beside a constraining
+    one is not judged.
+    """
+    exit_code = match.get(_EXIT_CODE_KEY)
+    constrains_exit = isinstance(exit_code, int) and not isinstance(exit_code, bool)
+    constrains_output = any(_is_signature(match.get(key)) for key in _SIGNATURE_KEYS)
+    if not (constrains_exit or constrains_output):
+        raise ValueError(
+            f"probe[{index}] is a check probe whose match {match!r} constrains "
+            "nothing, so it observes present whatever reify does; give it an "
+            f"integer {_EXIT_CODE_KEY} or a non-empty "
+            f"{' / '.join(sorted(_SIGNATURE_KEYS))}"
+        )
+
+
+def _validate_ir_present_signature(index: int, match: Dict[str, Any]) -> None:
+    """Reject an ir probe expecting present that names no signature to look for.
+
+    observe_with_evidence() reads exit 0 as ABSENT and an error whose stderr
+    lacks the signature as INDETERMINATE, so without one such a probe can never
+    pass.  An ir probe expecting absent needs none: a clean exit is its claim.
+    """
+    if not _is_signature(match.get(_STDERR_SIGNATURE_KEY)):
+        raise ValueError(
+            f"probe[{index}] is an ir probe expecting present whose match "
+            f"{match!r} names no error signature, so exit 0 reads absent and "
+            "any error reads indeterminate: it can never pass; give it a "
+            f"non-empty {_STDERR_SIGNATURE_KEY}"
+        )
+
+
 def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
     """Reject any `value` probe that would be armed but assert nothing.
 
@@ -471,15 +569,6 @@ def _validate_value_predicate(index: int, match: Dict[str, Any]) -> None:
         raise ValueError(
             f"{where} match.{_VALUE_PREDICATE_KEY} must be an object, "
             f"got {type(spec).__name__}"
-        )
-
-    forbidden = sorted(_VALUE_FORBIDDEN_MATCH_KEYS & set(match))
-    if forbidden:
-        raise ValueError(
-            f"{where} is a value probe carrying match.{forbidden[0]}; a value "
-            f"probe's exit 0 is structural to the kind and its stdout assertion "
-            f"goes through {_VALUE_PREDICATE_KEY}.pattern, so "
-            f"{', '.join(forbidden)} would be a second, drifting spelling"
         )
 
     unknown = sorted(set(spec) - _VALUE_LOCATOR_KEYS - _VALUE_CONSTRAINT_KEYS)
@@ -573,8 +662,9 @@ def load_probe_set(text: str) -> List[Probe]:
     - missing required fields (capability, probe_kind, fixture, expected)
     - unknown probe_kind (must be grammar|check|ir|value)
     - unknown observation value (must be present|absent)
-    - a vacuous or malformed value-kind predicate, or a stdout_value on a kind
-      that would silently ignore it (see _validate_value_predicate)
+    or if a probe would run yet could prove nothing, by the rules
+    tests/prd-gate/README.md states; each is one _validate_* / _refuse_* call
+    below.
 
     This is the single validation site: prd-decompose-verify.py's bind_premises
     routes its assembled probe set through here rather than re-checking, so a
@@ -612,6 +702,7 @@ def load_probe_set(text: str) -> List[Probe]:
                 f"probe[{i}] has unknown probe_kind '{probe_kind}'; "
                 f"must be one of {sorted(_VALID_PROBE_KINDS)}"
             )
+        _validate_fixture(i, raw["fixture"])
 
         expected = raw["expected"]
         if not isinstance(expected, dict) or "observation" not in expected:
@@ -634,15 +725,13 @@ def load_probe_set(text: str) -> List[Probe]:
                 f"probe[{i}] expected.match must be an object, "
                 f"got {type(match).__name__}"
             )
+        _refuse_unconsulted_match_keys(i, probe_kind, match)
         if probe_kind == "value":
             _validate_value_predicate(i, match)
-        elif _VALUE_PREDICATE_KEY in match:
-            raise ValueError(
-                f"probe[{i}] is a '{probe_kind}' probe carrying "
-                f"match.{_VALUE_PREDICATE_KEY}, which only the 'value' kind "
-                "consults; leaving it here would arm a predicate nothing ever "
-                "evaluates"
-            )
+        elif probe_kind == "check":
+            _validate_check_predicate(i, match)
+        elif probe_kind == "ir" and observation == "present":
+            _validate_ir_present_signature(i, match)
 
         probes.append(Probe(
             capability=raw["capability"],
@@ -986,7 +1075,7 @@ def observe_with_evidence(
         if run.exit_code == 0:
             return ABSENT, None
         # exit ≠ 0: check for the asserted signature in stderr
-        sig = match.get("stderr_contains")
+        sig = match.get(_STDERR_SIGNATURE_KEY)
         if sig and sig in run.stderr:
             return PRESENT, None
         return INDETERMINATE, None

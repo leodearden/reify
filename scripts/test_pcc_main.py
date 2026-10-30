@@ -11,6 +11,8 @@ import json
 import os
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -20,6 +22,7 @@ from _pcc_test_support import (
     pcc,
     _CACHE_DENIED_STDERR,
     _EXAMPLE_PROBE_SET,
+    _HARNESS_PATH,
     _REPO_ROOT,
     _VALUE_CELLS_FIXTURE,
     _VALUE_CELLS_STDOUT,
@@ -1050,6 +1053,74 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         rc, out, _ = self._e2e("ir", "absent", {"stderr_contains": "EvalError"})
         self.assertEqual(rc, 0, out)
         self.assertIn(f"[{pcc.PASS}]", out)
+
+
+# ---------------------------------------------------------------------------
+# #8644 (S22 δ, B8): the real CLI refuses a vacuous probe set as a usage error
+# ---------------------------------------------------------------------------
+
+class TestLoadRefusalCli(unittest.TestCase):
+    """prd-capability-check.py, run as a real process, exits 64 naming the probe.
+
+    REIFY_BIN names a binary that does not exist, so a probe set the loader
+    wrongly accepts ends in a harness error instead of a real `reify` run, and
+    can never be mistaken for the usage error asserted here.
+    """
+
+    def _run_cli(self, bad_probe):
+        valid_first = {
+            "capability": "a valid check probe",
+            "probe_kind": "check",
+            "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+            "expected": {"observation": "present", "match": {"exit_code": 1}},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "probe-set.json")
+            with open(path, "w") as fh:
+                json.dump({"probes": [valid_first, bad_probe]}, fh)
+            env = dict(os.environ, REIFY_BIN=os.path.join(tmp, "no-such-reify"))
+            return subprocess.run(
+                [sys.executable, _HARNESS_PATH, path],
+                capture_output=True, text=True, env=env,
+            )
+
+    def _check_probe(self, match, fixture="tests/prd-gate/fixtures/arrow_type.ri"):
+        return {
+            "capability": "a check probe",
+            "probe_kind": "check",
+            "fixture": fixture,
+            "expected": {"observation": "present", "match": match},
+        }
+
+    def _assert_usage_error_naming_second_probe(self, bad_probe, *needles):
+        proc = self._run_cli(bad_probe)
+        self.assertEqual(proc.returncode, 64, proc.stderr)
+        for needle in ("probe[1]",) + needles:
+            self.assertIn(needle, proc.stderr)
+
+    def test_check_probe_with_empty_match_is_a_usage_error(self):
+        self._assert_usage_error_naming_second_probe(self._check_probe({}))
+
+    def test_probe_with_empty_fixture_is_a_usage_error(self):
+        self._assert_usage_error_naming_second_probe(
+            self._check_probe({"exit_code": 1}, fixture="")
+        )
+
+    def test_check_probe_with_only_an_empty_stderr_signature_is_a_usage_error(self):
+        self._assert_usage_error_naming_second_probe(
+            self._check_probe({"stderr_contains": ""})
+        )
+
+    def test_check_probe_with_only_an_empty_stdout_signature_is_a_usage_error(self):
+        self._assert_usage_error_naming_second_probe(
+            self._check_probe({"stdout_contains": ""})
+        )
+
+    def test_check_probe_with_a_misspelt_match_key_is_a_usage_error(self):
+        self._assert_usage_error_naming_second_probe(
+            self._check_probe({"exit_code": 0, "stderr_pattern": "x"}),
+            "stderr_pattern",
+        )
 
 
 if __name__ == "__main__":

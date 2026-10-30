@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-test_prd_decompose_verify.py — main() CLI, boundary e2e and user-observable-signal tests
-for scripts/prd-decompose-verify.py.  Sibling partitions _bind, _synthesize and _mjs run
-with this one in a single unittest invocation from tests/infra/test_prd_decompose_verify.sh.
+test_prd_decompose_verify.py — main() CLI, boundary e2e, user-observable-signal and
+binding-row CLI tests for scripts/prd-decompose-verify.py.  Sibling partitions _bind,
+_synthesize and _mjs run with this one in a single unittest invocation from
+tests/infra/test_prd_decompose_verify.sh.
 """
 
+import glob
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -554,6 +557,101 @@ class TestUserObservableSignal(unittest.TestCase):
         self.assertIn(f"{len(bv.blocking)} blocking", header)
         self.assertIn(f"{len(bv.malformed)} malformed", header)
         self.assertIn(f"{len(bv.fixture_absent)} fixture-absent", header)
+
+
+
+# ---------------------------------------------------------------------------
+# #8644 (S22 δ, B6/B7): the binding row's required match, through both real CLIs
+# ---------------------------------------------------------------------------
+
+_PDV_SCRIPT = os.path.join(REPO_ROOT, "scripts", "prd-decompose-verify.py")
+_ALPHA_SCRIPT = os.path.join(REPO_ROOT, "scripts", "prd-capability-check.py")
+
+
+class TestBindingRowCli(unittest.TestCase):
+    """`bind` writes a row's required match, and α then executes it.
+
+    Both scripts run as real processes.  α's reify is a /bin/sh stub named by
+    REIFY_BIN, and the fixture is an existing file given by absolute path, so
+    the verdict depends on the stub's exit status alone.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pdv_binding_row_")
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = self._tmp.name
+        self.fixture = os.path.join(self.tmp, "f.ri")
+        with open(self.fixture, "w") as fh:
+            fh.write("// existing fixture; the stub reify never reads it\n")
+
+    def _write_json(self, name, obj):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as fh:
+            json.dump(obj, fh)
+        return path
+
+    def _stub_reify(self, status):
+        path = os.path.join(self.tmp, f"reify-exit-{status}")
+        with open(path, "w") as fh:
+            fh.write(f"#!/bin/sh\necho 'stub reify: exiting {status}' >&2\nexit {status}\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def _bind(self, premises_path):
+        return subprocess.run(
+            [sys.executable, _PDV_SCRIPT, "bind", premises_path],
+            capture_output=True, text=True,
+        )
+
+    def _resolves_premises(self, match):
+        return self._write_json("premises.json", {"premises": [{
+            "text": "f.ri resolves",
+            "assertion_kind": "resolves",
+            "fixture": self.fixture,
+            "match": match,
+        }]})
+
+    def test_b6_a_resolves_premise_with_no_match_binds_an_executed_exit_code_0(self):
+        bind = self._bind(self._resolves_premises({}))
+        self.assertEqual(bind.returncode, 0, bind.stderr)
+        probe_set = json.loads(bind.stdout)
+        self.assertEqual(probe_set["probes"][0]["expected"]["match"], {"exit_code": 0})
+
+        probe_set_path = os.path.join(self.tmp, "probe-set.json")
+        with open(probe_set_path, "w") as fh:
+            fh.write(bind.stdout)
+        for status, verdict, alpha_rc in ((1, "FAIL", 1), (0, "PASS", 0)):
+            with self.subTest(reify_exit=status):
+                alpha = subprocess.run(
+                    [sys.executable, _ALPHA_SCRIPT, "--json", probe_set_path],
+                    capture_output=True, text=True,
+                    env=dict(os.environ, REIFY_BIN=self._stub_reify(status)),
+                )
+                self.assertEqual(alpha.returncode, alpha_rc, alpha.stderr)
+                results = json.loads(alpha.stdout)["results"]
+                self.assertEqual(results[0]["verdict"], verdict, results)
+
+    def test_b7_a_resolves_premise_that_demands_exit_code_1_is_refused(self):
+        bind = self._bind(self._resolves_premises({"exit_code": 1}))
+        self.assertEqual(bind.returncode, 64, bind.stdout)
+        for needle in ("resolves", "exit_code"):
+            self.assertIn(needle, bind.stderr)
+        self.assertRegex(bind.stderr, r"\b0\b")
+        self.assertRegex(bind.stderr, r"\b1\b")
+        self.assertEqual(bind.stdout.strip(), "")
+
+    def test_every_committed_premises_file_binds(self):
+        premise_files = []
+        for path in sorted(glob.glob(os.path.join(REPO_ROOT, "tests", "prd-gate", "*.json"))):
+            with open(path) as fh:
+                doc = json.load(fh)
+            if isinstance(doc, dict) and "premises" in doc:
+                premise_files.append(path)
+        self.assertTrue(premise_files, "no committed premises file under tests/prd-gate")
+        for path in premise_files:
+            with self.subTest(premises=os.path.basename(path)):
+                bind = self._bind(path)
+                self.assertEqual(bind.returncode, 0, bind.stderr)
 
 
 if __name__ == "__main__":
