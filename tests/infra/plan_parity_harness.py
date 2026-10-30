@@ -15,8 +15,18 @@ scenario overrides any of these; an override of None unsets the variable.
 compare() is byte-for-byte on exit code, stdout and stderr. Its message names
 the first differing line, the plan section it sits in, the module of
 scripts/reify_verify/ that produces that section, and the port-window rule.
+
+EXPECTED_DIVERGENCES is the whole list of differences B1 accepts: PRD D8's
+listed divergences that γ1's corpus reaches, each asserted positively both
+ways by check_divergence(). Every other scenario compares byte-equal; there
+is no per-scenario opt-out.
+
+GridParity runs one action's full grid (PRD D13: role × profile × scope, with
+--include-infra) in two clone states; each grid shard member subclasses it.
 """
 
+import dataclasses
+import itertools
 import os
 import re
 import sys
@@ -41,14 +51,19 @@ from tree_under_test import shared_clone  # noqa: E402
 
 __all__ = (
     "Clone",
+    "EXPECTED_DIVERGENCES",
     "PORT_WINDOW_RULE",
     "Scenario",
     "Pair",
     "Divergence",
+    "ExpectedDivergence",
+    "GridParity",
     "InParityClone",
     "base_env",
+    "check_divergence",
     "compare",
     "discard_clone",
+    "grid_scenarios",
     "plan_sections",
     "run_both",
     "run_many",
@@ -127,18 +142,34 @@ def shared_env(clone: Clone, overrides: Mapping[str, str | None] = ()) -> dict:
     return env
 
 
-def run_both(clone: Clone, scenario: Scenario) -> Pair:
-    """Run `scenario` through bash verify.sh, then verify.py, in `clone`."""
+def _prepared(clone: Clone, scenario: Scenario) -> tuple[dict, Path]:
+    """(env, cwd) for `scenario`, after its setup has run on `clone`."""
     overrides = dict(scenario.env)
     if scenario.setup is not None:
         overrides.update(scenario.setup(clone) or {})
-    env = shared_env(clone, overrides)
     cwd = clone.root / scenario.cwd if scenario.cwd else clone.root
+    return shared_env(clone, overrides), cwd
+
+
+def _run_bash(clone: Clone, scenario: Scenario, env, cwd) -> Outcome:
     verify_sh = os.path.relpath(clone.root / "scripts" / "verify.sh", cwd)
+    return run_command(["bash", verify_sh, *scenario.argv], env, cwd)
+
+
+def _run_py(clone: Clone, scenario: Scenario, env, cwd) -> Outcome:
     verify_py = clone.root / "scripts" / "verify.py"
-    bash = run_command(["bash", verify_sh, *scenario.argv], env, cwd)
-    py = run_command([sys.executable, "-I", "-B", str(verify_py), *scenario.argv], env, cwd)
-    return Pair(bash, py)
+    return run_command([sys.executable, "-I", "-B", str(verify_py), *scenario.argv], env, cwd)
+
+
+def run_bash(clone: Clone, scenario: Scenario) -> Outcome:
+    """Run `scenario` through bash verify.sh alone, in `clone`."""
+    return _run_bash(clone, scenario, *_prepared(clone, scenario))
+
+
+def run_both(clone: Clone, scenario: Scenario) -> Pair:
+    """Run `scenario` through bash verify.sh, then verify.py, in `clone`."""
+    env, cwd = _prepared(clone, scenario)
+    return Pair(_run_bash(clone, scenario, env, cwd), _run_py(clone, scenario, env, cwd))
 
 
 def run_many(clone: Clone, scenarios) -> list[tuple[Scenario, Pair]]:
@@ -272,3 +303,122 @@ class InParityClone(InClone):
             pair.bash.returncode, 0,
             f"premise: bash plans [{scenario.label}]\n{pair.bash.stderr}",
         )
+
+
+def _without_line(text: str, line: str) -> str:
+    return "".join(kept for kept in text.splitlines(keepends=True) if kept.rstrip("\n") != line)
+
+
+def _write_merge_head(clone: Clone):
+    clone.merge_head().write_text(f"{clone.base}\n", encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class ExpectedDivergence:
+    """One of PRD D8's listed divergences, asserted positively both ways.
+
+    python's outcome on `scenario` equals transform(bash's outcome on
+    `reference`) over `sections`, and bash's outcome on `scenario` differs
+    from python's. `reference` defaults to `scenario`; it is another
+    invocation only where bash reaches python's outcome by a different route
+    (the cwd defect 4 needs, or the text flag the JSON plan twins). Sections
+    left out of `sections` are another member's subject, named by `citation`.
+    """
+
+    name: str
+    citation: str
+    scenario: Scenario
+    transform: Callable[[Outcome], Outcome] = lambda outcome: outcome
+    reference: Scenario | None = None
+    sections: tuple[str, ...] = SECTIONS
+
+
+OFFLINE_DUPLICATE_KNOB_WARNING = (
+    "verify.sh: WARNING: invalid REIFY_VERIFY_TEST_TIMEOUT_RELEASE=bogus; using default 90m"
+)
+LINT_ALL_PLAN = ("lint", "--scope", "all", "--print-plan")
+MERGE_HEAD_FROM_SCRIPTS = Scenario(
+    "MERGE_HEAD present, run from scripts/", ("lint", "--scope", "staged", "--print-plan"),
+    setup=_write_merge_head, cwd="scripts",
+)
+
+EXPECTED_DIVERGENCES = (
+    ExpectedDivergence(
+        "offline-single-knob-warning",
+        "PRD D8 listed divergences: a malformed timeout knob warns once, where offline today warns twice",
+        Scenario(
+            "offline role, bogus release test timeout", LINT_ALL_PLAN,
+            {"DF_VERIFY_ROLE": "offline", "REIFY_VERIFY_TEST_TIMEOUT_RELEASE": "bogus"},
+        ),
+        lambda bash: dataclasses.replace(
+            bash, stderr=_without_line(bash.stderr, OFFLINE_DUPLICATE_KNOB_WARNING)
+        ),
+    ),
+    ExpectedDivergence(
+        "print-plan-json-accepted",
+        "PRD D8 listed divergences: --print-plan=json is accepted, where bash exits 64 on it "
+        "(fold-verifier V12); its stdout is TestJsonPlanParity's subject",
+        Scenario("json plan", ("lint", "--scope", "all", "--print-plan=json")),
+        reference=Scenario("text plan", LINT_ALL_PLAN),
+        sections=("exit code", "stderr"),
+    ),
+    ExpectedDivergence(
+        "merge-head-from-foreign-cwd",
+        "PRD D8 listed divergences: the defect 4 fix (§2.4 — the MERGE_HEAD force was "
+        "evaluated against the caller's cwd)",
+        MERGE_HEAD_FROM_SCRIPTS,
+        reference=dataclasses.replace(MERGE_HEAD_FROM_SCRIPTS, cwd=None),
+    ),
+)
+
+
+def check_divergence(clone: Clone, expected: ExpectedDivergence) -> str | None:
+    """None when `expected` holds both ways in `clone`, else the failure message."""
+    pair = run_both(clone, expected.scenario)
+    if compare(pair.bash, pair.py) is None:
+        return (
+            f"[{expected.name}] expected divergence did not occur — bash converged; "
+            f"delete the entry ({expected.citation})"
+        )
+    reference = pair.bash if expected.reference is None else run_bash(clone, expected.reference)
+    divergence = compare(expected.transform(reference), pair.py, expected.sections)
+    if divergence is not None:
+        return (
+            f"[{expected.name}] python is not bash's outcome transformed as {expected.citation} "
+            f"lists (the 'bash' side below is the transformed one)\n{divergence.message}"
+        )
+    return None
+
+
+GRID_ROLES = (None, "merge", "offline", "background")
+GRID_PROFILES = ((), ("--profile", "debug"), ("--profile", "release"), ("--profile", "both"))
+GRID_SCOPES = ("all", "staged", "branch")
+GRID_CRATE_CHANGE = "crates/reify-doc/src/lib.rs"
+
+
+def grid_scenarios(action: str) -> list[Scenario]:
+    """`action`'s full grid (PRD D13): role × profile × scope, each with --include-infra."""
+    scenarios = []
+    for role, profile, scope in itertools.product(GRID_ROLES, GRID_PROFILES, GRID_SCOPES):
+        argv = (action, "--scope", scope, *profile, "--include-infra", "--print-plan")
+        scenarios.append(Scenario(f"{' '.join(argv)} role={role}", argv, {"DF_VERIFY_ROLE": role}))
+    return scenarios
+
+
+class GridParity(InParityClone):
+    """One action's grid, ACTION, compared in full in each clone state; a shard sets ACTION."""
+
+    ACTION: str
+
+    def assert_grid(self):
+        for scenario, pair in run_many(self.clone, grid_scenarios(self.ACTION)):
+            with self.subTest(scenario.label):
+                self.assert_bash_plans(scenario, pair)
+                self.assert_parity(scenario, pair)
+
+    def assert_staged_change_grid(self):
+        """The grid over a staged crate change on a started branch, so staged and branch both see it."""
+        self.clone.start_branch()
+        self.clone.stage(GRID_CRATE_CHANGE)
+        self.assertEqual(self.clone.name_list("--cached"), [GRID_CRATE_CHANGE], "premise: the change is staged")
+        self.assert_grid()

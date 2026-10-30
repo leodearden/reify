@@ -8,7 +8,9 @@ Every check plans one scenario on both sides, as subprocesses, in the shared
 clone of the tree under test, and compares exit code, stdout and stderr byte
 for byte. This module never imports reify_verify. Bash is the oracle until the
 cutover: a divergence reds, and its message names the module to edit and the
-port-window rule (PRD D13).
+port-window rule (PRD D13). The one exception is the harness's
+EXPECTED_DIVERGENCES (PRD D8's listed divergences), which
+TestExpectedDivergences asserts positively both ways.
 
 The runner, the scenario record and compare() live in
 tests/infra/plan_parity_harness.py. The lint and typecheck grids are the
@@ -34,11 +36,13 @@ from pathlib import Path
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 from plan_parity_harness import (  # noqa: E402
+    EXPECTED_DIVERGENCES,
     PORT_WINDOW_RULE,
     Clone,
     InParityClone,
     Scenario,
     base_env,
+    check_divergence,
     compare,
     discard_clone,
     plan_sections,
@@ -740,16 +744,25 @@ class TestJsonPlanParity(InParityClone):
             tracked = self.clone.git("ls-files", "--", *gate_paths).splitlines()
             self.assertEqual(sorted(tracked), gate_paths, f"{label}: every gate path is a tracked file")
 
-    def test_bash_refuses_the_json_flag(self):
-        """D8 listed divergence: the new query flag is accepted, where bash exits 64 on it."""
-        (scenario, pair), = run_many(self.clone, (lint_all("json plan", argv=("lint", "--scope", "all", JSON_PLAN)),))
-        self.assertEqual(pair.bash.returncode, 64, pair.bash.stderr)
-        self.assertIn(f"unknown argument '{JSON_PLAN}'", pair.bash.stderr)
-        self.assertEqual(pair.py.returncode, 0, pair.py.stderr)
-
 
 def fields_of(record) -> dict:
     return {name: value for name, value in record.items() if name not in NOT_RECORD_FIELDS}
+
+
+class TestExpectedDivergences(InParityClone):
+    """PRD D8's listed divergences in γ1's corpus, each asserted positively both ways.
+
+    python equals bash's outcome as the entry transforms it, and bash differs
+    from python; a stale entry reds, naming itself for deletion.
+    """
+
+    def test_each_listed_divergence_holds(self):
+        for expected in EXPECTED_DIVERGENCES:
+            with self.subTest(expected.name):
+                self.clone.reset()
+                failure = check_divergence(self.clone, expected)
+                if failure is not None:
+                    self.fail(failure)
 
 
 class TestTestRegionNotYetPlanned(InParityClone):
