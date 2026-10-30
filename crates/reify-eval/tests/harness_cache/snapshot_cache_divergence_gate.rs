@@ -6,12 +6,13 @@
 //! `Engine::check_snapshot_cache_divergence` convenience wrapper — proving the
 //! invariant holds post-eval: for every cell in `snapshot.values`, any PRESENT
 //! cache entry agrees by content-hash with the snapshot value, unless the cell
-//! is `CacheLeg::Skip`-exempt (a `cache-skip=` marker on its latest `Started`
-//! journal event). A MISSING cache entry is never a divergence (forward audit).
+//! is `CacheLeg::Skip`-exempt (its latest `Started` journal event carries a
+//! `CacheLegKind::Skipped` commit tag). A MISSING cache entry is never a
+//! divergence (forward audit).
 //!
 //! MANDATED anti-silent-accept: `seeded_divergence_is_reported` fabricates a
-//! minimal divergent state (NOT a real compile+eval — post-γ there is no
-//! reproducible real divergence through `eval()`, since every post-pass
+//! minimal divergent state (NOT a real compile+eval — there is no reproducible
+//! real non-exempt divergence through `eval()`, since every post-pass
 //! overwrite is `CacheLeg::Skip`) and asserts the checker actually fires. A
 //! checker that always returned `vec![]` would otherwise make the unified corpus
 //! sweep vacuously green — the exact rationale the precedent (task 4952,
@@ -42,8 +43,11 @@ use std::time::Instant;
 use reify_core::{ValueCellId, VersionId};
 use reify_eval::cache::{CacheStore, CachedResult, NodeId};
 use reify_eval::deps::DependencyTrace;
-use reify_eval::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
+use reify_eval::journal::{
+    CacheLegKind, CommitTag, EvalEvent, EventJournal, EventKind, TraceSource,
+};
 use reify_ir::{DeterminacyState, PersistentMap, Value};
+use reify_test_support::{make_engine, parse_and_compile};
 
 /// Builds the shared mismatched state: the snapshot holds `Int(2)` for the
 /// returned cell, while the cache holds `Int(1)` for that same cell — so the
@@ -95,31 +99,134 @@ fn seeded_divergence_is_reported() {
     );
 }
 
-/// Companion exemption test: the SAME divergent state plus a `cache-skip=`
-/// marker on the cell's latest `Started` event → the checker must report
-/// nothing (the divergence is intentional, flagged by a `CacheLeg::Skip`).
+/// A journal `Started` event for `cell` carrying a post-pass commit tag with
+/// the given cache leg, and no payload.
+fn post_pass_started(cell: &ValueCellId, cache: CacheLegKind) -> EvalEvent {
+    EvalEvent {
+        timestamp: Instant::now(),
+        node_id: NodeId::Value(cell.clone()),
+        kind: EventKind::Started {
+            commit: Some(CommitTag {
+                trace: TraceSource::PostPassOverwrite,
+                cache,
+            }),
+        },
+        version: VersionId(1),
+        payload: None,
+    }
+}
+
+fn seeded_skip() -> CacheLegKind {
+    CacheLegKind::Skipped {
+        reason: "seeded".to_string(),
+    }
+}
+
+/// Companion exemption test: the SAME divergent state plus a
+/// `CacheLegKind::Skipped` commit tag on the cell's latest `Started` event →
+/// the checker must report nothing (the divergence is intentional, flagged by
+/// a `CacheLeg::Skip` commit).
 #[test]
 fn seeded_skip_committed_divergence_is_exempted() {
     let (cell, snapshot_values, cache) = seeded_divergent_state();
 
     let mut journal = EventJournal::new();
-    journal.record(EvalEvent {
-        timestamp: Instant::now(),
-        node_id: NodeId::Value(cell.clone()),
-        kind: EventKind::Started { commit: None },
-        version: VersionId(1),
-        payload: Some(EventPayload::Custom(
-            "post-pass-overwrite|cache-skip=seeded".to_string(),
-        )),
-    });
+    journal.record(post_pass_started(&cell, seeded_skip()));
 
     let divergences =
         reify_eval::check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
 
     assert!(
         divergences.is_empty(),
-        "a Skip-committed (cache-skip= marker) cell must be exempt despite the hash \
+        "a Skip-committed (Skipped commit tag) cell must be exempt despite the hash \
          divergence, got {divergences:?}"
+    );
+}
+
+/// The LATEST commit decides: a Recorded commit after a Skipped one leaves the
+/// divergence reported.
+#[test]
+fn seeded_recorded_after_skip_divergence_is_reported() {
+    let (cell, snapshot_values, cache) = seeded_divergent_state();
+
+    let mut journal = EventJournal::new();
+    journal.record(post_pass_started(&cell, seeded_skip()));
+    journal.record(post_pass_started(&cell, CacheLegKind::Recorded));
+
+    let divergences =
+        reify_eval::check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
+
+    assert_eq!(
+        divergences.iter().map(|d| &d.cell).collect::<Vec<_>>(),
+        vec![&cell],
+        "a Recorded commit after a Skipped one must not exempt the divergent cell"
+    );
+}
+
+/// A real compile+eval whose post-pass Skip commit genuinely diverges from its
+/// cache entry, and is exempt only through the typed tag. `ms = self.members`
+/// is overwritten by the structural-query post-pass with `CacheLeg::Skip`, so
+/// its cache entry keeps the main pass's pre-expansion value.
+#[test]
+fn real_post_pass_skip_divergence_is_exempted_by_its_tag() {
+    let module = parse_and_compile(
+        r#"
+    structure S {
+        let ms = self.members
+        let ms_det = determined(ms)
+    }
+"#,
+    );
+    let mut engine = make_engine();
+    engine.eval(&module);
+
+    let ms = ValueCellId::new("S", "ms");
+    let node = NodeId::Value(ms.clone());
+
+    // (1) `ms` genuinely diverges, so the exemption is load-bearing.
+    let (value, det) = engine
+        .snapshot()
+        .and_then(|snapshot| snapshot.values.get(&ms))
+        .expect("ms is in the snapshot")
+        .clone();
+    let entry = engine
+        .cache_store()
+        .get(&node)
+        .expect("the main pass caches ms before the post-pass overwrites it");
+    assert_ne!(
+        entry.result_hash,
+        CachedResult::Value(value, det).content_hash(),
+        "ms's cache entry must diverge from its snapshot value, or this test \
+         proves nothing about the exemption"
+    );
+
+    // (2) The latest commit for `ms` is the post-pass's Skip.
+    let latest_commit = engine
+        .journal()
+        .events_for_node(&node)
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::Started { commit } => Some(commit.clone()),
+            _ => None,
+        })
+        .flatten();
+    assert!(
+        matches!(
+            latest_commit,
+            Some(CommitTag {
+                cache: CacheLegKind::Skipped { .. },
+                ..
+            })
+        ),
+        "ms's latest Started event must carry a Skipped commit tag, got {latest_commit:?}"
+    );
+
+    // (3) The checker exempts it.
+    let divergences = engine.check_snapshot_cache_divergence();
+    assert!(
+        divergences.is_empty(),
+        "the Skip-committed post-pass cell must be exempt, got {divergences:?}"
     );
 }
 

@@ -1907,7 +1907,7 @@ mod tests {
             CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
         };
 
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CommitTag, EventKind};
 
         let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
         let n_minus_1 = binop(
@@ -1949,11 +1949,18 @@ mod tests {
             .events_for_node(&NodeId::Value(child_m.clone()));
         assert!(
             events.iter().any(|e| {
-                matches!(&e.kind, EventKind::Started { .. })
-                    && matches!(&e.payload, Some(EventPayload::Custom(s)) if s == "guarded-group")
+                matches!(
+                    &e.kind,
+                    EventKind::Started {
+                        commit: Some(CommitTag {
+                            trace: TraceSource::GuardedGroup,
+                            ..
+                        })
+                    }
+                )
             }),
-            "expected a Started event for S.child.m carrying \
-             EventPayload::Custom(\"guarded-group\"), got: {:?}",
+            "expected a Started event for S.child.m carrying a GuardedGroup \
+             commit tag, got: {:?}",
             events
         );
     }

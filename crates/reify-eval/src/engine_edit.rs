@@ -6563,6 +6563,27 @@ mod tests {
         assert_eq!(messages, vec!["a", "b", "c"]);
     }
 
+    /// Asserts `event` is a `Started` event carrying an `EditReeval` commit
+    /// tag with the given cache leg.
+    fn assert_edit_reeval_commit(
+        event: &crate::journal::EvalEvent,
+        cache: crate::journal::CacheLegKind,
+        label: &str,
+    ) {
+        use crate::journal::{CommitTag, EventKind, TraceSource};
+        match &event.kind {
+            EventKind::Started { commit } => assert_eq!(
+                *commit,
+                Some(CommitTag {
+                    trace: TraceSource::EditReeval,
+                    cache,
+                }),
+                "{label}: Started must carry this commit tag"
+            ),
+            other => panic!("{label}: expected a Started event, got {other:?}"),
+        }
+    }
+
     /// Assert that `v` is a `Value::Scalar` whose SI value is within `tol`
     /// of `si`. Dimension-agnostic (works for any scalar, not just lengths)
     /// — shared by `edit_param_back_props_solved_auto` /
@@ -6909,7 +6930,7 @@ mod tests {
     ///
     /// Asserts two things the hand-rolled copy cannot produce today:
     /// (1) journal provenance — `q`'s journal gains a `Started` event whose
-    ///     payload carries `TraceSource::EditReeval.as_str()` ("edit-reeval"),
+    ///     commit tag is `EditReeval` with a `Recorded` cache leg,
     ///     paired with a `Completed{outcome}` — RED on base, where the
     ///     Started event at engine_edit.rs:1060 always uses `payload: None`;
     /// (2) three-leg agreement — `result.values[q]`, `engine.snapshot().values[q]`,
@@ -6928,8 +6949,7 @@ mod tests {
         use reify_test_support::compile_source;
 
         use crate::cache::{CachedResult, NodeId};
-        use crate::journal::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CacheLegKind, EventKind};
 
         const SRC: &str = r#"structure S {
     param p : Length = 1mm
@@ -6951,7 +6971,7 @@ mod tests {
             .expect("edit_param must succeed");
 
         // Journal: the primitive's own Started/Completed pair, with the
-        // EditReeval provenance slug recorded on Started.
+        // EditReeval commit tag recorded on Started.
         let events_after = engine.journal().events_for_node(&q_node);
         assert!(
             events_after.len() >= events_before_len + 2,
@@ -6961,22 +6981,7 @@ mod tests {
         );
         let started = events_after[events_after.len() - 2];
         let completed = events_after[events_after.len() - 1];
-        assert!(
-            matches!(started.kind, EventKind::Started { .. }),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug,
-                TraceSource::EditReeval.as_str(),
-                "Started payload must carry the edit-reeval provenance slug"
-            ),
-            other => panic!(
-                "expected Started payload Custom(\"{}\"), got {other:?}",
-                TraceSource::EditReeval.as_str()
-            ),
-        }
+        assert_edit_reeval_commit(started, CacheLegKind::Recorded, "q");
         assert!(
             matches!(completed.kind, EventKind::Completed { .. }),
             "expected the last event to be Completed, got {:?}",
@@ -7236,8 +7241,8 @@ mod tests {
     /// decision D5. Two sources differing only in `p`'s default, so
     /// `edit_source` re-evaluates the dependents `q` and `r`.
     ///
-    /// RED on base, measured verbatim from assertion (3)'s helper call:
-    /// `expected Started payload Custom("edit-reeval"), got None`. Assertions
+    /// RED on base: assertion (3)'s helper found `q`'s Started event carried
+    /// no edit-reeval provenance. Assertions
     /// (1), (2), (4), (5) all already pass on base — they are the
     /// behaviour-preservation net that must stay green through the migration.
     ///
@@ -7317,8 +7322,8 @@ mod tests {
             q_events_after.len()
         );
 
-        // (3) RED SIGNAL — measured on base:
-        // `expected Started payload Custom("edit-reeval"), got None`. The
+        // (3) RED SIGNAL — on base, `q`'s Started event carried no
+        // edit-reeval provenance. The
         // helper's snapshot/cache three-leg checks already pass on base
         // (snapshot[q] = (0.003, Determined), cache[q] = Value(0.003,
         // Determined)) — they are the behaviour-preservation half of this
@@ -7365,8 +7370,8 @@ mod tests {
 
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
-    /// commit: a `Started`/`Completed` journal pair with the edit-reeval
-    /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
+    /// commit: a `Started`/`Completed` journal pair with the `EditReeval`
+    /// `Recorded` commit tag, and `(expected_si, DeterminacyState::Determined)` in
     /// both the snapshot and the cache, within the default `1e-9` tolerance.
     /// Shared by the recorded-site fixtures below (task δ #5056 step-3) so
     /// each site's test is a thin setup + one-line assertion, mirroring
@@ -7397,8 +7402,7 @@ mod tests {
         label: &str,
     ) {
         use crate::cache::{CachedResult, NodeId};
-        use crate::journal::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CacheLegKind, EventKind};
         use reify_ir::DeterminacyState;
 
         let node = NodeId::Value(id.clone());
@@ -7409,22 +7413,7 @@ mod tests {
         );
         let started = events[events.len() - 2];
         let completed = events[events.len() - 1];
-        assert!(
-            matches!(started.kind, EventKind::Started { .. }),
-            "{label}: expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug,
-                TraceSource::EditReeval.as_str(),
-                "{label}: Started payload must carry the edit-reeval provenance slug"
-            ),
-            other => panic!(
-                "{label}: expected Started payload Custom(\"{}\"), got {other:?}",
-                TraceSource::EditReeval.as_str()
-            ),
-        }
+        assert_edit_reeval_commit(started, CacheLegKind::Recorded, label);
         assert!(
             matches!(completed.kind, EventKind::Completed { .. }),
             "{label}: expected the last event to be Completed, got {:?}",
@@ -7533,11 +7522,10 @@ mod tests {
     ///     `(5mm, DeterminacyState::Determined)`;
     /// (b) `engine.cache_store().get(&node)` is `None` (no cache entry —
     ///     the site is deliberately unrecorded);
-    /// (c) the journal's `Started` event for the node carries the
-    ///     `"edit-reeval|cache-skip=<reason>"` marker — the exact format
-    ///     `commit_cell_result` stamps on its `CacheLeg::Skip` arm
-    ///     (cell_commit.rs:268-271). Checked via `starts_with` (not an exact
-    ///     string) since the specific `<reason>` text is step-6's to choose.
+    /// (c) one of the journal's `Started` events for the node carries an
+    ///     `EditReeval` commit tag whose cache leg is
+    ///     `CacheLegKind::Skipped` with this site's own `CacheLeg::Skip`
+    ///     reason — the tag `commit_cell_result` records for a Skip commit.
     ///
     /// RED on base: (a) and (b) already hold today (the site already inserts
     /// into values/snapshot without touching the cache), but the site emits
@@ -7551,8 +7539,7 @@ mod tests {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::journal::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
 
         const SRC: &str = r#"structure BoltPart {
     param diameter : Length = 5mm
@@ -7604,29 +7591,24 @@ structure GrowColl {
             "bolts[2].diameter must have NO cache entry (unrecorded site)"
         );
 
-        // (c) journal Started payload carries the cache-skip marker. RED on
-        // base: the site emits no journal event at all today, so this fails
-        // before ever reaching the payload-format check.
+        // (c) a journal Started event carries U2's own Skipped commit tag.
+        // U4 re-commits this node after U2, so U2's commit is not the last
+        // one (the U4 fixture pins that). RED on base: the site emitted no
+        // journal event at all.
         let events = engine.journal().events_for_node(&node);
+        let u2_commit = Some(CommitTag {
+            trace: TraceSource::EditReeval,
+            cache: CacheLegKind::Skipped {
+                reason: "collection-resize child re-recorded by structural rebuild".to_string(),
+            },
+        });
         assert!(
-            events.len() >= 2,
-            "expected at least a Started+Completed pair for bolts[2].diameter, got {events:?}"
-        );
-        let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started { .. }),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert!(
-                slug.starts_with(&format!("{}|cache-skip=", TraceSource::EditReeval.as_str())),
-                "Started payload must carry the edit-reeval cache-skip marker, got {slug:?}"
+            events.iter().any(
+                |event| matches!(&event.kind, EventKind::Started { commit } if *commit == u2_commit)
             ),
-            other => panic!(
-                "expected Started payload Custom(\"edit-reeval|cache-skip=<reason>\"), got {other:?}"
-            ),
-        }
+            "bolts[2].diameter (U2): expected a Started event carrying {u2_commit:?}, \
+             got {events:?}"
+        );
     }
 
     /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
@@ -7643,9 +7625,8 @@ structure GrowColl {
     /// `edit_path_reeval_surfaces_dropped_field_oob_warning`'s
     /// `OOB_GUARD_SRC` shape (same "directly-edited bool guard activates a
     /// member" pattern, minus the field sampling — that fixture proves the
-    /// runtime-sink leg; this one proves the cache-skip leg with U1's own
-    /// exact reason string, checked via equality rather than the shared
-    /// prefix `edit_param_unrecorded_sites_skip_cache_via_primitive` uses).
+    /// runtime-sink leg; this one proves the skipped cache leg with U1's own
+    /// exact reason string).
     #[test]
     fn edit_param_u1_guard_member_reseed_skips_cache_via_primitive() {
         use reify_constraints::SimpleConstraintChecker;
@@ -7654,8 +7635,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::journal::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::CacheLegKind;
 
         const SRC: &str = r#"structure GuardU1 {
     param cond : Bool = false
@@ -7703,31 +7683,22 @@ structure GrowColl {
             "m must have NO cache entry (U1 is an unrecorded site)"
         );
 
-        // (c) journal Started payload carries U1's OWN cache-skip reason,
-        // checked by exact equality (not just the shared prefix) so a
-        // regression that mixed up U1's reason with another site's is caught.
+        // (c) journal Started event carries U1's OWN Skipped reason, checked
+        // by exact equality so a regression that mixed up U1's reason with
+        // another site's is caught.
         let events = engine.journal().events_for_node(&node);
         assert!(
             events.len() >= 2,
             "expected at least a Started+Completed pair for m, got {events:?}"
         );
         let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started { .. }),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
+        assert_edit_reeval_commit(
+            started,
+            CacheLegKind::Skipped {
+                reason: "post-wave2 guard-member reseed".to_string(),
+            },
+            "m (U1)",
         );
-        let expected_slug = format!(
-            "{}|cache-skip=post-wave2 guard-member reseed",
-            TraceSource::EditReeval.as_str()
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, &expected_slug,
-                "Started payload must carry U1's exact cache-skip reason"
-            ),
-            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
-        }
     }
 
     /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
@@ -7749,8 +7720,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::journal::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::CacheLegKind;
 
         const SRC: &str = r#"structure BoltPart {
     param diameter : Length = 5mm
@@ -7801,30 +7771,21 @@ structure GrowColl {
             "__list_bolts__diameter must have NO cache entry (U3 is an unrecorded site)"
         );
 
-        // (c) journal Started payload carries U3's OWN cache-skip reason,
-        // checked by exact equality (not just the shared prefix).
+        // (c) journal Started event carries U3's OWN Skipped reason, checked
+        // by exact equality.
         let events = engine.journal().events_for_node(&node);
         assert!(
             events.len() >= 2,
             "expected at least a Started+Completed pair for __list_bolts__diameter, got {events:?}"
         );
         let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started { .. }),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
+        assert_edit_reeval_commit(
+            started,
+            CacheLegKind::Skipped {
+                reason: "synthetic member-list aggregate".to_string(),
+            },
+            "__list_bolts__diameter (U3)",
         );
-        let expected_slug = format!(
-            "{}|cache-skip=synthetic member-list aggregate",
-            TraceSource::EditReeval.as_str()
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, &expected_slug,
-                "Started payload must carry U3's exact cache-skip reason"
-            ),
-            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
-        }
     }
 
     /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
@@ -7841,8 +7802,8 @@ structure GrowColl {
     /// documents). This fixture checks the journal's LAST Started/Completed
     /// pair for the node — the final, persisted commit — and pins it to
     /// U4's OWN `CacheLeg::Skip("grown-instance reseed after structural
-    /// grow (θ2)")` reason specifically (exact equality, not the shared
-    /// prefix), so a regression isolated to U4's reason/rule/journal leg
+    /// grow (θ2)")` reason specifically (exact equality), so a regression
+    /// isolated to U4's reason/rule/journal leg
     /// (while leaving U2's untouched) is caught here even though it would
     /// slip past the U2-only fixture above.
     #[test]
@@ -7853,8 +7814,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::journal::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::CacheLegKind;
 
         const SRC: &str = r#"structure BoltPart {
     param diameter : Length = 5mm
@@ -7887,23 +7847,13 @@ structure GrowColl {
              (U2 then U4), got {events:?}"
         );
         let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started { .. }),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
+        assert_edit_reeval_commit(
+            started,
+            CacheLegKind::Skipped {
+                reason: "grown-instance reseed after structural grow (θ2)".to_string(),
+            },
+            "bolts[2].diameter, final writer (U4)",
         );
-        let expected_slug = format!(
-            "{}|cache-skip=grown-instance reseed after structural grow (θ2)",
-            TraceSource::EditReeval.as_str()
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, &expected_slug,
-                "the FINAL Started payload for bolts[2].diameter must carry U4's \
-                 exact cache-skip reason (U4 is the last writer)"
-            ),
-            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
-        }
     }
 
     /// A REJECTED `edit_param` must leave `last_changed_realizations` intact

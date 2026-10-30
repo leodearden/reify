@@ -12,7 +12,7 @@
 //! §2, §7 (B2/B3 — B1 is out of γ's scope per esc-5053-2 Option A).
 //!
 //! This file grows incrementally: the prerequisite `pre-1` commit added
-//! shared scaffolding only (the `started_payload` provenance-reading helper
+//! shared scaffolding only (the `first_started_commit` provenance-reading helper
 //! and the trigger `.ri` sources); `test-1` onward each add one `#[test]` fn.
 
 use reify_core::DiagnosticCode;
@@ -20,34 +20,52 @@ use reify_core::ValueCellId;
 use reify_core::VersionId;
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
-use reify_eval::journal::{EventKind, EventPayload};
+use reify_eval::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
 use reify_ir::{DeterminacyState, ErrorRef, Freshness, Value};
 use reify_test_support::{make_engine, mm, parse_and_compile, parse_and_compile_with_stdlib};
 
-/// Returns the payload of the FIRST `EventKind::Started` event recorded for
-/// `id` in `engine`'s journal, IF that payload is `EventPayload::Custom` —
-/// `None` if there is no `Started` event for `id`, or if its payload isn't
-/// `Custom` (e.g. today's baseline `payload: None` at the not-yet-migrated
-/// sites).
+/// The commit tag of the FIRST `EventKind::Started` event recorded for `id`
+/// in `engine`'s journal — `None` if there is no `Started` event for `id`, or
+/// if it carries no tag (a visit, or a commit not made through
+/// `commit_cell_result`).
 ///
-/// This is the observability hook every RED provenance test in this file
-/// asserts against: `commit_cell_result` (`cell_commit.rs`) records the
-/// migration's additive `TraceSource` slug on the `Started` event's
-/// `EventPayload::Custom` — verbatim on `CacheLeg::Record`, or suffixed
-/// `|cache-skip=<reason>` on `CacheLeg::Skip` — so a test asserting
-/// `started_payload(&engine, &cell) == Some("<slug>")` is RED before the
-/// matching site is migrated (today's payload is `None` or absent) and GREEN
-/// after.
-fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+/// This is the observability hook every provenance test in this file asserts
+/// against: `commit_cell_result` (`cell_commit.rs`) records the commit's
+/// `TraceSource` and cache-leg fate as a `CommitTag` on its `Started` event.
+fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
     let node_id = NodeId::Value(id.clone());
-    let events = engine.journal().events_for_node(&node_id);
-    let started = events
+    engine
+        .journal()
+        .events_for_node(&node_id)
         .iter()
-        .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
-    match &started.payload {
-        Some(EventPayload::Custom(slug)) => Some(slug.clone()),
+        .find_map(|event| started_commit(&event.kind))
+        .flatten()
+}
+
+/// `Some(commit)` for a `Started` event, `None` for any other kind.
+fn started_commit(kind: &EventKind) -> Option<Option<CommitTag>> {
+    match kind {
+        EventKind::Started { commit } => Some(commit.clone()),
         _ => None,
     }
+}
+
+/// The tag of a commit made by `trace` that recorded its cache leg.
+fn recorded(trace: TraceSource) -> Option<CommitTag> {
+    Some(CommitTag {
+        trace,
+        cache: CacheLegKind::Recorded,
+    })
+}
+
+/// The tag of a commit made by `trace` that skipped its cache leg for `reason`.
+fn skipped(trace: TraceSource, reason: &str) -> Option<CommitTag> {
+    Some(CommitTag {
+        trace,
+        cache: CacheLegKind::Skipped {
+            reason: reason.to_string(),
+        },
+    })
 }
 
 /// Guarded group with an accepted-default Param (`x_ok`) and a
@@ -213,8 +231,8 @@ const PARITY_FIXTURE_SRC: &str = r#"
 /// RED today: `eval_guarded_group_param_cell` (engine_eval.rs, ~@2132) emits
 /// its Started journal event with `payload: None` (@~2148) — none of its
 /// four value-write arms calls `commit_cell_result` yet — so
-/// `started_payload` is `None` for both `x_ok` and `x_rejected`, not
-/// `Some("guarded-group")`. GREEN after impl-1 migrates the helper's commit
+/// `first_started_commit` is `None` for both `x_ok` and `x_rejected`, not
+/// a `GuardedGroup` commit tag. GREEN after impl-1 migrates the helper's commit
 /// onto `commit_cell_result` with `TraceSource::GuardedGroup`.
 ///
 /// Also pins determinacy PRESERVED across the migration boundary — the
@@ -242,25 +260,31 @@ fn guarded_group_param_provenance_and_determinacy() {
     let ok_a_id = ValueCellId::new("S", "ok_a");
     let ok_r_id = ValueCellId::new("S", "ok_r");
 
-    eprintln!("x_ok started_payload = {:?}", started_payload(&engine, &x_ok_id));
-    eprintln!("x_rejected started_payload = {:?}", started_payload(&engine, &x_rejected_id));
+    eprintln!(
+        "x_ok first_started_commit = {:?}",
+        first_started_commit(&engine, &x_ok_id)
+    );
+    eprintln!(
+        "x_rejected first_started_commit = {:?}",
+        first_started_commit(&engine, &x_rejected_id)
+    );
     eprintln!("ok_a = {:?}", result.values.get(&ok_a_id));
     eprintln!("ok_r = {:?}", result.values.get(&ok_r_id));
     eprintln!("x_rejected value = {:?}", result.values.get(&x_rejected_id));
     eprintln!("diagnostics = {:?}", result.diagnostics);
 
-    // (1) Provenance — RED today (payload is None, not Some("guarded-group")).
+    // (1) Provenance — RED today (no commit tag, not a GuardedGroup one).
     assert_eq!(
-        started_payload(&engine, &x_ok_id),
-        Some("guarded-group".to_string()),
+        first_started_commit(&engine, &x_ok_id),
+        recorded(TraceSource::GuardedGroup),
         "x_ok's (override/default-accepted arm) Started event should carry the \
-         'guarded-group' TraceSource slug once migrated onto commit_cell_result"
+         GuardedGroup commit tag once migrated onto commit_cell_result"
     );
     assert_eq!(
-        started_payload(&engine, &x_rejected_id),
-        Some("guarded-group".to_string()),
+        first_started_commit(&engine, &x_rejected_id),
+        recorded(TraceSource::GuardedGroup),
         "x_rejected's (rejected-override-no-default arm) Started event should carry \
-         the 'guarded-group' TraceSource slug once migrated onto commit_cell_result"
+         the GuardedGroup commit tag once migrated onto commit_cell_result"
     );
 
     // (2) Determinacy preserved (characterization guard).
@@ -291,7 +315,7 @@ fn guarded_group_param_provenance_and_determinacy() {
 ///
 /// RED today: the Let cache-miss arm (engine_eval.rs, ~@6317) records its
 /// Started journal event with `payload: None` (@~6322-6328), so
-/// `started_payload` is `None`, not `Some("cached-serve")`. GREEN after
+/// `first_started_commit` is `None`, not a `CachedServe` commit tag. GREEN after
 /// impl-3 migrates the commit onto `commit_cell_result` with
 /// `TraceSource::CachedServe`.
 ///
@@ -316,14 +340,17 @@ fn eval_cached_let_miss_provenance_and_determinacy() {
     let y_id = ValueCellId::new("S", "y");
     let y_det_id = ValueCellId::new("S", "y_det");
 
-    eprintln!("y started_payload = {:?}", started_payload(&engine, &y_id));
+    eprintln!(
+        "y first_started_commit = {:?}",
+        first_started_commit(&engine, &y_id)
+    );
     eprintln!("y_det = {:?}", result.eval_result.values.get(&y_det_id));
 
     assert_eq!(
-        started_payload(&engine, &y_id),
-        Some("cached-serve".to_string()),
-        "eval_cached's Let cache-miss path should carry the 'cached-serve' \
-         TraceSource slug once migrated onto commit_cell_result"
+        first_started_commit(&engine, &y_id),
+        recorded(TraceSource::CachedServe),
+        "eval_cached's Let cache-miss path should carry the CachedServe \
+         commit tag once migrated onto commit_cell_result"
     );
     assert_eq!(
         result.eval_result.values.get(&y_det_id),
@@ -337,10 +364,9 @@ fn eval_cached_let_miss_provenance_and_determinacy() {
 // test-4: structural-query post-pass explicit CacheLeg::Skip audit
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Returns the payload of the LAST `EventKind::Started` event recorded for
-/// `id` in `engine`'s journal, IF that payload is `EventPayload::Custom` —
-/// mirrors `started_payload` but selects the LAST match rather than the
-/// first.
+/// The commit tag of the LAST `EventKind::Started` event recorded for `id`
+/// in `engine`'s journal — mirrors `first_started_commit` but selects the
+/// LAST match rather than the first.
 ///
 /// Needed specifically for post-pass provenance assertions (structural-query
 /// / annotation-args), and to prove a cell has NO post-pass overwrite
@@ -349,24 +375,22 @@ fn eval_cached_let_miss_provenance_and_determinacy() {
 /// `evaluate_params_and_lets_unified` / `evaluate_let_bindings` — the
 /// dominant, freshness-propagating let/param evaluators that are themselves
 /// left unmigrated (documented at impl-7; see `cell_commit.rs`'s "Known
-/// scope gaps") and which emit their OWN Started(`payload: None`) event for
+/// scope gaps") and which emit their OWN untagged Started event for
 /// the same node first. So a post-pass cell always carries (at least) two
 /// Started events — the main pass's, then the post-pass's — and
-/// `started_payload`'s first-match semantics would only ever observe the
-/// (unmigrated, `None`-payload) main-pass event, never the post-pass's own.
+/// `first_started_commit`'s first-match semantics would only ever observe the
+/// main-pass event, never the post-pass's own.
 /// Confirmed empirically via a scratch probe on `ms` (`STRUCTURAL_QUERY_SRC`):
 /// exactly 2 `Started` events, matching this reasoning.
-fn last_started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+fn last_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
     let node_id = NodeId::Value(id.clone());
-    let events = engine.journal().events_for_node(&node_id);
-    let started = events
+    engine
+        .journal()
+        .events_for_node(&node_id)
         .iter()
         .rev()
-        .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
-    match &started.payload {
-        Some(EventPayload::Custom(slug)) => Some(slug.clone()),
-        _ => None,
-    }
+        .find_map(|event| started_commit(&event.kind))
+        .flatten()
 }
 
 /// RED: structural-query post-pass explicit `CacheLeg::Skip` audit.
@@ -374,12 +398,11 @@ fn last_started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
 /// RED today: the structural-query post-pass (engine_eval.rs, ~@3894-3903)
 /// writes `values`/`snapshot.values` directly and emits NO journal event of
 /// its own, so the LAST `Started` event recorded for `ms` is still the main
-/// pass's (unmigrated, `None`-payload) one — `None`, not
-/// `Some("post-pass-overwrite|cache-skip=structural-query post-pass
-/// overwrite")`. GREEN after impl-4 migrates the commit onto
+/// pass's (unmigrated, untagged) one — `None`, not a `PostPassOverwrite`
+/// commit tag whose cache leg is `Skipped`. GREEN after impl-4 migrates the commit onto
 /// `commit_cell_result` with `TraceSource::PostPassOverwrite` and
 /// `CacheLeg::Skip("structural-query post-pass overwrite")`, which adds a
-/// SECOND, later `Started` event carrying that slug.
+/// SECOND, later `Started` event carrying that tag.
 ///
 /// Also pins (characterization guards that must stay green across the
 /// migration boundary): the post-pass's own commit never writes/updates the
@@ -414,18 +437,24 @@ fn structural_query_post_pass_cache_skip_audit() {
     let ms_id = ValueCellId::new("S", "ms");
     let ms_det_id = ValueCellId::new("S", "ms_det");
 
-    eprintln!("ms last_started_payload = {:?}", last_started_payload(&engine, &ms_id));
+    eprintln!(
+        "ms last_started_commit = {:?}",
+        last_started_commit(&engine, &ms_id)
+    );
     eprintln!("ms = {:?}", result.values.get(&ms_id));
     eprintln!("ms_det = {:?}", result.values.get(&ms_det_id));
 
     // (1) Provenance + explicit skip marker — RED today (the last Started
-    // event is still the main pass's None-payload one).
+    // event is still the main pass's untagged one).
     assert_eq!(
-        last_started_payload(&engine, &ms_id),
-        Some("post-pass-overwrite|cache-skip=structural-query post-pass overwrite".to_string()),
+        last_started_commit(&engine, &ms_id),
+        skipped(
+            TraceSource::PostPassOverwrite,
+            "structural-query post-pass overwrite"
+        ),
         "the structural-query post-pass's Started event should be the LAST \
          one recorded for the cell and should carry the 'post-pass-overwrite' \
-         TraceSource slug plus its cache-skip reason once migrated onto \
+         commit tag with its Skipped reason once migrated onto \
          commit_cell_result with CacheLeg::Skip"
     );
 
@@ -436,7 +465,7 @@ fn structural_query_post_pass_cache_skip_audit() {
     // so a literal "no cache entry" check does not hold; CacheLeg::Skip's
     // contract is that THIS commit omits the cache leg, leaving whatever
     // was there before untouched. Checking "not the fresh value" is the
-    // form of that proof available here; the journal's `cache-skip=` marker
+    // form of that proof available here; the journal's Skipped commit tag
     // asserted in (1) is the authoritative "this commit skipped the cache
     // leg" signal (the plan's journal-recoverable alternative).
     match engine.cache_store().get(&NodeId::Value(ms_id.clone())) {
@@ -489,15 +518,18 @@ fn self_datum_projection_commits_once_in_the_main_pass() {
     let p_id = ValueCellId::new("S", "p");
     let p_det_id = ValueCellId::new("S", "p_det");
 
-    eprintln!("p last_started_payload = {:?}", last_started_payload(&engine, &p_id));
+    eprintln!(
+        "p last_started_commit = {:?}",
+        last_started_commit(&engine, &p_id)
+    );
     eprintln!("p = {:?}", result.values.get(&p_id));
     eprintln!("p_det = {:?}", result.values.get(&p_det_id));
 
     // (1) The LAST Started event for p is the main pass's own commit: no
-    // post-pass overwrite (and no `cache-skip=` marker) follows it.
+    // post-pass overwrite (and no Skipped commit tag) follows it.
     assert_eq!(
-        last_started_payload(&engine, &p_id).as_deref(),
-        Some("cold-eval"),
+        last_started_commit(&engine, &p_id),
+        recorded(TraceSource::ColdEval),
         "p should be committed once, by the main pass, with no later overwrite"
     );
 
@@ -540,7 +572,7 @@ fn self_datum_projection_commits_once_in_the_main_pass() {
 /// RED today: the post-pass's success arm (engine_eval.rs, ~@4926-4936)
 /// writes `values`/`snapshot.values` directly and emits NO journal event of
 /// its own, so the LAST `Started` event recorded for `it` is still the main
-/// pass's (unmigrated, `None`-payload) one. GREEN after impl-6 migrates the
+/// pass's (unmigrated, untagged) one. GREEN after impl-6 migrates the
 /// commit onto `commit_cell_result` with `TraceSource::PostPassOverwrite`
 /// and `CacheLeg::Skip("annotation-args materialization overlay")`.
 ///
@@ -566,19 +598,22 @@ fn annotation_args_materialization_success_cache_skip_audit() {
 
     let it_id = ValueCellId::new("S", "it");
 
-    eprintln!("it last_started_payload = {:?}", last_started_payload(&engine, &it_id));
+    eprintln!(
+        "it last_started_commit = {:?}",
+        last_started_commit(&engine, &it_id)
+    );
     eprintln!("it = {:?}", result.values.get(&it_id));
 
     // (1) Provenance + explicit skip marker — RED today.
     assert_eq!(
-        last_started_payload(&engine, &it_id),
-        Some(
-            "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
-                .to_string()
+        last_started_commit(&engine, &it_id),
+        skipped(
+            TraceSource::PostPassOverwrite,
+            "annotation-args materialization overlay"
         ),
         "the annotation-args post-pass's success-arm Started event should be \
          the LAST one recorded for the cell and should carry the \
-         'post-pass-overwrite' TraceSource slug plus its cache-skip reason \
+         PostPassOverwrite commit tag with its Skipped reason \
          once migrated onto commit_cell_result with CacheLeg::Skip"
     );
 
@@ -647,19 +682,22 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 
     let it_id = ValueCellId::new("BadS", "it");
 
-    eprintln!("it last_started_payload = {:?}", last_started_payload(&engine, &it_id));
+    eprintln!(
+        "it last_started_commit = {:?}",
+        last_started_commit(&engine, &it_id)
+    );
     eprintln!("it = {:?}", result.values.get(&it_id));
 
     // (1) Provenance + explicit skip marker — RED today.
     assert_eq!(
-        last_started_payload(&engine, &it_id),
-        Some(
-            "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
-                .to_string()
+        last_started_commit(&engine, &it_id),
+        skipped(
+            TraceSource::PostPassOverwrite,
+            "annotation-args materialization overlay"
         ),
         "the annotation-args post-pass's failure-arm Started event should be \
          the LAST one recorded for the cell and should carry the \
-         'post-pass-overwrite' TraceSource slug plus its cache-skip reason \
+         PostPassOverwrite commit tag with its Skipped reason \
          once migrated onto commit_cell_result with CacheLeg::Skip"
     );
 
@@ -730,7 +768,7 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 /// non-`Final` input WOULD therefore diverge cold-vs-warm. That divergence is
 /// a PRE-EXISTING property of the warm cache-miss arm inherited from γ
 /// (#5053), not a regression introduced here, and migrating that arm off
-/// `CacheLeg::Record` is out of #5238's scope. The `started_payload` assertion
+/// `CacheLeg::Record` is out of #5238's scope. The `first_started_commit` assertion
 /// below pins that the cold side really is on the `RecordPropagating` path, so
 /// the parity is measured where the task claims it.
 ///
@@ -743,13 +781,13 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 /// B3 — consolidated `CacheLeg::Skip` audit: re-asserts, in one place, that
 /// each of the two post-pass sites migrated at impl-4/6 (structural-query,
 /// annotation-args materialization) carries its
-/// `|cache-skip=<reason>` marker on the LAST Started event for its cell, and
+/// Skipped commit tag on the LAST Started event for its cell, and
 /// that the Skip leg did not overwrite the pre-existing cache entry with its
 /// fresh value. Cold-only (`engine.eval()`) — neither post-pass
 /// runs during `eval_cached`. Mirrors test-4/6's "stale, not absent" cache
 /// check exactly: a cache entry already exists from each cell's own
 /// preceding, unmigrated main-pass evaluation, so "no cache entry exists for
-/// it" does not hold literally — the journal's cache-skip marker is the
+/// it" does not hold literally — the journal's Skipped commit tag is the
 /// authoritative "this commit skipped the cache leg" signal (see those
 /// tests' doc comments for the full reasoning, empirically reconfirmed here).
 #[test]
@@ -849,9 +887,9 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
     // commit (impl-2), rather than the parity above holding vacuously via some
     // unmigrated path.
     assert_eq!(
-        started_payload(&cold_engine, &s_id).as_deref(),
-        Some("cold-eval"),
-        "cold S.s must carry the migrated main-pass provenance slug, proving the \
+        first_started_commit(&cold_engine, &s_id),
+        recorded(TraceSource::ColdEval),
+        "cold S.s must carry the migrated main-pass commit tag, proving the \
          freshness parity above is measured on the RecordPropagating path"
     );
 
@@ -864,13 +902,13 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
         engine.eval(&module);
         let ms_id = ValueCellId::new("S", "ms");
         assert_eq!(
-            last_started_payload(&engine, &ms_id),
-            Some(
-                "post-pass-overwrite|cache-skip=structural-query post-pass overwrite"
-                    .to_string()
+            last_started_commit(&engine, &ms_id),
+            skipped(
+                TraceSource::PostPassOverwrite,
+                "structural-query post-pass overwrite"
             ),
             "structural-query post-pass: LAST Started event for ms should carry its \
-             cache-skip marker"
+             Skipped commit tag"
         );
         match engine.cache_store().get(&NodeId::Value(ms_id.clone())) {
             None => {}
@@ -893,13 +931,13 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
         engine.eval(&module);
         let it_id = ValueCellId::new("S", "it");
         assert_eq!(
-            last_started_payload(&engine, &it_id),
-            Some(
-                "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
-                    .to_string()
+            last_started_commit(&engine, &it_id),
+            skipped(
+                TraceSource::PostPassOverwrite,
+                "annotation-args materialization overlay"
             ),
             "annotation-args post-pass: LAST Started event for it should carry its \
-             cache-skip marker"
+             Skipped commit tag"
         );
         match engine.cache_store().get(&NodeId::Value(it_id.clone())) {
             None => {}
@@ -936,7 +974,7 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
 /// engine_eval.rs — reached by `engine.eval()`, NOT `eval_cached`) emits its
 /// `Started` journal event with `payload: None` and writes the cache leg via a
 /// direct `record_evaluation_propagating_freshness(val, Determined, false)`
-/// call, so `started_payload(&engine, &y_id)` is `None`, not `Some("cold-eval")`.
+/// call, so `first_started_commit(&engine, &y_id)` is `None`, not a `ColdEval` tag.
 /// GREEN after impl-2 migrates the commit onto `commit_cell_result` with
 /// `TraceSource::ColdEval` + `CacheLeg::RecordPropagating { still_refining:
 /// false }` (removing the superseded manual `Started(None)`/`Completed` pair so
@@ -960,19 +998,22 @@ fn params_and_lets_main_let_provenance_and_freshness() {
     let y_id = ValueCellId::new("S", "y");
     let y_det_id = ValueCellId::new("S", "y_det");
 
-    eprintln!("y started_payload = {:?}", started_payload(&engine, &y_id));
+    eprintln!(
+        "y first_started_commit = {:?}",
+        first_started_commit(&engine, &y_id)
+    );
     eprintln!(
         "y freshness = {:?}",
         engine.cache_store().freshness(&NodeId::Value(y_id.clone()))
     );
     eprintln!("y_det = {:?}", result.values.get(&y_det_id));
 
-    // (1) Provenance — RED today (the main let path's Started payload is None).
+    // (1) Provenance — RED today (the main let path's Started is untagged).
     assert_eq!(
-        started_payload(&engine, &y_id),
-        Some("cold-eval".to_string()),
+        first_started_commit(&engine, &y_id),
+        recorded(TraceSource::ColdEval),
         "evaluate_params_and_lets_unified's main let commit should carry the \
-         'cold-eval' TraceSource slug once migrated onto commit_cell_result"
+         ColdEval commit tag once migrated onto commit_cell_result"
     );
 
     // (2) Freshness preserved (characterization guard — green throughout).
@@ -1016,10 +1057,10 @@ fn params_and_lets_main_let_provenance_and_freshness() {
 ///
 /// The journal KIND of the last event — `Completed`, vs today's bare
 /// `CacheHit` — is the RED signal. As of the #5238 review amendment the
-/// provenance slug is ALSO discriminating: the v1 Let cache-MISS (already
+/// provenance tag is ALSO discriminating: the v1 Let cache-MISS (already
 /// γ-migrated, `eval_cached_let_miss_provenance_and_determinacy`) stamps
-/// `TraceSource::CachedServe` (`cached-serve`) while the migrated re-serve
-/// stamps the distinct `TraceSource::CachedReuse` (`cached-reuse`), so
+/// `TraceSource::CachedServe` while the migrated re-serve
+/// stamps the distinct `TraceSource::CachedReuse`, so
 /// assertion (4) below pins the re-serve as the last writer from the journal
 /// alone — without reaching for the in-memory `CacheLeg`, which
 /// `commit_cell_result` consumes and never records.
@@ -1123,15 +1164,15 @@ fn eval_cached_let_reserve_preserves_freshness_and_commits() {
     );
 
     // (4) Provenance is self-describing FROM THE JOURNAL ALONE: the re-serve's
-    // Started slug is `cached-reuse`, distinct from the v1 cache-MISS arm's
-    // `cached-serve`. Without the split, all three commit sites inside
-    // eval_cached would stamp one slug and a §2.6 divergence audit could not
+    // Started tag's trace is `CachedReuse`, distinct from the v1 cache-MISS arm's
+    // `CachedServe`. Without the split, all three commit sites inside
+    // eval_cached would stamp one trace and a §2.6 divergence audit could not
     // attribute this event to a producing path.
     assert_eq!(
-        last_started_payload(&engine, &y_id),
-        Some("cached-reuse".to_string()),
+        last_started_commit(&engine, &y_id),
+        recorded(TraceSource::CachedReuse),
         "the Let preserve-freshness re-serve must stamp the distinct \
-         'cached-reuse' provenance slug, not the cache-MISS arm's 'cached-serve'"
+         CachedReuse trace, not the cache-MISS arm's CachedServe"
     );
 }
 
@@ -1172,8 +1213,8 @@ const PLAIN_PARAM_SRC: &str = r#"
 ///
 /// The journal KIND of the last event — `Completed`, vs today's bare `CacheHit`
 /// — is the RED signal (mirrors test-4). As of the #5238 review amendment the
-/// provenance slug also discriminates: the migrated re-serve stamps
-/// `TraceSource::CachedReuse` (`cached-reuse`), distinct from the cache-MISS
+/// provenance tag also discriminates: the migrated re-serve stamps
+/// `TraceSource::CachedReuse`, distinct from the cache-MISS
 /// arm's `TraceSource::CachedServe`, pinned by assertion (4) below.
 ///
 /// Assertion (5) pins the property the whole determinacy-reproduction argument
@@ -1295,12 +1336,12 @@ fn eval_cached_param_reserve_commits_and_preserves() {
     );
 
     // (4) Provenance is self-describing FROM THE JOURNAL ALONE (see test-4's
-    // assertion (4) for why the slug had to be split off `cached-serve`).
+    // assertion (4) for why the trace had to be split off `CachedServe`).
     assert_eq!(
-        last_started_payload(&engine, &w_id),
-        Some("cached-reuse".to_string()),
+        last_started_commit(&engine, &w_id),
+        recorded(TraceSource::CachedReuse),
         "the Param preserve-freshness re-serve must stamp the distinct \
-         'cached-reuse' provenance slug, not the cache-MISS arm's 'cached-serve'"
+         CachedReuse trace, not the cache-MISS arm's CachedServe"
     );
 
     // (5) EARLY-CUTOFF branch pinned: `pending_cause` survives the re-serve.
@@ -1443,7 +1484,7 @@ const PAIRING_CHAIN_SRC: &str = r#"
 /// This is the invariant #5238 nearly lost: both let evaluators used to emit
 /// one shared `Started` at the TOP of the loop body, covering every exit.
 /// Migrating the main success-path commit onto `commit_cell_result` (which
-/// emits its own slug-carrying `Started`) required deleting that shared event
+/// emits its own tagged `Started`) required deleting that shared event
 /// — which, on its own, would leave every OTHER exit emitting a terminal event
 /// with no paired `Started`. `record_subpath_started` re-pairs them lazily.
 fn assert_started_terminal_pairing(engine: &Engine, id: &ValueCellId, label: &str) {

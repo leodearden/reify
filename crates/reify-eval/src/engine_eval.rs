@@ -12731,7 +12731,7 @@ mod combined_param_let_graph_geometry_let_tests {
 /// exactly as the impl-2 plan step's fallback describes.
 ///
 /// RED today: `reeval_cone_cell` records ONLY to `self.cache` (@~5346),
-/// emitting NO journal event, so `started_payload` is `None` in both cases
+/// emitting NO journal event, so `first_started_commit` is `None` in both cases
 /// below. GREEN after impl-2 migrates the commit onto `commit_cell_result`
 /// with `TraceSource::ConeReeval`.
 ///
@@ -12749,22 +12749,23 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     use crate::Engine;
     use crate::cache::NodeId;
-    use crate::journal::{EventKind, EventPayload};
+    use crate::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
     use reify_test_support::mocks::MockConstraintChecker;
 
-    /// Mirrors the integration test file's `started_payload` helper: the
-    /// first `Started` event's `EventPayload::Custom` slug for `id`, or
-    /// `None` if there is no such event or its payload isn't `Custom`.
-    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+    /// Mirrors the integration test file's `first_started_commit` helper: the
+    /// commit tag of the first `Started` event for `id`, or `None` if there is
+    /// no such event or it carries no tag.
+    fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
         let node_id = NodeId::Value(id.clone());
-        let events = engine.journal().events_for_node(&node_id);
-        let started = events
+        engine
+            .journal()
+            .events_for_node(&node_id)
             .iter()
-            .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
-            _ => None,
-        }
+            .find_map(|event| match &event.kind {
+                EventKind::Started { commit } => Some(commit.clone()),
+                _ => None,
+            })
+            .flatten()
     }
 
     #[test]
@@ -12789,10 +12790,13 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
         );
 
         assert_eq!(
-            started_payload(&engine, &vcid),
-            Some("cone-reeval".to_string()),
-            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
-             TraceSource slug once migrated onto commit_cell_result"
+            first_started_commit(&engine, &vcid),
+            Some(CommitTag {
+                trace: TraceSource::ConeReeval,
+                cache: CacheLegKind::Recorded,
+            }),
+            "reeval_cone_cell's Started event should carry the ConeReeval \
+             commit tag once migrated onto commit_cell_result"
         );
         assert_eq!(
             snapshot_values.get(&vcid),
@@ -12825,10 +12829,13 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
         );
 
         assert_eq!(
-            started_payload(&engine, &vcid),
-            Some("cone-reeval".to_string()),
-            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
-             TraceSource slug once migrated onto commit_cell_result"
+            first_started_commit(&engine, &vcid),
+            Some(CommitTag {
+                trace: TraceSource::ConeReeval,
+                cache: CacheLegKind::Recorded,
+            }),
+            "reeval_cone_cell's Started event should carry the ConeReeval \
+             commit tag once migrated onto commit_cell_result"
         );
         assert_eq!(
             snapshot_values.get(&vcid),
@@ -14061,8 +14068,8 @@ mod dependent_cells_admissibility_tests {
 // elaboration pass, gated on `!template.sub_components.is_empty()`), and even
 // then the now-migrated
 // `evaluate_params_and_lets_unified` (#5238 impl-2) emits its OWN first
-// `Started(Custom "cold-eval")` event for the same let cell, so
-// `started_payload`'s first-match semantics could not isolate
+// `ColdEval`-tagged `Started` event for the same let cell, so
+// `first_started_commit`'s first-match semantics could not isolate
 // `evaluate_let_bindings`' own commit. Calling `evaluate_let_bindings` directly
 // on a pre-seeded two-cell module (param `a` + let `b = a * 2.0`) makes its
 // `Started` event the SOLE one recorded for `b`, giving a clean RED signal.
@@ -14077,26 +14084,27 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
 
     use crate::Engine;
     use crate::cache::NodeId;
-    use crate::journal::{EventKind, EventPayload};
+    use crate::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
     use crate::snapshot::Snapshot;
     use reify_test_support::builders::{binop, literal, value_ref_typed};
     use reify_test_support::mocks::MockConstraintChecker;
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
-    /// First `Started`-event `Custom` slug for `id` (mirrors the integration
-    /// file's `started_payload` helper): `None` if there is no `Started` event
-    /// for `id` or if its payload isn't `Custom` — today's un-migrated
-    /// `payload: None` baseline.
-    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+    /// Commit tag of the first `Started` event for `id` (mirrors the
+    /// integration file's `first_started_commit` helper): `None` if there is
+    /// no `Started` event for `id` or it carries no tag — the un-migrated
+    /// baseline.
+    fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
         let node_id = NodeId::Value(id.clone());
-        let events = engine.journal().events_for_node(&node_id);
-        let started = events
+        engine
+            .journal()
+            .events_for_node(&node_id)
             .iter()
-            .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
-            _ => None,
-        }
+            .find_map(|event| match &event.kind {
+                EventKind::Started { commit } => Some(commit.clone()),
+                _ => None,
+            })
+            .flatten()
     }
 
     /// The 2-cell synthetic module — param `a` = `Real(5.0)`, let `b = a * 2.0`
@@ -14134,7 +14142,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     /// journal event with `payload: None` (from the shared pre-eval `Started`
     /// at the top of its loop body) and writes the cache leg via a direct
     /// `record_evaluation_propagating_freshness(val, Determined, false)` call,
-    /// so `started_payload(&engine, &b)` is `None`, not `Some("cold-eval")`.
+    /// so `first_started_commit(&engine, &b)` is `None`, not a `ColdEval` tag.
     /// GREEN after impl-3 migrates the commit onto `commit_cell_result` with
     /// `TraceSource::ColdEval` + `CacheLeg::RecordPropagating { still_refining:
     /// false }` (removing the superseded manual `Started(None)`/`Completed` pair
@@ -14188,7 +14196,10 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
             &runtime_sink,
         );
 
-        eprintln!("b started_payload = {:?}", started_payload(&engine, &b_id));
+        eprintln!(
+            "b first_started_commit = {:?}",
+            first_started_commit(&engine, &b_id)
+        );
         eprintln!("b snapshot value = {:?}", snapshot.values.get(&b_id));
         eprintln!(
             "b freshness = {:?}",
@@ -14196,12 +14207,15 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
         );
         eprintln!("diagnostics = {:?}", diagnostics);
 
-        // (1) Provenance — RED today (the main let path's Started payload is None).
+        // (1) Provenance — RED today (the main let path's Started is untagged).
         assert_eq!(
-            started_payload(&engine, &b_id),
-            Some("cold-eval".to_string()),
-            "evaluate_let_bindings' main let commit should carry the 'cold-eval' \
-             TraceSource slug once migrated onto commit_cell_result"
+            first_started_commit(&engine, &b_id),
+            Some(CommitTag {
+                trace: TraceSource::ColdEval,
+                cache: CacheLegKind::Recorded,
+            }),
+            "evaluate_let_bindings' main let commit should carry the ColdEval \
+             commit tag once migrated onto commit_cell_result"
         );
 
         // (2) Value + determinacy preserved (characterization guard — green throughout).

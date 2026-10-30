@@ -533,6 +533,8 @@ mod tests {
             "expected exactly Started + Completed, got {events:?}"
         );
         assert_eq!(started_commit(events[0]), recorded(TraceSource::ColdEval));
+        // The tag is the only carrier of trace and cache leg.
+        assert!(events[0].payload.is_none(), "got {:?}", events[0].payload);
         assert_eq!(completed_outcome(events[1]), Some(EvalOutcome::Changed));
 
         // The returned cache outcome is the one the journal's Completed carries.
@@ -719,16 +721,15 @@ mod tests {
                 },
             })
         );
+        assert!(events[0].payload.is_none(), "got {:?}", events[0].payload);
         // No cache write happened, so there is no cache outcome to report.
         assert_eq!(completed_outcome(events[1]), None);
         assert_eq!(outcome, None);
     }
 
     /// Pins §2.3's provenance requirement: the commit's `TraceSource` is
-    /// recorded on the journal's `Started` event — not `Completed`, which
-    /// carries the cache outcome + duration instead — and every `TraceSource`
-    /// variant maps to a distinct, stable kebab slug via `as_str`, the string
-    /// a later divergence audit would key off of.
+    /// recorded on the journal's `Started` event's commit tag — not on
+    /// `Completed`, which carries the cache outcome + duration instead.
     #[test]
     fn trace_source_provenance_is_recorded_on_started_event() {
         let mut values = ValueMap::new();
@@ -772,86 +773,6 @@ mod tests {
         match &events[1].payload {
             Some(EventPayload::Duration(_)) => {}
             other => panic!("expected Completed payload Duration(_), got {other:?}"),
-        }
-
-        // Every variant maps to a distinct, stable kebab slug. `ALL_TRACE_SOURCES`
-        // is kept exhaustive by `trace_source_enumeration_is_exhaustive` below —
-        // adding a variant without listing it here is a compile error, not a
-        // silently-unchecked slug (#5238 amendment: `CachedReuse` was shipped
-        // while this list still had six entries, so neither its uniqueness nor
-        // its frozen string was covered).
-        let slugs: Vec<&'static str> = ALL_TRACE_SOURCES.iter().map(|t| t.as_str()).collect();
-        assert_eq!(
-            slugs,
-            [
-                "cold-eval",
-                "cached-serve",
-                "cached-reuse",
-                "edit-reeval",
-                "guarded-group",
-                "post-pass-overwrite",
-                "cone-reeval",
-            ],
-            "TraceSource slugs are frozen once shipped (see TraceSource::as_str)"
-        );
-        let unique: std::collections::HashSet<_> = slugs.iter().collect();
-        assert_eq!(
-            unique.len(),
-            slugs.len(),
-            "TraceSource slugs must be distinct: {slugs:?}"
-        );
-    }
-
-    /// Every [`TraceSource`] variant, in declaration order — the list
-    /// `trace_source_provenance_is_recorded_on_started_event` pins slugs over.
-    ///
-    /// Kept exhaustive by `trace_source_enumeration_is_exhaustive`: because that
-    /// sentinel matches on `TraceSource` with no wildcard arm, adding a variant
-    /// fails to compile until it is named there, and the `ALL_TRACE_SOURCES.len()`
-    /// assertion then fails until it is added here too.
-    const ALL_TRACE_SOURCES: [TraceSource; 7] = [
-        TraceSource::ColdEval,
-        TraceSource::CachedServe,
-        TraceSource::CachedReuse,
-        TraceSource::EditReeval,
-        TraceSource::GuardedGroup,
-        TraceSource::PostPassOverwrite,
-        TraceSource::ConeReeval,
-    ];
-
-    /// Compile-time + run-time guard that `ALL_TRACE_SOURCES` really is every
-    /// variant, so the slug uniqueness/stability assertions above are checked
-    /// over the WHOLE enum rather than over a hand-maintained subset that
-    /// silently drifts (which is exactly how `CachedReuse` shipped uncovered).
-    #[test]
-    fn trace_source_enumeration_is_exhaustive() {
-        // Wildcard-free match: a new `TraceSource` variant fails to compile
-        // here until it is named, which is the whole point of the sentinel.
-        // Mapping each variant to its expected INDEX (rather than just
-        // counting) also catches a repeated or omitted entry in the array.
-        fn declaration_index(t: TraceSource) -> usize {
-            match t {
-                TraceSource::ColdEval => 0,
-                TraceSource::CachedServe => 1,
-                TraceSource::CachedReuse => 2,
-                TraceSource::EditReeval => 3,
-                TraceSource::GuardedGroup => 4,
-                TraceSource::PostPassOverwrite => 5,
-                TraceSource::ConeReeval => 6,
-            }
-        }
-        assert_eq!(
-            ALL_TRACE_SOURCES.len(),
-            7,
-            "ALL_TRACE_SOURCES must list every TraceSource variant exactly once"
-        );
-        for (i, t) in ALL_TRACE_SOURCES.iter().enumerate() {
-            assert_eq!(
-                declaration_index(*t),
-                i,
-                "ALL_TRACE_SOURCES[{i}] = {t:?} is out of order, repeated, or \
-                 omits a variant: {ALL_TRACE_SOURCES:?}"
-            );
         }
     }
 

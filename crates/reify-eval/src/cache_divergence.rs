@@ -154,29 +154,21 @@ mod tests {
 
     use crate::cache::{CacheStore, CachedResult, NodeId};
     use crate::deps::DependencyTrace;
-    use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
+    use crate::journal::{
+        CacheLegKind, CommitTag, EvalEvent, EventJournal, EventKind, TraceSource,
+    };
 
-    /// Anti-silent-accept RED self-test (step-1): seeds a present-but-mismatched
-    /// cache entry and asserts the checker fires. The snapshot holds
-    /// `Value::Int(2)` for `cell`, but the cache entry for the SAME cell was
-    /// recorded with `Value::Int(1)` — so the stored `result_hash`
-    /// (= hash(Int(1))) ≠ the `CachedResult::Value(Int(2), Determined)`
-    /// content-hash the snapshot side recomputes. With no `cache-skip=` journal
-    /// marker present, this is a genuine divergence the checker MUST report.
-    ///
-    /// RED before step-2: the module's `check_snapshot_cache_divergence` free
-    /// function and `SnapshotCacheDivergence` struct do not exist yet, so this
-    /// does not compile.
-    #[test]
-    fn divergence_fires_on_present_but_mismatched_cache_entry() {
-        let cell = ValueCellId::new("SnapCacheDemo", "diverged");
-
-        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::new();
+    /// A divergent state for `cell`: the snapshot holds `Int(2)` while the
+    /// cache entry was recorded with `Int(1)`, so the stored `result_hash`
+    /// differs from the hash the snapshot side recomputes.
+    fn divergent_state(
+        cell: &ValueCellId,
+    ) -> (
+        PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        CacheStore,
+    ) {
+        let mut snapshot_values = PersistentMap::new();
         snapshot_values.insert(cell.clone(), (Value::Int(2), DeterminacyState::Determined));
-
-        // Seed the cache with a DIFFERENT value (Int(1)) for the same cell, so
-        // the stored `result_hash` diverges from the snapshot side's hash.
         let mut cache = CacheStore::new();
         cache.record_evaluation(
             NodeId::Value(cell.clone()),
@@ -184,8 +176,40 @@ mod tests {
             VersionId(1),
             DependencyTrace::default(),
         );
+        (snapshot_values, cache)
+    }
 
-        // Empty journal: no `cache-skip=` marker, so the cell is NOT exempt.
+    /// A journal `Started` event for `cell` carrying `commit` and no payload.
+    fn started(cell: &ValueCellId, commit: Option<CommitTag>) -> EvalEvent {
+        EvalEvent {
+            timestamp: Instant::now(),
+            node_id: NodeId::Value(cell.clone()),
+            kind: EventKind::Started { commit },
+            version: VersionId(1),
+            payload: None,
+        }
+    }
+
+    fn post_pass(cache: CacheLegKind) -> Option<CommitTag> {
+        Some(CommitTag {
+            trace: TraceSource::PostPassOverwrite,
+            cache,
+        })
+    }
+
+    fn skipped() -> CacheLegKind {
+        CacheLegKind::Skipped {
+            reason: "seeded".to_string(),
+        }
+    }
+
+    /// Anti-silent-accept self-test: a present-but-mismatched cache entry with
+    /// no Skip-tagged commit in the journal is a genuine divergence the
+    /// checker MUST report.
+    #[test]
+    fn divergence_fires_on_present_but_mismatched_cache_entry() {
+        let cell = ValueCellId::new("SnapCacheDemo", "diverged");
+        let (snapshot_values, cache) = divergent_state(&cell);
         let journal = EventJournal::new();
 
         let divergences = check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
@@ -203,57 +227,66 @@ mod tests {
         );
     }
 
-    /// RED before step-4: a cell whose snapshot↔cache hashes DIVERGE but whose
-    /// latest `Started` journal event carries a `cache-skip=` marker (the exact
-    /// `<trace-slug>|cache-skip=<reason>` shape `commit_cell_result` writes for
-    /// every `CacheLeg::Skip` commit) must be EXEMPT. Step-2's checker has no
-    /// exemption, so it still reports this cell — this test fails until step-4
-    /// adds the Skip guard.
+    /// A divergent cell whose latest `Started` event carries a
+    /// `CacheLegKind::Skipped` commit tag — what `commit_cell_result` records
+    /// for a `CacheLeg::Skip` commit — is EXEMPT. The tag is the only carrier:
+    /// the event has no payload.
     #[test]
     fn skip_committed_cell_is_exempt() {
         let cell = ValueCellId::new("SnapCacheSkip", "diverged_but_skipped");
-
-        // Identical mismatched state to the step-1 fire test: snapshot Int(2),
-        // cache Int(1) — the hashes diverge.
-        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::new();
-        snapshot_values.insert(cell.clone(), (Value::Int(2), DeterminacyState::Determined));
-
-        let mut cache = CacheStore::new();
-        cache.record_evaluation(
-            NodeId::Value(cell.clone()),
-            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
-            VersionId(1),
-            DependencyTrace::default(),
-        );
-
-        // The distinguishing input: a `cache-skip=` marker on the cell's latest
-        // Started event — as commit_cell_result writes for a CacheLeg::Skip.
+        let (snapshot_values, cache) = divergent_state(&cell);
         let mut journal = EventJournal::new();
-        journal.record(EvalEvent {
-            timestamp: Instant::now(),
-            node_id: NodeId::Value(cell.clone()),
-            kind: EventKind::Started { commit: None },
-            version: VersionId(1),
-            payload: Some(EventPayload::Custom(
-                "post-pass-overwrite|cache-skip=seeded".to_string(),
-            )),
-        });
+        journal.record(started(&cell, post_pass(skipped())));
 
         let divergences = check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
 
         assert!(
             divergences.is_empty(),
-            "a cell whose latest Started event carries a `cache-skip=` marker must \
+            "a cell whose latest Started event carries a Skipped commit tag must \
              be exempt even though its snapshot↔cache hashes diverge, got {divergences:?}"
+        );
+    }
+
+    /// The LATEST commit decides: an earlier Skipped commit does not exempt a
+    /// cell whose later commit recorded the cache leg.
+    #[test]
+    fn recorded_commit_after_skip_is_reported() {
+        let cell = ValueCellId::new("SnapCacheSkip", "skipped_then_recorded");
+        let (snapshot_values, cache) = divergent_state(&cell);
+        let mut journal = EventJournal::new();
+        journal.record(started(&cell, post_pass(skipped())));
+        journal.record(started(&cell, post_pass(CacheLegKind::Recorded)));
+
+        let divergences = check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
+
+        assert_eq!(
+            divergences.iter().map(|d| &d.cell).collect::<Vec<_>>(),
+            vec![&cell],
+            "a Recorded commit after a Skipped one must leave the divergence reported"
+        );
+    }
+
+    /// A `Started` event with no commit tag is a visit, not a Skip commit, so
+    /// it exempts nothing.
+    #[test]
+    fn untagged_started_is_not_exempt() {
+        let cell = ValueCellId::new("SnapCacheSkip", "untagged");
+        let (snapshot_values, cache) = divergent_state(&cell);
+        let mut journal = EventJournal::new();
+        journal.record(started(&cell, None));
+
+        let divergences = check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
+
+        assert_eq!(
+            divergences.iter().map(|d| &d.cell).collect::<Vec<_>>(),
+            vec![&cell],
+            "an untagged Started event must not exempt a divergent cell"
         );
     }
 
     /// A cell whose cache entry was recorded with the SAME `(val, det)` as the
     /// snapshot holds — so the stored `result_hash` equals the snapshot side's
-    /// recomputed hash — is NOT a divergence. GREEN under step-2 already (the
-    /// core checker only fires on a hash MISMATCH); pins that matching state is
-    /// never reported, independent of the journal.
+    /// recomputed hash — is NOT a divergence, independent of the journal.
     #[test]
     fn matching_hash_is_not_a_divergence() {
         let cell = ValueCellId::new("SnapCacheMatch", "agrees");
