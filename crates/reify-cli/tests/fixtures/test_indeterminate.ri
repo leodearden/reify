@@ -4,7 +4,8 @@
 //
 // This file must contain no `auto` param. `reify test` resolves autos, so an
 // auto here would be solved and the verdict would stop being Indeterminate.
-// Used by test_command_on_indeterminate_file_exits_success.
+// Used by test_command_on_indeterminate_file_exits_success and
+// test_command_prints_the_reason_behind_an_indeterminate.
 
 @test structure TestUndefTolerance {
     param divisor: Int = 0

@@ -56,6 +56,61 @@ fn test_command_on_indeterminate_file_exits_success() {
     );
 }
 
+// A FAIL names the violated constraint under its status line, and the
+// violation diagnostic reaches stderr.
+#[test]
+fn test_command_prints_the_violation_behind_a_fail() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_one_fail.ri"));
+
+    assert!(
+        !status.success(),
+        "reify test should exit non-zero when a test fails.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            "  FAIL  TestNegative",
+            "    VIOLATED TestNegative#constraint[0]",
+            "test result: FAIL. 0 passed; 1 failed; 0 indeterminate",
+        ],
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line == "error: constraint TestNegative#constraint[0] violated"),
+        "stderr should carry the violation diagnostic, got: {stderr}"
+    );
+}
+
+// An INDETERMINATE names the undecided constraint and its recorded reason
+// under its status line, and the indeterminate diagnostic reaches stderr.
+#[test]
+fn test_command_prints_the_reason_behind_an_indeterminate() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_indeterminate.ri"));
+
+    assert!(
+        status.success(),
+        "reify test should exit 0 when no test fails.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            "  INDETERMINATE  TestUndefTolerance",
+            "    INDETERMINATE TestUndefTolerance#constraint[0]: undefined inputs: TestUndefTolerance.tolerance",
+            "test result: ok. 0 passed; 0 failed; 1 indeterminate",
+        ],
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            == "warning: constraint TestUndefTolerance#constraint[0] indeterminate: undefined inputs: TestUndefTolerance.tolerance"),
+        "stderr should carry the indeterminate diagnostic, got: {stderr}"
+    );
+}
+
 // Solver-driver parity B8: `reify test` resolves autos, so a test whose
 // constraint reads a two-sided auto gets a real verdict, not Indeterminate.
 #[test]
