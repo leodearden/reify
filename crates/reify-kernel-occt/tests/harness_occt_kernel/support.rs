@@ -3,15 +3,11 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, Value};
+use reify_ir::{GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
 
 /// Create the canonical 20×10×5 axis-aligned box used by the InertiaTensor
 /// density/analytic tests and store it in `kernel`. Returns the handle ID.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
 pub(crate) fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
@@ -21,6 +17,54 @@ pub(crate) fn make_box_20_10_5(kernel: &mut OcctKernel) -> GeometryHandleId {
         })
         .expect("Box creation must succeed")
         .id
+}
+
+/// Create a circle face of given `radius`, rotate it into the XZ plane, translate
+/// it `offset_r` along X, and store into `kernel`. Returns a GeometryHandleId
+/// suitable for revolving around the Z axis to produce a torus.
+pub(crate) fn circle_torus_profile(
+    kernel: &mut OcctKernel,
+    radius: f64,
+    offset_r: f64,
+) -> GeometryHandleId {
+    let face = kernel.store_circle_face_for_test(radius, 0.0);
+    let rotated = kernel
+        .execute(&GeometryOp::Rotate {
+            target: face,
+            axis: [1.0, 0.0, 0.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        })
+        .expect("Rotate should succeed");
+    kernel
+        .execute(&GeometryOp::Translate {
+            target: rotated.id,
+            dx: offset_r,
+            dy: 0.0,
+            dz: 0.0,
+        })
+        .expect("Translate should succeed")
+        .id
+}
+
+/// Assert that the volume of the shape at `handle_id` is within `tolerance`
+/// relative error of `expected`. Panics with a descriptive message including `label`.
+pub(crate) fn assert_volume_near(
+    kernel: &mut OcctKernel,
+    handle_id: GeometryHandleId,
+    expected: f64,
+    tolerance: f64,
+    label: &str,
+) {
+    let vol = kernel
+        .query(&GeometryQuery::Volume(handle_id))
+        .expect("Volume query should succeed")
+        .as_f64()
+        .expect("Volume should be numeric");
+    let rel_err = (vol - expected).abs() / expected;
+    assert!(
+        rel_err < tolerance,
+        "{label}: expected volume \u{2248} {expected:.2}, got {vol:.2} (rel_err={rel_err:.4})"
+    );
 }
 
 /// Assert that a `Result` is an `Err(GeometryError::OperationFailed(msg))` where
@@ -48,10 +92,6 @@ pub(crate) fn assert_operation_fails_with(
 /// Parse a `{"x":_,"y":_,"z":_}` JSON string into `(x, y, z)`.
 /// Used by `CenterOfMass` query tests to decode the `Value::String` encoding returned
 /// by `query_centroid`.
-///
-/// Twin: `src/lib.rs`'s in-file `mod tests` holds a byte-identical copy
-/// for the private-reach tests that stayed. Edit both until #8659 moves
-/// those tests and deletes that copy.
 pub(crate) fn parse_centroid_json(s: &str) -> (f64, f64, f64) {
     let parse_field = |field: &str| -> f64 {
         let needle = format!("\"{field}\":");
