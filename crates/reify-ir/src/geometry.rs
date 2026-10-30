@@ -10756,6 +10756,37 @@ mod tests {
         Mesh { vertices, indices, normals: None }
     }
 
+    /// [`unit_cube_mesh`]'s local corner literal follows the corner order
+    /// under which the shared index block is outward-wound: every triangle's
+    /// facet normal points away from the cube's centre.
+    ///
+    /// Per triangle rather than a divergence-theorem volume, because the -X,
+    /// -Y and -Z faces of `[0,1]^3` lie on the coordinate planes, where a
+    /// flipped triangle adds nothing to a volume taken about the origin.
+    #[test]
+    fn unit_cube_mesh_triangles_each_face_outward() {
+        let mesh = unit_cube_mesh();
+        let corner =
+            |i: u32| -> [f32; 3] { std::array::from_fn(|k| mesh.vertices[3 * i as usize + k]) };
+        let corner_count = (mesh.vertices.len() / 3) as f32;
+        let centre: [f32; 3] = std::array::from_fn(|k| {
+            mesh.vertices.iter().skip(k).step_by(3).sum::<f32>() / corner_count
+        });
+
+        for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+            let [a, b, c] = [corner(tri[0]), corner(tri[1]), corner(tri[2])];
+            let normal = compute_facet_normal(a, b, c);
+            let outward: f32 = (0..3)
+                .map(|k| normal[k] * ((a[k] + b[k] + c[k]) / 3.0 - centre[k]))
+                .sum();
+            assert!(
+                outward > 0.0,
+                "triangle {t} {tri:?} has facet normal {normal:?}, which does not \
+                 point out of the cube (dot with centroid - centre = {outward})"
+            );
+        }
+    }
+
     /// Helper: [`unit_cube_mesh`]'s `[0,1]^3` corners expressed in reify's
     /// SI-metre model space as `[0, 0.030]^3` — a 30 mm cube, topology
     /// unchanged.
