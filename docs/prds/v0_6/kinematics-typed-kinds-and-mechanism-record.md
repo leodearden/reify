@@ -380,7 +380,7 @@ After σ₀, σ's typed `snapshot_for_sample` call (dynamics→snapshot) and `co
 | T12 | Input failure has a reason | Rust boundary test below the compiler: a record missing `chain_b`, and a chain joint that does not parse | the named `LoopClosureInputError` variant, as a snapshot error Map → coded diagnostic through the engine scan |
 | T13 | Status fields are Bools | non-singular, converged snapshot | `s.is_singular` reads `false` and `s.converged` reads `true`; `four_bar_singular.ri` emits exactly one singularity warning |
 | T14 | Tree bodies by id | `s6_idyn_open_after_closing.ri` | forces for ids 0, 1, 3 with 45.24 N on id 3 |
-| T15 | Closed-chain compliance | `s6_idyn_closed_flexure.ri` | sample 1 τ_a = −14.31375 N, equal to `s6_idyn_open_flexure_control.ri` (this loop's constraint is projected out by `reduce_constraint_rank`, so the closed answer equals the open one) |
+| T15 | Closed-chain compliance | `s6_idyn_closed_flexure.ri` | **[Amended 2026-10-30, #9566]** sample 1 τ = [τ_a, τ_b] = [−20.72, 8.85875] N, whose sum equals `s6_idyn_open_flexure_control.ri`'s (derivation, invariant and today's value: "T15 re-derivation after #7312" below). ~~sample 1 τ_a = −14.31375 N, equal to `s6_idyn_open_flexure_control.ri` (this loop's constraint is projected out by `reduce_constraint_rank`, so the closed answer equals the open one)~~ (superseded: #7312 retired that projection) |
 | T16 | Coupling dynamics refused loudly | `s6_idyn_coupling.ri` | coded refusal naming the coupling joint |
 | T17 | Relation kinds | per-kind relate fixtures; a `fn … -> Relation` wrapper | identical poses and conflict phrases (fasten explicit); the wrapper gets `unconsumable_relation_diagnostic`; `antiparallel` dispatches as itself in `solvespace` |
 | T18 | Kind exhaustiveness | review compile probe adding a variant | every consumer named in §1 item 4 fails to compile |
@@ -579,7 +579,7 @@ No waiver is needed.
 - **A rank-based over/underconstraint policy.** A known gap; a future rank test uses the LDLᵀ pivots `solve_normal_equations` already computes.
 - **Stacked simultaneous multi-loop solves.** #8145 for dynamics. Snapshot uses C5's record-order rule with final re-measurement.
 - **Coupling inverse dynamics.** σ makes it a coded refusal.
-- **`reduce_constraint_rank`'s cut-joint treatment of the closing joint.** It projects the closing joint's subspace out, which differs from snapshot's rigid-tie rule (§12.7). Follow-up candidate, not filed here.
+- **`reduce_constraint_rank`'s cut-joint treatment of the closing joint.** **[Resolved 2026-10-30 by #7312]** The function now drops only zero or linearly dependent rows, so the KKT constraint has the zero set of snapshot's rigid-tie residual, and T15 is re-derived on that basis. ~~It projects the closing joint's subspace out, which differs from snapshot's rigid-tie rule (§12.7). Follow-up candidate, not filed here.~~ The other half of the mismatch, that a closing body's mass never loads a joint in inverse dynamics, is #8883.
 - **TOTS `force_limit` / `actuator_limits` (#7083) and dimension gating of trajectory readers (#6941).**
 - **The trajectory `JointValue = Real` alias** (profile scalars).
 - **The `JointParent` / `Mechanism.joint_parents` declaration mismatch.** Follow-up candidate.
@@ -593,7 +593,7 @@ No waiver is needed.
 4. **A sweep whose free set changes mid-sweep (π).** A newly free joint seeds at its midpoint. Pin it with a test.
 5. **`Value::Enum` display (η).** Measure the payload-enum goldens first (`cli_eval_generic_enum.rs`, `getar_*` fixtures) and list them per D10.
 6. **`classifier.rs` and `std::fasten` (γ).** Read `is_geometry_qualified_name`'s consumer, decide whether fasten belongs, and pin it.
-7. **The cut-joint vs rigid-tie note for `reduce_constraint_rank`.** File a follow-up when ρ lands, if T15's equality turns out to depend on it.
+7. **The cut-joint vs rigid-tie note for `reduce_constraint_rank`.** **[Resolved 2026-10-30]** T15's equality did depend on it. #7312 retired the projection, and #9566 re-derived T15 ("T15 re-derivation after #7312" below). ~~File a follow-up when ρ lands, if T15's equality turns out to depend on it.~~
 
 ## 13. Rulings (Leo, 2026-10-13, this session)
 
@@ -616,3 +616,15 @@ Rulings from `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16). 
 ## Retro-critic sitting amendments (2026-10-20)
 
 - **S9 B1 / retro-critic R6 (C1)** — `RelationKind` is `reify_builtins::RelationKind`, the builtin registry's generated `Relation` sub-enum minted by the S8 leaf S8-ψ #9418; supersedes C2's hand-written reify-ir enum (C2 amended in place: `ALL` → `iter()`, `as_str` → the row's name, `from_name` deleted under I-REG-1; R4's parse point stands, the parser is `lookup`). §1 goal, §3 step 1, §9 rows (home of the kinds, S9 λ, S8 — direction reversed: rows mint, S6 binds) and the §10 γ row amended. γ #8830: modules reify-constraints and reify-eval (both take reify-builtins as a normal dependency); reify-ir `relation_kind.rs` is not created; new edge #8830 ← #9418; delivered checks `no-hand-written-relation-kind-parser` (replacing the `pub enum RelationKind` check) and `instance-carries-kind`. **Flagged, not ruled:** the joint twin — §9's S8 row still has joint builtin rows derive from `JointKind::from_ctor_name` (#6945 ← #8829), the same direction a leaf reify-builtins cannot take. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`.
+
+## T15 re-derivation after #7312 (2026-10-30)
+
+#7312 (landed `10eb8ca95b`) retired the closing-joint motion-subspace projection in `dynamics/closed_chain.rs::reduce_constraint_rank`, which now drops only zero or linearly dependent rows. T15's old target held only because that projection deleted this loop's one constraint row. #9566 re-derived it by hand, and that derivation is the authority for T15's target. Its inputs are the fixtures' masses and topology plus the open control's τ_open, which anyone can re-measure on main; the scratch build under **Corroboration** only supports it:
+- **The loop.** j_a (the flexure, prismatic z, 0.5 kg) and j_b (prismatic z, 0.25 kg) are both world-rooted. The 0.125 kg closing body re-parents j_b onto j_a, so the closure is q_b = q_a: one live row, A = [1, −1] (m_eff = 1, the same shape as `closed_2prismatic_idyn.ri`).
+- **Inputs.** M = diag(0.5, 0.25) kg. ρ decides compliance once (C8), so the closed chain's τ_open is the open control's sample 1, measured with `target/debug/reify eval` built from main `ec9e47f729`: [m_a·g + f_s, m_b·g] = [−14.31375, 2.4525] N. The flexure spring term at q_a = 0.3 mm is f_s = τ_a − m_a·g = −19.21875 N.
+- **KKT.** λ = (A·M⁻¹·τ_open)/(A·M⁻¹·Aᵀ) = (2·(−14.31375) − 4·2.4525)/(2 + 4) = −6.40625 N, and τ = τ_open + Aᵀλ = [−20.72, 8.85875] N. In closed form λ = f_s·m_b/(m_a + m_b). Gravity alone gives A·M⁻¹·τ_open = 0, which is why today's answer, with no spring term, has λ = 0.
+- **Invariant.** Aᵀλ is orthogonal to ker(A) = span(1, 1), so τ_a + τ_b = −11.86125 N equals the open control's sum whatever the split. The split assumes today's massless closing body. #8883 owns that model and re-derives T15 if it changes.
+- **Why the runtime reproduces it.** The loop residual is linear in both prismatic coordinates, so the FD Jacobian is ±1 to rounding and the solver's A equals the hand A. ρ asserts the derived value without retuning.
+- **Corroboration.** Built the same way, the closed fixture gives [4.905, 2.4525] N today: the derivation's λ = 0 case, since no spring term reaches the closed chain yet. A scratch build, reverted and not recorded anywhere, wired compliance into `closed_chain_inverse_dynamics` the way `snapshot_inverse_dynamics` does and gave sample 1 = [−20.72, 8.85875] N. It cannot be replayed, so it is supporting evidence only; ρ's own run is the first reproducible measurement of the target.
+- **T14 is unaffected.** Every joint in its loop carries the same q̈ + g, so λ = 0 and "45.24 N on id 3" stands. Its before-image did move: the closing body is still in today's positional slice, and the now-live row gives ids 0, 1, 2 = 16.45, 40.10, 17.48 N (was 22.62, 33.93, 11.31 N).
+- **Records.** #8845's signal carries these values. #8883 is narrowed to the closing-body-mass half.
