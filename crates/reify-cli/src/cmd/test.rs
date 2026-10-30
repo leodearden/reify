@@ -31,6 +31,13 @@ pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
     }
 
     let results = reify_eval::run_tests(&compiled, || Box::new(SimpleConstraintChecker));
+    if results.is_empty() {
+        println!(
+            "test result: no tests. {} declares no @test structures",
+            args[0]
+        );
+        return ExitCode::SUCCESS;
+    }
 
     let mut passed: usize = 0;
     let mut failed: usize = 0;
