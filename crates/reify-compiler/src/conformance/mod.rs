@@ -4059,7 +4059,7 @@ mod tests {
     ///
     /// Pinned separately from (a-i) because a rule that compared only one side
     /// against `None` would pass (a-i) and fail here. Together they pin that
-    /// [`emit_if_quantity_conflict`] requires BOTH sides to name a dimension —
+    /// [`crate::type_acceptance::quantity_verdict`] requires BOTH sides to name a dimension —
     /// which is also how the `is_numeric_placeholder_leaf` unknown-ness fence
     /// (D4-5) survives at these arms.
     #[test]
@@ -4118,7 +4118,7 @@ mod tests {
              erasure, so `Dimensionless` there asserts unit-lessness. The ARG-side tolerance \
              leg is deliberately untouched (`vector_param_accepts_dimensionless_vector_arg`).",
         );
-        // The ONE whole-message pin for `emit_if_quantity_conflict`'s rendering
+        // The ONE whole-message pin for `emit_quantity_conflict`'s rendering
         // — see `assert_quantity_slot_conflict`'s doc for why it is here and only
         // here. This probe is chosen because its two quantities differ
         // ASYMMETRICALLY (`Scalar[m]` arg, `Real` param), so a transposition
@@ -4144,7 +4144,7 @@ mod tests {
 
     /// THE PARAM-SIDE RULING (task 6159) at the `Matrix`/`Tensor` arm.
     ///
-    /// [`emit_if_quantity_conflict`] is shared by all three shape arms, but the
+    /// [`crate::type_acceptance::quantity_verdict`] is shared by all three shape arms, but the
     /// ruling's new cell was pinned only at the `Vector` one, and
     /// `crates/reify-core/src/ty.rs` asserts a consequence specific to THIS arm:
     /// a dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is
@@ -4183,7 +4183,7 @@ mod tests {
 
     /// THE PARAM-SIDE RULING (task 6159) at the `Point` arm — sibling of
     /// `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`,
-    /// closing the third of the three arms [`emit_if_quantity_conflict`] serves.
+    /// closing the third of the three arms [`crate::type_acceptance::quantity_verdict`] serves.
     ///
     /// Constructed as a direct `Type` so the probe reaches the walker without
     /// depending on `math_fn_result_type`'s agreeing-components quantity
@@ -4248,13 +4248,13 @@ mod tests {
     /// FENCE (b-param), task 6159: an `Int` PARAM quantity slot stays CLEAN.
     ///
     /// The PARAM-side half of fence (b) directly above, which puts `Type::Int` in
-    /// the ARG slot and so constrains [`arg_quantity_slot_dimension`] only.
+    /// the ARG slot and so constrains [`crate::type_acceptance::arg_quantity_slot_dimension`] only.
     /// `crates/reify-core/src/ty.rs` rules that on the param side "`Type::Int`
     /// and `Type::ScalarParam` still name nothing", and only the `ScalarParam`
     /// half of that was pinned param-side (fence (a-i),
     /// `dimensioned_quantity_param_accepts_generic_vector_arg`). Without this
     /// probe, adding `Type::Int => Some(DimensionVector::DIMENSIONLESS)` to
-    /// [`param_quantity_slot_dimension`] leaves every other test in both files
+    /// [`crate::type_acceptance::param_quantity_slot_dimension`] leaves every other test in both files
     /// green.
     ///
     /// This is a fence on the PREDICATE's shape, not on a reachable source cell:
@@ -4365,7 +4365,7 @@ mod tests {
     ///
     /// `matrix_param_accepts_matrix_arg_without_arity_check` below builds a
     /// DIMENSIONLESS `Matrix` arg, so it exercises only
-    /// [`arg_quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
+    /// [`crate::type_acceptance::arg_quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
     /// tightening fixture routes through a `Type::Tensor` arg. This is the
     /// `Type::Matrix`-arg reject leg.
     ///
