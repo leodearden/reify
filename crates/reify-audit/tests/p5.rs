@@ -2856,7 +2856,7 @@ mod tests {
     }
 
     /// The H1 prefilter is authoritative for "no candidate": when the task's
-    /// one `--no-renames` union diff declares no fn that arms H1, the per-path
+    /// one added-lines superset declares no fn that arms H1, the per-path
     /// walk is skipped. The per-path answer here WOULD fire, so a finding
     /// proves the walk ran anyway.
     #[test]
@@ -2866,7 +2866,7 @@ mod tests {
             "crates/x/tests/h1.rs",
             firing_h1_lines(),
             |git, commit| {
-                git.set_diff_added_lines_in_commit_no_renames(
+                git.set_added_lines_in_commit_superset(
                     commit,
                     Ok(vec![(1, "    let unrelated = 1;".to_string())]),
                 );
@@ -2875,7 +2875,7 @@ mod tests {
         assert!(findings.is_empty(), "the prefilter found no candidate; got {findings:?}");
     }
 
-    /// A failed union diff answers nothing, so the per-path walk decides.
+    /// A failed superset query answers nothing, so the per-path walk decides.
     #[test]
     fn h1_prefilter_failure_falls_back_to_the_per_path_walk() {
         let findings = run_h1_single_file_with(
@@ -2883,13 +2883,13 @@ mod tests {
             "crates/x/tests/h1.rs",
             firing_h1_lines(),
             |git, commit| {
-                git.set_diff_added_lines_in_commit_no_renames(commit, Err("boom".to_string()));
+                git.set_added_lines_in_commit_superset(commit, Err("boom".to_string()));
             },
         );
         assert_eq!(findings.len(), 1, "the per-path walk must still run; got {findings:?}");
     }
 
-    /// Unseeded, the mock's union is the concatenation of its per-path
+    /// Unseeded, the mock's superset is the concatenation of its per-path
     /// answers, so a firing fn reaches the walk.
     #[test]
     fn h1_prefilter_with_an_armed_fn_runs_the_per_path_walk() {

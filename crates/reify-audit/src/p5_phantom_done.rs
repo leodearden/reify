@@ -468,11 +468,11 @@ fn check_task(
 ///
 /// Skipped when `done_provenance.commit` is absent (no commit to diff).
 ///
-/// Prefiltered: one `--no-renames` diff over all the task's test paths
-/// ([`crate::GitOps::try_diff_added_lines_in_commit_no_renames`]) holds every
+/// Prefiltered: one superset of the added lines over all the task's test paths
+/// ([`crate::GitOps::try_added_lines_in_commit_superset`]) holds every
 /// line any per-path diff adds, so when none of its lines declares a fn that
-/// [`arms_h1`], no per-path walk can fire and none is run. A failed union
-/// diff answers nothing, and the per-path walk decides as before.
+/// [`arms_h1`], no per-path walk can fire and none is run. A failed superset
+/// query answers nothing, and the per-path walk decides as before.
 ///
 /// # Known limitation
 ///
@@ -499,7 +499,7 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     }
     if let Ok(union) = ctx
         .git
-        .try_diff_added_lines_in_commit_no_renames(commit, &test_paths)
+        .try_added_lines_in_commit_superset(commit, &test_paths)
         && !union
             .iter()
             .any(|(_, line)| extract_fn_name(line).is_some_and(|name| arms_h1(&name)))

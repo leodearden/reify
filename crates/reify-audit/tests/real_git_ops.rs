@@ -1187,7 +1187,7 @@ fn no_renames_union_is_a_superset_of_each_per_path_diff() {
         .map(str::to_string)
         .to_vec();
     let union: Vec<String> = git
-        .try_diff_added_lines_in_commit_no_renames(&merge, &paths)
+        .try_added_lines_in_commit_superset(&merge, &paths)
         .expect("the union diff runs")
         .into_iter()
         .map(|(_, content)| content)
@@ -1212,7 +1212,7 @@ fn no_renames_union_is_a_superset_of_each_per_path_diff() {
     assert!(per_path_total >= 3, "fixture premise: the per-path diffs add lines");
 
     assert!(
-        git.try_diff_added_lines_in_commit_no_renames(
+        git.try_added_lines_in_commit_superset(
             "0123456789abcdef0123456789abcdef01234567",
             &paths,
         )

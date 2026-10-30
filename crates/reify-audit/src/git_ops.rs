@@ -164,24 +164,23 @@ pub trait GitOps {
     /// `main`, so `git diff M^1..M` recovers the exact task delta.
     fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)>;
 
-    /// The `+` lines of `git diff --no-renames <commit>^1..<commit> -- <paths…>`
-    /// as `(new_side_line_no, content)` pairs, or `Err` when git did not
-    /// answer.
+    /// A superset of the `+` lines that [`GitOps::diff_added_lines_in_commit`]
+    /// returns for `commit` and each `p` in `paths`, as `(line_no, content)`
+    /// pairs, or `Err` when git did not answer. A caller asking "could any
+    /// per-path diff add a line like this" asks once. Line numbers are not
+    /// comparable with the per-path answers'.
     ///
-    /// Every line [`GitOps::diff_added_lines_in_commit`] returns for a `p` in
-    /// `paths` is among them: a single-pathspec diff can pair a rename only
-    /// within that pathspec, and `--no-renames` renders any such pair as a
-    /// whole-file add. So a caller asking "could any per-path diff add a line
-    /// like this" asks once. Line numbers are not comparable across the two.
-    fn try_diff_added_lines_in_commit_no_renames(
+    /// The default concatenates the per-path answers ([`per_path_added_lines`]).
+    /// [`RealGitOps`] makes one `git diff --no-renames <commit>^1..<commit> --
+    /// <paths…>`: a single-pathspec diff can pair a rename only within that
+    /// pathspec, and `--no-renames` renders any such pair as a whole-file add,
+    /// so every per-path `+` line is among its lines.
+    fn try_added_lines_in_commit_superset(
         &self,
         commit: &str,
         paths: &[String],
     ) -> Result<Vec<(usize, String)>, String> {
-        Ok(paths
-            .iter()
-            .flat_map(|p| self.diff_added_lines_in_commit(commit, p))
-            .collect())
+        Ok(per_path_added_lines(self, commit, paths))
     }
 
     /// Returns all lines of `path` at `reference` (e.g. `"main"`, `"HEAD"`) as
@@ -339,6 +338,20 @@ pub struct RealGitOps {
     /// Compiled out of production builds entirely.
     #[cfg(any(test, feature = "test-support"))]
     inject_spawn_failures: AtomicUsize,
+}
+
+/// The `+` lines of every [`GitOps::diff_added_lines_in_commit`] of `commit`
+/// over `paths`, concatenated in order: the exact union, and so a valid answer
+/// to [`GitOps::try_added_lines_in_commit_superset`] for any implementation.
+fn per_path_added_lines<G: GitOps + ?Sized>(
+    git: &G,
+    commit: &str,
+    paths: &[String],
+) -> Vec<(usize, String)> {
+    paths
+        .iter()
+        .flat_map(|p| git.diff_added_lines_in_commit(commit, p))
+        .collect()
 }
 
 /// Parse the `+` lines from a unified diff (`git diff` stdout) into
@@ -968,7 +981,7 @@ impl GitOps for RealGitOps {
         parse_added_lines(&stdout)
     }
 
-    fn try_diff_added_lines_in_commit_no_renames(
+    fn try_added_lines_in_commit_superset(
         &self,
         commit: &str,
         paths: &[String],
@@ -1071,9 +1084,10 @@ pub struct MockGitOps {
     is_gitignored_errors: HashMap<String, String>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
-    /// Canned `--no-renames` union diffs keyed by commit; an unseeded commit
-    /// answers the per-path concatenation, as the trait default does.
-    diff_added_lines_in_commit_no_renames: HashMap<String, Result<Vec<(usize, String)>, String>>,
+    /// Canned `try_added_lines_in_commit_superset` answers keyed by commit; an
+    /// unseeded commit answers the per-path concatenation, as the trait
+    /// default does.
+    added_lines_in_commit_superset: HashMap<String, Result<Vec<(usize, String)>, String>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
     /// Simulated `git ls-tree` FAILURES, keyed like `path_tracked_on`. An
@@ -1181,15 +1195,15 @@ impl MockGitOps {
             .insert((commit.to_string(), path.to_string()), added);
     }
 
-    /// Answer `try_diff_added_lines_in_commit_no_renames(commit, _)` with
+    /// Answer `try_added_lines_in_commit_superset(commit, _)` with
     /// `answer`, whatever the paths.
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
-    pub fn set_diff_added_lines_in_commit_no_renames(
+    pub fn set_added_lines_in_commit_superset(
         &mut self,
         commit: &str,
         answer: Result<Vec<(usize, String)>, String>,
     ) {
-        self.diff_added_lines_in_commit_no_renames
+        self.added_lines_in_commit_superset
             .insert(commit.to_string(), answer);
     }
 
@@ -1271,17 +1285,14 @@ impl GitOps for MockGitOps {
             .unwrap_or_default()
     }
 
-    fn try_diff_added_lines_in_commit_no_renames(
+    fn try_added_lines_in_commit_superset(
         &self,
         commit: &str,
         paths: &[String],
     ) -> Result<Vec<(usize, String)>, String> {
-        match self.diff_added_lines_in_commit_no_renames.get(commit) {
+        match self.added_lines_in_commit_superset.get(commit) {
             Some(answer) => answer.clone(),
-            None => Ok(paths
-                .iter()
-                .flat_map(|p| self.diff_added_lines_in_commit(commit, p))
-                .collect()),
+            None => Ok(per_path_added_lines(self, commit, paths)),
         }
     }
 
