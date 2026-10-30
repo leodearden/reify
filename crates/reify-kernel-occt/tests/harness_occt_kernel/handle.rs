@@ -657,16 +657,29 @@ fn handle_warm_state_none_on_empty_kernel() {
     assert!(state.is_none(), "empty kernel should have no warm state");
 }
 
+/// The handle answers `warm_state` itself, without asking the kernel thread,
+/// so its answer is held to `OcctKernel`'s after the same op.
 #[test]
-fn handle_warm_state_is_none_after_ops() {
+fn handle_warm_state_matches_the_kernel_after_the_same_op() {
     use reify_ir::WarmStartable;
-    let handle = OcctKernelHandle::spawn();
+    use reify_kernel_occt::OcctKernel;
     let op = GeometryOp::Box {
         size_x: Value::Real(10.0),
         size_y: Value::Real(20.0),
         size_z: Value::Real(30.0),
     };
+    let handle = OcctKernelHandle::spawn();
     handle.execute(&op).unwrap();
+    let mut kernel = OcctKernel::new();
+    kernel.execute(&op).unwrap();
+
+    assert_eq!(
+        handle.warm_state().is_some(),
+        kernel.warm_state().is_some(),
+        "OcctKernelHandle's WarmStartable impl must mirror OcctKernel's: if the \
+         kernel regains warm state, the handle must forward the request to the \
+         kernel thread"
+    );
     assert!(
         handle.warm_state().is_none(),
         "the OCCT handle carries no warm state, even after an execute"

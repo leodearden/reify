@@ -1196,6 +1196,9 @@ fn make_ellipse_face_ffi_nonfinite_semi_axis_returns_err() {
 
 // --- BRep serialize/deserialize round-trip ---
 
+/// `serialize_brep`/`deserialize_brep` have had no production caller since
+/// OCCT warm start became the trait no-op, and no consumer is planned. This
+/// test covers the pair only until #9594 deletes both together with it.
 #[test]
 fn brep_serialization_roundtrip() {
     let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();

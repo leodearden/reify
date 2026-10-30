@@ -3425,6 +3425,7 @@ fn analytic_curve_datum_to_value(
 }
 
 /// Stateless across warm starts: there is no state to capture or restore.
+/// `OcctKernelHandle` mirrors this answer without a kernel-thread round-trip.
 #[cfg(has_occt)]
 impl WarmStartable for OcctKernel {
     fn warm_state(&self) -> Option<OpaqueState> {
