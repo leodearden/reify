@@ -9,15 +9,16 @@ use std::collections::HashMap;
 use std::fmt;
 
 use reify_compiler::CompiledModule;
-use reify_core::DimensionVector;
+use reify_core::{DimensionVector, NAMED_DIMENSIONS};
 use reify_ir::{CompiledExprKind, Value};
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
+use strum::IntoEnumIterator;
 
 /// Invariant R's relative scale bound (PRD §5 C2). Not exact equality: `1g/cm^3` reads back as
 /// `999.9999999999999`.
 const SCALE_REL_TOL: f64 = 1e-12;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
 enum Surface {
     DimensionDisplay,
     ToDisplayUnits,
@@ -237,6 +238,39 @@ fn corpus_with(injected: impl IntoIterator<Item = Emission>) -> Vec<Emission> {
     let mut corpus = surface_emissions();
     corpus.extend(injected);
     corpus
+}
+
+/// The sweep cannot go silently empty: every surface contributes, and S1 covers every row of
+/// `NAMED_DIMENSIONS`. Counts come from the slice, never from a number written here.
+fn assert_corpus_covers_every_surface(corpus: &[Emission]) {
+    for surface in Surface::iter() {
+        assert!(
+            corpus.iter().any(|emission| emission.surface == surface),
+            "no emission came from {surface:?}, so the sweep proves nothing about that surface"
+        );
+    }
+    let display_emissions = corpus
+        .iter()
+        .filter(|emission| emission.surface == Surface::DimensionDisplay)
+        .count();
+    assert_eq!(
+        display_emissions,
+        NAMED_DIMENSIONS.len(),
+        "`Display for DimensionVector` must be swept once per NAMED_DIMENSIONS row"
+    );
+}
+
+#[test]
+fn every_label_a_unit_surface_emits_reads_back_to_its_dimension_and_scale() {
+    let corpus = surface_emissions();
+    assert_corpus_covers_every_surface(&corpus);
+
+    let report = invariant_r_report(&corpus);
+
+    assert!(
+        report.unexpected.is_empty() && report.stale_blocks.is_empty(),
+        "Invariant R does not hold over the unit-display surfaces:\n{report}"
+    );
 }
 
 #[test]
