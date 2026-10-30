@@ -46,23 +46,94 @@ pub(crate) fn parse_tip(raw: &[u8]) -> Result<String, String> {
 }
 
 /// One commit of [`BranchMessages`].
-struct CommitMessage {
+struct CommitSubject {
     sha: String,
     subject: String,
     /// The subject was not valid UTF-8 and `subject` holds its lossy decoding.
     /// Per-call `git log --grep` fails outright on such output, so a grep that
     /// lists this commit is declined rather than answered differently.
     subject_lossy: bool,
-    /// The full message (`%B`: subject and body), lossily decoded. An ASCII
-    /// substring is found in the lossy text exactly where it is in the bytes.
-    message: String,
 }
 
-/// Every commit reachable from a branch, with its subject and full message, in
-/// `git log` order.
+/// The words of every commit message, for literal search. A word is a maximal
+/// run of ASCII alphanumeric bytes, so an all-alphanumeric pattern occurs in a
+/// message exactly when it occurs inside one of the message's words. A search
+/// then scans each distinct word once rather than every message.
+struct MessageWords {
+    /// Every distinct word, each followed by a `\n`. No word holds one, so no
+    /// match of an alphanumeric pattern spans two words.
+    text: String,
+    /// Where each word starts in `text`, ascending.
+    starts: Vec<usize>,
+    /// Per word, the `git log` positions of the commits whose message holds
+    /// it, ascending.
+    holders: Vec<Vec<u32>>,
+}
+
+impl MessageWords {
+    /// Index the full messages (`%B`) of a branch, given in `git log` order.
+    /// Raw bytes: an ASCII byte never occurs inside a multi-byte UTF-8
+    /// sequence, so a message that is not valid UTF-8 splits into the same
+    /// words its lossy decoding would.
+    fn build<'m>(messages: impl IntoIterator<Item = &'m [u8]>) -> Result<Self, String> {
+        let mut words = Self {
+            text: String::new(),
+            starts: Vec::new(),
+            holders: Vec::new(),
+        };
+        let mut ids: HashMap<&[u8], usize> = HashMap::new();
+        for (position, message) in messages.into_iter().enumerate() {
+            let position = u32::try_from(position)
+                .map_err(|_| "the message dump has too many commits to index".to_string())?;
+            for word in message
+                .split(|b| !b.is_ascii_alphanumeric())
+                .filter(|w| !w.is_empty())
+            {
+                let id = *ids.entry(word).or_insert_with(|| words.push(word));
+                let holders = &mut words.holders[id];
+                if holders.last() != Some(&position) {
+                    holders.push(position);
+                }
+            }
+        }
+        Ok(words)
+    }
+
+    /// Append `word`, which no earlier call appended, and return its id.
+    fn push(&mut self, word: &[u8]) -> usize {
+        self.starts.push(self.text.len());
+        self.text.extend(word.iter().map(|&b| char::from(b)));
+        self.text.push('\n');
+        self.holders.push(Vec::new());
+        self.holders.len() - 1
+    }
+
+    /// The `git log` positions of the commits whose message contains
+    /// `pattern`, ascending. `pattern` must be non-empty ASCII alphanumerics.
+    fn holders_of(&self, pattern: &str) -> Vec<u32> {
+        debug_assert!(!pattern.is_empty() && pattern.bytes().all(|b| b.is_ascii_alphanumeric()));
+        let mut words: Vec<usize> = self
+            .text
+            .match_indices(pattern)
+            .map(|(at, _)| self.starts.partition_point(|&start| start <= at) - 1)
+            .collect();
+        words.dedup();
+        let mut positions: Vec<u32> = words
+            .iter()
+            .flat_map(|&word| self.holders[word].iter().copied())
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        positions
+    }
+}
+
+/// Every commit reachable from a branch, with its subject, in `git log` order,
+/// and the words of each full message.
 pub(crate) struct BranchMessages {
-    commits: Vec<CommitMessage>,
+    commits: Vec<CommitSubject>,
     shas: HashSet<String>,
+    words: MessageWords,
 }
 
 impl BranchMessages {
@@ -110,14 +181,18 @@ impl BranchMessages {
                 Err(_) => (String::from_utf8_lossy(triple[1]).into_owned(), true),
             };
             shas.insert(sha.to_string());
-            commits.push(CommitMessage {
+            commits.push(CommitSubject {
                 sha: sha.to_string(),
                 subject,
                 subject_lossy,
-                message: String::from_utf8_lossy(triple[2]).into_owned(),
             });
         }
-        Ok(Self { commits, shas })
+        let words = MessageWords::build(fields.chunks_exact(3).map(|triple| triple[2]))?;
+        Ok(Self {
+            commits,
+            shas,
+            words,
+        })
     }
 
     /// True iff `sha` is the full name of a commit reachable from the branch.
@@ -133,15 +208,16 @@ impl BranchMessages {
     /// Answered only for a non-empty, all-ASCII-alphanumeric pattern: such a
     /// pattern is a literal under BRE, ERE and PCRE alike, and `--grep` matches
     /// it against the message lines, so a substring test of the message is the
-    /// same question. A custom `--format` searches no notes. Declined too when
-    /// a matching commit's subject is not valid UTF-8, where the per-call
-    /// command fails rather than answers.
+    /// same question, which [`MessageWords`] answers. A custom `--format`
+    /// searches no notes. Declined too when a matching commit's subject is not
+    /// valid UTF-8, where the per-call command fails rather than answers.
     pub(crate) fn grep_literal(&self, pattern: &str) -> Option<Vec<(&str, &str)>> {
         if pattern.is_empty() || !pattern.bytes().all(|b| b.is_ascii_alphanumeric()) {
             return None;
         }
         let mut hits = Vec::new();
-        for commit in self.commits.iter().filter(|c| c.message.contains(pattern)) {
+        for position in self.words.holders_of(pattern) {
+            let commit = &self.commits[position as usize];
             if commit.subject_lossy {
                 return None;
             }
@@ -256,6 +332,32 @@ mod tests {
         assert_eq!(parsed.grep_literal("999"), Some(vec![]));
         assert!(parsed.contains(B));
         assert!(!parsed.contains(&B[..7]), "an abbreviation is never held");
+    }
+
+    #[test]
+    fn grep_literal_finds_a_pattern_inside_one_word_and_never_across_two() {
+        let raw = messages(&[
+            (A, b"a", b"x12y and 12 again\n"),
+            (B, b"b", b"1-2 \xff12\xff\n"),
+            (C, b"c", b"1\n2 12\n"),
+        ]);
+        let parsed = BranchMessages::parse(&raw).expect("well-formed dump");
+        assert_eq!(
+            parsed.grep_literal("12"),
+            Some(vec![(A, "a"), (B, "b"), (C, "c")]),
+            "inside a word, beside invalid UTF-8, and once per commit however often it occurs",
+        );
+        assert_eq!(parsed.grep_literal("x12y"), Some(vec![(A, "a")]));
+        assert_eq!(
+            parsed.grep_literal("x12yand"),
+            Some(vec![]),
+            "a match never spans a separator"
+        );
+        assert_eq!(
+            parsed.grep_literal("1"),
+            Some(vec![(A, "a"), (B, "b"), (C, "c")])
+        );
+        assert_eq!(parsed.grep_literal("again"), Some(vec![(A, "a")]));
     }
 
     #[test]
