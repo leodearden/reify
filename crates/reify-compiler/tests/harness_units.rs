@@ -72,3 +72,6 @@ mod volume_unit_tests;
 
 #[path = "harness_units/curvature_dimension_tests.rs"]
 mod curvature_dimension_tests;
+
+#[path = "harness_units/unit_label_round_trip.rs"]
+mod unit_label_round_trip;
