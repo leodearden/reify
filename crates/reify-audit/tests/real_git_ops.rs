@@ -997,6 +997,14 @@ fn history_snapshot_answers_like_per_call_git() {
     assert_history_answers_match(&plain, &snap, &fx);
 }
 
+/// Commit `late.rs` on the checked-out `main` with a subject naming 77, and
+/// return its SHA.
+fn land_late_commit(root: &std::path::Path) -> String {
+    write_file(root, "late.rs", "fn late() {}\n");
+    git_commit(root, "feat(77): landed after the snapshot");
+    rev_parse_head(root)
+}
+
 /// Pin that the snapshot is point-in-time: a commit landing on `main` after
 /// the snapshot answered is invisible to its grep, while ancestry for that
 /// commit still answers truthfully through the per-call fallback. This is the
@@ -1029,9 +1037,7 @@ fn history_snapshot_is_point_in_time() {
     );
     snap.fail_next_spawns(0);
 
-    write_file(root, "late.rs", "fn late() {}\n");
-    git_commit(root, "feat(77): landed after the snapshot");
-    let late = rev_parse_head(root);
+    let late = land_late_commit(root);
 
     let fresh = RealGitOps::new(root);
     assert!(
@@ -1064,6 +1070,84 @@ fn history_snapshot_on_unusable_branch_falls_back() {
     let plain = RealGitOps::new(root);
     let broken = RealGitOps::new(root).with_history_snapshot("no-such-branch");
     assert_history_answers_match(&plain, &broken, &fx);
+}
+
+/// Pin that both dumps read the tip the snapshot resolved first: the
+/// changed-paths dump, loaded after `main` moved, still does not hold the late
+/// commit, so asking about it forks. The forks are made to fail, which makes
+/// the fork observable as an empty answer where a dump of the moved `main`
+/// would have answered `late.rs`.
+#[test]
+fn history_snapshot_dumps_read_one_tip() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    history_fixture(root);
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+
+    let snap = RealGitOps::new(root).with_history_snapshot("main");
+    assert_eq!(snap.try_log_grep("main", "77"), Ok(vec![]));
+    let late = land_late_commit(root);
+    assert_eq!(
+        snap.changed_paths_in_commit(&merge),
+        RealGitOps::new(root).changed_paths_in_commit(&merge),
+        "the changed-paths dump loads after main moved",
+    );
+    assert_eq!(
+        RealGitOps::new(root).changed_paths_in_commit(&late),
+        vec!["late.rs".to_string()],
+        "fixture premise: the late commit's own delta",
+    );
+
+    snap.fail_next_spawns(16);
+    assert_eq!(
+        snap.changed_paths_in_commit(&late),
+        Vec::<String>::new(),
+        "the late commit is past the snapshot's tip, so the question forked",
+    );
+}
+
+/// Pin that a snapshot of the very branch asked about answers exactly as one
+/// git call per question does when one of its loads fails: the tip, before
+/// anything else loaded, or the message dump, after the tip and the
+/// changed-paths dump loaded.
+///
+/// Each failure is injected as exactly the 3 spawn attempts
+/// `spawn_with_retry` makes for one git call, so the load fails and every
+/// fork after it runs. A failed load is recorded, not retried, so a later
+/// grep forks and sees a commit that landed after the tip. Were the attempt
+/// budget raised, the load would succeed and that last assertion reds rather
+/// than passing for the wrong reason.
+#[test]
+fn history_snapshot_load_failures_fall_back() {
+    let dir: TempDir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let fx = history_fixture(root);
+    let merge = git_stdout(root, &["rev-parse", "main^1"]);
+    let plain = RealGitOps::new(root);
+
+    let no_tip = RealGitOps::new(root).with_history_snapshot("main");
+    no_tip.fail_next_spawns(3);
+    assert_history_answers_match(&plain, &no_tip, &fx);
+
+    let no_messages = RealGitOps::new(root).with_history_snapshot("main");
+    assert_eq!(
+        no_messages.changed_paths_in_commit(&merge),
+        plain.changed_paths_in_commit(&merge),
+        "the tip and the changed-paths dump load",
+    );
+    no_messages.fail_next_spawns(3);
+    assert_history_answers_match(&plain, &no_messages, &fx);
+
+    let late = land_late_commit(root);
+    for (name, snap) in [("no_tip", &no_tip), ("no_messages", &no_messages)] {
+        assert!(
+            snap.try_log_grep("main", "77")
+                .expect("the per-call grep runs")
+                .iter()
+                .any(|c| c.sha == late),
+            "{name}: after a failed load, grep forks and sees the moved main",
+        );
+    }
 }
 
 // -----------------------------------------------------------------------

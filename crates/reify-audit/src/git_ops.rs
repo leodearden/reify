@@ -1,6 +1,6 @@
 //! The git seam: the [`GitOps`] trait every detector reads git through, its production [`RealGitOps`] impl, and the test-support `MockGitOps`.
 
-use crate::git_history::{BranchMessages, FirstParentChanges};
+use crate::git_history::{BranchMessages, FirstParentChanges, parse_tip, tip_argv};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
@@ -301,16 +301,20 @@ pub trait GitOps {
 /// reachable from it. A whole-corpus sweep asks them thousands of times, and
 /// each fork walks the branch's history again.
 ///
-/// Each answer is exactly what the per-call command would give, and anything
-/// the snapshot cannot answer exactly — an abbreviated SHA, an unreachable
-/// commit, a non-literal pattern, a root commit — still forks. The two dumps
-/// it reads are loaded lazily, each on the first question that needs it, so a
-/// run that never asks pays nothing; a dump that fails to load or parse costs
-/// one breadcrumb and leaves every question forking as before.
+/// Each answer is exactly what the per-call command would have given when the
+/// snapshot was taken, and anything the snapshot cannot answer exactly — an
+/// abbreviated SHA, a commit it does not hold, a non-literal pattern, a root
+/// commit — still forks. The two dumps it reads are loaded lazily, each on the
+/// first question that needs it, so a run that never asks pays nothing; a
+/// dump that fails to load or parse costs one breadcrumb and leaves every
+/// question it would have answered forking as before.
 ///
-/// The snapshot is point-in-time: the branch is read once, and commits landing
-/// on it later are not seen. That gives a sweep one consistent view of
-/// history. A short single-task run should not opt in, since one dump costs
+/// The snapshot is point-in-time. The first question that needs it resolves
+/// the branch to one tip commit, and both dumps read history from that commit,
+/// so the snapshot's own answers agree with each other however the branch
+/// moves during the run. A question that forks asks about the LIVE branch, so
+/// it can see a commit that landed after the tip and the snapshot's answers
+/// cannot. A short single-task run should not opt in, since one dump costs
 /// more than the handful of forks it would replace.
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
@@ -426,10 +430,15 @@ fn parse_rename_target(stdout: &str, old_path: &str) -> Option<String> {
     })
 }
 
-/// One branch's history, each part loaded on first need. `None` inside a
-/// loaded cell records a load that failed, so it is not retried.
+/// One branch's history as of one tip commit, each part loaded on first need.
+/// `None` inside a loaded cell records a load that failed, so it is not
+/// retried.
 struct HistorySnapshot {
     branch: String,
+    /// The commit `branch` named when the snapshot was first needed. Every
+    /// dump reads history from it, so the parts agree with each other however
+    /// `branch` moves later.
+    tip: OnceLock<Option<String>>,
     messages: OnceLock<Option<BranchMessages>>,
     changes: OnceLock<Option<FirstParentChanges>>,
 }
@@ -451,10 +460,23 @@ impl RealGitOps {
     pub fn with_history_snapshot(mut self, branch: &str) -> Self {
         self.history = Some(HistorySnapshot {
             branch: branch.to_string(),
+            tip: OnceLock::new(),
             messages: OnceLock::new(),
             changes: OnceLock::new(),
         });
         self
+    }
+
+    /// The commit `history`'s dumps read from, resolving its branch on first
+    /// need, or `None` when that failed.
+    fn snapshot_tip<'h>(&self, history: &'h HistorySnapshot) -> Option<&'h str> {
+        history
+            .tip
+            .get_or_init(|| {
+                let argv = tip_argv(&history.branch);
+                self.load_history_part(&history.branch, "tip", &argv, |raw| parse_tip(&raw))
+            })
+            .as_deref()
     }
 
     /// The snapshot's messages of `branch`, loading them on first need, or
@@ -464,7 +486,7 @@ impl RealGitOps {
         history
             .messages
             .get_or_init(|| {
-                let argv = BranchMessages::argv(&history.branch);
+                let argv = BranchMessages::argv(self.snapshot_tip(history)?);
                 self.load_history_part(&history.branch, "messages", &argv, |raw| {
                     BranchMessages::parse(&raw)
                 })
@@ -479,7 +501,7 @@ impl RealGitOps {
         history
             .changes
             .get_or_init(|| {
-                let argv = FirstParentChanges::argv(&history.branch);
+                let argv = FirstParentChanges::argv(self.snapshot_tip(history)?);
                 self.load_history_part(&history.branch, "changed paths", &argv, |raw| {
                     let dump = String::from_utf8(raw)
                         .map_err(|_| "git output not valid UTF-8".to_string())?;

@@ -1,9 +1,11 @@
 //! In-memory answers about one branch's history, parsed from two `git log`
-//! dumps taken once.
+//! dumps of one tip commit.
 //!
 //! Pure: this module runs no git. Each dump's argv lives beside the parser
 //! that reads it, so the wire format and its reader cannot drift apart; the
-//! caller runs the argv and hands the output back.
+//! caller runs the argv and hands the output back. Both dumps pass
+//! `--no-show-signature`, so a `log.showSignature` setting cannot write
+//! verification lines into them.
 //!
 //! Every query answers only what the dump can answer exactly as the
 //! equivalent per-call git command would, and returns `None` otherwise, so a
@@ -16,6 +18,31 @@ fn is_full_sha(s: &str) -> bool {
     s.len() == 40
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The `git` argv whose stdout [`parse_tip`] reads: the commit `branch` names
+/// now. Resolved once, so every dump of a snapshot reads the same history.
+pub(crate) fn tip_argv(branch: &str) -> Vec<String> {
+    vec![
+        "rev-parse".to_string(),
+        "--verify".to_string(),
+        format!("{branch}^{{commit}}"),
+    ]
+}
+
+/// Parse the stdout of [`tip_argv`]: one full SHA and a newline.
+pub(crate) fn parse_tip(raw: &[u8]) -> Result<String, String> {
+    std::str::from_utf8(raw)
+        .ok()
+        .and_then(|s| s.strip_suffix('\n'))
+        .filter(|sha| is_full_sha(sha))
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "the tip is not one full SHA: {:?}",
+                String::from_utf8_lossy(raw)
+            )
+        })
 }
 
 /// One commit of [`BranchMessages`].
@@ -39,11 +66,13 @@ pub(crate) struct BranchMessages {
 }
 
 impl BranchMessages {
-    /// The `git` argv whose stdout [`BranchMessages::parse`] reads.
-    pub(crate) fn argv(branch: &str) -> Vec<String> {
+    /// The `git` argv whose stdout [`BranchMessages::parse`] reads: every
+    /// commit reachable from `tip`.
+    pub(crate) fn argv(tip: &str) -> Vec<String> {
         vec![
             "log".to_string(),
-            branch.to_string(),
+            tip.to_string(),
+            "--no-show-signature".to_string(),
             "-z".to_string(),
             "--format=%H%x00%s%x00%B".to_string(),
         ]
@@ -129,16 +158,18 @@ pub(crate) struct FirstParentChanges {
 }
 
 impl FirstParentChanges {
-    /// The `git` argv whose stdout [`FirstParentChanges::parse`] reads.
+    /// The `git` argv whose stdout [`FirstParentChanges::parse`] reads: every
+    /// commit reachable from `tip`.
     ///
     /// Deliberately without `-z`: without it git C-quotes any path holding a
     /// TAB or a newline, so a line that starts with TAB can only be a header,
     /// and every path comes out quoted exactly as `git diff --name-only`
     /// prints it.
-    pub(crate) fn argv(branch: &str) -> Vec<String> {
+    pub(crate) fn argv(tip: &str) -> Vec<String> {
         vec![
             "log".to_string(),
-            branch.to_string(),
+            tip.to_string(),
+            "--no-show-signature".to_string(),
             "--diff-merges=first-parent".to_string(),
             "--name-only".to_string(),
             "--no-renames".to_string(),
@@ -282,6 +313,15 @@ mod tests {
             "a root commit is not recorded"
         );
         assert_eq!(parsed.changed_paths(&A[..7]), None);
+    }
+
+    #[test]
+    fn tip_is_one_full_sha_and_a_newline() {
+        assert_eq!(parse_tip(format!("{A}\n").as_bytes()), Ok(A.to_string()));
+        assert!(parse_tip(A.as_bytes()).is_err());
+        assert!(parse_tip(format!("{A}\n{B}\n").as_bytes()).is_err());
+        assert!(parse_tip(b"abc123\n").is_err());
+        assert!(parse_tip(b"").is_err());
     }
 
     #[test]
