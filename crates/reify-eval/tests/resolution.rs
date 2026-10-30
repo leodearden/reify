@@ -10,7 +10,7 @@ use reify_ir::{DeterminacyState, ObjectiveSense, ObjectiveSet, SnapshotProvenanc
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
     MultiCallSpyConstraintSolver, SpyConstraintSolver, TopologyTemplateBuilder, binop, gt, literal,
-    lt, mm, value_ref,
+    lt, mm, scalar_si, value_ref,
 };
 
 #[test]
@@ -875,10 +875,7 @@ fn e2e_minimize_through_real_solver() {
         .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
-    let si_value = match thickness_val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar for thickness, got {:?}", other),
-    };
+    let si_value = scalar_si(thickness_val, "thickness");
 
     // The Nelder-Mead minimiser should push thickness well below the initial guess
     // of 10mm (0.01m). Any value <= 5mm (0.005m) demonstrates that the Minimize
