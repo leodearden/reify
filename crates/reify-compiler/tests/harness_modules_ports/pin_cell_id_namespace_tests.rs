@@ -32,6 +32,7 @@
 //! not just this file.
 
 use reify_compiler::{CompiledConstraint, CompiledModule, TopologyTemplate};
+use reify_test_support::design_files::{PRINTER_RI, read_design_file};
 
 // The CONSTRAINT namespace (`build_constraints`'s `parameter_ids`) for the
 // two pins the task names — `Printer.<sub_name>.<member>` instance paths
@@ -143,15 +144,6 @@ fn scoped_ids_match_the_gui_gates_pin_constants() {
 
 // ── Derivation machinery (S2) ────────────────────────────────────────────────
 
-/// The real `prj/printer_v01/printer.ri`, resolved from this crate's manifest
-/// dir. Hand-copied from `harness_constructor_typing/orientation_constructor_typing_tests.rs`'s
-/// `PRINTER_RI` constant rather than shared — neither file has a common home
-/// for it yet (`reify-test-support`, which both dev-depend on, would be the
-/// natural one; see task #7450's follow-up). Being two copies, these CAN
-/// disagree about which file they gate until hoisted; keep both in sync by
-/// hand in the meantime.
-const PRINTER_RI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../prj/printer_v01/printer.ri");
-
 /// Compiles `PRINTER_RI` with the stdlib prelude once per test binary
 /// (`OnceLock`). COMPILE ONLY — see module doc, #7383. Asserts nothing about
 /// `.diagnostics` (that belongs to the orientation gate); every positive
@@ -160,9 +152,7 @@ const PRINTER_RI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../prj/printer
 fn compiled_printer() -> &'static CompiledModule {
     static MODULE: std::sync::OnceLock<CompiledModule> = std::sync::OnceLock::new();
     MODULE.get_or_init(|| {
-        let source = std::fs::read_to_string(PRINTER_RI)
-            .unwrap_or_else(|e| panic!("cannot read {PRINTER_RI}: {e}"));
-        reify_test_support::compile_source_with_stdlib(&source)
+        reify_test_support::compile_source_with_stdlib(&read_design_file(PRINTER_RI))
     })
 }
 
