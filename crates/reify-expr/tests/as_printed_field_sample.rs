@@ -161,22 +161,31 @@ fn sample_as_printed_is_undef_for_a_mistyped_params_element() {
     let values = ValueMap::new();
     let ctx = EvalContext::simple(&values);
 
-    let cases: [(&str, fn(&mut Vec<Value>)); 3] = [
-        ("bare Real line_width", |p| p[3] = Value::Real(0.0004)),
-        ("MASS layer_height", |p| {
+    let sample_wall_point = |edit: fn(&mut Vec<Value>)| {
+        let (field, field_type) = as_printed_field_with(edit);
+        eval_expr(
+            &sample_call(field, field_type, point3([0.0003, 0.020, 0.005])),
+            &ctx,
+        )
+    };
+    assert_eq!(
+        sample_wall_point(|p| p[3] = Value::Real(0.0004)),
+        Value::Undef,
+        "bare Real line_width"
+    );
+    assert_eq!(
+        sample_wall_point(|p| {
             p[2] = Value::Scalar {
                 si_value: 0.0002,
                 dimension: DimensionVector::MASS,
             }
         }),
-        ("Length-typed walls count", |p| p[0] = length(3.0)),
-    ];
-    for (label, edit) in cases {
-        let (field, field_type) = as_printed_field_with(edit);
-        let wall_point = eval_expr(
-            &sample_call(field, field_type, point3([0.0003, 0.020, 0.005])),
-            &ctx,
-        );
-        assert_eq!(wall_point, Value::Undef, "{label}, got {wall_point:?}");
-    }
+        Value::Undef,
+        "MASS layer_height"
+    );
+    assert_eq!(
+        sample_wall_point(|p| p[0] = length(3.0)),
+        Value::Undef,
+        "Length-typed walls count"
+    );
 }
