@@ -5,7 +5,17 @@
 //! The four surfaces are `Display for DimensionVector`, `DimensionVector::to_display_units`,
 //! `reify_ir::dimension_unit_label` and the `reify_core::unit_ladders()` rungs.
 
+use std::collections::HashMap;
+use std::fmt;
+
+use reify_compiler::CompiledModule;
 use reify_core::DimensionVector;
+use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
+
+/// Invariant R's relative scale bound (PRD §5 C2). Not exact equality: `1g/cm^3` reads back as
+/// `999.9999999999999`.
+const SCALE_REL_TOL: f64 = 1e-12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Surface {
@@ -45,12 +55,116 @@ struct Report {
     unexpected: Vec<Violation>,
 }
 
+impl fmt::Display for Violation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Emission {
+            surface,
+            dimension_name,
+            dimension,
+            label,
+            si_scale,
+        } = &self.emission;
+        write!(
+            f,
+            "{surface:?} {dimension_name} ({dimension}) `{label}` at scale {si_scale:e}: "
+        )?;
+        match &self.breach {
+            Breach::Unreadable(message) => write!(f, "does not compile: {message}"),
+            Breach::WrongDimension { read } => write!(f, "reads back as dimension {read}"),
+            Breach::WrongScale { read } => write!(f, "reads back at scale {read:e}"),
+        }
+    }
+}
+
+impl fmt::Display for Report {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{} emission(s) fail Invariant R:", self.unexpected.len())?;
+        for violation in &self.unexpected {
+            writeln!(f, "  {violation}")?;
+        }
+        Ok(())
+    }
+}
+
 fn surface_emissions() -> Vec<Emission> {
     Vec::new()
 }
 
-fn invariant_r_report(_emissions: &[Emission]) -> Report {
-    Report::default()
+/// What `1{label}` compiles to: its SI value and dimension, or why it does not compile.
+type ReadBack = Result<(f64, DimensionVector), String>;
+
+/// Compiles `1{label}` with the stdlib prelude, the path a typed-in value takes: parse, lower,
+/// then registry-first unit resolution. Never panics, so one bad label cannot stop the sweep.
+fn resolve_unit_literal(label: &str) -> ReadBack {
+    let source = format!("structure def S {{ let x = 1{label} }}");
+    let module = compile_source_with_stdlib_allow_parse_errors(&source);
+    let errors = errors_only(&module);
+    if !errors.is_empty() {
+        let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+        return Err(messages.join("; "));
+    }
+    match probe_cell_expr(&module) {
+        Some(CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        })) => Ok((*si_value, *dimension)),
+        Some(other) => Err(format!(
+            "`1{label}` compiled to {other:?}, not a scalar literal"
+        )),
+        None => Err(format!(
+            "`1{label}` compiled without errors but left no cell `x` with a default expression"
+        )),
+    }
+}
+
+fn probe_cell_expr(module: &CompiledModule) -> Option<&CompiledExprKind> {
+    let default_expr = module
+        .templates
+        .iter()
+        .find(|template| template.name == "S")?
+        .value_cells
+        .iter()
+        .find(|cell| cell.id.member == "x")?
+        .default_expr
+        .as_ref()?;
+    Some(&default_expr.kind)
+}
+
+/// False when either scale is NaN.
+fn scales_agree(read: f64, claimed: f64) -> bool {
+    (read - claimed).abs() <= SCALE_REL_TOL * read.abs().max(claimed.abs())
+}
+
+fn first_breach(emission: &Emission, read_back: &ReadBack) -> Option<Breach> {
+    match read_back {
+        Err(message) => Some(Breach::Unreadable(message.clone())),
+        Ok((_, read_dimension)) if *read_dimension != emission.dimension => {
+            Some(Breach::WrongDimension {
+                read: *read_dimension,
+            })
+        }
+        Ok((read_scale, _)) if !scales_agree(*read_scale, emission.si_scale) => {
+            Some(Breach::WrongScale { read: *read_scale })
+        }
+        Ok(_) => None,
+    }
+}
+
+fn invariant_r_report(emissions: &[Emission]) -> Report {
+    let mut read_backs: HashMap<&str, ReadBack> = HashMap::new();
+    let unexpected = emissions
+        .iter()
+        .filter_map(|emission| {
+            let read_back = read_backs
+                .entry(emission.label.as_str())
+                .or_insert_with(|| resolve_unit_literal(&emission.label));
+            first_breach(emission, read_back).map(|breach| Violation {
+                emission: emission.clone(),
+                breach,
+            })
+        })
+        .collect();
+    Report { unexpected }
 }
 
 fn injected_rung(
@@ -86,10 +200,7 @@ fn a_non_ascii_label_injected_into_the_corpus_fails_the_gate() {
     let report = invariant_r_report(&corpus);
 
     let [violation] = report.unexpected.as_slice() else {
-        panic!(
-            "the gate must report exactly the injected `kg/m³` rung; got {:#?}",
-            report.unexpected
-        );
+        panic!("the gate must report exactly the injected `kg/m³` rung; got:\n{report}");
     };
     assert_eq!(violation.emission.label, "kg/m³");
     assert!(
@@ -113,10 +224,7 @@ fn each_conjunct_of_invariant_r_fails_the_gate_on_its_own() {
     let report = invariant_r_report(&corpus);
 
     let [unreadable, wrong_dimension, wrong_scale] = report.unexpected.as_slice() else {
-        panic!(
-            "the gate must report exactly the three injected rungs; got {:#?}",
-            report.unexpected
-        );
+        panic!("the gate must report exactly the three injected rungs; got:\n{report}");
     };
     assert_eq!(unreadable.emission.label, "qq");
     assert!(
