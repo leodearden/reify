@@ -33,8 +33,8 @@ Further properties:
 
 **G6.** No leaf asserts a tuned numeric constant.
 - **T1 and T4 (1e-9 m):** these hold because Gauss-Newton is one-step exact on linear prismatic residuals. The solver's own tolerance (`NewtonConfig::default().tol_pos_m`) is 1e-6. A leaf whose residual is nonlinear asserts within that tolerance instead.
-- **T14 and T15:** these are the measured control values. The 45.24 N of T14 is 4 kg × 11.31 m/s².
-- **T15's closed answer** equals the open one because this loop's constraint is projected out by `reduce_constraint_rank` (§11 records the cut-joint note).
+- **T14:** a measured control value: 45.24 N = 4 kg × 11.31 m/s². It does not depend on the GAP-3 rank policy, because every joint in its loop carries the same q̈ + g, so λ = 0.
+- **T15** *(amended 2026-10-30, #9566)*: derived from measured inputs, not tuned. The inputs are the open control's τ_open = [−14.31375, 2.4525] N, M = diag(0.5, 0.25) kg, and the one live row A = [1, −1] that #7312's rank-preserving `reduce_constraint_rank` keeps. They give λ = −6.40625 N and τ = [−20.72, 8.85875] N, confirmed by a scratch build of ρ's compliance wiring. The FD Jacobian of this linear prismatic residual is exact to rounding. ~~T15's closed answer equals the open one because this loop's constraint is projected out by `reduce_constraint_rank` (§11 records the cut-joint note).~~
 - **Rejection premises** (T3 self-loop, T9 bind forms, T11 world-parented closure, T16 coupling refusal, T19 infeasible TOTS) are asserted as coded diagnostics. Each one's before-image fixture shows today's silent result.
 
 ## Fixture evidence (`target/debug/reify`, built from main 2026-10-12; no S6 path changed since)
@@ -50,8 +50,8 @@ Further properties:
 | `s6_mechanism_errors.ri` | eval | 1 | `error: duplicate solid …`; `world_parented_closure` → only `note: … undef (OpContractViolation)` |
 | `s6_loopclosure_declared_fields.ri` | eval | 0 | `lc_joint = undef`; `sing = undef`; `fv = [[0.7499…]]` |
 | `s6_loopclosure_closing_joint_member.ri` | check | 1 | `error: structure 'LoopClosure' has no member 'closing_joint'` |
-| `s6_idyn_open_after_closing.ri` / `…_open_before_closing_control.ri` | eval | 0 / 0 | ids 0, 1, 2 = 22.62, 33.93, **11.31** N / ids 0, 1, 2 = 22.62, 33.93, **45.24** N |
-| `s6_idyn_closed_flexure.ri` / `…_open_flexure_control.ri` | eval | 0 / 0 | sample 1 τ_a = **4.905** N / **−14.31375** N |
+| `s6_idyn_open_after_closing.ri` / `…_open_before_closing_control.ri` | eval | 0 / 0 | ids 0, 1, 2 = 22.62, 33.93, **11.31** N / ids 0, 1, 2 = 22.62, 33.93, **45.24** N · after #7312 (re-measured at `ec9e47f729`, 2026-10-30): ids 0, 1, 2 = **16.45, 40.10, 17.48** N / unchanged |
+| `s6_idyn_closed_flexure.ri` / `…_open_flexure_control.ri` | eval | 0 / 0 | sample 1 τ = **[4.905, 2.4525]** N / **[−14.31375, 2.4525]** N · unchanged after #7312 (re-measured at `ec9e47f729`, 2026-10-30) |
 | `s6_idyn_coupling.ri` | eval | 0 | `forces = undef (OpContractViolation)` |
 | `s6_tots_infeasible.ri` | eval / check | 0 / 0 | eval: `optimal = undef`, `d = undef`, no diagnostic; check: `OK constraint[0]`, `All constraints satisfied.` |
 | `s6_tots_nonconvergence.ri` | eval | 0 | normal-looking `PiecewisePolynomialProfile`, no diagnostic |
@@ -101,7 +101,7 @@ Further properties:
 | π | declaration | grep: kinematic.ri declares free_values : List<JointValue> (= Real) at main; runtime is per-loop flat rows | PASS | grep present `free_values[[:space:]]*:[[:space:]]*Map<Joint,[[:space:]]*JointPosition>` in `crates/reify-compiler/stdlib/kinematic.ri` |
 | π | loopclosure-member | fixture tests/prd-gate/fixtures/s6_loopclosure_closing_joint_member.ri: reify check exit 1 'structure LoopClosure has no member closing_joint' | PASS | manual (behavioural (C7); a check fixture flips from exit 1 to exit 0) |
 | π | warm-start-defect | fixture tests/prd-gate/fixtures/s6_closed_planar_sweep_warmstart.ri: sweep_2 = undef (width fix is #8545, upstream of μ/ξ) | PASS | manual (behavioural (T8)) |
-| ρ | tree-module | producer-self; fixtures tests/prd-gate/fixtures/s6_idyn_open_after_closing.ri (ids 0,1,2 with 11.31 N) and s6_idyn_closed_flexure.ri (sample 1 tau_a 4.905 N vs open control -14.31 N) | PASS | grep present `struct MechanismTree` in `crates/reify-stdlib/src/dynamics` |
+| ρ | tree-module | producer-self; fixtures tests/prd-gate/fixtures/s6_idyn_open_after_closing.ri (ids 0,1,2 with 11.31 N; 16.45, 40.10, 17.48 N after #7312) and s6_idyn_closed_flexure.ri (sample 1 tau_a 4.905 N vs open control -14.31 N; T15 target after #7312: tau = [-20.72, 8.85875] N) | PASS | grep present `struct MechanismTree` in `crates/reify-stdlib/src/dynamics` |
 | ρ | upstream-6922 | producer:#6922 (pending; branch task/6922 active) rewrites dynamics/eval.rs readers | PASS | manual (dependency edge is the enforcement) |
 | σ₀ | spatial-at-crate-root | grep: joints.rs imports crate::dynamics::spatial::SpatialVector6 (joints->dynamics edge of the reify-stdlib SCC {dynamics, joints, mechanism, snapshot}); dynamics/spatial.rs has no crate imports | PASS | grep present `mod spatial` in `crates/reify-stdlib/src/lib.rs` |
 | σ₀ | com-moves-to-dynamics | grep: snapshot.rs imports crate::dynamics::eval::mass_properties_from_value for the center_of_mass group at main (SCC edge snapshot->dynamics) | PASS | grep present `mod com\b` in `crates/reify-stdlib/src/dynamics/mod.rs` |
@@ -131,3 +131,7 @@ From `plans/gap-fill-deliberation-reify-20261016.md` §K6-D5: new leaf φ₂ #92
 ## Retro-critic sitting amendments (2026-10-20)
 
 From `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`: γ #8830 binds `reify_builtins::RelationKind` (S8-ψ #9418, new edge #8830 ← #9418). Its check `relation-kind-in-ir` (`pub enum RelationKind` present in `crates/reify-ir/src`) is replaced by `relation-kind-is-the-registry-enum` (`reify_builtins::RelationKind` present in `crates/reify-constraints/src`; red at main, green when γ binds the S8-ψ sub-enum); `instance-carries-kind` is unchanged. γ's files: `crates/reify-constraints/src/{relate_solve,solvespace,classifier}.rs`, `crates/reify-eval/src/relate_solve.rs`, `crates/reify-constraints/Cargo.toml`, `crates/reify-eval/Cargo.toml`; reify-ir `relation_kind.rs` and `lib.rs` dropped (three writes: this row, the `.yaml`, #8830's `metadata.delivered_checks` / `metadata.files`).
+
+## T15 re-derivation amendment (2026-10-30)
+
+This follows the PRD's "T15 re-derivation after #7312" (task #9566). #7312 (`10eb8ca95b`) made `reduce_constraint_rank` rank-preserving. T15's target therefore became the KKT value τ = [−20.72, 8.85875] N (G6 bullet above). T14's before-image moved, but its target did not. Both fixture rows were re-measured at `ec9e47f729`, and ρ's `tree-module` binding is amended in both twins. No delivered check changed: it is still `struct MechanismTree` present. So #8845's `metadata.delivered_checks` is untouched, and its `user_observable_signal` carries the new values.
