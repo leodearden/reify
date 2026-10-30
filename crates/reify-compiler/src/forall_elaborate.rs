@@ -64,15 +64,13 @@
 //! `Engine::edit_param` for the captured body shapes listed above. The
 //! uncaptured shapes keep compile-time silent-skip semantics.
 //!
-//! **Duplicate diagnostics:** every diagnostic raised inside
-//! `elaborate_forall_connect`'s per-element loop goes through
-//! `ForallDiagnosticSink`, which reports each distinct diagnostic once per
-//! declaration and only ever filters — so the zero-diagnostic guarantees above
-//! are unaffected. The window covers that loop and nothing else:
-//! `elaborate_forall_constraint` below is NOT routed through a sink, so an
-//! element-independent body diagnostic (e.g. `unresolved name: <ident>` from
-//! `compile_expr`) is still reported once per element there. Extending the sink
-//! to it is filed as a follow-up.
+//! **Duplicate diagnostics:** every diagnostic raised inside the per-element
+//! loop of `elaborate_forall_constraint` and of `elaborate_forall_connect` goes
+//! through `ForallDiagnosticSink`, which reports each distinct diagnostic once
+//! per declaration and only ever filters — so the zero-diagnostic guarantees
+//! above are unaffected. The window covers those loops and nothing else: the
+//! non-iterable-collection error and the deferred-path info diagnostics are
+//! emitted before it opens, each already exactly once.
 
 use super::*;
 use std::collections::HashMap;
@@ -347,13 +345,17 @@ fn resolve_count_cell_literal(
 ///
 /// Nothing an author or a downstream consumer can distinguish is lost: the
 /// collapsed copies come from running one check once per collection element, and
-/// each element keeps its own `connect_compat_*` constraint, so the per-element
-/// failure set stays recoverable from the compiled template.
+/// each element keeps its own compiled artifacts — a connect arm's
+/// `connect_compat_*` constraint, a constraint arm's per-element `forall@<var>[i]`
+/// constraint or guarded group — so the per-element failure set stays
+/// recoverable from the compiled template.
 ///
 /// Construct one immediately before a declaration's per-element loop and *after*
 /// collection resolution, so diagnostics raised by `resolve_forall_elements` and
 /// by the `ResolveForallOutcome::Deferred` arm — each already emitted exactly
-/// once — stay outside the window.
+/// once — stay outside the window. The sink keeps the caller's vector mutably
+/// borrowed until its last use, so an emission inside the loop that bypasses it
+/// does not compile.
 struct ForallDiagnosticSink<'a> {
     /// The caller's diagnostics vector; retained entries are appended here.
     out: &'a mut Vec<Diagnostic>,
@@ -384,9 +386,10 @@ impl<'a> ForallDiagnosticSink<'a> {
     /// inside the loop cannot half-use the protocol and silently lose
     /// diagnostics. The window holds one entry per DISTINCT rendering — one for
     /// an element-independent message (direction mismatch, invalid port
-    /// reference), N for a name-bearing one (`undefined port 'vents[i].inlet'`)
-    /// — so the linear scan is O(elements × distinct), worst case quadratic in
-    /// the collection size on a compile that is already failing.
+    /// reference, `unresolved name: <ident>` from a constraint body), N for a
+    /// name-bearing one (`undefined port 'vents[i].inlet'`) — so the linear scan
+    /// is O(elements × distinct), worst case quadratic in the collection size on
+    /// a compile that is already failing.
     fn collecting<R>(&mut self, emit: impl FnOnce(&mut Vec<Diagnostic>) -> R) -> R {
         self.scratch.clear();
         let result = emit(&mut self.scratch);
@@ -548,6 +551,9 @@ pub(crate) fn elaborate_forall_constraint(
         ResolveForallOutcome::Skip => return,
     };
 
+    // The window opens after collection resolution; see `ForallDiagnosticSink`.
+    let mut sink = ForallDiagnosticSink::new(diagnostics);
+
     for (i, element) in elements.iter().enumerate() {
         let mut bindings: HashMap<String, reify_ast::Expr> = HashMap::new();
         bindings.insert(decl.variable.clone(), element.clone());
@@ -555,8 +561,15 @@ pub(crate) fn elaborate_forall_constraint(
         match &decl.body {
             ForallConstraintBody::Constraint(body_constraint) => {
                 let substituted_expr = substitute_expr(&body_constraint.expr, &bindings);
-                let compiled_expr =
-                    compile_expr(&substituted_expr, scope, enum_defs, functions, diagnostics);
+                let compiled_expr = sink.collecting(|element_diagnostics| {
+                    compile_expr(
+                        &substituted_expr,
+                        scope,
+                        enum_defs,
+                        functions,
+                        element_diagnostics,
+                    )
+                });
 
                 let id = ConstraintNodeId::new(entity_name, *constraint_index);
                 let cc = CompiledConstraint {
@@ -586,18 +599,20 @@ pub(crate) fn elaborate_forall_constraint(
                         condition: substitute_expr(&wc.condition, &bindings),
                         span: wc.span,
                     };
-                    compile_per_decl_constraint_guard(
-                        entity_name,
-                        &substituted_wc,
-                        cc,
-                        scope,
-                        enum_defs,
-                        functions,
-                        diagnostics,
-                        guarded_groups,
-                        structure_controlling,
-                        guard_index,
-                    );
+                    sink.collecting(|element_diagnostics| {
+                        compile_per_decl_constraint_guard(
+                            entity_name,
+                            &substituted_wc,
+                            cc,
+                            scope,
+                            enum_defs,
+                            functions,
+                            element_diagnostics,
+                            guarded_groups,
+                            structure_controlling,
+                            guard_index,
+                        );
+                    });
                 } else {
                     constraints.push(cc);
                 }
@@ -638,22 +653,24 @@ pub(crate) fn elaborate_forall_constraint(
                     content_hash: ci.content_hash,
                 };
                 let suffix = format!("forall@{}[{}]", decl.variable, i);
-                expand_constraint_inst(
-                    &substituted_ci,
-                    entity_name,
-                    constraint_def_registry,
-                    scope,
-                    enum_defs,
-                    functions,
-                    constraints,
-                    constraint_index,
-                    constraint_inst_counts,
-                    guarded_groups,
-                    structure_controlling,
-                    guard_index,
-                    diagnostics,
-                    Some(&suffix),
-                );
+                sink.collecting(|element_diagnostics| {
+                    expand_constraint_inst(
+                        &substituted_ci,
+                        entity_name,
+                        constraint_def_registry,
+                        scope,
+                        enum_defs,
+                        functions,
+                        constraints,
+                        constraint_index,
+                        constraint_inst_counts,
+                        guarded_groups,
+                        structure_controlling,
+                        guard_index,
+                        element_diagnostics,
+                        Some(&suffix),
+                    );
+                });
             }
         }
     }
@@ -759,10 +776,7 @@ pub(crate) fn elaborate_forall_connect(
         ResolveForallOutcome::Skip => return,
     };
 
-    // Open the per-declaration duplicate-diagnostic window (task 7195). It opens
-    // HERE — after collection resolution and the `Deferred` early return — so the
-    // non-iterable-collection error and the deferred-path diagnostics, each
-    // already emitted exactly once, stay outside it.
+    // The window opens after collection resolution; see `ForallDiagnosticSink`.
     let mut sink = ForallDiagnosticSink::new(diagnostics);
 
     // PRD criterion 6 — empty-collection path: when `elements` is empty (either
