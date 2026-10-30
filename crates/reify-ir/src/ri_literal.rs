@@ -55,7 +55,7 @@
 //! write bare built-in symbols only, and refuse every dimension that would
 //! need a compound `UnitExpr`. [`value_to_ri_literal_in_scope`] with
 //! [`UnitScope::SiBaseUnitsSeeded`] lifts that refusal (`2.5m^2`,
-//! `101325kg/m/s^2`, `7850kg/m^3`) — but qualification 2 above says a bare
+//! `101325Pa`, `7850kg/m^3`) — but qualification 2 above says a bare
 //! symbol resolves as `registry.lookup(..).or_else(|| unit_to_scalar(..))`,
 //! and the `or_else` is what makes the bare guarantee TOTAL: it holds even in
 //! a module that imports nothing. A compound `UnitExpr` has no such fallback.
@@ -253,11 +253,13 @@ pub enum UnitScope {
     /// `or_else` fallback behind the registry. Nothing about this arm is
     /// contingent on what the target file imports.
     BareBuiltinsOnly,
-    /// The caller ASSERTS that the target module resolves the SI base symbols
-    /// (`m`/`kg`/`s`/`K`/`rad`/`sr`/`USD`) to factor exactly `1.0`. Unlocks
+    /// The caller ASSERTS that the target module resolves every symbol of
+    /// [`reify_core::RI_COMPOUND_BASE_SYMBOLS`] and
+    /// [`reify_core::RI_NAMED_DERIVED_SYMBOLS`] to factor exactly `1.0` — that
+    /// is, that `std.units` and `std.si_units` are seeded. Unlocks
     /// compound emission, and with it every dimension that has no bare symbol
     /// at all — Area, Volume, Force, Pressure, Density, Energy, SolidAngle,
-    /// Money.
+    /// Money, and Current-bearing ones such as Voltage and Charge.
     ///
     /// True for any module compiled with the stdlib prelude (`compile_with_stdlib`
     /// seeds all stdlib modules unconditionally), and for one that imports
@@ -325,8 +327,8 @@ pub fn value_to_ri_literal_with_unit(
 /// both the `Ok` and `Err` paths — pinned by `the_unhinted_entry_point_delegates`.
 ///
 /// Under [`UnitScope::SiBaseUnitsSeeded`] a dimension with NO bare built-in
-/// symbol is written as a compound unit expression built from SI base symbols
-/// (`2.5m^2`, `101325kg/m/s^2`, `7850kg/m^3`) instead of being refused. See
+/// symbol is written as a compound unit expression built from factor-1.0
+/// symbols (`2.5m^2`, `101325Pa`, `7850kg/m^3`) instead of being refused. See
 /// the module doc's qualification 3 for the precondition that carries, and
 /// `reify_core::units::ri_compound_unit_expr` for why bit-exactness on that
 /// path is structural rather than measured.
@@ -392,21 +394,11 @@ pub fn value_to_ri_literal_in_scope(
                 // shipped, and no value that is `Ok` today can change its
                 // literal.
                 //
-                // The magnitude is the SI value VERBATIM — no `exact_magnitude`
-                // call and no ladder search on this path. Every atom
-                // `ri_compound_unit_expr` writes has registry factor exactly
-                // 1.0, so `resolve_unit_expr` folds the whole expression to
-                // exactly 1.0 for ANY tree shape (`Unit → 1.0`;
-                // `Pow: 1.0.powi(n) == 1.0`; `Mul: 1.0 * 1.0 == 1.0`;
-                // `Div: 1.0 / 1.0 == 1.0`), and `expr.rs`'s single
-                // `si_value = value * factor` multiply is the IEEE identity.
-                // Bit-exactness here is therefore INDEPENDENT of the compiler's
-                // fold order rather than a mirror of it that could drift out of
-                // step with a future re-association.
-                //
-                // `preferred_unit` is deliberately not consulted: a hinted
-                // `mm^2` would fold `0.001.powi(2)` and reintroduce exactly the
-                // fold-order hazard this avoids.
+                // The magnitude is the SI value VERBATIM: no `exact_magnitude`
+                // call, no ladder search, and `preferred_unit` deliberately not
+                // consulted. Why that is bit-exact, and why a hint must never
+                // reach this path, is `reify_core::ri_compound_unit_expr`'s
+                // "Exactness is structural, not measured".
                 //
                 // The finiteness guard above has already run, so a non-finite
                 // compound value returns `NonFiniteNumber` before anything here
@@ -1076,11 +1068,14 @@ mod tests {
         let cases: &[(Value, &str)] = &[
             (compound(2.5, DimensionVector::AREA), "2.5m^2"),
             (compound(1e-6, DimensionVector::VOLUME), "1e-6m^3"),
-            (compound(101325.0, DimensionVector::PRESSURE), "101325kg/m/s^2"),
-            (compound(-9.81, DimensionVector::FORCE), "-9.81m*kg/s^2"),
+            (compound(101325.0, DimensionVector::PRESSURE), "101325Pa"),
+            (compound(-9.81, DimensionVector::FORCE), "-9.81N"),
+            (compound(1234.5, DimensionVector::ENERGY), "1234.5J"),
+            (compound(750.0, DimensionVector::POWER), "750W"),
             (compound(7850.0, DimensionVector::MASS_DENSITY), "7850kg/m^3"),
             (compound(1.5, DimensionVector::SOLID_ANGLE), "1.5sr"),
             (compound(19.99, DimensionVector::MONEY), "19.99USD"),
+            (compound(1.5, DimensionVector::VOLTAGE), "1.5m^2*kg/s^3/A"),
         ];
         for (v, expected) in cases {
             assert_eq!(&seeded(v), expected, "compound emission drifted for {v:?}");
@@ -1182,22 +1177,6 @@ mod tests {
     /// something would produce a literal that does not re-parse.
     #[test]
     fn the_unlock_does_not_widen_to_what_still_cannot_be_written() {
-        // Current-bearing dimensions: bare `A` is never in the registry.
-        for dim in [DimensionVector::VOLTAGE, DimensionVector::CHARGE] {
-            assert!(
-                matches!(
-                    value_to_ri_literal_in_scope(
-                        &compound(1.5, dim),
-                        None,
-                        UnitScope::SiBaseUnitsSeeded
-                    ),
-                    Err(RiLiteralError::UnrepresentableDimension { .. })
-                ),
-                "{:?} names a base symbol the registry never carries",
-                dim.canonical_name()
-            );
-        }
-
         // A fractional exponent has no integral `UnitExpr::Pow` spelling.
         assert!(matches!(
             value_to_ri_literal_in_scope(

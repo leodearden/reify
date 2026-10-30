@@ -47,7 +47,7 @@
 //! the seeding order or the literal lowering; a round-trip cannot say which
 //! table entry moved.
 
-use reify_compiler::{UnitEntry, UnitRegistry, stdlib_loader};
+use reify_compiler::{CompiledModule, UnitEntry, UnitRegistry, seed_prelude_units, stdlib_loader};
 use reify_core::DimensionVector;
 use reify_ir::Value;
 use reify_ir::ri_literal::{
@@ -140,6 +140,14 @@ fn ri_type_name(v: &Value) -> &'static str {
             DimensionVector::FREQUENCY => "Frequency",
             DimensionVector::SOLID_ANGLE => "SolidAngle",
             DimensionVector::MONEY => "Money",
+            DimensionVector::CURRENT => "Current",
+            DimensionVector::AMOUNT_OF_SUBSTANCE => "AmountOfSubstance",
+            DimensionVector::LUMINOUS_INTENSITY => "LuminousIntensity",
+            DimensionVector::VOLTAGE => "Voltage",
+            DimensionVector::CHARGE => "Charge",
+            DimensionVector::ILLUMINANCE => "Illuminance",
+            DimensionVector::POWER => "Power",
+            DimensionVector::DYNAMIC_VISCOSITY => "DynamicViscosity",
             other => panic!("no .ri type name wired for dimension {other}"),
         },
         other => panic!("no .ri type name wired for {other:?}"),
@@ -658,33 +666,26 @@ fn a_dimensionless_scalar_downgrades_to_real_with_identical_bits() {
 
 // ─── (d) the registry precondition ───────────────────────────────────────────
 
-/// Rebuild the stdlib-seeded `UnitRegistry` the way the compiler does.
+/// Build the stdlib-seeded `UnitRegistry` the way the compiler does.
 ///
-/// There is no public accessor for it — `CompilationCtx.unit_registry` and
-/// `phase_units` are both `pub(crate)`, and the seeded registry is never
-/// surfaced across the compile boundary. So this replays the body of
-/// `compile_builder/units_phase.rs`'s prelude loop verbatim from public parts.
+/// The seeded registry is never surfaced across the compile boundary, so this
+/// calls `seed_prelude_units` — the one implementation `phase_units` seeds
+/// with — over the stdlib modules, and asserts that seeding them reports no
+/// collision.
 ///
 /// Iterating EVERY stdlib module matters: `mm` is not declared in
 /// `stdlib/units.ri` at all — it is generated into `std.si_units` from the
 /// milli prefix — so a `std/units`-only scan would miss the single most
-/// frequently emitted symbol in the whole ladder. Last-write-wins is
-/// semantically inert here because `stdlib_loader`'s
-/// `assert_no_cross_module_name_collisions` panics on a duplicate unit name
-/// across stdlib modules.
+/// frequently emitted symbol in the whole ladder.
 fn stdlib_seeded_unit_registry() -> UnitRegistry {
+    let modules: Vec<&CompiledModule> = stdlib_loader::load_stdlib().iter().collect();
     let mut registry = UnitRegistry::new();
-    for module in stdlib_loader::load_stdlib() {
-        let module_display = module.path.to_string();
-        for cu in &module.units {
-            if cu.is_pub {
-                registry.seed_prelude_unit(UnitEntry::from_compiled_for_prelude(
-                    cu,
-                    module_display.clone(),
-                ));
-            }
-        }
-    }
+    let diags = seed_prelude_units(&mut registry, &modules);
+    assert!(
+        diags.is_empty(),
+        "seeding the stdlib must report no cross-module unit collision: {:?}",
+        diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
     registry
 }
 
@@ -740,10 +741,9 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
 
         let Some(entry) = registry.lookup(sym) else {
             // Not shadowed at all — the built-in fallback wins unconditionally,
-            // which is the *strongest* form of the guarantee, not a gap. `A`,
-            // `mol` and `cd` land here: `si_units.rs` registers them only as
-            // prefix bases (`mA`, `kA`, …) and `SI_PREFIXES` has no empty
-            // prefix, so no bare declaration is ever emitted for them.
+            // which is the *strongest* form of the guarantee, not a gap.
+            // Nothing lands here today: every built-in, `A`/`mol`/`cd`
+            // included, is declared in `stdlib/units.ri`.
             builtin_only.push(sym);
             continue;
         };
@@ -787,12 +787,13 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
     );
     // The guard is worthless if it silently compares nothing — e.g. if
     // `load_stdlib()`'s module set changed shape and every lookup missed.
-    // mm/cm/m/deg/rad/kg/s/K/in/g are all declared today.
-    assert!(
-        compared >= 10,
-        "expected at least the 10 stdlib-declared emittable symbols to be \
-         compared, got {compared} (built-in-only: {builtin_only:?}) — did the \
-         stdlib module set or the seeding shape change?"
+    // `stdlib/units.ri` declares exactly these 13: mm/cm/m/in/deg/rad/kg/g/s/K/
+    // A/mol/cd.
+    assert_eq!(
+        compared, 13,
+        "expected exactly the 13 stdlib-declared built-in symbols to be compared \
+         (built-in-only: {builtin_only:?}) — did the stdlib module set or the \
+         seeding shape change?"
     );
 }
 
@@ -813,13 +814,12 @@ fn stdlib_unit_declarations_agree_bit_for_bit_with_the_builtin_table() {
 /// localises a drift to a specific symbol and factor, which a round-trip
 /// failure would only hint at.
 ///
-/// The case list covers every symbol the cross-guard actually compares — the
-/// eleven canonical ladder rungs plus `in` and `g`, which are reachable only
-/// through a caller-supplied hint — so a registry shadow on ANY of them fails
-/// here. It is hand-written rather than driven from `BUILTIN_UNITS` because
-/// each case needs a magnitude and a declared `.ri` type, not just a symbol;
-/// the cross-guard above is the table-driven half, and the two are meant to be
-/// read together.
+/// The case list covers all 13 symbols the cross-guard compares — the eleven
+/// canonical ladder rungs plus `in` and `g`, which are reachable only through a
+/// caller-supplied hint — so a registry shadow on ANY of them fails here. It is
+/// hand-written rather than driven from `BUILTIN_UNITS` because each case needs
+/// a magnitude and a declared `.ri` type, not just a symbol; the cross-guard
+/// above is the table-driven half, and the two are meant to be read together.
 #[test]
 fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
     let cases = vec![
@@ -883,6 +883,32 @@ fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
             },
         )
         .emitting("293.15K"),
+        // The three SI bases declared bare in `stdlib/units.ri` alongside the
+        // built-in fallback entries for them.
+        Case::new(
+            "stdlib A",
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::CURRENT,
+            },
+        )
+        .emitting("1.5A"),
+        Case::new(
+            "stdlib mol",
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::AMOUNT_OF_SUBSTANCE,
+            },
+        )
+        .emitting("0.25mol"),
+        Case::new(
+            "stdlib cd",
+            Value::Scalar {
+                si_value: 3.0,
+                dimension: DimensionVector::LUMINOUS_INTENSITY,
+            },
+        )
+        .emitting("3cd"),
     ];
     assert_round_trips_under(&cases, Prelude::Stdlib);
 }
@@ -896,7 +922,7 @@ fn emitted_literals_round_trip_under_the_stdlib_unit_registry() {
 /// only one that runs the real parser and `resolve_unit_expr` against a real
 /// seeded registry. `reify-core` can pin the emitted STRING and `reify-ir` can
 /// pin the emitted MAGNITUDE, but neither can see whether `m^2` resolves, what
-/// factor it folds to, or whether `kg/m/s^2` even parses.
+/// factor it folds to, or whether `kg/m/s` even parses.
 ///
 /// The awkward-bits cases are the point, not padding. A naive implementation
 /// that scaled the magnitude — or reproduced `resolve_unit_expr`'s fold by hand
@@ -915,17 +941,34 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
         // One per compound dimension, each pinning its exact literal.
         compound("area", 2.5, DimensionVector::AREA).emitting("2.5m^2"),
         compound("volume", 1e-6, DimensionVector::VOLUME).emitting("1e-6m^3"),
-        // ASSOCIATIVITY WITNESS. `unit_expr` is `prec.left(1)` for `*` and `/`,
-        // so this must fold as `Div(Div(kg, m), Pow(s, 2))`. Under RIGHT
-        // association it would be `Div(kg, Div(m, Pow(s, 2)))` — dimension
-        // `kg·m^-1·s^+2`, with the Time exponent's SIGN flipped — which
-        // `assert_identical`'s dimension check catches. So this case confirms
-        // the association against the real parse rather than assuming it, and
-        // it is the reason a division CHAIN is safe to emit at all.
-        compound("pressure", 101_325.0, DimensionVector::PRESSURE).emitting("101325kg/m/s^2"),
-        compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81m*kg/s^2"),
+        // Named factor-1.0 derived symbols: a single atom, resolved through the
+        // BARE path rather than `resolve_unit_expr`.
+        compound("pressure", 101_325.0, DimensionVector::PRESSURE).emitting("101325Pa"),
+        compound("force", -9.81, DimensionVector::FORCE).emitting("-9.81N"),
+        compound("energy", 1234.5, DimensionVector::ENERGY).emitting("1234.5J"),
+        compound("power", 750.0, DimensionVector::POWER).emitting("750W"),
+        // NEGATIVE ZERO on a named atom: the bare path computes
+        // `v * factor + offset`, so the sign must ride the unary minus.
+        compound("negative-zero pressure", -0.0, DimensionVector::PRESSURE).emitting("-0Pa"),
         compound("density", 7850.0, DimensionVector::MASS_DENSITY).emitting("7850kg/m^3"),
-        compound("energy", 1234.5, DimensionVector::ENERGY).emitting("1234.5m^2*kg/s^2"),
+        // ASSOCIATIVITY WITNESS. `unit_expr` is `prec.left(1)` for `*` and `/`,
+        // so this must fold as `Div(Div(kg, m), s)`. Under RIGHT association it
+        // would be `Div(kg, Div(m, s))` — dimension `kg·m^-1·s^+1`, with the
+        // Time exponent's SIGN flipped — which `assert_identical`'s dimension
+        // check catches. So this case confirms the association against the
+        // real parse rather than assuming it, and it is the reason a division
+        // CHAIN is safe to emit at all.
+        compound(
+            "dynamic viscosity",
+            0.001,
+            DimensionVector::DYNAMIC_VISCOSITY,
+        )
+        .emitting("0.001kg/m/s"),
+        // A second division-chain ASSOCIATIVITY WITNESS: right association
+        // would read `s^3/A` as one denominator and flip A's sign.
+        compound("voltage", 230.0, DimensionVector::VOLTAGE).emitting("230m^2*kg/s^3/A"),
+        compound("charge", 2.5, DimensionVector::CHARGE).emitting("2.5s*A"),
+        compound("illuminance", 500.0, DimensionVector::ILLUMINANCE).emitting("500cd*sr/m^2"),
         // The empty-numerator form. A leading `/` is not a valid `unit_expr`,
         // so this is the one shape that MUST use signed powers — and only a
         // real parse can confirm `s^-1` lexes and folds as `Pow(s, -1)`.
@@ -964,10 +1007,10 @@ fn compound_literals_round_trip_under_the_stdlib_unit_registry() {
 ///     write of that dimension silently lossy while looking right in a debug
 ///     print, and it is exactly the identity `mag * factor == si_value` rests
 ///     on;
-///   - a `None` slot MUST be absent. If the stdlib GAINS a bare `A`/`mol`/`cd`
-///     declaration, the emitter is now needlessly refusing a dimension it could
-///     write — a capability gap, not a corruption, but still a bug, and one no
-///     forward-only test can see.
+///   - a `None` slot MUST be absent. If the stdlib GAINS a bare declaration
+///     for such a slot, the emitter is now needlessly refusing a dimension it
+///     could write — a capability gap, not a corruption, but still a bug, and
+///     one no forward-only test can see.
 #[test]
 fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
     let registry = stdlib_seeded_unit_registry();
@@ -993,35 +1036,7 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
                          {i} to `None` and drop that dimension's cases."
                     )
                 });
-                assert!(
-                    entry.offset.is_none(),
-                    "slot {i}: {sym:?} is AFFINE in the registry (offset {:?}). \
-                     `si = mag * factor + offset` is not the arithmetic the compound \
-                     path proves against — its whole exactness argument is that the \
-                     fold is the IEEE identity.",
-                    entry.offset
-                );
-                assert_eq!(
-                    entry.factor.to_bits(),
-                    1.0f64.to_bits(),
-                    "slot {i}: {sym:?} resolves at factor {:?} (bits {:#018x}), not \
-                     exactly 1.0 (bits {:#018x}) — declared in {}. The compound path \
-                     writes the SI value VERBATIM as the magnitude precisely because \
-                     the fold is exactly 1.0 for any tree shape; at any other factor \
-                     every compound write of a dimension touching this slot is \
-                     silently lossy.",
-                    entry.factor,
-                    entry.factor.to_bits(),
-                    1.0f64.to_bits(),
-                    entry.source_module.as_deref().unwrap_or("?")
-                );
-                assert_eq!(
-                    entry.dimension,
-                    basis_dimension(i),
-                    "slot {i}: {sym:?} resolves to dimension {:?}, not the base \
-                     dimension of its own slot",
-                    entry.dimension.canonical_name()
-                );
+                assert_factor_one_entry(entry, sym, basis_dimension(i), &format!("slot {i}"));
                 compared += 1;
             }
             None => {
@@ -1039,9 +1054,8 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         }
     }
 
-    // Non-vacuity floor, matching the `compared >= 10` the sibling cross-guard
-    // uses: all ten slots are decided, and at least seven are emittable today
-    // (m/kg/s/K/rad/sr/USD).
+    // Non-vacuity: all ten slots are decided, and all ten are emittable
+    // (m/kg/s/A/K/mol/cd/rad/sr/USD).
     assert_eq!(
         compared, 10,
         "every BASE_UNIT_SYMBOLS slot must be decided in one direction or the other"
@@ -1050,11 +1064,80 @@ fn si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
         .iter()
         .filter(|s| s.is_some())
         .count();
+    assert_eq!(
+        emittable, 10,
+        "expected all 10 registry-resolvable base symbols \
+         (m/kg/s/A/K/mol/cd/rad/sr/USD) to be emittable — did the stdlib lose a \
+         unit declaration?"
+    );
+}
+
+/// FORWARD CROSS-GUARD for `RI_NAMED_DERIVED_SYMBOLS`: every named derived
+/// symbol the emitter may write is seeded in the stdlib registry at factor
+/// exactly 1.0, with no offset and the row's dimension.
+///
+/// Forward-only by design. The reverse — "every factor-1.0 registry unit is
+/// tabled" — is false by construction: `Hz`/`Bq` share Frequency and `Gy`/`Sv`
+/// share AbsorbedDose, so a whole-dimension table can hold at most one of each
+/// pair, and other factor-1.0 symbols are deliberately untabled. The reverse
+/// coupling that matters — the emitter actually reads the table — is a pure
+/// reify-core property, pinned by its
+/// `ri_named_derived_symbols_are_unambiguous_and_consulted`.
+#[test]
+fn named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry() {
+    let registry = stdlib_seeded_unit_registry();
+    for &(sym, dim) in reify_core::RI_NAMED_DERIVED_SYMBOLS {
+        let entry = registry.lookup(sym).unwrap_or_else(|| {
+            panic!(
+                "RI_NAMED_DERIVED_SYMBOLS names {sym:?}, but it is NOT in the \
+                 stdlib-seeded UnitRegistry, so every literal written with it fails \
+                 to resolve. Restore its si_units.rs declaration or drop the row."
+            )
+        });
+        assert_factor_one_entry(entry, sym, dim, "RI_NAMED_DERIVED_SYMBOLS");
+    }
+    assert_eq!(
+        reify_core::RI_NAMED_DERIVED_SYMBOLS.len(),
+        4,
+        "expected exactly the four N/Pa/J/W rows in RI_NAMED_DERIVED_SYMBOLS — \
+         did the named-derived table change?"
+    );
+}
+
+/// The factor-one invariant both registry guards enforce: `entry` (for `sym`)
+/// has no offset, factor bits exactly `1.0`, and dimension `expected`.
+///
+/// `.to_bits()`, not a tolerance: a factor of `0.9999999999999999` would make
+/// every write naming `sym` silently lossy while looking right in a debug
+/// print, and `mag * factor == si_value` is exactly the identity the emitter
+/// rests on. `context` prefixes every message so a failure names its table row.
+fn assert_factor_one_entry(entry: &UnitEntry, sym: &str, expected: DimensionVector, context: &str) {
+    let module = entry.source_module.as_deref().unwrap_or("?");
     assert!(
-        emittable >= 7,
-        "expected at least the 7 registry-resolvable base symbols \
-         (m/kg/s/K/rad/sr/USD) to be emittable, got {emittable} — did the stdlib \
-         lose a unit declaration?"
+        entry.offset.is_none(),
+        "{context}: {sym:?} is AFFINE in the registry (offset {:?}, declared in \
+         {module}). `si = mag * factor + offset` is not the arithmetic the emitter \
+         proves against — its whole exactness argument is that the fold is the \
+         IEEE identity.",
+        entry.offset
+    );
+    assert_eq!(
+        entry.factor.to_bits(),
+        1.0f64.to_bits(),
+        "{context}: {sym:?} resolves at factor {:?} (bits {:#018x}), not exactly 1.0 \
+         (bits {:#018x}) — declared in {module}. The emitter writes the SI value \
+         VERBATIM as the magnitude precisely because the fold is exactly 1.0; at \
+         any other factor every write naming {sym:?} is silently lossy.",
+        entry.factor,
+        entry.factor.to_bits(),
+        1.0f64.to_bits()
+    );
+    assert_eq!(
+        entry.dimension,
+        expected,
+        "{context}: {sym:?} resolves to dimension {:?} (declared in {module}), not {:?}",
+        entry.dimension.canonical_name(),
+        expected.canonical_name()
     );
 }
 

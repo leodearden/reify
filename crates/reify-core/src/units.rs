@@ -206,8 +206,8 @@ pub fn unit_symbol_to_si(unit: &str) -> Option<(f64, DimensionVector)> {
 /// answers "which BARE symbols may be written, most-preferred first" — an
 /// ORDERED ladder the caller WALKS for bit-exactness, whose factor-1.0
 /// TERMINATOR contract is meaningless for a compound expression — while that
-/// one answers "which `UnitExpr`-shaped string spells this dimension out of SI
-/// base symbols", and is unordered and total.
+/// one answers "which `UnitExpr`-shaped string spells this dimension out of
+/// factor-1.0 symbols", and is unordered and total.
 ///
 /// The preconditions differ too, which is the half that actually matters: a
 /// bare symbol round-trips in ANY module because the built-in table is an
@@ -263,50 +263,55 @@ pub fn ri_emittable_units(dim: &DimensionVector) -> &'static [&'static str] {
 /// dimension then breaks BOTH tables at compile time rather than silently
 /// mis-labelling a slot.
 ///
-/// # Why slots 3 / 5 / 6 are `None`
-///
-/// `A` (Current), `mol` (AmountOfSubstance) and `cd` (LuminousIntensity) are in
-/// [`BUILTIN_UNITS`], but they are NEVER seeded into the compiler's
-/// `UnitRegistry` — not even under the full stdlib. `stdlib/units.ri` does not
-/// declare them, and `si_units.rs` registers them only as prefix BASES (`mA`,
-/// `kA`, …) with `SI_PREFIXES` carrying no empty prefix, so no bare declaration
-/// is ever generated. A compound naming one would therefore resolve to
-/// `UnitResolveError::UnknownUnit` at parse time: a broken round-trip, which is
-/// the exact failure this table exists to prevent. Refusing is the correct
-/// behaviour, not a gap.
+/// A compound `UnitExpr` resolves against the compiler's `UnitRegistry` alone,
+/// so a slot is `Some` only if its bare symbol is seeded there at factor exactly
+/// `1.0` — see [`ri_compound_unit_expr`] for what that identity buys. All ten
+/// slots are today: nine bases are declared in `stdlib/units.ri`, and `sr` is
+/// generated bare by `si_units.rs`.
 ///
 /// That is an empirical fact about the stdlib, so it is not left to trust:
 /// `ri_literal_roundtrip.rs`'s
 /// `si_base_symbols_resolve_to_factor_one_in_the_stdlib_registry` cross-guards
 /// this table against the actually-seeded registry BIDIRECTIONALLY — a `Some`
 /// slot must be present at factor exactly 1.0, and a `None` slot must be
-/// absent — so a stdlib change in EITHER direction fires and names the slot to
-/// fix.
+/// absent — so a stdlib change in EITHER direction fires and names the slot.
+/// Should the stdlib ever drop a declaration, `None` is the response: the
+/// emitter then refuses every dimension touching that slot rather than writing
+/// a literal that cannot re-parse.
 ///
-/// Every `Some` symbol resolves to factor exactly `1.0`, and that is the whole
-/// point: see [`ri_compound_unit_expr`] for what the identity buys.
-///
-/// # What the guard actually measured
-///
-/// All seven `Some` slots are present in the stdlib-seeded registry at factor
-/// exactly `1.0` with no offset, and all three `None` slots are absent —
-/// observed, not inferred. `sr` in particular is worth naming: it is generated
-/// bare from `si_units.rs`'s `SI_DERIVED_UNITS` rather than declared in
-/// `stdlib/units.ri`, so its presence was a real open question when this table
-/// was written. It IS generated, so SolidAngle is emittable. Had it not been,
-/// the fix would have been slot 8 → `None`; the structured refusal is the
-/// correct behaviour in that case, not a defect.
+/// Read by `ri_compound_unit_expr`, and through it by reify-compiler's
+/// conformance migration hint.
 pub const RI_COMPOUND_BASE_SYMBOLS: [Option<&'static str>; 10] = [
     Some("m"),   // 0 Length
     Some("kg"),  // 1 Mass
     Some("s"),   // 2 Time
-    None,        // 3 Current — bare `A` is never in the registry
+    Some("A"),   // 3 Current
     Some("K"),   // 4 Temperature
-    None,        // 5 AmountOfSubstance — bare `mol` is never in the registry
-    None,        // 6 LuminousIntensity — bare `cd` is never in the registry
+    Some("mol"), // 5 AmountOfSubstance
+    Some("cd"),  // 6 LuminousIntensity
     Some("rad"), // 7 Angle
     Some("sr"),  // 8 SolidAngle
     Some("USD"), // 9 Money
+];
+
+/// Named SI derived symbols that [`ri_compound_unit_expr`] writes for a WHOLE
+/// dimension, symbol first as in [`BUILTIN_UNITS`].
+///
+/// - These are symbols reify-compiler's `si_units.rs` generates BARE at factor
+///   exactly `1.0`, mirrored here because reify-core cannot depend on
+///   reify-compiler.
+/// - Factor 1.0 ONLY. A prefixed form (`kN`, `MPa`) would scale the magnitude
+///   and break the verbatim-SI-value identity, so it never belongs here.
+/// - Cross-guarded against the actually-seeded registry by
+///   `ri_literal_roundtrip.rs`'s
+///   `named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry`.
+/// - Matched against the whole dimension only, never used as a factor inside a
+///   larger compound (`Pa*s`, `N*m`).
+pub const RI_NAMED_DERIVED_SYMBOLS: &[(&str, DimensionVector)] = &[
+    ("N", DimensionVector::FORCE),
+    ("Pa", DimensionVector::PRESSURE),
+    ("J", DimensionVector::ENERGY),
+    ("W", DimensionVector::POWER),
 ];
 
 /// Render one factor of a compound unit expression, omitting `^1`.
@@ -318,12 +323,13 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
     }
 }
 
-/// A `UnitExpr`-shaped `.ri` string spelling `dim` out of SI base symbols, or
-/// `None` when it cannot be written exactly (task #6400).
+/// A `UnitExpr`-shaped `.ri` string for `dim` — a named factor-1.0 derived
+/// symbol when one exists, else SI base symbols — or `None` when it cannot be
+/// written exactly (task #6400).
 ///
 /// The COMPOUND sibling of [`ri_emittable_units`], used by
 /// `reify_ir::ri_literal` under `UnitScope::SiBaseUnitsSeeded` to write values
-/// whose dimension has no bare symbol at all: `2.5m^2`, `101325kg/m/s^2`,
+/// whose dimension has no bare symbol at all: `2.5m^2`, `101325Pa`,
 /// `7850kg/m^3`.
 ///
 /// # Why this is not a widening of [`ri_emittable_units`]
@@ -361,14 +367,21 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 /// would fold `0.001.powi(2)` and reintroduce exactly the fold-order hazard
 /// this structurally avoids.
 ///
+/// A single named atom (`Pa`) is a bare `UnitExpr::Unit`, which the compiler
+/// resolves by its bare path (`v * factor + offset.unwrap_or(0.0)`): exact for
+/// factor 1.0, no offset and a non-negative magnitude, the sign riding a unary
+/// minus — exactly as for `sr` and `USD`.
+///
 /// # Shape
 ///
-/// Factors appear in [`crate::dimension::BASE_UNIT_SYMBOLS`] index order:
-/// positive exponents first joined by `*`, then each negative exponent
-/// introduced by its own `/` carrying the ABSOLUTE exponent (`m*kg/s^2`,
-/// `kg/m/s^2`, `kg/m^3`); `^n` is omitted when `n == 1`. That is the same
-/// partition and ordering `impl Display for DimensionVector` uses, so the two
-/// renderers share one convention.
+/// Named first: a dimension equal to a [`RI_NAMED_DERIVED_SYMBOLS`] row is that
+/// one symbol (`Pa`, never `kg/m/s^2`). Otherwise factors appear in
+/// [`crate::dimension::BASE_UNIT_SYMBOLS`] index order: positive exponents
+/// first joined by `*`, then each negative exponent introduced by its own `/`
+/// carrying the ABSOLUTE exponent (`kg/m/s`, `kg/m^3`, `m^2*kg/s^3/A`); `^n` is
+/// omitted when `n == 1`. That is the same partition and ordering
+/// `impl Display for DimensionVector` uses, so the two renderers share one
+/// convention.
 ///
 /// When EVERY non-zero exponent is negative the numerator would be empty, and a
 /// leading `/` is not a valid `unit_expr` at all — the rule must start with an
@@ -385,9 +398,18 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 ///   acceptance set cannot drift from the compiler's by construction;
 /// - a negative exponent whose ABSOLUTE value is outside `i8` — a tighter bound
 ///   than `as_i8` alone, because the denominator form writes `|n|`;
-/// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`
-///   (Current / AmountOfSubstance / LuminousIntensity).
+/// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`.
 pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
+    RI_NAMED_DERIVED_SYMBOLS
+        .iter()
+        .find(|&&(_, named)| named == *dim)
+        .map(|&(sym, _)| sym.to_owned())
+        .or_else(|| ri_base_symbol_unit_expr(dim))
+}
+
+/// [`ri_compound_unit_expr`]'s fallback: `dim` spelled out of
+/// [`RI_COMPOUND_BASE_SYMBOLS`].
+fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
     // Collect first, decide the form second: whether the numerator is empty is
     // a property of the WHOLE vector, and the two forms accept different
     // exponents (the signed form can write `s^-128`, the denominator form
@@ -814,8 +836,10 @@ mod tests {
         DimensionVector(exps)
     }
 
-    /// (a) SHAPES — the exact string emitted, in `BASE_UNIT_SYMBOLS` index
-    /// order (0:m 1:kg 2:s 3:A 4:K 5:mol 6:cd 7:rad 8:sr 9:USD).
+    /// (a) SHAPES — the exact string emitted. A dimension with a named
+    /// factor-1.0 symbol is that one atom; any other is built in
+    /// `BASE_UNIT_SYMBOLS` index order (0:m 1:kg 2:s 3:A 4:K 5:mol 6:cd 7:rad
+    /// 8:sr 9:USD).
     ///
     /// Positive-exponent factors come first joined by `*`, then each
     /// negative-exponent factor is introduced by its own `/` carrying the
@@ -832,12 +856,29 @@ mod tests {
         let cases: &[(DimensionVector, &str)] = &[
             (DimensionVector::AREA, "m^2"),
             (DimensionVector::VOLUME, "m^3"),
-            (DimensionVector::FORCE, "m*kg/s^2"),
-            (DimensionVector::PRESSURE, "kg/m/s^2"),
+            // Named factor-1.0 derived symbols win whole-dimension matches.
+            (DimensionVector::FORCE, "N"),
+            (DimensionVector::PRESSURE, "Pa"),
+            (DimensionVector::ENERGY, "J"),
+            (DimensionVector::POWER, "W"),
+            // No named symbol: the base-symbol builder writes these.
             (DimensionVector::MASS_DENSITY, "kg/m^3"),
-            (DimensionVector::ENERGY, "m^2*kg/s^2"),
+            (DimensionVector::DYNAMIC_VISCOSITY, "kg/m/s"),
             (DimensionVector::SOLID_ANGLE, "sr"),
             (DimensionVector::MONEY, "USD"),
+            // Dimensions touching the Current / AmountOfSubstance /
+            // LuminousIntensity slots.
+            (DimensionVector::VOLTAGE, "m^2*kg/s^3/A"),
+            (DimensionVector::CHARGE, "s*A"),
+            (DimensionVector::ILLUMINANCE, "cd*sr/m^2"),
+            (
+                DimensionVector::AMOUNT_OF_SUBSTANCE.div(&DimensionVector::VOLUME),
+                "mol/m^3",
+            ),
+            (
+                DimensionVector::CURRENT.mul(&DimensionVector::CURRENT),
+                "A^2",
+            ),
             // A single atom. The bare ladder still wins at the `reify-ir`
             // policy layer (`80mm`, never `0.08m`) — this function is pure and
             // has no opinion about that; containment lives at the call site.
@@ -889,39 +930,17 @@ mod tests {
             None,
             "an exponent outside i8 is what `resolve_unit_expr` rejects"
         );
-
-        // Current / AmountOfSubstance / LuminousIntensity: bare `A`/`mol`/`cd`
-        // are in BUILTIN_UNITS but are NEVER seeded into the compiler's
-        // `UnitRegistry` (stdlib/units.ri does not declare them, and
-        // si_units.rs registers them only as prefix bases `mA`/`kA`/…), so a
-        // compound naming one would fail to resolve. VOLTAGE and CHARGE are
-        // the witnesses; the raw slots pin the reason rather than the pair.
-        for dim in [DimensionVector::VOLTAGE, DimensionVector::CHARGE] {
-            assert_eq!(
-                ri_compound_unit_expr(&dim),
-                None,
-                "{:?} names a base symbol the registry never carries",
-                dim.canonical_name()
-            );
-        }
-        for slot in [3usize, 5, 6] {
-            assert_eq!(
-                ri_compound_unit_expr(&one_slot(slot, crate::Rational::ONE)),
-                None,
-                "slot {slot} ({}) has no registry-resolvable bare symbol",
-                BASE_UNIT_SYMBOLS[slot]
-            );
-        }
     }
 
     /// (c) STRUCTURAL guard — every alphabetic atom in an emitted string is a
-    /// member of [`BASE_UNIT_SYMBOLS`].
+    /// symbol of [`RI_COMPOUND_BASE_SYMBOLS`] or [`RI_NAMED_DERIVED_SYMBOLS`],
+    /// the two tables the compiler tier cross-guards at factor exactly 1.0.
     ///
-    /// Fires if the builder ever reaches for a symbol outside the base table
-    /// (a prefixed `mm`, a named derived `Pa`), which would abandon the
-    /// factor-1.0 identity the whole exactness argument rests on.
+    /// Fires if the emitter ever reaches for any other symbol (a prefixed `mm`,
+    /// an untabled `Hz`), which would abandon the factor-1.0 identity the whole
+    /// exactness argument rests on.
     #[test]
-    fn ri_compound_unit_expr_only_ever_names_base_unit_symbols() {
+    fn ri_compound_unit_expr_only_ever_names_cross_guarded_factor_one_symbols() {
         let dims = [
             DimensionVector::AREA,
             DimensionVector::VOLUME,
@@ -933,7 +952,15 @@ mod tests {
             DimensionVector::MONEY,
             DimensionVector::LENGTH,
             DimensionVector::FREQUENCY,
+            DimensionVector::VOLTAGE,
+            DimensionVector::CHARGE,
+            DimensionVector::POWER,
+            DimensionVector::DYNAMIC_VISCOSITY,
         ];
+        let is_cross_guarded = |atom: &str| {
+            RI_COMPOUND_BASE_SYMBOLS.contains(&Some(atom))
+                || RI_NAMED_DERIVED_SYMBOLS.iter().any(|&(sym, _)| sym == atom)
+        };
         let mut checked = 0usize;
         for dim in dims {
             let expr = ri_compound_unit_expr(&dim)
@@ -943,11 +970,12 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    BASE_UNIT_SYMBOLS.contains(&atom),
+                    is_cross_guarded(atom),
                     "emitted expression {expr:?} for {:?} names {atom:?}, which is \
-                     not an SI base symbol — only base symbols resolve to factor \
-                     exactly 1.0, and that identity is what makes the emitted \
-                     magnitude the SI value verbatim",
+                     in neither RI_COMPOUND_BASE_SYMBOLS nor RI_NAMED_DERIVED_SYMBOLS \
+                     — only those symbols are cross-guarded at factor exactly 1.0, \
+                     and that identity is what makes the emitted magnitude the SI \
+                     value verbatim",
                     dim.canonical_name()
                 );
                 checked += 1;
@@ -958,6 +986,60 @@ mod tests {
             "expected to sweep at least 10 atoms, saw {checked} — did the shape \
              table lose entries?"
         );
+    }
+
+    /// (d) TABLE invariants of [`RI_NAMED_DERIVED_SYMBOLS`]: every row is a
+    /// compound-only dimension with one unambiguous symbol, and the emitter
+    /// actually consults it.
+    ///
+    /// The compiler tier checks the other half — that each symbol is seeded at
+    /// factor exactly 1.0 — in `ri_literal_roundtrip.rs`'s
+    /// `named_derived_symbols_resolve_to_factor_one_in_the_stdlib_registry`.
+    #[test]
+    fn ri_named_derived_symbols_are_unambiguous_and_consulted() {
+        assert!(
+            !RI_NAMED_DERIVED_SYMBOLS.is_empty(),
+            "the named-symbol table is empty, so every check below is vacuous"
+        );
+        for (i, &(sym, dim)) in RI_NAMED_DERIVED_SYMBOLS.iter().enumerate() {
+            assert!(
+                !BASE_UNIT_SYMBOLS.contains(&sym),
+                "{sym:?} is an SI base symbol; base symbols belong in \
+                 RI_COMPOUND_BASE_SYMBOLS"
+            );
+            assert!(
+                unit_symbol_to_si(sym).is_none(),
+                "{sym:?} is a bare built-in, so it already resolves without the \
+                 registry and does not belong in the compound table"
+            );
+            assert!(
+                ri_emittable_units(&dim).is_empty(),
+                "{sym:?} names {:?}, which has a bare ladder — reify-ir never takes \
+                 the compound path for it, so this row is dead",
+                dim.canonical_name()
+            );
+            assert!(
+                !dim.is_dimensionless(),
+                "{sym:?} names the dimensionless vector"
+            );
+            for &(other_sym, other_dim) in &RI_NAMED_DERIVED_SYMBOLS[i + 1..] {
+                assert_ne!(
+                    other_dim,
+                    dim,
+                    "{sym:?} and {other_sym:?} share {:?}; a first-match lookup \
+                     would shadow the later row",
+                    dim.canonical_name()
+                );
+                assert_ne!(other_sym, sym, "{sym:?} appears twice");
+            }
+            assert_eq!(
+                ri_compound_unit_expr(&dim).as_deref(),
+                Some(sym),
+                "ri_compound_unit_expr does not write {sym:?} for {:?} — the table \
+                 is not consulted",
+                dim.canonical_name()
+            );
+        }
     }
 
 }

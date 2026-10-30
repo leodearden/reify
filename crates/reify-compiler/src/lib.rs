@@ -78,6 +78,7 @@ pub use annotations::materialize::{
     MaterializationAnnotationArg, MaterializationArgType, compile_materialization_annotation_args,
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
+pub use compile_builder::units_phase::seed_prelude_units;
 pub use entity::satisfies_trait_bound;
 pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
