@@ -631,6 +631,19 @@ fn needs_jcodemunch(args: &Args) -> bool {
         && selected_detectors(args.pattern.as_deref()).any(|detector| detector.jcodemunch.queries())
 }
 
+/// The branch whose history [`RealGitOps`] snapshots for this run, or `None`
+/// to fork one git call per question.
+///
+/// Only a sweep repays the snapshot: it asks ancestry, grep and changed-path
+/// questions for thousands of tasks, while a `--task` spot-check asks a
+/// handful, fewer than one whole-history dump costs. `--pre-done` runs inside
+/// fused-memory's per-project write lock under a 30 s budget and must never
+/// pay a dump. `main` is the base both P5 and P2 query; a snapshot of any
+/// other branch would never be consulted.
+fn history_snapshot_branch(args: &Args) -> Option<&'static str> {
+    (!args.pre_done && args.task_id.is_none()).then_some("main")
+}
+
 /// Return true when EVERY detector selected by `--pattern` requires
 /// jcodemunch ([`JcodemunchUse::Required`]), i.e. a refusal costs the run
 /// nothing it could still have delivered.
@@ -1026,6 +1039,10 @@ fn main() -> ExitCode {
 
     // Construct seam impls.
     let git = RealGitOps::new(PathBuf::from(&args.project_root));
+    let git = match history_snapshot_branch(&args) {
+        Some(branch) => git.with_history_snapshot(branch),
+        None => git,
+    };
 
     // Resolve the jcodemunch repo identity ONCE, before the seam is
     // constructed, so the identity queried and the identity gated cannot
@@ -1415,6 +1432,36 @@ mod tests {
     /// Whether a run with this `--pattern` value dispatches `token`'s detector.
     fn selects(token: &str, pattern: Option<&str>) -> bool {
         selected_detectors(pattern).any(|detector| detector.token == token)
+    }
+
+    /// The history snapshot is bound for sweeps only: a `--task` spot-check
+    /// asks too few questions to repay a whole-history dump, and `--pre-done`
+    /// runs inside fused-memory's write lock under a hard timeout.
+    #[test]
+    fn history_snapshot_binds_for_sweeps_only() {
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, None)),
+            Some("main")
+        );
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, Some("P5"))),
+            Some("main")
+        );
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, Some("P2"))),
+            Some("main")
+        );
+
+        let spot_check = Args {
+            task_id: Some("1".to_string()),
+            ..make_args(false, None)
+        };
+        assert_eq!(history_snapshot_branch(&spot_check), None);
+        let pre_done = Args {
+            task_id: Some("1".to_string()),
+            ..make_args(true, None)
+        };
+        assert_eq!(history_snapshot_branch(&pre_done), None);
     }
 
     #[test]

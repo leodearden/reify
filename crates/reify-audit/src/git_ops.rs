@@ -1,9 +1,14 @@
 //! The git seam: the [`GitOps`] trait every detector reads git through, its production [`RealGitOps`] impl, and the test-support `MockGitOps`.
 
+use crate::git_history::{BranchMessages, FirstParentChanges, parse_tip, tip_argv};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicUsize;
@@ -107,6 +112,13 @@ pub trait GitOps {
     /// non-blocking `Low`.
     fn try_is_gitignored(&self, path: &str) -> Result<bool, String>;
 
+    /// [`GitOps::try_is_gitignored`] for each of `paths`, in order: exactly
+    /// the answer each per-path call would give. For a caller about to ask
+    /// about many paths, which an implementation may answer in one batch.
+    fn try_is_gitignored_each(&self, paths: &[String]) -> Vec<Result<bool, String>> {
+        paths.iter().map(|p| self.try_is_gitignored(p)).collect()
+    }
+
     /// Returns `true` iff `path` resolves on `branch` to a tracked file OR a
     /// directory containing tracked files (git does not track empty dirs),
     /// equivalent to `git ls-tree <branch> -- <path>` returning non-empty.
@@ -151,6 +163,25 @@ pub trait GitOps {
     /// been reaped by the orchestrator — but the merge commit M survives on
     /// `main`, so `git diff M^1..M` recovers the exact task delta.
     fn diff_added_lines_in_commit(&self, commit: &str, path: &str) -> Vec<(usize, String)>;
+
+    /// A superset of the `+` lines that [`GitOps::diff_added_lines_in_commit`]
+    /// returns for `commit` and each `p` in `paths`, as `(line_no, content)`
+    /// pairs, or `Err` when git did not answer. A caller asking "could any
+    /// per-path diff add a line like this" asks once. Line numbers are not
+    /// comparable with the per-path answers'.
+    ///
+    /// The default concatenates the per-path answers.
+    /// [`RealGitOps`] makes one `git diff --no-renames <commit>^1..<commit> --
+    /// <paths…>`: a single-pathspec diff can pair a rename only within that
+    /// pathspec, and `--no-renames` renders any such pair as a whole-file add,
+    /// so every per-path `+` line is among its lines.
+    fn try_added_lines_in_commit_superset(
+        &self,
+        commit: &str,
+        paths: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        Ok(per_path_added_lines(self, commit, paths))
+    }
 
     /// Returns all lines of `path` at `reference` (e.g. `"main"`, `"HEAD"`) as
     /// `(1-based_line_no, content)` pairs, equivalent to `git show
@@ -259,6 +290,32 @@ pub trait GitOps {
 /// `cli::git_check_ignore_breadcrumb_dedups_across_files`
 /// (`tests/cli.rs`) pins the user-visible signal: with N≥2 files in a
 /// non-git directory, exactly one breadcrumb appears in stderr.
+///
+/// # History snapshot (opt-in, for sweeps)
+///
+/// [`RealGitOps::with_history_snapshot`] lets one instance answer three
+/// questions about a branch from memory instead of forking per question:
+/// [`is_ancestor`](GitOps::is_ancestor) and
+/// [`try_log_grep`](GitOps::try_log_grep) against that branch, and
+/// [`changed_paths_in_commit`](GitOps::changed_paths_in_commit) for a commit
+/// reachable from it. A whole-corpus sweep asks them thousands of times, and
+/// each fork walks the branch's history again.
+///
+/// Each answer is exactly what the per-call command would have given when the
+/// snapshot was taken, and anything the snapshot cannot answer exactly — an
+/// abbreviated SHA, a commit it does not hold, a non-literal pattern, a root
+/// commit — still forks. The two dumps it reads are loaded lazily, each on the
+/// first question that needs it, so a run that never asks pays nothing; a
+/// dump that fails to load or parse costs one breadcrumb and leaves every
+/// question it would have answered forking as before.
+///
+/// The snapshot is point-in-time. The first question that needs it resolves
+/// the branch to one tip commit, and both dumps read history from that commit,
+/// so the snapshot's own answers agree with each other however the branch
+/// moves during the run. A question that forks asks about the LIVE branch, so
+/// it can see a commit that landed after the tip and the snapshot's answers
+/// cannot. A short single-task run should not opt in, since one dump costs
+/// more than the handful of forks it would replace.
 pub struct RealGitOps {
     /// Working directory passed as `git -C <dir>` to every invocation.
     pub project_root: PathBuf,
@@ -277,12 +334,28 @@ pub struct RealGitOps {
     /// single-instance construction requirement that makes this budget
     /// meaningful in production.
     gitignore_unavailable: AtomicBool,
+    /// The opt-in history snapshot; see the type doc.
+    history: Option<HistorySnapshot>,
     /// Number of `spawn_once` invocations to fail with a synthetic
     /// `Err(WouldBlock)` before delegating to a real `git` subprocess.
     /// Mirrors the `gitignore_unavailable` interior-mutability pattern.
     /// Compiled out of production builds entirely.
     #[cfg(any(test, feature = "test-support"))]
     inject_spawn_failures: AtomicUsize,
+}
+
+/// The `+` lines of every [`GitOps::diff_added_lines_in_commit`] of `commit`
+/// over `paths`, concatenated in order: the exact union, and so a valid answer
+/// to [`GitOps::try_added_lines_in_commit_superset`] for any implementation.
+fn per_path_added_lines<G: GitOps + ?Sized>(
+    git: &G,
+    commit: &str,
+    paths: &[String],
+) -> Vec<(usize, String)> {
+    paths
+        .iter()
+        .flat_map(|p| git.diff_added_lines_in_commit(commit, p))
+        .collect()
 }
 
 /// Parse the `+` lines from a unified diff (`git diff` stdout) into
@@ -357,14 +430,108 @@ fn parse_rename_target(stdout: &str, old_path: &str) -> Option<String> {
     })
 }
 
+/// One branch's history as of one tip commit, each part loaded on first need.
+/// `None` inside a loaded cell records a load that failed, so it is not
+/// retried.
+struct HistorySnapshot {
+    branch: String,
+    /// The commit `branch` named when the snapshot was first needed. Every
+    /// dump reads history from it, so the parts agree with each other however
+    /// `branch` moves later.
+    tip: OnceLock<Option<String>>,
+    messages: OnceLock<Option<BranchMessages>>,
+    changes: OnceLock<Option<FirstParentChanges>>,
+}
+
 impl RealGitOps {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
             gitignore_unavailable: AtomicBool::new(false),
+            history: None,
             #[cfg(any(test, feature = "test-support"))]
             inject_spawn_failures: AtomicUsize::new(0),
         }
+    }
+
+    /// Answer ancestry, message grep and per-commit changed paths for
+    /// `branch` from a point-in-time snapshot of its history. See the type
+    /// doc's "History snapshot" section.
+    pub fn with_history_snapshot(mut self, branch: &str) -> Self {
+        self.history = Some(HistorySnapshot {
+            branch: branch.to_string(),
+            tip: OnceLock::new(),
+            messages: OnceLock::new(),
+            changes: OnceLock::new(),
+        });
+        self
+    }
+
+    /// The commit `history`'s dumps read from, resolving its branch on first
+    /// need, or `None` when that failed.
+    fn snapshot_tip<'h>(&self, history: &'h HistorySnapshot) -> Option<&'h str> {
+        history
+            .tip
+            .get_or_init(|| {
+                let argv = tip_argv(&history.branch);
+                self.load_history_part(&history.branch, "tip", &argv, |raw| parse_tip(&raw))
+            })
+            .as_deref()
+    }
+
+    /// The snapshot's messages of `branch`, loading them on first need, or
+    /// `None` when there is no snapshot of `branch` or it failed to load.
+    fn snapshot_messages(&self, branch: &str) -> Option<&BranchMessages> {
+        let history = self.history.as_ref().filter(|h| h.branch == branch)?;
+        history
+            .messages
+            .get_or_init(|| {
+                let argv = BranchMessages::argv(self.snapshot_tip(history)?);
+                self.load_history_part(&history.branch, "messages", &argv, |raw| {
+                    BranchMessages::parse(&raw)
+                })
+            })
+            .as_ref()
+    }
+
+    /// The snapshot's first-parent changed paths, loading them on first need,
+    /// or `None` when there is no snapshot or it failed to load.
+    fn snapshot_changes(&self) -> Option<&FirstParentChanges> {
+        let history = self.history.as_ref()?;
+        history
+            .changes
+            .get_or_init(|| {
+                let argv = FirstParentChanges::argv(self.snapshot_tip(history)?);
+                self.load_history_part(&history.branch, "changed paths", &argv, |raw| {
+                    let dump = String::from_utf8(raw)
+                        .map_err(|_| "git output not valid UTF-8".to_string())?;
+                    FirstParentChanges::parse(&dump)
+                })
+            })
+            .as_ref()
+    }
+
+    /// Run one history dump and parse it, or emit ONE breadcrumb and return
+    /// `None` so every question it would have answered forks instead.
+    fn load_history_part<T>(
+        &self,
+        branch: &str,
+        part: &str,
+        argv: &[String],
+        parse: impl FnOnce(Vec<u8>) -> Result<T, String>,
+    ) -> Option<T> {
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        self.run_raw(&argv).and_then(parse).map_or_else(
+            |e| {
+                eprintln!(
+                    "reify-audit: git history snapshot of {branch} ({part}) unavailable in {}: \
+                     {e}; falling back to one git call per question",
+                    self.project_root.display()
+                );
+                None
+            },
+            Some,
+        )
     }
 
     /// Inject `n` transient spawn failures into the next `n` `spawn_once`
@@ -457,6 +624,12 @@ impl RealGitOps {
     /// through `run_or_warn` → `None` → callers return `vec![]`, degrading
     /// exactly as before.
     fn run(&self, args: &[&str]) -> Result<String, String> {
+        String::from_utf8(self.run_raw(args)?).map_err(|_| "git output not valid UTF-8".to_string())
+    }
+
+    /// [`RealGitOps::run`] without the UTF-8 decode: failure modes 1 and 2
+    /// only, and stdout as raw bytes.
+    fn run_raw(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let out = self.spawn_with_retry(args)
             .map_err(|e| format!("git invocation failed: {}", e))?;
         if !out.status.success() {
@@ -467,7 +640,7 @@ impl RealGitOps {
                 stderr.trim()
             ));
         }
-        String::from_utf8(out.stdout).map_err(|_| "git output not valid UTF-8".to_string())
+        Ok(out.stdout)
     }
 
     /// `git rev-parse HEAD` — the working tree's current commit sha.
@@ -518,6 +691,47 @@ impl RealGitOps {
         })
     }
 
+    /// One `git check-ignore --stdin -z` over `paths`, returning its stdout:
+    /// each path git reports ignored, echoed exactly as given, NUL-terminated.
+    /// `Err` unless git ran and exited 0 (some ignored) or 1 (none).
+    ///
+    /// The paths are written from a scoped thread while this one collects
+    /// stdout, so a full stdout pipe cannot deadlock the write.
+    fn check_ignore_batch(&self, paths: &[String]) -> Result<Vec<u8>, String> {
+        let mut child = crate::git_env::command(&self.project_root)
+            .args(["check-ignore", "--stdin", "-z"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("git invocation failed: {e}"))?;
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        let (written, output) = std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                paths.iter().try_for_each(|p| {
+                    stdin
+                        .write_all(p.as_bytes())
+                        .and_then(|()| stdin.write_all(b"\0"))
+                })
+            });
+            let output = child.wait_with_output();
+            (writer.join(), output)
+        });
+        let output = output.map_err(|e| format!("git invocation failed: {e}"))?;
+        if !matches!(output.status.code(), Some(0 | 1)) {
+            return Err(format!(
+                "git exited {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        match written {
+            Ok(Ok(())) => Ok(output.stdout),
+            Ok(Err(e)) => Err(format!("writing paths to git failed: {e}")),
+            Err(_) => Err("the path writer panicked".to_string()),
+        }
+    }
+
     /// [`RealGitOps::run_warned`] with the error discarded, so callers can
     /// `else { return vec![]; }` in one line. The breadcrumb is identical —
     /// only the recoverable error string is dropped.
@@ -528,6 +742,18 @@ impl RealGitOps {
 
 impl GitOps for RealGitOps {
     fn try_log_grep(&self, branch: &str, pattern: &str) -> Result<Vec<GitCommit>, String> {
+        if let Some(hits) = self
+            .snapshot_messages(branch)
+            .and_then(|messages| messages.grep_literal(pattern))
+        {
+            return Ok(hits
+                .into_iter()
+                .map(|(sha, subject)| GitCommit {
+                    sha: sha.to_string(),
+                    subject: subject.to_string(),
+                })
+                .collect());
+        }
         let stdout = self.run_warned("log --grep", &[
             "log",
             branch,
@@ -568,6 +794,12 @@ impl GitOps for RealGitOps {
     }
 
     fn changed_paths_in_commit(&self, commit: &str) -> Vec<String> {
+        if let Some(paths) = self
+            .snapshot_changes()
+            .and_then(|changes| changes.changed_paths(commit))
+        {
+            return paths.to_vec();
+        }
         // Goes through run_or_warn (not Command::output directly) so the
         // single-RealGitOps-instance breadcrumb dedup stays intact.
         //
@@ -667,12 +899,56 @@ impl GitOps for RealGitOps {
         }
     }
 
+    /// One batched `git check-ignore --stdin -z` instead of one fork per path.
+    ///
+    /// Falls back to one [`try_is_gitignored`](GitOps::try_is_gitignored) per
+    /// path whenever the batch cannot stand in for them exactly: the breadcrumb
+    /// budget is already latched (every per-path answer is then `Err`), a path
+    /// holds a NUL (it could not be one stdin record), or the batch failed — git
+    /// refuses a whole batch for one path it rejects. The batch itself never
+    /// latches `gitignore_unavailable`, so the per-path calls keep today's
+    /// budget and breadcrumb.
+    fn try_is_gitignored_each(&self, paths: &[String]) -> Vec<Result<bool, String>> {
+        let per_path = || paths.iter().map(|p| self.try_is_gitignored(p)).collect();
+        if paths.is_empty() {
+            return vec![];
+        }
+        if self.gitignore_unavailable.load(Ordering::Relaxed)
+            || paths.iter().any(|p| p.contains('\0'))
+        {
+            return per_path();
+        }
+        match self.check_ignore_batch(paths) {
+            Ok(stdout) => {
+                let ignored: HashSet<&[u8]> = stdout.split(|&b| b == 0).collect();
+                paths
+                    .iter()
+                    .map(|p| Ok(ignored.contains(p.as_bytes())))
+                    .collect()
+            }
+            Err(e) => {
+                eprintln!(
+                    "reify-audit: batched git check-ignore --stdin failed in {}: {e}; \
+                     probing one path at a time",
+                    self.project_root.display()
+                );
+                per_path()
+            }
+        }
+    }
+
     fn try_path_tracked_on(&self, branch: &str, path: &str) -> Result<bool, String> {
         self.run_warned("ls-tree", &["ls-tree", branch, "--", path])
             .map(|stdout| !stdout.trim().is_empty())
     }
 
     fn is_ancestor(&self, commit: &str, branch: &str) -> bool {
+        if self
+            .snapshot_messages(branch)
+            .is_some_and(|messages| messages.contains(commit))
+        {
+            return true;
+        }
         // Use .output() (not .status()) so git's stderr ("fatal: not a git
         // repository", "fatal: Not a valid commit name", etc.) is captured and
         // does not leak to our process's stderr / corrupt JSON output.
@@ -725,6 +1001,28 @@ impl GitOps for RealGitOps {
             return vec![];
         };
         parse_added_lines(&stdout)
+    }
+
+    fn try_added_lines_in_commit_superset(
+        &self,
+        commit: &str,
+        paths: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        // No paths would be an unrestricted diff; the contract is the union of
+        // no per-path diffs, which is empty.
+        if paths.is_empty() {
+            return Ok(vec![]);
+        }
+        // A multi-file patch carries per-file header lines after its first
+        // hunk, which `parse_added_lines` reads as hunk lines. They only add
+        // entries (`+++ b/<path>` as `++ b/<path>`) and never drop a real `+`
+        // line, so the superset contract holds; line numbers past the first
+        // file are not meaningful, which the contract already disclaims.
+        let range = format!("{commit}^1..{commit}");
+        let mut args = vec!["diff", "--no-renames", range.as_str(), "--"];
+        args.extend(paths.iter().map(String::as_str));
+        self.run_warned("diff --no-renames (commit)", &args)
+            .map(|stdout| parse_added_lines(&stdout))
     }
 
     fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
@@ -808,6 +1106,10 @@ pub struct MockGitOps {
     is_gitignored_errors: HashMap<String, String>,
     diff_added_lines: HashMap<(String, String, String), Vec<(usize, String)>>,
     diff_added_lines_in_commit: HashMap<(String, String), Vec<(usize, String)>>,
+    /// Canned `try_added_lines_in_commit_superset` answers keyed by commit; an
+    /// unseeded commit answers the per-path concatenation, as the trait
+    /// default does.
+    added_lines_in_commit_superset: HashMap<String, Result<Vec<(usize, String)>, String>>,
     file_lines_on: HashMap<(String, String), Vec<(usize, String)>>,
     path_tracked_on: HashMap<(String, String), bool>,
     /// Simulated `git ls-tree` FAILURES, keyed like `path_tracked_on`. An
@@ -915,6 +1217,18 @@ impl MockGitOps {
             .insert((commit.to_string(), path.to_string()), added);
     }
 
+    /// Answer `try_added_lines_in_commit_superset(commit, _)` with
+    /// `answer`, whatever the paths.
+    // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
+    pub fn set_added_lines_in_commit_superset(
+        &mut self,
+        commit: &str,
+        answer: Result<Vec<(usize, String)>, String>,
+    ) {
+        self.added_lines_in_commit_superset
+            .insert(commit.to_string(), answer);
+    }
+
     // G-allow: test-support fixture (feature = "test-support"); not consumed in production builds
     pub fn set_changed_paths_in_commit(&mut self, commit: &str, paths: Vec<String>) {
         self.changed_paths_in_commit.insert(commit.to_string(), paths);
@@ -993,6 +1307,17 @@ impl GitOps for MockGitOps {
             .unwrap_or_default()
     }
 
+    fn try_added_lines_in_commit_superset(
+        &self,
+        commit: &str,
+        paths: &[String],
+    ) -> Result<Vec<(usize, String)>, String> {
+        match self.added_lines_in_commit_superset.get(commit) {
+            Some(answer) => answer.clone(),
+            None => Ok(per_path_added_lines(self, commit, paths)),
+        }
+    }
+
     fn file_lines_on(&self, reference: &str, path: &str) -> Vec<(usize, String)> {
         self.file_lines_on
             .get(&(reference.to_string(), path.to_string()))
@@ -1032,7 +1357,15 @@ impl GitOps for MockGitOps {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_rename_target;
+    use super::{RealGitOps, parse_rename_target};
+
+    /// A history snapshot must not cost `RealGitOps` its `Sync`: the CLI's
+    /// one instance is shared by every detector.
+    #[test]
+    fn real_git_ops_with_a_history_snapshot_is_sync() {
+        fn assert_sync<T: Sync>(_: &T) {}
+        assert_sync(&RealGitOps::new("/nonexistent").with_history_snapshot("main"));
+    }
 
     /// The measured single-rename shape: `git show -M --name-status --format=`
     /// prints `R<score>\t<old>\t<new>`.
