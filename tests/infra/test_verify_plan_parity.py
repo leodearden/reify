@@ -71,6 +71,10 @@ TEST_REGION_BEGIN = (
     "(TEST-EXECUTION gated, held in verify.sh)"
 )
 EX_UNAVAILABLE = 69
+FAILED_ONLY = {"REIFY_VERIFY_RETRY_SCOPE": "failed_only"}
+RETRY_MARKER = "@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=0 nextest_release=0 "
+PLAN_HEADER = "# verify.sh plan — "
+RUN_ALL = "tests/infra/run_all.sh"
 # The changed paths tests/infra/test_verify_scope.sh plans one at a time with
 # `plan_for staged` (S22 B14); each is written as 'x\n' and staged, as plan_for does.
 CHANGED_PATH_FIXTURES = (
@@ -386,6 +390,51 @@ class TestPlanParityRegionFree(FullPlanParity):
             "infra-mapped docs path inside an infra suite", ("--scope", "staged"),
             {"REIFY_INFRA_SUITE_ACTIVE": "1"}, expect=(EMPTY_PLAN,),
         )
+
+
+class TestPlanParityRetryMarker(FullPlanParity):
+    """The failed_only retry marker: stdout's first line iff a suite really narrowed, under REIFY_VERIFY_RETRY_SCOPE=failed_only."""
+
+    def check_first_line(self, cases):
+        """cases: (label, argv, env, the first line bash prints) — its premise, then full parity."""
+        scenarios = [
+            Scenario(label, (*argv, "--print-plan"), {**FAILED_ONLY, **env}) for label, argv, env, _ in cases
+        ]
+        pairs = self.check_scenarios(scenarios)
+        for (label, _, _, first_line), (_, pair) in zip(cases, pairs):
+            self.assertEqual(
+                pair.bash.stdout.splitlines()[0][: len(first_line)], first_line,
+                f"premise: [{label}] bash's first stdout line",
+            )
+
+    def test_run_all_subset(self):
+        lint_all = ("lint", "--scope", "all")
+        self.check_first_line((
+            ("a matched and a stale member", lint_all,
+             {"REIFY_RUN_ALL_MEMBER_SUBSET": "test_verify_policy.sh nope.sh"},
+             f"{RETRY_MARKER}run_all=1 gui=0"),
+            ("stale members only", lint_all,
+             {"REIFY_RUN_ALL_MEMBER_SUBSET": "nope.sh gone.sh"}, PLAN_HEADER),
+            ("a full retry", lint_all,
+             {"REIFY_VERIFY_RETRY_SCOPE": "full", "REIFY_RUN_ALL_MEMBER_SUBSET": "test_verify_policy.sh"},
+             PLAN_HEADER),
+        ))
+
+    def test_gui_specs(self):
+        self.clone.stage(GUI_CHANGE)
+        test_staged = ("test", "--scope", "staged")
+        self.check_first_line((
+            ("valid gui specs", test_staged, {"REIFY_GUI_RETRY_SPECS": VALID_GUI_SPECS},
+             f"{RETRY_MARKER}run_all=0 gui=2"),
+            ("rejected gui specs", test_staged, {"REIFY_GUI_RETRY_SPECS": "$(x)"}, PLAN_HEADER),
+        ))
+
+    def test_run_all_missing_counts_words(self):
+        (self.clone.root / RUN_ALL).unlink()
+        self.check_first_line((
+            ("run_all.sh missing", ("lint", "--scope", "all"),
+             {"REIFY_RUN_ALL_MEMBER_SUBSET": "first.sh second.sh"}, f"{RETRY_MARKER}run_all=2 gui=0"),
+        ))
 
 
 class TestTestRegionNotYetPlanned(InParityClone):
