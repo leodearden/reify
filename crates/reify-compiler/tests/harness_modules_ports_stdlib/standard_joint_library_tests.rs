@@ -234,8 +234,8 @@ fn ball_joint_definition_is_self_check_clean() {
 // The (b) `spherical` / `ball` tests above assert the ABSENCE of a diagnostic.
 // That oracle is satisfiable two ways: the verdict was computed and matched, or
 // the verdict was never computed at all. The second way is a live failure mode —
-// an unresolvable DOF type name degrades to `Type::Error` and the §7.1 verdict
-// gate then sets `skip_verdict` and emits NOTHING (anti-cascade), so a joint
+// an unresolvable DOF type name degrades to `Type::Error` and the kind-less-DOF
+// gate of `joint_dof_diagnostics` emits NOTHING (anti-cascade), so a joint
 // written `with orientation: Orientation` produced BYTE-IDENTICAL silence to one
 // written `with orientation: Blorp`. The full chain, and why the resolver arm
 // closing it is the fix, is stated once in the "Orientation type-name
@@ -258,7 +258,7 @@ fn ball_joint_definition_is_self_check_clean() {
 ///
 /// Both halves matter and neither is redundant:
 ///   * exactly-one — zero would mean the DOF type never resolved and the
-///     verdict was SKIPPED (the `Type::Error` → `skip_verdict` path), which is
+///     verdict was SKIPPED (`joint_dof_diagnostics`' kind-less-DOF gate), which is
 ///     byte-identically silent to a clean verdict;
 ///   * `declared_phrase` — produced only by `describe_declared` inside
 ///     `check_joint_dof`, code the skip path never reaches, and its rotational
