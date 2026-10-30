@@ -3,7 +3,9 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{BRepKind, GeometryOp, GeometryQuery, OpaqueState, Value, WarmStartable};
+use reify_ir::{
+    BRepKind, GeometryOp, GeometryQuery, OpaqueState, QueryError, Value, WarmStartable,
+};
 use reify_kernel_occt::OcctKernel;
 
 /// The OCCT kernel carries no warm state: `warm_state` is `None` on a fresh
@@ -133,6 +135,85 @@ fn shape_count_reports_resident_shape_table_size() {
         2,
         "executing two primitives leaves exactly two resident shapes"
     );
+}
+
+/// `reset()` part (a): frees every resident native shape and clears every
+/// table derived from them, so a reused kernel carries no build-N state into a
+/// whole-file reload. Each table is observed through the public seam: the
+/// shape table by `shape_count`, the repr table by `repr_of`, extraction
+/// provenance by `OwnerBody`, and each extraction cache by its `extract_*`
+/// call, which would return the stale cached handles if the cache survived.
+#[test]
+fn reset_clears_the_shape_table_and_every_derived_cache() {
+    let mut kernel = OcctKernel::new();
+    let box_id = kernel
+        .execute(&GeometryOp::Box {
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(20.0),
+            size_z: Value::Real(30.0),
+        })
+        .unwrap()
+        .id;
+    let faces = kernel
+        .extract_faces(box_id)
+        .expect("extract_faces on the box should succeed");
+    let edges = kernel
+        .extract_edges(box_id)
+        .expect("extract_edges on the box should succeed");
+    let vertices = kernel
+        .extract_vertices(box_id)
+        .expect("extract_vertices on the box should succeed");
+
+    assert!(
+        kernel.shape_count() > 0,
+        "the box and its sub-shapes are resident before reset"
+    );
+    assert_eq!(kernel.repr_of(box_id), Some(BRepKind::Solid));
+    assert_eq!(kernel.repr_of(faces[0]), Some(BRepKind::Face));
+    assert_eq!(
+        kernel
+            .query(&GeometryQuery::OwnerBody(faces[0]))
+            .expect("the extracted face has an owner before reset"),
+        Value::Int(i64::try_from(box_id.0).unwrap()),
+    );
+    assert!(
+        !faces.is_empty() && !edges.is_empty() && !vertices.is_empty(),
+        "every extraction cache is populated before reset"
+    );
+
+    kernel.reset();
+
+    assert_eq!(
+        kernel.shape_count(),
+        0,
+        "reset must free every resident native shape"
+    );
+    assert_eq!(
+        kernel.repr_of(box_id),
+        None,
+        "reset must clear the box's repr"
+    );
+    assert_eq!(
+        kernel.repr_of(faces[0]),
+        None,
+        "reset must clear the extracted face's repr"
+    );
+    let owner = kernel.query(&GeometryQuery::OwnerBody(faces[0]));
+    assert!(
+        matches!(owner, Err(QueryError::QueryFailed(_))),
+        "reset must clear extraction provenance; got {owner:?}"
+    );
+    for (kind, extracted) in [
+        ("faces", kernel.extract_faces(box_id)),
+        ("edges", kernel.extract_edges(box_id)),
+        ("vertices", kernel.extract_vertices(box_id)),
+    ] {
+        assert!(
+            matches!(extracted, Err(QueryError::InvalidHandle(id)) if id == box_id),
+            "reset must clear the {kind} cache, so extracting from the freed box \
+             reports InvalidHandle; got {extracted:?}"
+        );
+    }
 }
 
 /// `reset()` part (b): `next_id` stays MONOTONIC across a reset — it is

@@ -9,6 +9,9 @@
 //! are a behavioural property, guarded by `op_args_entry_point_parity.rs`, not
 //! a row here. γ2's rows (iv)–(vi) share one homed-uses mechanism: named
 //! identifiers used only inside their home fns, every home seen using one.
+//! Row (vii) bans a `map_err(|_| …)` that discards an error to mint a
+//! `QueryError`, `ExportError` or `TessError` `InvalidHandle`, erasing the
+//! cause the store lookup reported.
 //!
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
@@ -1128,29 +1131,31 @@ fn row_iv_op_history_decode_within_baseline() {
 
 /// The construct is the in-kernel parent enumeration every membership loop
 /// needs: an `extract_*` call on the kernel itself (`self.`, `Self::` or
-/// `OcctKernel::`) outside the extraction facades and the one mapper. A call
-/// through another binding, such as the handle actor's `kernel.extract_faces`,
-/// is not counted: that is the row's known blind spot. The "does not belong
-/// to" message is not counted either, as that would pin wording (γ1,
-/// 70628489ca); `curated_selection_membership.rs` holds the messages equal
-/// across entry points.
+/// `OcctKernel::`), or a `sub_shapes` call on the store (`store.`, which also
+/// matches `self.store.`), outside the extraction facades and the one mapper,
+/// `ShapeStore::indices_of`. A call through another binding, such as the
+/// handle actor's `kernel.extract_faces`, is not counted: that is the row's
+/// known blind spot. The "does not belong to" message is not counted either,
+/// as that would pin wording (γ1, 70628489ca);
+/// `curated_selection_membership.rs` holds the messages equal across entry
+/// points.
 const ROW_V: HomedRow = HomedRow {
     id: "v",
     idents: &[
         "extract_edges",
         "extract_faces",
         "extract_vertices",
-        "extract_subshapes",
+        "sub_shapes",
     ],
-    receivers: Some(&["self.", "Self::", "OcctKernel::"]),
+    receivers: Some(&["self.", "Self::", "OcctKernel::", "store."]),
     homes: &[
         ("lib.rs", "extract_edges"),
         ("lib.rs", "extract_faces"),
         ("lib.rs", "extract_vertices"),
-        ("lib.rs", "map_selection_to_indices"),
+        ("shape_store.rs", "indices_of"),
     ],
     baseline: 0,
-    remedy: "map a curated selection through OcctKernel::map_selection_to_indices",
+    remedy: "map a curated selection through ShapeStore::indices_of",
 };
 
 #[test]
@@ -1164,14 +1169,132 @@ const ROW_VI: HomedRow = HomedRow {
     id: "vi",
     idents: &["get_edges", "get_faces", "get_vertices"],
     receivers: None,
-    homes: &[("lib.rs", "extract_subshapes")],
+    homes: &[("shape_store.rs", "sub_shapes")],
     baseline: 0,
-    remedy: "enumerate sub-shapes through OcctKernel::extract_subshapes",
+    remedy: "enumerate sub-shapes through ShapeStore::sub_shapes",
 };
 
 #[test]
-fn row_vi_topology_getters_only_in_extract_subshapes() {
+fn row_vi_topology_getters_only_in_sub_shapes() {
     assert_homed_row(&ROW_VI);
+}
+
+// ── row (vii): erased-cause InvalidHandle mappings ──────────────────────────
+
+const ROW_VII_BASELINE: usize = 0;
+
+/// The error types whose `InvalidHandle` a discarding `map_err` must not mint.
+const ROW_VII_ERRORS: &[&str] = &["QueryError", "ExportError", "TessError"];
+
+#[derive(Debug, Default)]
+struct RowVii {
+    live: Vec<Finding>,
+    /// `map_err(|_|` heads examined, whatever their body.
+    heads: usize,
+}
+
+fn skip_ws(bytes: &[u8], mut at: usize) -> usize {
+    while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+        at += 1;
+    }
+    at
+}
+
+/// One past the `|_|` of a `map_err(|_|` head, `move` optional, whose `map_err`
+/// token starts at `at`; `None` when the closure binds its argument.
+fn discarding_closure_body(bytes: &[u8], at: usize) -> Option<usize> {
+    let mut i = skip_ws(bytes, at + "map_err".len());
+    if bytes.get(i) != Some(&b'(') {
+        return None;
+    }
+    i = skip_ws(bytes, i + 1);
+    if bytes[i..].starts_with(b"move") && !bytes.get(i + 4).is_some_and(|&b| is_ident_byte(b)) {
+        i = skip_ws(bytes, i + 4);
+    }
+    bytes[i..].starts_with(b"|_|").then_some(i + 3)
+}
+
+/// The segments of the `::`-separated path starting at `at`.
+fn path_segments(text: &str, at: usize) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut segments = Vec::new();
+    let mut i = at;
+    loop {
+        let start = i;
+        while bytes.get(i).is_some_and(|&b| is_ident_byte(b)) {
+            i += 1;
+        }
+        if i == start {
+            break;
+        }
+        segments.push(&text[start..i]);
+        if !text[i..].starts_with("::") {
+            break;
+        }
+        i += 2;
+    }
+    segments
+}
+
+/// Does the closure body at `body`, braced or not, lead with a path ending in
+/// one of [`ROW_VII_ERRORS`]' `InvalidHandle`?
+fn mints_invalid_handle(text: &str, body: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = skip_ws(bytes, body);
+    if bytes.get(i) == Some(&b'{') {
+        i = skip_ws(bytes, i + 1);
+    }
+    matches!(
+        path_segments(text, i).as_slice(),
+        [.., ty, "InvalidHandle"] if ROW_VII_ERRORS.contains(ty)
+    )
+}
+
+/// Scans the whole production text, not statement windows: a brace-bodied
+/// closure splits across windows, and its body would escape a per-window read.
+fn row_vii_scan(label: &str, src: &str) -> RowVii {
+    let text = production_view(src).skeleton_lines().join("\n");
+    let source_lines: Vec<&str> = src.lines().collect();
+    let mut scan = RowVii::default();
+    for at in ident_offsets(&text, "map_err") {
+        let Some(body) = discarding_closure_body(text.as_bytes(), at) else {
+            continue;
+        };
+        scan.heads += 1;
+        if mints_invalid_handle(&text, body) {
+            let line = text[..at].matches('\n').count() + 1;
+            scan.live.push(Finding {
+                file: label.to_owned(),
+                line,
+                text: source_lines[line - 1].trim().to_owned(),
+            });
+        }
+    }
+    scan
+}
+
+#[test]
+fn row_vii_no_discarding_map_err_mints_invalid_handle() {
+    let mut scan = RowVii::default();
+    for (label, src) in production_sources(crate_sources()) {
+        let file_scan = row_vii_scan(&label, &src);
+        scan.live.extend(file_scan.live);
+        scan.heads += file_scan.heads;
+    }
+    assert!(
+        scan.heads > 0,
+        "row (vii): no `map_err(|_|` head found in production code, so the matcher may be \
+         reading nothing"
+    );
+    assert!(
+        within_baseline(scan.live.len(), ROW_VII_BASELINE),
+        "row (vii): {} `map_err(|_| …Error::InvalidHandle…)` mapping(s) > baseline \
+         {ROW_VII_BASELINE}. Instead, propagate ShapeStore::get's error with `?` (reify-ir's \
+         From<GeometryError> impls keep the cause); a new instance needs a visible baseline \
+         edit:\n{}",
+        scan.live.len(),
+        render(&scan.live)
+    );
 }
 
 // ── self-tests: scanner ─────────────────────────────────────────────────────
@@ -1887,8 +2010,36 @@ pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
 
 // ── self-tests: row (vi) ────────────────────────────────────────────────────
 
+/// A store-side enumerator and the lib.rs facades over it, as ε shapes them.
+const STORE_SUB_SHAPES: &str = r#"
+fn sub_shapes(
+    &mut self,
+    parent: GeometryHandleId,
+    kind: SubShapeKind,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let vec = match kind {
+        SubShapeKind::Edge => ffi::ffi::get_edges(shape),
+        SubShapeKind::Face => ffi::ffi::get_faces(shape),
+        SubShapeKind::Vertex => ffi::ffi::get_vertices(shape),
+    }
+    .map_err(q)?;
+}
+"#;
+
+const KERNEL_FACADES: &str = r#"
+pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
+    self.store.sub_shapes(handle, SubShapeKind::Edge)
+}
+pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
+    self.store.sub_shapes(handle, SubShapeKind::Face)
+}
+pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
+    self.store.sub_shapes(handle, SubShapeKind::Vertex)
+}
+"#;
+
 #[test]
-fn row_vi_flags_three_extract_bodies_and_clears_behind_extract_subshapes() {
+fn row_vi_flags_three_extract_bodies_and_clears_behind_sub_shapes() {
     let three_bodies = snippet(
         r#"
 fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
@@ -1911,39 +2062,22 @@ pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
     );
     assert_eq!(
         unseen_homes(&ROW_VI, &scan.homes_seen),
-        vec!["lib.rs::extract_subshapes".to_owned()]
+        vec!["shape_store.rs::sub_shapes".to_owned()]
     );
 
-    let one_body = snippet(
-        r#"
-fn extract_subshapes(
-    &mut self,
-    parent: GeometryHandleId,
-    kind: SubShapeKind,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let vec = match kind {
-        SubShapeKind::Edge => ffi::ffi::get_edges(shape),
-        SubShapeKind::Face => ffi::ffi::get_faces(shape),
-        SubShapeKind::Vertex => ffi::ffi::get_vertices(shape),
-    }
-    .map_err(q)?;
-}
-pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
-    self.extract_subshapes(handle, SubShapeKind::Edge)
-}
-pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
-    self.extract_subshapes(handle, SubShapeKind::Face)
-}
-pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
-    self.extract_subshapes(handle, SubShapeKind::Vertex)
-}
-"#,
-    );
-    let scan = homed_scan(&ROW_VI, "src/lib.rs", one_body);
-    assert!(scan.live.is_empty(), "{scan:?}");
+    let store = homed_scan(&ROW_VI, "src/shape_store.rs", snippet(STORE_SUB_SHAPES));
+    assert!(store.live.is_empty(), "{store:?}");
     assert_eq!(
-        unseen_homes(&ROW_VI, &scan.homes_seen),
+        unseen_homes(&ROW_VI, &store.homes_seen),
         Vec::<String>::new()
+    );
+    let facades = homed_scan(&ROW_VI, "src/lib.rs", snippet(KERNEL_FACADES));
+    assert!(facades.live.is_empty(), "{facades:?}");
+
+    assert_eq!(
+        homed_live_lines(&ROW_VI, "src/lib.rs", snippet(STORE_SUB_SHAPES)),
+        vec![7, 8, 9],
+        "the home is the fn in shape_store.rs only"
     );
 }
 
@@ -1957,12 +2091,16 @@ pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
     let parent_faces = self.extract_faces(target).map_err(fail)?;
     let parent_edges = Self::extract_edges(self, target).map_err(fail)?;
     let parent_vertices = crate::OcctKernel::extract_vertices(self, target).map_err(fail)?;
+    let parent_shells = self.store.sub_shapes(target, SubShapeKind::Face).map_err(fail)?;
+}
+fn draft(store: &mut ShapeStore, target: GeometryHandleId) -> R {
+    let parent_faces = store.sub_shapes(target, SubShapeKind::Face).map_err(fail)?;
 }
 "#,
     );
     assert_eq!(
         homed_live_lines(&ROW_V, "src/lib.rs", kernel_side),
-        vec![2, 3, 4]
+        vec![2, 3, 4, 5, 8]
     );
 
     let handle_forwards = snippet(
@@ -2012,32 +2150,148 @@ pub fn chamfer_asymmetric_edges_with_history(&mut self, shape_id: GeometryHandle
         vec![2, 5, 8, 11, 14]
     );
 
-    let one_mapper = snippet(
-        r#"
-fn map_selection_to_indices(
+    let mapper = homed_scan(
+        &ROW_V,
+        "src/shape_store.rs",
+        snippet(
+            r#"
+fn indices_of(
     &mut self,
     parent: GeometryHandleId,
     selection: Option<&[GeometryHandleId]>,
     kind: SubShapeKind,
     label: &str,
 ) -> Result<Vec<u32>, GeometryError> {
-    let parent_subshapes = self.extract_subshapes(parent, kind).map_err(fail)?;
+    let parent_subshapes = self.sub_shapes(parent, kind).map_err(fail)?;
 }
-pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
-    self.extract_subshapes(handle, SubShapeKind::Edge)
+"#,
+        ),
+    );
+    let callers = format!(
+        "{}{}",
+        snippet(KERNEL_FACADES),
+        r#"pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let face_indices = self.store.indices_of(target, Some(faces), FACE, "draft_faces")?;
 }
-pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
-    self.extract_subshapes(handle, SubShapeKind::Face)
+"#
+    );
+    let kernel = homed_scan(&ROW_V, "src/lib.rs", &callers);
+    assert!(mapper.live.is_empty(), "{mapper:?}");
+    assert!(kernel.live.is_empty(), "{kernel:?}");
+    let seen: Vec<(String, String)> = mapper
+        .homes_seen
+        .into_iter()
+        .chain(kernel.homes_seen)
+        .collect();
+    assert_eq!(unseen_homes(&ROW_V, &seen), Vec::<String>::new());
 }
-pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
-    self.extract_subshapes(handle, SubShapeKind::Vertex)
+
+// ── self-tests: row (vii) ───────────────────────────────────────────────────
+
+fn row_vii_live_lines(src: &str) -> Vec<usize> {
+    row_vii_scan("src/lib.rs", src)
+        .live
+        .iter()
+        .map(|f| f.line)
+        .collect()
 }
-pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
-    let face_indices = self.map_selection_to_indices(target, Some(faces), FACE, "draft_faces")?;
+
+#[test]
+fn row_vii_flags_each_erased_handle_error_on_one_line() {
+    let src = snippet(
+        r#"
+fn q(&self, id: GeometryHandleId) -> Result<f64, QueryError> {
+    let shape = self.store.get(id).map_err(|_| QueryError::InvalidHandle(id))?;
+}
+fn e(&self, id: GeometryHandleId) -> Result<(), ExportError> {
+    let shape = self.store.get(id).map_err(move |_| ExportError::InvalidHandle(id))?;
+}
+fn t(&self, id: GeometryHandleId) -> Result<Mesh, TessError> {
+    let shape = self.store.get(id).map_err(|_| TessError::InvalidHandle(id))?;
 }
 "#,
     );
-    let scan = homed_scan(&ROW_V, "src/lib.rs", one_mapper);
+    assert_eq!(row_vii_live_lines(src), vec![2, 5, 8]);
+}
+
+#[test]
+fn row_vii_flags_the_brace_bodied_form_across_lines() {
+    let src = snippet(
+        r#"
+fn export(&self, h: GeometryHandleId) -> Result<(), ExportError> {
+    let shape = self
+        .store
+        .get(h)
+        .map_err(|_| {
+            ExportError::InvalidHandle(h)
+        })?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![5]);
+}
+
+#[test]
+fn row_vii_flags_a_qualified_error_path() {
+    let src = snippet(
+        r#"
+fn t(&self, h: GeometryHandleId) -> Result<Mesh, reify_ir::TessError> {
+    let shape = self.store.get(h).map_err(|_| reify_ir::TessError::InvalidHandle(h))?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![2]);
+}
+
+#[test]
+fn row_vii_clears_once_rewritten_to_the_question_mark() {
+    let src = snippet(
+        r#"
+fn q(&self, id: GeometryHandleId) -> Result<f64, QueryError> {
+    let shape = self.store.get(id)?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), Vec::<usize>::new());
+}
+
+#[test]
+fn row_vii_does_not_flag_a_kept_cause_another_variant_or_an_overflow_mapping() {
+    let src = snippet(
+        r#"
+fn q(&self, shape: &OcctShape, face_index: &i64) -> Result<f64, QueryError> {
+    let a = ffi::query_volume(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+    let b = ffi::query_area(shape).map_err(|_| QueryError::QueryFailed(area()))?;
+    let idx: u32 = (*face_index).try_into().map_err(|_| {
+        GeometryError::OperationFailed(format!("face index {face_index} overflows u32"))
+    })?;
+}
+"#,
+    );
+    let scan = row_vii_scan("src/lib.rs", src);
     assert!(scan.live.is_empty(), "{scan:?}");
-    assert_eq!(unseen_homes(&ROW_V, &scan.homes_seen), Vec::<String>::new());
+    assert_eq!(scan.heads, 2, "both `|_|` heads are examined");
+}
+
+#[test]
+fn row_vii_ignores_comments_strings_and_test_code() {
+    let src = snippet(
+        r#"
+/// Never `.map_err(|_| QueryError::InvalidHandle(id))`.
+fn q() {
+    // .map_err(|_| QueryError::InvalidHandle(id)) was the old erasure
+    let _hint = ".map_err(|_| TessError::InvalidHandle(id))";
+}
+#[cfg(all(test, has_occt))]
+mod tests {
+    fn t(k: &OcctKernel, id: GeometryHandleId) -> Result<(), QueryError> {
+        k.store.get(id).map_err(|_| QueryError::InvalidHandle(id))?;
+        Ok(())
+    }
+}
+"#,
+    );
+    let scan = row_vii_scan("src/lib.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(scan.heads, 0, "no production `map_err(|_|` head remains");
 }
