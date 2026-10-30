@@ -148,26 +148,20 @@ fn test_command_on_mixed_file_shows_summary() {
         !status.success(),
         "reify test should exit non-zero when some tests fail.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stdout.contains("PASS"),
-        "stdout should contain 'PASS', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("FAIL"),
-        "stdout should contain 'FAIL', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
-    );
-    // Summary line should show counts
-    assert!(
-        stdout.contains("1 passed"),
-        "stdout should contain '1 passed' in summary, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("1 failed"),
-        "stdout should contain '1 failed' in summary, got: {stdout}"
+    for status_line in [
+        "  PASS  TestPass",
+        "  FAIL  TestFail",
+        "  INDETERMINATE  TestIndet",
+    ] {
+        assert!(
+            stdout.lines().any(|line| line == status_line),
+            "stdout should carry the status line {status_line:?}, got: {stdout}\nstderr: {stderr}"
+        );
+    }
+    assert_eq!(
+        stdout.lines().last(),
+        Some("test result: FAIL. 1 passed; 1 failed; 1 indeterminate"),
+        "stdout: {stdout}\nstderr: {stderr}"
     );
 }
 
