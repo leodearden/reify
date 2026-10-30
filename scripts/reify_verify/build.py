@@ -4,6 +4,12 @@ plan_invocation runs every planning stage and returns either the Plan and the
 diagnostics bash prints on its way there, in bash's order, or a refusal: the
 lines bash would print instead and the exit code. It prints nothing itself.
 
+Its startup stages are bash's load-time ones, run after argv is parsed (a D8
+listed divergence): the libs verify.sh sources must exist, the heavy filterset
+must be non-empty, and each timeout knob resolves with its warning. The
+nextest availability probe runs after the scope, selection and narrowing
+stages, under the planning env, as bash's does.
+
 γ1 plans every action whose plan has no test region. A test or all plan that
 runs the Rust families has one (bash's _plan_has_test_passes); it is refused
 until γ2 ports the region, because a plan printed without it would lie.
@@ -22,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from reify_verify import bashcall, childproc, environment, knobs, narrowing, scope, selection
-from reify_verify.bashcall import BashCall, DataFile
+from reify_verify.bashcall import BashCall, BashExport, DataFile
+from reify_verify.environment import NextestAvailable, NextestBroken, ProbeSleepFailed
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
@@ -46,7 +53,7 @@ from reify_verify.plan import (
     StepKind,
     Workspace,
 )
-from reify_verify.policy import ROLE_TABLE, InfraTier, RolePolicy, resolve_prio
+from reify_verify.policy import ROLE_TABLE, InfraTier, Profile, RolePolicy, resolve_prio, test_wall
 from reify_verify.scope import ScopeDecision
 from reify_verify.selection import Selection
 
@@ -55,6 +62,24 @@ CUTOVER = "the S18 cutover (docs/prds/v0_6/verify-structured-plan-and-role-table
 TEST_ACTIONS = (Action.TEST, Action.ALL)
 GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
 RUN_ALL = DataFile("tests/infra/run_all.sh")
+HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTEST_FILTER")
+# The libs verify.sh sources at load, in its order; the first missing one refuses the run.
+LOAD_TIME_LIBS = tuple(
+    f"scripts/{name}"
+    for name in (
+        "occt-scope-lib.sh",
+        "release-scope-lib.sh",
+        "affected-crates-lib.sh",
+        "lib_test_semaphore.sh",
+        "cpu-admit.sh",
+        "lib_proc_reaper.sh",
+        "heavy-test-filter-lib.sh",
+        "lib_git_env_scrub.sh",
+    )
+)
+EMPTY_HEAVY_FILTER = (
+    f"{ERROR}{HEAVY_FILTER.name} empty after sourcing {Path(HEAVY_FILTER.lib).name}"
+)
 
 
 @dataclass(frozen=True)
@@ -72,7 +97,11 @@ class Refused:
 def plan_invocation(
     invocation: Invocation, env: Mapping[str, str], repo_root: Path
 ) -> Planned | Refused:
+    loaded = _load(repo_root, env)
+    if isinstance(loaded, Refused):
+        return loaded
     role_policy = ROLE_TABLE[invocation.role]
+    walls, wall_warnings = Walls.resolve(role_policy, env)
     prio = resolve_prio(
         role_policy,
         invocation.role.value,
@@ -89,6 +118,22 @@ def plan_invocation(
     narrowed, narrowing_warnings = narrowing.narrow(
         decision, invocation.narrow, repo_root, planning
     )
+    diagnostics = (
+        *wall_warnings,
+        *filter(None, (prio.warning,)),
+        *resolved.notices,
+        *step_env.warnings,
+        *gather_warnings,
+        *selection_warnings,
+        *narrowing_warnings,
+    )
+    match environment.nextest_probe(planning, repo_root):
+        case NextestBroken() as broken:
+            return Refused((*diagnostics, broken.error), 1)
+        case ProbeSleepFailed(result=result) as failed:
+            return Refused((*diagnostics, *result.stderr_lines), failed.exit_code)
+        case probe:
+            nextest = isinstance(probe, NextestAvailable)
     families = Families.of(invocation.action)
     vitest, vitest_warnings = VitestArm.of(families, narrowed, planning)
     inputs = PlanInputs(
@@ -99,7 +144,8 @@ def plan_invocation(
         selection=selected,
         role_policy=role_policy,
         cargo_prio=prio.prefix,
-        walls=Walls.resolve(env),
+        walls=walls,
+        heavy_filter=loaded.heavy_filter,
         node_lane=NodeLane.compose(families, decision, vitest),
         infra_suite_active=knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value,
         git_env_scrub_prefix=lambda: _git_env_scrub_prefix(repo_root, planning),
@@ -111,10 +157,9 @@ def plan_invocation(
         profiles=profile_selection.profiles,
         scope=decision.mode,
         include_infra=invocation.include_infra,
-        nextest=_nextest_available(planning, repo_root),
+        nextest=nextest,
         role=invocation.role,
     )
-    steps = build_steps(inputs)
     plan = Plan(
         retry_marker=_retry_marker(inputs.node_lane, TEST_REGION_UNPLANNED, planning, repo_root),
         header=header,
@@ -124,18 +169,27 @@ def plan_invocation(
         narrowing=narrowed,
         heavy_partition=None,
         environment=step_env.lines,
-        steps=steps,
+        steps=build_steps(inputs),
     )
-    diagnostics = (
-        *filter(None, (prio.warning,)),
-        *resolved.notices,
-        *step_env.warnings,
-        *gather_warnings,
-        *selection_warnings,
-        *narrowing_warnings,
-        *vitest_warnings,
-    )
-    return Planned(plan, diagnostics)
+    return Planned(plan, (*diagnostics, *vitest_warnings))
+
+
+@dataclass(frozen=True)
+class Loaded:
+    """What verify.sh reads as it loads: the heavy filterset its libs export."""
+
+    heavy_filter: str
+
+
+def _load(repo_root: Path, env: Mapping[str, str]) -> Loaded | Refused:
+    """bash's load-time checks: every sourced lib exists, and the heavy filterset is non-empty."""
+    for lib in LOAD_TIME_LIBS:
+        if not os.path.isfile(repo_root / lib):
+            return Refused((f"{ERROR}{lib} not found next to verify.sh",), 1)
+    heavy_filter = bashcall.read_export(HEAVY_FILTER, repo_root, env)
+    if not heavy_filter:
+        return Refused((EMPTY_HEAVY_FILTER,), 1)
+    return Loaded(heavy_filter)
 
 
 def _has_test_region(action: Action, decision: ScopeDecision) -> bool:
@@ -151,10 +205,6 @@ def _test_region_refusal(action: Action) -> Refused:
         ),
         os.EX_UNAVAILABLE,
     )
-
-
-def _nextest_available(env: Mapping[str, str], repo_root: Path) -> bool:
-    return childproc.run(["cargo", "nextest", "--version"], repo_root, env).returncode == 0
 
 
 @dataclass(frozen=True)
@@ -240,17 +290,32 @@ class Families:
 
 @dataclass(frozen=True)
 class Walls:
-    check: str
-    clippy: str
+    """The outer `timeout` of each pass, one per timeout knob."""
+
+    test: str
+    test_release: str
     prebuild: str
+    clippy: str
+    gui_feature_test: str
+    check: str
 
     @classmethod
-    def resolve(cls, env: Mapping[str, str]) -> "Walls":
-        return cls(
-            check=knobs.resolve(knobs.CHECK_TIMEOUT, env).value,
-            clippy=knobs.resolve(knobs.CLIPPY_TIMEOUT, env).value,
-            prebuild=knobs.resolve(knobs.PREBUILD_TIMEOUT, env).value,
-        )
+    def resolve(cls, role_policy: RolePolicy, env: Mapping[str, str]) -> tuple["Walls", tuple[str, ...]]:
+        """The walls, and one warning per malformed knob in bash's resolution order.
+
+        The release wall takes the role's default, so offline warns once
+        where bash warns twice (a D8 listed divergence).
+        """
+        resolutions = {
+            "test": test_wall(role_policy, Profile.DEBUG, env),
+            "test_release": test_wall(role_policy, Profile.RELEASE, env),
+            "prebuild": knobs.resolve(knobs.PREBUILD_TIMEOUT, env),
+            "clippy": knobs.resolve(knobs.CLIPPY_TIMEOUT, env),
+            "gui_feature_test": knobs.resolve(knobs.GUI_FEATURE_TEST_TIMEOUT, env),
+            "check": knobs.resolve(knobs.CHECK_TIMEOUT, env),
+        }
+        walls = cls(**{name: resolution.value for name, resolution in resolutions.items()})
+        return walls, tuple(r.warning for r in resolutions.values() if r.warning)
 
 
 GUI_VITEST_RUN = "scripts/gui-vitest-run.sh"
@@ -348,6 +413,7 @@ class PlanInputs:
     role_policy: RolePolicy
     cargo_prio: str
     walls: Walls
+    heavy_filter: str
     node_lane: NodeLane | None
     infra_suite_active: bool
     git_env_scrub_prefix: Callable[[], str]

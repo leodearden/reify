@@ -16,19 +16,23 @@ NOT_EXECUTABLE = 126
 
 @dataclass(frozen=True)
 class CallResult:
-    """A finished child process: its exit status, its stdout, and its stderr as lines."""
+    """A finished child process: its exit status, its stdout and its stderr."""
 
     returncode: int
     stdout: str
-    stderr_lines: tuple[str, ...]
+    stderr: str
 
     @classmethod
     def of(cls, proc: subprocess.CompletedProcess) -> "CallResult":
         return cls(
             proc.returncode,
             proc.stdout.decode("utf-8", "surrogateescape"),
-            tuple(proc.stderr.decode("utf-8", "surrogateescape").splitlines()),
+            proc.stderr.decode("utf-8", "surrogateescape"),
         )
+
+    @property
+    def stderr_lines(self) -> tuple[str, ...]:
+        return tuple(self.stderr.splitlines())
 
     @property
     def lines(self) -> tuple[str, ...]:
@@ -52,7 +56,7 @@ def run(argv: Sequence[str], cwd: Path | None, env: Mapping[str, str]) -> CallRe
             list(argv), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL, capture_output=True
         )
     except FileNotFoundError as err:
-        return CallResult(NOT_FOUND, "", (f"cannot run {argv[0]}: {err}",))
+        return CallResult(NOT_FOUND, "", f"cannot run {argv[0]}: {err}\n")
     except OSError as err:
-        return CallResult(NOT_EXECUTABLE, "", (f"cannot run {argv[0]}: {err}",))
+        return CallResult(NOT_EXECUTABLE, "", f"cannot run {argv[0]}: {err}\n")
     return CallResult.of(proc)

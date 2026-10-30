@@ -1,10 +1,11 @@
 """bashcall — the gate's seams: the bash library functions and data files verify reads (PRD D1, D15).
 
-Each seam is a typed record: a BashCall for a library function, a DataFile
-for a data file, a SourcedFile for a shell file sourced for what it exports.
-Each module declares the constants it uses, so a later --print-gates (PRD
-D15) can collect them from the modules. run and source_delta each fork ONE
-`bash -c` per call. Paths, the function name and its arguments travel as argv
+Each seam is a typed record: a BashCall for a library function, a BashExport
+for a variable a library exports, a DataFile for a data file, a SourcedFile
+for a shell file sourced for what it exports. Each module declares the
+constants it uses, so a later --print-gates (PRD D15) can collect them from
+the modules. run, read_export and source_delta each fork ONE `bash -c` per
+call. Paths, the function name and its arguments travel as argv
 and are never interpolated into the script text.
 
 A data file that cannot be read raises DataFileUnreadable whatever the cause.
@@ -20,6 +21,7 @@ from reify_verify import childproc
 from reify_verify.childproc import CallResult
 
 _SOURCE_AND_CALL = 'source "$1" || exit; shift; "$@"'
+_SOURCE_AND_PRINT = 'source "$1" || exit; printenv -- "$2" || exit 0'
 _ENV_AROUND_SOURCE = 'env -0; printf "\\0"; . "$1" || exit; env -0; exit "$?"'
 _DROPPED_ENV = ("BASH_ENV", "ENV")
 
@@ -33,6 +35,17 @@ class BashCall:
 
     def __str__(self) -> str:
         return f"{self.lib}::{self.function}"
+
+
+@dataclass(frozen=True)
+class BashExport:
+    """A variable a bash library exports when sourced, the library path relative to the repo root."""
+
+    lib: str
+    name: str
+
+    def __str__(self) -> str:
+        return f"{self.lib}::${self.name}"
 
 
 @dataclass(frozen=True)
@@ -90,7 +103,7 @@ class DataFileUnreadable(Exception):
 
 
 class BashCallError(Exception):
-    def __init__(self, call: "BashCall | SourcedFile", result: CallResult):
+    def __init__(self, call: "BashCall | BashExport | SourcedFile", result: CallResult):
         super().__init__(result.exit_summary(str(call)))
         self.call = call
         self.result = result
@@ -111,6 +124,22 @@ def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, 
     if result.returncode != 0:
         raise BashCallError(call, result)
     return result
+
+
+def read_export(export: BashExport, repo_root: Path, env: Mapping[str, str]) -> str:
+    """The value `export.lib` exports as `export.name` when sourced under `env`, "" when it exports none.
+
+    bash's `${NAME:-}` reads an unset variable as empty, so this does too. A
+    failed `source` raises BashCallError.
+    """
+    result = childproc.run(
+        ["bash", "-c", _SOURCE_AND_PRINT, "bashcall", str(repo_root / export.lib), export.name],
+        repo_root,
+        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+    )
+    if result.returncode != 0:
+        raise BashCallError(export, result)
+    return result.stdout.removesuffix("\n")
 
 
 def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> EnvDelta:

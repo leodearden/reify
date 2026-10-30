@@ -13,10 +13,14 @@ returns a frozen StepEnvironment holding two envs, never touching os.environ:
 
 The plan loader path comes from lib_native_ld_path.sh's cargo-target class;
 no loader directory is named here (PRD D9, D15).
+
+nextest_probe asks, under the planning env, whether cargo-nextest runs, as
+bash's availability probe does before it plans.
 """
 
 import os
 import re
+import shutil
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,8 +28,9 @@ from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
 
-from reify_verify import bashcall, knobs
+from reify_verify import bashcall, childproc, knobs
 from reify_verify.bashcall import BashCall, SourcedFile
+from reify_verify.childproc import CallResult
 from reify_verify.policy import Role, RolePolicy, jobserver_fifo
 
 CARGO_ENV = SourcedFile(".cargo/env")
@@ -35,6 +40,9 @@ BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 PROC = Path("/proc")
 UNKNOWN_BOOT = "-"
 STEP_DROPPED_ENV = ("BASH_ENV", "ENV")
+NEXTEST_PROBE = ("cargo", "nextest", "--version")
+NEXTEST_PROBE_RETRIES = 3
+SIGNALLED = 128
 _DIGITS = re.compile(r"[0-9]+", re.ASCII)
 _IFS_WHITESPACE = " \t\n"
 
@@ -209,3 +217,77 @@ def _host_boot_id() -> str:
 def _plan_loader_path(ambient: str, repo_root: Path, planning: Mapping[str, str]) -> str:
     dirs = bashcall.run(LOADER_DIRS, (LOADER_CLASS,), repo_root, planning).lines
     return ":".join((*dirs, *((ambient,) if ambient else ())))
+
+
+@dataclass(frozen=True)
+class NextestAvailable:
+    pass
+
+
+@dataclass(frozen=True)
+class NextestAbsent:
+    """cargo nextest fails and no cargo-nextest is on PATH: the plan falls back to cargo test."""
+
+
+@dataclass(frozen=True)
+class NextestBroken:
+    """cargo-nextest is on PATH, yet every retry of the probe failed; the last one's status and stderr."""
+
+    attempts: int
+    returncode: int
+    stderr: str
+
+    @property
+    def error(self) -> str:
+        return (
+            "verify.sh: ERROR — cargo-nextest is present on PATH but the availability probe "
+            f"(`{' '.join(NEXTEST_PROBE)}`) failed persistently across "
+            f"{self.attempts}/{NEXTEST_PROBE_RETRIES} retries ({self.attempts + 1} probes total, "
+            f"including the initial attempt; last retry rc={self.returncode}) — refusing to "
+            "silently fall back to the cargo-test plan (no -E support) while cargo-nextest is "
+            f"installed. Last probe stderr: {self.stderr}"
+        )
+
+
+@dataclass(frozen=True)
+class ProbeSleepFailed:
+    """The pause between two retries failed, as `sleep` fails on a value it cannot read."""
+
+    result: CallResult
+
+    @property
+    def exit_code(self) -> int:
+        return _shell_status(self.result.returncode)
+
+
+NextestProbe = NextestAvailable | NextestAbsent | NextestBroken | ProbeSleepFailed
+
+
+def nextest_probe(env: Mapping[str, str], repo_root: Path) -> NextestProbe:
+    """Whether cargo nextest runs under `env` (the planning env).
+
+    A failed probe is ambiguous: nextest may be absent, or a fork may have
+    failed under host pressure. A cargo-nextest binary on PATH says which.
+    Present, the probe is retried up to NEXTEST_PROBE_RETRIES times, with
+    coreutils `sleep` given REIFY_NEXTEST_PROBE_RETRY_SLEEP between retries.
+    A retry's stderr is kept without its trailing newlines, as $(…) keeps it.
+    """
+    if childproc.run(NEXTEST_PROBE, repo_root, env).returncode == 0:
+        return NextestAvailable()
+    if shutil.which("cargo-nextest", path=env.get("PATH", os.defpath)) is None:
+        return NextestAbsent()
+    pause = knobs.resolve(knobs.NEXTEST_PROBE_RETRY_SLEEP, env).value
+    for attempt in range(1, NEXTEST_PROBE_RETRIES + 1):
+        retry = childproc.run(NEXTEST_PROBE, repo_root, env)
+        if retry.returncode == 0:
+            return NextestAvailable()
+        if attempt < NEXTEST_PROBE_RETRIES:
+            slept = childproc.run(("sleep", pause), repo_root, env)
+            if slept.returncode != 0:
+                return ProbeSleepFailed(slept)
+    return NextestBroken(NEXTEST_PROBE_RETRIES, _shell_status(retry.returncode), retry.stderr.rstrip("\n"))
+
+
+def _shell_status(returncode: int) -> int:
+    """A child's exit status as $? reports it: 128 + N for death by signal N."""
+    return returncode if returncode >= 0 else SIGNALLED - returncode
