@@ -26,14 +26,16 @@
 # beside a verify without being coupled to it, so a window that starts early or
 # outlives the run must not fail whatever launched it.
 #
-# The summary also carries own_uid_links= and resolved_links=, each summed over
-# the window; a stderr WARNING fires when resolved_links is under half of
-# own_uid_links — the reading then covers only the caller's visible tree.
+# The summary also carries own_uid_links= (candidates running as the caller's
+# effective uid) and resolved_links= (how many of THOSE the caller could read),
+# each summed over the window.  A stderr WARNING fires when resolved_links is
+# under half of own_uid_links: the caller then lacks ptrace read reach, and the
+# reading covers only its visible process tree.
 #
 # ENVIRONMENT — two injection seams; the contract guard drives both.
 #   REIFY_SAMPLER_PROC_ROOT  the /proc to read (default /proc).
 #   REIFY_SAMPLER_PIDS_CMD   OVERRIDE for candidate discovery.  Unset or empty
-#                            — the default — enumerates <PROC_ROOT>/*/exe.
+#                            — the default — enumerates <PROC_ROOT>/<pid>/exe.
 #
 # ---------------------------------------------------------------------------
 # WHY THE ARGV MATCH ALONE IS WRONG (defect (a), measured).
@@ -141,17 +143,12 @@
 # ---------------------------------------------------------------------------
 # WHY own_uid_links / resolved_links EXIST (defect (e), measured).
 #
-# readlink /proc/<pid>/exe needs ptrace READ access to <pid>.  Under Landlock
-# that access is denied for every process outside the caller's domain, same uid
-# included, so a sandboxed caller confirms only its own descendants and reports
-# peak=0 nonzero_samples=0 over a host busy running tests: a THIRD silent zero,
-# textually the defect-(b) INCONCLUSIVE window.  A stat of /proc/<pid> is not
-# ptrace-gated, so the caller can still COUNT its own-uid candidates while blind
-# to their exe — own_uid_links is that count, resolved_links the operands the
-# confirmation resolved.  The denominator is own-uid on purpose: DAC denies every
-# root daemon and kernel thread to any healthy non-root caller, so a ratio over
-# all candidates would sit next to normal operation.  Under half resolved WARNs.
-# The measurements live in
+# A caller without ptrace read reach (e.g. one inside a Landlock domain) can
+# confirm only its own process tree, so over a host busy running tests it
+# reports peak=0 nonzero_samples=0: a THIRD silent zero, textually the
+# defect-(b) INCONCLUSIVE window.  The two fields and their WARNING (USAGE
+# above) make it visible.  The mechanism, the measurements and the reason the
+# denominator is own-uid live in
 # docs/notes/nextest-global-pool-concurrency-observation.md -> "Ptrace blindness
 # (detected, task #7500)", their single owner.
 # ---------------------------------------------------------------------------
@@ -172,7 +169,7 @@ while [ "$#" -gt 0 ]; do
         (--deps-glob)  [ "$#" -ge 2 ] || _die "--deps-glob needs a value"; DEPS_GLOB="$2"; shift 2 ;;
         (--deps-glob=*) DEPS_GLOB="${1#*=}"; shift ;;
         (-h|--help)
-            sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         (*) _die "unknown argument '$1'" ;;
     esac
@@ -241,10 +238,10 @@ HOST_NPROC="$(_host_nproc)"
 #
 # DEFAULT: read PROC_ROOT directly.  A bash glob is readdir only — no fork, no
 # argv walk — so discovery and the confirmation that follows it are one pass over
-# one snapshot, and the glob already holds exactly the paths needed.  Non-numeric
-# entries (self, thread-self, ...) come through harmlessly: their exe targets
-# resolve to this script's own helper processes, which cannot match a
-# */target/*/deps/* pattern.
+# one snapshot, and the glob already holds exactly the paths needed.  It takes
+# numeric entries only: the others (self, thread-self, ...) alias this script's
+# own helper processes, which are never test binaries and would inflate both
+# reach-audit counts.
 #
 # OVERRIDE: REIFY_SAMPLER_PIDS_CMD still speaks PIDS — the natural thing for a
 # caller to produce — so its lines are mapped to links here, and the digits-only
@@ -266,24 +263,48 @@ EOF
     fi
     local -a exes=()
     shopt -s nullglob
-    exes=( "$PROC_ROOT"/*/exe )
+    exes=( "$PROC_ROOT"/[0-9]*/exe )
     shopt -u nullglob
     [ "${#exes[@]}" -gt 0 ] || return 0
     printf '%s\n' "${exes[@]}"
 }
 
-# _own_uid_link_count <link>... — how many of the given <root>/<pid>/exe links
-# belong to a process running as this caller's effective uid.  It tests the
-# <root>/<pid> DIRECTORY, never the exe link: `[ -O` follows symlinks, and
-# following /proc/<pid>/exe is ptrace-gated exactly like reading it, so it would
-# go blind together with the confirmation it exists to audit.  A stat of the
-# directory is not ptrace-gated.  Builtin test only, no fork per link.
-_own_uid_link_count() {
-    local link n=0
+# _resolve_links <link>... — ONE batched readlink over every operand (see
+# _sample): one line per resolvable operand, the unresolvable ones silently
+# omitted.  Always succeeds.
+_resolve_links() {
+    printf '%s\0' "$@" | xargs -0 readlink 2>/dev/null || true
+}
+
+# _reach_audit <link>... — prints `<own_uid> <resolved>`: how many of the given
+# <root>/<pid>/exe links belong to a process running as this caller's effective
+# uid, and how many of THOSE the caller can resolve.  Both counts range over the
+# same own-uid operands, so a caller that can also read other uids' links (root,
+# CAP_SYS_PTRACE) cannot mask blindness among its own.
+#
+# Ownership tests the <root>/<pid> DIRECTORY, never the exe link: `[ -O` follows
+# symlinks, and following /proc/<pid>/exe is ptrace-gated exactly like reading
+# it, so it would go blind together with the confirmation it exists to audit.  A
+# stat of the directory is not ptrace-gated.  Builtin test only, no fork per link.
+#
+# It runs AFTER the confirmation, with a readlink of its own, because the
+# ownership stats cost about as much as the confirmation itself: run first, they
+# would widen the discovery->confirmation gap that peak depends on (defect (d)).
+_reach_audit() {
+    local link exe r=0
+    local -a own=()
     for link in "$@"; do
-        [ -O "${link%/exe}" ] && n=$((n + 1))
+        if [ -O "${link%/exe}" ]; then own+=( "$link" ); fi
     done
-    printf '%s' "$n"
+    if [ "${#own[@]}" -gt 0 ]; then
+        while IFS= read -r exe; do
+            [ -n "$exe" ] || continue
+            r=$((r + 1))
+        done <<EOF
+$(_resolve_links "${own[@]}")
+EOF
+    fi
+    printf '%s %s' "${#own[@]}" "$r"
 }
 
 # _lacks_ptrace_reach <own_uid_links> <resolved_links> — true iff the caller
@@ -296,17 +317,15 @@ _lacks_ptrace_reach() {
 
 # ---------------------------------------------------------------------------
 # _sample — one sample.  ONE batched confirmation, never one per pid.  Prints
-# ONE line of three integers: `<confirmed> <resolved> <own_uid>` — test binaries
-# confirmed, operands the confirmation resolved at all, and candidates owned by
-# this caller's uid (the reach audit, counted AFTER the confirmation so it adds
-# nothing to the discovery->confirmation gap).
+# ONE line of three integers: `<confirmed> <own_uid> <resolved>` — test binaries
+# confirmed, then _reach_audit's two counts.
 #
 # Candidate discovery may legitimately yield nothing (a host with no test
 # binaries), and any candidate may exit before it is confirmed, leaving no
 # <root>/<pid> — both are normal, not errors, so every step is guarded and the
 # function always succeeds with its three counts on stdout.  An EMPTY
 # confirmation is not a reason to stop early: total blindness is exactly the
-# case the own-uid count must still report.
+# case the reach audit must still report.
 #
 # The confirmation is a SINGLE multi-operand `readlink`: it prints one line per
 # resolvable operand, silently omits the unresolvable ones, and exits 1 if any
@@ -319,7 +338,7 @@ _lacks_ptrace_reach() {
 # that the confirmation never ran.
 # ---------------------------------------------------------------------------
 _sample() {
-    local candidates link exe glob resolved own n=0 r=0 matched
+    local candidates link exe glob resolved n=0 matched
     local -a links=()
     candidates="$(_candidate_exe_links)"
     [ -n "$candidates" ] || { printf '0 0 0\n'; return 0; }
@@ -330,11 +349,9 @@ _sample() {
 $candidates
 EOF
     [ "${#links[@]}" -gt 0 ] || { printf '0 0 0\n'; return 0; }
-    resolved="$(printf '%s\0' "${links[@]}" | xargs -0 readlink 2>/dev/null || true)"
-    own="$(_own_uid_link_count "${links[@]}")"
+    resolved="$(_resolve_links "${links[@]}")"
     while IFS= read -r exe; do
         [ -n "$exe" ] || continue
-        r=$((r + 1))
         matched=0
         # Iterate the pre-split ARRAY, never the raw string (defect (c)).  The
         # `case` pattern stays UNQUOTED on purpose: case patterns undergo neither
@@ -348,7 +365,7 @@ EOF
     done <<EOF
 $resolved
 EOF
-    printf '%s %s %s\n' "$n" "$r" "$own"
+    printf '%s %s\n' "$n" "$(_reach_audit "${links[@]}")"
 }
 
 _started="$SECONDS"
@@ -361,7 +378,7 @@ resolved_total=0
 # Sample FIRST, then test the deadline: --duration 0 must still yield exactly one
 # observation rather than an empty window.
 while :; do
-    read -r c r o <<<"$(_sample)"
+    read -r c o r <<<"$(_sample)"
     samples=$((samples + 1))
     own_uid_total=$((own_uid_total + o))
     resolved_total=$((resolved_total + r))

@@ -364,25 +364,23 @@ candidates the caller's uid owns, the ratio is 549/560 = 98% healthy against
 **Fix.**  The summary line gains two appended fields, both summed over the
 window:
 
-* `own_uid_links=`: candidates whose `/proc/<pid>` directory the caller's
+* `own_uid_links=`: pid candidates whose `/proc/<pid>` directory the caller's
   effective uid owns, tested with the builtin `[ -O ]`.  That test is a stat of
   the directory, never of the exe link.
-* `resolved_links=`: operands that the batched `readlink` resolved.
+* `resolved_links=`: how many of those own-uid candidates a batched `readlink`
+  resolved.  Both fields range over the same operands, so a caller that can also
+  read other uids' links (root, `CAP_SYS_PTRACE`) cannot mask blindness among
+  its own, and `resolved_links` never exceeds `own_uid_links`.
 
 When `own_uid_links > 0` and `2 × resolved_links < own_uid_links`, a stderr
 WARNING says the reading covers only the caller's visible tree.  In that case a
 zero is not evidence of an empty host, and a non-zero peak is a floor.  The exit
 status stays 0, and this WARNING is independent of the `nonzero_samples=0` one.
 
-Pinned by asserts in `tests/infra/test_test_binary_concurrency_sampler.sh`:
-
-* C1, C1b, C2 and C3 are hermetic.  C1 is partial blindness, C1b total
-  blindness, C2 a few own-uid denials that must not warn, and C3 checks that the
-  grammar change is additive.
-* C4a runs against the real `/proc` and checks that other-uid DAC denials stay
-  out of the denominator.
-* C4b runs under real Landlock via the vendored helper: 8 spawned processes
-  resolve 8/8 directly and 0/8 inside a nested domain.
+Pinned in `tests/infra/test_test_binary_concurrency_sampler.sh`: hermetically
+for the arithmetic, and live for the two kernel premises above (DAC's denials of
+other uids stay out of the denominator; under real Landlock a stat still counts
+what `readlink` cannot read).
 
 Accepted limitation: for a uid-0 caller, root-owned kernel threads enter the
 denominator and never resolve.  A near-idle host could therefore false-warn
@@ -404,6 +402,10 @@ INFO: nextest test-binary concurrency: peak=0 samples=1 nonzero_samples=0 \
       interval=0s duration=0s deps_glob=*/target/*/deps/* host_nproc=32 \
       own_uid_links=699 resolved_links=4
 ```
+
+Both were taken before `resolved_links` was restricted to own-uid operands and
+before discovery stopped taking the `self`/`thread-self` entries, so they are
+not byte-comparable with current readings.
 
 Both runs emitted the blindness WARNING alongside the `nonzero_samples=0` one.
 Their `peak=0` says nothing about whether test binaries were running elsewhere
