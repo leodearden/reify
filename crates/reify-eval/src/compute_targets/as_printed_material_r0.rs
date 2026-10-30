@@ -63,8 +63,8 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// degrades honestly to a `Value::Undef`-lambda field (every sample returns
 /// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`; a
 /// mistyped `walls`, `top_bottom_layers` or `build_direction`, or a
-/// non-finite `layer_height` or bead-derived `line_width`, degrades the same
-/// way. A present numeric FDMProcess field the reader refuses — a number
+/// non-finite `layer_height`, bead-derived `line_width` or `build_direction`
+/// component, degrades the same way. A present numeric FDMProcess field the reader refuses — a number
 /// of the wrong dimension or a value that is not a number at all — is
 /// [`ComputeOutcome::Failed`] with that field's `DimensionedArgRejected` Error,
 /// exactly as on the R-fast rung.
@@ -130,7 +130,8 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
         return Ok(None);
     };
 
-    // The build axis is the frame z-axis / weakest axis; degenerate → +Z.
+    // The build axis is the frame z-axis / weakest axis; finite but
+    // zero-length → +Z.
     let build_unit = unit3(build_direction).unwrap_or([0.0, 0.0, 1.0]);
 
     let opts = R0Options {

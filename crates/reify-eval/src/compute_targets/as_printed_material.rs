@@ -57,10 +57,10 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 ///
 /// Returns [`ComputeOutcome::Completed`] with a
 /// `Value::Field { source: AsPrintedZones }`. When the inputs are incomplete,
-/// the body realization is unavailable, or `layer_height` / `line_width` is
-/// non-finite, it degrades honestly to a field whose lambda is
-/// [`Value::Undef`] (every sample returns `Undef`) rather than panicking —
-/// matching the Undef-for-Field convention of the stdlib surface.
+/// the body realization is unavailable, or `layer_height` / `line_width` / a
+/// `build_direction` component is non-finite, it degrades honestly to a field
+/// whose lambda is [`Value::Undef`] (every sample returns `Undef`) rather than
+/// panicking — matching the Undef-for-Field convention of the stdlib surface.
 /// A present numeric field the reader refuses — a number of the wrong dimension
 /// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
 /// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule).
@@ -138,7 +138,7 @@ fn build_as_printed_field(
 
     // The build axis is the (weak) axial direction; align the material frame's
     // z-axis with it so build-Z is the weakest axis (PRD C4 invariant). A
-    // degenerate build_direction falls back to +Z.
+    // finite but zero-length build_direction falls back to +Z.
     let build_unit = unit3(build_direction).unwrap_or([0.0, 0.0, 1.0]);
     let cos_threshold = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
     let frame = material_frame(build_unit);
@@ -285,15 +285,18 @@ pub(crate) fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> 
     }
 }
 
-/// Read a 3-component `Vector` / `Point` / `Direction` field.
+/// Read a 3-component `Vector` / `Point` / `Direction` field; `None` if any
+/// component is non-numeric or non-finite, so a NaN / ±Inf `build_direction`
+/// degrades the rung instead of normalising to the degenerate +Z fallback.
 pub(crate) fn field_vec3(data: &StructureInstanceData, key: &str) -> Option<[f64; 3]> {
-    match data.fields.get(key) {
+    let v = match data.fields.get(key) {
         Some(Value::Vector(c) | Value::Point(c)) if c.len() == 3 => {
-            Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
+            [c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?]
         }
-        Some(Value::Direction { x, y, z }) => Some([*x, *y, *z]),
-        _ => None,
-    }
+        Some(Value::Direction { x, y, z }) => [*x, *y, *z],
+        _ => return None,
+    };
+    v.iter().all(|c| c.is_finite()).then_some(v)
 }
 
 /// Map the FDMProcess `infill_pattern` enum to the β [`InfillPattern`].

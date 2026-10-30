@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use crate::common::as_printed::{
     as_printed_options, assert_degraded_field, box_mesh, fdm_process, length, r0_toolpath_gcode,
-    structure, with_field,
+    structure, vec3_dimensionless, with_field,
 };
 use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
@@ -341,6 +341,21 @@ fn r0_trampoline_degrades_on_a_non_finite_layer_height() {
     assert_degraded_field(&run_r0_inputs(&[
         Value::String(r0_toolpath_gcode().to_string()),
         with_field(fdm_process(), "layer_height", length(f64::NAN)),
+        as_printed_options(),
+    ]));
+}
+
+/// task 6940: a non-finite `build_direction` component names no build axis, so
+/// the field degrades rather than silently classifying against +Z.
+#[test]
+fn r0_trampoline_degrades_on_a_non_finite_build_direction() {
+    assert_degraded_field(&run_r0_inputs(&[
+        Value::String(r0_toolpath_gcode().to_string()),
+        with_field(
+            fdm_process(),
+            "build_direction",
+            vec3_dimensionless([0.0, 0.0, f64::INFINITY]),
+        ),
         as_printed_options(),
     ]));
 }

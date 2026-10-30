@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use crate::common::as_printed::{
     BOX_MAX, BOX_MIN, as_printed_options, assert_degraded_field, box_mesh, coupon_default,
-    fdm_process, length, scalar, with_field,
+    fdm_process, length, scalar, vec3_dimensionless, with_field,
 };
 use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
@@ -273,6 +273,48 @@ fn as_printed_trampoline_degrades_on_a_non_finite_layer_height() {
         process,
         as_printed_options(),
     )));
+}
+
+/// task 6940: a non-finite `build_direction` component names no build axis, so
+/// the field degrades rather than silently classifying against +Z.
+#[test]
+fn as_printed_trampoline_degrades_on_a_non_finite_build_direction() {
+    let process = with_field(
+        fdm_process(),
+        "build_direction",
+        vec3_dimensionless([0.0, f64::NAN, 1.0]),
+    );
+    assert_degraded_field(&completed_result(run_r_fast_with(
+        process,
+        as_printed_options(),
+    )));
+}
+
+/// task 6940: a finite but zero-length `build_direction` is the deliberate
+/// degenerate case — it falls back to +Z instead of degrading.
+#[test]
+fn as_printed_trampoline_falls_back_to_plus_z_for_a_zero_build_direction() {
+    let process = with_field(
+        fdm_process(),
+        "build_direction",
+        vec3_dimensionless([0.0, 0.0, 0.0]),
+    );
+    let Value::Field { lambda, .. } =
+        completed_result(run_r_fast_with(process, as_printed_options()))
+    else {
+        panic!("expected a Field");
+    };
+    let Value::List(items) = lambda.as_ref() else {
+        panic!("a zero build_direction must not degrade, got {lambda:?}");
+    };
+    let Value::List(p) = &items[2] else {
+        panic!("expected the params list at items[2], got {:?}", items[2]);
+    };
+    assert_eq!(
+        p[4..],
+        [Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)],
+        "zero build_direction must fall back to +Z"
+    );
 }
 
 fn coupon_with_ex(ex: Value) -> Value {
