@@ -879,3 +879,10 @@ gui/src/__tests__/reifyGrammarCorpus.expected-clean.json    tests/infra/test_ver
 scripts/occt-touching-crates.txt    tests/infra/test_verify_scope_record.sh
 tests/infra/harness-layout-lib.sh    tests/infra/test_verify_narrowing_selection.sh
 scripts/verify-pipeline-infra-tests.txt    tests/infra/test_verify_narrowing_selection.sh
+
+# S18 γ1 (#9098; PRD verify-structured-plan-and-role-table D13, D14): B1, the plan-parity members.
+tests/infra/test_verify_plan_parity.py    tests/infra/test_verify_plan_parity.sh
+tests/infra/plan_parity_harness.py    tests/infra/test_verify_plan_parity.sh
+tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity.sh
+tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity.sh
+tests/infra/verify_ledger_env.py    tests/infra/test_verify_plan_parity.sh
