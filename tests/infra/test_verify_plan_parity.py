@@ -41,7 +41,9 @@ from plan_parity_harness import (  # noqa: E402
 )
 
 PLAN_ACTIONS = ("lint", "typecheck")
+TEST_ACTIONS = ("test", "all")
 ROLES = (None, "merge", "offline", "background")
+PROFILE_ARGS = ((), ("--profile", "debug"), ("--profile", "release"), ("--profile", "both"))
 COMMANDS_MARKER = "# --- commands ("
 RENDER_MODULE = "scripts/reify_verify/render.py"
 SELF_TEST_PLAN = Scenario(
@@ -56,6 +58,19 @@ RUST_CHANGE = "crates/reify-doc/src/lib.rs"
 GUI_CHANGE = "gui/src/editor/foo.ts"
 DOCS_CHANGE = "docs/note.md"
 EMPTY_PLAN = "# (no commands — nothing to verify for this action/scope)"
+INFRA_MAPPED_DOCS = "docs/notes/verify-pipeline-knobs.md"
+POLICY_LEAF = "( for _vt in tests/infra/test_verify_policy.sh; do "
+LEAF_TAIL = ' -u REIFY_VERIFY_EVENT_LOG bash "$_vt" || exit $?; done )'
+LD_SCRUB = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
+PLAIN_GUI_PROJECT = f"{LD_SCRUB}if test -d gui; then (cd gui && "
+FULL_GUI_SUITE = "../scripts/gui-vitest-run.sh'); fi"
+VALID_GUI_SPECS = "src/__tests__/a.test.ts src/__tests__/b.test.ts"
+GUI_SPECS_REJECTED = "REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -]"
+TEST_REGION_BEGIN = (
+    "# >>> test-run semaphore: ACQUIRE held slot — clock-stop region BEGINS "
+    "(TEST-EXECUTION gated, held in verify.sh)"
+)
+EX_UNAVAILABLE = 69
 # The changed paths tests/infra/test_verify_scope.sh plans one at a time with
 # `plan_for staged` (S22 B14); each is written as 'x\n' and staged, as plan_for does.
 CHANGED_PATH_FIXTURES = (
@@ -221,23 +236,34 @@ class TestPlanParityEnvironment(InParityClone):
         self.check("host default FIFO", {TASK_FIFO: None, MERGE_FIFO: None}, ("/tmp/reify-jobserver-task",))
 
 
-class TestPlanParityCommands(InParityClone):
-    """Full stdout, stderr and exit code of lint and typecheck plans."""
+class FullPlanParity(InParityClone):
+    """Base of the members comparing full stdout, stderr and exit code; ACTIONS is the default action set."""
 
-    def check(self, label, argv, env=(), expect=(), actions=PLAN_ACTIONS):
-        """Each action agrees; bash's stdout holds each `expect` text (the scenario's premise)."""
+    ACTIONS = PLAN_ACTIONS
+
+    def check(self, label, argv, env=(), expect=(), warns=(), actions=None):
+        """Each action agrees; bash's stdout holds each `expect` text and its stderr each `warns` text (the premises)."""
         scenarios = [
             Scenario(f"{label} ({action})", (action, *argv, "--print-plan"), dict(env))
-            for action in actions
+            for action in (self.ACTIONS if actions is None else actions)
         ]
+        return self.check_scenarios(scenarios, expect, warns)
+
+    def check_scenarios(self, scenarios, expect=(), warns=()):
         pairs = run_many(self.clone, scenarios)
         for scenario, pair in pairs:
             with self.subTest(scenario.label):
                 self.assert_bash_plans(scenario, pair)
                 for text in expect:
                     self.assertIn(text, pair.bash.stdout, "premise")
+                for text in warns:
+                    self.assertIn(text, pair.bash.stderr, "premise")
                 self.assert_parity(scenario, pair)
         return pairs
+
+
+class TestPlanParityCommands(FullPlanParity):
+    """Full stdout, stderr and exit code of lint and typecheck plans."""
 
     def stage_written(self, path):
         """plan_for's fixture: `path` holds exactly 'x\\n', staged."""
@@ -303,6 +329,88 @@ class TestPlanParityCommands(InParityClone):
             self.clone.reset()
             self.stage_written(path)
             self.check(f"staged {path}", ("--scope", "staged", "--include-infra"), actions=("lint",))
+
+
+class TestPlanParityRegionFree(FullPlanParity):
+    """Full stdout, stderr and exit code of test and all plans that hold no test region (RUN_RUST=0)."""
+
+    ACTIONS = TEST_ACTIONS
+
+    def test_empty_diff_under_each_profile(self):
+        self.clone.start_branch()
+        scenarios = []
+        for action, scope, role, profile in itertools.product(
+            TEST_ACTIONS, ("staged", "branch"), (None, "offline"), PROFILE_ARGS
+        ):
+            argv = (action, "--scope", scope, *profile, "--print-plan")
+            scenarios.append(Scenario(f"{' '.join(argv)} role={role}", argv, role_env(role)))
+        self.check_scenarios(scenarios, expect=("RUN_RUST=0", EMPTY_PLAN))
+
+    def test_gui_only_change_runs_the_plain_node_lane(self):
+        self.clone.stage(GUI_CHANGE)
+        pairs = self.check(
+            "gui-only change", ("--scope", "staged"),
+            expect=("RUN_RUST=0 RUN_GUI=1", FULL_GUI_SUITE),
+        )
+        for scenario, pair in pairs:
+            self.assertTrue(
+                any(line.startswith(PLAIN_GUI_PROJECT) for line in pair.bash.stdout.splitlines()),
+                f"premise: [{scenario.label}] the gui project is a foreground step of its own",
+            )
+
+    def test_gui_retry_specs(self):
+        self.clone.stage(GUI_CHANGE)
+        self.check(
+            "valid REIFY_GUI_RETRY_SPECS", ("--scope", "staged"),
+            {"REIFY_GUI_RETRY_SPECS": VALID_GUI_SPECS},
+            expect=(f"../scripts/gui-vitest-run.sh {VALID_GUI_SPECS}'",),
+        )
+        for value in ("$(x)", "--run"):
+            self.check(
+                f"rejected REIFY_GUI_RETRY_SPECS={value!r}", ("--scope", "staged"),
+                {"REIFY_GUI_RETRY_SPECS": value},
+                expect=(FULL_GUI_SUITE,), warns=(GUI_SPECS_REJECTED,),
+            )
+
+    def test_selective_infra_leaf(self):
+        self.clone.stage(INFRA_MAPPED_DOCS)
+        self.check(
+            "infra-mapped docs path", ("--scope", "staged"),
+            expect=("RUN_RUST=0", POLICY_LEAF, LEAF_TAIL),
+        )
+        self.check(
+            "infra-mapped docs path, offline role", ("--scope", "staged"),
+            role_env("offline"), expect=("RUN_RUST=0", POLICY_LEAF),
+        )
+        self.check(
+            "infra-mapped docs path inside an infra suite", ("--scope", "staged"),
+            {"REIFY_INFRA_SUITE_ACTIVE": "1"}, expect=(EMPTY_PLAN,),
+        )
+
+
+class TestTestRegionNotYetPlanned(InParityClone):
+    """γ1 refuses a test or all plan that holds a test region, rather than print it without one.
+
+    γ2 (#9099) ports the region and deletes this class.
+    """
+
+    def test_a_test_region_plan_is_refused(self):
+        scenarios = [
+            Scenario(f"{action} --scope all role={role}", (action, "--scope", "all", "--print-plan"), role_env(role))
+            for action in TEST_ACTIONS
+            for role in ROLES
+        ]
+        for scenario, pair in run_many(self.clone, scenarios):
+            with self.subTest(scenario.label):
+                self.assert_bash_plans(scenario, pair)
+                self.assertIn(TEST_REGION_BEGIN, pair.bash.stdout.splitlines(), "premise: a test region")
+                self.assertEqual(pair.py.returncode, EX_UNAVAILABLE, pair.py.stderr)
+                self.assertEqual(pair.py.stdout, "")
+                lines = pair.py.stderr.splitlines()
+                self.assertEqual(len(lines), 1, pair.py.stderr)
+                self.assertTrue(lines[0].startswith("verify.sh: ERROR — "), lines[0])
+                self.assertIn("test region", lines[0])
+                self.assertIn("S18 cutover", lines[0])
 
 
 class TestPlanParitySelfTest(InParityClone):
