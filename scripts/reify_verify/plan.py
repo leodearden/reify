@@ -57,14 +57,111 @@ class Phase(Enum):
     OTHER = "other"
 
 
-KIND_COMMANDS = MappingProxyType({kind: () for kind in StepKind})
+@dataclass(frozen=True)
+class Script:
+    """A repo script: `[K=V ...] [timeout <wall>] (bash <path>|./<path>) [args] [2>&1]`."""
+
+    path: str
+    args: tuple[str, ...] = ()
+    wall: str | None = None
+    via_bash: bool = False
+    env: tuple[tuple[str, str], ...] = ()
+    stderr_to_stdout: bool = False
+
+
+@dataclass(frozen=True)
+class Workspace:
+    pass
+
+
+@dataclass(frozen=True)
+class Packages:
+    names: tuple[str, ...]
+
+    def __post_init__(self):
+        if not self.names:
+            raise ValueError("Packages: a package selector names at least one package")
+
+
+Selector = Workspace | Packages
+
+
+@dataclass(frozen=True)
+class Cargo:
+    """`timeout <wall> <prio>cargo <subcommand> [--release] <selector> <args> [2>&1]`."""
+
+    subcommand: str
+    selector: Selector
+    args: tuple[str, ...]
+    wall: str
+    prio: str
+    release: bool = False
+    stderr_to_stdout: bool = False
+
+
+@dataclass(frozen=True)
+class Chain:
+    """Commands joined by `&&`."""
+
+    parts: tuple["Command", ...]
+
+
+@dataclass(frozen=True)
+class Guarded:
+    """`if test <flag> <path>; then <body>; [else echo '<warning>'; ]fi [2>&1]`."""
+
+    test_flag: str
+    path: str
+    body: "Command"
+    else_warning: str | None = None
+    stderr_to_stdout: bool = False
+
+    def __post_init__(self):
+        if self.test_flag not in ("-f", "-d"):
+            raise ValueError(f"Guarded: test flag {self.test_flag!r} is not -f or -d")
+
+
+@dataclass(frozen=True)
+class NodeProject:
+    """One node project of the gui lane, guarded on `guard_path` and run in `dir`."""
+
+    guard_flag: str
+    guard_path: str
+    dir: str
+    minutes: int
+    commands: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NodeLaneStart:
+    """The node lane started in the background of the main shell, overlapping clippy."""
+
+    projects: tuple[NodeProject, ...]
+
+
+@dataclass(frozen=True)
+class NodeLaneJoin:
+    pass
+
+
+Command = Script | Cargo | Chain | Guarded | NodeProject | NodeLaneStart | NodeLaneJoin
+
+KIND_COMMANDS = MappingProxyType(
+    {
+        StepKind.CARGO: (Cargo, Guarded),
+        StepKind.TOOL: (Script, Guarded, NodeProject),
+        StepKind.BUILTIN: (),
+        StepKind.MAIN_SHELL: (NodeLaneStart, NodeLaneJoin),
+        StepKind.SENTINEL: (),
+    }
+)
 
 
 @dataclass(frozen=True)
 class Step:
     kind: StepKind
     phase: Phase
-    command: object
+    command: Command
     gate_path: str | None
     guard_file: str | None
     annotation: tuple[str, ...] = ()

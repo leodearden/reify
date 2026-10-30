@@ -4,6 +4,10 @@ render_text is `--print-plan`: byte-identical to scripts/verify.sh's print
 loop. Every line it returns is printed with a trailing newline; the narrowing
 header keeps the closure's text verbatim, so it spans several physical lines
 when affected_crates printed one crate per line (PRD §2.4 defect 7).
+
+render_step is the one producer of a step's text. The kind decides the
+loader-path scrub: a TOOL step's text starts with it, a CARGO or BUILTIN
+step's never does, and the node lane carries it inside its own braces.
 """
 
 from reify_verify.environment import (
@@ -14,7 +18,22 @@ from reify_verify.environment import (
     JobserverUnset,
     UnsetCause,
 )
-from reify_verify.plan import Plan, RetryMarker
+from reify_verify.plan import (
+    Cargo,
+    Chain,
+    Command,
+    Guarded,
+    NodeLaneJoin,
+    NodeLaneStart,
+    NodeProject,
+    Packages,
+    Plan,
+    RetryMarker,
+    Script,
+    Step,
+    StepKind,
+    Workspace,
+)
 
 ENVIRONMENT_MARKER = (
     "# --- environment (process-level; inherited by every command below EXCEPT where a "
@@ -22,6 +41,9 @@ ENVIRONMENT_MARKER = (
 )
 COMMANDS_MARKER = "# --- commands (executed in order; '&&' semantics — stop on first failure) ---"
 EMPTY_PLAN = "# (no commands — nothing to verify for this action/scope)"
+LD_SCRUB = 'export LD_LIBRARY_PATH="${REIFY_AMBIENT_LD_LIBRARY_PATH-}"; '
+KILL_AFTER = "timeout --kill-after=60"
+NODE_BG_PID = "_VERIFY_NODE_BG_PID"
 
 
 def render_text(plan: Plan) -> tuple[str, ...]:
@@ -32,7 +54,79 @@ def render_text(plan: Plan) -> tuple[str, ...]:
         *(f"# {render_env_line(line)}" for line in plan.environment),
         COMMANDS_MARKER,
         *(() if plan.steps else (EMPTY_PLAN,)),
+        *(line for step in plan.steps for line in _step_lines(step)),
     )
+
+
+def _step_lines(step: Step) -> tuple[str, ...]:
+    if step.kind is StepKind.SENTINEL:
+        return step.annotation
+    return (*step.annotation, render_step(step))
+
+
+def render_step(step: Step) -> str:
+    text = render_command(step.command)
+    return f"{LD_SCRUB}{text}" if step.kind is StepKind.TOOL else text
+
+
+def render_command(command: Command) -> str:
+    match command:
+        case Script():
+            return _script(command)
+        case Cargo():
+            return _cargo(command)
+        case Chain(parts=parts):
+            return " && ".join(render_command(part) for part in parts)
+        case Guarded():
+            otherwise = f"; else echo '{command.else_warning}'" if command.else_warning else ""
+            text = (
+                f"if test {command.test_flag} {command.path}; then "
+                f"{render_command(command.body)}{otherwise}; fi"
+            )
+            return f"{text} 2>&1" if command.stderr_to_stdout else text
+        case NodeProject():
+            return f"if test {command.guard_flag} {command.guard_path}; then {_subshell(command)}; fi"
+        case NodeLaneStart(projects=projects):
+            lane = " && ".join(render_command(project) for project in projects)
+            return (
+                f"{{ {LD_SCRUB}{lane} ; }} & {NODE_BG_PID}=$!; "
+                f"trap 'if kill \"${NODE_BG_PID}\" 2>/dev/null; then :; fi; _verify_cleanup' EXIT"
+            )
+        case NodeLaneJoin():
+            return f'wait "${NODE_BG_PID}"'
+    raise TypeError(f"render_command: not a Command: {command!r}")
+
+
+def _script(script: Script) -> str:
+    env = "".join(f"{name}={value} " for name, value in script.env)
+    timed = f"{KILL_AFTER} {script.wall} " if script.wall else ""
+    program = f"bash {script.path}" if script.via_bash else f"./{script.path}"
+    args = "".join(f" {arg}" for arg in script.args)
+    redirect = " 2>&1" if script.stderr_to_stdout else ""
+    return f"{env}{timed}{program}{args}{redirect}"
+
+
+def _cargo(cargo: Cargo) -> str:
+    release = " --release" if cargo.release else ""
+    match cargo.selector:
+        case Workspace():
+            selector = "--workspace"
+        case Packages(names=names):
+            selector = " ".join(f"-p {name}" for name in names)
+    args = "".join(f" {arg}" for arg in cargo.args)
+    redirect = " 2>&1" if cargo.stderr_to_stdout else ""
+    return (
+        f"{KILL_AFTER} {cargo.wall} {cargo.prio}cargo {cargo.subcommand}{release} "
+        f"{selector}{args}{redirect}"
+    )
+
+
+def _subshell(project: NodeProject) -> str:
+    """bash's wrap_subshell: `bash -c '…'` only when the inner text is a compound."""
+    inner = " && ".join(project.commands)
+    if "&&" in inner:
+        inner = f"bash -c '{inner}'"
+    return f"(cd {project.dir} && {KILL_AFTER} {project.minutes}m {inner})"
 
 
 def render_env_line(line: EnvLine) -> str:
