@@ -1193,3 +1193,25 @@ fn make_ellipse_face_ffi_nonfinite_semi_axis_returns_err() {
         "make_ellipse_face with semi_minor=NaN should return Err, got Ok"
     );
 }
+
+// --- BRep serialize/deserialize round-trip ---
+
+#[test]
+fn brep_serialization_roundtrip() {
+    let shape = ffi::ffi::make_box(10.0, 20.0, 30.0).unwrap();
+
+    let brep = ffi::ffi::serialize_brep(&shape).unwrap();
+    assert!(
+        !brep.is_empty(),
+        "BRep serialization should produce non-empty output"
+    );
+
+    cxx::let_cxx_string!(brep_cxx = brep.as_str());
+    let restored = ffi::ffi::deserialize_brep(&brep_cxx).unwrap();
+
+    let vol = ffi::ffi::query_volume(&restored).unwrap();
+    assert!(
+        (vol - 6000.0).abs() < 1.0,
+        "expected volume ~6000, got {vol}"
+    );
+}

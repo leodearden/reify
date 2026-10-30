@@ -1,6 +1,6 @@
 //! `OcctKernelHandle` through its request channel: sync and async execute,
-//! query, export and tessellate, drop and shutdown, warm-start transfer, and
-//! topology extraction.
+//! query, export and tessellate, drop and shutdown, the warm-start trait
+//! no-op, and topology extraction.
 
 #![cfg(has_occt)]
 
@@ -646,89 +646,7 @@ async fn shutdown_completes_cleanly() {
     assert_eq!(result.id, GeometryHandleId(1)); // fresh kernel, fresh ids
 }
 
-// --- Warm-start tests ---
-
-#[test]
-fn handle_warm_state_returns_some_after_op() {
-    use reify_ir::WarmStartable;
-    let handle = OcctKernelHandle::spawn();
-    let op = GeometryOp::Box {
-        size_x: Value::Real(10.0),
-        size_y: Value::Real(20.0),
-        size_z: Value::Real(30.0),
-    };
-    handle.execute(&op).unwrap();
-    let state = handle.warm_state();
-    assert!(state.is_some(), "handle with shapes should have warm state");
-    assert!(
-        state.unwrap().estimated_size_bytes() > 0,
-        "estimated size should be positive"
-    );
-}
-
-#[test]
-fn cross_handle_warm_start_transfer() {
-    use reify_ir::WarmStartable;
-    // Handle A: create box
-    let handle_a = OcctKernelHandle::spawn();
-    let op = GeometryOp::Box {
-        size_x: Value::Real(10.0),
-        size_y: Value::Real(20.0),
-        size_z: Value::Real(30.0),
-    };
-    handle_a.execute(&op).unwrap();
-
-    // Extract warm state from handle A
-    let state = handle_a.warm_state().expect("should have warm state");
-
-    // Handle B: restore warm state
-    let mut handle_b = OcctKernelHandle::spawn();
-    handle_b.with_warm_state(state);
-
-    // Query volume on handle B using handle ID 1
-    let vol = handle_b
-        .query(&GeometryQuery::Volume(GeometryHandleId(1)))
-        .unwrap();
-    match vol {
-        Value::Real(v) => {
-            assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
-        }
-        other => panic!("expected Value::Real, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn async_warm_start_roundtrip() {
-    let handle_a = OcctKernelHandle::spawn();
-    let op = GeometryOp::Box {
-        size_x: Value::Real(10.0),
-        size_y: Value::Real(20.0),
-        size_z: Value::Real(30.0),
-    };
-    handle_a.execute_async(&op).await.unwrap();
-
-    // Extract warm state via async
-    let state = handle_a
-        .warm_state_async()
-        .await
-        .expect("should have warm state");
-
-    // Restore on new handle via async
-    let handle_b = OcctKernelHandle::spawn();
-    handle_b.with_warm_state_async(state).await;
-
-    // Query volume via async
-    let vol = handle_b
-        .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
-        .await
-        .unwrap();
-    match vol {
-        Value::Real(v) => {
-            assert!((v - 6000.0).abs() < 1.0, "expected volume ~6000, got {v}");
-        }
-        other => panic!("expected Value::Real, got {:?}", other),
-    }
-}
+// --- Warm start: the trait no-op ---
 
 #[test]
 fn handle_warm_state_none_on_empty_kernel() {
@@ -739,30 +657,43 @@ fn handle_warm_state_none_on_empty_kernel() {
     assert!(state.is_none(), "empty kernel should have no warm state");
 }
 
-#[tokio::test]
-async fn warm_startable_trait_safe_in_async_context() {
+#[test]
+fn handle_warm_state_is_none_after_ops() {
     use reify_ir::WarmStartable;
-    // Calling the sync WarmStartable trait methods from an async context
-    // must not panic (previously used blocking_send/blocking_recv which
-    // panicked inside tokio runtime).
-    let handle_a = OcctKernelHandle::spawn();
+    let handle = OcctKernelHandle::spawn();
     let op = GeometryOp::Box {
         size_x: Value::Real(10.0),
         size_y: Value::Real(20.0),
         size_z: Value::Real(30.0),
     };
-    handle_a.execute_async(&op).await.unwrap();
+    handle.execute(&op).unwrap();
+    assert!(
+        handle.warm_state().is_none(),
+        "the OCCT handle carries no warm state, even after an execute"
+    );
+}
 
-    // Call sync warm_state() from async context — must not panic
-    let state = handle_a.warm_state().expect("should have warm state");
+#[tokio::test]
+async fn handle_warm_start_trait_is_a_no_op_in_async_context() {
+    use reify_ir::{OpaqueState, WarmStartable};
+    // The sync WarmStartable methods must not panic inside a tokio runtime,
+    // and with_warm_state must leave the kernel's shapes resolvable.
+    let mut handle = OcctKernelHandle::spawn();
+    let op = GeometryOp::Box {
+        size_x: Value::Real(10.0),
+        size_y: Value::Real(20.0),
+        size_z: Value::Real(30.0),
+    };
+    let gh = handle.execute_async(&op).await.unwrap();
 
-    // Call sync with_warm_state() from async context — must not panic
-    let mut handle_b = OcctKernelHandle::spawn();
-    handle_b.with_warm_state(state);
+    assert!(
+        handle.warm_state().is_none(),
+        "the OCCT handle carries no warm state"
+    );
+    handle.with_warm_state(OpaqueState::new(String::from("foreign"), 8));
 
-    // Verify restored state works
-    let vol = handle_b
-        .query_async(&GeometryQuery::Volume(GeometryHandleId(1)))
+    let vol = handle
+        .query_async(&GeometryQuery::Volume(gh.id))
         .await
         .unwrap();
     match vol {
