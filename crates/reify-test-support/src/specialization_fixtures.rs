@@ -1,13 +1,10 @@
-//! Shared AST-builder fixtures for specialization-scope tests.
+//! Shared fixtures for tests over structure members and `sub` scopes: AST
+//! builders that construct members directly, and shape guards that assert a
+//! parsed AST has the form a test depends on before the test relies on it.
 //!
-//! These helpers are used by:
-//! - `reify-compiler` unit tests in `specialization_scope_check.rs`
-//! - `reify-compiler` integration tests in `specialization_scope_validation_tests.rs`
-//! - `reify-lsp` regression tests in `diagnostics.rs`
-//!
-//! All helpers are `pub` and consumed via
-//! `use reify_test_support::specialization_fixtures::*;` inside the relevant
-//! test modules — **not** re-exported from the crate root to avoid polluting the
+//! All helpers are `pub` and imported from
+//! `reify_test_support::specialization_fixtures` inside the consuming test
+//! modules — **not** re-exported from the crate root to avoid polluting the
 //! top-level namespace with generic names like `dummy_span`.
 //!
 //! # Span layout
