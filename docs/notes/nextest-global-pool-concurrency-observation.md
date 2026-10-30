@@ -39,6 +39,11 @@ INFO: nextest test-binary concurrency: peak=14 samples=163 nonzero_samples=12 \
       interval=1s duration=420s deps_glob=*/target/*/deps/* host_nproc=32
 ```
 
+The summary lines quoted for windows 1–3 predate the `own_uid_links=` and
+`resolved_links=` fields that task #7500 appended to that line (see "Ptrace
+blindness (detected, task #7500)" below), so none of them records its caller's
+ptrace reach.
+
 * Workload: `cargo nextest run --config-file <generated> -p reify-syntax
   -p reify-compiler -p reify-lsp -p reify-expr -p reify-core --no-fail-fast`,
   i.e. a **scoped debug-profile nextest pass**, not a full
@@ -47,7 +52,10 @@ INFO: nextest test-binary concurrency: peak=14 samples=163 nonzero_samples=12 \
   file, so the pass went essentially straight to execution.
 * The run reached test 3107/7579 during the window and was subsequently
   terminated by the harness `timeout 400` wrapper, not by a test failure.
-* Sampling was host-wide (all lanes), not scoped to this lane.
+* Sampling was meant to be host-wide (all lanes), not scoped to this lane.  The
+  caller's ptrace reach was not recorded, because the fields that now report it
+  did not exist yet.  Host-wide is therefore the instrument's intent for this
+  window, not a verified property of it.
 * **Taken with the cwd-dependence defect live, but UNCONTAMINATED by it** — see
   "Instrument defects found after the fact" below.  Re-confirmed first-hand
   against the pre-fix script itself: from the lane root the recorded
@@ -113,8 +121,9 @@ INFO: nextest test-binary concurrency: peak=51 samples=1034 nonzero_samples=827 
   attribution could be checked, and an unverifiable attribution is worth less
   than the gate's own log.)
 * **Sampling was LANE-SCOPED, not host-wide** — see "Why this window is not
-  host-wide" below.  Windows 1 and 2 claim host-wide sampling; window 3 does
-  not, and the difference is a property of who ran the sampler, not of the fix.
+  host-wide" below.  Windows 1 and 2 claim host-wide sampling (unverified, see
+  window 1); window 3 does not, and the difference is a property of who ran the
+  sampler, not of the fix.
 
 ### The distribution, not just the peak
 
@@ -168,11 +177,12 @@ in `/proc` at the moment of the probe, so the empty result is a denial and not a
 vanished pid.  The caller reports `Uid 1000`, `CapEff 0000000000000000`,
 `NoNewPrivs 1`.
 
-*Hypothesis (not pinned down):* an LSM ptrace restriction attached to the
-sandboxed agent role denies `PTRACE_MODE_READ_FSCREDS` outside the agent's own
-domain.  Yama does not explain it (`ptrace_scope` is 1, and Yama's check returns
-0 for any mode without `PTRACE_MODE_ATTACH`), and neither does DAC (the targets
-share the caller's uid).
+The mechanism, first recorded here as a hypothesis, has since been pinned under
+task #7500.  The cause is Landlock's domain-scoped ptrace restriction: the
+sandboxed agent runs inside a Landlock domain, and that domain denies ptrace read
+access to every process outside it, whatever that process's uid.  Yama and DAC
+are excluded.  For the measurements, see "Ptrace blindness (detected, task
+#7500)" under "Instrument defects found after the fact".
 
 The consequence is what matters here: from a sandboxed agent the sampler can
 only see its own process tree, so "sample beside a gate that is already running"
@@ -180,9 +190,10 @@ is unreachable and the only workable shape is to START the gate and sample its
 descendants.  That is what was done, and it is why this window reports ONE
 lane's gate rather than the host.  A sandbox-induced zero is a third member of
 the silent-zero family this instrument's header already documents (the
-cwd-induced zero and the never-saw-an-execution-phase zero), and the instrument
-cannot yet tell it from the other two.  **Tracked as #7500** (filed from
-esc-6375-2).
+cwd-induced zero and the never-saw-an-execution-phase zero).  Since task #7500
+(filed from esc-6375-2) the instrument tells it apart from the other two.  Its
+summary line reports `own_uid_links=` and `resolved_links=`, and it WARNS when
+fewer than half of the caller's own-uid candidates resolved.
 
 ## Why window 1 was not conclusive (retained as provenance)
 
@@ -297,6 +308,111 @@ path must discover from `PROC_ROOT`) in
 is therefore **not** an apples-to-apples re-run of windows 1 and 2: it was taken
 with a materially different instrument, and windows 1–2 must be read as floors.
 
+**Ptrace blindness (detected, task #7500).**  This is the third silent zero.
+`readlink /proc/<pid>/exe` needs ptrace READ access to `<pid>`.  A caller that
+lacks it gets an empty confirmation for every process outside its own tree, and
+so reports `peak=0 nonzero_samples=0` over a host that may be busy running tests.
+That reading is textually identical to window 2's honest INCONCLUSIVE.  This
+section is the single owner of the measurements below; the sampler's header and
+the contract guard cite it rather than restating them.
+
+Measured, each in a named context:
+
+1. *Task 6375's lane* (`_lane-34`, HEAD `28eab60f8a`).  The caller was a
+   sandboxed agent shell: Uid 1000, CapEff 0, NoNewPrivs 1, Seccomp 0, Yama
+   `ptrace_scope` 1.  `printf '%s\0' /proc/[0-9]*/exe | xargs -0 readlink`
+   resolved **6 of 1099** glob entries, and those 6 were the agent session's own
+   process tree.  Every same-uid non-descendant sampled returned `Permission
+   denied` on a link that `ls -l` shows as `leo:leo`.  Eight `verify.sh`
+   processes were in flight at the time, two of them with a live `cargo-nextest
+   nextest run`, yet the sampler reported `peak=0 nonzero_samples=0` over a
+   40 s window.  Window 3's agent measured 19 of 961 the same way (see "Why
+   this window is not host-wide").
+2. *Architect probe, 2026-10-11, `_lane-24`*: the same host in two contexts.
+
+   | context | own-uid `/proc/<pid>` | of which resolved | other-uid | of which resolved |
+   |---|---|---|---|---|
+   | unsandboxed shell: uid 1000, NoNewPrivs 0, AppArmor `unconfined` | 560 | 549 | 837 | 0 |
+   | same probe under `gui/src-tauri/sandbox/landlock_exec.py` (NoNewPrivs 1) | 548 | 1 | not recorded | not recorded |
+
+   Unsandboxed, the 11 own-uid misses are non-dumpable own processes
+   (`ssh-agent`, `gpg-agent`, `systemd --user`, `(sd-pam)`, …) or zombies, and
+   667 of the 730 root-owned entries are kernel threads.  Under the helper,
+   `xargs -0 readlink -v` over every `/proc/*/exe` reported 1481 `Permission
+   denied` and 1 `No such file`.
+
+**Mechanism (pinned).**  Since Landlock ABI 1, a process inside a Landlock
+domain may use ptrace, `PTRACE_MODE_READ` included, only on processes in its own
+domain or a nested one, whatever their uid.  That reproduces 6375's signature
+exactly: the caller's own tree resolves, and same-uid non-descendants get
+`EACCES`.  Two other causes are excluded:
+
+* Yama: `ptrace_scope` 1 restricts only `PTRACE_MODE_ATTACH`.
+* DAC: the targets share the caller's uid.
+
+The property the fix rests on is that a **stat of `/proc/<pid>` is not
+ptrace-gated**: 548 own-uid directories were still counted under the helper.  So
+a blind caller can still COUNT the own-uid processes it cannot read.
+
+**Why the denominator is own-uid.**  A naive resolved/enumerated ratio is about
+40% on a HEALTHY unsandboxed non-root host: 595 of 1411 in the architect's
+context.  DAC denies every root daemon and kernel thread to such a caller, so a
+threshold on that ratio would sit right next to normal operation.  Restricted to
+candidates the caller's uid owns, the ratio is 549/560 = 98% healthy against
+1/548 = 0.2% under Landlock, a gap of two orders of magnitude.
+
+**Fix.**  The summary line gains two appended fields, both summed over the
+window:
+
+* `own_uid_links=`: pid candidates whose `/proc/<pid>` directory the caller's
+  effective uid owns, tested with the builtin `[ -O ]`.  That test is a stat of
+  the directory, never of the exe link.
+* `resolved_links=`: how many of those own-uid candidates a batched `readlink`
+  resolved.  Both fields range over the same operands, so a caller that can also
+  read other uids' links (root, `CAP_SYS_PTRACE`) cannot mask blindness among
+  its own, and `resolved_links` never exceeds `own_uid_links`.
+
+When `own_uid_links > 0` and `2 × resolved_links < own_uid_links`, a stderr
+WARNING says the reading covers only the caller's visible tree.  In that case a
+zero is not evidence of an empty host, and a non-zero peak is a floor.  The exit
+status stays 0, and this WARNING is independent of the `nonzero_samples=0` one.
+
+Pinned in `tests/infra/test_test_binary_concurrency_sampler.sh`: hermetically
+for the arithmetic, and live for the two kernel premises above (DAC's denials of
+other uids stay out of the denominator; under real Landlock a stat still counts
+what `readlink` cannot read).
+
+Accepted limitation: for a uid-0 caller, root-owned kernel threads enter the
+denominator and never resolve.  A near-idle host could therefore false-warn
+there.  Nobody runs the instrument that way.
+
+*Demonstration, and its own context.*  These lines were taken from this task's
+implementer shell: `_lane-24`, HEAD `dfd7995d5b`, 2026-10-11 19:53 +01:00, Uid
+1000, CapEff 0, NoNewPrivs 1, Seccomp 0, AppArmor `unconfined`, loadavg 82.54.
+That shell is itself **sandboxed**, so the bare run is the blind case and NOT a
+host-wide reading:
+
+```
+# bare, from the implementer's own Landlock domain
+INFO: nextest test-binary concurrency: peak=0 samples=1 nonzero_samples=0 \
+      interval=0s duration=0s deps_glob=*/target/*/deps/* host_nproc=32 \
+      own_uid_links=706 resolved_links=8
+# nested once more under gui/src-tauri/sandbox/landlock_exec.py
+INFO: nextest test-binary concurrency: peak=0 samples=1 nonzero_samples=0 \
+      interval=0s duration=0s deps_glob=*/target/*/deps/* host_nproc=32 \
+      own_uid_links=699 resolved_links=4
+```
+
+Both were taken before `resolved_links` was restricted to own-uid operands and
+before discovery stopped taking the `self`/`thread-self` entries, so they are
+not byte-comparable with current readings.
+
+Both runs emitted the blindness WARNING alongside the `nonzero_samples=0` one.
+Their `peak=0` says nothing about whether test binaries were running elsewhere
+on the host, which is the point of the fields.  No unsandboxed reading was
+available from this context; the architect's unsandboxed probe above is the
+healthy-side reference.
+
 ## Host-wide framing (do not confuse with the per-run bound)
 
 `test-threads` bounds **one** `cargo nextest run`, never the host.  With
@@ -347,18 +463,23 @@ What each requirement asked for, and what window 3 delivered:
    still applies:** any reading taken with an **earlier copy** of the script must
    have its cwd checked before it is trusted (if that cwd contained a tree
    matching the run's `deps_glob`, the reading is a silent zero and is not
-   evidence about anything) — and, as of window 3, must also have its **caller's
+   evidence about anything).  Such a reading must also have its **caller's
    ptrace reach** checked, since a sandboxed caller sees only its own process
-   tree and produces the same shape of silent zero.
+   tree and produces the same shape of silent zero.  Since task #7500 that
+   second check is mechanical: readings from the current instrument carry
+   `own_uid_links=` / `resolved_links=` and WARN when the caller was blind.
+   Only older readings, windows 1–3 among them, still need it checked by hand.
 
 The un-narrowing is now justified by an **observed** peak — window 3's
 `peak=51`, with a sustained execution-phase plateau whose shoulder sits exactly
 at the generated `test-threads = 32` — and no longer only by the config being
 read back as `test-threads = 32`.
 
-**The one residual.**  The instrument cannot yet distinguish a sandbox-induced
-zero from the two silent zeros it already documents.  That does not affect window
-3 (which is non-zero throughout and states its own scope), and it is filed as
-**#7500** (filed from esc-6375-2) rather than left as prose here — the same
-cite-a-live-task-by-number discipline this section argues for above, applied to
-the residual this round leaves behind.
+**The residual this round left behind, now detected.**  #6375's round could not
+distinguish a sandbox-induced zero from the two silent zeros it already
+documented.  It was filed as **#7500** (from esc-6375-2) rather than left as
+prose here, the same cite-by-number discipline this section argues for above.
+Readings from the current instrument carry `own_uid_links=` /
+`resolved_links=` and WARN when the caller was blind; see "Ptrace blindness
+(detected, task #7500)".  It never affected window 3, which is non-zero
+throughout and states its own scope.

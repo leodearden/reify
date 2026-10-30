@@ -32,10 +32,15 @@
 # under its own mktemp -d and drives the sampler through two injection seams:
 #   REIFY_SAMPLER_PROC_ROOT  — the /proc to read (default /proc)
 #   REIFY_SAMPLER_PIDS_CMD   — a command printing candidate pids, one per line
-#                              (default: the `pgrep -f` prefilter)
+#                              (default, since task 6375: unset — enumerate
+#                              <PROC_ROOT>/<pid>/exe directly; B2 pins it)
 # No real host process is inspected, so the expectations are exact integers on
 # ANY host and under ANY concurrent load — the Tests 13a-15b form the sibling
-# nextest suites use.  Compile-free: bash/awk/readlink only, no cargo, no
+# nextest suites use.  The two deliberate exceptions are C4a/C4b, which pin
+# KERNEL premises no fake tree can (DAC and Landlock behaviour of the real
+# /proc); they read only processes they chose or spawned, so their integers stay
+# exact, and they SKIP where the premise cannot be exercised.  Compile-free:
+# bash/awk/readlink (plus python3 for C4b's Landlock helper) only, no cargo, no
 # nextest, no workspace compile (task 4613).
 #
 # Bucket `pool` in tests/infra/run-all-classification.manifest: hermetic, safe to
@@ -590,6 +595,330 @@ assert "B2: with REIFY_SAMPLER_PIDS_CMD UNSET, a test binary under the injected 
         out=$(REIFY_SAMPLER_PROC_ROOT="$root" \
               bash "'"$SAMPLER"'" --duration 0 --interval 0)
         [ "$(_field "$out" peak)" = "1" ]
+    '
+
+
+# ---------------------------------------------------------------------------
+# C1-C3 (PTRACE BLINDNESS — a third silent zero, task 7500).  The mechanism and
+# the measurements live in docs/notes/nextest-global-pool-concurrency-observation.md
+# -> "Ptrace blindness (detected, task #7500)"; they are not restated here.
+#
+# What these asserts pin: the summary line carries own_uid_links= (candidates
+# whose /proc/<pid> the caller owns) and resolved_links= (how many of those the
+# caller could resolve), and a stderr WARNING names them when fewer than half
+# resolved.  A few own-uid denials must NOT warn.
+#
+# The fixture is ten own-uid fake processes on the DEFAULT discovery path (as
+# B2): one test binary and nine non-test images.  Pids sit above pid_max, as in
+# B2.  Partial reach is modelled by a PATH readlink shim that resolves only an
+# allow-listed subset of operands, delegating them to the real readlink.
+# ---------------------------------------------------------------------------
+
+# _mk_reach_fixture <root> — the ten fake own-uid processes C1-C3, C5 and C6 share.
+_mk_reach_fixture() {
+    local root="$1" pid
+    local -a specs=( 4194311=/home/u/lanes/_lane-1/target/debug/deps/reify_lsp-2f1c9ab4 )
+    for pid in 4194312 4194313 4194314 4194315 4194316 4194317 4194318 4194319 4194320; do
+        specs+=( "$pid=/usr/bin/bash" )
+    done
+    _mk_proc "$root" "${specs[@]}"
+}
+
+# _readlink_allow_shim <bindir> <real_rl> <allowfile>
+#   Writes <bindir>/readlink: a multi-operand readlink that resolves ONLY the
+#   operands listed (one per line) in <allowfile>, by delegating them to
+#   <real_rl>, and omits the rest — exiting 1 if it omitted any, which is the
+#   real tool's behaviour for an unresolvable operand.
+_readlink_allow_shim() {
+    local bindir="$1" real_rl="$2" allowfile="$3"
+    mkdir -p "$bindir"
+    cat > "$bindir/readlink" <<SHIM
+#!/usr/bin/env bash
+declare -A allow=()
+while IFS= read -r a; do [ -n "\$a" ] && allow["\$a"]=1; done < "$allowfile"
+ops=(); rc=0
+for op in "\$@"; do
+    if [ -n "\${allow[\$op]:-}" ]; then ops+=( "\$op" ); else rc=1; fi
+done
+if [ "\${#ops[@]}" -gt 0 ]; then "$real_rl" "\${ops[@]}" || rc=\$?; fi
+exit \$rc
+SHIM
+    chmod +x "$bindir/readlink"
+}
+
+echo ""
+echo "--- C1-C3 (ptrace blindness): the summary reports own_uid_links/resolved_links and WARNs when most own-uid links are unreadable ---"
+
+assert "C1: a caller that can read only 1 of its 10 own-uid exe links is reported blind (own_uid_links=10 resolved_links=1, WARNING naming own_uid_links), exit 0" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _mk_reach_fixture _readlink_allow_shim _field)"'
+        real_rl=$(command -v readlink)
+        _mk_reach_fixture "$root"
+        printf "%s\n" "$root/4194311/exe" > "$d/allow"
+        _readlink_allow_shim "$d/bin" "$real_rl" "$d/allow"
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(PATH="$d/bin:$PATH" REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err") \
+            && rc=0 || rc=$?
+        [ "$rc" -eq 0 ] || exit 1
+        [ "$(_field "$out" own_uid_links)" = "10" ] || exit 1
+        [ "$(_field "$out" resolved_links)" = "1" ] || exit 1
+        [ "$(_field "$out" peak)" = "1" ] || exit 1
+        [ "$(_field "$out" nonzero_samples)" = "1" ] || exit 1
+        grep WARNING "$d/err" | grep -qE "own_uid_links=10([^0-9]|$)"
+    '
+
+assert "C1b: TOTAL blindness (no exe link readable) still reports the own-uid count (own_uid_links=10 resolved_links=0) and WARNs naming it, exit 0" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _mk_reach_fixture _readlink_allow_shim _field)"'
+        real_rl=$(command -v readlink)
+        _mk_reach_fixture "$root"
+        : > "$d/allow"
+        _readlink_allow_shim "$d/bin" "$real_rl" "$d/allow"
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(PATH="$d/bin:$PATH" REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err") \
+            && rc=0 || rc=$?
+        [ "$rc" -eq 0 ] || exit 1
+        [ "$(_field "$out" own_uid_links)" = "10" ] || exit 1
+        [ "$(_field "$out" resolved_links)" = "0" ] || exit 1
+        grep WARNING "$d/err" | grep -qE "own_uid_links=10([^0-9]|$)"
+    '
+
+assert "C2: a few own-uid denials are NOT blindness (8 of 10 resolve: own_uid_links=10 resolved_links=8 peak=1, no WARNING)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _mk_reach_fixture _readlink_allow_shim _field)"'
+        real_rl=$(command -v readlink)
+        _mk_reach_fixture "$root"
+        for p in 4194311 4194312 4194313 4194314 4194315 4194316 4194317 4194318; do
+            printf "%s\n" "$root/$p/exe"
+        done > "$d/allow"
+        _readlink_allow_shim "$d/bin" "$real_rl" "$d/allow"
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(PATH="$d/bin:$PATH" REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err") \
+            && rc=0 || rc=$?
+        [ "$rc" -eq 0 ] || exit 1
+        [ "$(_field "$out" own_uid_links)" = "10" ] || exit 1
+        [ "$(_field "$out" resolved_links)" = "8" ] || exit 1
+        [ "$(_field "$out" peak)" = "1" ] || exit 1
+        if grep -q WARNING "$d/err"; then exit 1; fi
+    '
+
+# C3: the new fields are APPENDED.  The seven existing fields keep their order —
+# the observation doc quotes the old prefix verbatim, and _field-style consumers
+# must keep working.
+assert "C3: the summary line is the seven existing fields in order, then own_uid_links= and resolved_links= appended (one anchored ERE)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _mk_reach_fixture)"'
+        _mk_reach_fixture "$root"
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 2>/dev/null)
+        re="^INFO: nextest test-binary concurrency: peak=[0-9]+ samples=[0-9]+ nonzero_samples=[0-9]+ interval=[0-9]+s duration=[0-9]+s deps_glob=[^ ]+ host_nproc=[^ ]+ own_uid_links=[0-9]+ resolved_links=[0-9]+$"
+        grep -qE "$re" <<<"$out"
+    '
+
+# ---------------------------------------------------------------------------
+# C4a/C4b (LIVE KERNEL PREMISES of the C-series detector).
+#
+# C1-C3 pin the arithmetic over a shim; these two pin the kernel facts it rests
+# on, against the real /proc.  C4a: DAC's denials of other-uid processes do not
+# read as blindness.  C4b: under real Landlock, own_uid_links still counts the
+# own-uid processes whose exe the caller cannot read.
+#
+# The blindness WARNING is matched by its own_uid_links= token: these fixtures
+# contain no test binary, so the independent nonzero_samples=0 WARNING
+# legitimately fires as well.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- C4a-C4b (live): other-uid DAC denials are not blindness; real Landlock blindness is reported ---"
+
+_c4a_skip=""
+_c4a_foreign_pids=()
+if [ "$(id -u)" -eq 0 ]; then
+    _c4a_skip="C4a needs a non-root caller"
+else
+    for _p in /proc/[0-9]*; do
+        [ -O "$_p" ] && continue
+        _c4a_foreign_pids+=( "${_p#/proc/}" )
+        [ "${#_c4a_foreign_pids[@]}" -ge 20 ] && break
+    done
+    unset _p
+    [ "${#_c4a_foreign_pids[@]}" -gt 0 ] || \
+        _c4a_skip="C4a found no other-uid process in /proc (hidepid?)"
+fi
+
+if [ -n "$_c4a_skip" ]; then
+    echo "  SKIP: $_c4a_skip"
+else
+    assert "C4a: real /proc — this shell plus ${#_c4a_foreign_pids[@]} other-uid pids reads own_uid_links=1 resolved_links=1 and does NOT warn of blindness (DAC denials of other uids are not in the denominator)" \
+        bash -c '
+            set -eu
+            d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+            '"$(declare -f _field)"'
+            for p in $$ '"${_c4a_foreign_pids[*]}"'; do echo "$p"; done > "$d/pids"
+            unset REIFY_SAMPLER_PROC_ROOT
+            out=$(REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "1" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "1" ] || exit 1
+            if grep WARNING "$d/err" | grep -q own_uid_links; then exit 1; fi
+        '
+fi
+
+HELPER="$REPO_ROOT/gui/src-tauri/sandbox/landlock_exec.py"
+_c4b_skip=""
+if ! command -v python3 >/dev/null 2>&1; then
+    _c4b_skip="python3 not on PATH"
+elif [ ! -f "$HELPER" ]; then
+    _c4b_skip="helper missing: $HELPER"
+else
+    # Probe the exact invocation C4b depends on: the same --writable set, over a
+    # scratch dir made the way the assert makes its own.
+    _c4b_probe_dir="$(mktemp -d)"
+    if ! python3 "$HELPER" --writable "$_c4b_probe_dir" --writable "${TMPDIR:-/tmp}" \
+            -- true >/dev/null 2>&1; then
+        _c4b_skip="landlock_exec.py --writable <scratch> --writable ${TMPDIR:-/tmp} -- true failed"
+    fi
+    rm -rf "$_c4b_probe_dir"
+    unset _c4b_probe_dir
+fi
+
+if [ -n "$_c4b_skip" ]; then
+    echo "  SKIP: C4b: Landlock unavailable on this host ($_c4b_skip)"
+else
+    assert "C4b: real Landlock — 8 own sleep processes read own_uid_links=8 resolved_links=8 unsandboxed, and own_uid_links=8 resolved_links=0 plus a blindness WARNING from inside a nested Landlock domain, exit 0" \
+        bash -c '
+            set -eu
+            d=$(mktemp -d); sl=""
+            trap "kill \$sl 2>/dev/null; rm -rf \"$d\"" EXIT
+            '"$(declare -f _field)"'
+            for i in 1 2 3 4 5 6 7 8; do
+                sleep 300 </dev/null >/dev/null 2>&1 &
+                sl="$sl $!"
+                echo "$!" >> "$d/pids"
+            done
+            unset REIFY_SAMPLER_PROC_ROOT
+            out=$(REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err.direct") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "8" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "8" ] || exit 1
+            if grep WARNING "$d/err.direct" | grep -q own_uid_links; then exit 1; fi
+            out=$(REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  python3 "'"$HELPER"'" --writable "$d" --writable "${TMPDIR:-/tmp}" -- \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err.sandboxed") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "8" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "0" ] || exit 1
+            grep WARNING "$d/err.sandboxed" | grep -qE "own_uid_links=8([^0-9]|$)"
+        '
+fi
+
+# ---------------------------------------------------------------------------
+# C5-C6 (WHAT THE TWO COUNTS RANGE OVER).  Both fields count the SAME operands:
+# the caller's own-uid candidates.
+#
+# C5: a caller that can read OTHER uids' exe links (root, or CAP_SYS_PTRACE)
+# must not have those reads mask blindness among its own processes, and its
+# other-uid test binary must still count toward peak.  Modelled by candidate
+# directories that are symlinks to the root-owned `/`, plus a readlink shim that
+# fabricates their targets: the real readlink cannot stand for reach this
+# caller lacks.
+#
+# C6: the non-numeric PROC_ROOT entries (self, thread-self) alias the sampler's
+# own helper processes, so they are not candidates and enter neither count.
+# ---------------------------------------------------------------------------
+
+# _readlink_map_shim <bindir> <mapfile>
+#   Writes <bindir>/readlink: resolves each operand listed in <mapfile> (one
+#   `<operand><TAB><target>` per line) to its target, and omits the rest —
+#   exiting 1 if it omitted any, as the real tool does.
+_readlink_map_shim() {
+    local bindir="$1" mapfile="$2"
+    mkdir -p "$bindir"
+    cat > "$bindir/readlink" <<SHIM
+#!/usr/bin/env bash
+declare -A map=()
+while IFS=\$'\t' read -r op target; do [ -n "\$op" ] && map["\$op"]="\$target"; done < "$mapfile"
+rc=0
+for op in "\$@"; do
+    if [ -n "\${map[\$op]:-}" ]; then printf '%s\n' "\${map[\$op]}"; else rc=1; fi
+done
+exit \$rc
+SHIM
+    chmod +x "$bindir/readlink"
+}
+
+echo ""
+echo "--- C5-C6: own_uid_links and resolved_links both range over own-uid pid candidates only ---"
+
+if [ -O / ]; then
+    echo "  SKIP: C5 needs a caller that does not own / (it models other-uid processes as symlinks to /)"
+else
+    assert "C5: a caller that reads 20 OTHER-uid exe links but only 1 of its 10 own is still reported blind (own_uid_links=10 resolved_links=1, WARNING), and the other-uid test binary still counts (peak=2), exit 0" \
+        bash -c '
+            set -eu
+            d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+            root="$d/proc"
+            '"$(declare -f _mk_proc _mk_reach_fixture _readlink_map_shim _field)"'
+            _mk_reach_fixture "$root"
+            : > "$d/pids"
+            for p in 4194311 4194312 4194313 4194314 4194315 4194316 4194317 4194318 4194319 4194320; do
+                echo "$p" >> "$d/pids"
+            done
+            printf "%s\t%s\n" "$root/4194311/exe" \
+                /home/u/lanes/_lane-1/target/debug/deps/reify_lsp-2f1c9ab4 > "$d/map"
+            for p in $(seq 4194321 4194340); do
+                ln -s / "$root/$p"
+                echo "$p" >> "$d/pids"
+                printf "%s\t%s\n" "$root/$p/exe" /usr/sbin/cron >> "$d/map"
+            done
+            printf "%s\t%s\n" "$root/4194321/exe" \
+                /home/v/lanes/_lane-2/target/debug/deps/reify_core-1111aaaa >> "$d/map"
+            _readlink_map_shim "$d/bin" "$d/map"
+            out=$(PATH="$d/bin:$PATH" REIFY_SAMPLER_PROC_ROOT="$root" \
+                  REIFY_SAMPLER_PIDS_CMD="cat $d/pids" \
+                  bash "'"$SAMPLER"'" --duration 0 --interval 0 2>"$d/err") \
+                && rc=0 || rc=$?
+            [ "$rc" -eq 0 ] || exit 1
+            [ "$(_field "$out" own_uid_links)" = "10" ] || exit 1
+            [ "$(_field "$out" resolved_links)" = "1" ] || exit 1
+            [ "$(_field "$out" peak)" = "2" ] || exit 1
+            grep WARNING "$d/err" | grep -qE "own_uid_links=10([^0-9]|$)"
+        '
+fi
+
+assert "C6: self and thread-self entries under PROC_ROOT are not candidates (own_uid_links=10 resolved_links=10 beside the ten-process fixture)" \
+    bash -c '
+        set -eu
+        d=$(mktemp -d); trap "rm -rf \"$d\"" EXIT
+        root="$d/proc"
+        '"$(declare -f _mk_proc _mk_reach_fixture _field)"'
+        _mk_reach_fixture "$root"
+        _mk_proc "$root" self=/usr/bin/readlink thread-self=/usr/bin/readlink
+        unset REIFY_SAMPLER_PIDS_CMD
+        out=$(REIFY_SAMPLER_PROC_ROOT="$root" \
+              bash "'"$SAMPLER"'" --duration 0 --interval 0 2>/dev/null)
+        [ "$(_field "$out" own_uid_links)" = "10" ] || exit 1
+        [ "$(_field "$out" resolved_links)" = "10" ]
     '
 
 
