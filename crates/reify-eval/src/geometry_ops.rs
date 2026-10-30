@@ -1205,15 +1205,14 @@ fn accept_variadic_length_args(
 /// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
 /// wordings are lifted VERBATIM from [`required_length_arg`].
 ///
-/// SCOPE OF "byte-identical": it is a claim about the pushed `Diagnostic` and
-/// about the `Err` string the units gate returns. The value-form callers
-/// ([`pattern_mirror`], [`pattern_circular`]) pass the decoder `Err` through
-/// unwrapped, so the op-compile `Err` reads
-/// `missing or non-Length argument 'ox' for mirror`, exactly as the SCALAR
-/// branch's [`required_length_origin3`] does. The decoders' own non-units
-/// failures (wrong variant, wrong shape, degenerate normal/direction) name the
-/// builtin themselves with the same threaded `kind_label` (`mirror: expected a
-/// Plane value, got ...`), so the label is consistent across every message.
+/// SCOPE OF "byte-identical": it holds for a given label, and the label is the
+/// caller's to choose. The value-form callers pass the decoder `Err` through
+/// unwrapped, and each decoder prefixes only its own non-units messages with the
+/// label it is given. [`pattern_mirror`] passes `kind` ("mirror", identical to
+/// its scalar branch); [`pattern_circular`] passes its `surface_name`
+/// ("circular_pattern"), so its value form names the builtin the author typed,
+/// while the scalar branch's [`required_length_origin3`] still renders
+/// `PatternKind`'s "circular" label.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -2070,8 +2069,8 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
 ///     `decode_plane_non_finite_length_origin_warns_without_a_code`);
 ///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
 ///     or a normal with non-numeric / non-finite components — these keep their
-///     pre-δ wording and push no diagnostic, because a wrong shape is not a
-///     units rejection;
+///     pre-δ wording behind the `kind_label` prefix and push no diagnostic,
+///     because a wrong shape is not a units rejection;
 ///   - zero-magnitude normal.
 ///
 /// # Visibility
@@ -2105,8 +2104,8 @@ pub(crate) fn decode_plane(
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
         format!("{kind_label}: Plane normal is not a valid 3-component numeric Point/Vector")
     })?;
-    let unit_normal =
-        unit_vector3(normal_raw).map_err(|e| format!("{kind_label}: Plane has a degenerate normal: {e}"))?;
+    let unit_normal = unit_vector3(normal_raw)
+        .map_err(|e| format!("{kind_label}: Plane has a degenerate normal: {e}"))?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -2146,8 +2145,9 @@ pub(crate) fn decode_plane(
 ///     `decode_axis_non_finite_length_origin_warns_without_a_code`;
 ///   - origin or direction of the wrong SHAPE (not a 3-component
 ///     `Point`/`Vector`), or a direction with non-numeric / non-finite
-///     components — these keep their pre-δ wording and push no diagnostic. A
-///     kernel-minted `Value::Direction` still lands here, unchanged;
+///     components — these keep their pre-δ wording behind the `kind_label`
+///     prefix and push no diagnostic. A kernel-minted `Value::Direction` still
+///     lands here, unchanged;
 ///   - zero-magnitude direction.
 ///
 /// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
@@ -2184,8 +2184,8 @@ pub(crate) fn decode_axis(
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
         format!("{kind_label}: Axis direction is not a valid 3-component numeric Point/Vector")
     })?;
-    let unit_dir =
-        unit_vector3(dir_raw).map_err(|e| format!("{kind_label}: Axis has a degenerate direction: {e}"))?;
+    let unit_dir = unit_vector3(dir_raw)
+        .map_err(|e| format!("{kind_label}: Axis has a degenerate direction: {e}"))?;
     Ok((origin_arr, unit_dir))
 }
 
@@ -4138,7 +4138,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, surface_name, diagnostics)?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,

@@ -25872,7 +25872,10 @@
             ),
             (
                 reify_ir::Value::Undef,
-                format!("mirror: expected a Plane value, got {}", reify_ir::Value::Undef),
+                format!(
+                    "mirror: expected a Plane value, got {}",
+                    reify_ir::Value::Undef
+                ),
             ),
             // Wrong SHAPE, origin side: a 2-component origin is not a units
             // failure, so it keeps the caller's pre-δ message and emits nothing.
@@ -25999,12 +26002,12 @@
     /// The wrong-SHAPE message for an axis ORIGIN (pre-δ wording plus the
     /// builtin label), supplied to `accept_length_point3` as `shape_err`.
     const AXIS_ORIGIN_SHAPE_ERR: &str =
-        "circular: Axis origin is not a valid 3-component numeric Point/Vector";
+        "circular_pattern: Axis origin is not a valid 3-component numeric Point/Vector";
 
     /// The wrong-SHAPE message for an axis DIRECTION. The direction is not
     /// gated, so it still reads through bare `point3_components`.
     const AXIS_DIRECTION_SHAPE_ERR: &str =
-        "circular: Axis direction is not a valid 3-component numeric Point/Vector";
+        "circular_pattern: Axis direction is not a valid 3-component numeric Point/Vector";
 
     /// Build a `Value::Axis` from an origin and a direction `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY direction shape.
@@ -26025,7 +26028,7 @@
             length_point3(0.01, 0.02, 0.03),
             bare_real_vector3(0.0, 0.0, 1.0),
         );
-        let (origin, dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (origin, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("a LENGTH origin beside a bare unit direction is the clean path");
         assert_eq!(
             origin,
@@ -26051,13 +26054,13 @@
             bare_real_vector3(0.01, 0.02, 0.03),
             bare_real_vector3(0.0, 0.0, 1.0),
         );
-        let got = decode_axis(&axis, "circular", &mut diagnostics);
+        let got = decode_axis(&axis, "circular_pattern", &mut diagnostics);
         assert_eq!(
             got,
-            Err("missing or non-Length argument 'ox' for circular".to_string()),
-            "the caller-facing `Err` is byte-identical to the SCALAR form's — \
-             same `ox`/`oy`/`oz` names since task 5350, and the same kind label, \
-             because both branches thread the very same `&PatternKind`"
+            Err("missing or non-Length argument 'ox' for circular_pattern".to_string()),
+            "the caller-facing `Err` is the SCALAR form's — same `ox`/`oy`/`oz` \
+             names since task 5350 — under the label the caller threads in: the \
+             builtin the author typed"
         );
         assert_eq!(
             diagnostics.len(),
@@ -26074,7 +26077,7 @@
             );
             assert_eq!(
                 d.message,
-                expected_length_rejection("circular", name, "Real")
+                expected_length_rejection("circular_pattern", name, "Real")
             );
         }
     }
@@ -26100,7 +26103,7 @@
             },
         );
         assert_eq!(
-            decode_axis(&axis, "circular", &mut diagnostics),
+            decode_axis(&axis, "circular_pattern", &mut diagnostics),
             Err(AXIS_DIRECTION_SHAPE_ERR.to_string()),
             "unchanged by δ — a `Value::Direction` is a SHAPE mismatch for the \
              bare direction read, not a units rejection"
@@ -26120,7 +26123,7 @@
             length_point3(0.0, 0.0, 0.0),
             bare_real_vector3(2.0, 0.0, 0.0),
         );
-        let (_, dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (_, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("a non-unit direction [2,0,0] normalises without error");
         assert_eq!(dir, [1.0, 0.0, 0.0]);
         assert!(
@@ -26141,11 +26144,14 @@
         let cases: Vec<(reify_ir::Value, String)> = vec![
             (
                 plane.clone(),
-                format!("circular: expected an Axis value, got {}", plane),
+                format!("circular_pattern: expected an Axis value, got {}", plane),
             ),
             (
                 reify_ir::Value::Undef,
-                format!("circular: expected an Axis value, got {}", reify_ir::Value::Undef),
+                format!(
+                    "circular_pattern: expected an Axis value, got {}",
+                    reify_ir::Value::Undef
+                ),
             ),
             (
                 axis_of(
@@ -26162,7 +26168,7 @@
                     length_point3(0.0, 0.0, 0.0),
                     bare_real_vector3(0.0, 0.0, 0.0),
                 ),
-                "circular: Axis has a degenerate direction: zero-magnitude vector \
+                "circular_pattern: Axis has a degenerate direction: zero-magnitude vector \
                  [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
                  unit direction"
                     .to_string(),
@@ -26172,7 +26178,7 @@
         for (value, expected) in cases {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             assert_eq!(
-                decode_axis(&value, "circular", &mut diagnostics),
+                decode_axis(&value, "circular_pattern", &mut diagnostics),
                 Err(expected.clone()),
                 "pre-δ wording must survive byte-identical for {:?}",
                 value
@@ -26203,8 +26209,8 @@
             bare_real_vector3(0.0, 0.0, 1.0),
         );
         assert_eq!(
-            decode_axis(&axis, "circular", &mut diagnostics),
-            Err("missing or non-Length argument 'oy' for circular".to_string()),
+            decode_axis(&axis, "circular_pattern", &mut diagnostics),
+            Err("missing or non-Length argument 'oy' for circular_pattern".to_string()),
             "a non-finite LENGTH takes the units `Err`, NOT the pre-δ shape \
              message; `oy` because the FIRST error wins and only `oy` failed"
         );
@@ -26225,7 +26231,7 @@
         );
         assert_eq!(
             diagnostics[0].message,
-            "argument 'oy' for circular evaluated to a non-finite Length"
+            "argument 'oy' for circular_pattern evaluated to a non-finite Length"
         );
     }
 
@@ -26723,7 +26729,7 @@
             origin: Box::new(length_point3(0.0, 0.02, 0.0)),
             direction: Box::new(bare_real_vector3(1.0, 0.0, 0.0)),
         };
-        let (axis_origin, axis_dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (axis_origin, axis_dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("a bare DIRECTION over a LENGTH origin must decode clean");
         assert_eq!(axis_origin, [0.0, 0.02, 0.0]);
         assert_eq!(axis_dir, [1.0, 0.0, 0.0]);
@@ -27007,7 +27013,7 @@
         let origin = make_point3_length_val(0.0, 0.0, 0.0);
         let val = reify_stdlib::eval_builtin("axis_z", std::slice::from_ref(&origin));
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (got_origin, got_dir) = decode_axis(&val, "circular", &mut diagnostics)
+        let (got_origin, got_dir) = decode_axis(&val, "circular_pattern", &mut diagnostics)
             .expect("axis_z should decode cleanly");
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
@@ -27049,7 +27055,7 @@
         let origin = make_point3_length_val(0.001, 0.002, 0.003);
         let val = reify_stdlib::eval_builtin("axis_x", std::slice::from_ref(&origin));
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (got_origin, got_dir) = decode_axis(&val, "circular", &mut diagnostics)
+        let (got_origin, got_dir) = decode_axis(&val, "circular_pattern", &mut diagnostics)
             .expect("axis_x with offset origin should decode");
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
@@ -27090,7 +27096,7 @@
         let origin = make_point3_length_val(0.0, 0.0, 0.0);
         let val = reify_stdlib::eval_builtin("axis_y", std::slice::from_ref(&origin));
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (got_origin, got_dir) = decode_axis(&val, "circular", &mut diagnostics)
+        let (got_origin, got_dir) = decode_axis(&val, "circular_pattern", &mut diagnostics)
             .expect("axis_y should decode cleanly");
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
@@ -27132,7 +27138,7 @@
             direction: Box::new(non_unit_dir),
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (_, got_dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (_, got_dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("non-unit direction [2,0,0] should normalize without error");
         assert!(
             (got_dir[0] - 1.0).abs() < 1e-12,
@@ -27161,7 +27167,7 @@
             normal: Box::new(normal),
         };
         assert!(
-            decode_axis(&plane, "circular", &mut Vec::new()).is_err(),
+            decode_axis(&plane, "circular_pattern", &mut Vec::new()).is_err(),
             "Value::Plane must be rejected by decode_axis (wrong variant)"
         );
     }
@@ -27170,7 +27176,7 @@
     #[test]
     fn decode_axis_rejects_undef() {
         assert!(
-            decode_axis(&reify_ir::Value::Undef, "circular", &mut Vec::new()).is_err(),
+            decode_axis(&reify_ir::Value::Undef, "circular_pattern", &mut Vec::new()).is_err(),
             "Value::Undef must be rejected by decode_axis"
         );
     }
@@ -27193,7 +27199,7 @@
             direction: Box::new(zero_dir),
         };
         assert!(
-            decode_axis(&axis, "circular", &mut Vec::new()).is_err(),
+            decode_axis(&axis, "circular_pattern", &mut Vec::new()).is_err(),
             "zero-magnitude direction must be rejected by decode_axis"
         );
     }
