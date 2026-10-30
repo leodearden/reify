@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use reify_compiler::CompiledModule;
-use reify_core::{DimensionVector, NAMED_DIMENSIONS};
-use reify_ir::{CompiledExprKind, Value};
+use reify_core::{DimensionLadder, DimensionVector, NAMED_DIMENSIONS, unit_ladders};
+use reify_ir::{CompiledExprKind, Value, dimension_unit_label};
 use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
 use strum::IntoEnumIterator;
 
@@ -103,8 +103,67 @@ impl fmt::Display for Report {
     }
 }
 
+/// Every label the four surfaces print, each with the scale that surface gives it.
 fn surface_emissions() -> Vec<Emission> {
-    Vec::new()
+    let from_named_dimensions = NAMED_DIMENSIONS
+        .iter()
+        .flat_map(|&(dimension, name)| named_dimension_emissions(dimension, name));
+    let from_ladders = unit_ladders().into_iter().flat_map(ladder_rung_emissions);
+    from_named_dimensions.chain(from_ladders).collect()
+}
+
+/// S1 to S3 for one `NAMED_DIMENSIONS` row. Each scale is the surface's own claim: S2's comes
+/// from the same `to_display_units` call as its label, and S1 and S3 label the raw SI magnitude.
+fn named_dimension_emissions(
+    dimension: DimensionVector,
+    dimension_name: &'static str,
+) -> [Emission; 3] {
+    let emission = |surface, label: String, si_scale| Emission {
+        surface,
+        dimension_name,
+        dimension,
+        label,
+        si_scale,
+    };
+    let (shown, display_label) = dimension.to_display_units(1.0);
+    [
+        emission(Surface::DimensionDisplay, dimension.to_string(), 1.0),
+        emission(
+            Surface::ToDisplayUnits,
+            display_label.into_owned(),
+            1.0 / shown,
+        ),
+        emission(
+            Surface::DimensionUnitLabel,
+            dimension_unit_label(&dimension).into_owned(),
+            1.0,
+        ),
+    ]
+}
+
+/// S4: one emission per rung of a curated ladder, at the rung's own scale.
+fn ladder_rung_emissions(ladder: DimensionLadder) -> Vec<Emission> {
+    let (dimension, dimension_name) = NAMED_DIMENSIONS
+        .iter()
+        .copied()
+        .find(|&(_, name)| name == ladder.dimension)
+        .unwrap_or_else(|| {
+            panic!(
+                "unit ladder `{}` names no NAMED_DIMENSIONS row",
+                ladder.dimension
+            )
+        });
+    ladder
+        .units
+        .into_iter()
+        .map(|rung| Emission {
+            surface: Surface::UnitLadderRung,
+            dimension_name,
+            dimension,
+            label: rung.label,
+            si_scale: rung.si_scale,
+        })
+        .collect()
 }
 
 /// What `1{label}` compiles to: its SI value and dimension, or why it does not compile.
