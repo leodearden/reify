@@ -283,7 +283,7 @@ fn fea_bracket_minimize_mass_example_compiles_and_pins_the_design_loop() {
             if function_name == FEA_CALL)
     };
 
-    let mut max_over_von_mises = 0usize;
+    let mut applies_max_to_von_mises = false;
     let mut reduces_the_fea_stress_field = false;
     constraint.walk(&mut |node| {
         let Some([von_mises_call]) = exact_function_call(node, "max") else {
@@ -292,13 +292,13 @@ fn fea_bracket_minimize_mass_example_compiles_and_pins_the_design_loop() {
         let Some([field]) = exact_function_call(von_mises_call, "von_mises") else {
             return;
         };
-        max_over_von_mises += 1;
+        applies_max_to_von_mises = true;
         reduces_the_fea_stress_field |= any_node(field, |n| {
             member_read(n, FIELD_MEMBER).is_some_and(|result| any_node(result, is_fea_call))
         });
     });
     assert!(
-        max_over_von_mises > 0,
+        applies_max_to_von_mises,
         "leaf signal 'the loop reduces the stress field': {TEMPLATE_NAME}'s single \
          constraint must apply `max` to a `von_mises(...)` call (exact function names). \
          That field reduction is what this example exists to demonstrate; without it the \
