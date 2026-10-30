@@ -1,0 +1,14 @@
+module auto_derived_equality
+// A constructor-argument `auto` pinned by an equality against a DERIVED let
+// (`100mm + 23mm`) rather than a literal. `reify eval` solves the auto to
+// 0.12299999999999939 m, a ~6e-16 residual against 0.123 m, so a driver that
+// solves must report the equality Satisfied, not violated, at that residual.
+pub structure Rod {
+    param length : Length = 5mm
+    let body = cylinder(3mm, length)
+}
+pub structure DerivedEq {
+    let derived : Length = 100mm + 23mm
+    sub rod = Rod(length: auto)
+    constraint self.rod.length == derived
+}

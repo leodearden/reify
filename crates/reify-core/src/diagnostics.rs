@@ -4659,13 +4659,13 @@ pub enum DiagnosticCode {
     /// sites the severity is conditioned on the engine's compute registry:
     /// `Severity::Warning` iff the registry is entirely EMPTY, `Severity::Error`
     /// otherwise. An empty registry means the *driver* declared a
-    /// trampoline-free posture — `reify check` and `reify-lsp` both construct
-    /// their engine without calling `register_compute_trampolines` — so the
-    /// missing trampoline is expected, not a defect, and reporting it as an
-    /// error while exiting 0 is a loud/silent mismatch. A driver that
-    /// registered SOME trampolines (`reify eval`, `reify build`: 19 production
-    /// targets) and is still missing THIS one is a genuine defect, so the
-    /// severity stays `Severity::Error` there and keeps gating those exit codes.
+    /// trampoline-free posture — `reify-lsp` constructs its engine without
+    /// calling `register_compute_trampolines` — so the missing trampoline is
+    /// expected, not a defect, and reporting it as an error is a loud/silent
+    /// mismatch. A driver that registered SOME trampolines (`reify check`,
+    /// `reify eval`, `reify build`: 19 production targets) and is still missing
+    /// THIS one is a genuine defect, so the severity stays `Severity::Error`
+    /// there and keeps gating those exit codes.
     /// At the two HARD sites the severity is UNCONDITIONALLY `Severity::Error`
     /// — see `hard_no_trampoline_diagnostic`'s rustdoc for why the predicate is
     /// inapplicable there on the merits.
@@ -4684,14 +4684,15 @@ pub enum DiagnosticCode {
     /// byte-identical copies from two `@optimized` call sites collapsed into
     /// ONE printed line on `cmd_check`'s realization sub-path; they now both
     /// survive, so the line count under `check` is per CALL SITE rather than
-    /// per distinct message. Measured on `examples/anisotropic_bar.ri`: two
+    /// per distinct message. Measured while `check`'s compute registry was
+    /// still empty, on `examples/anisotropic_bar.ri`: two
     /// `solver::elastic_static` lines; on `examples/fdm_bracket.ri`: three
     /// lines over two distinct targets. That is the behaviour
     /// `dedup_diagnostics`' own rationale asks for — a coded entry's
     /// multiplicity is a per-callout fact, not re-run noise — and the
     /// coded-vs-uncoded split is pinned by `dedup_collapses_only_uncoded_entries`
     /// and `dedup_exempts_the_coded_missing_trampoline_pair` in
-    /// `crates/reify-cli/src/main.rs`.
+    /// `crates/reify-cli/src/check_verdict/d2_pass_ordering_tests.rs`.
     ///
     /// Minting rationale: `DiagnosticCode` is `#[non_exhaustive]`, carries no
     /// `VARIANT_COUNT` backstop, and is never matched exhaustively anywhere in

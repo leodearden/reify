@@ -322,14 +322,12 @@ crates/reify-eval/src/engine_admin.rs :: cache.rs:482
 crates/reify-eval/src/engine_admin.rs :: cache.rs:597
 crates/reify-eval/src/engine_admin.rs :: cache.rs:961
 crates/reify-eval/src/engine_admin.rs :: lib.rs:50
-crates/reify-eval/src/engine_admin.rs :: reify-cli/src/main.rs:450
 crates/reify-eval/src/engine_build.rs :: crates/reify-compiler/src/types.rs:848
 crates/reify-eval/src/engine_build.rs :: crates/reify-eval/src/unfold.rs:292
 crates/reify-eval/src/engine_build.rs :: deps.rs:149
 crates/reify-eval/src/engine_build.rs :: deps.rs:2795
 crates/reify-eval/src/engine_build.rs :: engine_build.rs ~6693
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:103
-crates/reify-eval/src/engine_build.rs :: engine_build.rs:1663
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:1802
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:5460
 crates/reify-eval/src/engine_build.rs :: engine_build.rs:5982
@@ -597,7 +595,6 @@ crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs :: reify-eval/tests/har
 crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs :: reify-ir/src/value.rs:94
 crates/reify-kernel-openvdb/src/register.rs :: crates/reify-kernel-manifold/src/register.rs:106
 crates/reify-lsp/src/analysis.rs :: crates/reify-eval/src/engine_eval.rs:210
-crates/reify-lsp/src/analysis.rs :: server.rs:268
 crates/reify-lsp/src/completion.rs :: crates/reify-compiler/src/type_resolution.rs:3790
 crates/reify-lsp/src/diagnostics.rs :: cache.rs:482
 crates/reify-lsp/src/diagnostics.rs :: crates/reify-eval/src/engine_eval.rs:210

@@ -1,24 +1,31 @@
-// CLI strict-mode fixture for §10 row 12 (task #4495/λ, type-hygiene PRD).
+// CLI strict-mode fixture for §10 row 12 of the type-hygiene PRD.
 //
-// Used by crates/reify-cli/tests/cli_type_hygiene_strict.rs to exercise the
-// θ (task #4488) `--strict` exit-code split:
+// Used by crates/reify-cli/tests/harness_cli/cli_type_hygiene_strict.rs to
+// exercise the `--strict` exit-code split:
 //
-//   reify check type_hygiene_strict.ri         → exit 0 (Indeterminate is OK)
+//   reify check type_hygiene_strict.ri          → exit 0 (Indeterminate is OK)
 //   reify check --strict type_hygiene_strict.ri → exit non-zero (Strict fail)
 //
 // Why the constraint is INDETERMINATE (not Satisfied or Violated):
-//   - `param mass : Mass = auto` — `auto` resolves to Value::Auto at check time
-//     (no geometry realization is performed by `reify check`).
-//   - β (task #4485) bare-zero coercion applies to `0` in `mass > 0`, giving it
-//     the `Mass` dimension. But the LEFT operand `mass` is Value::Auto → Undef.
-//   - ι (task #4489) classify_undef sees the leaf cell as Undef → Indeterminate.
+//   - `mass` is Undef because `divisor` is zero. The Undef comes from a
+//     run-dependent value: change `divisor` and the constraint resolves.
+//   - Bare-zero coercion still applies to `0` in `mass > 0`, giving it the
+//     `Mass` dimension, but the LEFT operand `mass` is Undef.
+//   - classify_undef sees the leaf cell as Undef → Indeterminate.
+//
+// This file must contain no `auto` param. A constraint that reads an Undef
+// operand AND an auto makes the solve Infeasible (`comparison_residual` scores
+// a non-numeric operand 1.0), which is an error that flips the exit code. An
+// auto-free Undef is dropped from the solve, so the verdict here does not
+// depend on whether the driver solves.
 //
 // Design choice (OCCT-independence):
 //   Geometry-based indeterminacy (e.g. `constraint trace(moment_of_inertia(b,...)) > 0`)
 //   would be SATISFIED under OCCT realization, making the strict-fail assertion
-//   mode-dependent. An `auto` mass param is unconditionally Indeterminate on all
-//   runners and avoids the OCCT-gating complication.
+//   mode-dependent. An Undef scalar is Indeterminate on all runners and avoids
+//   the OCCT-gating complication.
 structure def TypeHygieneStrict {
-    param mass : Mass = auto
+    param divisor : Int = 0
+    let mass : Mass = 1kg / divisor
     constraint mass > 0 && mass < 100kg
 }

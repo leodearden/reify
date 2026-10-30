@@ -315,10 +315,9 @@ fn parse_and_compile_with_cfg(
 /// membership, ordering, and the INV-FEA-1 single-source-of-truth rationale;
 /// this wrapper does not restate them).
 ///
-/// Exists to name the `MorphRegistration::Enabled` choice once and keep both
-/// call sites — `cmd_build` (solver-free, calls this directly) and
-/// [`configured_eval_engine`] (full solver) — one-line, with no drift between
-/// them.
+/// Exists to name the `MorphRegistration::Enabled` choice once; its one
+/// production caller is [`production_cli_engine`], which every CLI engine
+/// ([`configured_eval_engine`], [`configured_check_build_engine`]) goes through.
 ///
 /// The morph producer is dormant-safe (task 4744 β): the dispatch only
 /// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
@@ -329,6 +328,45 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
     engine.register_production_compute_fns(reify_eval::MorphRegistration::Enabled(
         reify_mesh_morph::register_morph_producer,
     ));
+}
+
+/// A production CLI engine: `construct` called with `posture`, then the
+/// compute trampolines registered so `@optimized` targets dispatch.
+/// [`configured_eval_engine`] and [`configured_check_build_engine`] differ only
+/// in the posture they pass and in what they attach afterwards.
+fn production_cli_engine(
+    posture: reify_eval::SolverPosture,
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    let mut engine = construct(posture);
+    register_compute_trampolines(&mut engine);
+    engine
+}
+
+/// `cmd_check`'s and `cmd_build`'s solver posture: the solver's default budget,
+/// and nothing persisted is served, because [`configured_check_build_engine`]
+/// attaches no persistent cache.
+const CHECK_BUILD_POSTURE: reify_eval::SolverPosture =
+    reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH);
+
+/// Construct and configure the [`reify_eval::Engine`] that `cmd_check` and
+/// `cmd_build` run: `construct` is called with [`CHECK_BUILD_POSTURE`], whose
+/// `Solve` posture wires the production [`reify_constraints::SolverRegistry`]
+/// so autos resolve as they do under `reify eval`, and the compute trampolines
+/// are registered.
+///
+/// The registered trampolines also keep the missing-trampoline diagnostic an
+/// Error, which both commands gate on: on an engine whose compute registry is
+/// entirely empty it would be a Warning, leaving FEA-result constraints
+/// Indeterminate without failing the command.
+///
+/// No persistent cache is attached: the posture's `StalenessPolicy::Fresh`
+/// forbids serving an earlier session's results, and
+/// `Engine::set_persistent_cache_dir` refuses a cache on such an engine.
+fn configured_check_build_engine(
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    production_cli_engine(CHECK_BUILD_POSTURE, construct)
 }
 
 /// The eval family's (`cmd_eval`, `cmd_report`, `cmd_explain`) solver posture:
@@ -365,16 +403,10 @@ const EVAL_FAMILY_POSTURE: reify_eval::SolverPosture =
 /// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
 /// "falling back to tet meshing" warning even though the FEA trampoline independently
 /// re-classifies and runs the correct shell solve.
-///
-/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
-/// [`register_compute_trampolines`] directly (constructs `SolverPosture::SolverFree`)
-/// to preserve cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
-/// `cmd_build` for rationale.
 fn configured_eval_engine(
     construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
 ) -> reify_eval::Engine {
-    let mut engine = construct(EVAL_FAMILY_POSTURE);
-    register_compute_trampolines(&mut engine);
+    let mut engine = production_cli_engine(EVAL_FAMILY_POSTURE, construct);
     // Resolve the persistent FEA cache dir from env/config/defaults and wire it
     // into the engine.  Best-effort: a resolver error (e.g. bad
     // REIFY_CACHE_MAX_BYTES env var) is logged at DEBUG and the engine proceeds
@@ -566,6 +598,32 @@ mod persistent_cache_cli_wiring_tests {
                 panic!("the eval family must construct a Solve posture, got SolverFree")
             }
         }
+    }
+
+    /// `reify check` and `reify build` solve with a fresh profile, attach no
+    /// persistent cache, and register the compute trampolines.
+    #[test]
+    fn configured_check_build_engine_solves_fresh_with_trampolines_and_no_cache() {
+        let engine = configured_check_build_engine(|posture| {
+            reify_eval::Engine::new(
+                posture,
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            )
+        });
+        assert_eq!(
+            engine.solver_posture(),
+            reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            "check and build must solve, and serve nothing persisted"
+        );
+        assert!(
+            engine.persistent_cache_dir().is_none(),
+            "check and build must not attach the persistent cache"
+        );
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "check and build must register the production compute trampolines"
+        );
     }
 
     /// The `--cache-dir` flag override (modelled by calling

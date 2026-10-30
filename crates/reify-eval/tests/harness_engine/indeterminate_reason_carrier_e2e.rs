@@ -23,9 +23,9 @@ use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
 const DIC_INERT_CONNECT: &str =
     include_str!("../../../reify-cli/tests/fixtures/dic_inert_connect.ri");
 
-/// The `reify check` fixture the CLI harness drives: the `auto` tolerance is
-/// never resolved, so the constraint that reads it is Indeterminate for want
-/// of an input.
+/// The `reify check` fixture the CLI harness drives: the tolerance divides by
+/// a zero param and is Undef, so the constraint that reads it is Indeterminate
+/// for want of an input.
 const BRACKET_INDETERMINATE: &str =
     include_str!("../../../reify-cli/tests/fixtures/bracket_indeterminate.ri");
 
@@ -104,7 +104,7 @@ fn inert_connect_records_the_operator_undefined_reason() {
 }
 
 #[test]
-fn unresolved_auto_records_the_undefined_input_cell() {
+fn undef_input_records_the_undefined_input_cell() {
     let result = check_kernel_less(BRACKET_INDETERMINATE);
 
     let tolerance = entry_named(&result, "Bracket#constraint[1]");

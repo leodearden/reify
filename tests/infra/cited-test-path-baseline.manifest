@@ -40,7 +40,6 @@ crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs :: crates/reify
 crates/reify-cli/tests/fixtures/appearance_violated.ri :: crates/reify-cli/tests/cli_check.rs
 crates/reify-cli/tests/fixtures/result_match_bore_err.ri :: crates/reify-eval/tests/result_match_e2e.rs
 crates/reify-cli/tests/fixtures/result_match_bore_ok.ri :: crates/reify-eval/tests/result_match_e2e.rs
-crates/reify-cli/tests/fixtures/type_hygiene_strict.ri :: crates/reify-cli/tests/cli_type_hygiene_strict.rs
 crates/reify-cli/tests/harness_cli/cli_eval_result_fallback.rs :: crates/reify-eval/tests/result_fallback_e2e.rs
 crates/reify-cli/tests/harness_cli/cli_eval_result_match.rs :: crates/reify-eval/tests/result_match_e2e.rs
 crates/reify-cli/tests/harness_cli/cli_eval_result_recovery.rs :: crates/reify-eval/tests/result_recovery_e2e.rs
