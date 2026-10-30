@@ -62,8 +62,8 @@
 //! graph. Beyond the inert status on [`Manifest`], nothing enforces the
 //! policy either (see `docs/notes/reify-toml-schema.md`). The
 //! three `commitment_policy` values mirror
-//! `reify_runtime::NodeCommitmentOverride` verbatim: `commit_if_slow`,
-//! `always_cancel_when_stale`, `only_run_on_final_inputs`. See
+//! `reify_runtime::commitment::NodeCommitmentOverride` verbatim:
+//! `commit_if_slow`, `always_cancel_when_stale`, `only_run_on_final_inputs`. See
 //! `docs/prds/v0_3/node-traits-unification.md` §6 "Level 3" for the
 //! precedence chain that places these entries.
 //!
@@ -143,8 +143,8 @@ pub const DEFAULT_AUTO_TYPE_PARAM_MAX_CROSS_PRODUCT_SIZE: usize = 100_000;
 
 /// Commitment policy for a per-node override, as declared in `reify.toml`.
 ///
-/// Mirrors the three `reify_runtime::NodeCommitmentOverride` variants
-/// verbatim; the consumer (`reify-runtime`) owns the conversion.
+/// Mirrors the three `reify_runtime::commitment::NodeCommitmentOverride`
+/// variants verbatim; the consumer (`reify-runtime`) owns the conversion.
 /// TOML values use `snake_case`: `commit_if_slow`, `always_cancel_when_stale`,
 /// `only_run_on_final_inputs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
