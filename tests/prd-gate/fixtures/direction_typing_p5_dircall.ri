@@ -1,0 +1,6 @@
+module p5_dircall
+structure def Main {
+    let a = dir(0, 1, 0)
+    let b = vector(axis_y(point3(0mm, 0mm, 0mm)).dir)
+    let c = frame(1)
+}

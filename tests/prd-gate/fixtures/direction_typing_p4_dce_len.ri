@@ -1,0 +1,9 @@
+module p4_dce_len
+enum E {
+    Normal,
+    Fixed { n: Length },
+}
+structure def Main {
+    param L : Length = 3mm
+    let b = Fixed { n: L }
+}

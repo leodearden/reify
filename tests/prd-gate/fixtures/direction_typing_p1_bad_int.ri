@@ -1,0 +1,8 @@
+module p1_bad_int
+structure def S {
+    param f : Frame
+}
+structure def Main {
+    let s = S(f: 5)
+    let g = s.f
+}

@@ -1,0 +1,13 @@
+module p4_dce_payload
+enum PressureDirection {
+    Normal,
+    Fixed { dir: Direction },
+}
+structure def Main {
+    let ax = axis_y(point3(0mm, 0mm, 0mm)).dir
+    let b = Fixed { dir: ax }
+    let c = match b {
+        Normal => 0,
+        Fixed { dir: d } => 1
+    }
+}
