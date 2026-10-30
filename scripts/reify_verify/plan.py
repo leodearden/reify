@@ -144,13 +144,55 @@ class NodeLaneJoin:
     pass
 
 
-Command = Script | Cargo | Chain | Guarded | NodeProject | NodeLaneStart | NodeLaneJoin
+@dataclass(frozen=True)
+class HeadStamp:
+    """`git rev-parse HEAD > <path> 2>/dev/null || true`: records the commit a build was made from."""
+
+    path: str
+
+
+@dataclass(frozen=True)
+class ArtifactAssertion:
+    """`if test -f <manifest> && [ ! -f <artifact> ]; then echo '<error>' >&2; false; fi 2>&1`."""
+
+    manifest: str
+    artifact: str
+    error: str
+
+
+@dataclass(frozen=True)
+class InfraLeafLoop:
+    """One selective-infra leaf: every file `glob` matches, run in turn under `env` and the scrub.
+
+    `scrub_prefix` is the `env -u …` text the git-env scrub seam prints;
+    `unset` names the further variables the member runs without.
+    """
+
+    glob: str
+    env: tuple[tuple[str, str], ...]
+    wall: str
+    scrub_prefix: str
+    unset: tuple[str, ...]
+
+
+Command = (
+    Script
+    | Cargo
+    | Chain
+    | Guarded
+    | NodeProject
+    | NodeLaneStart
+    | NodeLaneJoin
+    | HeadStamp
+    | ArtifactAssertion
+    | InfraLeafLoop
+)
 
 KIND_COMMANDS = MappingProxyType(
     {
         StepKind.CARGO: (Cargo, Guarded),
-        StepKind.TOOL: (Script, Guarded, NodeProject),
-        StepKind.BUILTIN: (),
+        StepKind.TOOL: (Script, Guarded, NodeProject, InfraLeafLoop),
+        StepKind.BUILTIN: (ArtifactAssertion,),
         StepKind.MAIN_SHELL: (NodeLaneStart, NodeLaneJoin),
         StepKind.SENTINEL: (),
     }

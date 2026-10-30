@@ -19,10 +19,13 @@ from reify_verify.environment import (
     UnsetCause,
 )
 from reify_verify.plan import (
+    ArtifactAssertion,
     Cargo,
     Chain,
     Command,
     Guarded,
+    HeadStamp,
+    InfraLeafLoop,
     NodeLaneJoin,
     NodeLaneStart,
     NodeProject,
@@ -94,6 +97,14 @@ def render_command(command: Command) -> str:
             )
         case NodeLaneJoin():
             return f'wait "${NODE_BG_PID}"'
+        case HeadStamp(path=path):
+            return f"git rev-parse HEAD > {path} 2>/dev/null || true"
+        case ArtifactAssertion(manifest=manifest, artifact=artifact, error=error):
+            return (
+                f"if test -f {manifest} && [ ! -f {artifact} ]; then echo '{error}' >&2; false; fi 2>&1"
+            )
+        case InfraLeafLoop():
+            return _infra_leaf_loop(command)
     raise TypeError(f"render_command: not a Command: {command!r}")
 
 
@@ -118,6 +129,15 @@ def _cargo(cargo: Cargo) -> str:
     return (
         f"{KILL_AFTER} {cargo.wall} {cargo.prio}cargo {cargo.subcommand}{release} "
         f"{selector}{args}{redirect}"
+    )
+
+
+def _infra_leaf_loop(leaf: InfraLeafLoop) -> str:
+    env = "".join(f"{name}={value} " for name, value in leaf.env)
+    unset = "".join(f" -u {name}" for name in leaf.unset)
+    return (
+        f'( for _vt in {leaf.glob}; do [ -f "$_vt" ] || continue; '
+        f'{env}{KILL_AFTER} {leaf.wall} {leaf.scrub_prefix}{unset} bash "$_vt" || exit $?; done )'
     )
 
 

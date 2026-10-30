@@ -15,18 +15,23 @@ list a later --print-gates reads (PRD D12).
 """
 
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from reify_verify import childproc, environment, knobs, narrowing, scope, selection
+from reify_verify import bashcall, childproc, environment, knobs, narrowing, scope, selection
+from reify_verify.bashcall import BashCall, DataFile
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
+    ArtifactAssertion,
     Cargo,
     Chain,
     Guarded,
+    HeadStamp,
+    InfraLeafLoop,
     NodeLaneJoin,
     NodeLaneStart,
     NodeProject,
@@ -47,6 +52,8 @@ from reify_verify.selection import Selection
 ERROR = "verify.sh: ERROR — "
 CUTOVER = "the S18 cutover (docs/prds/v0_6/verify-structured-plan-and-role-table.md)"
 TEST_ACTIONS = (Action.TEST, Action.ALL)
+GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
+RUN_ALL = DataFile("tests/infra/run_all.sh")
 
 
 @dataclass(frozen=True)
@@ -81,6 +88,8 @@ def plan_invocation(
     narrowed, narrowing_warnings = narrowing.narrow(
         decision, invocation.narrow, repo_root, planning
     )
+    families = Families.of(invocation.action)
+    vitest, vitest_warnings = VitestArm.of(families, narrowed, planning)
     profile_selection = invocation.profile_arg or role_policy.default_profile
     header = PlanHeader(
         action=invocation.action,
@@ -102,7 +111,7 @@ def plan_invocation(
         environment=step_env.lines,
         steps=build_steps(
             PlanInputs(
-                families=Families.of(invocation.action),
+                families=families,
                 include_infra=invocation.include_infra,
                 decision=decision,
                 narrowing=narrowed,
@@ -110,7 +119,9 @@ def plan_invocation(
                 role_policy=role_policy,
                 cargo_prio=prio.prefix,
                 walls=Walls.resolve(env),
-                node_lane=NodeLane.compose(Families.of(invocation.action), decision),
+                node_lane=NodeLane.compose(families, decision, vitest),
+                infra_suite_active=knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value,
+                git_env_scrub_prefix=lambda: _git_env_scrub_prefix(repo_root, planning),
             )
         ),
     )
@@ -121,6 +132,7 @@ def plan_invocation(
         *gather_warnings,
         *selection_warnings,
         *narrowing_warnings,
+        *vitest_warnings,
     )
     return Planned(plan, diagnostics)
 
@@ -142,6 +154,11 @@ def _test_region_refusal(action: Action) -> Refused:
 
 def _nextest_available(env: Mapping[str, str], repo_root: Path) -> bool:
     return childproc.run(["cargo", "nextest", "--version"], repo_root, env).returncode == 0
+
+
+def _git_env_scrub_prefix(repo_root: Path, env: Mapping[str, str]) -> str:
+    """The `env -u …` prefix, as bash's `$(reify_git_env_scrub_prefix)` captures it."""
+    return bashcall.run(GIT_ENV_SCRUB_PREFIX, (), repo_root, env).stdout.rstrip("\n")
 
 
 @dataclass(frozen=True)
@@ -176,6 +193,49 @@ class Walls:
         )
 
 
+GUI_VITEST_RUN = "scripts/gui-vitest-run.sh"
+VITEST_SPEC_CHARS = re.compile(r"[A-Za-z0-9._/ -]+", re.ASCII)
+GUI_SPECS_REJECTED = (
+    f"verify.sh: WARNING — {knobs.GUI_RETRY_SPECS.name} contains characters outside "
+    "[A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite"
+)
+
+
+@dataclass(frozen=True)
+class VitestArm:
+    """The gui project's vitest run: the validated retry specs verbatim, or "" for the full suite."""
+
+    specs: str
+
+    @property
+    def spec_count(self) -> int:
+        return len(self.specs.split())
+
+    @property
+    def command(self) -> str:
+        return f"../{GUI_VITEST_RUN} {self.specs}" if self.specs else f"../{GUI_VITEST_RUN}"
+
+    @classmethod
+    def of(
+        cls, families: Families, narrowed: Narrowing, env: Mapping[str, str]
+    ) -> tuple["VitestArm | None", tuple[str, ...]]:
+        """The test side's arm when the node lane runs vitest, and the warning a rejected spec list prints.
+
+        The specs reach a `bash -c '…'` string raw, so they must hold only
+        path characters, and no token may read as an option.
+        """
+        if not (families.test and narrowed.run_gui_vitest):
+            return None, ()
+        specs = knobs.resolve(knobs.GUI_RETRY_SPECS, env).value
+        if not specs:
+            return cls(""), ()
+        if VITEST_SPEC_CHARS.fullmatch(specs) and not any(
+            token.startswith("-") for token in specs.split()
+        ):
+            return cls(specs), ()
+        return cls(""), (GUI_SPECS_REJECTED,)
+
+
 @dataclass(frozen=True)
 class NodeLane:
     """The gui, sidecar and tree-sitter node projects, composed once per plan."""
@@ -183,17 +243,30 @@ class NodeLane:
     gui: NodeProject
     sidecar: NodeProject
     tree_sitter: NodeProject
+    vitest: VitestArm | None
 
     @property
     def projects(self) -> tuple[NodeProject, ...]:
         return (self.gui, self.sidecar, self.tree_sitter)
 
+    @property
+    def gui_specs_applied(self) -> int:
+        """The validated retry spec count the retry marker reports as gui=."""
+        return self.vitest.spec_count if self.vitest else 0
+
+    @property
+    def gui_gate_path(self) -> str | None:
+        return GUI_VITEST_RUN if self.vitest else None
+
     @classmethod
-    def compose(cls, families: Families, decision: ScopeDecision) -> "NodeLane | None":
+    def compose(
+        cls, families: Families, decision: ScopeDecision, vitest: VitestArm | None
+    ) -> "NodeLane | None":
         if not (decision.run_gui and (families.test or families.lint)):
             return None
+        vitest_run = (vitest.command,) if vitest else ()
         return cls(
-            gui=NodeProject("-d", "gui", "gui", 15, ("npm ci", "npm run typecheck")),
+            gui=NodeProject("-d", "gui", "gui", 15, ("npm ci", "npm run typecheck", *vitest_run)),
             sidecar=NodeProject(
                 "-f", "gui/sidecar/package-lock.json", "gui/sidecar", 10,
                 ("npm ci", "npm run typecheck", "npm run typecheck:test"),
@@ -201,6 +274,7 @@ class NodeLane:
             tree_sitter=NodeProject(
                 "-f", "tree-sitter-reify/package-lock.json", "tree-sitter-reify", 10, ("npm ci",),
             ),
+            vitest=vitest,
         )
 
 
@@ -215,6 +289,8 @@ class PlanInputs:
     cargo_prio: str
     walls: Walls
     node_lane: NodeLane | None
+    infra_suite_active: bool
+    git_env_scrub_prefix: Callable[[], str]
 
     @property
     def selector(self) -> Selector:
@@ -248,12 +324,31 @@ COMPILE_GATE = Script("scripts/verify.sh", ("compile-gate",))
 FRESHNESS_CHECK = Script("scripts/tree-sitter-freshness.sh", ("check",))
 GUI_SIDECAR_PLACEHOLDER = "scripts/ensure-gui-sidecar-placeholder.sh"
 GUI_CRATE_MANIFEST = "gui/src-tauri/Cargo.toml"
+TEST_INFRA_CHECKS = (("tests/sync_comments_test.sh", "10m"),)
 LINT_INFRA_CHECKS = (
     ("scripts/test_pm_standardization.sh", "10m"),
     ("scripts/check_event_inventory.sh", "5m"),
     ("scripts/check-nan-safe-ordering.sh", "5m"),
     ("scripts/check-compute-trampoline-registration.sh", "5m"),
 )
+RELEASE_PREBUILDS = ("reify-audit", "reify-cli")
+AUDIT_MANIFEST = "crates/reify-audit/Cargo.toml"
+AUDIT_BINARY_MISSING = ArtifactAssertion(
+    AUDIT_MANIFEST,
+    "target/release/reify-audit",
+    "ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; "
+    "restore the pre-step above or remove this check deliberately",
+)
+CLI_BINARY = "target/release/reify"
+CLI_BINARY_STAMP = HeadStamp("target/.reify-bin-sha")
+RUN_ALL_POOL_ENV = (
+    ("REIFY_AUDIT_NO_COLD_BUILD", "1"),
+    ("REIFY_RUN_ALL_EXCLUDE_HOST_INFRA", "1"),
+    ("REIFY_RUN_ALL_CONTENT_SKIP", "1"),
+)
+RUN_ALL_POOL_WALL = "60m"
+INFRA_LEAF_WALL = "10m"
+INFRA_LEAF_UNSET = ("REIFY_VERIFY_EVENT_LOG",)
 
 
 def _static_gates(inputs: PlanInputs) -> tuple[Step, ...]:
@@ -277,10 +372,11 @@ def _cargo_check(inputs: PlanInputs) -> tuple[Step, ...]:
 
 
 def _node_lane_start(inputs: PlanInputs) -> tuple[Step, ...]:
-    if not (inputs.lints_rust and inputs.node_lane):
+    lane = inputs.node_lane
+    if not (inputs.lints_rust and lane):
         return ()
-    start = NodeLaneStart(inputs.node_lane.projects)
-    return (Step(StepKind.MAIN_SHELL, Phase.GUI_NODE_LAUNCH, start, None, None),)
+    start = NodeLaneStart(lane.projects)
+    return (Step(StepKind.MAIN_SHELL, Phase.GUI_NODE_LAUNCH, start, lane.gui_gate_path, None),)
 
 
 def _clippy(inputs: PlanInputs) -> tuple[Step, ...]:
@@ -317,14 +413,17 @@ def _node_lane_join(inputs: PlanInputs) -> tuple[Step, ...]:
 
 def _node_lane_plain(inputs: PlanInputs) -> tuple[Step, ...]:
     """Without a clippy pass to overlap, the node projects run in the foreground, one step each."""
-    if inputs.node_lane is None or inputs.lints_rust:
+    lane = inputs.node_lane
+    if lane is None or inputs.lints_rust:
         return ()
-    return tuple(_tool(Phase.GUI_NODE, project) for project in inputs.node_lane.projects)
+    return (
+        _tool(Phase.GUI_NODE, lane.gui, lane.gui_gate_path),
+        _tool(Phase.GUI_NODE, lane.sidecar),
+        _tool(Phase.GUI_NODE, lane.tree_sitter),
+    )
 
 
-def _lint_infra_checks(inputs: PlanInputs) -> tuple[Step, ...]:
-    if not (inputs.include_infra and inputs.lints_rust):
-        return ()
+def _infra_checks(checks) -> tuple[Step, ...]:
     return tuple(
         _tool(
             Phase.INFRA_STATIC,
@@ -335,7 +434,71 @@ def _lint_infra_checks(inputs: PlanInputs) -> tuple[Step, ...]:
             path,
             path,
         )
-        for path, wall in LINT_INFRA_CHECKS
+        for path, wall in checks
+    )
+
+
+def _test_infra_checks(inputs: PlanInputs) -> tuple[Step, ...]:
+    if not (inputs.include_infra and inputs.decision.run_rust and inputs.families.test):
+        return ()
+    return _infra_checks(TEST_INFRA_CHECKS)
+
+
+def _lint_infra_checks(inputs: PlanInputs) -> tuple[Step, ...]:
+    if not (inputs.include_infra and inputs.lints_rust):
+        return ()
+    return _infra_checks(LINT_INFRA_CHECKS)
+
+
+def _release_prebuild(inputs: PlanInputs, package: str) -> Step:
+    manifest = f"crates/{package}/Cargo.toml"
+    build = Cargo(
+        "build", Packages((package,)), (), inputs.walls.prebuild, inputs.cargo_prio,
+        release=True, stderr_to_stdout=True,
+    )
+    return Step(StepKind.CARGO, Phase.RELEASE_PREBUILD, Guarded("-f", manifest, build), None, manifest)
+
+
+def _infra_pool(inputs: PlanInputs) -> tuple[Step, ...]:
+    """The wholesale run_all.sh pool, after release pre-builds of the binaries its members drive."""
+    if not (
+        inputs.role_policy.infra_tier is InfraTier.WHOLESALE
+        and inputs.decision.run_rust
+        and inputs.families.test
+        and not inputs.infra_suite_active
+    ):
+        return ()
+    audit, cli = (_release_prebuild(inputs, package) for package in RELEASE_PREBUILDS)
+    run_all = Script(
+        RUN_ALL.path, wall=RUN_ALL_POOL_WALL, via_bash=True, env=RUN_ALL_POOL_ENV,
+        stderr_to_stdout=True,
+    )
+    return (
+        audit,
+        Step(StepKind.BUILTIN, Phase.BOOKKEEPING, AUDIT_BINARY_MISSING, None, AUDIT_MANIFEST),
+        cli,
+        _tool(Phase.BOOKKEEPING, Guarded("-f", CLI_BINARY, CLI_BINARY_STAMP), guard_file=CLI_BINARY),
+        _tool(Phase.INFRA_POOL, Guarded("-f", RUN_ALL.path, run_all), RUN_ALL.path, RUN_ALL.path),
+    )
+
+
+def _selective_infra(inputs: PlanInputs) -> tuple[Step, ...]:
+    """One loop per selected leaf glob, each member under the git-env scrub."""
+    leaves = inputs.selection.leaves
+    if not (
+        inputs.role_policy.infra_tier is InfraTier.SELECTIVE
+        and inputs.families.test
+        and leaves
+        and not inputs.infra_suite_active
+    ):
+        return ()
+    scrub_prefix = inputs.git_env_scrub_prefix()
+    return tuple(
+        _tool(
+            Phase.INFRA_SELECTIVE,
+            InfraLeafLoop(leaf.glob, leaf.env, INFRA_LEAF_WALL, scrub_prefix, INFRA_LEAF_UNSET),
+        )
+        for leaf in leaves
     )
 
 
@@ -355,12 +518,15 @@ EMITTERS = (
     Emitter("static gates", tuple(gate.path for gate in STATIC_GATES), _static_gates),
     Emitter("compile gate", (COMPILE_GATE.path,), _compile_gate),
     Emitter("cargo check", (), _cargo_check),
-    Emitter("node lane start", (), _node_lane_start),
+    Emitter("node lane start", (GUI_VITEST_RUN,), _node_lane_start),
     Emitter("clippy", (), _clippy),
     Emitter("gui feature check", (GUI_SIDECAR_PLACEHOLDER,), _gui_feature_check),
     Emitter("node lane join", (), _node_lane_join),
-    Emitter("node lane, plain", (), _node_lane_plain),
+    Emitter("node lane, plain", (GUI_VITEST_RUN,), _node_lane_plain),
+    Emitter("test infra checks", tuple(path for path, _ in TEST_INFRA_CHECKS), _test_infra_checks),
     Emitter("lint infra checks", tuple(path for path, _ in LINT_INFRA_CHECKS), _lint_infra_checks),
+    Emitter("infra pool", (RUN_ALL.path,), _infra_pool),
+    Emitter("selective infra", (), _selective_infra),
     Emitter("test region", (), _test_region),
     Emitter("freshness check", (FRESHNESS_CHECK.path,), _freshness_check),
 )
