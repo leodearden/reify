@@ -970,9 +970,9 @@ mod tests {
 
     // ---- step-3/4 pins: free-face selection + interior-vertex compaction ----
 
-    /// Unit cube `[0,1]^3` (vertices 0..=7, the [`box_surface_mesh`] corner
-    /// ordering) fanned into 12 tets about an INTERIOR centre node (vertex 8):
-    /// one tet per outward-wound boundary triangle.
+    /// The unit cube `reify_test_support::mesh_fixtures::unit_cube_mesh`
+    /// (vertices 0..=7) fanned into 12 tets about an INTERIOR centre node
+    /// (vertex 8): one tet per outward-wound boundary triangle.
     ///
     /// Every one of the 12 boundary triangles appears in exactly one tet, and
     /// every face touching the centre node is shared by exactly two tets — so
@@ -982,26 +982,13 @@ mod tests {
     /// interior faces, and compacting away the interior vertex they were the
     /// only carrier of.
     fn cube_fan_with_interior_node() -> VolumeMesh {
-        #[rustfmt::skip]
-        let corners: [[f32; 3]; 8] = [
-            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
-        ];
-        #[rustfmt::skip]
-        let boundary_tris: [[u32; 3]; 12] = [
-            [0, 2, 1], [0, 3, 2], // -Z
-            [4, 5, 6], [4, 6, 7], // +Z
-            [0, 1, 5], [0, 5, 4], // -Y
-            [3, 7, 6], [3, 6, 2], // +Y
-            [0, 4, 7], [0, 7, 3], // -X
-            [1, 2, 6], [1, 6, 5], // +X
-        ];
+        let cube = reify_test_support::mesh_fixtures::unit_cube_mesh();
 
-        let mut vertices: Vec<f32> = corners.iter().flatten().copied().collect();
+        let mut vertices = cube.vertices;
         vertices.extend_from_slice(&[0.5, 0.5, 0.5]); // 8 = interior centre
 
         let mut indices = Vec::with_capacity(48);
-        for tri in boundary_tris {
+        for tri in cube.indices.chunks_exact(3) {
             indices.extend_from_slice(&[tri[0], tri[1], tri[2], 8]);
         }
 

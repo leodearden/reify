@@ -93,6 +93,79 @@ fn prismatic_box_has_eight_vertices_twelve_triangles_and_exact_volume() {
     );
 }
 
+/// Every triangle of an axis-aligned box faces OUT of the box, and the six
+/// outward directions are each carried by exactly two triangles.
+///
+/// [`enclosed_volume`] cannot see this on its own: it integrates about the
+/// origin, and a box spanning `[0,lx] x [0,ly] x [0,lz]` has its -X, -Y and -Z
+/// faces on the coordinate planes, where every triangle contributes zero to the
+/// sum. A flipped triangle on one of those faces changes no volume.
+///
+/// The box's vertex coordinates are exactly representable, so the f64 cross
+/// products are exact and an axis-parallel normal has exactly two zero
+/// components.
+fn assert_every_triangle_faces_outward(mesh: &Mesh, what: &str) {
+    let (min, max) = mesh_aabb(mesh);
+    let centre: [f64; 3] = std::array::from_fn(|k| (min[k] as f64 + max[k] as f64) / 2.0);
+    let node = |i: u32| -> [f64; 3] {
+        let i = i as usize;
+        std::array::from_fn(|k| mesh.vertices[3 * i + k] as f64)
+    };
+
+    let mut triangles_per_direction = [[0usize; 2]; 3];
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let (a, b, c) = (node(tri[0]), node(tri[1]), node(tri[2]));
+        let e1: [f64; 3] = std::array::from_fn(|k| b[k] - a[k]);
+        let e2: [f64; 3] = std::array::from_fn(|k| c[k] - a[k]);
+        let normal = [
+            e1[1] * e2[2] - e1[2] * e2[1],
+            e1[2] * e2[0] - e1[0] * e2[2],
+            e1[0] * e2[1] - e1[1] * e2[0],
+        ];
+        let non_zero_axes: Vec<usize> = (0..3).filter(|&k| normal[k] != 0.0).collect();
+        assert_eq!(
+            non_zero_axes.len(),
+            1,
+            "{what}: triangle {t} {tri:?} has normal {normal:?}, which is not \
+             a non-zero vector parallel to exactly one axis"
+        );
+        let axis = non_zero_axes[0];
+
+        let outward: f64 = (0..3)
+            .map(|k| normal[k] * ((a[k] + b[k] + c[k]) / 3.0 - centre[k]))
+            .sum();
+        assert!(
+            outward > 0.0,
+            "{what}: triangle {t} {tri:?} has normal {normal:?}, which points \
+             into the box (dot with centroid - centre = {outward})"
+        );
+
+        let positive = usize::from(normal[axis] > 0.0);
+        triangles_per_direction[axis][positive] += 1;
+    }
+
+    for (axis, name) in ["X", "Y", "Z"].iter().enumerate() {
+        for (positive, sign) in ["-", "+"].iter().enumerate() {
+            assert_eq!(
+                triangles_per_direction[axis][positive], 2,
+                "{what}: expected exactly two triangles facing {sign}{name}"
+            );
+        }
+    }
+}
+
+/// The welded box's triangles each face outward, two per face direction.
+///
+/// Distinct extents make an axis mix-up visible, and every coordinate is
+/// exactly representable in f32.
+#[test]
+fn prismatic_box_triangles_each_face_outward() {
+    assert_every_triangle_faces_outward(
+        &prismatic_box_mesh(2.0, 3.0, 5.0),
+        "prismatic_box_mesh(2.0, 3.0, 5.0)",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Unwelded box
 // ---------------------------------------------------------------------------
@@ -119,6 +192,15 @@ fn unwelded_box_has_24_vertices_and_encloses_the_welded_volume() {
         welded_volume,
         F32_STORAGE_REL,
         "enclosed volume of the unwelded box vs the welded box",
+    );
+}
+
+/// The unwelded box's triangles face outward exactly as the welded box's do.
+#[test]
+fn unwelded_box_triangles_each_face_outward() {
+    assert_every_triangle_faces_outward(
+        &unwelded_prismatic_box_mesh(2.0, 3.0, 5.0),
+        "unwelded_prismatic_box_mesh(2.0, 3.0, 5.0)",
     );
 }
 

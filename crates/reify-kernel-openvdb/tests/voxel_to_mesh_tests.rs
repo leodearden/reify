@@ -14,39 +14,10 @@
 // Shared mesh fixture (closed 2.0-unit cube centred at origin)
 // ---------------------------------------------------------------------------
 
-/// Build a closed 2.0-unit cube mesh centred at the origin (8 corner vertices,
-/// 12 outward-wound triangles). Identical to the cube fixture in
-/// `dispatcher_integration.rs::openvdb_two_stage_chain_voxelize_primitive_executes`.
+/// Closed 2.0-unit cube mesh centred at the origin.
 #[cfg(has_openvdb)]
 fn cube_2unit_mesh() -> reify_ir::Mesh {
-    reify_ir::Mesh {
-        vertices: vec![
-            -1.0_f32, -1.0, -1.0, // 0
-             1.0,     -1.0, -1.0, // 1
-             1.0,      1.0, -1.0, // 2
-            -1.0,      1.0, -1.0, // 3
-            -1.0,     -1.0,  1.0, // 4
-             1.0,     -1.0,  1.0, // 5
-             1.0,      1.0,  1.0, // 6
-            -1.0,      1.0,  1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // Bottom (-Z)
-            0, 2, 1,  0, 3, 2,
-            // Top (+Z)
-            4, 5, 6,  4, 6, 7,
-            // Front (-Y)
-            0, 1, 5,  0, 5, 4,
-            // Back (+Y)
-            2, 3, 7,  2, 7, 6,
-            // Left (-X)
-            0, 4, 7,  0, 7, 3,
-            // Right (+X)
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
+    reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
 }
 
 /// Build a voxel grid from the closed cube mesh and return the kernel + handle.

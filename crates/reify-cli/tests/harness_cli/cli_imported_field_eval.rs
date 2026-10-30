@@ -97,27 +97,10 @@ fn openvdb_stress_example_compiles_and_has_expected_shape() {
 #[test]
 fn openvdb_stress_cli_eval_prints_sampled_values() {
     use reify_kernel_openvdb::OpenVdbKernel;
+    use reify_kernel_openvdb::test_fixtures::{box_mesh, vertex_and_triangle_arrays};
 
-    // ── Fixture: unit cube mesh (8 verts, 12 tris, half-extent 1.0) ────────────
-    let verts: Vec<[f32; 3]> = vec![
-        [-1.0, -1.0, -1.0],
-        [1.0, -1.0, -1.0],
-        [1.0, 1.0, -1.0],
-        [-1.0, 1.0, -1.0],
-        [-1.0, -1.0, 1.0],
-        [1.0, -1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, 1.0, 1.0],
-    ];
-    #[rustfmt::skip]
-    let tris: Vec<[u32; 3]> = vec![
-        [0, 2, 1], [0, 3, 2],
-        [4, 5, 6], [4, 6, 7],
-        [0, 1, 5], [0, 5, 4],
-        [2, 3, 7], [2, 7, 6],
-        [3, 0, 4], [3, 4, 7],
-        [1, 2, 6], [1, 6, 5],
-    ];
+    // ── Fixture: closed cube mesh, half-extent 1.0 ─────────────────────────────
+    let (verts, tris) = vertex_and_triangle_arrays(&box_mesh(1.0, 1.0, 1.0));
 
     let dir = tempfile::tempdir().expect("tempfile::tempdir");
     let fixtures_dir = dir.path().join("fixtures");

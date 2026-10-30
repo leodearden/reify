@@ -1057,37 +1057,6 @@ fn apply_rigid_transform_to_mesh(mesh: &Mesh, rotation: [f64; 4], translation: [
 mod surface_execute_tests {
     use super::*;
 
-    /// Closed 2.0-unit cube mesh centred at the origin (8 corner vertices, 12
-    /// outward-wound triangles). Same fixture shape as
-    /// `crates/reify-kernel-openvdb/tests/voxel_to_mesh_tests.rs::cube_2unit_mesh`
-    /// (that file's integration-test items are not reachable from this
-    /// crate-internal unit test, hence the local copy).
-    fn cube_2unit_mesh() -> Mesh {
-        Mesh {
-            #[rustfmt::skip]
-            vertices: vec![
-                -1.0, -1.0, -1.0, // 0
-                 1.0, -1.0, -1.0, // 1
-                 1.0,  1.0, -1.0, // 2
-                -1.0,  1.0, -1.0, // 3
-                -1.0, -1.0,  1.0, // 4
-                 1.0, -1.0,  1.0, // 5
-                 1.0,  1.0,  1.0, // 6
-                -1.0,  1.0,  1.0, // 7
-            ],
-            #[rustfmt::skip]
-            indices: vec![
-                0, 2, 1,  0, 3, 2, // bottom (-Z)
-                4, 5, 6,  4, 6, 7, // top (+Z)
-                0, 1, 5,  0, 5, 4, // front (-Y)
-                2, 3, 7,  2, 7, 6, // back (+Y)
-                0, 4, 7,  0, 7, 3, // left (-X)
-                1, 2, 6,  1, 6, 5, // right (+X)
-            ],
-            normals: None,
-        }
-    }
-
     /// Task 5033 review coverage gap: `OpenVdbKernel::execute`'s
     /// `GeometryOp::Surface` arm has two paths — a cheap pass-through when
     /// `grid` already names a `register_mesh_handle`-stored Mesh (the only
@@ -1101,7 +1070,7 @@ mod surface_execute_tests {
     /// freshly-registered Mesh-repr handle.
     #[test]
     fn execute_surface_on_genuine_voxel_grid_runs_marching_cubes_and_registers_mesh() {
-        let mesh = cube_2unit_mesh();
+        let mesh = crate::test_fixtures::box_mesh(1.0, 1.0, 1.0);
         let opts = crate::MeshToVoxelOptions::honest_floor(&mesh)
             .expect("honest_floor must return Some for a valid closed cube");
         let mut kernel = OpenVdbKernel::new();

@@ -26,10 +26,13 @@ use reify_ir::{DenseSdfGrid, Mesh};
 /// Closed axis-aligned box spanning `min`..`max`: 8 corner vertices and 12
 /// outward-wound triangles.
 ///
-/// The single winding table every fixture in this module is built from, so a
-/// box and a plate cannot disagree about face orientation — `meshToVolume`
-/// signs the interior from that orientation, and an inward-wound face inverts
-/// the sign of everything downstream.
+/// Every mesh fixture in this module is built from this one box, whose
+/// triangles are the workspace's single box index block, the data file
+/// `crates/reify-ir/src/box_triangle_indices.rs`. So a box and a plate cannot
+/// disagree about face orientation — `meshToVolume` signs the interior from
+/// that orientation, and an inward-wound face inverts the sign of everything
+/// downstream. The block is outward only for the corner order below, which
+/// `tests/box_fixture_agreement.rs` pins against the canonical box.
 pub fn axis_aligned_box(min: [f32; 3], max: [f32; 3]) -> Mesh {
     let [x0, y0, z0] = min;
     let [x1, y1, z1] = max;
@@ -45,21 +48,7 @@ pub fn axis_aligned_box(min: [f32; 3], max: [f32; 3]) -> Mesh {
         x1, y1, z1, // 6
         x0, y1, z1, // 7
     ];
-    #[rustfmt::skip]
-    let indices: Vec<u32> = vec![
-        // Bottom (-Z)
-        0, 2, 1,  0, 3, 2,
-        // Top (+Z)
-        4, 5, 6,  4, 6, 7,
-        // Front (-Y)
-        0, 1, 5,  0, 5, 4,
-        // Back (+Y)
-        2, 3, 7,  2, 7, 6,
-        // Left (-X)
-        0, 4, 7,  0, 7, 3,
-        // Right (+X)
-        1, 2, 6,  1, 6, 5,
-    ];
+    let indices: Vec<u32> = include!("../../reify-ir/src/box_triangle_indices.rs").to_vec();
 
     Mesh { vertices, indices, normals: None }
 }
@@ -68,6 +57,22 @@ pub fn axis_aligned_box(min: [f32; 3], max: [f32; 3]) -> Mesh {
 /// extents `2 * hx × 2 * hy × 2 * hz`.
 pub fn box_mesh(hx: f32, hy: f32, hz: f32) -> Mesh {
     axis_aligned_box([-hx, -hy, -hz], [hx, hy, hz])
+}
+
+/// `mesh`'s flat buffers split into per-vertex and per-triangle triples: the
+/// `verts` / `tris` slices `OpenVdbKernel::realize_voxel_from_mesh` takes.
+pub fn vertex_and_triangle_arrays(mesh: &Mesh) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
+    let vertices = mesh
+        .vertices
+        .chunks_exact(3)
+        .map(|v| [v[0], v[1], v[2]])
+        .collect();
+    let triangles = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    (vertices, triangles)
 }
 
 /// The shells PRD's motivating PROPORTIONS
