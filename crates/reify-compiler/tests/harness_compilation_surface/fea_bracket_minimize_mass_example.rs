@@ -24,9 +24,8 @@
 //!       to the DIMENSIONLESS default, `von_mises(...)` types as dimensionless
 //!       `Real`, and `< yield_limit` (a `Pressure`) becomes a dimensional-mismatch
 //!       Error — which is exactly what this pin reports. The example's own predicate
-//!       reads the result's `.max_von_mises` member today, so that regression
-//!       surfaces here for the explicit `max(von_mises(.stress))` spelling, whose
-//!       adoption #7333 owns;
+//!       is `max(von_mises(<solve>.stress)) < yield_limit`, so this pin guards that
+//!       `Type::Field` arm on a shipped example;
 //!   (c) the compiled module exposes the bracket structure template;
 //!   (d) `thickness` is a solver-delegated `ValueCellKind::Auto { free: true }` cell.
 //!       Pinning the COMPILED KIND rather than the source text `= auto` means a
@@ -40,7 +39,10 @@
 //!   (e) the template carries an `ObjectiveSet` with exactly one
 //!       `ObjectiveSense::Minimize` term — pins the `minimize` by compiled property;
 //!   (f) the template carries EXACTLY ONE compiled constraint, and that constraint's
-//!       compiled expression actually reaches `solve_elastic_static`.
+//!       compiled expression actually reaches `solve_elastic_static`;
+//!   (g) that constraint reduces the FEA's stress FIELD — `max` over `von_mises` of
+//!       the result's `.stress` — and never reads the element-max `.max_von_mises`
+//!       member, which is `>=` the field peak and so would bind instead of it.
 //!
 //! Pin (f) is the structural guard against a specific, silent trap. Reify's grammar
 //! accepts `minimize <expr> where <cond>`, and the parser dutifully lowers the guard
@@ -70,7 +72,7 @@
 
 use reify_ast::{Declaration, MemberDecl};
 use reify_core::{ModulePath, Severity};
-use reify_ir::ObjectiveSense;
+use reify_ir::{CompiledExpr, CompiledExprKind, ObjectiveSense, Value};
 
 /// Path to the example, resolved from `CARGO_MANIFEST_DIR` so it works in any
 /// worktree (mirrors `multi_load_bracket_example_tests.rs`).
@@ -242,14 +244,14 @@ fn fea_bracket_minimize_mass_example_compiles_and_pins_the_design_loop() {
     // …and the surviving constraint must actually close the loop through the FEA.
     // Without this, `constraint thickness > 1mm` satisfies every pin above while
     // removing `solve_elastic_static` from the design loop entirely — precisely the
-    // silent degradation this module exists to catch, and one the ~88s e2e test can
+    // silent degradation this module exists to catch, and one the slow e2e test can
     // no longer be relied on to catch alone now that it is in the heavy set and off
     // the merge gate.
     //
     // Matched on the compiled expression's Debug rendering rather than a hand-rolled
-    // `CompiledExpr` walk: the call is nested under a `BinOp`/member access today,
-    // and a walk enumerating only today's spine would go quietly vacuous if the
-    // predicate were later restructured (say, wrapped in a `min(...)` reduction).
+    // `CompiledExpr` walk: the call is nested under a `BinOp`, a field reduction and
+    // a member access today, and a walk enumerating only today's spine would go
+    // quietly vacuous if the predicate were later restructured.
     // `UserFunctionCall.function_name` is a `String` field, so the name is present
     // in the Debug output of any tree shape that contains the call.
     const FEA_CALL: &str = "solve_elastic_static";
@@ -262,6 +264,61 @@ fn fea_bracket_minimize_mass_example_compiles_and_pins_the_design_loop() {
          other pin in this module green while dropping the FEA out of the design loop, \
          which leaves the example demonstrating nothing it claims to. Compiled predicate \
          was: {predicate}"
+    );
+
+    // ── (g) The loop closes through the stress FIELD reduction ───────────────
+    //
+    // (f) proves the FEA is in the loop; this proves the loop reads the FEA's stress
+    // FIELD, `max(von_mises(<solve>.stress))`, which is the reduction this example
+    // exists to show, rather than the result's precomputed element-max member.
+    //
+    // Walked structurally with EXACT names, not matched on (f)'s Debug string:
+    // "max_von_mises" contains "von_mises", so a substring test cannot tell the
+    // element-max member read from the field reduction.
+    const FIELD_MEMBER: &str = "stress";
+    const ELEMENT_MAX_MEMBER: &str = "max_von_mises";
+    let constraint = &bracket.constraints[0].expr;
+    let is_fea_call = |node: &CompiledExpr| {
+        matches!(&node.kind, CompiledExprKind::UserFunctionCall { function_name, .. }
+            if function_name == FEA_CALL)
+    };
+
+    let mut applies_max_to_von_mises = false;
+    let mut reduces_the_fea_stress_field = false;
+    constraint.walk(&mut |node| {
+        let Some([von_mises_call]) = exact_function_call(node, "max") else {
+            return;
+        };
+        let Some([field]) = exact_function_call(von_mises_call, "von_mises") else {
+            return;
+        };
+        applies_max_to_von_mises = true;
+        reduces_the_fea_stress_field |= any_node(field, |n| {
+            member_read(n, FIELD_MEMBER).is_some_and(|result| any_node(result, is_fea_call))
+        });
+    });
+    assert!(
+        applies_max_to_von_mises,
+        "leaf signal 'the loop reduces the stress field': {TEMPLATE_NAME}'s single \
+         constraint must apply `max` to a `von_mises(...)` call (exact function names). \
+         That field reduction is what this example exists to demonstrate; without it the \
+         design loop bounds some other quantity. Compiled predicate was: {predicate}"
+    );
+    assert!(
+        reduces_the_fea_stress_field,
+        "leaf signal 'the reduced field is the FEA stress': the `von_mises(...)` reduced \
+         by `max` in {TEMPLATE_NAME}'s constraint must read the `.{FIELD_MEMBER}` member of \
+         the `{FEA_CALL}` result. Reducing any other field leaves the solved stress out of \
+         the design predicate. Compiled predicate was: {predicate}"
+    );
+    assert!(
+        !any_node(constraint, |n| member_read(n, ELEMENT_MAX_MEMBER).is_some()),
+        "leaf signal 'the field reduction binds': {TEMPLATE_NAME}'s constraint must not read \
+         the result's element-max `.{ELEMENT_MAX_MEMBER}` member. The field peak satisfies \
+         `max(von_mises(r.{FIELD_MEMBER})) <= r.{ELEMENT_MAX_MEMBER}`, so a predicate that \
+         also bounds the element max binds on it, and the field reduction becomes \
+         decorative: it compiles and converges while demonstrating nothing. Compiled \
+         predicate was: {predicate}"
     );
 
     // ── AST guard against reintroducing the no-op `where` form ───────────────
@@ -331,4 +388,37 @@ fn assert_no_objective_guard(members: &[MemberDecl]) {
             _ => {}
         }
     }
+}
+
+/// The args of `expr` when it is a resolved (stdlib or built-in) call named EXACTLY
+/// `name`, else `None`.
+fn exact_function_call<'a>(expr: &'a CompiledExpr, name: &str) -> Option<&'a [CompiledExpr]> {
+    match &expr.kind {
+        CompiledExprKind::FunctionCall { function, args } if function.name == name => Some(args),
+        _ => None,
+    }
+}
+
+/// The object of `expr` when it reads the member named EXACTLY `member`, else `None`.
+///
+/// `<call>.<member>` compiles to an `IndexAccess` keyed by a string literal. Pin (g)
+/// uses this one helper for both its positive `.stress` match and its negative
+/// `.max_von_mises` match, so a change to that lowering reds the positive half
+/// instead of quietly emptying the negative one.
+fn member_read<'a>(expr: &'a CompiledExpr, member: &str) -> Option<&'a CompiledExpr> {
+    let CompiledExprKind::IndexAccess { object, index } = &expr.kind else {
+        return None;
+    };
+    match &index.kind {
+        CompiledExprKind::Literal(Value::String(key)) if key == member => Some(object),
+        _ => None,
+    }
+}
+
+/// Whether any node of `expr`, visited by the canonical `CompiledExpr::walk`,
+/// satisfies `pred`.
+fn any_node(expr: &CompiledExpr, pred: impl Fn(&CompiledExpr) -> bool) -> bool {
+    let mut found = false;
+    expr.walk(&mut |node| found |= pred(node));
+    found
 }
