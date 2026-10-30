@@ -1,11 +1,14 @@
-//! `reify test <file>`: runs the module's `@test` entities and reports each verdict.
+//! `reify test <file>`: runs the module's `@test` entities and reports each
+//! verdict with its constraint lines and diagnostics.
 
+use std::io::Write;
 use std::process::ExitCode;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
-use reify_eval::TestStatus;
+use reify_eval::{TestResult, TestStatus};
 
+use crate::constraint_report::report_eval_output;
 use crate::parse_and_compile;
 
 pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
@@ -48,7 +51,12 @@ pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
                 "INDETERMINATE"
             }
         };
-        println!("  {}  {}", label, result.name);
+        report_test_result(
+            result,
+            label,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
     }
 
     let overall = if failed > 0 { "FAIL" } else { "ok" };
@@ -62,4 +70,28 @@ pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// Write `result`'s status line to `out` with its constraint lines nested two
+/// spaces under it, then its diagnostics to `err`: `report_eval_output`'s
+/// rendering and order, so `test` and `check` cannot drift.
+fn report_test_result(
+    result: &TestResult,
+    label: &str,
+    out: &mut impl Write,
+    err: &mut impl Write,
+) {
+    let _ = writeln!(out, "  {label}  {}", result.name);
+    let mut verdicts = Vec::new();
+    let mut diagnostics = Vec::new();
+    report_eval_output(
+        &result.constraint_results,
+        &result.diagnostics,
+        &mut verdicts,
+        &mut diagnostics,
+    );
+    for line in String::from_utf8_lossy(&verdicts).lines() {
+        let _ = writeln!(out, "  {line}");
+    }
+    let _ = err.write_all(&diagnostics);
 }
