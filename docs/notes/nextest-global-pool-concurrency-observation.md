@@ -473,9 +473,11 @@ The un-narrowing is now justified by an **observed** peak — window 3's
 at the generated `test-threads = 32` — and no longer only by the config being
 read back as `test-threads = 32`.
 
-**The one residual.**  The instrument cannot yet distinguish a sandbox-induced
-zero from the two silent zeros it already documents.  That does not affect window
-3 (which is non-zero throughout and states its own scope), and it is filed as
-**#7500** (filed from esc-6375-2) rather than left as prose here — the same
-cite-a-live-task-by-number discipline this section argues for above, applied to
-the residual this round leaves behind.
+**The residual this round left behind, now detected.**  #6375's round could not
+distinguish a sandbox-induced zero from the two silent zeros it already
+documented.  It was filed as **#7500** (from esc-6375-2) rather than left as
+prose here, the same cite-by-number discipline this section argues for above.
+Readings from the current instrument carry `own_uid_links=` /
+`resolved_links=` and WARN when the caller was blind; see "Ptrace blindness
+(detected, task #7500)".  It never affected window 3, which is non-zero
+throughout and states its own scope.
