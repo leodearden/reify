@@ -1,4 +1,4 @@
-use super::*;
+use reify_core::{Diagnostic, DiagnosticLabel, SourceSpan, Type};
 
 /// The kind of item that could not be resolved in pass 2, for use with
 /// [`emit_ice_unresolved`].
@@ -59,6 +59,7 @@ pub(crate) fn emit_ice_unresolved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::Severity;
 
     #[test]
     fn emit_ice_unresolved_pushes_one_error_diagnostic() {

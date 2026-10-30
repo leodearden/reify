@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use reify_core::{Diagnostic, DiagnosticLabel, Type, ValueCellId};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, UnOp, Value};
+
+use crate::types::{GuardState, SubComponentDecl, TopologyTemplate, ValueCellDecl, ValueCellKind};
 
 pub(crate) fn check_recursive_termination(
     templates: &[TopologyTemplate],

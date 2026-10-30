@@ -13,7 +13,7 @@
 //!
 //! See `docs/prds/v0_6/geometric-relations.md` §9 β.
 
-use super::*;
+use reify_core::Type;
 
 /// Outcome of resolving a datum-projection member access `receiver.member`.
 #[derive(Debug, Clone, PartialEq)]

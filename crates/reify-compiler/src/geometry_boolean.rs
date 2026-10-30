@@ -1,4 +1,17 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+use reify_ir::CompiledFunction;
+
+use crate::arg_check::{check_arg_count_at_least, check_arg_count_exact};
+use crate::expr::try_emit_cross_sub_geometry;
+use crate::geometry::{
+    GeometryConstraintSink, compile_geometry_call, match_self_sub_member,
+    try_resolve_cross_sub_geom_ref,
+};
+use crate::geometry_list::{GeometryListArg, push_element_cap_error, resolve_geometry_list_arg};
+use crate::scope::CompilationScope;
+use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef};
 
 /// Resolve a single boolean-op geometry argument into its `GeomRef` and the
 /// sub-ops that must be emitted before the binary `Boolean` op.
