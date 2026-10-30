@@ -5,11 +5,24 @@
 //! Dependency-free (`std` only): `crates/reify-audit` carries this crate as a
 //! NORMAL dependency (see this crate's `Cargo.toml`).
 
-/// The printer assembly.
-pub const PRINTER_RI: &str = "prj/printer_v01/printer.ri";
+/// Declares each design-file const and lists it in [`ALL`] in one place, so a
+/// newly declared design file cannot miss the checks every entry gets.
+macro_rules! design_files {
+    ($($(#[$attr:meta])* $name:ident = $repo_relative:literal;)+) => {
+        $($(#[$attr])* pub const $name: &str = $repo_relative;)+
 
-/// The standalone capstan development design.
-pub const DEV_CAPSTAN: &str = "prj/printer_v01/dev_capstan.ri";
+        /// Every named design file, as `(const name, repo-relative path)`.
+        pub const ALL: &[(&str, &str)] = &[$((stringify!($name), $name)),+];
+    };
+}
+
+design_files! {
+    /// The printer assembly.
+    PRINTER_RI = "prj/printer_v01/printer.ri";
+
+    /// The standalone capstan development design.
+    DEV_CAPSTAN = "prj/printer_v01/dev_capstan.ri";
+}
 
 /// The source of the design file at `repo_relative`, read from the running
 /// tree's [`crate::workspace_root::workspace_root`].
@@ -34,7 +47,7 @@ pub fn read_design_file(repo_relative: &str) -> String {
 mod tests {
     use std::path::Path;
 
-    use super::{DEV_CAPSTAN, PRINTER_RI, read_design_file};
+    use super::{ALL, read_design_file};
 
     /// A design-file path absent from the real tree, written only into the
     /// re-exec fixture workspace.
@@ -50,7 +63,7 @@ mod tests {
     /// the workspace root.
     #[test]
     fn every_named_design_file_is_repo_relative_and_reads_non_empty() {
-        for (name, rel) in [("PRINTER_RI", PRINTER_RI), ("DEV_CAPSTAN", DEV_CAPSTAN)] {
+        for &(name, rel) in ALL {
             assert!(
                 Path::new(rel).is_relative(),
                 "{name} ({rel}) must be repo-relative, not absolute"
