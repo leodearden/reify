@@ -130,9 +130,9 @@ where
     let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
     let k_stage = 4.0 * k_blade / series_divisor;
     let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length / series_divisor;
-    let k_out_of_plane = 4.0 * FIXED_GUIDED_GAMMA * c.e * (c.thickness * c.width.powi(3) / 12.0)
-        / c.length.powi(3)
-        / series_divisor;
+    let i_strong = c.thickness * c.width.powi(3) / 12.0;
+    let k_out_of_plane =
+        4.0 * FIXED_GUIDED_GAMMA * c.e * i_strong / c.length.powi(3) / series_divisor;
     let k_radial = k_transverse.min(k_out_of_plane);
 
     // Auto SAFE displacement δ_auto = yield·L²/(3·E·t) (the fixed-guided
