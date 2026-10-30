@@ -10,6 +10,7 @@ mod dev_url_tests;
 mod diff_tests;
 mod engine_activity_tests;
 mod engine_lock_tests;
+mod engine_reload_tests;
 mod engine_state_view_tests;
 mod engine_tests;
 mod eval_queue_tests;
@@ -117,6 +118,18 @@ fn public_api_types_are_accessible() {
 /// `crates/reify-eval/src/geometry_ops/tests.rs` (esc-4906-57).
 fn gui_crate_manifest_dir() -> String {
     std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+}
+
+/// Absolute path to the workspace's `examples/<file_name>`, two levels up from
+/// [`gui_crate_manifest_dir`].
+fn examples_path(file_name: &str) -> std::path::PathBuf {
+    std::path::Path::new(&gui_crate_manifest_dir())
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(file_name)
 }
 
 /// Guards against a file under `src/tests/` that this module never

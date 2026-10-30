@@ -1473,12 +1473,7 @@ fn load_file_returns_gui_state() {
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Use the examples/bracket.ri file from project root
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/bracket.ri");
+    let path = super::examples_path("bracket.ri");
 
     let state = session.load_file(&path).expect("load_file should succeed");
 
@@ -1806,12 +1801,7 @@ fn source_map_consistent_after_load_file_then_update() {
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/bracket.ri");
+    let path = super::examples_path("bracket.ri");
 
     session.load_file(&path).expect("load_file should succeed");
 
@@ -1838,12 +1828,7 @@ fn get_source_location_correct_after_load_file_then_update() {
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/bracket.ri");
+    let path = super::examples_path("bracket.ri");
 
     session.load_file(&path).expect("load_file should succeed");
 
@@ -18725,12 +18710,7 @@ fn load_file_emits_fea_diagnostics() {
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/bracket.ri");
+    let path = super::examples_path("bracket.ri");
 
     let recorder = RecordingFeaDiagnosticsEmitter::new();
     let captured = Arc::clone(&recorder.events);
@@ -20435,8 +20415,7 @@ fn resolve_param_default_span_resolves_a_non_first_member() {
 
 #[test]
 fn resolve_param_default_span_returns_none_with_no_module_loaded() {
-    // parsed_cache is None on a fresh session (and on load_from_compiled-injected
-    // sessions). Must degrade to None, never panic.
+    // parsed_cache is None on a fresh session. Must degrade to None, never panic.
     let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     assert_eq!(session.resolve_param_default_span("Bracket.width"), None);
 }
