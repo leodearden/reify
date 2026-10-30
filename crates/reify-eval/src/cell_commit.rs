@@ -551,7 +551,32 @@ mod tests {
 
     use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
     use crate::deps::DependencyTrace;
-    use crate::journal::{EventJournal, EventKind, EventPayload};
+    use crate::journal::{
+        CacheLegKind, CommitTag, EvalEvent, EventJournal, EventKind, EventPayload, TraceSource,
+    };
+
+    /// The commit tag a journal `Started` event carries.
+    fn started_commit(event: &EvalEvent) -> Option<CommitTag> {
+        let EventKind::Started { commit } = &event.kind else {
+            panic!("expected EventKind::Started, got {:?}", event.kind);
+        };
+        commit.clone()
+    }
+
+    /// The cache outcome a journal `Completed` event carries.
+    fn completed_outcome(event: &EvalEvent) -> Option<EvalOutcome> {
+        let EventKind::Completed { outcome } = &event.kind else {
+            panic!("expected EventKind::Completed, got {:?}", event.kind);
+        };
+        *outcome
+    }
+
+    fn recorded(trace: TraceSource) -> Option<CommitTag> {
+        Some(CommitTag {
+            trace,
+            cache: CacheLegKind::Recorded,
+        })
+    }
 
     /// Pins INV-EVAL-1's "divergence encoded, not erased" invariant: the
     /// recorded `DeterminacyState` is driven by which `DeterminacyRule` was
@@ -654,18 +679,11 @@ mod tests {
             2,
             "expected exactly Started + Completed, got {events:?}"
         );
-        assert!(matches!(events[0].kind, EventKind::Started));
-        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+        assert_eq!(started_commit(events[0]), recorded(TraceSource::ColdEval));
+        assert_eq!(completed_outcome(events[1]), Some(EvalOutcome::Changed));
 
-        // Returned CommitOutcome mirrors the commit's metadata. Read via the
-        // pub(crate) accessors (not the private fields directly) to prove the
-        // accessors migration call sites will use return the right data. The
-        // committed VALUE is deliberately not carried on the outcome (#5238
-        // amendment); it is asserted above, on the legs that actually hold it.
-        assert_eq!(outcome.determinacy(), DeterminacyState::Determined);
-        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
-        assert_eq!(outcome.skip_reason(), None);
-        assert_eq!(outcome.trace_source(), TraceSource::ColdEval);
+        // The returned cache outcome is the one the journal's Completed carries.
+        assert_eq!(outcome, Some(EvalOutcome::Changed));
     }
 
     /// Extends Record-path coverage to `DeterminacyRule::Undetermined`
@@ -719,8 +737,9 @@ mod tests {
             other => panic!("expected CachedResult::Value, got {other:?}"),
         }
 
-        assert_eq!(outcome.determinacy, DeterminacyState::Undetermined);
-        assert_eq!(outcome.cache_outcome, Some(EvalOutcome::Changed));
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(started_commit(events[0]), recorded(TraceSource::GuardedGroup));
+        assert_eq!(outcome, Some(EvalOutcome::Changed));
     }
 
     /// Pins that `CacheLeg::Record`'s `cache_outcome` forwards whatever
@@ -754,7 +773,7 @@ mod tests {
             VersionId(1),
             CacheLeg::Record,
         );
-        assert_eq!(first.cache_outcome, Some(EvalOutcome::Changed));
+        assert_eq!(first, Some(EvalOutcome::Changed));
 
         // Second commit: identical value and determinacy rule -> identical
         // content hash -> CacheStore's early-cutoff path -> Unchanged.
@@ -773,7 +792,7 @@ mod tests {
             VersionId(2),
             CacheLeg::Record,
         );
-        assert_eq!(second.cache_outcome, Some(EvalOutcome::Unchanged));
+        assert_eq!(second, Some(EvalOutcome::Unchanged));
 
         // The journal's second Completed event for this node reflects the
         // forwarded Unchanged outcome, not a stale/hardcoded Changed.
@@ -784,12 +803,7 @@ mod tests {
             4,
             "expected Started+Completed per commit (x2), got {events:?}"
         );
-        match &events[3].kind {
-            EventKind::Completed { outcome } => {
-                assert_eq!(*outcome, EvalOutcome::Unchanged);
-            }
-            other => panic!("expected Completed{{outcome: Unchanged}}, got {other:?}"),
-        }
+        assert_eq!(completed_outcome(events[3]), Some(EvalOutcome::Unchanged));
     }
 
     /// Pins INV-EVAL-1's core Skip assertion: `CacheLeg::Skip` must omit
@@ -842,37 +856,19 @@ mod tests {
             2,
             "expected exactly Started + Completed, got {events:?}"
         );
-        assert!(matches!(events[0].kind, EventKind::Started));
-        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
-
-        // The journal alone (no access to the in-memory CommitOutcome) must
-        // be able to discover that the cache leg was skipped, and why: the
-        // Started event's payload carries the trace slug plus a
-        // `cache-skip=<reason>` suffix.
-        match &events[0].payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, "cold-eval|cache-skip=cyclic let-cell (2266)",
-                "Started payload must carry both the trace slug and the skip reason"
-            ),
-            other => panic!("expected Started payload Custom(_), got {other:?}"),
-        }
-
-        // Completed's `outcome` on the Skip path is an UNSPECIFIED PLACEHOLDER
-        // (see the doc comment in commit_cell_result) — pinned here so a
-        // future change to the fallback is caught by this test instead of
-        // silently becoming load-bearing. It must NOT be read as "nothing
-        // changed" or "the value was cached": the Started-payload assertion
-        // above is the actual, journal-recoverable skip signal.
-        match &events[1].kind {
-            EventKind::Completed { outcome } => {
-                assert_eq!(*outcome, EvalOutcome::Changed);
-            }
-            other => panic!("expected Completed{{outcome}}, got {other:?}"),
-        }
-
-        assert_eq!(outcome.cache_outcome, None);
-        assert_eq!(outcome.skip_reason, Some("cyclic let-cell (2266)"));
-        assert_eq!(outcome.determinacy, DeterminacyState::Determined);
+        // The journal alone records that the cache leg was skipped, and why.
+        assert_eq!(
+            started_commit(events[0]),
+            Some(CommitTag {
+                trace: TraceSource::ColdEval,
+                cache: CacheLegKind::Skipped {
+                    reason: "cyclic let-cell (2266)".to_string(),
+                },
+            })
+        );
+        // No cache write happened, so there is no cache outcome to report.
+        assert_eq!(completed_outcome(events[1]), None);
+        assert_eq!(outcome, None);
     }
 
     /// Pins §2.3's provenance requirement: the commit's `TraceSource` is
@@ -913,21 +909,17 @@ mod tests {
             "expected exactly Started + Completed, got {events:?}"
         );
 
-        // Started carries the provenance slug...
-        assert!(matches!(events[0].kind, EventKind::Started));
-        match &events[0].payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(slug, "edit-reeval"),
-            other => panic!("expected Started payload Custom(\"edit-reeval\"), got {other:?}"),
-        }
+        // Started carries the provenance on its commit tag...
+        let commit = started_commit(events[0]).expect("a primitive commit is tagged");
+        assert_eq!(commit.trace, TraceSource::EditReeval);
+        assert_eq!(commit.cache, CacheLegKind::Recorded);
 
         // ...Completed carries the duration, not provenance.
-        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+        assert_eq!(completed_outcome(events[1]), outcome);
         match &events[1].payload {
             Some(EventPayload::Duration(_)) => {}
             other => panic!("expected Completed payload Duration(_), got {other:?}"),
         }
-
-        assert_eq!(outcome.trace_source, TraceSource::EditReeval);
 
         // Every variant maps to a distinct, stable kebab slug. `ALL_TRACE_SOURCES`
         // is kept exhaustive by `trace_source_enumeration_is_exhaustive` below —
@@ -1081,11 +1073,9 @@ mod tests {
             2,
             "expected exactly Started + Completed, got {events:?}"
         );
-        assert!(matches!(events[0].kind, EventKind::Started));
-        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
-
-        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
-        assert_eq!(outcome.skip_reason(), None);
+        assert_eq!(started_commit(events[0]), recorded(TraceSource::ColdEval));
+        assert_eq!(completed_outcome(events[1]), Some(EvalOutcome::Changed));
+        assert_eq!(outcome, Some(EvalOutcome::Changed));
 
         // Companion: still_refining: false over an empty (all-Final) trace
         // derives Final. A distinct node avoids the early-cutoff freshness
@@ -1194,12 +1184,11 @@ mod tests {
             2,
             "expected exactly Started + Completed, got {events:?}"
         );
-        assert!(matches!(events[0].kind, EventKind::Started));
-        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+        assert_eq!(started_commit(events[0]), recorded(TraceSource::CachedServe));
+        assert_eq!(completed_outcome(events[1]), Some(EvalOutcome::Changed));
 
         // cold write → Changed.
-        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
-        assert_eq!(outcome.skip_reason(), None);
+        assert_eq!(outcome, Some(EvalOutcome::Changed));
 
         // ── EARLY-CUTOFF branch (the one the eval_cached re-serves ride) ──
         // Re-commit the SAME value on the SAME node with a DIFFERENT supplied
@@ -1223,13 +1212,16 @@ mod tests {
             CacheLeg::RecordWithFreshness(resupplied.clone()),
         );
         assert_eq!(
-            outcome2.cache_outcome(),
+            outcome2,
             Some(EvalOutcome::Unchanged),
             "re-committing an identical (value, determinacy) pair must take \
              record_evaluation_with_freshness' content-hash early-cutoff branch \
              — the branch that preserves pending_cause/diagnostics, and the one \
              the eval_cached preserve-freshness re-serves depend on"
         );
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(started_commit(events[2]), recorded(TraceSource::CachedReuse));
+        assert_eq!(completed_outcome(events[3]), Some(EvalOutcome::Unchanged));
         let entry2 = cache
             .get(&node_id)
             .expect("the early-cutoff path must leave the cache entry in place");
