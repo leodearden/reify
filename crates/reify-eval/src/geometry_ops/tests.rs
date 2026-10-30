@@ -6808,12 +6808,13 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        assert!(
-            result.is_err(),
+        let err = result.expect_err(
             "a bare-origin axis VALUE must be REJECTED and no CircularPattern op \
-             produced — never silently built with a metre-scale axis origin; \
-             got {:?}",
-            result
+             produced — never silently built with a metre-scale axis origin",
+        );
+        assert_eq!(
+            err, "missing or non-Length argument 'ox' for circular_pattern",
+            "the Err names the builtin exactly once, with no prefix in front of it"
         );
 
         let rejections: Vec<_> = diagnostics
@@ -6832,14 +6833,12 @@
         for (d, name) in rejections.iter().zip(["ox", "oy", "oz"]) {
             assert_eq!(
                 d.message,
-                // "circular", not "circular_pattern": the kind label is
-                // `PatternKind`'s own `Display`, and `pattern_circular` hands
-                // `decode_axis` the very same `kind` it hands
-                // `required_length_origin3` in the scalar branch. Threading the
-                // `kind` rather than a hand-written string is what makes the two
-                // forms byte-identical instead of merely similar.
-                expected_length_rejection("circular", name, "Real"),
-                "the value form now mints the SAME wording as its scalar sibling"
+                // The value form names the builtin the author typed, which is
+                // what the compile layer reports for the same mistake in the
+                // scalar form.
+                expected_length_rejection("circular_pattern", name, "Real"),
+                "the value form's rejection must name `circular_pattern`, the \
+                 builtin the author typed"
             );
         }
     }
@@ -6905,6 +6904,60 @@
                 .iter()
                 .any(|d| d.severity == reify_core::Severity::Error),
             "got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// A non-Axis value in the axis slot is not a units failure, so the decoder
+    /// speaks for itself — and the builtin it names must be the one the author
+    /// typed (`circular_pattern`), not `PatternKind`'s own `Display`
+    /// (`circular`), which names nothing that exists.
+    #[test]
+    fn compile_geometry_op_circular_pattern_axis_value_form_wrong_variant_names_the_surface_builtin()
+     {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let plane = plane_of(
+            length_point3(0.0, 0.0, 0.0),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                (
+                    "axis".into(),
+                    reify_ir::CompiledExpr::literal(
+                        plane.clone(),
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                ),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("a Plane in the axis slot must drop the op");
+
+        assert_eq!(
+            err,
+            format!("circular_pattern: expected an Axis value, got {plane}")
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a wrong variant is the decoder's own Err, not a units rejection, so \
+             nothing is pushed; got: {:?}",
             diagnostics
         );
     }
@@ -7070,6 +7123,56 @@
             "Length origin + dimensionless normal must not produce an Error \
              diagnostic; got: {:?}",
             diagnostics
+        );
+    }
+
+    /// The plane-VALUE form of `mirror` must surface its decoder's `Err`
+    /// unwrapped: the decoder already names `mirror` itself, so a caller that
+    /// prefixed it again would print the builtin twice.
+    #[test]
+    fn compile_geometry_op_mirror_plane_value_form_errors_carry_one_prefix() {
+        let mirror_err_for_plane_arg = |plane: reify_ir::Value| -> String {
+            let op = CompiledGeometryOp::Pattern {
+                kind: PatternKind::Mirror,
+                target: GeomRef::Step(0),
+                args: vec![(
+                    "plane".into(),
+                    reify_ir::CompiledExpr::literal(
+                        plane,
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                )],
+            };
+            compile_geometry_op(
+                &op,
+                &ValueMap::new(),
+                &[GeometryHandleId(42)],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut Vec::new(),
+            )
+            .expect_err("a malformed plane VALUE must drop the op")
+        };
+
+        let axis = axis_of(
+            length_point3(0.0, 0.0, 0.0),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            mirror_err_for_plane_arg(axis.clone()),
+            format!("mirror: expected a Plane value, got {axis}"),
+            "a wrong-variant Err carries `mirror:` once"
+        );
+
+        let bare_origin_plane = plane_of(
+            bare_real_vector3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            mirror_err_for_plane_arg(bare_origin_plane),
+            "missing or non-Length argument 'ox' for mirror",
+            "a units Err is the scalar form's exact Err, with no `mirror: ` in front"
         );
     }
 
