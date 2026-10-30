@@ -166,7 +166,8 @@ pub mod register;
 pub mod tessellate_options;
 pub use tessellate_options::TessellateOptions;
 // Unconditional `WarmStartableRegistration` submission for NodeKind::Realization
-// — both has_occt and stub OcctKernel impl WarmStartable. See module docs.
+// — both has_occt and stub OcctKernel implement WarmStartable as the trait
+// no-op. See module docs.
 mod warm_register;
 // `types` is always compiled so `Curvature` exists in both `has_occt` and
 // `!has_occt` builds without a `#[cfg]`-gated duplicate definition.
@@ -229,29 +230,6 @@ use op_args::{
 
 #[cfg(has_occt)]
 use reify_ir::{BOX_DIMENSIONS_MUST_BE_FINITE_POSITIVE, BRepKind, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryOp, GeometryQuery, Mesh, OpaqueState, QueryError, SPHERE_RADIUS_MUST_BE_FINITE_POSITIVE, StepSchema, TessError, ThreeMfOptions, Value, WarmStartable, write_3mf, write_stl_binary};
-
-#[cfg(has_occt)]
-/// Send-safe payload for OCCT warm-start state.
-///
-/// Contains BRep ASCII serializations of all shapes in the kernel, the
-/// per-handle [`BRepKind`] classification map, and the next handle ID counter.
-/// BRep format is valid UTF-8 text, so `String` is used instead of `Vec<u8>`.
-///
-/// The `reprs` map is kept in lock-step with `shapes`: only IDs whose BRep
-/// serialized successfully are included, so every key in `reprs` is also a
-/// key in `shapes`.
-struct OcctWarmState {
-    /// Map from handle ID to BRep ASCII string of the corresponding shape.
-    shapes: HashMap<u64, String>,
-    /// Map from handle ID to [`BRepKind`] classification (Face, Solid, Edge, …).
-    ///
-    /// Restored alongside `shapes` in `with_warm_state` so that post-warm-start
-    /// dispatch (e.g. `Centroid` → `query_face_centroid` for `BRepKind::Face`)
-    /// works correctly.
-    reprs: HashMap<u64, BRepKind>,
-    /// The next handle ID to assign (preserves ID namespace across warm-start).
-    next_id: u64,
-}
 
 #[cfg(has_occt)]
 /// Encode a `Point3` as the JSON string `{"x":_,"y":_,"z":_}` used by centroid-style queries.
@@ -328,11 +306,7 @@ impl SubShapeKind {
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     /// Per-handle BRepKind, populated alongside `shapes` in `store_with_repr`.
-    /// Looked up via the public `repr_of(id)` accessor. Persisted and
-    /// restored in lock-step with `shapes` across warm-start (see
-    /// `warm_state` / `with_warm_state`): entries missing at restore time
-    /// (e.g. because the shape failed to serialize) fall back to
-    /// `BRepKind::Solid`.
+    /// Looked up via the public `repr_of(id)` accessor.
     reprs: HashMap<u64, BRepKind>,
     /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
     /// previously-minted edge handle list (in canonical
@@ -358,8 +332,8 @@ pub struct OcctKernel {
     /// by downstream consumers (task C CornerVertex/CapCornerVertex seeders)
     /// to recover the canonical vertex index of a caller-supplied handle.
     /// Without idempotency the second call would mint a fresh set of ids and
-    /// the caller's pre-extracted handles would no longer match. Cache is
-    /// invalidated on `with_warm_state` (same rationale as `extracted_edges`).
+    /// the caller's pre-extracted handles would no longer match. Cleared by
+    /// `reset`, like `extracted_edges`.
     extracted_vertices: HashMap<u64, Vec<GeometryHandleId>>,
     /// Provenance map: child handle id → parent (body) handle id, populated
     /// inside [`Self::extract_edges`] / [`Self::extract_faces`] so a later
@@ -373,8 +347,6 @@ pub struct OcctKernel {
     /// recorded parent and surface as `QueryError::QueryFailed`.
     parent_handle: HashMap<u64, GeometryHandleId>,
     next_id: u64,
-    /// Number of shapes that failed deserialization during the last `with_warm_state()` call.
-    last_warm_start_failures: usize,
 }
 
 // Note: OcctKernel is !Send + !Sync because cxx::UniquePtr<OcctShape> is !Send.
@@ -443,38 +415,13 @@ impl OcctKernel {
             extracted_vertices: HashMap::new(),
             parent_handle: HashMap::new(),
             next_id: 1,
-            last_warm_start_failures: 0,
         }
     }
 
     /// Return the [`BRepKind`] that was assigned to `id` at `store_with_repr`
     /// time, or `None` if `id` is unknown to this kernel.
-    ///
-    /// After a `warm_state()`/`with_warm_state()` round-trip the classification
-    /// is restored from the persisted `reprs` map. Any handle whose BRep
-    /// serialized successfully but whose repr entry was absent falls back to
-    /// [`BRepKind::Solid`].
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
         self.reprs.get(&id.0).copied()
-    }
-
-    /// Returns the number of shapes that failed BRep deserialization during
-    /// the last [`WarmStartable::with_warm_state`] call (0 if none failed, or
-    /// if `with_warm_state` has not yet been called on this kernel).
-    ///
-    /// INV-GEO-3 production observability accessor: each failure is also
-    /// reported via a `tracing::warn!` event at the point of failure (see
-    /// `with_warm_state`); this accessor exposes the failure count from
-    /// the most recent restore for production consumers that want the
-    /// summary figure without instrumenting tracing.
-    ///
-    /// Edge case: a `with_warm_state` call whose [`OpaqueState`] fails the
-    /// type check is a no-op per the trait contract (state silently
-    /// ignored) and returns *before* the counter reset — it does not zero
-    /// or otherwise change the count left by the previous successful
-    /// restore.
-    pub fn warm_start_failures(&self) -> usize {
-        self.last_warm_start_failures
     }
 
     /// Number of shapes currently resident in this kernel's native `shapes`
@@ -487,7 +434,6 @@ impl OcctKernel {
     /// lets callers (and the boundedness regression test) verify that a
     /// reset genuinely frees the resident shapes and that repeated
     /// execute-batch→reset cycles stay bounded rather than accumulating.
-    /// Mirrors the [`Self::warm_start_failures`] diagnostic accessor above.
     pub fn shape_count(&self) -> usize {
         self.shapes.len()
     }
@@ -513,17 +459,14 @@ impl OcctKernel {
     /// IsNull/InvalidReference guard instead of silently reading a different
     /// shape. INV-BUILD-1 (`engine_build.rs`) warns that "re-minting id 1 on
     /// a later build would be served silently in release"; this is the
-    /// read-side counterpart. (It is also why `with_warm_state`'s
-    /// `*next_id = warm.next_id` swap, which CAN lower the counter, is a
-    /// dormant aliasing hazard — see its guard comment.)
+    /// read-side counterpart.
     pub fn reset(&mut self) {
         // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
         // `..` spread) forces every OcctKernel field to be classified here as
         // CLEAR (freed on reload) or KEEP (deliberately preserved). Adding a
         // new field to OcctKernel without extending this pattern is a hard
         // compile error (E0027), so the reload clear/keep decision can't be
-        // silently skipped. Mirrors the warm_state()/with_warm_state()
-        // destructures.
+        // silently skipped.
         let Self {
             shapes,
             reprs,
@@ -531,8 +474,7 @@ impl OcctKernel {
             extracted_faces,
             extracted_vertices,
             parent_handle,
-            next_id: _,                  // KEEP: monotonic — see doc comment above.
-            last_warm_start_failures: _, // KEEP: last-restore diagnostic, not a resident shape.
+            next_id: _, // KEEP: monotonic — see doc comment above.
         } = self;
         // CLEAR: free the resident native shapes (the reload memory bound)
         // and every derived provenance/idempotency cache keyed to them.
@@ -549,7 +491,7 @@ impl OcctKernel {
     /// `repr` is wrapped in `Some(...)` on the returned [`GeometryHandle`] —
     /// OCCT is a genuine B-rep kernel so sub-shape classification is always
     /// meaningful. The persistent `reprs` map stores the bare [`BRepKind`]
-    /// for `repr_of(id)` lookups (warm-state round-trips).
+    /// for `repr_of(id)` lookups.
     fn store_with_repr(
         &mut self,
         shape: cxx::UniquePtr<ffi::ffi::OcctShape>,
@@ -568,10 +510,9 @@ impl OcctKernel {
     /// The [`BRepKind`] `policy` assigns to `shape`.
     ///
     /// An `Inherit` source always has a recorded kind: every caller has
-    /// already read the source's shape, and `store_with_repr` and
-    /// `with_warm_state` record a shape and its kind together. A source with
-    /// no kind is therefore a broken invariant and an error, never a silent
-    /// re-classification.
+    /// already read the source's shape, and `store_with_repr` records a shape
+    /// and its kind together. A source with no kind is therefore a broken
+    /// invariant and an error, never a silent re-classification.
     fn resolve_repr(
         &self,
         shape: &ffi::ffi::OcctShape,
@@ -597,30 +538,6 @@ impl OcctKernel {
     ) -> Result<GeometryHandle, GeometryError> {
         let repr = self.resolve_repr(&shape, policy)?;
         Ok(self.store_with_repr(shape, repr))
-    }
-
-    /// Debug-only invariant guard for [`Self::extract_subshapes`]: asserts
-    /// that `h`, just returned from `store_with_repr`, really did get a
-    /// strictly fresh id (never reused).
-    ///
-    /// This protects `warm_state()`'s bounded-payload filter (see its
-    /// "Bounded payload" note): the filter treats every `parent_handle` key
-    /// as a derived, rebuildable sub-shape id and drops it from persisted
-    /// state. That's only safe because `store_with_repr` mints ids by
-    /// fetch-and-increment on `next_id` and never reuses one, so a
-    /// root/persistent handle id can never end up back here as `h.id.0`.
-    /// Assert that freshness explicitly so a future change that breaks it
-    /// (e.g. a `store_with_repr` that interns/reuses ids) fails loudly here
-    /// instead of silently making the filter drop real root data.
-    fn debug_assert_fresh_id(&self, h: &GeometryHandle) {
-        debug_assert_eq!(
-            h.id.0,
-            self.next_id - 1,
-            "store_with_repr must mint a strictly fresh id; a non-fresh \
-             id here could alias an existing root/persistent handle and \
-             make warm_state()'s parent_handle filter silently drop real \
-             root data"
-        );
     }
 
     /// Look up a shape by handle ID.
@@ -710,7 +627,6 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, kind.repr());
-            self.debug_assert_fresh_id(&h);
             // Provenance, so `OwnerBody(child)` answers without re-extraction.
             self.parent_handle.insert(h.id.0, parent);
             ids.push(h.id);
@@ -771,8 +687,7 @@ impl OcctKernel {
     /// the canonical sub-shape index of a caller-supplied handle. Without
     /// idempotency the second call would mint a fresh set of ids and the
     /// caller's pre-extracted handles would no longer match. The cache is
-    /// invalidated on `with_warm_state` (when the kernel's shape table is
-    /// swapped wholesale).
+    /// cleared by `reset`.
     ///
     /// Returns [`QueryError::InvalidHandle`] if `handle` is unknown.
     pub fn extract_edges(
@@ -809,8 +724,7 @@ impl OcctKernel {
     /// verbatim (cached in `extracted_vertices`). Required by the PNv2
     /// selector vocabulary v2 (task 3632) and downstream task-C seeders that
     /// re-call `extract_vertices` internally to recover the canonical vertex
-    /// index. The cache is invalidated on `with_warm_state` (when the kernel's
-    /// shape table is swapped wholesale).
+    /// index. The cache is cleared by `reset`.
     ///
     /// Child handle provenance is recorded in `parent_handle` so a later
     /// `OwnerBody(vertex_id)` query can answer "what body did this vertex come
@@ -1582,8 +1496,8 @@ impl OcctKernel {
             }
             // `repr_of` returns `None` iff `shape_id` is unknown to this kernel.
             // The "repr-lost-but-shape-present" case is unreachable: `store_with_repr`
-            // and `with_warm_state` keep `self.shapes` and `self.reprs` in lock-step
-            // (see `repr_of` doc).  Fall through to `get_shape` below, which returns
+            // keeps `self.shapes` and `self.reprs` in lock-step.
+            // Fall through to `get_shape` below, which returns
             // `InvalidReference` for genuinely unknown handles rather than a false
             // "requires Solid" rejection (esc-2655-26 suggestion #4 / task 2821
             // amendment; comment aligned by task 2905 / esc-2821-61 #1).
@@ -3850,254 +3764,14 @@ fn analytic_curve_datum_to_value(
     }
 }
 
+/// Stateless across warm starts: there is no state to capture or restore.
 #[cfg(has_occt)]
 impl WarmStartable for OcctKernel {
     fn warm_state(&self) -> Option<OpaqueState> {
-        // INV-GEO-3 state-inventory guard: exhaustive destructure (no `..`
-        // spread) so a newly-added OcctKernel field forces a compile-time
-        // persist/clear/runtime classification here instead of being
-        // silently omitted from warm-start state.
-        //   PERSIST (serialized into OcctWarmState): shapes, reprs, next_id
-        //     — excluding ids that are keys in parent_handle (see below)
-        //   CLEAR-on-restore (derived provenance, rebuilt by extract_*;
-        //     see with_warm_state): extracted_edges, extracted_faces,
-        //     extracted_vertices, parent_handle
-        //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
-        //
-        // Bounded payload: `shapes` is persisted below, but ids that are
-        // keys in `parent_handle` are skipped. Those ids name sub-shape
-        // blobs previously minted by extract_edges/extract_faces/
-        // extract_vertices; since parent_handle and the extracted_* caches
-        // are CLEAR-on-restore, a serialized sub-shape would round-trip as
-        // an ordinary shapes/reprs entry but come out orphaned on the
-        // consumer side: still queryable by id (repr_of, Volume, ...) but
-        // unreachable via OwnerBody and never reused by a later extract_*
-        // call, which mints fresh ids against the cleared cache. Left
-        // unfiltered, this would be unbounded across repeated warm-start
-        // cycles, not just single-cycle bloat: each cycle would serialize
-        // prior orphans, restore them, and the next extract_* would mint
-        // yet more fresh ids on top of the cleared cache, so the shape
-        // table would monotonically grow with phantom, unreachable
-        // entries. `parent_handle`'s key set is exactly the derived,
-        // rebuildable sub-shape ids — roots created by `execute` (Box,
-        // Cylinder, Union, Sphere, ...) are never keys, so only
-        // root/persistent shapes round-trip.
-        //
-        // `next_id` is not part of this bounded-vs-unbounded concern: it is
-        // persisted verbatim (see the `OcctWarmState` construction below)
-        // and, by design, keeps advancing across warm-start cycles — every
-        // `store_with_repr` call, root or (pre-filter) sub-shape alike,
-        // mints its id via fetch-and-increment and never reuses one, so
-        // `next_id` is monotonic regardless of this filter. That's expected
-        // and harmless: it's a single 8-byte scalar, not a per-entry
-        // collection, so it never contributes to the multi-cycle payload
-        // growth this filter exists to bound.
-        //
-        // Consumer contract: a `GeometryHandleId` returned by extract_edges/
-        // extract_faces/extract_vertices must not be held across a
-        // `with_warm_state()` boundary. After restore, such an id is only
-        // valid again once re-minted by a fresh extract_* call on its root;
-        // querying the old id directly (Volume, OwnerBody, repr_of, ...)
-        // now fails with `QueryError::InvalidHandle` instead of the
-        // pre-filter behavior of returning a stale-but-queryable orphan.
-        // Callers must re-extract sub-shapes from their root after every
-        // warm-start restore (see `warm_state_reextract_cycle` in the test
-        // module below). Verified at the time this filter was added (task
-        // #5162): no in-tree production caller exercises this cycle today.
-        // `OcctKernelHandle` (crates/reify-kernel-occt/src/handle.rs)
-        // forwards `warm_state`/`with_warm_state` over its request channel,
-        // but nothing outside this crate's own tests sends
-        // `OcctRequest::WarmState`/`WithWarmState`; and `reify-eval`'s only
-        // production warm-state wiring (`CacheStore::donate_warm_state`/
-        // `get_warm_state`, driven from `engine_compute.rs`/
-        // `engine_edit.rs`) is scoped to `NodeId::Compute` solver state, not
-        // `OcctKernel`/`OcctKernelHandle` geometry state — `engine_build.rs`
-        // has no `warm_state`/`OpaqueState` reference at all. A future
-        // caller that wires OCCT warm-start into the eval graph must follow
-        // the re-extraction contract above.
-        let Self {
-            shapes,
-            reprs,
-            next_id,
-            extracted_edges,
-            extracted_faces,
-            extracted_vertices,
-            parent_handle,
-            last_warm_start_failures: _,
-        } = self;
-        // Completeness cross-check for the bounded-payload filter below: it is
-        // only correct if every extracted_edges/extracted_faces/
-        // extracted_vertices cached id is also a `parent_handle` key. That
-        // holds today because extract_edges/extract_faces/extract_vertices
-        // insert into `parent_handle` immediately after minting each id (see
-        // their `store_with_repr` call sites), but nothing at the type level
-        // enforces that pairing — `debug_assert_fresh_id` only guards id
-        // freshness, not this coupling. Assert it explicitly (read-only; these
-        // fields are otherwise unused here, not persisted) so a future code
-        // path that repopulates one of the extracted_* caches, or stores a
-        // sub-shape, without a matching `parent_handle` insert fails loudly
-        // here instead of silently re-opening the unbounded multi-cycle
-        // growth this filter exists to prevent.
-        debug_assert!(
-            [extracted_edges, extracted_faces, extracted_vertices]
-                .into_iter()
-                .flat_map(|cache| cache.values().flatten())
-                .all(|id| parent_handle.contains_key(&id.0)),
-            "every extracted_edges/extracted_faces/extracted_vertices cached \
-             id must be a parent_handle key, or warm_state()'s bounded-payload \
-             filter would silently leak an un-filtered orphan back into \
-             persisted warm-start state"
-        );
-        if shapes.is_empty() {
-            return None;
-        }
-        let mut warm_shapes = HashMap::new();
-        let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
-        let mut total_bytes: usize = 0;
-        for (&id, shape) in shapes {
-            if parent_handle.contains_key(&id) {
-                // Derived sub-shape id (rebuildable via extract_*); skip so
-                // it doesn't round-trip as an orphaned entry. See the
-                // "Bounded payload" note above.
-                continue;
-            }
-            let Some(shape_ref) = shape.as_ref() else {
-                continue; // Skip null shapes (best-effort, like serialization failures)
-            };
-            match ffi::ffi::serialize_brep(shape_ref) {
-                Ok(brep) => {
-                    total_bytes += brep.len();
-                    warm_shapes.insert(id, brep);
-                    // Mirror repr entry only for ids that successfully serialized,
-                    // keeping shapes and reprs in lock-step.
-                    if let Some(&repr) = reprs.get(&id) {
-                        warm_reprs.insert(id, repr);
-                    }
-                }
-                Err(_) => {
-                    // Skip shapes that fail to serialize (best-effort)
-                    continue;
-                }
-            }
-        }
-        if warm_shapes.is_empty() {
-            return None;
-        }
-        let staged_count = warm_shapes.len();
-        // size_estimate is a payload-bytes lower bound, not a true heap footprint.
-        // Per-repr entry: 16 bytes (u64 key + enum byte, payload only). True cost in
-        // hashbrown's open-addressing layout is ~32–48 bytes/entry, but the existing
-        // +64 struct overhead already underestimates the shapes HashMap the same way —
-        // callers treat this figure as approximate, not as a precise allocator reading.
-        let size_estimate = total_bytes + staged_count * 16 + 64;
-        Some(OpaqueState::new(
-            OcctWarmState {
-                shapes: warm_shapes,
-                reprs: warm_reprs,
-                next_id: *next_id,
-            },
-            size_estimate,
-        ))
+        None
     }
 
-    fn with_warm_state(&mut self, state: OpaqueState) {
-        let warm = match state.downcast::<OcctWarmState>() {
-            Some(w) => w,
-            None => return, // Wrong type, silently ignore per trait contract
-        };
-        // Stage deserialization into a temporary map first. If all entries fail
-        // to deserialize, we preserve the kernel's pre-existing state untouched.
-        self.last_warm_start_failures = 0;
-        let mut staged = HashMap::new();
-        for (id, brep) in warm.shapes {
-            cxx::let_cxx_string!(brep_cxx = brep.as_str());
-            match ffi::ffi::deserialize_brep(&brep_cxx) {
-                Ok(shape) => {
-                    staged.insert(id, shape);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        shape_id = id,
-                        error = %e,
-                        "warm-start deserialization failed"
-                    );
-                    self.last_warm_start_failures += 1;
-                    continue;
-                }
-            }
-        }
-        // Atomic swap: only replace kernel state if at least one shape was
-        // successfully deserialized. Otherwise the kernel state is untouched.
-        //
-        // Coverage boundary: the INV-GEO-3 exhaustive-destructure drift guard
-        // below only fires on this swap-occurs path. A future field that must
-        // be cleared even on the no-op (total-failure) branch is NOT caught
-        // by that guard — it would need its own explicit handling above this
-        // `if`, plus a behavioral pin (see
-        // `with_warm_state_total_failure_preserves_dirty_state_and_provenance`,
-        // which asserts the no-op path leaves every current field, including
-        // `parent_handle`, untouched on a dirty kernel).
-        if !staged.is_empty() {
-            // Rebuild repr map: for every successfully staged id, take the
-            // persisted repr if present, falling back to BRepKind::Solid.
-            // debug_assert guards against a future producer that serializes
-            // warm.shapes and warm.reprs out of sync: if reprs is non-empty it
-            // must contain an entry for every shape id (the lock-step invariant
-            // maintained by warm_state()). The production fallback remains safe.
-            let mut new_reprs = HashMap::new();
-            for &id in staged.keys() {
-                debug_assert!(
-                    warm.reprs.is_empty() || warm.reprs.contains_key(&id),
-                    "warm.reprs and warm.shapes are out of sync: \
-                     id {id} present in shapes but missing from reprs"
-                );
-                let repr = warm.reprs.get(&id).copied().unwrap_or(BRepKind::Solid);
-                new_reprs.insert(id, repr);
-            }
-            // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
-            // `..` spread) forces every OcctKernel field to be classified here
-            // as PERSIST (overwritten from the restored state) or CLEAR-on-restore
-            // (derived/cached provenance invalidated by the wholesale shape
-            // swap). Adding a new field to OcctKernel without extending this
-            // pattern is a hard compile error (E0027), so the consumer-side
-            // clear/rebuild decision can't be silently skipped.
-            let Self {
-                shapes,
-                reprs,
-                next_id,
-                extracted_edges,
-                extracted_faces,
-                extracted_vertices,
-                parent_handle,
-                last_warm_start_failures: _, // finalized above; not part of the swap
-            } = self;
-            // PERSIST: overwritten wholesale from the restored warm state.
-            *shapes = staged;
-            *reprs = new_reprs;
-            *next_id = warm.next_id;
-            // FORWARD-LOOKING HAZARD (task 5212, no production caller today):
-            // this wholesale `*shapes = staged` swap paired with
-            // `*next_id = warm.next_id` can LOWER next_id to a value at or
-            // below ids already handed out this session. If OCCT geometry
-            // warm-start is ever wired into the GUI whole-file reload path, a
-            // later `store_with_repr` could then re-mint an id that a stale
-            // handle (e.g. a lingering realization-cache entry) still names,
-            // aliasing it onto a freshly-minted shape — silent data corruption
-            // / UAF — instead of failing cleanly. This is exactly why
-            // `OcctKernel::reset()` deliberately keeps next_id MONOTONIC (see
-            // its doc comment and INV-BUILD-1): a warm-start reload wiring must
-            // reconcile next_id (take the max, never lower it), not overwrite.
-            // CLEAR-on-restore: derived provenance/idempotency caches keyed to
-            // the pre-restore shape table. Cached child ids may not correspond
-            // to any face/edge/vertex of the freshly-restored shapes, and
-            // parent_handle's child → parent entries are likewise stale
-            // (rebuilt on demand by a later extract_edges/faces/vertices call).
-            extracted_edges.clear();
-            extracted_faces.clear();
-            extracted_vertices.clear();
-            parent_handle.clear();
-        }
-    }
+    fn with_warm_state(&mut self, _state: OpaqueState) {}
 }
 
 #[cfg(all(test, has_occt))]
