@@ -3324,22 +3324,17 @@ pub(crate) fn apply_lambda_with_point_unpacking(
 ///
 /// `items` is the 7-element lambda-slot list documented on
 /// `reify_ir::FieldSourceKind::AsPrintedZones`:
-/// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`,
-/// where `params` is itself a `Value::List` of 7 numbers
-/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]` whose two
-/// band widths are `Length` scalars, read dimension-blind via `as_f64`.
+/// `[aabb_min, aabb_max, params, cos_threshold, mat_wall, mat_skin, mat_infill]`.
 ///
-/// Reconstructs the γ [`reify_fdm::AxisAlignedBox`] / [`reify_fdm::ZoneProcessParams`],
+/// Reconstructs the γ [`reify_fdm::AxisAlignedBox`] and
+/// [`reify_fdm::ZoneProcessParams`] (via [`as_printed_zone_params`]),
 /// classifies the query point `at` into a Wall / Skin / Infill zone via
 /// [`reify_fdm::classify_point`], and returns the matching precomputed material
 /// value (`mat_wall` / `mat_skin` / `mat_infill`). Returns [`Value::Undef`] if
-/// any stored datum is malformed (non-Point AABB corners, wrong-arity or
-/// non-numeric `params`, non-numeric threshold, or a non-finite layer_height /
-/// line_width / build direction) or `at` is not a 3-component `Point`/`Vector`.
+/// any stored datum is malformed (non-finite or non-Point AABB corners, a
+/// `params` slot [`as_printed_zone_params`] refuses, non-numeric threshold) or
+/// `at` is not a 3-component `Point`/`Vector`.
 fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
-    let Value::List(params) = &items[2] else {
-        return Value::Undef;
-    };
     let (Some(min), Some(max), Some(point)) =
         (datum_vec3(&items[0]), datum_vec3(&items[1]), datum_vec3(at))
     else {
@@ -3348,31 +3343,58 @@ fn sample_as_printed_zones(items: &[Value], at: &Value) -> Value {
     let Some(cos_threshold) = items[3].as_f64() else {
         return Value::Undef;
     };
-    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz]
-    let Some(p) = params
-        .iter()
-        .map(|v| v.as_f64())
-        .collect::<Option<Vec<f64>>>()
-        .filter(|p| p.len() == 7)
-    else {
+    let Some(zone_params) = as_printed_zone_params(&items[2]) else {
         return Value::Undef;
     };
     let aabb = reify_fdm::AxisAlignedBox { min, max };
-    let zone_params = reify_fdm::ZoneProcessParams {
-        walls: p[0] as u32,
-        top_bottom_layers: p[1] as u32,
-        layer_height: p[2],
-        line_width: p[3],
-        build_direction: [p[4], p[5], p[6]],
-    };
-    if !zone_params.is_finite() {
-        return Value::Undef;
-    }
     match reify_fdm::classify_point(&aabb, &zone_params, cos_threshold, point) {
         reify_fdm::Zone::Wall => items[4].clone(),
         reify_fdm::Zone::Skin => items[5].clone(),
         reify_fdm::Zone::Infill => items[6].clone(),
     }
+}
+
+/// Decode the `AsPrintedZones` `params` slot, a 7-element `Value::List`
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`, under
+/// the element typing `reify-eval`'s FEA reader enforces: the two band widths
+/// are `Length` scalars and every other element is a `Value::Real`. `None` for
+/// any other shape, or when the decoded params violate
+/// [`reify_fdm::ZoneProcessParams::is_finite`].
+fn as_printed_zone_params(params: &Value) -> Option<reify_fdm::ZoneProcessParams> {
+    let Value::List(params) = params else {
+        return None;
+    };
+    let [
+        walls,
+        top_bottom_layers,
+        layer_height,
+        line_width,
+        bx,
+        by,
+        bz,
+    ] = params.as_slice()
+    else {
+        return None;
+    };
+    let real = |v: &Value| match v {
+        Value::Real(r) => Some(*r),
+        _ => None,
+    };
+    let length = |v: &Value| match v {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } if *dimension == DimensionVector::LENGTH => Some(*si_value),
+        _ => None,
+    };
+    let zone_params = reify_fdm::ZoneProcessParams {
+        walls: real(walls)? as u32,
+        top_bottom_layers: real(top_bottom_layers)? as u32,
+        layer_height: length(layer_height)?,
+        line_width: length(line_width)?,
+        build_direction: [real(bx)?, real(by)?, real(bz)?],
+    };
+    zone_params.is_finite().then_some(zone_params)
 }
 
 /// Evaluate a zero-argument member projection (collection, range, complex,
