@@ -137,7 +137,7 @@ fn cell_latest_commit_was_skip(journal: &EventJournal, node: &NodeId) -> bool {
         .events_for_node(node)
         .iter()
         .rev()
-        .find(|event| matches!(event.kind, EventKind::Started))
+        .find(|event| matches!(event.kind, EventKind::Started { .. }))
         .is_some_and(|event| {
             matches!(&event.payload, Some(EventPayload::Custom(s)) if s.contains("cache-skip="))
         })
@@ -233,7 +233,7 @@ mod tests {
         journal.record(EvalEvent {
             timestamp: Instant::now(),
             node_id: NodeId::Value(cell.clone()),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(1),
             payload: Some(EventPayload::Custom(
                 "post-pass-overwrite|cache-skip=seeded".to_string(),

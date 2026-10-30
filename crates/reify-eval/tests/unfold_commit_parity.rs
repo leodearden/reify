@@ -71,7 +71,7 @@ fn eval_single_template(
 /// `commit_cell_result` writes for `TraceSource::GuardedGroup` commits.
 fn has_guarded_group_started_provenance(events: &[&reify_eval::journal::EvalEvent]) -> bool {
     events.iter().any(|e| {
-        matches!(&e.kind, EventKind::Started)
+        matches!(&e.kind, EventKind::Started { .. })
             && matches!(&e.payload, Some(EventPayload::Custom(s)) if s == "guarded-group")
     })
 }

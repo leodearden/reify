@@ -318,7 +318,7 @@ fn journal_records_full_edit_cycle_events() {
     let volume_events = engine.journal().events_for_node(&volume_node);
     let volume_started = volume_events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .count();
     assert!(
         volume_started >= 2,
@@ -331,7 +331,7 @@ fn journal_records_full_edit_cycle_events() {
     let width_events = engine.journal().events_for_node(&width_node);
     let width_started = width_events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .count();
     assert_eq!(
         width_started, 1,

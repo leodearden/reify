@@ -152,13 +152,14 @@ use reify_ir::{
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::cell_commit::{
-    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+    CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result, commit_cell_result_at,
 };
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
 };
@@ -1390,9 +1391,8 @@ impl Engine {
                     VersionId(version_id),
                     CacheLeg::Record,
                 );
-                let outcome = commit_outcome
-                    .cache_outcome()
-                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
+                let outcome =
+                    commit_outcome.expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // μ (#5062): store this re-evaluated cell's diagnostics delta
                 // for replay on future cache-hit serves (empty delta clears
@@ -3688,9 +3688,8 @@ impl Engine {
                     VersionId(version_id),
                     CacheLeg::Record,
                 );
-                let outcome = commit_outcome
-                    .cache_outcome()
-                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
+                let outcome =
+                    commit_outcome.expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // Early-cutoff propagation — identical policy to edit_param:
                 // - Changed: dependents inherit has_changed_parent and are
@@ -6929,7 +6928,7 @@ mod tests {
         use reify_test_support::compile_source;
 
         use crate::cache::{CachedResult, NodeId};
-        use crate::cell_commit::TraceSource;
+        use crate::journal::TraceSource;
         use crate::journal::{EventKind, EventPayload};
 
         const SRC: &str = r#"structure S {
@@ -6963,7 +6962,7 @@ mod tests {
         let started = events_after[events_after.len() - 2];
         let completed = events_after[events_after.len() - 1];
         assert!(
-            matches!(started.kind, EventKind::Started),
+            matches!(started.kind, EventKind::Started { .. }),
             "expected the second-to-last event to be Started, got {:?}",
             started.kind
         );
@@ -7398,7 +7397,7 @@ mod tests {
         label: &str,
     ) {
         use crate::cache::{CachedResult, NodeId};
-        use crate::cell_commit::TraceSource;
+        use crate::journal::TraceSource;
         use crate::journal::{EventKind, EventPayload};
         use reify_ir::DeterminacyState;
 
@@ -7411,7 +7410,7 @@ mod tests {
         let started = events[events.len() - 2];
         let completed = events[events.len() - 1];
         assert!(
-            matches!(started.kind, EventKind::Started),
+            matches!(started.kind, EventKind::Started { .. }),
             "{label}: expected the second-to-last event to be Started, got {:?}",
             started.kind
         );
@@ -7552,7 +7551,7 @@ mod tests {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
+        use crate::journal::TraceSource;
         use crate::journal::{EventKind, EventPayload};
 
         const SRC: &str = r#"structure BoltPart {
@@ -7615,7 +7614,7 @@ structure GrowColl {
         );
         let started = events[events.len() - 2];
         assert!(
-            matches!(started.kind, EventKind::Started),
+            matches!(started.kind, EventKind::Started { .. }),
             "expected the second-to-last event to be Started, got {:?}",
             started.kind
         );
@@ -7655,7 +7654,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
+        use crate::journal::TraceSource;
         use crate::journal::{EventKind, EventPayload};
 
         const SRC: &str = r#"structure GuardU1 {
@@ -7714,7 +7713,7 @@ structure GrowColl {
         );
         let started = events[events.len() - 2];
         assert!(
-            matches!(started.kind, EventKind::Started),
+            matches!(started.kind, EventKind::Started { .. }),
             "expected the second-to-last event to be Started, got {:?}",
             started.kind
         );
@@ -7750,7 +7749,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
+        use crate::journal::TraceSource;
         use crate::journal::{EventKind, EventPayload};
 
         const SRC: &str = r#"structure BoltPart {
@@ -7811,7 +7810,7 @@ structure GrowColl {
         );
         let started = events[events.len() - 2];
         assert!(
-            matches!(started.kind, EventKind::Started),
+            matches!(started.kind, EventKind::Started { .. }),
             "expected the second-to-last event to be Started, got {:?}",
             started.kind
         );
@@ -7854,7 +7853,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
+        use crate::journal::TraceSource;
         use crate::journal::{EventKind, EventPayload};
 
         const SRC: &str = r#"structure BoltPart {
@@ -7889,7 +7888,7 @@ structure GrowColl {
         );
         let started = events[events.len() - 2];
         assert!(
-            matches!(started.kind, EventKind::Started),
+            matches!(started.kind, EventKind::Started { .. }),
             "expected the second-to-last event to be Started, got {:?}",
             started.kind
         );

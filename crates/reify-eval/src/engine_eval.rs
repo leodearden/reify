@@ -24,7 +24,7 @@ use reify_ir::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::cell_commit::{
-    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+    CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result, commit_cell_result_at,
 };
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
@@ -32,7 +32,7 @@ use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_tr
 use crate::dirty::topological_sort;
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::journal::{EvalEvent, EventKind, EventPayload};
+use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
@@ -498,7 +498,9 @@ fn record_eval_completed(
     journal.record(EvalEvent {
         timestamp: Instant::now(),
         node_id,
-        kind: EventKind::Completed { outcome },
+        kind: EventKind::Completed {
+            outcome: Some(outcome),
+        },
         version,
         payload: Some(EventPayload::Duration(start.elapsed())),
     });
@@ -536,7 +538,7 @@ fn record_subpath_started(
     journal.record(EvalEvent {
         timestamp: start,
         node_id,
-        kind: EventKind::Started,
+        kind: EventKind::Started { commit: None },
         version,
         payload: None,
     });
@@ -6336,7 +6338,7 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: start,
                                 node_id: node_id.clone(),
-                                kind: EventKind::Started,
+                                kind: EventKind::Started { commit: None },
                                 version: VersionId(res_version_id),
                                 payload: None,
                             });
@@ -6364,7 +6366,9 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
-                                kind: EventKind::Completed { outcome },
+                                kind: EventKind::Completed {
+                                    outcome: Some(outcome),
+                                },
                                 version: VersionId(res_version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
                             });
@@ -7746,7 +7750,7 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: start,
                         node_id: node_id.clone(),
-                        kind: EventKind::Started,
+                        kind: EventKind::Started { commit: None },
                         version: VersionId(res_version_id),
                         payload: None,
                     });
@@ -7772,7 +7776,9 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
-                        kind: EventKind::Completed { outcome },
+                        kind: EventKind::Completed {
+                            outcome: Some(outcome),
+                        },
                         version: VersionId(res_version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
@@ -8240,7 +8246,7 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: start,
                         node_id: node_id.clone(),
-                        kind: EventKind::Started,
+                        kind: EventKind::Started { commit: None },
                         version,
                         payload: None,
                     });
@@ -8265,7 +8271,9 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
-                        kind: EventKind::Completed { outcome },
+                        kind: EventKind::Completed {
+                            outcome: Some(outcome),
+                        },
                         version,
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
@@ -8498,7 +8506,7 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: start,
                                 node_id: node_id.clone(),
-                                kind: EventKind::Started,
+                                kind: EventKind::Started { commit: None },
                                 version,
                                 payload: None,
                             });
@@ -8604,7 +8612,9 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
-                                kind: EventKind::Completed { outcome },
+                                kind: EventKind::Completed {
+                                    outcome: Some(outcome),
+                                },
                                 version,
                                 payload: Some(EventPayload::Duration(start.elapsed())),
                             });
@@ -8838,7 +8848,6 @@ impl Engine {
                                 CacheLeg::Record,
                             );
                             let outcome = commit_outcome
-                                .cache_outcome()
                                 .expect("CacheLeg::Record always yields Some(outcome)");
 
                             // μ (#5062): store this freshly-evaluated cell's
@@ -10165,7 +10174,7 @@ impl Engine {
                 self.journal.record(EvalEvent {
                     timestamp: start,
                     node_id: node_id.clone(),
-                    kind: EventKind::Started,
+                    kind: EventKind::Started { commit: None },
                     version,
                     payload: None,
                 });
@@ -10187,7 +10196,9 @@ impl Engine {
                 self.journal.record(EvalEvent {
                     timestamp: Instant::now(),
                     node_id,
-                    kind: EventKind::Completed { outcome },
+                    kind: EventKind::Completed {
+                        outcome: Some(outcome),
+                    },
                     version,
                     payload: Some(EventPayload::Duration(start.elapsed())),
                 });
@@ -10282,7 +10293,7 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: start,
                         node_id: node_id_p.clone(),
-                        kind: EventKind::Started,
+                        kind: EventKind::Started { commit: None },
                         version,
                         payload: None,
                     });
@@ -10433,7 +10444,7 @@ impl Engine {
                                 timestamp: Instant::now(),
                                 node_id: node_id.clone(),
                                 kind: EventKind::Completed {
-                                    outcome: EvalOutcome::Unchanged,
+                                    outcome: Some(EvalOutcome::Unchanged),
                                 },
                                 version: VersionId(version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10495,7 +10506,7 @@ impl Engine {
                                         timestamp: Instant::now(),
                                         node_id,
                                         kind: EventKind::Completed {
-                                            outcome: EvalOutcome::Unchanged,
+                                            outcome: Some(EvalOutcome::Unchanged),
                                         },
                                         version: VersionId(version_id),
                                         payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10646,7 +10657,7 @@ impl Engine {
                                             timestamp: Instant::now(),
                                             node_id,
                                             kind: EventKind::Completed {
-                                                outcome: EvalOutcome::Changed,
+                                                outcome: Some(EvalOutcome::Changed),
                                             },
                                             version: VersionId(version_id),
                                             payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10677,7 +10688,7 @@ impl Engine {
                                             timestamp: Instant::now(),
                                             node_id,
                                             kind: EventKind::Completed {
-                                                outcome: EvalOutcome::Unchanged,
+                                                outcome: Some(EvalOutcome::Unchanged),
                                             },
                                             version: VersionId(version_id),
                                             payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11405,7 +11416,7 @@ impl Engine {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
                         kind: EventKind::Completed {
-                            outcome: EvalOutcome::Unchanged,
+                            outcome: Some(EvalOutcome::Unchanged),
                         },
                         version: VersionId(version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11479,7 +11490,7 @@ impl Engine {
                                 timestamp: Instant::now(),
                                 node_id,
                                 kind: EventKind::Completed {
-                                    outcome: EvalOutcome::Unchanged,
+                                    outcome: Some(EvalOutcome::Unchanged),
                                 },
                                 version: VersionId(version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11743,7 +11754,7 @@ impl Engine {
                                     timestamp: Instant::now(),
                                     node_id,
                                     kind: EventKind::Completed {
-                                        outcome: EvalOutcome::Changed,
+                                        outcome: Some(EvalOutcome::Changed),
                                     },
                                     version: VersionId(version_id),
                                     payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11787,7 +11798,7 @@ impl Engine {
                                     timestamp: Instant::now(),
                                     node_id,
                                     kind: EventKind::Completed {
-                                        outcome: EvalOutcome::Unchanged,
+                                        outcome: Some(EvalOutcome::Unchanged),
                                     },
                                     version: VersionId(version_id),
                                     payload: Some(EventPayload::Duration(start.elapsed())),
@@ -12749,7 +12760,7 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
         let events = engine.journal().events_for_node(&node_id);
         let started = events
             .iter()
-            .find(|event| matches!(event.kind, EventKind::Started))?;
+            .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
         match &started.payload {
             Some(EventPayload::Custom(slug)) => Some(slug.clone()),
             _ => None,
@@ -14081,7 +14092,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
         let events = engine.journal().events_for_node(&node_id);
         let started = events
             .iter()
-            .find(|event| matches!(event.kind, EventKind::Started))?;
+            .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
         match &started.payload {
             Some(EventPayload::Custom(slug)) => Some(slug.clone()),
             _ => None,
@@ -14222,7 +14233,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
         let shape: Vec<&'static str> = events
             .iter()
             .filter_map(|e| match e.kind {
-                EventKind::Started => Some("Started"),
+                EventKind::Started { .. } => Some("Started"),
                 EventKind::Completed { .. } => Some("Completed"),
                 EventKind::Failed { .. } => Some("Failed"),
                 _ => None,

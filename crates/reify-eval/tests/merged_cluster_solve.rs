@@ -2464,8 +2464,10 @@ fn eval_cached_merged_cluster_co_solve_records_commit_provenance() {
         // is exactly the journal leg the INV-EVAL-1/2 migration (step 10) adds.
         let events = engine.journal().events_for_node(&NodeId::Value(id.clone()));
         assert!(
-            events.iter().any(|ev| matches!(ev.kind, EventKind::Started)
-                && matches!(ev.payload, Some(EventPayload::Custom(_)))),
+            events
+                .iter()
+                .any(|ev| matches!(ev.kind, EventKind::Started { .. })
+                    && matches!(ev.payload, Some(EventPayload::Custom(_)))),
             "co-solved cluster-member auto {:?} must have a journal `Started` \
              event with an `EventPayload::Custom` provenance slug -- proving the \
              warm merged write-back routed through `commit_cell_result` \

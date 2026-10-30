@@ -43,7 +43,7 @@ fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
     let events = engine.journal().events_for_node(&node_id);
     let started = events
         .iter()
-        .find(|event| matches!(event.kind, EventKind::Started))?;
+        .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
     match &started.payload {
         Some(EventPayload::Custom(slug)) => Some(slug.clone()),
         _ => None,
@@ -362,7 +362,7 @@ fn last_started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
     let started = events
         .iter()
         .rev()
-        .find(|event| matches!(event.kind, EventKind::Started))?;
+        .find(|event| matches!(event.kind, EventKind::Started { .. }))?;
     match &started.payload {
         Some(EventPayload::Custom(slug)) => Some(slug.clone()),
         _ => None,
@@ -1452,7 +1452,7 @@ fn assert_started_terminal_pairing(engine: &Engine, id: &ValueCellId, label: &st
     let shape: Vec<&'static str> = events
         .iter()
         .filter_map(|e| match e.kind {
-            EventKind::Started => Some("Started"),
+            EventKind::Started { .. } => Some("Started"),
             EventKind::Completed { .. } => Some("Completed"),
             EventKind::Failed { .. } => Some("Failed"),
             _ => None,
@@ -1532,7 +1532,7 @@ fn non_migrated_let_subpaths_emit_paired_started_events() {
         .events_for_node(&NodeId::Value(c_id.clone()));
     let c_started = c_events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .count();
     assert!(
         c_started >= 2,

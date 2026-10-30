@@ -106,7 +106,7 @@ fn seeded_skip_committed_divergence_is_exempted() {
     journal.record(EvalEvent {
         timestamp: Instant::now(),
         node_id: NodeId::Value(cell.clone()),
-        kind: EventKind::Started,
+        kind: EventKind::Started { commit: None },
         version: VersionId(1),
         payload: Some(EventPayload::Custom(
             "post-pass-overwrite|cache-skip=seeded".to_string(),

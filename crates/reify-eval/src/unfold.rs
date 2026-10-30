@@ -9,12 +9,12 @@ use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
 
 use crate::cache::{CacheStore, NodeId};
-use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result};
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
-use crate::journal::EventJournal;
+use crate::journal::{EventJournal, TraceSource};
 use crate::snapshot::Snapshot;
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
@@ -1949,7 +1949,7 @@ mod tests {
             .events_for_node(&NodeId::Value(child_m.clone()));
         assert!(
             events.iter().any(|e| {
-                matches!(&e.kind, EventKind::Started)
+                matches!(&e.kind, EventKind::Started { .. })
                     && matches!(&e.payload, Some(EventPayload::Custom(s)) if s == "guarded-group")
             }),
             "expected a Started event for S.child.m carrying \
