@@ -41,12 +41,15 @@
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
 #   2b.Prune unconsulted units from the staging copy: one call to the sibling
-#      scripts/prune-unconsulted-target.sh on <base_dir>.gen.<N>.partial/debug
-#      (debug only, 7-day window, atime probed on the advancing dir). A failed
-#      prune, or a missing sibling, aborts the refresh before the partial→gen
-#      rename. Rule, skips and exit codes: that script's header. Its
-#      victim_bytes is apparent here: reflinked extents stay shared with the
-#      advancing source until that drops them too.
+#      scripts/prune-unconsulted-target.sh --prune-dead-unit-records on
+#      <base_dir>.gen.<N>.partial/debug (debug only, 7-day window, atime probed
+#      on the advancing dir). A dead compile unit loses its deps files, its
+#      depth-1 .dwo shards and its .fingerprint record; a unit with a build/
+#      dir keeps its record and shards. A failure at any stage, or a missing
+#      sibling, aborts the refresh before the partial→gen rename. Rule, skips
+#      and exit codes: that script's header. Its victim_bytes is apparent
+#      here: reflinked extents stay shared with the advancing source until
+#      that drops them too.
 #      Executable spec: tests/infra/test_refresh_warm_base.sh Block LIVE.
 #   3. Bootstrap (first refresh): if <base_dir> is a pre-existing real dir,
 #      rename it to a retired gen dir first (never rename-over-populated).
@@ -416,7 +419,7 @@ ok "Reflink copy complete (gen ${_next_gen})."
 # Called plainly, with no `if` or `||`, so set -e aborts on any failure (a
 # missing sibling included) before the rename below; the EXIT trap then drops
 # the partial.
-"$_SCRIPT_DIR/prune-unconsulted-target.sh" --window-days 7 \
+"$_SCRIPT_DIR/prune-unconsulted-target.sh" --window-days 7 --prune-dead-unit-records \
     --atime-probe "$ADVANCING_DIR" "${_new_gen_partial}/debug"
 
 # Step 4: rename staging dir to the final gen dir (dir→new-name rename, safe).
