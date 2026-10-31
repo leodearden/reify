@@ -134,6 +134,19 @@ class Views(TempRoot):
         self.assertEqual(result.count, 3)
         self.assertEqual(result.hits, ("src/a.rs:2", "src/a.rs:7", "src/a.rs:7"))
 
+    def test_code_view_counts_text_only_the_lexed_line_spells(self):
+        self.write("src/a.rs", rust_fn('    let s = "abc";', "    foo/* c */bar();"))
+        blanked = self.evaluate_one(demo_row(r'= "";', "src/a.rs", baseline=1))
+        spliced = self.evaluate_one(demo_row(r"\bfoobar\(", "src/a.rs", baseline=1))
+        self.assertEqual(blanked.hits, ("src/a.rs:2",))
+        self.assertEqual(spliced.hits, ("src/a.rs:3",))
+
+    def test_starts_in_code_view_anchors_at_each_raw_line_start(self):
+        self.write("src/a.rs", rust_fn('    "needle_a".len();'))
+        result = self.evaluate_one(
+            demo_row(r'^\s*"needle_', "src/a.rs", view=rcr.View.STARTS_IN_CODE))
+        self.assertEqual(result.hits, ("src/a.rs:2",))
+
     def test_starts_in_code_view_counts_literal_openers_only(self):
         self.write("src/a.rs", rust_fn(
             '    let a = "needle_x";',
