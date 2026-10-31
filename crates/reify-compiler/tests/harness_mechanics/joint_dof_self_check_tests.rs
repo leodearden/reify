@@ -269,8 +269,10 @@ fn arg_type_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> 
 
 /// A DOF whose type does not resolve registers as `Type::Error`, which the
 /// resolver owns: the self-check draws neither a verdict nor a second
-/// diagnostic for it, in the single and the record form. The companion is the
-/// same joint with a resolvable `Angle`, which must draw the verdict.
+/// diagnostic for it, in the single and the record form. Each source's
+/// companion differs only in reading `Blorp` as `Angle`, and must draw the
+/// verdict — so the silence is the gate's, not a source that never reaches the
+/// self-check.
 ///
 /// Nothing is asserted about a diagnostic for the unresolved `Blorp` itself
 /// (that silence is task #8148's).
@@ -287,17 +289,17 @@ fn type_error_dof_draws_no_mismatch_and_no_second_diagnostic() {
              for `{source}`: {:#?}",
             module.diagnostics
         );
-    }
 
-    let control = compile_source_with_stdlib(
-        "joint j(a: Axis, b: Axis) with angle: Angle = concentric(a, b)",
-    );
-    assert_eq!(
-        joint_dof_errors(&control).len(),
-        1,
-        "the resolvable control must draw exactly one E_JOINT_DOF_MISMATCH: {:#?}",
-        control.diagnostics
-    );
+        let companion_source = source.replace("Blorp", "Angle");
+        let companion = compile_source_with_stdlib(&companion_source);
+        assert_eq!(
+            joint_dof_errors(&companion).len(),
+            1,
+            "the resolvable companion `{companion_source}` must draw exactly one \
+             E_JOINT_DOF_MISMATCH: {:#?}",
+            companion.diagnostics
+        );
+    }
 }
 
 /// A DOF declared with a type that is neither `Angle`, `Length`, nor

@@ -4,8 +4,8 @@
 //! The verdict (`E_JOINT_DOF_MISMATCH`) is gated off by a kind-less DOF (an
 //! unresolved type draws nothing more; a non-kind type draws one targeted
 //! error) and by a body relation with a known DOF count but no rot/trans split.
-//! The control fixture proves the CLI path computes verdicts at all, so the
-//! silent fixtures are not vacuous.
+//! The control fixture is the unresolved-type fixture with each `Blorp` read as
+//! `Angle`; its verdicts prove the silent fixtures are not vacuous.
 //!
 //! The CLI surfaces diagnostic MESSAGE text, so these assertions match message
 //! substrings; the exact codes are pinned in reify-compiler's
@@ -36,18 +36,31 @@ fn check_joint_dof_mismatch_control_draws_the_verdict() {
         "the control joint must fail its DOF self-check.\nstdout: {stdout}\nstderr: {stderr}"
     );
     let mismatches = lines_containing(&stderr, MISMATCH_MARKER);
+    for joint in ["`j`", "`k`"] {
+        let joint_mismatches: Vec<&str> = mismatches
+            .iter()
+            .copied()
+            .filter(|line| line.contains(joint))
+            .collect();
+        assert_eq!(
+            joint_mismatches.len(),
+            1,
+            "exactly one mismatch line naming joint {joint} expected, got: {stderr}"
+        );
+        assert!(
+            joint_mismatches[0].contains("1 rot + 1 trans"),
+            "the mismatch must name the residual, got: {}",
+            joint_mismatches[0]
+        );
+    }
     assert_eq!(
         mismatches.len(),
-        1,
-        "exactly one mismatch line expected, got: {stderr}"
-    );
-    assert!(
-        mismatches[0].contains("1 rot + 1 trans"),
-        "the mismatch must name the residual, got: {}",
-        mismatches[0]
+        2,
+        "exactly one mismatch line per joint expected, got: {stderr}"
     );
 }
 
+/// Paired with the control fixture, which differs only in its resolvable types.
 /// No exit-code assertion: the unresolved `Blorp` is itself silent today, which
 /// is task #8148's to change.
 #[test]
