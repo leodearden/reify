@@ -2578,7 +2578,7 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: The body below is the AS-AUTHORED design record
+      pattern: '^[^|]*The body below is the AS-AUTHORED design record'
       expect: present
       paths:
       - docs/prds/v0_6/direction-typing.capability-manifest.md
