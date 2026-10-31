@@ -2318,7 +2318,7 @@ tasks:
       reason: Upstream task.
   - name: fixed-payload-consumed-as-traction
     binding: Delivered by this leaf. assemble_box_face_pressures ignores PressureSpec.direction on main;
-      κ consumes Fixed { dir } as traction = magnitude * dir (lead reading of D9, PROPOSED). Normal stays
+      κ consumes Fixed { dir } as traction = magnitude * dir (D9′, Leo 2026-10-31; dir is in the solve's global coordinates). Normal stays
       byte-identical.
     verdict: PASS
     delivered_check:

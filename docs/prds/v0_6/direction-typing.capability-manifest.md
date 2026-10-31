@@ -17,7 +17,7 @@ Every grep check was executed against main at decompose: each `present` pattern 
 
 **Critic.** One fable/high adversarial pass over the assembled draft: 1 blocker (δ's hint check would have wedged Phase 2, now anchored on `DIRECTION_MIGRATION_HINT`) and 3 majors, all folded. No separate fold-verifier ran: the fold after the critic was small, and the checks were re-executed and re-linted after it.
 
-**PROPOSED, not ruled:** D9′ (`Fixed` traction semantics and sign). **Ruled by Leo 2026-10-31:** the let-annotation row, the Add/Sub guard and the fn-call hint are in #9571's scope; the downstream edges below are wired; #5955 cancelled.
+**Ruled by Leo 2026-10-31:** D9′ (`Fixed` traction semantics, sign and global coordinates); the let-annotation row, the Add/Sub guard and the fn-call hint are in #9571's scope; the downstream edges below are wired; #5955 cancelled.
 
 
 ## α #9633: Direction value contract (UnitVec3 newtype, decode_direction, frame_basis, DIRECTION_DEGENERACY_FLOOR, DegenerateDirection code, Display dir(x, y, z))
@@ -356,7 +356,7 @@ Every grep check was executed against main at decompose: each `present` pattern 
 | pressure-spec-reader-matches-enum-payload | PASS | delivered by this leaf: parse_pressure_spec (elastic_static.rs) reading Value::Enum PressureDirection instead of Value::String. | manual: Decoder home is #8683's choice; "Fixed" already occurs in reify-eval/src, so no sound present check exists. Cover: the Fixed-vs-Normal box fixture. |
 | runtime-variant-construction-upstream | PASS | producer:task-7456 upstream, edge wired; replaces the κ₀ label. Delivers CompiledExprKind::VariantCtor and retires the non-constant payload diagnostic. | manual: #7456 carries its own delivered checks. |
 | s15-pressure-decoder-upstream | PASS | producer:task-8683 upstream, edge wired. Rust PressureDirection decoder that κ extends with Fixed. | manual: Upstream task. |
-| fixed-payload-consumed-as-traction | PASS | Delivered by this leaf. assemble_box_face_pressures ignores PressureSpec.direction on main; κ consumes Fixed { dir } as traction = magnitude * dir (lead reading of D9, PROPOSED). Normal stays byte-identical. | manual: Behaviour: a box fixture whose Fixed reaction differs from Normal. INV-SF-3. |
+| fixed-payload-consumed-as-traction | PASS | Delivered by this leaf. assemble_box_face_pressures ignores PressureSpec.direction on main; κ consumes Fixed { dir } as traction = magnitude * dir (D9′, Leo 2026-10-31; dir is in the solve's global coordinates). Normal stays byte-identical. | manual: Behaviour: a box fixture whose Fixed reaction differs from Normal. INV-SF-3. |
 
 ## λ #9650: docs-truth — chunk prose, stdlib reference, spec, ty.rs rule, directions.ri exemplar, cheatsheet index
 
