@@ -28,6 +28,14 @@
 //! this harness cannot see" below before treating a green sweep as closing
 //! decision 12 for a whole row.
 //!
+//! A probe whose declared type is a `Type::Field` is compared twice (see
+//! [`probe_legs`]): the call's result against the declared Field, then one
+//! sample of that result, taken through reify-expr's `sample` intercept,
+//! against the declared codomain — both by the same oracle. The first leg
+//! alone cannot tell the analysis rows' Field claims apart, because the oracle
+//! maps a `Value::Field` onto ANY `Type::Field` and those claims differ only in
+//! codomain.
+//!
 //! Membership is DERIVED, never declared: no builtin name, id, or count is
 //! restated here. A τ migration that adds rows is swept with no edit to this
 //! module (see [`eval_builtin_rows`]), and the argument side is forced by an
@@ -105,29 +113,37 @@
 //! Stated so the claims above are read at their real width, and so the next τ
 //! author does not assume a gap here is covered.
 //!
-//! **The `Type::Field` branch of the `ArgAware` resolvers is not parity-checked
-//! here, and structurally cannot be.** `reduce_tensor_arg`
-//! (`crates/reify-builtins/src/resolvers.rs`) has two branches — a `Type::Field`
-//! arm added by #6577 and a concrete fall-through — so `von_mises`, `max_shear`,
-//! `principal_stresses` and `safety_factor` each declare a `Field<D, ..>` result
-//! for a Field argument. Every probe in this module is concrete, and a Field
-//! probe cannot be added: `reify_stdlib::eval_builtin` has no Field handling at
-//! all. The lazy wrap that produces a `Value::Field` is `wrap_tensor_field` in
-//! `crates/reify-expr/src/analysis.rs`, reached through reify-expr's evaluator
-//! ladder and not through the `eval_builtin` path this harness executes — so a
-//! Field probe here would evaluate to `Value::Undef` and read `Vacuous`,
-//! certifying nothing.
+//! - **The oracle is kind-level.** [`crate::value_type_kind_matches`] compares
+//!   a value's outer KIND against a type. Dimensions and inner element types
+//!   are not compared, for concrete and Field shapes alike: a kernel answering
+//!   `Scalar<LENGTH>` where `Scalar<PRESSURE>` is declared, or a list of the
+//!   wrong element type, reads `Matches`.
+//! - **A Field result is sampled at one point.** The Sample leg (see
+//!   [`probe_legs`]) executes the declared codomain at a single point of the
+//!   domain, so a codomain that held there and changed kind elsewhere would not
+//!   be seen.
+//! - **Only the two backings `tensor_backing` admits are probed** — Callable
+//!   (an `Analytical` lambda) and Grid (a `Sampled` grid), in
+//!   `crates/reify-expr/src/analysis.rs`. reify-expr declines a field with any
+//!   other backing (an `Imported` one, say), the call evaluates to
+//!   `Value::Undef`, and the probe would read `Vacuous`. The resolvers work on
+//!   types and cannot see a backing, the asymmetry `field_tensor_arg`
+//!   (`crates/reify-builtins/src/resolvers.rs`) documents. The two backings
+//!   also check different things: the Callable backing samples through the
+//!   pointwise builtin, so its sample's kind does not depend on the codomain
+//!   label reify-expr writes on the wrapper, while the Grid backing wraps its
+//!   interpolated values per that label — so only the Grid probe joins the
+//!   label against the registry (mutation Leg 5 below).
+//! - **The residue is closed only for rows whose probes exist.** PRD §3
+//!   decision 12's residue is closed for the `Type::Field` branch of
+//!   `reduce_tensor_arg` (`von_mises`, `max_shear`, `principal_stresses`,
+//!   `safety_factor`) because [`representative_probes`] registers a Callable
+//!   and a Grid Field probe for each, beside the concrete one. A later
+//!   resolver branch is covered only once its shape is registered there too.
 //!
-//! The residue PRD §3 decision 12 names therefore remains OPEN for the Field
-//! half of those four rows, and closing it is reify-expr's to do, not ψ's.
-//! [`representative_probes`] returns a LIST precisely so that a leaf which
-//! routes Field evaluation through this path can register a Field shape
-//! alongside the concrete one rather than replacing it.
-//!
-//! The resolvers' own `Type`-level Field contract IS covered — by
-//! `reify_builtins::resolvers`' unit tests, ported from #6577 — but that is a
-//! type-algebra test on one side of the pair, which is exactly the kind of
-//! one-sided check this module exists to join.
+//! The resolvers' own `Type`-level Field contract is also pinned by
+//! `reify_builtins::resolvers`' unit tests, ported from #6577 — a type-algebra
+//! test on one side of the pair, which this module joins to execution.
 //!
 //! # Vocabulary
 //!
@@ -143,11 +159,11 @@
 //! # Mutation recipe — the proof these guards are not vacuously true
 //!
 //! Each leg below was OBSERVED by temporary mutate-run-revert, never guessed
-//! (task 6013 ψ step 11, re-confirmed at the amendment pass). **No mutating
-//! test is committed**, here or anywhere: a committed mutation asserts the bug,
-//! not the contract. The permanent guards are the tests in this module; this
-//! recipe is how you re-confirm each one still fires when a τ migration makes
-//! you doubt it.
+//! (task 6013 ψ step 11, re-confirmed at the amendment pass; Legs 4–6 added
+//! by #7563 for the Field half). **No mutating test is committed**, here or
+//! anywhere: a committed mutation asserts the bug, not the contract. The
+//! permanent guards are the tests in this module; this recipe is how you
+//! re-confirm each one still fires when a τ migration makes you doubt it.
 //!
 //! Only the EDIT and the expected verdict CLASS are recorded. The observed
 //! failure text is deliberately NOT transcribed here: it carries run-specific
@@ -185,8 +201,32 @@
 //! the harness's probe data rather than in the row, which is exactly the
 //! misattribution it exists to prevent. Revert the arm.
 //!
-//! Legs 1 and 2 each transiently edit another crate, so `git status` must be
-//! clean of `registry.rs` and `parse.rs` before anything is committed.
+//! **Leg 4 — the eval side reduces a Field eagerly** (the Call leg). In
+//! `crates/reify-expr/src/analysis.rs`, make `compute_max_shear` return
+//! `Value::Real(0.0)` instead of the `wrap_tensor_field` wrapper. Expect the
+//! sweep RED with `MaxShear` UNLEDGERED at verdict `Diverges`, at a Field
+//! probe's Call leg. Revert the function.
+//!
+//! **Leg 5 — reify-expr writes the wrong codomain label** (the Grid probe's
+//! Sample leg). In the same file, set `compute_principal_stresses`'
+//! `result_codomain` to the bare scalar type instead of `Type::List(..)`.
+//! Expect the sweep RED with `PrincipalStresses` at verdict `Diverges` at the
+//! GRID probe's Sample leg, while its Callable probe's legs still match — the
+//! split that shows the two backings check different things. Revert the line.
+//!
+//! **Leg 6 — the resolver claims an eager result for a Field** (the #6577 bug
+//! class). In `crates/reify-builtins/src/resolvers.rs`, make
+//! `reduce_tensor_arg`'s Field branch return `Some(codomain(dim))`. Expect the
+//! sweep RED with all four analysis rows at verdict `Diverges` at a Field
+//! probe's Call leg. `representative_probes_are_well_formed_for_every_row`'s
+//! check (e) and the premise of
+//! `a_field_probe_is_compared_at_its_call_and_at_a_sample_of_its_result` go RED
+//! with it, since the probes name sample points for a type that is no longer a
+//! Field. Revert the branch.
+//!
+//! Legs 1, 2, 4, 5 and 6 each transiently edit another crate, so `git status`
+//! must be clean of `registry.rs`, `parse.rs`, reify-expr's `analysis.rs` and
+//! reify-builtins' `resolvers.rs` before anything is committed.
 
 use std::collections::HashSet;
 
@@ -748,9 +788,10 @@ struct ExemptionEntry {
 }
 
 /// Every row whose parity assertion cannot be made non-vacuously today, one
-/// entry each. **Empty at α**, and that is the measured state, not a stub.
+/// entry each. **Empty at α, and still empty with the Field probes registered
+/// (#7563)** — that is the measured state, not a stub.
 ///
-/// # Measured at α: all seven seed rows classify `Matches`
+/// # Measured at α: all seven seed rows classify `Matches` (concrete probes)
 ///
 /// Observed by running the sweep, not derived by reading the table:
 ///
@@ -773,6 +814,23 @@ struct ExemptionEntry {
 /// `StructureInstance` whose `type_id` is a sentinel, and the matcher's
 /// `Type::StructureRef` arm compares `type_name` only, which is why
 /// `registry: None` suffices (see [`classify`]).
+///
+/// # Measured at #7563: every Field probe classifies `Matches` on both legs
+///
+/// The four analysis rows' Callable and Grid Field probes, observed the same
+/// way (the domain is `Point3<Length>` throughout):
+///
+/// | row | Call leg: observed / declared | Sample leg: observed / declared |
+/// |---|---|---|
+/// | `von_mises` | `Field{source:VonMises}` / `Field<_, Scalar{PRESSURE}>` | `Scalar{PRESSURE}` / `Scalar{PRESSURE}` |
+/// | `max_shear` | `Field{source:MaxShear}` / `Field<_, Scalar{PRESSURE}>` | `Scalar{PRESSURE}` / `Scalar{PRESSURE}` |
+/// | `principal_stresses` | `Field{source:PrincipalStresses}` / `Field<_, List(Scalar{PRESSURE})>` | `List([Scalar{PRESSURE}; 3])` / `List(Scalar{PRESSURE})` |
+/// | `safety_factor` | `Field{source:SafetyFactor}` / `Field<_, Scalar{DIMENSIONLESS}>` | `Real(2.5)` / `Scalar{DIMENSIONLESS}` |
+///
+/// The Callable and Grid probes observed identical kinds on every leg: they
+/// differ in which reify-expr path produced the sample, not in what it
+/// produced, which is why mutation Leg 5 is needed to show they check
+/// different things.
 ///
 /// # Why the PRD's named seed entry cannot be here yet
 ///
@@ -1171,11 +1229,15 @@ fn describe_failure(
 /// # I-REG-1 is satisfied twice over
 ///
 /// `row.name` is passed as a **variable**, derived from `reify_builtins::rows()`
-/// — no builtin-name literal appears anywhere in this file, so the seed
-/// string-dispatch gate
+/// — no registry-row name literal appears anywhere in this file or in its
+/// `probes` child, so the seed string-dispatch gate
 /// (`crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs`) has
 /// nothing to find even before its `#[cfg(test)]`-block masking applies. No
 /// ledger entry there is needed or wanted.
+///
+/// The one call-name literal is [`FIELD_SAMPLE_CALL`], reify-expr's `sample`
+/// intercept. It has no registry row, so the gate, which sweeps registered
+/// names only, cannot match it, and it is never passed to `eval_builtin`.
 ///
 /// # Every row is reported, not just the first
 ///

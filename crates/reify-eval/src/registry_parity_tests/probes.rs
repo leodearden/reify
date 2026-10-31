@@ -251,8 +251,10 @@ fn grid_stress_field() -> (Value, Type) {
 /// Four of α's seven rows are `ResultSpec::ArgAware` over `reduce_tensor_arg`
 /// (`crates/reify-builtins/src/resolvers.rs`), which has two branches — a
 /// `Type::Field` arm added by #6577 and the concrete fall-through — so each of
-/// those rows registers its Field shape ALONGSIDE its concrete one rather than
-/// replacing it.
+/// those rows registers its Field shapes ALONGSIDE its concrete one rather than
+/// replacing it: one per tensor backing reify-expr admits, Callable
+/// ([`callable_stress_field`]) and Grid ([`grid_stress_field`]), because the
+/// two are sampled along different paths.
 ///
 /// # Why an exhaustive `match` with no `_` arm
 ///
