@@ -973,6 +973,55 @@ _wallclock_candidate_test_roots() {
     _emit_record_stream "$_roots" | LC_ALL=C sort -u
 }
 
+# ---------------------------------------------------------------------------
+# _wallclock_declared_target_dirs <manifest>...
+#
+# Prints (stdout) the directory of every `[[test]]`, `[[bench]]` and
+# `[[example]]` target that a Cargo.toml relocates with a `path` key, one per
+# target, as the path was named: a relative manifest gives a relative directory,
+# the same convention as the engine. It is the half of the completeness check's
+# ground truth that no directory NAME can give. A TOML reader and not a grep for
+# table headers, because a header cannot say where the target was put.
+#
+# Not printed: a target with no `path` (Cargo puts it in the auto-discovered
+# tests/, benches/ or examples/, which _wallclock_candidate_test_roots already
+# derives) and any lib, bin or build-script entry (shipped code; the header's
+# SCOPE IS CARGO'S TARGET MODEL paragraph).
+#
+# Returns 0, or 2 if ANY manifest could not be read or parsed. That manifest is
+# named on stderr and the rest are still read, so one run reports every bad
+# one, and the status is sticky. 2 and never a skip: a skipped manifest is a
+# silent blind spot. For the same reason there is no tomllib-missing SKIP -- an
+# interpreter without it fails here, loudly, rather than passing vacuously.
+#
+# The Python holds no single-quote character, comments included:
+# test_no_new_wallclock_upper_bounds.sh scans this file with a shell quote-state
+# line joiner that knows nothing of heredocs.
+# ---------------------------------------------------------------------------
+_wallclock_declared_target_dirs() {
+    python3 - "$@" <<'PY'
+import os
+import sys
+import tomllib
+
+status = 0
+for manifest in sys.argv[1:]:
+    try:
+        with open(manifest, "rb") as handle:
+            doc = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as err:
+        print(f"ERROR: cannot read Cargo manifest {manifest}: {err}", file=sys.stderr)
+        status = 2
+        continue
+    for kind in ("test", "bench", "example"):
+        for target in doc.get(kind, []):
+            if "path" in target:
+                print(os.path.normpath(os.path.join(
+                    os.path.dirname(manifest), os.path.dirname(target["path"]))))
+sys.exit(status)
+PY
+}
+
 # ===========================================================================
 # Section 1: Hermetic positive-detection -- the detector must flag a planted
 #             hand-rolled real-clock deadline (Rule A).
@@ -1659,8 +1708,33 @@ _s3_gt_n="$(_emit_record_stream "$_s3_gt" | grep -c . || true)"
 assert "live scan: the ground-truth derivation found a plausible number of test roots" \
     test "$_s3_gt_n" -ge 20
 
+# THE OTHER HALF of ground truth: targets a Cargo.toml PLACES, which no
+# directory name gives away. The manifests come from `git ls-files` for the same
+# reason the sources do -- tracked-only -- through a glob pathspec, so the
+# top-level manifest is listed with the nested ones.
+_s3_man_rc=0
+_s3_manifests="$(git ls-files -- ':(glob)**/Cargo.toml')" || _s3_man_rc=$?
+assert "live scan: the Cargo manifest listing succeeds" \
+    test "$_s3_man_rc" -eq 0
+
+# A floor for the reason given above it: a pathspec that stopped matching would
+# leave the declared-target derivation reading nothing, the completeness check
+# passing on that, and nothing else here noticing.
+_s3_man_n="$(_emit_record_stream "$_s3_manifests" | grep -c . || true)"
+assert "live scan: the manifest listing found a plausible number of Cargo.toml files" \
+    test "$_s3_man_n" -ge 10
+
+# stderr is NOT diverted: a manifest the derivation cannot read is named in the log.
+mapfile -t _s3_manifest_list < <(_emit_record_stream "$_s3_manifests")
+_s3_decl_rc=0
+_s3_decl="$(_wallclock_declared_target_dirs "${_s3_manifest_list[@]}")" || _s3_decl_rc=$?
+assert "live scan: the Cargo-declared target derivation succeeds" \
+    test "$_s3_decl_rc" -eq 0
+_s3_decl_n="$(_emit_record_stream "$_s3_decl" | grep -c . || true)"
+
 _s3_unc_rc=0
-_s3_uncovered="$(_emit_record_stream "$_s3_gt" \
+_s3_uncovered="$({ _emit_record_stream "$_s3_gt"; _emit_record_stream "$_s3_decl"; } \
+    | LC_ALL=C sort -u \
     | _wallclock_uncovered_test_roots "${_LIVE_ROOTS[@]}")" || _s3_unc_rc=$?
 assert "live scan: the completeness check runs (returns 0 -- the LIST is the result)" \
     test "$_s3_unc_rc" -eq 0
@@ -1670,11 +1744,15 @@ if [ -n "$_s3_uncovered" ]; then
     echo "Tracked Rust TEST ROOTS that _LIVE_ROOTS does not cover:" >&2
     printf '%s\n' "$_s3_uncovered" | sed 's/^/  /' >&2
     echo "" >&2
-    echo "Each directory above holds tracked Rust tests that this guard is NOT scanning," >&2
-    echo "so a hand-rolled deadline or an elapsed upper bound can land there unseen." >&2
-    echo "Add it to _LIVE_ROOTS above. If it is genuinely not a test root, say why in the" >&2
-    echo "header's SCOPE paragraph rather than quietly narrowing the derivation -- an" >&2
-    echo "unexplained exclusion is how the gap this check exists to catch got here." >&2
+    echo "Each directory above is a tests/, benches/ or examples/ directory, or the" >&2
+    echo "directory of a Cargo [[test]]/[[bench]]/[[example]] 'path =' target. It holds" >&2
+    echo "tracked Rust code that this guard is NOT scanning, so a hand-rolled deadline or" >&2
+    echo "an elapsed upper bound can land there unseen. Add it to _LIVE_ROOTS above." >&2
+    echo "A target whose path sits in production code (src/) is the exception: move it to" >&2
+    echo "a tests/, benches/ or examples/ root rather than widening the scan into shipped" >&2
+    echo "code. If a root is genuinely not a test root, say why in the header's SCOPE IS" >&2
+    echo "CARGO'S TARGET MODEL paragraph rather than quietly narrowing the derivation --" >&2
+    echo "an unexplained exclusion is how the gap this check exists to catch got here." >&2
 fi
 
 assert "live scan: _LIVE_ROOTS covers EVERY tracked Rust test root" \
@@ -1719,7 +1797,7 @@ assert "live scan: the floor -- at least 1000 .rs files were actually scanned" \
 # through the ratchet's own loader, so "what counts as a row" is not spelled
 # twice.
 _s3_rows="$(_wallclock_baseline_rows "$_BASELINE_FILE" 2>/dev/null | grep -c . || true)"
-echo "  scanned: ${#_LIVE_ROOTS[@]} roots (${_s3_gt_n} named \`tests\` in tree), ${_s3_files:-0} .rs files, ${_s3_rows} baselined rows"
+echo "  scanned: ${#_LIVE_ROOTS[@]} roots (${_s3_gt_n} named tests/benches/examples in tree, ${_s3_decl_n} Cargo-declared target dirs), ${_s3_files:-0} .rs files, ${_s3_rows} baselined rows"
 
 # --- (4) the escape allowlist ----------------------------------------------
 # The allowlist as a NUMBER rather than as prose. One escape:
