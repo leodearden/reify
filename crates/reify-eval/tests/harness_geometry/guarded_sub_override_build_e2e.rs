@@ -111,6 +111,20 @@ fn guard_admitted_recursive_sub_realizes_child_with_its_overrides() {
     );
 }
 
+/// The sorted entity path of every body `tessellate_realizations` surfaces.
+fn surfaced_entity_paths(compiled: &CompiledModule) -> Vec<String> {
+    let result = engine_with(MockGeometryKernel::new()).tessellate_realizations(compiled);
+    assert_no_errors(&result.diagnostics, "tessellation");
+
+    let mut surfaced: Vec<String> = result
+        .meshes
+        .into_iter()
+        .map(|surface| surface.entity_path)
+        .collect();
+    surfaced.sort_unstable();
+    surfaced
+}
+
 /// Eval admits `Tower.child` (depth 1) and declines its grandchild (depth 0),
 /// so exactly two bodies surface. The second template is what lets a phantom
 /// grandchild surface at all: the surfacing walk stops at a depth equal to the
@@ -120,17 +134,50 @@ fn guard_admitted_recursive_sub_realizes_child_with_its_overrides() {
 fn guard_declined_grandchild_of_an_admitted_child_surfaces_no_body() {
     let compiled = compiled_tower(1, "structure def Marker { param m : Int = 0 }");
 
-    let result = engine_with(MockGeometryKernel::new()).tessellate_realizations(&compiled);
-    assert_no_errors(&result.diagnostics, "Tower tessellation");
-
-    let mut surfaced: Vec<&str> = result
-        .meshes
-        .iter()
-        .map(|surface| surface.entity_path.as_str())
-        .collect();
-    surfaced.sort_unstable();
     assert_eq!(
-        surfaced,
+        surfaced_entity_paths(&compiled),
         vec!["Tower#realization[0]", "Tower.child#realization[0]"]
     );
+}
+
+/// Eval declines `Tree.child` at the root (depth 0), so `Tree.child` has no
+/// subtree. Its unguarded `leaf` (ctor args) and `tip` (arg-free) exist only
+/// as the root's own `Tree.leaf` and `Tree.tip`. Only the `Tree.child`
+/// subtree is pinned: `Tree` is self-recursive, so every template here also
+/// surfaces standalone as a cycle-fallback root.
+#[test]
+#[ignore = "blocked on #9547 — the surfacing walk recurses into a guard-declined sub, so Tree.child.leaf and Tree.child.tip surface phantom bodies"]
+fn guard_declined_child_surfaces_nothing_from_its_subtree() {
+    let compiled = compile_source(
+        "structure def Leaf {
+    param w : Length = 1mm
+    let body = box(w, w, w)
+}
+structure def Tip {
+    let body = box(1mm, 1mm, 1mm)
+}
+structure def Tree {
+    param depth : Int = 0
+    sub child = Tree(depth: depth - 1) where depth > 0
+    sub leaf = Leaf(w: 2mm)
+    sub tip = Tip()
+}",
+    );
+    assert_no_errors(&compiled.diagnostics, "Tree compile");
+
+    let surfaced = surfaced_entity_paths(&compiled);
+    let declined_subtree: Vec<&String> = surfaced
+        .iter()
+        .filter(|path| path.starts_with("Tree.child.") || path.starts_with("Tree.child#"))
+        .collect();
+    assert!(
+        declined_subtree.is_empty(),
+        "eval declined Tree.child, so nothing may surface under it; got {declined_subtree:?}"
+    );
+    for elaborated in ["Tree.leaf#realization[0]", "Tree.tip#realization[0]"] {
+        assert!(
+            surfaced.iter().any(|path| path == elaborated),
+            "{elaborated} is elaborated by eval and must surface; got {surfaced:?}"
+        );
+    }
 }

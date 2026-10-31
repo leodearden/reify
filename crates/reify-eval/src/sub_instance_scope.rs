@@ -49,10 +49,12 @@ enum ScopedArgs<'s, 'v> {
 ///
 /// Admitting a guarded sub commits every param cell via
 /// `elaborate_child_params_only`, so "guarded, and none of its arg cells
-/// committed" is the declined record. An unguarded sub is always
+/// committed" is read as the declined record. That is an inference from
+/// absent cells: a `values` map missing an admitted instance's cells reads as
+/// declined, with no diagnostic. An unguarded sub is always
 /// [`ScopedArgs::Elaborated`]. So is an arg-free guarded sub, because no cell
-/// tells its admission apart from its decline; eval recording admission
-/// itself is owned by #9538.
+/// tells its admission apart from its decline. #9538 owns replacing the
+/// inference, for both shapes, with eval's own record of admission.
 fn scoped_arg_values<'s, 'v>(
     parent_name: &str,
     sub: &'s SubComponentDecl,

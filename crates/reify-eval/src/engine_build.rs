@@ -1128,6 +1128,11 @@ fn seed_cross_let_named_steps(
 /// produce no geometry, and for every realization of a guarded sub whose
 /// guard eval declined.  On success, the terminal `KernelHandle` is tagged
 /// with the default kernel's `KernelId` via `kernel_id_for_registry_name`.
+///
+/// The row alone does not tell a declined instance from one with no
+/// geometry, so the walk still recurses into a declined sub's subtree.
+/// Returning the verdict, so the walk can skip that subtree, is owned by
+/// #9547.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn realize_sub_override_handles(
     parent_name: &str,
