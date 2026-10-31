@@ -14,7 +14,9 @@
 
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::CompiledExprKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
+use reify_test_support::{
+    compile_source, compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only,
+};
 
 // ── Step-1 producer tests — registered eagerly by traits_phase step 4 ───────
 
@@ -436,25 +438,6 @@ trait LegacyApi {
 
 // ── (#7872) Genericity-filter pin: generic slots admit any arg, concrete slots do not ──
 
-fn assembly_member_expr<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    member: &str,
-) -> &'m reify_ir::CompiledExpr {
-    let assembly = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Assembly")
-        .expect("compiled module should contain an Assembly template");
-    let cell = assembly
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("Assembly should have a let binding '{member}'"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{member}' should have a compiled default expr"))
-}
-
 /// A `Trait::fn(args)` call to a generic static assoc fn admits any argument and
 /// is typed from its instantiated return type, while a concrete slot rejects a
 /// mismatched argument and poisons the call.
@@ -474,7 +457,7 @@ structure def Assembly {
     let module = compile_source(source);
 
     for (member, expected) in [("a", Type::length()), ("b", Type::angle())] {
-        let expr = assembly_member_expr(&module, member);
+        let expr = get_let_expr_in(&module, "Assembly", member);
         assert!(
             matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
             "'{member}' should lower to UserFunctionCall; got: {:?}",
@@ -486,7 +469,7 @@ structure def Assembly {
         );
     }
 
-    let bad = assembly_member_expr(&module, "bad");
+    let bad = get_let_expr_in(&module, "Assembly", "bad");
     assert!(
         !matches!(bad.kind, CompiledExprKind::UserFunctionCall { .. }),
         "an Angle arg to a Length-only static fn must not lower to a call; got: {:?}",

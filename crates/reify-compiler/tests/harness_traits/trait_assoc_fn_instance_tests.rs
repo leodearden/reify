@@ -24,7 +24,8 @@
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
 use reify_test_support::{
-    compile_source, compile_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+    cell_value, compile_source, compile_source_with_stdlib, get_let_expr_in, get_value_cell_in,
+    make_simple_engine, parse_and_compile_with_stdlib,
 };
 
 /// Shared fixture: a `Cylindrical` trait with a default-providing instance fn
@@ -508,35 +509,10 @@ structure def Assembly {
          all diagnostics: {:?}",
         module.diagnostics
     );
-    assert_poisoned_without_type_param_leak(&module, "got");
+    assert_poisoned(&module, "got");
 }
 
 // ── (#7872) Generic instance assoc fns type from the instantiated return type ──
-
-fn assembly_cell<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    member: &str,
-) -> &'m reify_compiler::ValueCellDecl {
-    module
-        .templates
-        .iter()
-        .find(|t| t.name == "Assembly")
-        .expect("compiled module should contain an Assembly template")
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("Assembly should have a let binding '{member}'"))
-}
-
-fn assembly_member_expr<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    member: &str,
-) -> &'m CompiledExpr {
-    assembly_cell(module, member)
-        .default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{member}' should have a compiled default expr"))
-}
 
 fn diagnostics_with_code(
     module: &reify_compiler::CompiledModule,
@@ -554,7 +530,7 @@ fn assert_lowers_to_call_typed(
     member: &str,
     expected: Type,
 ) {
-    let expr = assembly_member_expr(module, member);
+    let expr = get_let_expr_in(module, "Assembly", member);
     assert!(
         matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
         "'{member}' should lower to UserFunctionCall; got: {:?}",
@@ -566,17 +542,17 @@ fn assert_lowers_to_call_typed(
     );
 }
 
-fn assert_poisoned_without_type_param_leak(module: &reify_compiler::CompiledModule, member: &str) {
-    let expr = assembly_member_expr(module, member);
+fn assert_poisoned(module: &reify_compiler::CompiledModule, member: &str) {
+    let expr = get_let_expr_in(module, "Assembly", member);
     assert!(
         !matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
         "'{member}' should be poisoned, not lowered to a call; got: {:?}",
         expr.kind
     );
-    assert!(
-        !matches!(expr.result_type, Type::TypeParam(_)),
-        "'{member}' must not leak a TypeParam result type; got: {:?}",
-        expr.result_type
+    assert_eq!(
+        expr.result_type,
+        Type::Error,
+        "'{member}' should carry the poison type, not leak a type param"
     );
 }
 
@@ -618,23 +594,27 @@ fn instance_dispatch_fn_generic_call_types_from_instantiated_return() {
     );
     assert_lowers_to_call_typed(&module, "got", Type::length());
     assert_eq!(
-        assembly_cell(&module, "got").cell_type,
+        get_value_cell_in(&module, "Assembly", "got").cell_type,
         Type::length(),
         "the value cell should carry the instantiated type"
     );
 }
 
-/// A fn-level generic instance assoc fn call evaluates to a concrete scalar.
+/// A fn-level generic instance assoc fn call evaluates to its argument.
 #[test]
-fn instance_dispatch_fn_generic_call_evaluates_without_panicking() {
+fn instance_dispatch_fn_generic_call_evaluates_to_its_argument() {
     let compiled = compile_source_with_stdlib(IDT_SRC);
     let mut engine = make_simple_engine();
     let eval_result = engine.eval(&compiled);
 
-    match eval_result.values.get(&ValueCellId::new("Assembly", "got")) {
-        Some(Value::Scalar { .. }) => {}
-        other => panic!("Assembly.got should evaluate to a Value::Scalar; got {other:?}"),
-    }
+    assert_eq!(
+        cell_value(&eval_result, "Assembly", "got"),
+        Value::Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector::LENGTH,
+        },
+        "i.(Idt::pick)(5mm) should evaluate to the 5mm length scalar"
+    );
 }
 
 /// With a generic and a concrete overload of one method, each call is typed by
@@ -690,7 +670,7 @@ structure def Assembly {
         "the conflict should name type parameter 'T'; got: {}",
         conflicts[0].message
     );
-    assert_poisoned_without_type_param_leak(&module, "got");
+    assert_poisoned(&module, "got");
 }
 
 /// A return type param that no argument binds emits a single FnTypeArgUnresolved
@@ -716,5 +696,38 @@ structure def Assembly {
         "expected exactly one FnTypeArgUnresolved; all diagnostics: {:?}",
         module.diagnostics
     );
-    assert_poisoned_without_type_param_leak(&module, "got");
+    assert_poisoned(&module, "got");
+}
+
+/// Interim pin: the call site does not see the conformer's `: Boxed<Length>`
+/// binding until #7866 threads it, so the trait-level `T` is instantiated from
+/// the argument and an Angle passed to a Length box types Angle, undiagnosed.
+/// When #7866 threads the binding this pin goes red: invert it to assert the
+/// mismatch is diagnosed.
+#[test]
+fn instance_dispatch_instantiates_trait_level_param_from_arg_not_conformer_binding() {
+    let source = r#"
+trait Boxed<T> {
+    fn put(self, x: T) -> T { x }
+}
+structure def LengthBox : Boxed<Length> {}
+structure def Assembly {
+    sub bx : LengthBox
+    let got = bx.(Boxed::put)(30deg)
+}
+"#;
+    let module = compile_source(source);
+
+    for code in [
+        DiagnosticCode::TraitMethodUnknown,
+        DiagnosticCode::FnTypeArgConflict,
+        DiagnosticCode::FnTypeArgUnresolved,
+    ] {
+        assert!(
+            diagnostics_with_code(&module, code).is_empty(),
+            "no {code:?} expected at the dispatch site; all diagnostics: {:?}",
+            module.diagnostics
+        );
+    }
+    assert_lowers_to_call_typed(&module, "got", Type::angle());
 }
