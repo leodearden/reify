@@ -54,7 +54,7 @@ struct Violation {
 #[derive(Debug, Default)]
 struct Report {
     unexpected: Vec<Violation>,
-    stale_blocks: Vec<DimensionVector>,
+    stale_blocks: Vec<KnownBlock>,
 }
 
 impl fmt::Display for Violation {
@@ -89,10 +89,7 @@ impl fmt::Display for Report {
         for violation in &self.unexpected {
             writeln!(f, "  {violation}")?;
         }
-        let stale_rows = KNOWN_BLOCKS
-            .iter()
-            .filter(|block| self.stale_blocks.contains(&block.dimension));
-        for block in stale_rows {
+        for block in &self.stale_blocks {
             writeln!(
                 f,
                 "  {} (owner {}): no emission it blocks fails any more; delete this KNOWN_BLOCKS row",
@@ -170,7 +167,8 @@ fn ladder_rung_emissions(ladder: DimensionLadder) -> Vec<Emission> {
 type ReadBack = Result<(f64, DimensionVector), String>;
 
 /// Compiles `1{label}` with the stdlib prelude, the path a typed-in value takes: parse, lower,
-/// then registry-first unit resolution. Never panics, so one bad label cannot stop the sweep.
+/// then registry-first unit resolution. Compile diagnostics become `Err`, so an unreadable label
+/// is reported without stopping the sweep.
 fn resolve_unit_literal(label: &str) -> ReadBack {
     let source = format!("structure def S {{ let x = 1{label} }}");
     let module = compile_source_with_stdlib_allow_parse_errors(&source);
@@ -243,14 +241,16 @@ fn violations(emissions: &[Emission]) -> Vec<Violation> {
 }
 
 /// A violation that is known and owned, so it does not fail the gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct KnownBlock {
     dimension: DimensionVector,
     owner: &'static str,
 }
 
 impl KnownBlock {
-    /// Keyed on the composed Display spelling as well as the dimension, so a curated rung or
-    /// `dimension_unit_label` for the same dimension stays gated.
+    /// Absorbs a violation only when its label is the composed Display spelling of this block's
+    /// dimension, whichever surface printed it. A label spelled any other way, such as a curated
+    /// ladder rung, stays gated.
     fn absorbs(&self, violation: &Violation) -> bool {
         violation.emission.dimension == self.dimension
             && violation.emission.label == self.dimension.to_string()
@@ -263,14 +263,14 @@ const KNOWN_BLOCKS: &[KnownBlock] = &[KnownBlock {
     owner: "#9236",
 }];
 
-fn invariant_r_report(emissions: &[Emission]) -> Report {
+fn invariant_r_report(emissions: &[Emission], blocks: &[KnownBlock]) -> Report {
     let (blocked, unexpected): (Vec<Violation>, Vec<Violation>) = violations(emissions)
         .into_iter()
-        .partition(|violation| KNOWN_BLOCKS.iter().any(|block| block.absorbs(violation)));
-    let stale_blocks = KNOWN_BLOCKS
+        .partition(|violation| blocks.iter().any(|block| block.absorbs(violation)));
+    let stale_blocks = blocks
         .iter()
         .filter(|block| !blocked.iter().any(|violation| block.absorbs(violation)))
-        .map(|block| block.dimension)
+        .copied()
         .collect();
     Report {
         unexpected,
@@ -324,7 +324,7 @@ fn every_label_a_unit_surface_emits_reads_back_to_its_dimension_and_scale() {
     let corpus = surface_emissions();
     assert_corpus_covers_every_surface(&corpus);
 
-    let report = invariant_r_report(&corpus);
+    let report = invariant_r_report(&corpus, KNOWN_BLOCKS);
 
     assert!(
         report.unexpected.is_empty() && report.stale_blocks.is_empty(),
@@ -341,7 +341,7 @@ fn a_non_ascii_label_injected_into_the_corpus_fails_the_gate() {
         1.0,
     )]);
 
-    let report = invariant_r_report(&corpus);
+    let report = invariant_r_report(&corpus, KNOWN_BLOCKS);
 
     let [violation] = report.unexpected.as_slice() else {
         panic!("the gate must report exactly the injected `kg/m³` rung; got:\n{report}");
@@ -357,7 +357,7 @@ fn a_non_ascii_label_injected_into_the_corpus_fails_the_gate() {
 #[test]
 fn each_conjunct_of_invariant_r_fails_the_gate_on_its_own() {
     let corpus = corpus_with([
-        // Names no declared unit: the class `L` was in before it was declared.
+        // Names no declared unit, so the label does not compile.
         injected_rung("Volume", DimensionVector::VOLUME, "qq", 1e-3),
         // Reads back as Length·Mass, so the claimed Mass is the wrong dimension.
         injected_rung("Mass", DimensionVector::MASS, "kg·m", 1.0),
@@ -365,7 +365,7 @@ fn each_conjunct_of_invariant_r_fails_the_gate_on_its_own() {
         injected_rung("Length", DimensionVector::LENGTH, "mm", 1.0),
     ]);
 
-    let report = invariant_r_report(&corpus);
+    let report = invariant_r_report(&corpus, KNOWN_BLOCKS);
 
     let [unreadable, wrong_dimension, wrong_scale] = report.unexpected.as_slice() else {
         panic!("the gate must report exactly the three injected rungs; got:\n{report}");
@@ -391,59 +391,67 @@ fn each_conjunct_of_invariant_r_fails_the_gate_on_its_own() {
     );
 }
 
+/// Stands in for a `KNOWN_BLOCKS` row, so the block-mechanism tests keep their meaning when the
+/// real list is empty.
+const FIXTURE_BLOCK: KnownBlock = KnownBlock {
+    dimension: DimensionVector::MASS,
+    owner: "fixture",
+};
+
+/// Mass's composed Display spelling claimed at `si_scale`. `1kg` reads back at 1.0, so any other
+/// claim breaches Invariant R.
+fn mass_display_emission(si_scale: f64) -> Emission {
+    let mass = DimensionVector::MASS;
+    Emission {
+        surface: Surface::DimensionDisplay,
+        dimension_name: "Mass",
+        dimension: mass,
+        label: mass.to_string(),
+        si_scale,
+    }
+}
+
 #[test]
 fn a_known_blocked_label_is_not_reported_as_unexpected() {
-    let fracture_toughness = DimensionVector::FRACTURE_TOUGHNESS;
-    let corpus = [Emission {
-        surface: Surface::DimensionDisplay,
-        dimension_name: "FractureToughness",
-        dimension: fracture_toughness,
-        label: fracture_toughness.to_string(),
-        si_scale: 1.0,
-    }];
+    let corpus = [mass_display_emission(2.0)];
 
-    let report = invariant_r_report(&corpus);
+    let report = invariant_r_report(&corpus, &[FIXTURE_BLOCK]);
 
     assert!(
         report.unexpected.is_empty() && report.stale_blocks.is_empty(),
-        "FractureToughness's composed Display label is a known block, so it is neither an \
-         unexpected violation nor evidence of a stale block; got:\n{report}"
+        "a violation the block absorbs is neither an unexpected violation nor evidence of a \
+         stale block; got:\n{report}"
     );
 }
 
 #[test]
 fn a_known_block_does_not_absorb_another_label_of_its_dimension() {
-    let corpus = [injected_rung(
-        "FractureToughness",
-        DimensionVector::FRACTURE_TOUGHNESS,
-        "qq",
-        1.0,
-    )];
+    let corpus = [
+        mass_display_emission(2.0),
+        injected_rung("Mass", DimensionVector::MASS, "qq", 1.0),
+    ];
 
-    let report = invariant_r_report(&corpus);
+    let report = invariant_r_report(&corpus, &[FIXTURE_BLOCK]);
 
     let [violation] = report.unexpected.as_slice() else {
-        panic!("a curated label of a blocked dimension must stay gated; got:\n{report}");
+        panic!("only the composed Display spelling may be absorbed; got:\n{report}");
     };
     assert_eq!(violation.emission.label, "qq");
 }
 
 #[test]
 fn a_known_block_whose_label_no_longer_fails_is_reported_stale() {
-    let corpus: Vec<Emission> = surface_emissions()
-        .into_iter()
-        .filter(|emission| emission.dimension != DimensionVector::FRACTURE_TOUGHNESS)
-        .collect();
+    let corpus = [mass_display_emission(1.0)];
 
-    let report = invariant_r_report(&corpus);
+    let report = invariant_r_report(&corpus, &[FIXTURE_BLOCK]);
 
     assert_eq!(
         report.stale_blocks,
-        [DimensionVector::FRACTURE_TOUGHNESS],
+        [FIXTURE_BLOCK],
         "a block with no failing emission must be reported stale"
     );
     assert!(
         report.unexpected.is_empty(),
-        "removing FractureToughness from the corpus must leave nothing unexpected; got:\n{report}"
+        "a label that reads back to its dimension and scale is not a violation; got:\n{report}"
     );
 }
