@@ -6516,6 +6516,25 @@
         }
     }
 
+    /// Build the axis-VALUE form of `circular_pattern` around a caller-supplied
+    /// `Value`. `count` and `angle` are held fixed so each test varies exactly
+    /// the axis it hands in — the value-form sibling of
+    /// [`circular_pattern_with_origin`].
+    fn circular_pattern_with_axis_value(axis: reify_ir::Value) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                (
+                    "axis".into(),
+                    reify_ir::CompiledExpr::literal(axis, reify_core::Type::dimensionless_scalar()),
+                ),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
+            ],
+        }
+    }
+
     /// A BARE (dimensionless) circular-pattern axis-origin component must be
     /// REJECTED — an axis ORIGIN is length-semantic (a point in space), so a
     /// bare `12` would be silently read as 12 SI **metres** rather than 12 mm,
@@ -6782,21 +6801,7 @@
                 reify_ir::Value::Real(1.0),
             ])),
         };
-        let op = CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        axis,
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        };
+        let op = circular_pattern_with_axis_value(axis);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
@@ -6856,21 +6861,7 @@
             origin: Box::new(length_point3(0.01, 0.02, 0.03)),
             direction: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
         };
-        let op = CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        axis,
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        };
+        let op = circular_pattern_with_axis_value(axis);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
@@ -6922,21 +6913,7 @@
             length_point3(0.0, 0.0, 0.0),
             bare_real_vector3(0.0, 0.0, 1.0),
         );
-        let op = CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        plane.clone(),
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        };
+        let op = circular_pattern_with_axis_value(plane.clone());
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let err = compile_geometry_op(
@@ -6959,6 +6936,67 @@
             "a wrong variant is the decoder's own Err, not a units rejection, so \
              nothing is pushed; got: {:?}",
             diagnostics
+        );
+    }
+
+    /// The two forms of `circular_pattern` label the SAME bare-origin mistake
+    /// differently, and this is the one place that difference is held in view.
+    ///
+    /// The value form names the builtin the author typed: `pattern_circular`
+    /// hands `decode_axis` its `surface_name`. The scalar form's
+    /// `required_length_origin3` still renders `PatternKind::Circular`'s own
+    /// `Display`, "circular", which names nothing the author wrote. The
+    /// rejection text is one template in both; only the label differs.
+    ///
+    /// The scalar half goes red the day that `Display` reads `circular_pattern`.
+    /// That is the cue to replace the two expectations with one parity
+    /// assertion and to collapse `surface_name` back to `kind`.
+    #[test]
+    fn compile_geometry_op_circular_pattern_origin_rejection_label_differs_by_form() {
+        let origin_rejections = |op: CompiledGeometryOp| -> Vec<String> {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            compile_geometry_op(
+                &op,
+                &ValueMap::new(),
+                &[GeometryHandleId(42)],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            )
+            .expect_err("a bare origin must drop the op in both forms");
+            diagnostics
+                .into_iter()
+                .filter(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected))
+                .map(|d| d.message)
+                .collect()
+        };
+        let rejections_under = |label: &str| -> Vec<String> {
+            ["ox", "oy", "oz"]
+                .into_iter()
+                .map(|name| expected_length_rejection(label, name, "Real"))
+                .collect()
+        };
+
+        let scalar =
+            circular_pattern_with_origin(literal_f64(0.01), literal_f64(0.02), literal_f64(0.03));
+        let value = circular_pattern_with_axis_value(axis_of(
+            bare_real_vector3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        ));
+
+        assert_eq!(
+            origin_rejections(scalar),
+            rejections_under("circular"),
+            "the scalar form still renders `PatternKind::Circular`'s own label, \
+             so this is where the two forms differ. If this now fails because \
+             that label reads `circular_pattern`, the forms agree: assert one \
+             parity and collapse `pattern_circular`'s `surface_name` back to `kind`"
+        );
+        assert_eq!(
+            origin_rejections(value),
+            rejections_under("circular_pattern"),
+            "the value form names the builtin the author typed"
         );
     }
 

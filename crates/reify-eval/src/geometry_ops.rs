@@ -1221,9 +1221,9 @@ fn accept_variadic_length_args(
 ///
 /// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
 /// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
-/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
-/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
-/// message survives byte-identical.
+/// nothing of its own — so the wording of a shape message, label prefix
+/// included, is entirely the caller's. This helper replaces
+/// [`point3_components`]' ACCEPTANCE policy, not its shape check.
 ///
 /// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
 /// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
@@ -1269,8 +1269,8 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
-    // whatever the caller's `shape_err` pushes is the whole of it.
+    // arity. A mismatch returns the caller's `shape_err` text and mints nothing
+    // here: whatever that closure pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
         _ => return Err(shape_err(diagnostics)),
@@ -2019,6 +2019,18 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
     Ok([v[0] / mag, v[1] / mag, v[2] / mag])
 }
 
+/// A decoder's OWN failure (wrong variant, wrong shape, degenerate vector), led
+/// by the label of the builtin it decodes for: `mirror: expected a Plane value,
+/// got …`.
+///
+/// The one home of that prefix. A units rejection never passes through here:
+/// [`accept_length_point3`] renders it already naming the label
+/// (`missing or non-Length argument 'ox' for mirror`), so prefixing it as well
+/// would print the builtin twice.
+fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display) -> String {
+    format!("{kind_label}: {failure}")
+}
+
 /// Decode a [`Value::Plane`] into `(origin, unit_normal)` — an SI metre triple
 /// and a dimensionless unit vector, returned as `([f64; 3], [f64; 3])`.
 ///
@@ -2085,27 +2097,42 @@ pub(crate) fn decode_plane(
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
-            return Err(format!("{kind_label}: expected a Plane value, got {other}"));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected a Plane value, got {other}"),
+            ));
         }
     };
-    // The plane ORIGIN is a point in space — LENGTH-gated. The shape message is
-    // handed through unchanged as `shape_err`, so a wrong-arity origin still
-    // reads exactly as it did pre-δ.
+    // The plane ORIGIN is a point in space — LENGTH-gated. A wrong-arity origin
+    // is no units rejection, so `accept_length_point3` returns this `shape_err`
+    // unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| format!("{kind_label}: Plane origin is not a valid 3-component numeric Point/Vector"),
+        |_| {
+            labelled(
+                kind_label,
+                "Plane origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
     // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
-        format!("{kind_label}: Plane normal is not a valid 3-component numeric Point/Vector")
+        labelled(
+            kind_label,
+            "Plane normal is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_normal = unit_vector3(normal_raw)
-        .map_err(|e| format!("{kind_label}: Plane has a degenerate normal: {e}"))?;
+    let unit_normal = unit_vector3(normal_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Plane has a degenerate normal: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -2166,26 +2193,41 @@ pub(crate) fn decode_axis(
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
-            return Err(format!("{kind_label}: expected an Axis value, got {other}"));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected an Axis value, got {other}"),
+            ));
         }
     };
-    // The axis ORIGIN is a point in space — LENGTH-gated, with the pre-δ shape
-    // message handed through unchanged as `shape_err`.
+    // The axis ORIGIN is a point in space — LENGTH-gated; a wrong-shape origin
+    // comes back as this `shape_err`, unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| format!("{kind_label}: Axis origin is not a valid 3-component numeric Point/Vector"),
+        |_| {
+            labelled(
+                kind_label,
+                "Axis origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
     // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
-        format!("{kind_label}: Axis direction is not a valid 3-component numeric Point/Vector")
+        labelled(
+            kind_label,
+            "Axis direction is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_dir = unit_vector3(dir_raw)
-        .map_err(|e| format!("{kind_label}: Axis has a degenerate direction: {e}"))?;
+    let unit_dir = unit_vector3(dir_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Axis has a degenerate direction: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_dir))
 }
 
