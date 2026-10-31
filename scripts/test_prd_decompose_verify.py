@@ -234,6 +234,7 @@ class TestMainCLI(unittest.TestCase):
             "exit_code": exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            "fixture_present": True,
         }
 
     def test_synthesize_all_pass_exits_0(self):
@@ -641,7 +642,8 @@ class TestUserObservableSignal(unittest.TestCase):
                 {"capability": "REAL executed fail", "probe_kind": "check",
                  "verdict": "FAIL",
                  "command": ["reify", "check", "tests/prd-gate/fixtures/x.ri"],
-                 "exit_code": 0, "stdout": "All constraints satisfied.", "stderr": ""},
+                 "exit_code": 0, "stdout": "All constraints satisfied.", "stderr": "",
+                 "fixture_present": True},
                 # (2) three unexecuted promises
                 {"capability": "vacuous-1", "probe_kind": "check", "verdict": "FAIL",
                  "command": [], "exit_code": None, "stdout": "", "stderr": ""},
@@ -661,7 +663,7 @@ class TestUserObservableSignal(unittest.TestCase):
                 # (4) an evidence-backed falsification whose command is a STRING
                 {"capability": "string-command cap", "probe_kind": "ir", "verdict": "FAIL",
                  "command": self._STRING_CMD, "exit_code": 1, "stdout": "",
-                 "stderr": "assertion did not hold"},
+                 "stderr": "assertion did not hold", "fixture_present": True},
             ],
         }
 

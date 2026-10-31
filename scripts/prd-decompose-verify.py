@@ -45,7 +45,11 @@ Design decisions:
       exempt and always blocks: it is the verdict that reports "nothing could
       be run at all", so absent evidence is its message, not a defect in it.
       A record α measured as having no fixture (`fixture_present: false`) is
-      set aside as fixture-absent rather than blocking; see classify_record.
+      set aside as fixture-absent rather than blocking.  A record that cannot
+      be adjudicated — a verdict outside α's Verdict, or (HARNESS_ERROR aside)
+      a fixture_present that is not α's boolean — is MALFORMED: set aside, and
+      its evidence is not counted as executed, so it never reads as verified.
+      classify_record states the order (PRD §5.2 as amended by R14).
   D3: reuse α's exact output shape via importlib — no re-implementation.
 """
 
@@ -324,11 +328,6 @@ def normalize_command(value: Any) -> List[str]:
 # BatchVerdict — output of synthesize_batch
 # ---------------------------------------------------------------------------
 
-_BLOCKING_VERDICTS = frozenset(
-    {pcc.Verdict.FAIL, pcc.Verdict.UNPROVABLE, pcc.Verdict.HARNESS_ERROR}
-)
-
-
 class RecordCategory(StrEnum):
     """How synthesize_batch treats one result record (task #7257 ARM 1).
 
@@ -369,25 +368,22 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
 def classify_record(rec: Dict[str, Any]) -> RecordCategory:
     """Classify a result record into its RecordCategory.
 
-    PRD docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.2, first match wins:
+    PRD docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.2 as amended by R14,
+    first match wins:
 
-      1. NON_BLOCKING   — the verdict is not FAIL / UNPROVABLE / HARNESS_ERROR
-                          and the fixture was not absent.  Covers PASS and
-                          premise-shaped records with no `verdict` key; the
-                          evidence gate does not re-litigate them.
+      1. NON_BLOCKING   — PASS on a fixture α saw (`fixture_present is True`).
       2. BLOCKING       — HARNESS_ERROR: the machinery could not run, so absent
                           evidence is its message rather than a defect in it
                           (the Prover's no-process fallback carries none).
-      3. MALFORMED      — no executed-probe evidence: an unexecuted promise.
-      4. FIXTURE_ABSENT — α measured the fixture absent when the probe launched,
-                          whatever the remaining verdict, including a relayed
-                          PASS that rule 1's guard let through.
-      5. BLOCKING       — an evidence-backed falsification.
+      3. MALFORMED      — the verdict is not one of α's, or fixture_present is
+                          not α's boolean: the record adjudicates nothing.
+      4. MALFORMED      — no executed-probe evidence: an unexecuted promise.
+      5. FIXTURE_ABSENT — α measured the fixture absent when the probe launched,
+                          whatever the remaining verdict, PASS included.
+      6. BLOCKING       — an evidence-backed falsification.
 
-    Only α's boolean `fixture_present: false` is an absent fixture (PRD D3).  A
-    missing or null field, or any non-bool value, reads as present: this is the
-    one branch that can stop a block, so it fires only on α's own unambiguous
-    answer.  No stderr text is consulted.
+    Rule 3's out-of-vocabulary arm is the fail-closed reading of a corner §5.2
+    leaves unstated (esc-8651-1).  No stderr text is consulted.
 
     Args:
         rec: An α --json result record.
@@ -395,15 +391,18 @@ def classify_record(rec: Dict[str, Any]) -> RecordCategory:
     Returns:
         The record's RecordCategory.
     """
-    verdict = rec.get("verdict", "")
-    fixture_absent = rec.get("fixture_present") is False
-    if verdict not in _BLOCKING_VERDICTS and not fixture_absent:
+    verdict = rec.get("verdict")
+    fixture_present = rec.get("fixture_present")
+    if verdict == pcc.Verdict.PASS and fixture_present is True:
         return RecordCategory.NON_BLOCKING
     if verdict == pcc.Verdict.HARNESS_ERROR:
         return RecordCategory.BLOCKING
+    is_verdict = isinstance(verdict, str) and verdict in set(pcc.Verdict)
+    if not is_verdict or not isinstance(fixture_present, bool):
+        return RecordCategory.MALFORMED
     if not has_probe_evidence(rec):
         return RecordCategory.MALFORMED
-    if fixture_absent:
+    if fixture_present is False:
         return RecordCategory.FIXTURE_ABSENT
     return RecordCategory.BLOCKING
 
@@ -421,16 +420,19 @@ class BatchVerdict:
                          executed / blocking / malformed / fixture-absent;
                          labelled sections below it embed the captured evidence
                          (command, exit_code, stdout, stderr) per record
-        malformed      — capability strings for FAIL/UNPROVABLE verdicts that
-                         carry NO executed-probe evidence.  A harness defect,
-                         not a falsification: these do NOT set `blocks`, but
-                         they mean the batch was not actually verified.
-                         HARNESS_ERROR is never routed here — it always blocks
-                         (see classify_record).
+        malformed      — capability strings for records classify_record
+                         finds MALFORMED: no executed-probe evidence, a verdict
+                         outside α's, or a fixture_present that is not α's
+                         boolean.  A harness defect, not a falsification:
+                         these do NOT set `blocks`, but they mean the batch was
+                         not actually verified.  HARNESS_ERROR is never routed
+                         here — it always blocks.
         fixture_absent — capability strings whose probe ran without its
                          fixture: α measured it absent at launch.  Not a
                          falsification, so these do NOT set `blocks`.
-        executed       — number of records carrying executed-probe evidence
+        executed       — number of records carrying executed-probe evidence,
+                         MALFORMED records excluded: evidence on a record that
+                         adjudicates nothing verifies nothing (PRD §5.2, B5′)
         total          — total number of records synthesized
 
     `malformed` and `fixture_absent` default to empty and `executed`/`total` to
@@ -567,6 +569,9 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         and is routed to `malformed` instead, where it is reported but does not
         set `blocks`.  Without this, one real falsification was buried among N
         vacuous ones and a human reading the report could not tell them apart.
+        A record whose verdict or fixture_present is not α's is MALFORMED too
+        (PRD §5.2 as amended by R14), and no MALFORMED record counts toward
+        `executed`, so it can never make a leaf read as verified.
 
         HARNESS_ERROR is exempt from BOTH downgrades and always blocks: it is
         the verdict that *reports* "nothing could be run", so absent evidence is
@@ -614,10 +619,10 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         capability = rec.get("capability", "<unknown>")
         role = rec.get("_role", "unknown")
 
-        if has_probe_evidence(rec):
+        category = classify_record(rec)
+        if category != RecordCategory.MALFORMED and has_probe_evidence(rec):
             executed += 1
 
-        category = classify_record(rec)
         if category == RecordCategory.NON_BLOCKING:
             continue
 

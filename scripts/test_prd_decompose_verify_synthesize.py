@@ -43,6 +43,7 @@ class TestSynthesizeBatch(unittest.TestCase):
             "exit_code": exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            "fixture_present": True,
         }
 
     # ── (1) all-PASS prover + empty adversary → does not block ───────────────
@@ -308,6 +309,7 @@ class TestCommandNormalization(unittest.TestCase):
             "exit_code": 1,
             "stdout": "",
             "stderr": "assertion did not hold",
+            "fixture_present": True,
         }
 
     def test_string_command_renders_verbatim_in_report(self):
@@ -359,6 +361,7 @@ class TestEvidenceGate(unittest.TestCase):
             "exit_code": exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            "fixture_present": True,
         }
         if omit_command:
             del rec["command"]
@@ -463,7 +466,6 @@ class TestEvidenceGate(unittest.TestCase):
         for label, verdict in (("MAYBE", "MAYBE"), ("a list", ["PASS"]), ("missing", None)):
             with self.subTest(verdict=label):
                 rec = self._result("odd-verdict cap", "PASS", exit_code=0)
-                rec["fixture_present"] = True
                 if verdict is None:
                     del rec["verdict"]
                 else:
@@ -529,6 +531,9 @@ class TestFixtureAbsent(unittest.TestCase):
 
     _ENOENT = reify_missing_fixture_stderr(_LEAF_FIXTURE)
 
+    # A field value that removes the field: how a case models a relay that dropped it.
+    _OMITTED = object()
+
     def _record(self, capability="cap", verdict="FAIL", stderr="", evidence=True,
                 **fields):
         rec = {
@@ -539,9 +544,10 @@ class TestFixtureAbsent(unittest.TestCase):
             "exit_code": 1 if evidence else None,
             "stdout": "",
             "stderr": stderr,
+            "fixture_present": True,
         }
         rec.update(fields)
-        return rec
+        return {key: value for key, value in rec.items() if value is not self._OMITTED}
 
     def _synthesize(self, rec):
         return pdv.synthesize_batch({"prover": [rec], "adversary": []})
@@ -632,7 +638,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_enoent_stderr_without_a_boolean_fixture_present_is_malformed(self):
         """PRD §5.2 rule 3 (R14 M3): missing, null and every non-bool value."""
         variants = {
-            "field missing": {},
+            "field missing": {"fixture_present": self._OMITTED},
             "field null": {"fixture_present": None},
             "field 0": {"fixture_present": 0},
             "field 'false'": {"fixture_present": "false"},
@@ -652,7 +658,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_pass_counts_only_on_a_fixture_alpha_saw(self):
         for label, fields, category in (
             ("field true", {"fixture_present": True}, pdv.RecordCategory.NON_BLOCKING),
-            ("field missing", {}, pdv.RecordCategory.MALFORMED),
+            ("field missing", {"fixture_present": self._OMITTED}, pdv.RecordCategory.MALFORMED),
             ("field null", {"fixture_present": None}, pdv.RecordCategory.MALFORMED),
         ):
             with self.subTest(variant=label):
@@ -664,7 +670,7 @@ class TestFixtureAbsent(unittest.TestCase):
     def test_a_pass_without_a_boolean_fixture_present_is_never_verified(self):
         """Its evidence is not counted, so the leaf rule (`executed === 0` →
         NOT_VERIFIED) cannot read VERIFIED off it."""
-        without_field = self._record("missing cap", "PASS")
+        without_field = self._record("missing cap", "PASS", fixture_present=self._OMITTED)
         null_field = self._record("null cap", "PASS", fixture_present=None)
         for rec in (without_field, null_field):
             with self.subTest(capability=rec["capability"]):
@@ -678,7 +684,8 @@ class TestFixtureAbsent(unittest.TestCase):
     # ── (6) HARNESS_ERROR blocks whatever its fixture_present says ───────────
 
     def test_harness_error_without_a_boolean_fixture_present_blocks(self):
-        for label, fields in (("field null", {"fixture_present": None}), ("field missing", {})):
+        for label, fields in (("field null", {"fixture_present": None}),
+                              ("field missing", {"fixture_present": self._OMITTED})):
             with self.subTest(variant=label):
                 rec = self._record("harness cap", "HARNESS_ERROR", evidence=False, **fields)
                 self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.BLOCKING)
@@ -738,6 +745,7 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
             "exit_code": exit_code,
             "stdout": "",
             "stderr": stderr,
+            "fixture_present": True,
         }
 
     # ── (1) the prompt's own fallback record produces the intended disposition ─

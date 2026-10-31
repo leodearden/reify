@@ -52,7 +52,8 @@ cat > "$_TMP_PASS" <<'EOJSON'
             "command": ["reify", "check", "/tmp/fixture.ri"],
             "exit_code": 0,
             "stdout": "All constraints satisfied.",
-            "stderr": ""
+            "stderr": "",
+            "fixture_present": true
         }
     ],
     "adversary": []
@@ -76,7 +77,8 @@ cat > "$_TMP_FAIL" <<'EOJSON'
             "command": ["reify", "check", "/tmp/revolute_silent_accept.ri"],
             "exit_code": 0,
             "stdout": "All constraints satisfied.",
-            "stderr": ""
+            "stderr": "",
+            "fixture_present": true
         }
     ],
     "adversary": []
@@ -147,7 +149,8 @@ cat > "$_TMP_MIXED" <<'EOJSON'
             "command": "target/release/reify eval f.ri",
             "exit_code": 1,
             "stdout": "",
-            "stderr": "assertion did not hold"
+            "stderr": "assertion did not hold",
+            "fixture_present": true
         }
     ]
 }
