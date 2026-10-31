@@ -1,13 +1,10 @@
-//! Shared AST-builder fixtures for specialization-scope tests.
+//! Shared fixtures for tests over structure members and `sub` scopes: AST
+//! builders that construct members directly, and shape guards that assert a
+//! parsed AST has the form a test depends on before the test relies on it.
 //!
-//! These helpers are used by:
-//! - `reify-compiler` unit tests in `specialization_scope_check.rs`
-//! - `reify-compiler` integration tests in `specialization_scope_validation_tests.rs`
-//! - `reify-lsp` regression tests in `diagnostics.rs`
-//!
-//! All helpers are `pub` and consumed via
-//! `use reify_test_support::specialization_fixtures::*;` inside the relevant
-//! test modules — **not** re-exported from the crate root to avoid polluting the
+//! All helpers are `pub` and imported from
+//! `reify_test_support::specialization_fixtures` inside the consuming test
+//! modules — **not** re-exported from the crate root to avoid polluting the
 //! top-level namespace with generic names like `dummy_span`.
 //!
 //! # Span layout
@@ -17,7 +14,7 @@
 //! valid `LSP Position { line: 0, character: N }` without any out-of-bounds
 //! access.
 
-use reify_ast::{ConstraintDecl, Declaration, Expr, ExprKind, LetDecl, MemberDecl, ParamDecl, PortDecl, StructureDef, SubDecl};
+use reify_ast::{ConstraintDecl, Declaration, Expr, ExprKind, KeyedSubMemberEntry, LetDecl, MemberDecl, ParamDecl, PortDecl, StructureDef, SubDecl};
 use reify_core::{ContentHash, ModulePath, SourceSpan};
 
 /// Dummy span for structure-level and default-use nodes: bytes 10–20.
@@ -217,6 +214,39 @@ pub fn parsed_module_with_structure_members(
         pragmas: Vec::new(),
         declared_module_path: None,
     }
+}
+
+/// The keyed entries of the single `sub` member in `members`, asserting the
+/// keyed lowering on the way through.
+///
+/// NON-VACUITY guard shared by every keyed-sub test: a member the parser
+/// hoisted into `SubDecl.body` — or up to the structure's top level — would be
+/// found by a pre-existing body-form path, so it would discriminate nothing.
+/// Panics, naming the broken invariant and dumping the offending AST, unless
+/// `members` holds exactly one `Sub`, lowered with `body: None` and at least
+/// one keyed entry.
+pub fn single_keyed_sub_entries(members: &[MemberDecl]) -> &[KeyedSubMemberEntry] {
+    let subs: Vec<_> = members
+        .iter()
+        .filter_map(|m| match m {
+            MemberDecl::Sub(sub) => Some(sub),
+            _ => None,
+        })
+        .collect();
+    let sub = match subs.as_slice() {
+        [sub] => *sub,
+        other => panic!("fixture must contain exactly one top-level Sub, got {other:#?}"),
+    };
+    assert!(
+        sub.body.is_none(),
+        "the keyed form must lower with `body: None`, got {:#?}",
+        sub.body
+    );
+    assert!(
+        !sub.keyed_members.is_empty(),
+        "fixture must lower to at least one keyed entry, got {sub:#?}"
+    );
+    &sub.keyed_members
 }
 
 /// A source stub long enough for all span offsets (up to [`sub_span()`]

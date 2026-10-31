@@ -586,38 +586,12 @@ mod tests {
     }
 
     /// The keyed entries of the single top-level `sub` in the first structure,
-    /// asserting the keyed lowering on the way through.
-    ///
-    /// NON-VACUITY guard shared by the keyed tests below: a decl the parser
-    /// hoisted into `SubDecl.body` — or up to the structure's top level — would
-    /// be reported by the pre-existing body-form path, so it would discriminate
-    /// nothing.
+    /// via the shared non-vacuity guard [`single_keyed_sub_entries`].
     fn keyed_entries(parsed: &ParsedModule) -> &[reify_ast::KeyedSubMemberEntry] {
-        let members: &[MemberDecl] = match &parsed.declarations[0] {
-            Declaration::Structure(s) => &s.members,
+        match &parsed.declarations[0] {
+            Declaration::Structure(s) => single_keyed_sub_entries(&s.members),
             other => panic!("expected a Structure declaration, got {other:?}"),
-        };
-        let subs: Vec<_> = members
-            .iter()
-            .filter_map(|m| match m {
-                MemberDecl::Sub(sub) => Some(sub),
-                _ => None,
-            })
-            .collect();
-        let sub = match subs.as_slice() {
-            [sub] => *sub,
-            other => panic!("fixture must contain exactly one top-level Sub, got {other:#?}"),
-        };
-        assert!(
-            sub.body.is_none(),
-            "the keyed form must lower with `body: None`, got {:#?}",
-            sub.body
-        );
-        assert!(
-            !sub.keyed_members.is_empty(),
-            "fixture must lower to at least one keyed entry, got {sub:#?}"
-        );
-        &sub.keyed_members
+        }
     }
 
     /// The span an AST node reports for itself.
