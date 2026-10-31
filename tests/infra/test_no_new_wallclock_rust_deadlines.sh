@@ -2733,4 +2733,213 @@ assert "4f-9: the composed derivation and completeness check returns 0" \
 assert "4f-9: a new bench directory is reported uncovered, by name" \
     test "$_s4f9_out" = "a/benches"
 
+# ===========================================================================
+# Section 4g: CARGO-DECLARED TARGET DIRS -- the second ground-truth input.
+#
+# 4f pins what a directory NAME can say about a test root. A name cannot say
+# where Cargo was TOLD to look: a `[[test]]`, `[[bench]]` or `[[example]]` table
+# with a `path` key puts its target anywhere. `_wallclock_declared_target_dirs
+# <manifest>...` reads those tables from Cargo.toml files and prints the
+# directory of each such target, so Section 3 can add them to the candidates
+# that `_wallclock_candidate_test_roots` derives from names.
+#
+# UNLIKE 4f this needs REAL FILES, because the subject is a TOML reader: the
+# synthetic manifests are written with _fixture into one mktemp directory
+# (registered in _TMPDIRS), never into the real tree. Every fixture captures
+# rc, for the reason given at 4f.
+#
+# Two fixtures carry the weight. 4g-3: a target under a root the list already
+# covers must come out COVERED, or the explicit `[[test]] path = ...` entries
+# of docs/prds/v0_6/cargo-native-harness-layout.md would red a correct tree.
+# 4g-7: an unreadable manifest is rc 2 and never skipped, because a skipped
+# manifest is a silent blind spot.
+# ===========================================================================
+echo ""
+echo "--- Section 4g: Cargo-declared target dirs ---"
+
+_s4g_tmp="$(mktemp -d)"; _TMPDIRS+=("$_s4g_tmp")
+mkdir -p "$_s4g_tmp/pkg" "$_s4g_tmp/bad"
+
+# ---------------------------------------------------------------------------
+# 4g-1: a `[[test]]` with a `path` is derived to the DIRECTORY holding that
+#       file -- roots are directories, and the path is echoed as it was named.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "it"' \
+    'path = "it/main.rs"'
+_s4g1_rc=0
+_s4g1_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g1_rc=$?
+assert "4g-1: the derivation returns 0" \
+    test "$_s4g1_rc" -eq 0
+assert "4g-1: a relocated [[test]] target names its directory" \
+    test "$_s4g1_out" = "$_s4g_tmp/pkg/it"
+
+# ---------------------------------------------------------------------------
+# 4g-2: [[bench]] and [[example]] are read exactly as [[test]] is. Compared
+#       sorted: the order of the derivation's output is not part of its contract.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[bench]]' \
+    'name = "perf"' \
+    'path = "perf/main.rs"' \
+    '[[example]]' \
+    'name = "show"' \
+    'path = "demos/show.rs"'
+_s4g2_rc=0
+_s4g2_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g2_rc=$?
+_s4g2_sorted="$(_emit_record_stream "$_s4g2_out" | LC_ALL=C sort)"
+assert "4g-2: the derivation returns 0 for bench and example targets" \
+    test "$_s4g2_rc" -eq 0
+assert "4g-2: [[bench]] and [[example]] targets name their directories" \
+    test "$_s4g2_sorted" = "$_s4g_tmp/pkg/demos
+$_s4g_tmp/pkg/perf"
+
+# ---------------------------------------------------------------------------
+# 4g-3: A TARGET UNDER A COVERED ROOT IS COVERED. An explicit entry for a
+#       harness under tests/ is the shape a harness-layout migration writes
+#       for every harness; the derivation names its directory, and that
+#       directory must come out of the completeness check as covered by the
+#       tests/ root already in the list, not as a false red.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "harness_x"' \
+    'path = "tests/harness_x/main.rs"'
+_s4g3_rc=0
+_s4g3_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g3_rc=$?
+_s4g3_cov_rc=0
+_s4g3_cov="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null \
+    | _wallclock_uncovered_test_roots "$_s4g_tmp/pkg/tests")" || _s4g3_cov_rc=$?
+assert "4g-3: the derivation returns 0" \
+    test "$_s4g3_rc" -eq 0
+assert "4g-3: the harness entry names its directory under tests/" \
+    test "$_s4g3_out" = "$_s4g_tmp/pkg/tests/harness_x"
+assert "4g-3: the derivation composed with the completeness check returns 0" \
+    test "$_s4g3_cov_rc" -eq 0
+assert "4g-3: a target under an existing tests/ root is covered (nothing printed)" \
+    test -z "$_s4g3_cov"
+
+# ---------------------------------------------------------------------------
+# 4g-4: only a RELOCATED test, bench or example target is a candidate. A
+#       [[test]] with no `path` defaults to the auto-discovered tests/ (which
+#       the name derivation already covers), and lib, bin and build-script
+#       sources are shipped code, excluded by the header's argument.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[package]' \
+    'name = "pkg"' \
+    'build = "gen.rs"' \
+    '[lib]' \
+    'path = "core/lib.rs"' \
+    '[[bin]]' \
+    'name = "x"' \
+    'path = "tools/x.rs"' \
+    '[[test]]' \
+    'name = "t"' \
+    'harness = false'
+_s4g4_rc=0
+_s4g4_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g4_rc=$?
+assert "4g-4: a manifest with no relocated target returns 0" \
+    test "$_s4g4_rc" -eq 0
+assert "4g-4: path-less [[test]], [lib], [[bin]] and build script yield nothing" \
+    test -z "$_s4g4_out"
+
+# ---------------------------------------------------------------------------
+# 4g-5: the path is NORMALIZED. Coverage compares path strings, so a spelling
+#       with `.` or `..` components must come out as the clean path a root
+#       list would hold.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "it"' \
+    'path = "./it/../it/main.rs"'
+_s4g5_rc=0
+_s4g5_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g5_rc=$?
+assert "4g-5: the derivation returns 0 for a non-canonical path" \
+    test "$_s4g5_rc" -eq 0
+assert "4g-5: dot and dot-dot components are normalized away" \
+    test "$_s4g5_out" = "$_s4g_tmp/pkg/it"
+
+# ---------------------------------------------------------------------------
+# 4g-6: a RELATIVE manifest argument gives a RELATIVE directory. That is the
+#       form Section 3 feeds the completeness check -- repo-relative, exactly
+#       as `git ls-files` names the manifests -- so it must not be made
+#       absolute on the way through.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "it"' \
+    'path = "it/main.rs"'
+_s4g6_rc=0
+_s4g6_out="$(cd "$_s4g_tmp/pkg" && _wallclock_declared_target_dirs Cargo.toml 2>/dev/null)" || _s4g6_rc=$?
+assert "4g-6: the derivation returns 0 for a relative manifest" \
+    test "$_s4g6_rc" -eq 0
+assert "4g-6: a relative manifest yields a relative directory" \
+    test "$_s4g6_out" = "it"
+
+# ---------------------------------------------------------------------------
+# 4g-7: FAIL CLOSED. A manifest that cannot be read or parsed is rc 2 (grep's
+#       "an input was unusable" code, as everywhere in this file), is named on
+#       stderr, and is NEVER skipped. The status is also STICKY: a good
+#       manifest before or after the bad one cannot turn it into a green.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/bad" "Cargo.toml" '[[test]'
+_s4g7a_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/bad/Cargo.toml" \
+    >/dev/null 2>"$_s4g_tmp/bad.err" || _s4g7a_rc=$?
+assert "4g-7: a malformed manifest is rc 2 -- not skipped, not 0, not 1" \
+    test "$_s4g7a_rc" -eq 2
+assert "4g-7: the error names the malformed manifest" \
+    grep -qF -- "$_s4g_tmp/bad/Cargo.toml" "$_s4g_tmp/bad.err"
+
+_s4g7b_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/absent/Cargo.toml" \
+    >/dev/null 2>"$_s4g_tmp/absent.err" || _s4g7b_rc=$?
+assert "4g-7: a manifest that does not exist is rc 2" \
+    test "$_s4g7b_rc" -eq 2
+assert "4g-7: the error names the missing manifest" \
+    grep -qF -- "$_s4g_tmp/absent/Cargo.toml" "$_s4g_tmp/absent.err"
+
+_s4g7c_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" "$_s4g_tmp/bad/Cargo.toml" \
+    >/dev/null 2>&1 || _s4g7c_rc=$?
+assert "4g-7: a bad manifest AFTER a good one is still rc 2" \
+    test "$_s4g7c_rc" -eq 2
+_s4g7d_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/bad/Cargo.toml" "$_s4g_tmp/pkg/Cargo.toml" \
+    >/dev/null 2>&1 || _s4g7d_rc=$?
+assert "4g-7: a bad manifest BEFORE a good one is still rc 2 -- never a partial green" \
+    test "$_s4g7d_rc" -eq 2
+
+# ---------------------------------------------------------------------------
+# 4g-8: a workspace-only manifest declares no target of its own: empty, rc 0.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[workspace]' \
+    'members = ["a"]'
+_s4g8_rc=0
+_s4g8_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g8_rc=$?
+assert "4g-8: a workspace-only manifest returns 0" \
+    test "$_s4g8_rc" -eq 0
+assert "4g-8: a workspace-only manifest declares no target directory" \
+    test -z "$_s4g8_out"
+
+# ---------------------------------------------------------------------------
+# 4g-9: a target FILE sitting directly in the package directory names that
+#       directory. It is reported, not skipped for having no directory part of
+#       its own: the package directory is where its source lives, and a skip
+#       would leave exactly that blind spot.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "flat"' \
+    'path = "flat.rs"'
+_s4g9_rc=0
+_s4g9_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g9_rc=$?
+assert "4g-9: the derivation returns 0 for a target in the package directory" \
+    test "$_s4g9_rc" -eq 0
+assert "4g-9: a target file beside the manifest names the package directory" \
+    test "$_s4g9_out" = "$_s4g_tmp/pkg"
+
 test_summary
