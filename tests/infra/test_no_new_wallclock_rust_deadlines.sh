@@ -2565,6 +2565,9 @@ assert "4e-13: a missing baseline over a CLEAN tree is rc 2, never a vacuous 0" 
 # and the function always returns 0. The verdict belongs to the caller, which
 # is why every fixture below asserts rc 0 alongside the output.
 #
+# 4f-6 onward pin `_wallclock_candidate_test_roots`, the derivation that FEEDS
+# the primitive above: tracked .rs paths in, candidate root directories out.
+#
 # PURE STRING LOGIC -- synthetic stdin against synthetic args, no filesystem,
 # no mktemp. These roots need not exist, and deliberately do not: the question
 # is whether the LIST covers a name, which is independent of what is on disk
@@ -2642,5 +2645,72 @@ assert "4f-5: BOTH uncovered roots are printed, not just the first" \
 assert "4f-5: coverage is tested against every argument, not only the first" \
     test "$_s4f5_out" = "a/tests
 c/tests"
+
+# ---------------------------------------------------------------------------
+# 4f-6: TODAY'S BEHAVIOUR, pinned before the scope widens. A tests/ directory
+#       is derived ONCE however many files or levels sit under it, and a
+#       TOP-LEVEL `tests/` is derived too: its path has no leading `/`, which
+#       is the case the first draft of this derivation dropped.
+# ---------------------------------------------------------------------------
+_s4f6_rc=0
+_s4f6_out="$(printf '%s\n' 'a/tests/x.rs' 'a/tests/sub/y.rs' 'tests/z.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null)" || _s4f6_rc=$?
+assert "4f-6: the derivation returns 0 -- the list is the result" \
+    test "$_s4f6_rc" -eq 0
+assert "4f-6: each tests/ root is derived once, the top-level one included" \
+    test "$_s4f6_out" = "a/tests
+tests"
+
+# ---------------------------------------------------------------------------
+# 4f-7: THE NEW SCOPE. benches/ and examples/ are candidate roots exactly as
+#       tests/ is -- nested or top-level, one entry per directory. The header's
+#       SCOPE IS CARGO'S TARGET MODEL paragraph argues why; this pins that the
+#       derivation follows it. C order, like every other list in this file.
+# ---------------------------------------------------------------------------
+_s4f7_rc=0
+_s4f7_out="$(printf '%s\n' 'a/benches/b.rs' 'a/benches/sub/c.rs' 'benches/top.rs' \
+    'a/examples/e.rs' 'examples/top.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null)" || _s4f7_rc=$?
+assert "4f-7: the widened derivation returns 0" \
+    test "$_s4f7_rc" -eq 0
+assert "4f-7: benches/ and examples/ roots are derived, nested and top-level, in C order" \
+    test "$_s4f7_out" = "a/benches
+a/examples
+benches
+examples"
+
+# ---------------------------------------------------------------------------
+# 4f-8: SHIPPED CODE AND NEAR-MISS NAMES stay out. lib, bin and build-script
+#       sources are not test, bench or example targets, and `benches2`,
+#       `mybenches` and `examples_util.rs` each CONTAIN a candidate name
+#       without being one: the match is on a whole path component. Finding
+#       nothing is also rc 0 -- grep's "no match" rc 1 must not leak out of a
+#       function whose contract is that the list is the result.
+# ---------------------------------------------------------------------------
+_s4f8_rc=0
+_s4f8_out="$(printf '%s\n' 'a/src/lib.rs' 'a/src/bin/tool.rs' 'a/build.rs' \
+    'a/benches2/x.rs' 'a/mybenches/x.rs' 'a/src/examples_util.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null)" || _s4f8_rc=$?
+assert "4f-8: a stream with no candidate is rc 0 -- an empty list is an answer" \
+    test "$_s4f8_rc" -eq 0
+assert "4f-8: production code and near-miss names yield no candidate" \
+    test -z "$_s4f8_out"
+
+# ---------------------------------------------------------------------------
+# 4f-9: THE COMPOSITION THE SCOPE DECISION RESTS ON. A bench directory beside a
+#       covered tests/ root is reported uncovered, by name -- so the day one
+#       lands, the completeness check reds on it. That is the whole mechanism
+#       by which a benches/ or examples/ root joins the scan: it cannot be
+#       pre-listed in _LIVE_ROOTS (an unmatched glob is a hard error), so the
+#       check names it when it appears.
+# ---------------------------------------------------------------------------
+_s4f9_rc=0
+_s4f9_out="$(printf '%s\n' 'a/benches/b.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null \
+    | _wallclock_uncovered_test_roots 'a/tests' 2>/dev/null)" || _s4f9_rc=$?
+assert "4f-9: the composed derivation and completeness check returns 0" \
+    test "$_s4f9_rc" -eq 0
+assert "4f-9: a new bench directory is reported uncovered, by name" \
+    test "$_s4f9_out" = "a/benches"
 
 test_summary
