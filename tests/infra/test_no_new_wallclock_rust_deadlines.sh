@@ -116,21 +116,24 @@
 # test fns, a CHILD of debug_server::tests, so recursing gui/src-tauri/src/tests
 # never reaches it -- in the very crate that produced all four flakes. So the
 # claim is derived rather than trusted. Section 3 builds ground truth from the
-# tree (every directory NAMED `tests` that holds a tracked .rs file) and reds on
-# any of them this list does not cover, naming it. A test directory split out
-# tomorrow therefore reds the gate instead of quietly becoming a second blind
-# spot.
+# tree (see SCOPE IS CARGO'S TARGET MODEL below) and reds on any root this list
+# does not cover, naming it. A test directory split out tomorrow therefore reds
+# the gate instead of quietly becoming a second blind spot.
 #
-# THE CHECK IS ONLY AS COMPLETE AS THAT NAME, and the promise is worded to
-# match. A Rust test root called something else -- a `benches/` or `examples/`
-# directory, or a Cargo `[[test]] path = "it/main.rs"` target -- is invisible
-# to the check for the same reason it is invisible to the scan, and adding one
-# would create a second blind spot with nothing redding. Measured: no tracked
-# .rs file lives in any benches/ or examples/ directory and no Cargo.toml
-# declares a `[[test]]` or `[[bench]]` target, so this bounds the claim rather
-# than dents it. Whether a benchmark should be scanned at all is a SCOPE
-# question -- see the production-code argument below, which turns on what a
-# directory CONTAINS, not what it is called -- and it belongs in a review.
+# SCOPE IS CARGO'S TARGET MODEL. A root is in scope when its CONTENTS are tests,
+# and Cargo's target kinds decide that without parsing Rust: test, bench and
+# example targets are harness code no artifact ships; lib, bin and build targets
+# are shipped code and stay out (PRODUCTION CODE IS EXCLUDED, below). Cargo finds
+# the three harness kinds in tests/, benches/ and examples/ by name, and a `path`
+# key on `[[test]]`, `[[bench]]` or `[[example]]` can put any of them elsewhere,
+# so ground truth is both. Benches are in because the production argument rests
+# on code that asserts nothing, and an elapsed upper bound is the assert most
+# natural in a benchmark: it inverts under load wherever it runs, the gate
+# compiles benches, and `test = true` runs one under nextest. Examples share
+# that door and are in so each kind gets one rule. A genuinely real-time
+# measurement window takes the argued escape. A bench or example root cannot be
+# pre-listed in `_LIVE_ROOTS` (a glob matching nothing is a hard error), so the
+# check names it the day it lands.
 #
 # THE BASELINE, AND THE DISTINCTION A READER MUST NOT BLUR. Widening the scan
 # could not be a one-line change: violating lines already existed across
@@ -173,8 +176,7 @@
 #
 # THE REMAINING BLIND SPOT, named exactly as #6438 named its own. Exactly ONE
 # KIND of uncovered location exists on this tree -- a measured claim rather
-# than a hopeful one, and bounded, as everything here is, by the naming
-# assumption stated above. An inline `#[cfg(test)]` module inside a production
+# than a hopeful one. An inline `#[cfg(test)]` module inside a production
 # src/ file is NOT scanned, even though its contents genuinely are tests.
 # Finding one lexically needs brace nesting -- i.e. the Rust grammar this guard
 # deliberately refuses to grow (see NO LINE JOINER at the engine). One instance
@@ -1668,32 +1670,15 @@ done
 # THE LIST IS COMPLETE -- checked against the tree, not asserted in the header.
 # Naming members one at a time can only pin the roots someone thought of; the
 # failure the #6597 review actually found was a root NOBODY thought of
-# (gui/src-tauri/src/debug_server/tests). So ground truth is DERIVED: every
-# directory NAMED `tests` that holds a tracked .rs file. `git ls-files` is the
-# right source precisely because it is TRACKED-only -- an untracked scratch
-# directory must not red the gate.
-#
-# THE DERIVATION ASSUMES A NAME, and that assumption is the exact boundary of
-# what "complete" means here -- so it is stated rather than left for a reader
-# to infer from the sed. A Rust test root called anything else is invisible to
-# BOTH this check and the scan itself: a `benches/` or `examples/` directory,
-# or a Cargo `[[test]] path = "it/main.rs"` target. Measured on this tree when
-# the check was written: zero tracked .rs files in any benches/ or examples/
-# directory, and zero `[[test]]`/`[[bench]]` declarations in any Cargo.toml --
-# so this is a latent boundary, not a live gap. `benches/` is the one worth
-# naming, because an elapsed-time upper bound is a natural thing to write
-# there. Widening to it is a SCOPE decision (is a benchmark a test?), which
-# belongs in a review rather than in a quiet edit to this pipeline.
-#
-# Both halves handle a TOP-LEVEL `tests/`, which the first draft dropped: its
-# path has no leading `/`, so an anchored `(.*/tests)` could not match it and
-# a `/tests$` filter discarded what was left. There is no such directory today
-# (measured), and a derivation that silently cannot see one is not worth
-# keeping. Verified to derive the same root set as the old expression on this
-# tree, and to catch a synthetic top-level root the old one dropped.
+# (gui/src-tauri/src/debug_server/tests). So ground truth is DERIVED, from the
+# two sources the header's SCOPE IS CARGO'S TARGET MODEL paragraph names:
+# directory names first, then Cargo-declared target paths. `git ls-files` is the
+# right source for both precisely because it is TRACKED-only -- an untracked
+# scratch directory must not red the gate.
 #
 # Coverage is by PREFIX, not equality: the roots scan recursively, so a nested
-# `a/tests/b/tests` is genuinely reached from `a/tests`. See Section 4f.
+# `a/tests/b/tests` is genuinely reached from `a/tests`. A TOP-LEVEL tests/ is
+# derived too. Both are pinned in Section 4f.
 _s3_gt_rc=0
 _s3_gt="$(git ls-files '*.rs' | _wallclock_candidate_test_roots)" || _s3_gt_rc=$?
 assert "live scan: the ground-truth test-root derivation succeeds" \
@@ -2826,7 +2811,7 @@ assert "4f-9: a new bench directory is reported uncovered, by name" \
 # (registered in _TMPDIRS), never into the real tree. Every fixture captures
 # rc, for the reason given at 4f.
 #
-# Two fixtures carry the weight. 4g-3: a target under a root the list already
+# The weight sits on 4g-3 and 4g-7. 4g-3: a target under a root the list already
 # covers must come out COVERED, or the explicit `[[test]] path = ...` entries
 # of docs/prds/v0_6/cargo-native-harness-layout.md would red a correct tree.
 # 4g-7: an unreadable manifest is rc 2 and never skipped, because a skipped

@@ -1,9 +1,9 @@
 # tests/infra/wallclock-rust-deadline-baseline.txt
 #
 # RATCHET BASELINE for tests/infra/test_no_new_wallclock_rust_deadlines.sh
-# (task #6597). Read by that guard's Section 3 live scan, which now covers
-# every Rust TEST ROOT -- crates/*/tests, gui/src-tauri/src/tests,
-# gui/src-tauri/tests and tree-sitter-reify/tests -- recursively.
+# (task #6597). Read by that guard's Section 3 live scan, which covers every
+# Rust test root its `_LIVE_ROOTS` names, recursively; what counts as one is
+# argued in that file's header, under SCOPE IS CARGO'S TARGET MODEL.
 #
 # WHAT A ROW MEANS, and the distinction a reader must not blur:
 #   * An ESCAPE comment at a site means "this is LEGITIMATE, and here is the
