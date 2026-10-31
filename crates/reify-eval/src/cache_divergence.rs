@@ -25,7 +25,7 @@ use reify_core::ValueCellId;
 use reify_ir::{DeterminacyState, PersistentMap, Value};
 
 use crate::cache::{CacheStore, CachedResult, NodeId};
-use crate::journal::{CacheLegKind, CommitTag, EventJournal, EventKind};
+use crate::journal::{CacheLegKind, CommitTag, EventJournal};
 
 /// A single snapshot↔cache content-hash divergence: `cell`'s snapshot value
 /// disagrees, by content-hash, with its PRESENT (and non-Skip-exempt) cache
@@ -134,20 +134,12 @@ impl crate::Engine {
 /// absence of a Skipped tag never implies anything about the cache itself;
 /// it just means "not Skip-exempt".
 fn cell_latest_commit_was_skip(journal: &EventJournal, node: &NodeId) -> bool {
-    let latest_commit = journal
-        .events_for_node(node)
-        .iter()
-        .rev()
-        .find_map(|event| match &event.kind {
-            EventKind::Started { commit } => Some(commit),
-            _ => None,
-        });
     matches!(
-        latest_commit,
-        Some(Some(CommitTag {
+        journal.latest_commit_for_node(node),
+        Some(CommitTag {
             cache: CacheLegKind::Skipped { .. },
             ..
-        }))
+        })
     )
 }
 
@@ -206,9 +198,7 @@ mod tests {
     }
 
     fn skipped() -> CacheLegKind {
-        CacheLegKind::Skipped {
-            reason: "seeded".to_string(),
-        }
+        CacheLegKind::Skipped { reason: "seeded" }
     }
 
     /// Anti-silent-accept self-test: a present-but-mismatched cache entry with

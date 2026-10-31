@@ -33,21 +33,10 @@ use reify_test_support::{make_engine, mm, parse_and_compile, parse_and_compile_w
 /// against: `commit_cell_result` (`cell_commit.rs`) records the commit's
 /// `TraceSource` and cache-leg fate as a `CommitTag` on its `Started` event.
 fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
-    let node_id = NodeId::Value(id.clone());
     engine
         .journal()
-        .events_for_node(&node_id)
-        .iter()
-        .find_map(|event| started_commit(&event.kind))
-        .flatten()
-}
-
-/// `Some(commit)` for a `Started` event, `None` for any other kind.
-fn started_commit(kind: &EventKind) -> Option<Option<CommitTag>> {
-    match kind {
-        EventKind::Started { commit } => Some(commit.clone()),
-        _ => None,
-    }
+        .first_commit_for_node(&NodeId::Value(id.clone()))
+        .cloned()
 }
 
 /// The tag of a commit made by `trace` that recorded its cache leg.
@@ -59,12 +48,10 @@ fn recorded(trace: TraceSource) -> Option<CommitTag> {
 }
 
 /// The tag of a commit made by `trace` that skipped its cache leg for `reason`.
-fn skipped(trace: TraceSource, reason: &str) -> Option<CommitTag> {
+fn skipped(trace: TraceSource, reason: &'static str) -> Option<CommitTag> {
     Some(CommitTag {
         trace,
-        cache: CacheLegKind::Skipped {
-            reason: reason.to_string(),
-        },
+        cache: CacheLegKind::Skipped { reason },
     })
 }
 
@@ -383,14 +370,10 @@ fn eval_cached_let_miss_provenance_and_determinacy() {
 /// Confirmed empirically via a scratch probe on `ms` (`STRUCTURAL_QUERY_SRC`):
 /// exactly 2 `Started` events, matching this reasoning.
 fn last_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
-    let node_id = NodeId::Value(id.clone());
     engine
         .journal()
-        .events_for_node(&node_id)
-        .iter()
-        .rev()
-        .find_map(|event| started_commit(&event.kind))
-        .flatten()
+        .latest_commit_for_node(&NodeId::Value(id.clone()))
+        .cloned()
 }
 
 /// RED: structural-query post-pass explicit `CacheLeg::Skip` audit.

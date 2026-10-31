@@ -117,9 +117,7 @@ fn post_pass_started(cell: &ValueCellId, cache: CacheLegKind) -> EvalEvent {
 }
 
 fn seeded_skip() -> CacheLegKind {
-    CacheLegKind::Skipped {
-        reason: "seeded".to_string(),
-    }
+    CacheLegKind::Skipped { reason: "seeded" }
 }
 
 /// Companion exemption test: the SAME divergent state plus a
@@ -201,16 +199,7 @@ fn real_post_pass_skip_divergence_is_exempted_by_its_tag() {
     );
 
     // (2) The latest commit for `ms` is the post-pass's Skip.
-    let latest_commit = engine
-        .journal()
-        .events_for_node(&node)
-        .iter()
-        .rev()
-        .find_map(|event| match &event.kind {
-            EventKind::Started { commit } => Some(commit.clone()),
-            _ => None,
-        })
-        .flatten();
+    let latest_commit = engine.journal().latest_commit_for_node(&node);
     assert!(
         matches!(
             latest_commit,

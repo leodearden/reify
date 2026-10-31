@@ -9,9 +9,9 @@
 //! and [`CacheLeg`]. The commit records its [`TraceSource`] and the cache
 //! leg's fate on the journal as a [`CommitTag`].
 //!
-//! This module introduces the primitive and its unit tests only. Migrating
-//! existing call sites (`engine_eval.rs`, `engine_edit.rs`, ...) onto this
-//! primitive is out of scope here — see PRD leaves γ/δ/ε/ι.
+//! Call sites in `engine_eval.rs`, `engine_edit.rs` and `unfold.rs` commit
+//! through this primitive. Not every per-cell commit does yet: a hand-rolled
+//! commit journals an untagged `Started { commit: None }` event.
 //!
 //! ## Known scope gaps for migration leaves (γ/δ/ε/ι)
 //!
@@ -205,13 +205,11 @@ impl CacheLeg {
     /// The journal's record of this leg: whether it writes the cache, and
     /// if not, why.
     fn kind(&self) -> CacheLegKind {
-        match self {
+        match *self {
             CacheLeg::Record
             | CacheLeg::RecordPropagating { .. }
             | CacheLeg::RecordWithFreshness(_) => CacheLegKind::Recorded,
-            CacheLeg::Skip(reason) => CacheLegKind::Skipped {
-                reason: reason.to_string(),
-            },
+            CacheLeg::Skip(reason) => CacheLegKind::Skipped { reason },
         }
     }
 }
@@ -712,7 +710,7 @@ mod tests {
             Some(CommitTag {
                 trace: TraceSource::ColdEval,
                 cache: CacheLegKind::Skipped {
-                    reason: "cyclic let-cell (2266)".to_string(),
+                    reason: "cyclic let-cell (2266)",
                 },
             })
         );

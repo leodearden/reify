@@ -7599,7 +7599,7 @@ structure GrowColl {
         let u2_commit = Some(CommitTag {
             trace: TraceSource::EditReeval,
             cache: CacheLegKind::Skipped {
-                reason: "collection-resize child re-recorded by structural rebuild".to_string(),
+                reason: "collection-resize child re-recorded by structural rebuild",
             },
         });
         assert!(
@@ -7695,7 +7695,7 @@ structure GrowColl {
         assert_edit_reeval_commit(
             started,
             CacheLegKind::Skipped {
-                reason: "post-wave2 guard-member reseed".to_string(),
+                reason: "post-wave2 guard-member reseed",
             },
             "m (U1)",
         );
@@ -7782,7 +7782,7 @@ structure GrowColl {
         assert_edit_reeval_commit(
             started,
             CacheLegKind::Skipped {
-                reason: "synthetic member-list aggregate".to_string(),
+                reason: "synthetic member-list aggregate",
             },
             "__list_bolts__diameter (U3)",
         );
@@ -7850,7 +7850,7 @@ structure GrowColl {
         assert_edit_reeval_commit(
             started,
             CacheLegKind::Skipped {
-                reason: "grown-instance reseed after structural grow (θ2)".to_string(),
+                reason: "grown-instance reseed after structural grow (θ2)",
             },
             "bolts[2].diameter, final writer (U4)",
         );

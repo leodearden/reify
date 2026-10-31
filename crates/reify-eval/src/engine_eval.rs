@@ -12747,23 +12747,17 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     use crate::Engine;
     use crate::cache::NodeId;
-    use crate::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
+    use crate::journal::{CacheLegKind, CommitTag, TraceSource};
     use reify_test_support::mocks::MockConstraintChecker;
 
     /// Mirrors the integration test file's `first_started_commit` helper: the
     /// commit tag of the first `Started` event for `id`, or `None` if there is
     /// no such event or it carries no tag.
     fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
-        let node_id = NodeId::Value(id.clone());
         engine
             .journal()
-            .events_for_node(&node_id)
-            .iter()
-            .find_map(|event| match &event.kind {
-                EventKind::Started { commit } => Some(commit.clone()),
-                _ => None,
-            })
-            .flatten()
+            .first_commit_for_node(&NodeId::Value(id.clone()))
+            .cloned()
     }
 
     #[test]
@@ -14093,16 +14087,10 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     /// no `Started` event for `id` or it carries no tag — the un-migrated
     /// baseline.
     fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
-        let node_id = NodeId::Value(id.clone());
         engine
             .journal()
-            .events_for_node(&node_id)
-            .iter()
-            .find_map(|event| match &event.kind {
-                EventKind::Started { commit } => Some(commit.clone()),
-                _ => None,
-            })
-            .flatten()
+            .first_commit_for_node(&NodeId::Value(id.clone()))
+            .cloned()
     }
 
     /// The 2-cell synthetic module — param `a` = `Real(5.0)`, let `b = a * 2.0`

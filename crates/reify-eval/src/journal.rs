@@ -99,36 +99,24 @@ pub enum CacheLegKind {
     /// The cache leg was omitted. `reason` is opaque data for a human
     /// reader; it is never parsed.
     Skipped {
-        reason: String,
+        reason: &'static str,
     },
 }
 
 /// Which call-path produced a committed value, carried on the journal as
-/// [`CommitTag::trace`]. Makes the journal self-describing so the §2.6
-/// divergence audit can attribute a mismatch to its producing path by
-/// variant.
+/// [`CommitTag::trace`], so the §2.6 divergence audit can attribute a
+/// mismatch to its producing path. Which cache leg each path writes is
+/// `cell_commit.rs`'s concern, not this enum's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceSource {
     /// First-time (cold) evaluation of a node with no prior cache entry.
     ColdEval,
-    /// Produced by the `eval_cached` warm pass's cache-MISS arm — a cold eval
-    /// inside the cached-serve pass. Deliberately distinct from
-    /// [`TraceSource::CachedReuse`]: this arm recomputes a value and writes
-    /// `Freshness::Final` via `CacheLeg::Record`.
+    /// A cache miss in the cached-serve pass: the value was recomputed.
     CachedServe,
-    /// Re-served verbatim from an existing non-dirty cache entry by one of
-    /// `eval_cached`'s preserve-freshness re-serves (Param and Let), which
-    /// reproduce the stored `(value, determinacy)` pair and carry the entry's
-    /// own freshness forward via `CacheLeg::RecordWithFreshness`. Split out
-    /// from [`TraceSource::CachedServe`] (task #5238) so the journal alone
-    /// separates a re-serve from a miss.
-    ///
-    /// Named `CachedReuse`, NOT `CachedReserve`: sitting directly beside
-    /// [`TraceSource::CachedServe`], a one-letter difference would have
-    /// carried the whole semantic load, and "reserve" (to set aside) is a
-    /// different English word from "re-serve" (to serve again) — the intended
-    /// sense. "Reuse" is also what the producing blocks in `engine_eval.rs`
-    /// already call themselves (`// Cache-reuse: not dirty + entry exists`).
+    /// A cache hit in the cached-serve pass: the stored value was served
+    /// again unchanged. Kept apart from [`TraceSource::CachedServe`] so the
+    /// journal alone separates a re-serve from a miss, and named "reuse"
+    /// rather than "reserve" so the two names differ by more than a letter.
     CachedReuse,
     /// Re-evaluation triggered by an edit to an upstream cell.
     EditReeval,
@@ -241,6 +229,39 @@ impl EventJournal {
             .get(node_id)
             .and_then(|indices| indices.last())
             .map(|&idx| &self.events[idx])
+    }
+
+    /// The commit tag on `node_id`'s FIRST `Started` event: `None` if the
+    /// node has no `Started` event, or if that event is an untagged visit.
+    pub fn first_commit_for_node(&self, node_id: &NodeId) -> Option<&CommitTag> {
+        self.started_commits_for_node(node_id)
+            .next()
+            .and_then(Option::as_ref)
+    }
+
+    /// The commit tag on `node_id`'s LATEST `Started` event: `None` if the
+    /// node has no `Started` event, or if that event is an untagged visit.
+    /// An untagged later visit therefore hides an earlier tag.
+    pub fn latest_commit_for_node(&self, node_id: &NodeId) -> Option<&CommitTag> {
+        self.started_commits_for_node(node_id)
+            .next_back()
+            .and_then(Option::as_ref)
+    }
+
+    /// The `commit` field of each of `node_id`'s `Started` events, in
+    /// insertion order.
+    fn started_commits_for_node(
+        &self,
+        node_id: &NodeId,
+    ) -> impl DoubleEndedIterator<Item = &Option<CommitTag>> {
+        self.by_node
+            .get(node_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|&idx| match &self.events[idx].kind {
+                EventKind::Started { commit } => Some(commit),
+                _ => None,
+            })
     }
 }
 
@@ -730,6 +751,77 @@ mod tests {
                 outcome: Some(EvalOutcome::Changed)
             }
         ));
+    }
+
+    fn started(node_name: &str, commit: Option<CommitTag>) -> EvalEvent {
+        make_event(node_name, EventKind::Started { commit }, 0)
+    }
+
+    fn recorded(trace: TraceSource) -> Option<CommitTag> {
+        Some(CommitTag {
+            trace,
+            cache: CacheLegKind::Recorded,
+        })
+    }
+
+    #[test]
+    fn commit_for_node_is_none_without_a_started_event() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("x", EventKind::CacheHit, 0));
+
+        let x = node("Test", "x");
+        assert_eq!(journal.first_commit_for_node(&x), None);
+        assert_eq!(journal.latest_commit_for_node(&x), None);
+    }
+
+    #[test]
+    fn first_and_latest_commit_read_the_node_s_first_and_last_started_events() {
+        let skipped = Some(CommitTag {
+            trace: TraceSource::PostPassOverwrite,
+            cache: CacheLegKind::Skipped { reason: "seeded" },
+        });
+        let mut journal = EventJournal::new();
+        journal.record(started("x", recorded(TraceSource::ColdEval)));
+        journal.record(make_event(
+            "x",
+            EventKind::Completed {
+                outcome: Some(EvalOutcome::Changed),
+            },
+            0,
+        ));
+        journal.record(started("y", recorded(TraceSource::EditReeval)));
+        journal.record(started("x", skipped.clone()));
+        journal.record(make_event("x", EventKind::Completed { outcome: None }, 0));
+
+        let x = node("Test", "x");
+        assert_eq!(
+            journal.first_commit_for_node(&x),
+            recorded(TraceSource::ColdEval).as_ref()
+        );
+        assert_eq!(journal.latest_commit_for_node(&x), skipped.as_ref());
+    }
+
+    #[test]
+    fn an_untagged_started_event_is_the_commit_it_stands_at() {
+        let mut journal = EventJournal::new();
+        journal.record(started("x", recorded(TraceSource::ColdEval)));
+        journal.record(started("x", None));
+        journal.record(started("y", None));
+        journal.record(started("y", recorded(TraceSource::ConeReeval)));
+
+        let x = node("Test", "x");
+        assert_eq!(
+            journal.first_commit_for_node(&x),
+            recorded(TraceSource::ColdEval).as_ref()
+        );
+        assert_eq!(journal.latest_commit_for_node(&x), None);
+
+        let y = node("Test", "y");
+        assert_eq!(journal.first_commit_for_node(&y), None);
+        assert_eq!(
+            journal.latest_commit_for_node(&y),
+            recorded(TraceSource::ConeReeval).as_ref()
+        );
     }
 
     #[test]
