@@ -78,6 +78,16 @@ class TestVerdictTruthTable(unittest.TestCase):
         v = pcc.verdict(pcc.INDETERMINATE, "absent")
         self.assertEqual(v, pcc.UNPROVABLE)
 
+    # ── HARNESS_ERROR: verdict() is total over Observation ───────────────────
+
+    def test_harness_error_observation_is_a_harness_error_verdict(self):
+        for expected in ("present", "absent"):
+            with self.subTest(expected=expected):
+                self.assertIs(
+                    pcc.verdict(pcc.Observation.HARNESS_ERROR, expected),
+                    pcc.Verdict.HARNESS_ERROR,
+                )
+
     # ── constants are distinct ────────────────────────────────────────────────
 
     def test_observation_constants_are_distinct(self):

@@ -33,6 +33,7 @@ from _pcc_test_support import (
     _ts_stub_hangs,
     _ts_stub_not_executable,
 )
+from _schema_test_support import schema_errors
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +854,35 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
             rc, out, err = self._run_main_capturing(["--grammar-substrate-status"])
         self.assertEqual(rc, 75, out + err)
         self.assertNotIn("[HARNESS ERROR", out + err)
+
+
+class TestJsonRecordConformsToPublishedSchema(_MainHarness, unittest.TestCase):
+    """Every --json record α emits conforms to the result_record α publishes."""
+
+    def _records(self, runner):
+        rc, out, err = self._run_main_capturing(["--json", _EXAMPLE_PROBE_SET], runner=runner)
+        self.assertIn(rc, (0, 70), out + err)
+        return json.loads(out)["results"]
+
+    def _assert_conforming(self, records):
+        schema = pcc.published_schemas()["result_record"]
+        for record in records:
+            with self.subTest(probe_kind=record.get("probe_kind")):
+                self.assertEqual(schema_errors(record, schema), [])
+
+    def test_all_pass_records_conform(self):
+        records = self._records(self._all_pass_runner())
+        self.assertTrue(any("value_observation" in r for r in records))
+        self._assert_conforming(records)
+
+    def test_a_launch_failure_record_conforms(self):
+        launch = pcc.ProbeRun(
+            127, "", "",
+            harness_failure=pcc.HarnessFailure(pcc.HarnessFailureKind.LAUNCH, "no such file"),
+        )
+        records = self._records(self._make_runner({"check": launch}))
+        self.assertTrue(any(r["harness_failure"] is not None for r in records))
+        self._assert_conforming(records)
 
 
 # ---------------------------------------------------------------------------
