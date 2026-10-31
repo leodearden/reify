@@ -2125,6 +2125,44 @@ fn feasible_and_within_acceptance_models_are_not_refuted() {
     );
 }
 
+/// A dependent cell that reads an auto moves with the solve, so its
+/// `current_values` snapshot is no bound. `d = 2*w` holds a stale `d = 1m`
+/// that contradicts `d <= 30mm`: read as a constant it would turn this
+/// feasible model (`1mm <= w <= 15mm`) into a false `ConstraintRefuted` proof.
+#[test]
+fn a_stale_dependent_cell_snapshot_is_not_refuted() {
+    let mut problem = refutation_problem(
+        "Plate",
+        vec![AutoParam {
+            free: true,
+            ..strict_length_auto("Plate", "w")
+        }],
+        vec![
+            le(value_ref("Plate", "d"), literal(mm(30.0))),
+            ge(value_ref("Plate", "w"), literal(mm(1.0))),
+        ],
+    );
+    problem.dependent_cells = vec![(
+        vcid("Plate", "d"),
+        binop(BinOp::Mul, literal(real_val(2.0)), value_ref("Plate", "w")),
+    )];
+    problem
+        .current_values
+        .insert(vcid("Plate", "d"), meters(1.0));
+    let result = DimensionalSolver.solve(&problem);
+    assert_not_refuted(&result, "a stale `d = 2*w` snapshot");
+    match result {
+        SolveResult::Solved { values, .. } => {
+            let w = values[&vcid("Plate", "w")].as_f64().expect("w is a scalar");
+            assert!(
+                (0.001..=0.015).contains(&w),
+                "w must satisfy both constraints through d = 2*w; got {w} m"
+            );
+        }
+        other => panic!("the model is feasible, so it solves; got {other:?}"),
+    }
+}
+
 /// #6653's toleranced equality reaches the proof: fixed cells `p == q` half a
 /// length floor apart are an ACCEPTED row, so the model solves.
 #[test]
