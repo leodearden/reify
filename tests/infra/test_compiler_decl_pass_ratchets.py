@@ -367,7 +367,7 @@ class RowExclusions(TempRoot):
 
 class LiveTree(unittest.TestCase):
 
-    def test_no_row_exceeds_its_baseline(self):
+    def test_every_row_sits_exactly_at_its_baseline(self):
         for result in rcr.evaluate(ROWS, REPO_ROOT):
             print(result.summary)
             with self.subTest(result.row.row_id):
