@@ -1,7 +1,8 @@
 //! Shared fixture helpers for interrogating a compiled design file's surface —
-//! the three jobs every `prj/`-backed gate in this compile unit does, with the
+//! the jobs every `prj/`-backed gate in this compile unit does, with the
 //! design FILE a parameter rather than a constant.
 //!
+//!   * [`entity_template`] finds one structure's compiled template;
 //!   * [`entity_cell`] / [`entity_real`] read one dimension-checked cell out of
 //!     an evaluated [`ValueMap`];
 //!   * [`CellSpans`] answers WHICH cell a diagnostic is about, structurally, by
@@ -16,12 +17,32 @@
 //! named, so `file: &str` is the parameter that replaced the fork. It lives
 //! here rather than in either gate because it belongs to NEITHER design: both
 //! files declare structures of the same name, and a gate for a third file
-//! should reach for these three jobs without importing them out of the
+//! should reach for these jobs without importing them out of the
 //! capstan's module.
 
 use reify_core::{Diagnostic, DimensionVector, SourceSpan, ValueCellId};
 use reify_eval::ConstraintCheckEntry;
 use reify_ir::{Satisfaction, Value, ValueMap};
+
+/// The compiled template of the structure named `entity` in `file`'s module,
+/// panicking with the templates that DID compile when it is absent.
+pub(super) fn entity_template<'m>(
+    module: &'m reify_compiler::CompiledModule,
+    file: &str,
+    entity: &str,
+) -> &'m reify_compiler::TopologyTemplate {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == entity)
+        .unwrap_or_else(|| {
+            panic!(
+                "{file} must declare the `{entity}` structure; templates \
+                 compiled: {:?}",
+                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        })
+}
 
 /// Read a `Value::Scalar` cell of `entity` out of a value map, asserting its
 /// dimension, and return its SI value (m / m³ / dimensionless).

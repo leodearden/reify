@@ -459,7 +459,7 @@ fn engine_build_post_processes_ad_hoc_face_selector_to_frame() {
 
     let checker = SimpleConstraintChecker;
     let kernel = configured_engine_kernel();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let top_frame_id = ValueCellId::new("AdHocCylinder", "top_frame");
@@ -540,7 +540,7 @@ fn engine_build_emits_warning_on_unresolved_face_name() {
     // for the post-process Frame construction are never reached because the
     // label resolves to Unresolved.
     let kernel = configured_engine_kernel();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let mystery_id = ValueCellId::new("AdHocCylinderUnresolved", "mystery_frame");
@@ -624,7 +624,7 @@ fn face_selector_ri_example_compiles_and_evaluates_to_frame() {
     // classification (seeder), and Centroid + FaceNormal for TOP_FACE post-process.
     let checker = SimpleConstraintChecker;
     let kernel = configured_engine_kernel();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Assert the primary user-observable witness: @face("top") → Value::Frame.
@@ -1118,7 +1118,7 @@ fn engine_build_topology_stale_warning_carries_nonzero_source_span() {
 
     let checker = SimpleConstraintChecker;
     let kernel = configured_engine_kernel();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Locate the TopologyAttributeStale warning — should be exactly one.

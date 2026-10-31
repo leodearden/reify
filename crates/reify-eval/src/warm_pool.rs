@@ -65,7 +65,7 @@ pub struct WarmStatePool {
     ///
     /// # Bounding
     /// All mutations go through [`push_event`](Self::push_event), which enforces
-    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS):
+    /// the pool's `events_cap` (default [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS)):
     /// - **Debug builds**: a `debug_assert!` fires at the cap, surfacing the
     ///   "engine never drains" scenario loudly during `cargo test`.
     /// - **Release builds**: the oldest half of the buffer is auto-trimmed and
@@ -91,27 +91,24 @@ pub struct WarmStatePool {
     /// Cumulative count of telemetry events silently dropped by the auto-trim
     /// safety net (release builds only).
     ///
-    /// Incremented by `MAX_BUFFERED_EVENTS / 2` on every trim round.  Exposed via
+    /// Incremented by `events_cap / 2` on every trim round.  Exposed via
     /// [`dropped_events`](Self::dropped_events) for diagnostic use (e.g. engine
     /// health checks or the diagnostic panel).  A non-zero value indicates that
     /// an embedder is not draining at its eval boundary.  Always `0` in normal
     /// steady-state operation (verified by `tests/warm_pool_drain_steady_state.rs`).
     dropped_events: u64,
-    /// Test-only override for the events buffer cap.
+    /// Cap on buffered telemetry events, enforced by [`push_event`](Self::push_event).
     ///
-    /// When `Some(n)`, [`push_event`](Self::push_event) uses `n` instead of
-    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS).  This lets field-schema
-    /// tests (e.g. `auto_trim_warn_omits_invariant_current_len_field`) fire the
-    /// auto-trim warn with ~17 donations instead of 65 537, dramatically reducing
-    /// unnecessary allocations in tests that only care about the warn's field set.
-    ///
-    /// Only present in test builds; has no effect on production behaviour.
-    #[cfg(test)]
-    test_events_cap: Option<usize>,
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS) unless the pool was built
+    /// with [`with_limits`](Self::with_limits); always `>= 2`.
+    events_cap: usize,
 }
 
 impl WarmStatePool {
-    /// Maximum number of buffered telemetry events before the cap enforcement fires.
+    /// Default cap on buffered telemetry events before the cap enforcement fires.
+    ///
+    /// Every constructor uses this cap except the crate-internal `with_limits`,
+    /// which takes the cap as a parameter.
     ///
     /// # Rationale
     /// [`WarmStatePool::events`] is unbounded until the engine wires `drain_events()`
@@ -143,6 +140,21 @@ impl WarmStatePool {
 
     /// Create a new pool with an explicit budget (or `None` for unlimited).
     pub fn with_budget(budget_bytes: Option<usize>) -> Self {
+        Self::with_limits(budget_bytes, Self::MAX_BUFFERED_EVENTS)
+    }
+
+    /// Create a new pool with an explicit budget (or `None` for unlimited) and an
+    /// explicit cap on buffered telemetry events.
+    ///
+    /// # Panics
+    /// If `events_cap < 2`: each release-build auto-trim round drops
+    /// `events_cap / 2` events, so a smaller cap would never shrink the buffer.
+    pub(crate) fn with_limits(budget_bytes: Option<usize>, events_cap: usize) -> Self {
+        assert!(
+            events_cap >= 2,
+            "WarmStatePool events_cap must be >= 2 so each auto-trim round drops \
+             cap/2 >= 1 events; got events_cap = {events_cap}"
+        );
         Self {
             pool: HashMap::new(),
             budget_bytes,
@@ -150,8 +162,7 @@ impl WarmStatePool {
             events: Vec::new(),
             auto_trim_warned: false,
             dropped_events: 0,
-            #[cfg(test)]
-            test_events_cap: None,
+            events_cap,
         }
     }
 
@@ -256,23 +267,6 @@ impl WarmStatePool {
         Self::from_config_or_env_value(config, std::env::var(BUDGET_ENV_VAR).ok().as_deref())
     }
 
-    /// Create an unlimited pool with a test-only override for the events buffer cap.
-    ///
-    /// Intended for field-schema tests that need to trigger the auto-trim warn without
-    /// pushing [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS) (65 536) events.  With
-    /// `cap = 16`, for example, only 17 donations are needed to force one trim round.
-    ///
-    /// Note: the `debug_assert!` in [`push_event`](Self::push_event) fires at `cap` in
-    /// debug builds, so callers must remain gated `#[cfg(not(debug_assertions))]` — the
-    /// debug assertion still enforces the cap; only the *trim path* (release-only) is
-    /// exercised by tests using this constructor.
-    #[cfg(all(test, not(debug_assertions)))]
-    pub(crate) fn with_test_events_cap(cap: usize) -> Self {
-        let mut pool = Self::unlimited();
-        pool.test_events_cap = Some(cap);
-        pool
-    }
-
     /// Store warm-start state for a node with an explicit cost-per-byte estimate.
     ///
     /// `cost_per_byte` is `estimated_cold_compute_time_secs / size_bytes` per arch §4.3.
@@ -318,8 +312,7 @@ impl WarmStatePool {
     /// Use this on the (4c)→(14b) cache-miss path when an entry checked out via
     /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost) must be
     /// returned without refreshing its LRU clock or losing its cost.  The production path
-    /// in `PendingWarmSeedsGuard` routes through this method; the `_stamp` path calls
-    /// the cost-0.0 wrapper [`donate_preserving_lru`](Self::donate_preserving_lru) instead.
+    /// in `PendingWarmSeedsGuard` routes through this method.
     ///
     /// # Architecture reference
     /// arch §4.3 line 539 "(4c)→(14b) round-trip"; task #3468 resolved the cost-reset
@@ -334,30 +327,12 @@ impl WarmStatePool {
         self.insert_entry(node_id, state, last_accessed, cost_per_byte);
     }
 
-    /// Re-donate a checked-out entry, preserving its original `last_accessed` timestamp.
-    ///
-    /// Back-compat wrapper around [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost)
-    /// that resets `cost_per_byte` to `0.0`.  Use
-    /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost) +
-    /// [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost) when cost
-    /// must be preserved through the (4c)→(14b) round-trip.
-    ///
-    /// # Architecture reference
-    /// arch §4.3 line 539 "(4c)→(14b) round-trip".
-    pub fn donate_preserving_lru(
-        &mut self,
-        node_id: NodeId,
-        state: OpaqueState,
-        last_accessed: Instant,
-    ) {
-        self.donate_preserving_lru_with_cost(node_id, state, last_accessed, 0.0);
-    }
-
     /// Shared core of all donate variants: sanitise cost, evict if over budget, insert entry,
     /// emit `Donated` event.
     ///
     /// `last_accessed` is provided by the caller so that [`donate_with_cost`] can use
-    /// `Instant::now()` while [`donate_preserving_lru`] can pass a previously-captured stamp.
+    /// `Instant::now()` while [`donate_preserving_lru_with_cost`] can pass a
+    /// previously-captured stamp.
     fn insert_entry(
         &mut self,
         node_id: NodeId,
@@ -462,40 +437,24 @@ impl WarmStatePool {
         }
     }
 
-    /// Returns the effective events buffer cap.
-    ///
-    /// In production builds this is always [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS).
-    /// In test builds it returns the test-only override when one has been set via
-    /// [`with_test_events_cap`](Self::with_test_events_cap), falling back to
-    /// `MAX_BUFFERED_EVENTS` otherwise.  Using this helper in [`push_event`](Self::push_event)
-    /// keeps the cap logic in one place and lets test fixtures fire the auto-trim path with
-    /// a tiny cap (~17 events) rather than 65 537.
-    #[inline]
-    fn events_cap_effective(&self) -> usize {
-        #[cfg(test)]
-        if let Some(n) = self.test_events_cap {
-            return n;
-        }
-        Self::MAX_BUFFERED_EVENTS
-    }
-
-    /// Append one telemetry event to the internal buffer, enforcing the cap.
+    /// Append one telemetry event to the internal buffer, enforcing the pool's
+    /// `events_cap` (default [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS)).
     ///
     /// # Cap enforcement (layered safety nets)
     ///
     /// **Debug builds** — a `debug_assert!` fires when the buffer is already at
-    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS), causing a visible panic in
-    /// `cargo test`.  This surfaces "engine never drains" loudly during development.
+    /// `events_cap`, causing a visible panic in `cargo test`.  This surfaces
+    /// "engine never drains" loudly during development.
     ///
-    /// **Release builds** — when `events.len() > MAX_BUFFERED_EVENTS` the oldest half
+    /// **Release builds** — when `events.len() > events_cap` the oldest half
     /// is auto-trimmed, the [`dropped_events`](Self::dropped_events) counter is
-    /// incremented by `MAX_BUFFERED_EVENTS / 2`, and a single `tracing::warn!` (with
+    /// incremented by `events_cap / 2`, and a single `tracing::warn!` (with
     /// the running `total_dropped` field) is emitted per pool instance.
     ///
     /// All donate/evict event emissions must go through this helper so the cap logic
     /// lives in exactly one place.
     fn push_event(&mut self, ev: WarmPoolEvent) {
-        let cap = self.events_cap_effective();
+        let cap = self.events_cap;
         debug_assert!(
             self.events.len() < cap,
             "WarmStatePool events buffer hit cap of {} — an embedder is not draining at \
@@ -530,13 +489,15 @@ impl WarmStatePool {
     /// the pool); returns `None` when the entry is absent OR has been
     /// LRU-evicted. A second call for the same node returns `None`.
     ///
-    /// Thin wrapper around [`checkout_with_lru_stamp`](Self::checkout_with_lru_stamp)
-    /// that discards the `last_accessed` timestamp.  Use `checkout_with_lru_stamp`
-    /// when the entry may need to be re-donated via
-    /// [`donate_preserving_lru`](Self::donate_preserving_lru) on the (4c)→(14b)
-    /// cache-miss path (arch §4.3).
+    /// Thin wrapper around
+    /// [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost)
+    /// that discards the `last_accessed` timestamp and the `cost_per_byte`.  Use
+    /// `checkout_with_lru_stamp_and_cost` when the entry may need to be re-donated via
+    /// [`donate_preserving_lru_with_cost`](Self::donate_preserving_lru_with_cost) on the
+    /// (4c)→(14b) cache-miss path (arch §4.3).
     pub fn checkout(&mut self, node_id: &NodeId) -> Option<OpaqueState> {
-        self.checkout_with_lru_stamp(node_id).map(|(s, _)| s)
+        self.checkout_with_lru_stamp_and_cost(node_id)
+            .map(|(state, _, _)| state)
     }
 
     /// Check out warm-start state together with the entry's `last_accessed` timestamp
@@ -556,20 +517,6 @@ impl WarmStatePool {
         let entry = self.pool.remove(node_id)?;
         self.used_bytes = self.used_bytes.saturating_sub(entry.size_bytes);
         Some((entry.state, entry.last_accessed, entry.cost_per_byte))
-    }
-
-    /// Check out warm-start state together with the entry's original `last_accessed`
-    /// timestamp (take semantics).
-    ///
-    /// Thin wrapper around [`checkout_with_lru_stamp_and_cost`](Self::checkout_with_lru_stamp_and_cost)
-    /// that discards the `cost_per_byte`.  Use `checkout_with_lru_stamp_and_cost` when cost
-    /// must be preserved through the (4c)→(14b) round-trip.
-    ///
-    /// Returns `None` when the entry is absent or has been evicted. A second call for
-    /// the same node returns `None` (take semantics identical to [`checkout`](Self::checkout)).
-    pub fn checkout_with_lru_stamp(&mut self, node_id: &NodeId) -> Option<(OpaqueState, Instant)> {
-        self.checkout_with_lru_stamp_and_cost(node_id)
-            .map(|(s, t, _)| (s, t))
     }
 
     /// Current estimated memory usage in bytes.
@@ -599,7 +546,8 @@ impl WarmStatePool {
     /// Total number of telemetry events silently dropped by the auto-trim safety net
     /// (release builds only; debug builds panic via `debug_assert!` instead).
     ///
-    /// Each auto-trim round drops `MAX_BUFFERED_EVENTS / 2` events; this counter
+    /// Each auto-trim round drops `events_cap / 2` events (`events_cap` defaults to
+    /// [`MAX_BUFFERED_EVENTS`](Self::MAX_BUFFERED_EVENTS)); this counter
     /// accumulates across all rounds since the pool was constructed.
     ///
     /// A non-zero value is a health signal: it means `drain_events()` is not being
@@ -640,8 +588,8 @@ impl WarmStatePool {
 
     /// Whether the pool currently holds an entry for `node_id`.
     ///
-    /// Non-destructive: unlike [`retrieve`](Self::retrieve), this leaves the
-    /// pool untouched. Use it to probe membership without consuming the entry
+    /// Non-destructive: unlike [`checkout`](Self::checkout), which has take
+    /// semantics, this leaves the pool untouched. Use it to probe membership without consuming the entry
     /// or perturbing the LRU ordering (`last_accessed` is not updated).
     pub fn contains(&self, node_id: &NodeId) -> bool {
         self.pool.contains_key(node_id)
@@ -1400,9 +1348,9 @@ mod tests {
         use std::panic::AssertUnwindSafe;
         // NOTE: This test performs MAX_BUFFERED_EVENTS (65 536) donations to fill the
         // buffer to the exact cap, then one more to trigger the debug_assert! panic.
-        // The count cannot be reduced without a test-only cap seam: the off-by-one
-        // boundary (len == MAX passes, len == MAX+1 fires) requires filling to the
-        // precise cap.  ~65 k HashMap inserts complete in ≲ 100 ms.  This test is
+        // It deliberately goes through `unlimited()` rather than `with_limits` to pin
+        // that the DEFAULT cap is MAX_BUFFERED_EVENTS (len == MAX passes, len == MAX+1
+        // fires).  ~65 k HashMap inserts complete in ≲ 100 ms.  This test is
         // gated #[cfg(debug_assertions)] and does not run in the release test pass.
 
         // Build a pool with effectively unlimited memory budget so LRU eviction
@@ -1600,7 +1548,7 @@ mod tests {
     /// This test also positively pins that `cap` and `total_dropped` ARE present, so
     /// we're verifying the auto-trim warn and not some unrelated warn from the pool.
     ///
-    /// Uses [`WarmStatePool::with_test_events_cap`] to set the cap to 16, so only 17
+    /// Uses [`WarmStatePool::with_limits`] to set the cap to 16, so only 17
     /// donations are needed to trigger the trim rather than 65 537.  None of the
     /// existing auto-trim tests pin the warn's field schema, so this is the only test
     /// for the negative `current_len` assertion; there is nothing to fold it into.
@@ -1626,7 +1574,7 @@ mod tests {
         let (subscriber, capture) = warn_capturing_subscriber();
 
         tracing::subscriber::with_default(subscriber, || {
-            let mut pool = WarmStatePool::with_test_events_cap(TEST_CAP);
+            let mut pool = WarmStatePool::with_limits(None, TEST_CAP);
 
             // Donate TEST_CAP+1 events: the (TEST_CAP+1)-th push takes events.len()
             // to TEST_CAP+1 > TEST_CAP, firing exactly one auto-trim round and one warn.
@@ -1661,7 +1609,74 @@ mod tests {
         );
     }
 
-    // --- Task 2516 step-1: donate_preserving_lru / checkout_with_lru_stamp ---
+    /// `with_limits`'s `events_cap` governs the debug-build tripwire: with a cap of 4
+    /// the 5th undrained push panics, where the default `MAX_BUFFERED_EVENTS` cap
+    /// would not.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn with_limits_events_cap_governs_debug_tripwire() {
+        use std::panic::AssertUnwindSafe;
+
+        let mut pool = WarmStatePool::with_limits(Some(1024), 4);
+        assert_eq!(pool.budget_bytes(), Some(1024));
+
+        for i in 0..4 {
+            let node = NodeId::Value(ValueCellId::new("T", format!("n{i}")));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let node = NodeId::Value(ValueCellId::new("T", "n4"));
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }));
+
+        assert!(
+            result.is_err(),
+            "debug-build tripwire: expected debug_assert! panic on the 5th undrained push \
+             with events_cap = 4, but catch_unwind returned Ok"
+        );
+    }
+
+    /// `with_limits`'s `events_cap` governs the release-build auto-trim: with a cap of
+    /// 16, the 17th undrained push trims `16 / 2 == 8` of the oldest events.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn with_limits_events_cap_governs_release_trim() {
+        const CAP: usize = 16;
+
+        let mut pool = WarmStatePool::with_limits(None, CAP);
+        assert_eq!(pool.budget_bytes(), None);
+
+        let mut last_node = NodeId::Value(ValueCellId::new("T", "n0"));
+        for i in 0..=CAP {
+            let node = NodeId::Value(ValueCellId::new("T", format!("n{i}")));
+            last_node = node.clone();
+            pool.donate(node, OpaqueState::new(0u8, 1));
+        }
+
+        assert_eq!(pool.dropped_events(), (CAP / 2) as u64);
+
+        let events = pool.drain_events();
+        assert_eq!(events.len(), CAP + 1 - CAP / 2);
+        assert_eq!(
+            events.last(),
+            Some(&WarmPoolEvent::Donated {
+                node_id: last_node,
+                size_bytes: 1,
+            }),
+            "auto-trim must keep the newest event"
+        );
+    }
+
+    /// Below 2, `events_cap / 2 == 0`: a release trim round would drop nothing and the
+    /// buffer would grow without bound, so construction rejects it.
+    #[test]
+    #[should_panic(expected = "events_cap")]
+    fn with_limits_rejects_events_cap_below_two() {
+        let _ = WarmStatePool::with_limits(None, 1);
+    }
+
+    // --- Task 2516 step-1: donate_preserving_lru_with_cost / checkout_with_lru_stamp_and_cost ---
     //
     // These tests pin the LRU-preserving round-trip API added in response to
     // reviewer suggestion S1 (see task 2516 analysis).  The (4c)→(14b) cache-miss
@@ -1670,21 +1685,22 @@ mod tests {
     // round-tripped entry look "recently accessed" and thus less likely to be
     // evicted than genuinely-old entries already in the pool.
 
-    /// `donate_preserving_lru` must re-insert the entry using the *provided*
+    /// `donate_preserving_lru_with_cost` must re-insert the entry using the *provided*
     /// `last_accessed` Instant, not a fresh `Instant::now()`.
     ///
     /// Setup: budget=250; donate A then B (with a sleep between to guarantee
     /// A's timestamp is strictly older than B's).  Round-trip A through
-    /// `checkout_with_lru_stamp` + `donate_preserving_lru`.  Donating C (100
-    /// bytes) forces exactly one eviction (200+100=300 > 250).  Because A's
-    /// preserved stamp is older than B's, A must be the LRU victim — not B.
+    /// `checkout_with_lru_stamp_and_cost` + `donate_preserving_lru_with_cost`.
+    /// Donating C (100 bytes) forces exactly one eviction (200+100=300 > 250).
+    /// Every entry carries cost 0.0, so the LRU tiebreak decides: because A's
+    /// preserved stamp is older than B's, A must be the victim — not B.
     ///
-    /// If `donate_preserving_lru` incorrectly called `Instant::now()`, A's stamp
-    /// would become newer than B's (set during the sleep window), causing B to be
-    /// evicted instead, and the assertion `pool.checkout(&node_a).is_none()` would
+    /// If `donate_preserving_lru_with_cost` incorrectly called `Instant::now()`, A's
+    /// stamp would become newer than B's (set during the sleep window), causing B to
+    /// be evicted instead, and the assertion `pool.checkout(&node_a).is_none()` would
     /// fail.
     #[test]
-    fn donate_preserving_lru_does_not_refresh_access_time() {
+    fn donate_preserving_lru_with_cost_does_not_refresh_access_time() {
         use std::time::Duration;
 
         let mut pool = WarmStatePool::new(250);
@@ -1704,11 +1720,11 @@ mod tests {
         // used = 200, budget = 250.
 
         // Round-trip A: checkout preserving the stamp, then re-donate preserving it.
-        let (a_state, a_stamp) = pool
-            .checkout_with_lru_stamp(&node_a)
+        let (a_state, a_stamp, a_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_a)
             .expect("A must be in the pool before round-trip");
         // A is now removed from pool; used = 100.
-        pool.donate_preserving_lru(node_a.clone(), a_state, a_stamp);
+        pool.donate_preserving_lru_with_cost(node_a.clone(), a_state, a_stamp, a_cost);
         // A is back in pool with its *original* (older) stamp; used = 200.
 
         // Donate C: 200+100=300 > 250 → exactly one eviction needed.
@@ -1719,7 +1735,7 @@ mod tests {
         assert!(
             pool.checkout(&node_a).is_none(),
             "A must be evicted: its preserved (original) stamp is older than B's; \
-             if donate_preserving_lru called Instant::now() instead, B would be \
+             if donate_preserving_lru_with_cost called Instant::now() instead, B would be \
              evicted here and this assertion would succeed on the wrong entry"
         );
         assert!(
@@ -1732,30 +1748,34 @@ mod tests {
         );
     }
 
-    /// `checkout_with_lru_stamp` returns both the `OpaqueState` and an `Instant`
+    /// `checkout_with_lru_stamp_and_cost` returns the `OpaqueState`, an `Instant`
     /// that was captured at donation time (bounded between `before` and `after`
-    /// the donate call).
+    /// the donate call), and the donated `cost_per_byte`.
     ///
-    /// Pins the return-type contract for the new method: the caller receives
-    /// `(OpaqueState, Instant)` so it can later pass the stamp to
-    /// `donate_preserving_lru` without losing the original LRU ordering.
+    /// Pins the return-type contract: the caller receives `(OpaqueState, Instant, f64)`
+    /// so it can later pass the stamp and cost to `donate_preserving_lru_with_cost`
+    /// without losing the original LRU ordering or the cost.
     #[test]
-    fn checkout_with_lru_stamp_returns_state_and_original_instant() {
+    fn checkout_with_lru_stamp_and_cost_returns_state_original_instant_and_cost() {
         let mut pool = WarmStatePool::new(1024);
         let node_x = NodeId::Value(ValueCellId::new("T", "x"));
 
         let before = std::time::Instant::now();
-        pool.donate(node_x.clone(), OpaqueState::new(42i32, 8));
+        pool.donate_with_cost(node_x.clone(), OpaqueState::new(42i32, 8), 0.75);
         let after = std::time::Instant::now();
 
-        let (state, stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        let (state, stamp, cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in the pool after donate");
 
         assert_eq!(
             state.downcast::<i32>(),
             Some(42),
-            "checkout_with_lru_stamp must return the donated state"
+            "checkout_with_lru_stamp_and_cost must return the donated state"
+        );
+        assert_eq!(
+            cost, 0.75,
+            "checkout_with_lru_stamp_and_cost must return the donated cost_per_byte"
         );
         assert!(
             stamp >= before,
@@ -1774,16 +1794,17 @@ mod tests {
         // Entry must have been consumed (take semantics).
         assert!(
             pool.checkout(&node_x).is_none(),
-            "checkout_with_lru_stamp must have take-semantics: second call returns None"
+            "checkout_with_lru_stamp_and_cost must have take-semantics: second call returns None"
         );
     }
 
     // --- Task 2456: emit Evicted on same-key overwrite ---
 
-    /// `donate_preserving_lru` emits overwrite-Evicted symmetrically via `insert_entry`.
+    /// `donate_preserving_lru_with_cost` emits overwrite-Evicted symmetrically via
+    /// `insert_entry`.
     ///
     /// Donate Y via `donate(Y, state)`, drain, then call
-    /// `donate_preserving_lru(Y, state2, some_stamp)` directly (without checkout)
+    /// `donate_preserving_lru_with_cost(Y, state2, some_stamp, 0.0)` directly (without checkout)
     /// to trigger the overwrite path — assert `[Evicted{Y,50}, Donated{Y,80}]`.
     ///
     /// Guards the design decision "localize the change to insert_entry" — all three
@@ -1792,7 +1813,7 @@ mod tests {
     /// covered transitively by `donate_same_node_emits_evicted_then_donated_on_overwrite`
     /// (which calls `donate`, a thin wrapper around `donate_with_cost`).
     #[test]
-    fn donate_preserving_lru_emits_overwrite_evicted() {
+    fn donate_preserving_lru_with_cost_emits_overwrite_evicted() {
         let mut pool = WarmStatePool::new(1024);
         let node_y = NodeId::Value(ValueCellId::new("T", "y"));
         let stamp = std::time::Instant::now();
@@ -1800,8 +1821,8 @@ mod tests {
         pool.donate(node_y.clone(), OpaqueState::new(0u8, 50));
         pool.drain_events(); // clear setup
 
-        // Call donate_preserving_lru directly on an already-present key.
-        pool.donate_preserving_lru(node_y.clone(), OpaqueState::new(0u8, 80), stamp);
+        // Call donate_preserving_lru_with_cost directly on an already-present key.
+        pool.donate_preserving_lru_with_cost(node_y.clone(), OpaqueState::new(0u8, 80), stamp, 0.0);
         let events = pool.drain_events();
 
         assert_eq!(
@@ -1816,7 +1837,7 @@ mod tests {
                     size_bytes: 80,
                 },
             ],
-            "donate_preserving_lru same-key overwrite must emit Evicted then Donated"
+            "donate_preserving_lru_with_cost same-key overwrite must emit Evicted then Donated"
         );
     }
 

@@ -67,7 +67,7 @@ fn descendants_pre_order_nesting_with_aux() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // (a) n == Int(3): Arm.motor + Arm.motor.shaft + Arm.motor.bushing
@@ -163,7 +163,7 @@ fn descendants_flattens_collection_sub() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // n == Int(5): motor + motor.shaft + bolts[0] + bolts[1] + bolts[2]
@@ -254,7 +254,7 @@ fn descendants_self_reference_terminates_bounded() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.set_max_unfold_depth(5);
     // eval must return without panic; the depth guard terminates the walk.
     let result = engine.eval(&compiled);
@@ -324,7 +324,7 @@ fn example_structural_query_descendants_ri_evals_clean() {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

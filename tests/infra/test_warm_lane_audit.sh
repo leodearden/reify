@@ -2962,6 +2962,12 @@ assert "S1: the STASH block is emitted with a zero total" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0( |$)"' _ "$OUT"
 assert "S1: an empty stack emits no per-entry detail lines" \
     bash -c '[ "$(printf "%s\n" "$1" | grep -c "^STASH entry ")" = "0" ]' _ "$OUT"
+# Non-vacuity control for S7/S10: a MEASURED empty stack reports stash_unknown=0,
+# so the flag cannot be hard-wired to 1.
+assert "S1: a measured empty stack reports stash_unknown=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S1: the STASH line reads total=0 unknown=0" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=0$"' _ "$OUT"
 
 # -- populate the fixture lane's own stack ------------------------------------
 # Three entries with deliberately awkward messages: an embedded newline (S4) and
@@ -2980,6 +2986,10 @@ assert "S2: HEADROOM carries stash_entries=3" \
     bash -c '[ "$1" = "3" ]' _ "$(_headroom_field "$OUT" stash_entries)"
 assert "S2: the STASH block total agrees" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=3( |$)"' _ "$OUT"
+assert "S2: a measured non-empty stack reports stash_unknown=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S2: the STASH line reads total=3 unknown=0" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=3 unknown=0$"' _ "$OUT"
 
 # -- S3 (c): per-entry detail — ref, branch, message ---------------------------
 # Asserted on the MESSAGES, so this cannot pass on a count-only implementation.
@@ -3009,10 +3019,11 @@ assert "S8: the audit created no new files in the lane" \
 
 # -- S6 (f): APPEND-NEVER-INTERPOSE -------------------------------------------
 # Every pre-existing HEADROOM field keeps its position and value; stash_entries
-# is appended AFTER plan_mismatch, so a consumer matching the old fixed field
-# order keeps working (the runbook convention).
-assert "S6: HEADROOM keeps its field order with stash_entries appended LAST" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM resident=[0-9]+ live=[0-9]+ pinned=[0-9]+ quarantined=[0-9]+ free=[0-9]+ assigned=[0-9]+ state_unknown=[0-9]+ reclaimable=[0-9]+ leaked=[0-9]+ leak_unknown=[0-9]+ divergent_gib=[0-9]+ free_gib=[0-9]+ budget_gib=[0-9]+ plan_stranded=[0-9]+ plan_unknown=[0-9]+ plan_rewritten=[0-9]+ plan_mismatch=[0-9]+ stash_entries=[0-9]+$"' _ "$OUT"
+# is appended AFTER plan_mismatch and stash_unknown after stash_entries, so a
+# consumer matching the old fixed field order keeps working (the runbook
+# convention).
+assert "S6: HEADROOM keeps its field order with stash_entries then stash_unknown appended LAST" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^HEADROOM resident=[0-9]+ live=[0-9]+ pinned=[0-9]+ quarantined=[0-9]+ free=[0-9]+ assigned=[0-9]+ state_unknown=[0-9]+ reclaimable=[0-9]+ leaked=[0-9]+ leak_unknown=[0-9]+ divergent_gib=[0-9]+ free_gib=[0-9]+ budget_gib=[0-9]+ plan_stranded=[0-9]+ plan_unknown=[0-9]+ plan_rewritten=[0-9]+ plan_mismatch=[0-9]+ stash_entries=[0-9]+ stash_unknown=[0-9]+$"' _ "$OUT"
 
 # -- S5 (e): JSON parity -------------------------------------------------------
 S_PY_JSON="$(mktemp /tmp/test-warm-lane-audit-s-json-XXXXXX.py)"
@@ -3021,6 +3032,7 @@ cat > "$S_PY_JSON" << 'PYEOF'
 import json, sys
 data = json.load(sys.stdin)
 assert data["headroom"]["stash_entries"] == 3, data["headroom"]
+assert data["headroom"]["stash_unknown"] == 0, data["headroom"]
 stack = data["stash_stack"]
 assert isinstance(stack, list) and len(stack) == 3, stack
 for obj in stack:
@@ -3055,10 +3067,12 @@ assert "S9: the knob's repo is what gets queried (1, not the lane's 3)" \
 assert "S9: the knob's entry message is what is reported" \
     bash -c 'printf "%s\n" "$1" | grep -E "^STASH entry " | grep -q "alt-only entry"' _ "$OUT"
 
-# -- S7 (g): FAIL-OPEN, NEVER GATING (inv.12 / A3-style degradation) -----------
-# A stash query that cannot resolve or fails degrades to 0 with a stderr note
-# and exit 0. An advisory reader must never abort — and must never gate — on a
-# figure it could not collect.
+# -- S7 (g): FAIL-OPEN, NEVER GATING, NEVER SILENT (inv.12 / A3-style) ---------
+# A stash query that cannot resolve reports stash_entries=0 WITH stash_unknown=1
+# (and `unknown=1` on the STASH line), plus a stderr note naming the queried
+# repo, and still exits 0. An advisory reader must never abort — and must never
+# gate — on a figure it could not collect, but an unmeasured stack must never
+# read the same as an empty one either. S1/S2 are the measured-0 controls.
 S_NOTGIT="$(mktemp -d /tmp/test-warm-lane-audit-s-notgit-XXXXXX)"
 _TMPDIRS+=("$S_NOTGIT")
 REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_NOTGIT" run_helper --mount "$S_MOUNT"
@@ -3067,8 +3081,26 @@ assert "S7: stash_entries degrades to 0" \
     bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
 assert "S7: the STASH block is still emitted (stable shape under degradation)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0( |$)"' _ "$OUT"
-assert "S7: a stderr note explains the degradation" \
-    bash -c 'printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
+assert "S7: a non-git stash repo reports stash_unknown=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S7: the STASH line reads total=0 unknown=1 for a non-git stash repo" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=1$"' _ "$OUT"
+assert "S7: a stderr note names stash_unknown and the queried non-git path" \
+    bash -c 'printf "%s\n" "$1" | grep "stash_unknown" | grep -qF -- "$2"' _ "$ERR_OUT" "$S_NOTGIT"
+S_PY_JSON_UNKNOWN="$(mktemp /tmp/test-warm-lane-audit-s-json-unknown-XXXXXX.py)"
+_TMPDIRS+=("$S_PY_JSON_UNKNOWN")
+cat > "$S_PY_JSON_UNKNOWN" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+headroom = data["headroom"]
+assert headroom["stash_unknown"] == 1, headroom
+assert headroom["stash_entries"] == 0, headroom
+# Unmeasured: the array stays empty and carries no flag of its own.
+assert data["stash_stack"] == [], data["stash_stack"]
+PYEOF
+REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_NOTGIT" run_helper --mount "$S_MOUNT" --format json
+assert "S7: json reports headroom.stash_unknown=1, stash_entries=0, stash_stack=[] for a non-git stash repo" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$S_PY_JSON_UNKNOWN"
 # ...and an empty mount (no resident lane to resolve a default from) degrades
 # the same way rather than erroring.
 S_EMPTY="$(mktemp -d /tmp/test-warm-lane-audit-s-empty-XXXXXX)"
@@ -3077,6 +3109,43 @@ run_helper --mount "$S_EMPTY"
 assert "S7: an empty mount (nothing to resolve) still exits 0" test "$RC" -eq 0
 assert "S7: an empty mount reports stash_entries=0" \
     bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S7: an empty mount reports stash_unknown=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S7: an empty mount's stderr note names stash_unknown" \
+    bash -c 'printf "%s\n" "$1" | grep -q "stash_unknown"' _ "$ERR_OUT"
+
+# -- S10: a FAILED stash query is reported, not swallowed ---------------------
+# The third degrade path: the repo resolves as a git worktree but `git stash
+# list` itself fails. Reached with a real corrupt fixture — refs/stash pointing
+# at an absent object — rather than a git shim. The two preconditions pin the
+# git behaviour this relies on, so a future git or ref backend that stops
+# failing here reds the block instead of letting it pass vacuously.
+S_BROKEN_ROOT="$(mktemp -d /tmp/test-warm-lane-audit-s-broken-XXXXXX)"
+_TMPDIRS+=("$S_BROKEN_ROOT")
+S_BROKEN="$S_BROKEN_ROOT/repo"
+make_lane "$S_BROKEN" task/9181
+printf 'broken wip\n' > "$S_BROKEN/README.md"
+git -C "$S_BROKEN" stash push -q -m s10
+printf '1111111111111111111111111111111111111111\n' > "$S_BROKEN/.git/refs/stash"
+assert "S10 precondition: the corrupt fixture still resolves as a git worktree" \
+    git -C "$S_BROKEN" rev-parse --git-dir
+assert "S10 precondition: git stash list fails on the corrupt fixture" \
+    bash -c '! git -C "$1" stash list' _ "$S_BROKEN"
+S_BROKEN_REF_BEFORE="$(cat "$S_BROKEN/.git/refs/stash")"
+REIFY_WARM_LANE_AUDIT_STASH_REPO="$S_BROKEN" run_helper --mount "$S_MOUNT"
+assert "S10: a failed stash query still exits 0" test "$RC" -eq 0
+assert "S10: a failed stash query reports stash_entries=0" \
+    bash -c '[ "$1" = "0" ]' _ "$(_headroom_field "$OUT" stash_entries)"
+assert "S10: a failed stash query reports stash_unknown=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" stash_unknown)"
+assert "S10: the STASH line reads total=0 unknown=1 for a failed query" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "^STASH total=0 unknown=1$"' _ "$OUT"
+assert "S10: a failed stash query emits no per-entry detail lines" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -c "^STASH entry ")" = "0" ]' _ "$OUT"
+assert "S10: a stderr note names stash_unknown and the queried repo" \
+    bash -c 'printf "%s\n" "$1" | grep "stash_unknown" | grep -qF -- "$2"' _ "$ERR_OUT" "$S_BROKEN"
+assert "S10: the audit did not repair or rewrite refs/stash (A1 read-only)" \
+    bash -c '[ "$(cat "$1")" = "$2" ]' _ "$S_BROKEN/.git/refs/stash" "$S_BROKEN_REF_BEFORE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block T — the liveness probe's FAIL-CLOSED direction (task 5738)

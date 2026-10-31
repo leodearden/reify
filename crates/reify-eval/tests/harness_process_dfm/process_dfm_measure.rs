@@ -124,7 +124,7 @@ structure def OverhangCheck : DFMRule {
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Compile `source` with stdlib, panicking on compile errors.
@@ -491,7 +491,7 @@ structure def Part {
 //
 // These tests verify the C1/D5 invariant for the new thickness arm: when no
 // OpenVDB kernel is present (or no kernel at all), `realize_solid_sdf` returns
-// None → `measure_min_wall`/`measure_min_feature` return None → verdict is
+// None → `measure_thickness_pair` returns (None, None) → verdict is
 // Value::Undef (Indeterminate) → NO `_DFM_MIN_WALL` / `_DFM_MIN_FEATURE` diagnostic
 // is emitted.  No false Violated constraint either.
 //
@@ -549,7 +549,7 @@ structure def ThicknessRule : DFMRule {
 /// diagnostics.
 ///
 /// `make_occt_engine()` registers OCCT but NOT OpenVDB, so `realize_solid_sdf`
-/// returns None → `measure_min_wall`/`measure_min_feature` return None →
+/// returns None → `measure_thickness_pair` returns (None, None) →
 /// verdict = Value::Undef (Indeterminate) → no `_DFM_MIN_WALL`/`_DFM_MIN_FEATURE`.
 #[test]
 fn occt_no_openvdb_no_thickness_diagnostics() {

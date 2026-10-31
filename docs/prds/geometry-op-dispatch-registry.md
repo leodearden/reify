@@ -1,6 +1,6 @@
 # Geometry-op dispatch-registry refactor
 
-**Status:** authored 2026-06-18 · **Type:** structural / build-infra (version-agnostic foundation)
+**Status: SHIPPED.** All 6 decomposition leaves have landed — L1 #4670, L2 #4671, L3 #4672, L4 #4673, L5 #4674, L6 #4675. **Type:** structural / build-infra (version-agnostic foundation). Authored 2026-06-18; shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its contention-site measurements, hard `file:line` anchors and task-state remarks (e.g. §8's out-of-batch colliders) are dated 2026-06-18 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — production code cites §5 DD-4 and §9 L4/L6 only as the provenance of the leaf that built it, not as a normative contract, so all of §§1–11 is AS-AUTHORED.
 **Slug:** `geometry-op-dispatch-registry` · **Manifest:** `geometry-op-dispatch-registry.capability-manifest.md`
 
 ## 1. Consumer & user-observable surface (G1)

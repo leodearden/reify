@@ -218,3 +218,15 @@ with *different* fields — recorded as a collision on both sides rather than a 
 **One premise refuted before filing, not after:** P6 killed the measurement-bearing-purpose
 fixture design. D7 and BT-5 were rewritten to claim only what the engine supports, rather than
 shipping a staleness test that would have asserted `stale` over provably fresh verdicts.
+
+## Delivered-check corrections (2026-10-15, S26 decompose)
+
+S26 (`docs/prds/v0_6/gui-frontend-wire-bindings-bridge-port.md`) moves the Tauri commands from
+`gui/src-tauri/src/main.rs` into `gui/src-tauri/src/tauri_commands.rs` (ι #9070), partitions
+`gui/src/App.tsx` into `gui/src/app/` (π #9078), and derives `KNOWN_DEBUG_TOOL_NAMES` from
+`gui/src-tauri/debug-tools.json` (υ #9082). Four checks were widened so they neither strand nor go
+green vacuously (three writes each: the `.yaml` sidecar, this note, and the tasks'
+`metadata.delivered_checks` on #6831/#6833/#6834 and the coarse #6904/#6905):
+`purpose-commands-registered` and `entity-candidates-sourceable` paths += `tauri_commands.rs`;
+`frontend-consumer-no-longer-fed-a-constant` paths += `gui/src/app`;
+`four-registration-guards-satisfied` paths += `gui/src-tauri/debug-tools.json`.

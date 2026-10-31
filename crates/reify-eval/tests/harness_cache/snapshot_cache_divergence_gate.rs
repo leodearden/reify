@@ -130,7 +130,7 @@ fn seeded_skip_committed_divergence_is_exempted() {
 #[test]
 fn fresh_engine_reports_no_divergence() {
     let engine =
-        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
+        reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None);
     let divergences = engine.check_snapshot_cache_divergence();
     assert!(
         divergences.is_empty(),

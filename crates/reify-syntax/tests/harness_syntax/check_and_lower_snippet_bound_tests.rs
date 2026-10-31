@@ -14,9 +14,9 @@
 //! Asserted through the public `reify_syntax::parse` API on the messages it actually emits,
 //! not against the private `snippet` helper: the contract is the user-visible diagnostic.
 //! That is also why the newline case is pinned here as well as by `snippet`'s own unit tests
-//! — only the rendered message shows that no raw newline survives into a diagnostic, and both
-//! renderings are line-structured: `report_parse_errors` (crates/reify-cli/src/main.rs) writes
-//! one `Parse error: {error}` line per error, and `mcp_context` joins messages with "; ".
+//! — only the rendered message shows that no raw newline survives into a diagnostic, and the
+//! rendering is line-structured: `report_parse_errors` (crates/reify-cli/src/main.rs) writes
+//! one `Parse error: {error}` line per error.
 
 use reify_ast::ParseError;
 

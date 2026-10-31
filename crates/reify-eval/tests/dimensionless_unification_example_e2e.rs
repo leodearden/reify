@@ -60,7 +60,7 @@ fn eval_example() -> reify_eval::EvalResult {
         errors_only(&compiled)
     );
 
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

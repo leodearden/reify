@@ -24,6 +24,9 @@
 //! The runtime tier FAILS (RED) until step-10 (task #4191) replaces the stub
 //! eval lowering with the real nested-grid decode.
 
+#[path = "common/strict_routing.rs"]
+mod strict_routing;
+
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, ValueCellId};
 use reify_ir::{ExportFormat, Value};
@@ -120,7 +123,7 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     Some(engine.build(&compiled, ExportFormat::Step))
 }
 
@@ -258,5 +261,18 @@ fn nurbs_surface_bilinear_patch_bbox_e2e() {
             .map(|b| !b.is_empty())
             .unwrap_or(false),
         "nurbs_surface STEP export should yield non-empty bytes"
+    );
+}
+
+// ── Strict multi-kernel routing reaches OCCT for nurbs_surface (#8989) ─────
+
+/// `SurfaceNurbs` must be declared by the kernel that executes it. Not routed
+/// through `compile_and_build_occt`, whose sentinel-mode engine silently falls
+/// back to its default kernel for an undeclared op.
+#[test]
+fn nurbs_surface_builds_under_registered_kernels() {
+    strict_routing::assert_step_builds_under_registered_kernels(
+        &parse_and_compile_with_stdlib(NURBS_SURFACE_BBOX_SOURCE),
+        reify_ir::Operation::SurfaceNurbs,
     );
 }

@@ -1,0 +1,237 @@
+{
+  "schema": 1,
+  "strata": [
+    {
+      "name": "spine",
+      "may_depend_on": [],
+      "packages": [
+        "reify-ast",
+        "reify-build-utils",
+        "reify-builtins",
+        "reify-config",
+        "reify-core",
+        "reify-doc",
+        "reify-ir",
+        "reify-syntax",
+        "tree-sitter-reify"
+      ]
+    },
+    {
+      "name": "language",
+      "may_depend_on": [
+        "spine"
+      ],
+      "packages": [
+        "reify-compiler",
+        "reify-constraints",
+        "reify-doc-build",
+        "reify-expr",
+        "reify-fdm",
+        "reify-gcode",
+        "reify-stdlib"
+      ]
+    },
+    {
+      "name": "kernel",
+      "may_depend_on": [
+        "spine"
+      ],
+      "packages": [
+        "reify-geometry",
+        "reify-kernel-fidget",
+        "reify-kernel-gmsh",
+        "reify-kernel-manifold",
+        "reify-kernel-occt",
+        "reify-kernel-openvdb"
+      ]
+    },
+    {
+      "name": "solver",
+      "may_depend_on": [
+        "spine"
+      ],
+      "packages": [
+        "reify-compute-contract",
+        "reify-shell-extract",
+        "reify-solver-elastic"
+      ]
+    },
+    {
+      "name": "analysis",
+      "may_depend_on": [
+        "spine",
+        "language",
+        "solver"
+      ],
+      "packages": []
+    },
+    {
+      "name": "engine",
+      "may_depend_on": [
+        "spine",
+        "language",
+        "kernel",
+        "solver",
+        "analysis"
+      ],
+      "packages": [
+        "reify-eval",
+        "reify-mesh-morph",
+        "reify-runtime"
+      ]
+    },
+    {
+      "name": "frontend",
+      "may_depend_on": [
+        "spine",
+        "language",
+        "kernel",
+        "solver",
+        "analysis",
+        "engine"
+      ],
+      "packages": [
+        "reify-cli",
+        "reify-gui",
+        "reify-lsp",
+        "reify-mcp"
+      ]
+    },
+    {
+      "name": "test-support",
+      "may_depend_on": [
+        "spine",
+        "language",
+        "kernel",
+        "solver",
+        "analysis",
+        "engine",
+        "frontend"
+      ],
+      "packages": [
+        "reify-eval-fea-tests",
+        "reify-kernel-conformance",
+        "reify-spec-conformance",
+        "reify-test-support"
+      ]
+    },
+    {
+      "name": "tooling",
+      "may_depend_on": [
+        "spine",
+        "language",
+        "kernel",
+        "solver",
+        "analysis",
+        "engine",
+        "frontend",
+        "test-support"
+      ],
+      "packages": [
+        "reify-audit"
+      ]
+    }
+  ],
+  "crate_rules": [
+    {
+      "name": "kernel-crate-deps",
+      "from": {
+        "packages": [
+          "reify-kernel-fidget",
+          "reify-kernel-gmsh",
+          "reify-kernel-manifold",
+          "reify-kernel-occt",
+          "reify-kernel-openvdb"
+        ]
+      },
+      "only": {
+        "packages": [
+          "reify-build-utils",
+          "reify-core",
+          "reify-ir"
+        ]
+      }
+    },
+    {
+      "name": "geometry-deps",
+      "from": {
+        "packages": [
+          "reify-geometry"
+        ]
+      },
+      "only": {
+        "packages": [
+          "reify-core",
+          "reify-ir"
+        ]
+      }
+    },
+    {
+      "name": "compute-contract-spine-only",
+      "from": {
+        "packages": [
+          "reify-compute-contract"
+        ]
+      },
+      "only": {
+        "strata": [
+          "spine"
+        ]
+      }
+    },
+    {
+      "name": "expr-compiler-independent",
+      "from": {
+        "packages": [
+          "reify-compiler",
+          "reify-expr"
+        ]
+      },
+      "never": {
+        "packages": [
+          "reify-compiler",
+          "reify-expr"
+        ]
+      }
+    },
+    {
+      "name": "production-not-on-test-support",
+      "from": {
+        "strata": [
+          "spine",
+          "language",
+          "kernel",
+          "solver",
+          "analysis",
+          "engine",
+          "frontend"
+        ]
+      },
+      "never": {
+        "strata": [
+          "test-support"
+        ]
+      }
+    }
+  ],
+  "exceptions": [
+    {
+      "from": "reify-compute-contract",
+      "to": "reify-solver-elastic",
+      "task": 9004,
+      "note": "S5 ν moves the FEA core out of the contract and drops this edge"
+    },
+    {
+      "from": "reify-kernel-occt",
+      "to": "reify-mesh-morph",
+      "task": 8561,
+      "note": "optional; serves one test-only projector impl"
+    },
+    {
+      "from": "reify-solver-elastic",
+      "to": "reify-kernel-gmsh",
+      "task": 8289,
+      "note": "meshing-service ζ drops this edge"
+    }
+  ]
+}

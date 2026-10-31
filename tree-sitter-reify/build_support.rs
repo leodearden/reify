@@ -1,4 +1,6 @@
-// Shared staleness primitives for the tree-sitter parser pipeline.
+// The build-script logic shared with `tests/build_logic_tests.rs` for the
+// tree-sitter parser pipeline: staleness predicates, stamp writers, and the
+// generate step's helpers.
 //
 // `include!`-ed by BOTH `build.rs` and `tests/build_logic_tests.rs`. It is a
 // bare item list, not a module: a build script cannot be `use`d by a test
@@ -20,6 +22,80 @@
 /// The expected output files that tree-sitter generate produces.
 #[allow(dead_code)]
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
+
+/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
+/// Used for staleness detection — not for security.
+#[allow(dead_code)]
+fn content_hash(path: &std::path::Path) -> String {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&bytes, &mut hasher);
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
+}
+
+/// Report which `EXPECTED_OUTPUTS` are missing from `src_dir` after a generate.
+/// The build script panics on `Err`, so the message is what cargo prints.
+#[allow(dead_code)]
+fn verify_outputs(src_dir: &std::path::Path) -> Result<(), String> {
+    let missing: Vec<&str> = EXPECTED_OUTPUTS
+        .iter()
+        .copied()
+        .filter(|name| !src_dir.join(name).exists())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "tree-sitter generate succeeded but these output files are missing: {}. \
+         Check tree-sitter CLI version.",
+        missing.join(", ")
+    ))
+}
+
+/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
+///
+/// Stdio disposition rationale: see test_run_with_timeout_discards_child_stdout
+/// and test_run_with_timeout_inherits_child_stderr in tests/build_logic_tests.rs.
+#[allow(dead_code)]
+fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                } else {
+                    return Err(format!(
+                        "'{}' failed with exit code {}",
+                        cmd,
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait(); // Reap the process.
+                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait(); // Reap the process to prevent orphans.
+                return Err(format!("Error waiting for '{}': {}", cmd, e));
+            }
+        }
+    }
+}
 
 /// Filename of the generated-output content manifest, written beside the
 /// outputs it describes (i.e. inside `tree-sitter-reify/src/`).
@@ -474,5 +550,18 @@ fn write_shell_stamps(src_dir: &std::path::Path, grammar_sha: &str) {
             src_dir.join(OUTPUTS_STAMP_NAME).display(),
             e
         );
+    }
+}
+
+/// Write `$OUT_DIR/grammar_hash.stamp`: the exact bytes of `grammar_hash`, the
+/// `content_hash` of grammar.js — NOT the sha256 `.grammar_hash.stamp` that
+/// `write_shell_stamps` writes into `src/`.
+///
+/// Never fatal. A failed write leaves the next build regenerating rather than
+/// failing.
+#[allow(dead_code)]
+fn write_out_dir_grammar_stamp(stamp_path: &std::path::Path, grammar_hash: &str) {
+    if let Err(e) = std::fs::write(stamp_path, grammar_hash) {
+        eprintln!("warning: failed to write {}: {}", stamp_path.display(), e);
     }
 }

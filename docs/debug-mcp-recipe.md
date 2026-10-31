@@ -225,7 +225,7 @@ when omitted, the first populated viewport is targeted.
 | `reify_update_source` | `{file_path, content}` | `{success, diagnostics_count, diagnostics}` — active file only, in memory; writes no disk |
 | `reify_open_file` | `{file_path}` | `{success, source}` |
 | `reify_save_file` | `{file_path?}` | `{success}` — saves the active file when `file_path` is omitted |
-| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is `step`, `stp` or `stl` |
+| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is one of the tool schema's `format` enum, derived from `EXPORT_FORMAT_SPELLINGS` in `gui/src-tauri/src/commands.rs`; the geometry kernel refuses a format it cannot write |
 
 Their write semantics are specified in
 [debug-mcp-contract.md](debug-mcp-contract.md) §0 "AI write tools" and are not

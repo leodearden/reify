@@ -72,7 +72,7 @@ fn build_widget() -> Engine {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let build_errors: Vec<_> = result
@@ -306,7 +306,7 @@ fn realization_change_donates_invalidation_to_backing_geometry_cell() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = result
         .diagnostics
@@ -402,7 +402,7 @@ fn lazy_revalidation_reresolves_stale_handle_and_undefs_missing_realization() {
     let compiled = compile_source(WIDGET_SRC);
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let geom = ValueCellId::new("Widget", "geometry");
@@ -551,7 +551,7 @@ fn removed_realization_donates_invalidation_to_surviving_geometry_cell() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled_a, ExportFormat::Step);
     let build_errors: Vec<_> = result
         .diagnostics

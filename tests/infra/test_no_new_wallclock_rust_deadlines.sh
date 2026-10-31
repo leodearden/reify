@@ -159,11 +159,12 @@
 # oversight. A "root" here is a directory whose CONTENTS are tests -- which is
 # why gui/src-tauri/src/tests is IN (a test root that happens to live under
 # src/) while crates/*/src is OUT. Re-running the two rules over the whole tree
-# finds 5 more matching lines that this guard deliberately drops:
+# also matches these production sites, which this guard deliberately drops:
 #   * crates/reify-fdm/src/slice.rs:333,340 -- `fn wait_within` polls a real
 #     child process for exit within a grace window, then escalates to SIGKILL.
 #     (Verified: that file contains no #[cfg(test)] module at all.)
-#   * tree-sitter-reify/build.rs:43,58 -- the identical shape in a build script.
+#   * tree-sitter-reify/build_support.rs, fn run_with_timeout -- the identical
+#     shape in build-script code.
 # Both rules exist for TEST flake: an upper bound on elapsed time INVERTS under
 # load. A subprocess grace period asserts nothing, cannot invert into a failure,
 # and has no WaitClock seam to be routed through -- it IS a real-time wait, by

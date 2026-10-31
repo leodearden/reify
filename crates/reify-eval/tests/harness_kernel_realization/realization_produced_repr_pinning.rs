@@ -19,15 +19,15 @@ fn single_box_realization_module() -> reify_compiler::CompiledModule {
         kind: PrimitiveKind::Box,
         args: vec![
             (
-                "width".to_string(),
+                "size_x".to_string(),
                 CompiledExpr::literal(Value::length(0.10), Type::length()),
             ),
             (
-                "height".to_string(),
+                "size_y".to_string(),
                 CompiledExpr::literal(Value::length(0.05), Type::length()),
             ),
             (
-                "depth".to_string(),
+                "size_z".to_string(),
                 CompiledExpr::literal(Value::length(0.02), Type::length()),
             ),
         ],
@@ -50,7 +50,7 @@ fn every_realization_node_has_produced_repr_brep_after_eval() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Drive eval so the snapshot is populated from the compiled module.
     // `eval` builds the EvaluationGraph (which initializes produced_repr to

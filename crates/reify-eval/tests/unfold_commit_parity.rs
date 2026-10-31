@@ -61,7 +61,7 @@ fn eval_single_template(
         .template(template)
         .build();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
     (engine, result)
 }

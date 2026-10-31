@@ -1,0 +1,13 @@
+// /prd generic-instantiation-and-call-binding α₁ evidence (#8214): an applied
+// generic enum resolves at any depth and through an alias body, exactly as the
+// top-level `param p : Ge<Real>` already does. Today all three are
+// "unresolved type": enum arity lives only in a caller-level fallback.
+module gicb_alpha_nested_generic_enum
+
+enum Ge<T> { Both { a: T }, Nn }
+type W = Ge<Real>
+structure def D {
+  param a : Option<Ge<Real>>
+  param b : List<Ge<Real>>
+  param c : W
+}

@@ -54,23 +54,6 @@
 //   (crates/reify-eval-fea-tests/tests/modal_analysis_e2e.rs::e2e_printer_gantry_prints_five_modes)
 //   verifies as the sole accuracy criterion (no analytic tolerance; see PRD §1).
 //
-// Argument binding (IMPORTANT — this note previously said the opposite):
-//   ModalOptions ctor args bind BY NAME. Since task-4522 the compiler's
-//   structure-ctor lowering resolves each `name:` label against the template's
-//   declared params and only fills the UNLABELLED slots positionally, in
-//   declaration order (n_modes, boundary_conditions, damping, shift_frequency,
-//   tol, max_iters, reference_direction, element_order). So labels are
-//   load-bearing, not cosmetic, and a reordered or partial keyword call binds
-//   correctly — `element_order: ElementOrder.P2` lands in `element_order`
-//   wherever it is written.
-//   The real trap is a MISSPELLED label: an unknown name emits
-//   `E_CTOR_UNKNOWN_FIELD` — a Warning today, an Error at δ — and is STILL
-//   appended lenient as `__arg{i}`, so the intended param falls back to its
-//   default anyway — which for `element_order` is P1, quietly reinstating the
-//   bending lock this fixture exists to avoid. A Warning does not fail the
-//   build, so spelling every param out, in order, still keeps that failure
-//   mode visible under review.
-//
 // RayleighDamping: matches the PRD §1 dogfood snippet and the resonance-budget
 //   purpose (per-mode damping ratios ζₙ = (α + β·ωₙ²) / (2·ωₙ)). It is a real
 //   stdlib `structure def RayleighDamping` in modal_analysis.ri, fully
@@ -128,13 +111,14 @@ structure PrinterGantryModes {
     // 1.5 · f_vertical for this aspect ratio), but all 7 requested modes are
     // real structural modes (not rigid-body), so strict ordering still holds.
     //
-    // IMPORTANT — argument binding is BY NAME (see the header note above):
-    // each `name:` label is resolved against ModalOptions' declared params, so
-    // `element_order: ElementOrder.P2` lands in `element_order` regardless of
-    // position. Every param is still spelled out, in declaration order, because
-    // a MISSPELLED label emits only an `E_CTOR_UNKNOWN_FIELD` Warning today
-    // (Error at δ) and is STILL bound leniently as `__arg{i}`, so it would
-    // leave element_order at its P1 default without failing the build.
+    // Ctor args bind BY NAME (task 4522), so a MISSPELLED label is the hazard
+    // here: the typo'd arg never claims `element_order`, which then falls back
+    // to its `ElementOrder.P1` default and reinstates the P1 bending lock this
+    // fixture exists to avoid. Every param is written out purely so a typo
+    // stays visible under review. What the compiler does with the typo'd arg,
+    // and how loudly it says so, are deliberately NOT restated here; both are
+    // pinned in
+    // `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
     //
     // RayleighDamping(alpha: 0.0Hz, beta: 0.0001s): structural damping for the
     // resonance-budget reference (damping does not affect natural frequencies).

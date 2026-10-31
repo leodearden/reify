@@ -1,7 +1,7 @@
 //! `reify-kernel-openvdb` — OpenVDB voxel-Boolean kernel adapter for the
 //! v0.2 multi-kernel system.
 //!
-//! This crate registers a [`KernelRegistration`] via `inventory::submit!`
+//! This crate registers a [`reify_ir::KernelRegistration`] via `inventory::submit!`
 //! declaring OpenVDB's voxel-Boolean capability surface
 //! (`BooleanUnion/Difference/Intersection × Voxel`). The registration is
 //! read at engine startup by `reify_eval::kernel_registry::registry()` and
@@ -41,6 +41,11 @@ pub mod register;
 // units that do NOT inherit `cfg(test)`), and production builds see neither.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
+
+// Process-global TBB single-thread scope for run-twice determinism tests;
+// test-only like `test_fixtures`, and real-FFI-only.
+#[cfg(all(has_openvdb, any(test, feature = "test-fixtures")))]
+pub mod tbb_scope;
 
 pub use marching_cubes_options::MarchingCubesOptions;
 pub use mesh_to_voxel_options::{

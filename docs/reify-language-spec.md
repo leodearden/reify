@@ -659,7 +659,7 @@ End-to-end runnable examples:
 - `examples/generics/unbound_param.ri` -- `constant_field(42.5)`: `C`=Real, `D` nested-unbound (tolerated, no `E_FN_TYPE_ARG_UNRESOLVED`)
 - `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
 
-See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
+See also the `fn gap<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
 
 #### 3.9.2 Generic enums
 
@@ -674,6 +674,8 @@ A type annotation pins every type argument positionally and overrides payload-dr
 ```
 param r : Result<Length, String> = Ok { value: 5mm }
 ```
+
+An annotation must supply every type argument: a bare generic enum name such as `param r : Result` is the arity error "enum `Result` expects 2 type arguments, found 0", the same diagnostic a wrong-length argument list gets. The one exception is an enum whose every declared type parameter has a default (`enum Wrapper<T = Length>`): there the bare name means the defaults, so `param w : Wrapper` is `Wrapper<Length>`. A default may name an earlier type parameter: for `enum Pair<A = Length, B = A>`, bare `Pair` is `Pair<Length, Length>`. A partially defaulted enum written bare is still an arity error. Defaults fill annotations only; construction inference never consults them. **Known limitation (#9358).** Enum variant payload fields and `let` annotations do not yet apply this rule: a bare generic enum there is accepted with its type arguments erased. **Known limitation (#5994).** A default written with type arguments, such as `B = Option<A>`, currently loses them, so it does not yet fill as `Option<Length>`.
 
 Once type arguments are known (pinned or inferred), each supplied field's value is checked against its declared field type with the type parameters substituted; a mismatch is an error (`E_VARIANT_PAYLOAD_TYPE`, the same payload-type check §4.5 describes for non-generic enums), e.g. constructing `Ok { value: "x" }` against `Result<Length, String>` expects `Length`, not `String`.
 
@@ -888,8 +890,8 @@ trait Cylindrical {
 
 ```
 // Valid: same name, different parameter types
-fn area(surface: Surface) -> Scalar<Area> { ... }
-fn area(solid: Solid) -> Scalar<Area> { ... }
+fn footprint(surface: Surface) -> Scalar<Area> { ... }
+fn footprint(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
 fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
@@ -901,24 +903,24 @@ fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... 
 Functions are non-entity declarations: no identity, no determinacy state, no evaluation graph presence. They are pure computations.
 
 ```
-fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
-    let dx = t.xx - t.yy
-    let dy = t.yy - t.zz
-    let dz = t.zz - t.xx
-    sqrt(0.5 * (dx^2 + dy^2 + dz^2))
+fn hoop_stress(p : Scalar<Pressure>, r : Length, t : Length) -> Scalar<Pressure> {
+    let ratio = r / t;
+    p * ratio
 }
 
-fn clamp(x : Real, lo : Real, hi : Real) -> Real {
-    if x < lo then lo else if x > hi then hi else x
+fn friction_factor(re : Real) -> Real {
+    if re < 2300 then 64 / re else 0.316 / re^0.25
 }
+
+fn as_percent(fraction : Real) -> Real = fraction * 100
 ```
 
 Semantics:
 - **Pure** -- no side effects, no state.
-- **Block body** -- `{ }` block containing `let` bindings and a final expression (the return value). No `return` keyword.
+- **Block body** -- `{ }` block containing `let` bindings, each terminated by `;`, and a final expression (the return value). No `return` keyword. A body with no bindings may instead be written `= expr` (as `as_percent` shows).
 - **Type annotations mandatory** on parameters and return type.
 - **Can be `pub`** for cross-module reuse.
-- **Supports type parameters:** `fn distance<Q: Dimension>(a : Point3<Q>, b : Point3<Q>) -> Scalar<Q> { ... }`
+- **Supports type parameters:** `fn gap<Q: Dimension>(a : Point3<Q>, b : Point3<Q>) -> Scalar<Q> { ... }`
 - **`@optimized` hook available** for built-in fast paths.
 - **Recursion permitted.** Self-recursion and mutual recursion are both permitted. Infinite recursion is a runtime error (stack overflow), not a compile-time error. The compiler does not attempt termination checking.
 
@@ -1324,6 +1326,8 @@ a < b       a > b       a <= b      a >= b
 ```
 
 Equality is structural for value types, identity for structure references.
+
+`==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
 
 **Chained comparisons:** `a < b < c` desugars to `a < b and b < c`. Any comparison operators may chain.
 
@@ -2841,12 +2845,13 @@ assoc_type_decl ::= 'type' TYPE_IDENT (':' trait_bound)?         (* associated t
 
 (* --- Function declarations --- *)
 fn_decl         ::= 'pub'? 'fn' IDENT type_params? '(' fn_params? ')' '->' type_expr
-                     '{' fn_body '}'
+                     fn_body
 
 fn_params       ::= fn_param (',' fn_param)*
 fn_param        ::= IDENT ':' type_expr
 
-fn_body         ::= (let_decl)* expr
+fn_body         ::= '{' fn_let_decl* expr '}' | '=' expr
+fn_let_decl     ::= 'let' IDENT (':' type_expr)? '=' expr ';'
 
 (* --- Type alias declarations --- *)
 type_alias_decl ::= 'pub'? 'type' TYPE_IDENT type_params? '=' type_expr
@@ -3147,7 +3152,7 @@ where
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
-| 10 | Expression-body sugar for `fn` | Deferred | `fn f(x: T) -> T = expr` shorthand |
+| 10 | Expression-body sugar for `fn` | Realized (v0.6) | `fn f(x: T) -> T = expr` shorthand; §4.3/§15 `fn_body`; see docs/prds/v0_6/expression-operator-completion.md |
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
 | 12 | No `priv` modifier | Deferred | Hidden parameters on public definitions not yet justified |
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |

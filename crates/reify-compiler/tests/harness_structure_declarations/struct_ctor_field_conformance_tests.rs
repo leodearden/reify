@@ -2820,9 +2820,9 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 /// Whether `dim` has no clean unit-literal spelling, and so is legitimately
 /// exempt from offering an example.
 ///
-/// Exactly three reasons, each independently derivable from the vector and the
-/// stdlib's own unit table — this predicate does NOT consult the compiler's
-/// derivation, so it is a real oracle rather than a restatement of it:
+/// Each reason is independently derivable from the vector and the stdlib's own
+/// unit table — this predicate does NOT consult the compiler's derivation, so it
+/// is a real oracle rather than a restatement of it:
 ///
 /// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
 ///   cannot be written as a unit literal at all;
@@ -2830,10 +2830,9 @@ fn example_literal_from_hint(message: &str) -> Option<String> {
 ///   numerator term to anchor the literal. Measured: `param x : Frequency = 1/s`
 ///   fails with `unresolved name: s` — reify reads the bare `1` as a number and
 ///   `/s` as a division, not as a quantity literal;
-/// * a slot whose base-unit symbol `stdlib/units.ri` does not declare as a unit.
+/// * a slot whose base-unit symbol is missing from [`SPELLABLE_BASE_UNITS`].
 ///   [`BASE_UNIT_SYMBOLS`] is the DISPLAY table; being renderable is weaker than
-///   being parseable. Measured: `param x : Voltage = 1m^2*kg/s^3/A` fails with
-///   `unknown unit: A`.
+///   being parseable.
 ///
 /// [`SPELLABLE_BASE_UNITS`] is this test's own reading of the stdlib, kept
 /// deliberately separate from the compiler's. Drift in EITHER direction is
@@ -2849,12 +2848,14 @@ fn has_no_clean_unit_literal(dim: &DimensionVector) -> bool {
     }) || !dim.0.iter().any(|r| r.num() > 0)
 }
 
-/// The base-unit symbols `crates/reify-compiler/stdlib/units.ri` declares as
-/// units, and which can therefore appear in a unit literal.
+/// The base-unit symbols the stdlib-seeded unit registry resolves, and which can
+/// therefore appear in a unit literal.
 ///
-/// `A`, `mol`, `cd` and `sr` are deliberately absent: they name
-/// `DimensionVector` slots but the stdlib declares no unit for them.
-const SPELLABLE_BASE_UNITS: [&str; 6] = ["m", "kg", "s", "K", "rad", "USD"];
+/// All ten `DimensionVector` slots: nine are declared bare in
+/// `crates/reify-compiler/stdlib/units.ri`, and `sr` is generated bare into
+/// `std.si_units`.
+const SPELLABLE_BASE_UNITS: [&str; 10] =
+    ["m", "kg", "s", "A", "K", "mol", "cd", "rad", "sr", "USD"];
 
 /// Assert `source`'s sole rejection carries the hint AND names the dimension
 /// `type_name` resolves to, using that dimension's own `canonical_name()`.
@@ -5982,7 +5983,7 @@ structure {probe} {{
 
 /// An UNKNOWN ctor label is DIAGNOSED — task 5303 (ε) emits
 /// `E_CTOR_UNKNOWN_FIELD` / [`DiagnosticCode::CtorUnknownField`] at the
-/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning pre-δ, Error at δ) — and is
+/// `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Error since δ, #5306) — and is
 /// STILL appended as a positional `__arg{i}`, so the param it was meant for
 /// falls back to its default (or stays unbound).
 ///
@@ -5992,12 +5993,11 @@ structure {probe} {{
 /// why (b) and (c) below are unchanged from this pin's pre-ε shape while (a)
 /// is inverted.
 ///
-/// The hazard three example files describe in prose;
-/// pinned here so their wording cannot rot. If the diagnosis moves again,
-/// update this pin AND the binding notes in
-/// `examples/modal/printer_gantry_modes.ri`,
-/// `examples/modal/transient_step_response.ri` and
-/// `examples/trajectory/printer_print_envelope.ri`.
+/// Example fixtures that guard against this hazard (a typo'd label leaving a
+/// load-bearing param such as `element_order` at its default) state only that
+/// local consequence and cite this test by path instead of restating the
+/// diagnosis, so if it moves again — code, severity or lenient fallback —
+/// only this pin needs updating.
 #[test]
 fn misspelled_ctor_label_is_diagnosed_but_still_leniently_appended() {
     // `bta` is a typo for `beta`. ε diagnoses it — at Error since δ, so

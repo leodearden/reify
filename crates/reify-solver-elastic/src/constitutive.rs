@@ -110,7 +110,7 @@ impl IsotropicElastic {
     /// Assert the contract `E > 0` and `-1 < ν < 0.5` in debug builds.
     ///
     /// This is the single source of truth for Poisson-ratio validation in this
-    /// crate. Both [`Self::d_matrix`] and [`crate::shell_assembly::plane_stress_d`]
+    /// crate. Both [`Self::d_matrix`] and [`crate::elements::shell_frame::plane_stress_d`]
     /// delegate here rather than carrying inline checks. A future hardening pass
     /// (PRD task #21 diagnostics) may promote these to a fallible
     /// `IsotropicElastic::new(e, nu) -> Result<Self, ConstitutiveError>`.
@@ -171,6 +171,13 @@ impl IsotropicElastic {
         }
         // Off-diagonal blocks are zero (initialised that way).
         d
+    }
+
+    /// Shear modulus `G = E / (2(1 + ν))` (engineering-shear convention), equal to
+    /// [`Self::d_matrix`]'s shear diagonal.
+    pub fn shear_modulus(&self) -> f64 {
+        let (e, nu) = (self.youngs_modulus, self.poisson_ratio);
+        e / (2.0 * (1.0 + nu))
     }
 }
 
@@ -542,7 +549,7 @@ impl ConstitutiveLaw for TransverseIsotropicMaterial {
 /// global basis vectors expressed in local coordinates.)
 ///
 /// ⚠ This is the **transpose** of the `ShellFrame.r` convention in
-/// `shell_assembly.rs` (which stores rows = local basis in global coords,
+/// `elements/shell_frame.rs` (which stores rows = local basis in global coords,
 /// i.e. `v_local = ShellFrame.r · v_global`, the global → local map).
 /// Callers holding a `ShellFrame` must pass `transpose(frame.r)` here.
 ///
@@ -807,9 +814,7 @@ mod tests {
         // ε = (0, 0, 0, γ, 0, 0) → σ_xy = G·γ with G = E / (2(1+ν));
         // all other σ-components vanish.
         let mat = steel_like();
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         let gamma = 2.5e-4;
         let strain = [0.0, 0.0, 0.0, gamma, 0.0, 0.0];
 
@@ -830,6 +835,27 @@ mod tests {
             }
             assert!(val.abs() < 1e-9 * scale, "non-zero σ[{k}] = {val}");
         }
+    }
+
+    #[test]
+    fn shear_modulus_is_e_over_two_one_plus_nu() {
+        // E = 200e9, ν = 0.25: 1 + ν = 1.25, 2(1 + ν) = 2.5, G = 80e9 — every
+        // intermediate is exact in f64, so the comparison is exact.
+        let exact = IsotropicElastic {
+            youngs_modulus: 200.0e9,
+            poisson_ratio: 0.25,
+        };
+        assert_eq!(exact.shear_modulus(), 80.0e9);
+
+        // The D matrix's shear diagonal μ is computed by a different expression
+        // (½·(1 − 2ν)·E/((1 + ν)(1 − 2ν))); the method must agree with it.
+        let mat = steel_like();
+        let mu = mat.d_matrix()[3][3];
+        let g = mat.shear_modulus();
+        assert!(
+            (g - mu).abs() <= 1e-12 * mu.abs(),
+            "shear_modulus() = {g}, d_matrix()[3][3] = {mu}",
+        );
     }
 
     #[test]
@@ -933,7 +959,7 @@ mod tests {
         );
 
         // Pure-shear strain → shear modulus G > 0.
-        let g = e / (2.0 * (1.0 + nu));
+        let g = mat.shear_modulus();
         assert!(g > 0.0, "G = {g} should be positive for ν = {nu}");
         let gamma = 1.0e-4_f64;
         let strain_s = [0.0, 0.0, 0.0, gamma, 0.0, 0.0];

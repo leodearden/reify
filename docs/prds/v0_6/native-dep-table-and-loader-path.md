@@ -1,7 +1,7 @@
 # PRD — native-dep table and the loader-path decision (review-all S21)
 
 **Status:** ready to decompose — review-all-reify-20261010 program, stream S21. The lead's pass-1 rulings (2026-10-12) are applied: δ is dropped (the verify.sh share goes to S18), D8 extends the existing infra members, and the RUNPATH root fix is out of scope (§9).
-**Program:** `plans/review-all-program-reify-20261012.md`, stream **S21** (size S, risk low, mode agent, wave 1, no upstream seam). Ruling: §Resolved decisions → "Uncontested block" (native-deps.toml read by lib.rs and check-manifold-deps.sh; OCCT directory decision in lib_gui_launch.sh) and §Contradictions ("the OCCT directory decision joins lib_gui_launch.sh").
+**Program:** `plans/review-all-program-reify-20261012.md`, stream **S21** (size S, risk low, mode agent, wave 1, no upstream seam). Ruling: §Resolved decisions → "Uncontested block" (native-deps.toml read by lib.rs and check-manifold-deps.sh; OCCT directory decision in lib_gui_launch.sh) and §Contradictions ("the OCCT directory decision joins lib_gui_launch.sh"). **[Amended 2026-10-20, retro-critic R12]** ~~The uncontested block's S21 clause as carried into D4 and β #8646: `reify_build_utils::detect(dep)` emits rerun-if-env-changed for both envs, the check-cfg and the `has_<dep>` cfg, with every kernel's fail-open warning-and-return branch kept unchanged.~~ (superseded by R12: S10 R5, 2026-10-13, removed the native-dep-free build; β is subsumed into S10 β₁ #8935.)
 **Findings closed:** `fk-ce79499430e2` (high), `fk-765ff49d2de5` (medium), `fk-e05e85e98f91` (medium). No mechanical filings exist for them (report §Mechanical filings: all three `open → this stream`).
 **Invariants established:** none promoted to this stream. Every extraction leaf names its adoption ratchet (program INV candidate 5, extract-with-ratchet). The existing CLAUDE.md native-deps invariant (one preflight arm per `NativeDep` variant) is kept and gets a by-construction enforcement (§4 D3).
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Every S21 anchor is byte-unchanged since the review's pinned tree `a030ee7528` (`git diff --stat a030ee7528..main` is empty for every path below). Anchors are cited by symbol. Re-locate lines at implementation time.
@@ -71,7 +71,7 @@ These are measured facts. The design in §4 rests on them.
    - `/usr/bin/python3` is 3.12.3, and `python3 -I -c 'import tomllib'` succeeds.
 5. **`check-manifold-deps.sh` already runs on the scrubbed ambient loader path.** It is emitted via `add_tool`, so a `python3` it spawns does not inherit the conda prefix.
 6. **Cfg-site counts reproduce exactly.** `git grep` finds 10 `rustc-cfg=has_(occt|gmsh|openvdb)` sites and 10 `rustc-check-cfg=cfg(has_…)` lines in 8 `build.rs` files, plus 6 kernel `rerun-if-env-changed=(OCCT|GMSH|OPENVDB)_*` literals.
-7. **Rerun-heuristic posture.** Every consumer that gains a rerun declaration from `detect()` already emits at least one `rerun-if-*` directive today (via `emit_rpath_*` or its own `rerun-if-changed`). Adding `rerun-if-env-changed` therefore does not switch any crate off cargo's default "any file in the package" heuristic. β re-checks `gui/src-tauri` without the `gui` feature at implementation time, because it calls `find(OpenVdb)` outside the feature gate.
+7. **Rerun-heuristic posture.** Every consumer that gains a rerun declaration from `require()` (D4) already emits at least one `rerun-if-*` directive today (via `emit_rpath_*` or its own `rerun-if-changed`). Adding `rerun-if-env-changed` therefore does not switch any crate off cargo's default "any file in the package" heuristic. S10 β₁ #8935 (which subsumed β) re-checks `gui/src-tauri` without the `gui` feature at implementation time, because it calls `find(OpenVdb)` outside the feature gate.
 8. **Gate routing.**
    - `scripts/verify-pipeline-guard.sh requires-full-gate` answers 0 (full gate) for `scripts/check-manifold-deps.sh`, `scripts/verify.sh`, `tests/infra/test_occt_deps_preflight.sh` and `scripts/verify-pipeline-infra-tests.txt`.
    - It answers 1 for `.cargo/run-with-occt.sh`, `scripts/lib_gui_launch.sh`, `crates/reify-build-utils/src/lib.rs` and a would-be `crates/reify-build-utils/native-deps.toml`.
@@ -114,21 +114,23 @@ These are measured facts. The design in §4 rests on them.
 - **The invariant chain.** Together with D2's exhaustive variant→row `match` and a Rust unit test that the table's row set equals the variant set, this gives *variant ⇔ row ⇔ arm* by construction. Each link is observable when it fails.
 - **Reader hygiene.** The reader is invoked on the guard's own (scrubbed) loader path. The reader's header names that requirement.
 
-**D4 — `reify_build_utils::detect(dep: NativeDep) -> Option<LibLoc>` is the only discovery entry point.**
-- It emits, in order:
-  - `cargo::rustc-check-cfg=cfg(<row.cfg>)`, always
-  - `cargo:rerun-if-env-changed=` for **both** `include_env` and `lib_env`, always
-  - `cargo:rustc-cfg=<row.cfg>`, only when both dirs resolve
-- It returns the `LibLoc`, so kernels keep linking from it.
-- `find()` stops being `pub`. The compiler then rejects any `build.rs` that calls it.
-- `emit_rpath_for_bins` and `emit_rpath_for_tests` keep their current contract. Their `lib_env` rerun line becomes redundant with `detect()`'s for crates that call both, which is harmless.
-- **The adoption ratchet** (INV candidate 5) is a section of `tests/infra/test_occt_deps_preflight.sh`. It `git grep`s tracked `*build.rs` files for:
+**D4 — The discovery entry point and its rerun inputs.**
+**[Amended 2026-10-20, retro-critic R12]** ~~D4 — `reify_build_utils::detect(dep: NativeDep) -> Option<LibLoc>` is the only discovery entry point; it emits check-cfg, both reruns and the cfg, returns the `LibLoc`, and every kernel keeps its fail-open branch; the adoption ratchet is a section of `tests/infra/test_occt_deps_preflight.sh`.~~ (superseded by R12, which applies S10 R5.)
+- **Owner.** This surface is S10's (R5), not S21's (§6). S10 β₁ #8935 builds it and subsumes β #8646.
+- **The one entry.** `reify_build_utils::require(dep)` is the one public discovery entry, and it fails closed: a missing dependency panics the build script (S10 C7). `find()` stops being `pub`. No `detect()` is added.
+- **What it emits, in order:**
+  - `cargo::rustc-check-cfg=cfg(<row.cfg>)`
+  - `cargo:rerun-if-env-changed=` for `include_env`, then for `lib_env`. This is the surviving half of fk-765ff49d2de5; the cfg-disagreement half cannot occur once a missing dep is a build error.
+  - `cargo:rustc-cfg=<row.cfg>`, for as long as `has_*` lives. S10 β₂ #8936 and β₃ #8957 sweep it, and β₃ retires the table's `cfg` column (§6).
+- **The directive contract is unit-tested (M2).** A pure `fn directives(row, resolved) -> Vec<String>` (or lib.rs's re-exec child pattern) is tested for the ordered lines, including the not-resolved case (§7).
+- `emit_rpath_for_bins` and `emit_rpath_for_tests` keep their current contract. Their `lib_env` rerun line becomes redundant with `require()`'s for crates that call both, which is harmless.
+- **The adoption ratchet (M1)** is rows in `tests/infra/adoption-ratchet.manifest` at ceiling 0, owner #8935, one row id per glob (`crates/*/build.rs`, `gui/src-tauri/build.rs`), for:
   - `rustc-cfg=has_`
-  - `rustc-check-cfg=cfg(has_`
+  - `rustc-check-cfg=cfg\(has_`
   - `rerun-if-env-changed=(OCCT|GMSH|OPENVDB)_`
-  - `reify_build_utils::find(`
+  - `reify_build_utils::find\(`
 
-  It requires **zero** hits. The baseline today is 10 + 10 + 6 + 10.
+  There is no bespoke section in `test_occt_deps_preflight.sh`. The engine strips only `#` lines, so a `//` comment in a `build.rs` that quotes a pattern counts as a hit. The baseline at authoring was 10 + 10 + 6 + 10.
 
 **D5 — The loader-path decision lives in one sourced lower lib, `scripts/lib_native_ld_path.sh`.**
 - **Who sources it.** `scripts/lib_gui_launch.sh` and `.cargo/run-with-occt.sh` both source it. The ruling's "or a lower lib that it and .cargo/run-with-occt.sh both source" branch is taken. The runner cannot sensibly source the GUI lib: it would inherit the GUI lib's source-time snapshot and GUI-only functions.
@@ -188,7 +190,9 @@ These are measured facts. The design in §4 rests on them.
 | `run-all-classification.manifest` rows for any new wrapper | **S19** | none (D8) |
 | `scripts/verify-pipeline-paths.txt` and the config-only fast path | **S18** | none: the table sits under a crate dir and the reader is `.py`. α re-runs the oracle on the final file set (§8 α) |
 | `scripts/verify-pipeline-infra-tests.txt` | unowned in the program table | α adds rows `crates/reify-build-utils/native-deps.toml` and `scripts/native_deps_table.py` → `tests/infra/test_occt_deps_preflight.sh`; γ adds `scripts/lib_native_ld_path.sh` → the two members D8 names |
-| CLAUDE.md "Native deps" bullets | unowned (S23 burns prose down in wave 4) | α rewrites the completeness-check sentence; γ adds the Pointers row |
+| CLAUDE.md "Native deps" bullets | unowned (S23 burns prose down in wave 4) | α rewrites the completeness-check sentence; γ adds the Pointers row. **[Amended 2026-10-20, retro-critic R12]** The native-deps bullet's fail-open sentences are rewritten once, by S10 β₁ #8935 |
+| **[Amended 2026-10-20, retro-critic R12]** `reify_build_utils` discovery API + `build.rs` native cfg emission | **S10** (R5) | S21: β #8646 is subsumed into S10 β₁ #8935 (D4) |
+| **[Amended 2026-10-20, retro-critic R12]** `native-deps.toml` columns | **S21** | S10 β₃ #8957 retires the `cfg` column end to end |
 
 There is no later-wave dependency. The only coupling to a later wave is S18 consuming the γ helper: S21 lands first, and S18 removes γ's verify.sh ratchet exemption when its rewrite lands.
 
@@ -200,6 +204,7 @@ G5 heuristic: the stakes are build-graph correctness and the merge gate, but eac
   - a unit test that the decoded row set equals the variant set
   - a unit test that the snap fallback resolves a fixture `<root>/<rev>/<subdir>/<sentinel>` for the OCCT row and **does not** scan for a row with no `snap` table
   - the existing override and empty-override unit tests, kept
+  - **[Amended 2026-10-20, retro-critic R12]** the directive contract (M2, built by S10 β₁ #8935): a unit test of `directives(row, resolved)`'s ordered lines — check-cfg, rerun `include_env`, rerun `lib_env`, cfg only when both dirs resolve — and of the not-resolved case
 - **Bash ⇔ table:** with a fixture table:
   - a fourth row reds the guard naming the row
   - a malformed table reds naming the path
@@ -229,15 +234,9 @@ G5 heuristic: the stakes are build-graph correctness and the merge gate, but eac
     - The six `_rust_*` function names are absent from the test.
     - `scripts/cargo-test-tally.py` over one captured `cargo test -p reify-kernel-occt -p reify-kernel-gmsh -p reify-kernel-openvdb` run reports the same non-zero passed counts as on main (the silent-vacuity check).
   - Before landing, re-run `verify-pipeline-guard.sh requires-full-gate` on the final file set (§6).
-- **β — `detect(dep)` owns rerun, check-cfg and cfg** · priority medium · keys `fk-765ff49d2de5` · INV: extract-with-ratchet (candidate 5), ratchet member = the D4 section of `tests/infra/test_occt_deps_preflight.sh` (baseline 10/10/6/10 → 0) · depends on α (same file, and env/cfg names come from the table).
-  - **Deliverable:**
-    - D4 `detect`; `find` made private
-    - all 8 `build.rs` migrated: 10 cfg + 10 check-cfg + 6 env literals deleted
-    - the `reify-mesh-morph` "copied from reify-solver-elastic" header line goes with its block
-  - **Signal (G2):**
-    - After `GMSH_INCLUDE_DIR=<other dir>`, `cargo build -p reify-eval -v` reports reify-eval's build script dirty on that env var. Today it does not.
-    - The ratchet section is green at 0.
-    - The per-crate passed counts for `reify-eval`, `reify-kernel-conformance` and `reify-mesh-morph` (one captured run, cargo-test-tally) equal main's.
+- **β — subsumed by S10 β₁ #8935** · **[Amended 2026-10-20, retro-critic R12]** ~~β — `detect(dep)` owns rerun, check-cfg and cfg~~ (superseded by R12). Task #8646 is cancelled with `x_subsumed_by = 8935`. Its key fk-765ff49d2de5, its migration list, its openvdb four-probe note (ported from #7623, whose subsumption is re-pointed to #8935) and its `rustc-cfg=has_`-absent check moved to #8935.
+  - **What #8935 carries from β:** `require(dep)` per D4; all 8 `build.rs` migrated (10 cfg + 10 check-cfg + 6 env literals deleted, and the `reify-mesh-morph` "copied from reify-solver-elastic" header line with its block); the M1 ratchet rows; the M2 directive unit test in its done criteria; the `gui/src-tauri`-without-`--features gui` rerun re-check (§3 item 7).
+  - **Signal (G2), carried by #8935:** after `GMSH_INCLUDE_DIR=<other dir>`, `cargo build -p reify-eval -v` reports reify-eval's build script dirty on that env var; the ratchet rows read 0.
 - **γ — one loader-path helper; GUI launch owns the OCCT dir** · priority medium · keys `fk-e05e85e98f91` · INV: extract-with-ratchet, ratchet member = the D8 loader-path prepend count in `tests/infra/test_verify_ld_library_path_scope.sh` (baseline 7 → 2; verify.sh's two lines are a named exemption until S18 lands).
   - **Deliverable:**
     - D5 `scripts/lib_native_ld_path.sh`
@@ -252,7 +251,7 @@ G5 heuristic: the stakes are build-graph correctness and the merge gate, but eac
     - One `gui/test/visual/run_find_uses_smoke.sh` run passes.
     - `cargo nextest run -p reify-kernel-occt` still loads (the `cargo-target` class keeps the deps dir, premise check 1).
     - The ratchet reads 2.
-- **ω — PRD close** · priority low · depends on α, β, γ · process leaf per the overlay's decompose-close obligations.
+- **ω — PRD close** · priority low · depends on α, β, γ (**[Amended 2026-10-20, retro-critic R12]** #8663's deps are [8634, 8935, 8654]: S10 β₁ replaces β) · process leaf per the overlay's decompose-close obligations.
   - **Deliverable:** task-id backfill, `Status: SHIPPED` freeze header with the LIVE/AS-AUTHORED map, and the matching manifest header.
   - **Signal:** the committed header.
 
@@ -266,8 +265,21 @@ Each leaf carries `metadata.x_finding_key` (list), `x_finding_run = "review-all-
 
 **Breadcrumb — RUNPATH completeness.**
 - **Premise** (measured 2026-10-12 against main `8e6ffcac9d`, binaries built 2026-10-11): the `reify-kernel-occt` lib-test binary has RUNPATH `[/usr/lib/x86_64-linux-gnu]` only. It `NEED`s `libgmsh.so.4.15` and `libopenvdb.so.13.0` through its dev-dependency on `reify-eval`, and both are `not found` without `LD_LIBRARY_PATH`.
-- **Follow-up leaf candidate.** Owner: `reify-build-utils`, the successor to S21 β.
-  - Every package whose test binaries `NEED` a deps lib emits rpath for it through `detect()`'s sibling `emit_rpath_for_tests`.
+- **Follow-up leaf candidate.** Owner: `reify-build-utils`, the successor to S10 β₁ #8935 (which subsumed S21 β).
+  - Every package whose test binaries `NEED` a deps lib emits rpath for it through `require()`'s sibling `emit_rpath_for_tests`.
   - A NEEDED-vs-RUNPATH scan over the built test binaries enforces this.
   - The `cargo-target` class can then drop `/opt/reify-deps/lib`, and with it the conda prefix that every cargo-run child process inherits today.
 - **Trigger:** a non-Rust child of a cargo-run binary misbehaves under the conda prefix, or the next `/review-all` re-raises the hostile-prefix exposure.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+- **R12 B1** — β #8646 is subsumed into S10 β₁ #8935 and cancelled with `x_subsumed_by = 8935`. This supersedes the 2026-10-12 uncontested-block S21 clause and D4's `detect()` design, because S10 R5 (2026-10-13) removed the native-dep-free build. `require(dep)` is the one public entry and `find()` goes private; only the rerun-input half of fk-765ff49d2de5 survives, and #8935 closes it (the key moved there). #7623's subsumption is re-pointed to #8935. ω #8663 depends on [8634, 8935, 8654]. §6 gains the row `reify_build_utils discovery API + build.rs native cfg emission | S10 (R5) | S21`. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 M1** — the β ratchet is rows in `tests/infra/adoption-ratchet.manifest` at ceiling 0 (owner #8935, one row id per glob: `crates/*/build.rs`, `gui/src-tauri/build.rs`); no new section in `test_occt_deps_preflight.sh` (D4). Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 M2** — a unit test of the directive contract (`directives(row, resolved)` or the re-exec child pattern): ordered check-cfg, rerun `include_env`, rerun `lib_env`, cfg only when both dirs resolve, and the not-resolved case. Listed in §7 and in #8935's done criteria. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 M3** — §6 gains the row `native-deps.toml columns | S21 | S10 β₃ #8957 retires cfg`. #8957's footprint and work delete the `cfg` column end to end: the table rows, `scripts/native_deps_table.py`, the guard's `$<ROW>_CFG` hints, preflight section R, `DepRow.cfg`/`check_row`, `every_row_cfg_is_has_row_key` and the lib.rs:489 test line. S10 β₂ #8936's reify-build-utils ratchet row excludes `crates/reify-build-utils`; β₃ takes it to 0. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 polarity** — #8935's `reify_build_utils::find\(`-absent check is replaced by `rustc-cfg=has_` absent over the 8 `build.rs` (β's check, moved). The `pub fn require\(` presence check stays. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 CLAUDE.md** — the "Native deps" bullet (which still says `find()` returns `None` and the build fails open) is rewritten once, by S10 β₁ #8935. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 m5 (stale record)** — #8269's record is stale against α: its lib.rs candidate anchors (`NativeDep::Occt`) and the guard's "mirror" are gone. It edits native-deps.toml's occt row and header, CLAUDE.md's "OCCT is the deliberate exception" bullet and γ's loader-path note (`docs/notes/native-dep-loader-path.md`, the 7.8-direct / 7.9-via-gmsh fact). Note appended to #8269. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 m4 (S18 ζ)** — Section I of `tests/infra/test_verify_ld_library_path_scope.sh` uses exact per-path allowances, so S18 ζ #9112 deletes the `[scripts/verify.sh]=2` row when verify.sh becomes a shim. Note appended to #9112. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 m6 (S5 κ₁)** — S5 κ₁ #8999's normal dependency on reify-build-utils contradicts α's Cargo.toml comment (normal deps limited to decoding native-deps.toml), and κ₁ contends `crates/reify-eval/build.rs` with #8935; whichever lands second rebases. Note appended to #8999. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.
+- **R12 cross-reference (S10)** — `kernel-interface-typed-seam.md` carries the matching line: β₁ #8935 absorbs this PRD's β contract and fk-765ff49d2de5, β₂ #8936's reify-build-utils row excludes `crates/reify-build-utils`, and β₃ #8957 retires the table's `cfg` column. Pointer: `plans/review-all-program-reify-20261012.md` §Resolved decisions — retro-critic sitting R12.

@@ -28,9 +28,9 @@ fn warm_start_failures_accessor_visible_in_production_build() {
     let mut source = OcctKernel::new();
     source
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box creation should succeed");
     let state = source

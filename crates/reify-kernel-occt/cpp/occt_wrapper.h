@@ -110,20 +110,15 @@ struct AnalyticCurveDatum;
 
 /// Return OCCT's `Precision::Confusion()` value (~1e-7).
 ///
-/// Test-fixture-style helper intentionally compiled into every build of the
-/// wrapper.  Cfg-gating cxx::bridge entries is awkward, and the cost of
-/// always shipping a tiny constant-returning function is lower than the
-/// friction of conditional bridge declarations.  The current sole call site
-/// is the `reify-kernel-occt` crate's private test module in `lib.rs`, which
-/// pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
-/// authoritative OCCT value at runtime.  The symbol is visible to all callers
-/// of the wrapper, not hidden by construction.
+/// Test-only: pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (see
+/// `src/ffi_contract_tests.rs`). Why it ships ungated: its declaration in
+/// `src/ffi.rs`.
 double precision_confusion();
 
 // --- Primitive construction ---
 
-/// Create a box centered at origin with given dimensions (in meters).
-std::unique_ptr<OcctShape> make_box(double width, double height, double depth);
+/// Create a box centered at origin; the arguments are its full X/Y/Z extents (in meters).
+std::unique_ptr<OcctShape> make_box(double size_x, double size_y, double size_z);
 
 /// Create a cylinder along Z axis (in meters).
 std::unique_ptr<OcctShape> make_cylinder(double radius, double height);
@@ -214,11 +209,9 @@ bool boolean_run_parallel();
 /// reported RunParallel() afterwards: what OCCT ran, not what was requested.
 uint64_t parallel_bop_build_count();
 
-/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
-/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
-/// fuse/pattern result's real type rather than assuming Solid (task 5213).
-rust::String shape_type_name(const OcctShape& shape);
+/// The TopAbs name of `shape`'s body type after the single-body unwrap, so
+/// OCCT's 1-solid COMPOUND wrappers name "Solid"; throws on a null shape.
+rust::String body_type_name(const OcctShape& shape);
 
 // --- Boolean operations ---
 
@@ -233,7 +226,7 @@ rust::String shape_type_name(const OcctShape& shape);
 /// the topology-preserving type the result actually is — one solid → bare
 /// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
 /// Callers must therefore classify the stored repr from the real shape (see
-/// `shape_type_name`) rather than assuming Solid.
+/// `body_type_name`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -722,7 +715,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_fillet_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_fillet_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `fillet_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_fillet_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_fillet_edges_with_history(
     const OcctShape& shape, double radius, const rust::Vec<uint32_t>& edge_indices);
@@ -741,7 +734,7 @@ std::unique_ptr<LocalFeatureOpHistory> make_chamfer_with_history(
 /// via `extract_edges` maps to the matching index). Materializes the result
 /// shape AND Modified/Generated/Deleted records into a `LocalFeatureOpHistory`,
 /// identically to `make_chamfer_with_history` — the curated path preserves the
-/// persistent-naming seam. The all-edges path uses `chamfer_all_edges`; this
+/// persistent-naming seam. The all-edges path uses `make_chamfer_with_history`; this
 /// function requires a non-empty `edge_indices`.
 std::unique_ptr<LocalFeatureOpHistory> make_chamfer_edges_with_history(
     const OcctShape& shape, double distance, const rust::Vec<uint32_t>& edge_indices);
@@ -779,11 +772,6 @@ rust::Vec<uint32_t> local_feature_op_history_edge_deleted(const LocalFeatureOpHi
 /// Count of Modified/Generated children silently dropped because they could
 /// not be found in the result map. Zero for a well-formed fillet/chamfer.
 uint32_t local_feature_op_history_silent_drop_count(const LocalFeatureOpHistory& history);
-
-// --- Modifications ---
-
-std::unique_ptr<OcctShape> fillet_all_edges(const OcctShape& shape, double radius);
-std::unique_ptr<OcctShape> chamfer_all_edges(const OcctShape& shape, double distance);
 
 // --- Transforms ---
 

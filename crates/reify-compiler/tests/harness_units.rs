@@ -45,6 +45,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "harness_units/bare_si_base_unit_tests.rs"]
+mod bare_si_base_unit_tests;
+
 #[path = "harness_units/torque_unit_tests.rs"]
 mod torque_unit_tests;
 
@@ -66,3 +69,6 @@ mod unit_middot_mul_tests;
 
 #[path = "harness_units/volume_unit_tests.rs"]
 mod volume_unit_tests;
+
+#[path = "harness_units/curvature_dimension_tests.rs"]
+mod curvature_dimension_tests;

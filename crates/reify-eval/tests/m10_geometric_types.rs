@@ -72,7 +72,7 @@ fn geometric_types_all_constraints_satisfied() {
     let compiled = parse_and_compile_with_stdlib(&source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No eval-level errors

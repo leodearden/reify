@@ -15,7 +15,8 @@ description = "Engine-driven synthetic-mesh FEA e2e tests (OCCT-free; Lever P of
 # "test-instrumentation"))]` in engine_admin.rs; `cfg(test)` only applies when
 # reify-eval is the crate under test, not when it's a dev-dep of another crate,
 # so the feature must be requested explicitly here (mirrors reify-eval's own
-# self-dev-dep at crates/reify-eval/Cargo.toml:74).
+# self-dev-dep at crates/reify-eval/Cargo.toml:74). It also gates
+# `persistent_cache::backdate_mtime` (tests/persistent_cache_cross_session.rs).
 reify-eval = { workspace = true, features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-core.workspace = true

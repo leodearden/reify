@@ -207,11 +207,11 @@ done <<< "$PLAN_LINE_KV"
 # ---------------------------------------------------------------------------
 # Derivation (source 2 of 3): dark-factory-orchestrator.yaml's verify_env block.
 #
-# verify_env_exports is mirrored VERBATIM (reuse-note, not extracted to a
-# shared lib) from tests/infra/test_verify_env_ambient_isolation.sh:59-85
-# (task 4966's drift-guard), to avoid editing that live merge-gate guard
-# file -- out of this task's declared scope. Refresh both copies together if
-# the awk logic ever changes.
+# verify_env_exports is the awk form of the parse contract stated in the
+# docstring of test_verify_env_ambient_isolation.py::verify_env_exports.
+# Identical copies live in other members
+# (`git grep -n '^verify_env_exports() {' -- tests/infra`); change every copy
+# and that function together.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Derivation (2/3): dark-factory-orchestrator.yaml verify_env block (verify_env_exports) ---"

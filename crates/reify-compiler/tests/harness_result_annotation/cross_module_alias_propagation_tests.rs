@@ -1603,10 +1603,11 @@ fn shadowed_prelude_parametric_alias_body_binds_as_the_direct_spelling_does() {
 /// `Diagnostic`/`DiagnosticLabel` carry no module identity, so a label built
 /// from a prelude alias BODY's span is a raw byte offset into a file the
 /// consumer's reader never opened — and for a short consumer it lands past the
-/// end of the source it will be rendered against. `reify-cli`'s `mcp_context`
-/// feeds the first label's span straight to `byte_offset_to_line_col`, whose
-/// `debug_assert!(offset <= source.len())` then trips in debug builds and
-/// reports a silently wrong line/col in release.
+/// end of the source it will be rendered against. A consumer that feeds the
+/// first label's span straight to `byte_offset_to_line_col` (as reify-cli's
+/// since-deleted `mcp_context` did, #6665) trips its
+/// `debug_assert!(offset <= source.len())` in debug builds and reports a
+/// silently wrong line/col in release.
 ///
 /// MEASURED on this tip with the span threading reverted: this consumer's
 /// single Error carried `labels=[SourceSpan { start: 50, end: 55 }]` against a

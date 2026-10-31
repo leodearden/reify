@@ -39,7 +39,7 @@ fn test_m11_annotations_reports_results() {
     // m11_annotations.ri is a committed example in the worktree — no SKIP needed.
     let (_status, stdout, stderr) = common::run_subcommand("test", &path);
 
-    // The fixture has PASS, FAIL, and INDETERMINATE rows.
+    // The fixture has PASS and FAIL rows; its auto-reading test is solved.
     assert!(
         stdout.contains("PASS"),
         "stdout should contain 'PASS', got: {stdout}"
@@ -49,35 +49,40 @@ fn test_m11_annotations_reports_results() {
         "stdout should contain 'FAIL', got: {stdout}"
     );
     assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
+        stdout.lines().any(|line| line == "  PASS  TestSolvedLoad"),
+        "the runner should solve TestSolvedLoad's two-sided auto and report PASS, got: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.contains("INDETERMINATE")),
+        "no m11 test should be Indeterminate once autos are solved, got: {stdout}"
     );
 
     // At least one test name should be visible.
     assert!(
         stdout.contains("TestPositiveWidth")
             || stdout.contains("TestNegativeWidth")
-            || stdout.contains("TestUnknownLoad"),
+            || stdout.contains("TestSolvedLoad"),
         "stdout should contain at least one test name, got: {stdout}"
     );
 
-    // Summary line: fixture declares 3 passed, 2 failed, 1 indeterminate.
+    // Summary line: fixture declares 4 passed, 2 failed, 0 indeterminate.
     // These counts correspond to the @test structures in examples/m11_annotations.ri:
-    //   PASS:          TestPositiveWidth, TestColumnPositive, TestAssemblyFits  (3)
+    //   PASS:          TestPositiveWidth, TestSolvedLoad, TestColumnPositive,
+    //                  TestAssemblyFits                                         (4)
     //   FAIL:          TestNegativeWidth, TestColumnNegative                    (2, intentional)
-    //   INDETERMINATE: TestUnknownLoad                                          (1)
+    //   INDETERMINATE: none                                                     (0)
     // If the fixture is updated, these counts must be updated here too.
     assert!(
-        stdout.contains("3 passed"),
-        "stdout should contain '3 passed' in summary, got: {stdout}"
+        stdout.contains("4 passed"),
+        "stdout should contain '4 passed' in summary, got: {stdout}"
     );
     assert!(
         stdout.contains("2 failed"),
         "stdout should contain '2 failed' in summary, got: {stdout}"
     );
     assert!(
-        stdout.contains("1 indeterminate"),
-        "stdout should contain '1 indeterminate' in summary, got: {stdout}"
+        stdout.contains("0 indeterminate"),
+        "stdout should contain '0 indeterminate' in summary, got: {stdout}"
     );
 
     // No internal errors or panics.

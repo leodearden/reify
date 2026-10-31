@@ -1,0 +1,9 @@
+// PRD docs/prds/v0_6/cell-eval-transaction-closure.md, control for leaves η
+// and ι. The same runtime diagnostic in a template-scope let already reaches
+// the user today: `reify eval` prints
+// `error: generate: count must be a non-negative Int` and exits 1.
+module cell_eval_let_runtime_diag_control
+
+structure S {
+    let xs = generate(-1, |i: Int| i * 2)
+}

@@ -1,6 +1,6 @@
 //! Shared helper for resolving MCP `reify_get_source_location` queries against
-//! a compiled module. Factored out of the GUI (`EngineSession`) and CLI
-//! (`CliToolContext`) adapters so both transports use identical traversal logic.
+//! a compiled module. Factored out of the GUI (`EngineSession`) and the
+//! since-deleted CLI adapter (#6665); it now serves the GUI.
 //!
 //! Accepted `entity_path` shapes:
 //! 1. **Template name** (e.g., `"Bracket"`) → returns the first value cell's

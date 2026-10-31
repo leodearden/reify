@@ -168,8 +168,8 @@ fn surface_fixture_no_longer_emits_invalid_sub_parse_error() {
 /// populated `SubDecl`), but **no compiler pass reads it yet** — so left
 /// unguarded the source would elaborate to exactly ONE instance instead of one
 /// per index, silently. The rejection is emitted over the parse-error channel,
-/// which every consumer already hard-aborts on (`reify-cli/src/main.rs`,
-/// `mcp_context.rs`, and the `parse_or_panic` family in reify-test-support).
+/// which every consumer already hard-aborts on (`reify-cli/src/main.rs` and
+/// the `parse_or_panic` family in reify-test-support).
 ///
 /// The message must carry the `#5482` cite so β's deletion of the line is
 /// greppable and the cite is canonical per CLAUDE.md's TODO-citation

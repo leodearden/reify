@@ -4,7 +4,8 @@
 //! runtime evidence and points at it rather than restating it.
 //!
 //! What it pins that nothing else does: every other eval assertion on these
-//! fields routes through a dimension-BLIND helper (`force_val` / `coord`) taking
+//! fields routes through a dimension-BLIND helper
+//! (`reify_test_support::read_real_or_scalar`) taking
 //! `Value::Scalar{..}` or `Value::Real(..)` interchangeably, so the trampoline
 //! could silently retag either way with no Rust test failing. The extractors
 //! below inspect the DIMENSION explicitly and panic on the wrong one — FORCE
@@ -144,7 +145,7 @@ fn list_field<'a>(fields: &'a PersistentMap<String, Value>, name: &str) -> &'a V
     }
 }
 
-// DIMENSION-STRICT extractors — deliberately NOT the dimension-blind `force_val`/`coord`.
+// DIMENSION-STRICT extractors — deliberately NOT the dimension-blind `read_real_or_scalar`.
 // Each pins the declared DIMENSION of its field and panics on anything else; only
 // `member_forces` additionally requires the `Value::Scalar` representation, because a
 // dimension tag can only be carried by that variant in the first place.

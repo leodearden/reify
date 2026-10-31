@@ -1,0 +1,10 @@
+// /prd generic-instantiation-and-call-binding β₁ evidence (#6853): an explicit
+// instantiation with no `auto:` clause is monomorphised. Today the sub keeps
+// pointing at the generic template and `reify check` panics in debug on the
+// TypeParam("S")-typed cell `Top.h.seal`.
+module gicb_beta_explicit_instantiation
+
+trait Seal {}
+structure def GasketSeal : Seal { param thickness : Real = 2.0 }
+structure def Holder<S: Seal> { param seal : S }
+structure def Top { sub h = Holder<GasketSeal>() }

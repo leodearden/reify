@@ -39,7 +39,7 @@ extern crate reify_kernel_occt as _;
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Serializes every test in this binary that touches the **process-global**
@@ -605,6 +605,54 @@ fn value_map_of(snapshot: &reify_eval::snapshot::Snapshot) -> reify_ir::ValueMap
     out
 }
 
+/// Both sides of one purely DIMENSIONAL tick, in the shape Stage A consumes.
+struct DimensionalTick {
+    graph_before: reify_eval::graph::EvaluationGraph,
+    values_before: reify_ir::ValueMap,
+    graph_after: reify_eval::graph::EvaluationGraph,
+    values_after: reify_ir::ValueMap,
+}
+
+/// Compile `src`, evaluate it cold, then set the `leaf` param to `new_value`
+/// through `Engine::edit_param`, as production drives a dimensional edit. Both
+/// sides are read from the engine snapshot (see [`value_map_of`]).
+///
+/// The engine is solver-free and kernel-free (`None` for the geometry kernel):
+/// Stage A reads the eval-surface ValueMap, which no kernel populates.
+fn dimensional_tick(
+    src: &str,
+    leaf: reify_core::ValueCellId,
+    new_value: reify_ir::Value,
+) -> DimensionalTick {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(src);
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+
+    engine.eval(&compiled);
+    let before = engine
+        .snapshot()
+        .expect("eval() must establish an engine snapshot");
+    let graph_before = before.graph.clone();
+    let values_before = value_map_of(before);
+
+    if let Err(e) = engine.edit_param(leaf.clone(), new_value) {
+        panic!("edit_param must succeed against the {leaf} param: {e:?}");
+    }
+    let after = engine
+        .snapshot()
+        .expect("edit_param must leave an engine snapshot in place");
+
+    DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after: after.graph.clone(),
+        values_after: value_map_of(after),
+    }
+}
+
 /// Task 6643: a purely DIMENSIONAL parameter tick must stay Stage-A eligible
 /// even though the production compiler emitted a DERIVED, non-whitelisted cell
 /// into the ValueMap — proved against a real compiled module, not a synthetic
@@ -632,24 +680,18 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
     use reify_core::{Type, ValueCellId};
     use reify_ir::Value;
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/morph_derived_let.ri"
-    ));
-
-    // Kernel-free engine: `None` for the geometry kernel. The fixture realizes
-    // no geometry, so nothing in this test can depend on OCCT or gmsh.
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
-        None,
+    // (1) The dimensional tick, width 10mm → 10.5mm. The fixture realizes no
+    //     geometry.
+    let DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after,
+        values_after,
+    } = dimensional_tick(
+        include_str!("fixtures/morph_derived_let.ri"),
+        ValueCellId::new("MorphDerivedLet", "width"),
+        Value::length(0.0105),
     );
-
-    // (1) Cold evaluation → the "old" side.
-    engine.eval(&compiled);
-    let snapshot_before = engine
-        .snapshot()
-        .expect("eval() must establish an engine snapshot");
-    let graph_before = snapshot_before.graph.clone();
-    let values_before = value_map_of(snapshot_before);
 
     // (2) PREMISE assertions against the REAL compiled graph. These are the
     //     genuinely new facts this test establishes — the synthetic unit tests
@@ -695,21 +737,7 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
          the two; a guard cell must still veto (Rule 2 runs before the kind match)"
     );
 
-    // (3) The dimensional tick: width 10mm → 10.5mm, driven at the numeric leaf
-    //     exactly as `Engine::edit_param` is in production.
-    engine
-        .edit_param(
-            ValueCellId::new("MorphDerivedLet", "width"),
-            Value::length(0.0105),
-        )
-        .expect("edit_param must succeed against the MorphDerivedLet.width Length param");
-    let snapshot_after = engine
-        .snapshot()
-        .expect("edit_param must leave an engine snapshot in place");
-    let graph_after = snapshot_after.graph.clone();
-    let values_after = value_map_of(snapshot_after);
-
-    // (4) The mechanism itself: a derived cell is a function of its leaves, so
+    // (3) The mechanism itself: a derived cell is a function of its leaves, so
     //     it differs on a PURELY DIMENSIONAL edit. This is why one such cell
     //     anywhere in a design made the morph arm 100% dormant.
     assert_ne!(
@@ -719,7 +747,7 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
          that is the mechanism the dormancy class rests on (measured: Bool(false) → Bool(true))"
     );
 
-    // (5) The contract.
+    // (4) The contract.
     assert!(
         reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
         "task 6643: a dimensional-only tick must be Stage-A eligible even though the \
@@ -730,12 +758,111 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
     );
 }
 
+/// Task 7486: a purely DIMENSIONAL tick must stay Stage-A eligible when a
+/// `Param`-kind LEAF of type `List<Geometry>` differs, pinning task 7016's
+/// Rule-4 arm end to end against a real compiled module and the eval-surface
+/// ValueMap that production Stage A reads. Why the leaf is a list literal:
+/// `structural_classifier`'s `### List<Geometry>` note on `classify_cell`.
+#[test]
+fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module() {
+    use reify_compiler::ValueCellKind;
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
+
+    // (1) The dimensional tick, width 10mm → 10.5mm.
+    let DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after,
+        values_after,
+    } = dimensional_tick(
+        include_str!("fixtures/morph_param_list_geometry.ri"),
+        ValueCellId::new("MorphParamListGeometry", "width"),
+        Value::length(0.0105),
+    );
+
+    // (2) PREMISES against the REAL compiled graph.
+    let items = ValueCellId::new("MorphParamListGeometry", "items");
+    let node = graph_before
+        .value_cells
+        .get(&items)
+        .expect(
+            "premise: the production compiler must emit `param items: List<Geometry>` as a \
+             value cell reaching the ValueMap",
+        )
+        .clone();
+    assert_eq!(
+        node.kind,
+        ValueCellKind::Param,
+        "premise: `items` must be a LEAF. Task 6643's leaf scoping admits a differing `Let` \
+         regardless of task 7016's arm, which would make this test vacuous"
+    );
+    assert_eq!(
+        node.cell_type,
+        Type::List(Box::new(Type::Geometry)),
+        "premise: `items` must be exactly List<Geometry>, the one type task 7016's arm adds"
+    );
+    assert!(
+        !graph_before.structure_controlling.contains(&items),
+        "premise: `items` must NOT be structure_controlling, or Rule 2 would decide instead \
+         of Rule 4"
+    );
+    assert!(
+        !graph_before
+            .collection_subs
+            .iter()
+            .any(|sub| sub.count_cell == items)
+            && !graph_before
+                .keyed_subs
+                .iter()
+                .any(|sub| sub.count_cell.as_ref() == Some(&items)),
+        "premise: `items` must NOT be a collection or keyed count cell, or Rule 3/3b would \
+         decide instead of Rule 4"
+    );
+    match values_before.get_or_undef(&items) {
+        Value::List(elems)
+            if !elems.is_empty()
+                && elems
+                    .iter()
+                    .all(|e| matches!(e, Value::GeometryHandle { .. })) => {}
+        other => panic!(
+            "premise: `items` must hold a non-empty List of GeometryHandles on the eval \
+             surface, got {other:?}"
+        ),
+    }
+
+    // (3) The leaf really differs, and the shape gate does not short-circuit,
+    //     so the per-cell walk is what decides (4).
+    assert_ne!(
+        values_before.get_or_undef(&items),
+        values_after.get_or_undef(&items),
+        "premise: the List<Geometry> leaf must DIFFER across a purely dimensional tick (each \
+         handle's upstream_values_hash folds `width`), or the walk never reaches it"
+    );
+    assert_eq!(
+        reify_eval::realization_graph_shape_hash(&graph_before),
+        reify_eval::realization_graph_shape_hash(&graph_after),
+        "the graph shape must be unchanged, so `stage_a_eligible`'s short-circuit does not \
+         mask the per-cell rule this test is about"
+    );
+
+    // (4) The contract.
+    assert!(
+        reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
+        "task 7016: a dimensional-only tick must be Stage-A eligible when a differing \
+         Param-kind List<Geometry> LEAF is present. The List<Geometry> arm of \
+         `classify_by_type` is the only thing that admits it; without the arm this returns \
+         false"
+    );
+}
+
 /// Task 6643, the VETO half: a compiler-synthesized `__guard_N`
 /// feature-suppression cell must still make a purely dimensional tick
 /// Stage-A INELIGIBLE — proved against a real compiled module.
 ///
-/// The sibling test above proves leaf scoping ADMITS a derived cell. This one
-/// proves it does not admit too much, and it carries the seam the unit test
+/// `stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module`
+/// proves leaf scoping ADMITS a derived cell. This one proves it does not
+/// admit too much, and it carries the seam the unit test
 /// `structural_classifier::tests::stage_a_eligible_derived_let_guard_cell_diff_returns_false`
 /// can only assume: that the production compiler + `EvaluationGraph::from_templates`
 /// really do route a `where` guard into `graph.structure_controlling`. Without
@@ -748,23 +875,19 @@ fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
     use reify_core::{Type, ValueCellId};
     use reify_ir::Value;
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/morph_derived_let_guarded.ri"
-    ));
-
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
-        None,
+    // (1) The dimensional tick, width 10mm → 10.5mm.
+    let DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after,
+        values_after,
+    } = dimensional_tick(
+        include_str!("fixtures/morph_derived_let_guarded.ri"),
+        ValueCellId::new("MorphDerivedLetGuarded", "width"),
+        Value::length(0.0105),
     );
 
-    engine.eval(&compiled);
-    let snapshot_before = engine
-        .snapshot()
-        .expect("eval() must establish an engine snapshot");
-    let graph_before = snapshot_before.graph.clone();
-    let values_before = value_map_of(snapshot_before);
-
-    // (1) PREMISE: the production compiler routed the `where` guard into
+    // (2) PREMISE: the production compiler routed the `where` guard into
     //     `structure_controlling`, at the Let+Bool shape Rule 2 has to catch.
     let guard_id = graph_before
         .structure_controlling
@@ -792,19 +915,6 @@ fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
         "premise: a compiler guard cell is Type::Bool — off Rule 4's Dimensional whitelist, \
          so only Rule 2 keeps it Structural once the kind match is reached"
     );
-
-    // (2) The same dimensional tick as the sibling test: width 10mm -> 10.5mm.
-    engine
-        .edit_param(
-            ValueCellId::new("MorphDerivedLetGuarded", "width"),
-            Value::length(0.0105),
-        )
-        .expect("edit_param must succeed against the MorphDerivedLetGuarded.width Length param");
-    let snapshot_after = engine
-        .snapshot()
-        .expect("edit_param must leave an engine snapshot in place");
-    let graph_after = snapshot_after.graph.clone();
-    let values_after = value_map_of(snapshot_after);
 
     // (3) The guard's value really flipped, so the union walk reaches it.
     assert_ne!(

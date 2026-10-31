@@ -34,7 +34,7 @@
 //!
 //! ## Signal is read through eval/build, NOT `reify check`
 //!
-//! `check_fails` (`crates/reify-cli/src/main.rs`) keys only on
+//! `check_fails` (`crates/reify-cli/src/check_verdict.rs`) keys only on
 //! `ConstraintOutcome` and ignores `Severity::Error` — gating `check`'s exit on
 //! Error severity is task #5403's leaf, not this one. `cmd_eval` and
 //! `build_is_success` DO gate on Error, which is what PRD B1's "reify eval/build
@@ -143,6 +143,7 @@ fn ok_fixture_source() -> &'static str {
 fn occt_engine() -> reify_eval::Engine {
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_test_support::MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     )
@@ -274,7 +275,7 @@ fn violated_fixture_emits_one_aggregated_static_relate_error() {
 /// direct `solve_scopes` call.
 ///
 /// Asserted through `build`, NOT `reify check`. `check_fails`
-/// (`crates/reify-cli/src/main.rs`) keys only on `ConstraintOutcome` and ignores
+/// (`crates/reify-cli/src/check_verdict.rs`) keys only on `ConstraintOutcome` and ignores
 /// `Severity::Error` — gating check's exit on Error severity is task #5403's leaf,
 /// not this one. `cmd_eval` and `build_is_success` both DO fail on any Error,
 /// which is what PRD B1's "reify eval/build emits the geometric violation Error"
@@ -508,7 +509,7 @@ fn autoful_scope_is_unperturbed_by_a_zero_auto_scope_in_the_same_module() {
     // The bound is the solver's own convergence rung: two runs of the same solve
     // agree to at least that, and anything coarser would not be a perturbation
     // test at all.
-    let tol = reify_constraints::relate_solve::RelateTolerance::kernel_default()
+    let tol = reify_constraints::scaling::RelateTolerance::kernel_default()
         .solver_convergence();
     for axis in 0..3 {
         assert!(

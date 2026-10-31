@@ -79,7 +79,7 @@ fn pendulum_idyn_static_gravity_torque_is_0_4905() {
     // MassProperties solid, so a plain mock kernel is enough.
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Locate the top-level `forces` cell. The structure_def is named

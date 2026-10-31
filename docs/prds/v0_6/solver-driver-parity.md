@@ -348,7 +348,8 @@ sub-cases, all probe-verified as silently passing today:
    for upper-only), NEVER the default-box edge, accompanied by the coded
    `Partial{DomainUnbounded}`-class warning. The value rule is owned by P3-δ
    #6709's verdict policy; ε #6692 implements only the strict refusal and must
-   not fire on `auto(free)`.)*
+   not fire on `auto(free)`. Its auto(free) twin,
+   `driver_parity_one_sided_auto_free.ri`, pins that negative case.)*
 3. **A contradictory `relate` block.** Probe-verified: `reify check --strict` on a
    model whose `relate` block demands one part be concentric with two holes 15 mm
    apart prints `All constraints satisfied.` and exits 0, while `reify eval` on the
@@ -799,6 +800,18 @@ Every numeric and capability claim in §1, §5 and §7 was measured at HEAD
    `IndeterminateReason` and with #6659's decline-at-recognition vocabulary rather
    than minting a parallel taxonomy. Decide during ε, in consultation with those
    tasks' owners.
+
+   *Resolved by ε #6692 (one-sided half only; the I5 markers stay open).* The
+   one-sided refusal reuses `DiagnosticCode::ConstraintNonUnique`, the existing
+   code for an underdetermined strict auto. The γ `DefaultBoundsDetermined` arm
+   already emits it with the per-param "no constraint bounds `X` above/below"
+   clause, so a new code would give one fact two spellings. The static arm is a
+   compile Error, the shape INV-SF-4 prescribes instead of an `Indeterminate`.
+   The runtime arm returns `Infeasible`, which the engine already carries as
+   `UndefCause::SolveFailed` and surfaces as `TransientReason::UndefInputs`
+   naming the auto. No `IndeterminateReason` variant is added: `StructuralReason`
+   stays #5419's to inhabit. #6659 has not landed, so there is no
+   decline-at-recognition vocabulary to adopt yet.
 5. **Whether φ drives the GUI in-process or through the debug MCP listener.**
    Suggested: in-process `EngineSession`, with the debug listener reserved for the
    viewport-specific rows. Decide during φ.

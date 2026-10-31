@@ -32,15 +32,30 @@
 //! `reached: true` is genuinely reached by some test path and must not be flagged
 //! (it is not untested). The detector drops these before emitting findings so
 //! only `reached: false` symbols surface.
+//!
+//! A FAILED `get_untested_symbols` query is not a fully tested repo: it
+//! replaces the run's result with one Low [`Pattern::PUntestedUnexamined`]
+//! ([`crate::model::corpus_unexamined`]).
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, pattern_flag};
 
 const DEFAULT_MIN_CONFIDENCE: f64 = 0.5;
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    let symbols = match ctx.jcodemunch.get_untested_symbols(DEFAULT_MIN_CONFIDENCE) {
+        Ok(symbols) => symbols,
+        Err(failure) => {
+            return vec![crate::model::corpus_unexamined(
+                Pattern::PUntestedUnexamined,
+                pattern_flag::PUNTESTED,
+                "untested",
+                &failure,
+            )];
+        }
+    };
     let mut findings = Vec::new();
 
-    for sym in ctx.jcodemunch.get_untested_symbols(DEFAULT_MIN_CONFIDENCE) {
+    for sym in symbols {
         // A reached symbol is not untested — suppress it.
         if sym.reached {
             continue;

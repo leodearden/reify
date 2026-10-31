@@ -43,7 +43,7 @@ occurrence def Welding {
 
     // Eval
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // Check speed = 50mm = 0.05 SI (metres)

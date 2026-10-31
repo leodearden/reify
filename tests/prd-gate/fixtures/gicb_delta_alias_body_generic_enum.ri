@@ -1,0 +1,8 @@
+// /prd generic-instantiation-and-call-binding δ evidence (#7573 gap 2): a
+// parametric alias whose body applies a generic enum resolves like the direct
+// spelling `Ge<Real>`.
+module gicb_delta_alias_body_generic_enum
+
+enum Ge<T> { Both { a: T } }
+type W<U> = Ge<U>
+structure def D { param p : W<Real> }

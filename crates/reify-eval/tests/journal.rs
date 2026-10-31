@@ -13,7 +13,7 @@ use reify_test_support::mocks::MockConstraintChecker;
 fn eval_populates_journal() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     engine.eval(&module);
 
@@ -73,7 +73,7 @@ fn eval_populates_journal() {
 fn edit_param_records_journal_events() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     engine.eval(&module);
@@ -161,7 +161,7 @@ fn edit_param_records_journal_events() {
 fn eval_cached_records_cache_hit_events() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // First call: cold start — should record Started/Completed
     let v0 = VersionId(0);

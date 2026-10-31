@@ -1,0 +1,14 @@
+module s8_geometry_arith_cmp
+
+// S8 PRD: docs/prds/v0_6/builtin-registry-migration-and-interception-classifier.md
+// Leaf: eta (geometry calls typed Geometry; arithmetic/comparison on geometry).
+// Pins: Geometry * Int, Geometry + Int, Geometry > Int as lets and as a
+// constraint, with volume(box(..)) as the well-typed control.
+
+structure def S8GeometryArithCmp {
+    let bad1 = box(1mm, 1mm, 1mm) * 2
+    let bad2 = box(1mm, 1mm, 1mm) + 1
+    let cmp = box(1mm, 1mm, 1mm) > 0
+    let vol = volume(box(1mm, 1mm, 1mm))
+    constraint box(1mm, 1mm, 1mm) > 0
+}

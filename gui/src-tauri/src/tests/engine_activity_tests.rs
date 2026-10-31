@@ -54,6 +54,7 @@ impl LockHolder {
 
 fn never_loaded_engine() -> Engine {
     Arc::new(Mutex::new(EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     )))

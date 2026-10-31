@@ -35,8 +35,9 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 ### β — guards/traits/forall_elaborate/geometry_list; entity↔guards cycle
 | Capability | Evidence | Verdict |
 |---|---|---|
-| the cycle is real | `entity.rs` → guards fns: 6 call sites; `guards.rs` → `build_param_value_cell_decl`, `build_auto_let_value_cell_decl`, `resolve_auto_let_cell_type` ×2, `fixup_option_none_for_let`, `fixup_option_none_for_param` | PASS |
-| the helpers can move down without reaching back | their callees: `annotations::{validate_annotations, lower_annotations, extract_solver_hints, validate_solver_hint_collections}`, `annotations/display.rs::validate_display_dimension`, the resolver, and `entity.rs::reject_keyed_value_position` (moves with them) | PASS |
+| the cycle is real | `entity.rs` → guards fns: 6 call sites; `guards.rs` → `build_param_value_cell_decl`, `build_auto_let_value_cell_decl`, `resolve_auto_let_cell_type` ×2, `fixup_option_none_for_let`, `fixup_option_none_for_param`, **[Amended 2026-10-20, retro-critic R8 M4]** `priv_flag_to_visibility` (the sixth) | PASS |
+| the helpers can move down without reaching back | their callees: `annotations::{validate_annotations, lower_annotations, extract_solver_hints, validate_solver_hint_collections}`, `annotations/display.rs::validate_display_dimension`, `crate::scope` (`&CompilationScope`, R8 M4), the resolver, and `entity.rs::reject_keyed_value_position` (moves with them) | PASS |
+| β separates entity and guards in the SCC graph | **[Amended 2026-10-20, retro-critic R8 B1 / R10]** no: β removes the direct edge only; guards still reaches entity via type_resolution, geometry → conformance, geometry_list and compile_builder::sketch_unsupported. "Apart" is delivered by σ #9419 and measured (R10) | superseded by σ |
 | delivered | `^use super::\*;` absent in `guards.rs`; `mod member_cell_decls;` present in `lib.rs` | — |
 
 ### γ — eight-file slice; termination helpers private
@@ -51,7 +52,8 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 |---|---|---|
 | facade consumers are exactly 3 modules | `expr.rs`, `compile_builder/entities_phase.rs`, `variant_construct.rs` (+ `type_compat.rs` itself) | PASS |
 | partition passes h13 | h14 record (seat measurement): binop group calls none of the other three groups; overload group and unify group import `reify_core` downward | PASS |
-| delivered | facade line absent in `type_compat.rs`; `^use super::\*;` absent in `type_compat.rs`; `path` `crates/reify-compiler/src/overload_resolution.rs` exists | — |
+| facade check anchored on the facade, not the private import | **[Amended 2026-10-20, retro-critic R8 M3]** the retained `constraint_arg_type_conforms` needs a private `use reify_core::overload::{type_carries_trait_object, type_carries_type_param};`, which the old pattern `use reify_core::overload::\{type_carries_trait_object` would match; the per-consumer criteria (each of `expr.rs`, `compile_builder/entities_phase.rs`, `variant_construct.rs` imports `type_carries_*` from `reify_core::overload`; no `type_carries` inside a `use crate::type_compat::{…}` list) replace the vacuous `git grep 'type_compat::type_carries'` | PASS |
+| delivered | `^pub\(crate\) use reify_core::overload::` absent in `type_compat.rs`; `^use super::\*;` absent in `type_compat.rs`; `path` `crates/reify-compiler/src/overload_resolution.rs` exists | — |
 
 ### ε — builtin_families.rs
 | Capability | Evidence | Verdict |
@@ -87,7 +89,8 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 | clippy runs `-D warnings` in the gate | `scripts/verify.sh` lint plan: `cargo clippy … --all-targets -- -D warnings` | PASS |
 | `wildcard_imports` exempts `use super::*` in `#[cfg(test)]` modules by default | clippy lint documentation; κ re-verifies on the real tree and allows only `pub use types::*` if the lint reports it | OPEN (κ verifies) |
 | root-path consumers beyond globs are few | `use crate::{CompiledFunction, compile_expr}` in `annotations/materialize.rs`; other `crate::<item>` uses resolve to `lib.rs`-defined fns or `types::*` | PASS |
-| delivered | `^pub\(crate\) use [a-z_]+::\*;` absent in `lib.rs`; `wildcard_imports` present in `lib.rs` | — |
+| internal crate-root re-export paths (third C7 count) | **[Amended 2026-10-20, retro-critic R8 M2]** 122 `crate::<root pub use or types glob item>` paths in 25 files at main; κ drives the count to 0 | PASS (κ carries it) |
+| delivered | `^pub\(crate\) use [a-z_]+::\*;` absent in `lib.rs`; `deny\(([^)]*,\s*)?clippy::wildcard_imports` present in `lib.rs` (anchored on the deny attribute, R8 polarity) | — |
 
 ### λ — Type::children / any_descendant; adoption ratchet
 | Capability | Evidence | Verdict |
@@ -104,7 +107,9 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 | three thread-locals, three guards | `type_resolution.rs` `thread_local!` blocks; `EnumNameScope`, `LocalEnumShadowScope`, `AliasDeferScope` | PASS |
 | install sites | `EnumNameScope::new` ×5 production (`defs_phase`, `entity.rs`, `functions.rs` ×2, `validate_pub_parametric_alias_def_site`); `LocalEnumShadowScope::new` ×1 (`lib.rs`) + 7 test sites; `AliasDeferScope::new` ×1 | PASS |
 | behaviour pins observed today | the four fixture rows in the batch-wide table; `harness_langcore/enum_ctor_param_binding_tests.rs` | PASS |
-| upstream tasks | #6955 (pending; adds a shadow-set reader); #5493 (pending; owns the install-site fold comment) — real dependency edges at decompose | PASS (edges to wire) |
+| behaviour pins byte-identical | **[Amended 2026-10-20, retro-critic R8 M5]** bound: the two s7 fixtures plus the M1 guarded-let and trait-conformance `Option<E>` cases become harness tests asserting exit code and diagnostics, landed before μ's rewrite (PRD §5 rows 6–7, 11–12); nothing in the gate reads `tests/prd-gate/fixtures` | OPEN |
+| install-site context flows through its dynamic extent | **[Amended 2026-10-20, retro-critic R8 M1]** `compile_entity` → guards, member_cell_decls, conformance, forall elaboration; `phase_constraint_defs` → `compile_constraint_def`; the alias def-site check; modules gain `conformance/mod.rs`, `member_cell_decls.rs`, `compile_builder/aliases_phase.rs`, `compile_builder/reserved_name_lint.rs` | PASS |
+| upstream tasks | #6955 (pending; adds a shadow-set reader); #5493 (pending; owns the install-site fold comment); **[Amended 2026-10-20, retro-critic R8 M6]** #8013 (fallback table shape, lazy `defs_phase` install) — real dependency edges | PASS (edges wired) |
 | delivered | `thread_local!` absent in `type_resolution.rs`; `struct ResolutionCtx` present under `crates/reify-compiler/src` | — |
 
 ### ν — SubFacts
@@ -114,11 +119,19 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 | forward-declared state is inferred today | `sub_member_is_cross_sub_geometry_or_forward_declared`: `sub_component_types.contains_key && !sub_member_types.contains_key` | PASS |
 | delivered | `^\s+pub\(crate\) sub_[a-z_]+:` absent in `scope.rs` | — |
 
+### σ — trait bounds, AST substitution and EntityDefRef below entity; sketch_unsupported lifted (#9419, R10)
+| Capability | Evidence | Verdict |
+|---|---|---|
+| β + σ separate entity and guards | **[Amended 2026-10-20, retro-critic R10 — new leaf]** sitting memo `s7-b1-memo.md`, SCC tool's own lexer on a scratch tree: after β + σ, `entity` in {compile_builder, entity, forall_elaborate}, `guards` in a separate 10-module SCC (strict and loose resolution); every strict subset leaves them together. Textual, not compiled | PASS (measured) |
+| the moved items reach no module above them | `trait_bounds` → `types` only; substitution trio and `EntityDefRef` → no crate module; lifted `diagnostic` → `reify_core` only | PASS |
+| delivered | `^pub\(crate\) fn satisfies_trait_bound\b\|^pub fn satisfies_trait_bound\b` absent in `entity.rs`; `^(pub )?mod trait_bounds;` present in `lib.rs` | — |
+
 ### ξ — INV-ARCH-1 reify-compiler rows
 | Capability | Evidence | Verdict |
 |---|---|---|
-| SCC tool exists | none on main (`git grep -il 'tarjan\|modgraph'` over scripts/tests/docs/notes: empty) — S3 α builds it (lead ruling 1); ξ is held on S3 α | OPEN |
-| delivered | manual until the tool's baseline path is fixed by its owner | — |
+| SCC tool exists | **[Amended 2026-10-20, retro-critic R8 polarity]** S3 α #8673 landed `scripts/assert-module-scc.py` and `scripts/module-scc-baseline.json` with reify-compiler in its `excluded` map | PASS |
+| entity and guards apart | **[Amended 2026-10-20, retro-critic R8 / R10]** after σ, as measured; ξ records the residual SCCs either way; fallback (R8 (a)): a back-edge from a module outside the residual SCC reds | PASS (depends on σ) |
+| delivered | `"reify-compiler": "glob imports hide edges` absent in `scripts/module-scc-baseline.json` | — |
 
 ### π — EnumCount on the geometry-kind enums (fk-bb1ba38a6a46, lead ruling 2)
 | Capability | Evidence | Verdict |
@@ -135,7 +148,8 @@ Machine-readable twin: `docs/prds/v0_6/compiler-module-namespace.capability-mani
 
 `shared.delivered_check_polarity.lint_delivered_checks` was run over every mechanical check in
 the sidecar against `main` (2026-10-12). With each leaf's `files` set to the paths its
-`expect: absent` checks name, all 16 blocks lint clean; with `files=None` every `absent` check
+`expect: absent` checks name, all 16 blocks lint clean (σ's block, added 2026-10-20 by the
+retro-critic sitting R10, names `entity.rs` in its `files`); with `files=None` every `absent` check
 warns `absent_overbroad`. So each leaf's `metadata.files` must include those paths (file
 paths only — ζ names the three `conformance/` files, not the directory).
 

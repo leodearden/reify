@@ -219,7 +219,7 @@ The spec names for `abs` and `arg` are *modulus* and *argument* respectively.
 
 ### 2.2 `std.units.si`
 
-Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes. The bare, un-prefixed `A`, `mol`, and `cd` resolve as unit literals (e.g. `1A`, `1mol`, `1cd`); previously only their prefixed forms (`mA`/`kA`, `mmol`, `mcd`) were available.
+Complete SI base units (`m`, `kg`, `s`, `A`, `K`, `rad`, `mol`, `cd`) with all SI prefixes (quecto through quetta). Derived units include: `N`, `J`, `W`, `Pa`, `V`, `ohm`, `S`, `F`, `H`, `Wb`, `T`, `Hz`, `rpm`, `rad_per_s`, `Pa_s`, `lm`, `lx`, `Bq`, `Gy`, `Sv`, `eV`, `bar`, `mbar`, with all common prefixes. The bare, un-prefixed `A`, `mol`, and `cd` resolve as unit literals (e.g. `1A`, `1mol`, `1cd`); previously only their prefixed forms (`mA`/`kA`, `mmol`, `mcd`) were available. They are declared in `std.units`, so they also compose in compound units (`1A^2`, `2mol/m^3`, `5cd/m^2`).
 
 Temperature offset: `degC : Temperature offset 273.15K`
 
@@ -547,7 +547,7 @@ convention changes:
 
 | Primitive | Anchor | Notes |
 |---|---|---|
-| `box` | centred at origin, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally |
+| `box` | centred at origin, all 3 axes | corner at `(-width/2, -depth/2, -height/2)` — width/depth/height are the X/Y/Z extents, which diagnostics and completion name `size_x`/`size_y`/`size_z` |
 | `box_centered` | centred at origin, all 3 axes | op-identical alias of `box`, for symmetry with `cylinder_centered` |
 | `sphere` | centred at origin | |
 | `torus` | centred at origin; axis is +Z | |
@@ -718,6 +718,23 @@ fn loft_guided(profiles: List<Surface>, guides: List<Curve>) -> Solid
 ```
 
 The unbounded (Bounded = false) variant `extrude_infinite` is documented in §3.2, beside `half_space`, the other unbounded producer.
+
+`sweep` transports the profile **exactly as posed**. It never re-orients the
+profile onto the path's start frame, so the body encloses
+`(profile area) x (spine displacement . profile normal)` — pose the profile
+yourself, and a profile lying in the spine's own plane sweeps edge-on and
+encloses nothing. `pipe` (§3.3) is the contrasting member: it *does* build its
+circle on the path's start frame, which is why it needs no posing.
+
+A profile posed so the path's start tangent sits less than **4 degrees** out of
+the profile's plane is rejected with a typed error rather than silently
+realizing a degenerate body. The error reports the path's measured start
+tangent, and the rotation that aligns the profile with it follows from that
+tangent; for a **+Y** one it is:
+
+```
+sweep(rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg), path)
+```
 
 ### 3.7 `std.geometry.transform`
 
@@ -1090,13 +1107,13 @@ trait MotivePort : MechanicalPort
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 trait GuidePort : MechanicalPort {
     param degrees_of_freedom : Int

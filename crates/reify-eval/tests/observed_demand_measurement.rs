@@ -308,7 +308,7 @@ fn bolt_parent_collection_engine(n_default: i64) -> (CompiledModule, Engine) {
         .template(parent)
         .template(bolt)
         .build();
-    let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     (module, engine)
 }
 

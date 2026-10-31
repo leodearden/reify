@@ -190,6 +190,21 @@ vi.mock('../../viewport/feaDiagnosticOverlay', () => ({
   })),
 }));
 
+// ── ProbeSystem mock (#9280) ──────────────────────────────────────────────────
+// The real one constructs a three Raycaster, which this file's Box3-only 'three'
+// mock lacks, as soon as FEA mode auto-enables. Viewport.probe.test.tsx runs it for real.
+vi.mock('../../viewport/ProbeSystem', () => ({
+  createProbeSystem: vi.fn(() => ({
+    addProbe: vi.fn(),
+    pickAndAddProbe: vi.fn(),
+    resampleAll: vi.fn(),
+    removeProbe: vi.fn(),
+    refreshMarkers: vi.fn(),
+    dispose: vi.fn(),
+  })),
+  ProbePopup: () => null,
+}));
+
 const mockSelectionSetHovered = vi.fn();
 const mockSelectionSetSelected = vi.fn();
 const mockSelectionRefreshSelected = vi.fn();

@@ -420,6 +420,7 @@ fn build_with_probe_using(
 ) -> (reify_eval::Engine, Vec<reify_core::Diagnostic>) {
     let compiled = reify_test_support::parse_and_compile(source);
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(kernel),
     );

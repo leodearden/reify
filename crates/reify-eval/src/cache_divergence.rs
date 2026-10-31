@@ -74,9 +74,9 @@ pub fn check_snapshot_cache_divergence(
         };
         let expected = CachedResult::Value(val.clone(), *det).content_hash();
         if entry.result_hash != expected {
-            // Skip-exemption: a `CacheLeg::Skip` commit (the self-datum /
-            // structural-query / annotation-args post-pass overwrites task γ
-            // migrated) deliberately leaves the cache entry un-updated relative
+            // Skip-exemption: a `CacheLeg::Skip` commit (the structural-query /
+            // annotation-args post-pass overwrites task γ migrated)
+            // deliberately leaves the cache entry un-updated relative
             // to the snapshot value it just wrote, flagging the divergence as
             // intentional via a `cache-skip=` marker on the cell's latest
             // `Started` event. Such a cell is exempt by construction.
@@ -121,9 +121,9 @@ impl crate::Engine {
 /// `<trace-slug>|cache-skip=<reason>` shape `commit_cell_result` writes onto
 /// the `Started` event for every `CacheLeg::Skip` commit (`cell_commit.rs`).
 ///
-/// LATEST-`Started` (not ANY-`Started`) is the faithful predicate: the three
-/// post-pass overwrites task γ migrated (self-datum, structural-query,
-/// annotation-args) are Record-then-Skip, so the cell's most-recent `Started`
+/// LATEST-`Started` (not ANY-`Started`) is the faithful predicate: the
+/// post-pass overwrites task γ migrated (structural-query, annotation-args)
+/// are Record-then-Skip, so the cell's most-recent `Started`
 /// event carries the marker and the current snapshot value reflects that Skip.
 /// An earlier Record `Started` (no marker) must not mask a later Skip, nor a
 /// later plain Record mask an earlier Skip.

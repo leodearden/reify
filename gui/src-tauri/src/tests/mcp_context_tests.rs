@@ -10,7 +10,7 @@ use crate::mcp_context::{TauriToolContext, mcp_tool_call_impl};
 fn make_loaded_session() -> EngineSession {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     session
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load");
@@ -38,6 +38,7 @@ fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Tauri
     std::fs::write(&path, bracket_source()).expect("write bracket.ri should succeed");
 
     let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -54,7 +55,7 @@ fn make_tauri_context_on_disk() -> (tempfile::TempDir, std::path::PathBuf, Tauri
 /// Mirrors make_loaded_session() but accepts parameterized source and module name.
 fn make_tauri_context_with_source(source: &str, module_name: &str) -> TauriToolContext {
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None);
+    let mut session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     session
         .load_from_source(source, module_name)
         .expect("load_from_source should succeed");
@@ -573,26 +574,6 @@ fn builder_with_both_options() {
     assert_eq!(recorded[0].0, "focus-entity");
 }
 
-// --- McpConfig struct tests ---
-
-#[test]
-fn mcp_config_struct_stores_fields() {
-    use crate::claude_bridge::McpConfig;
-
-    let sink_called = Arc::new(Mutex::new(false));
-    let sink_clone = sink_called.clone();
-
-    let config = McpConfig {
-        event_emitter: Arc::new(move |_name: String, _payload: serde_json::Value| {
-            *sink_clone.lock().unwrap() = true;
-        }),
-    };
-
-    // Assert the event_emitter field is accessible and invokable
-    (config.event_emitter)("test".to_string(), serde_json::json!({}));
-    assert!(*sink_called.lock().unwrap());
-}
-
 // --- Compile-time trait assertions ---
 
 #[test]
@@ -739,8 +720,8 @@ fn get_diagnostics_maps_warning_fields_to_diagnostic_info() {
 /// ("Bracket") and a full cell ID ("Bracket.width"), returning identical
 /// `(line, column, end_line, end_column)` tuples for both inputs.
 ///
-/// This mirrors the CLI-side test `mcp_server_get_source_location_accepts_template_name_and_cell_id`
-/// (step-5) and proves that both transports use the same unified semantics.
+/// Its CLI-side mirror was retired with `reify mcp-server` (#6665), so this is
+/// the only transport pin of the unified semantics.
 ///
 /// The test passes after step-4 (GUI engine refactor) because
 /// `EngineSession::get_source_location("Bracket")` now returns `Some` — before

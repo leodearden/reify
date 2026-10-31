@@ -315,9 +315,9 @@ pub fn run_local_feature_reports_face_records<F>(
 
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_SIDE_M),
-            height: Value::Real(BOX_SIDE_M),
-            depth: Value::Real(BOX_SIDE_M),
+            size_x: Value::Real(BOX_SIDE_M),
+            size_y: Value::Real(BOX_SIDE_M),
+            size_z: Value::Real(BOX_SIDE_M),
         })
         .expect("box should build");
 
@@ -443,9 +443,9 @@ pub fn run_local_feature_rejects_non_solid_input<F, T>(
 {
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box should build");
 

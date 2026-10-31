@@ -40,8 +40,8 @@ impl ParsedModule {
     /// Render every parse error against `source` as `line:col: message`, in parse order.
     ///
     /// INV-SF-7 `parse-is-value-faithful` (docs/legibility/design-invariants.md), task #5392.
-    /// The three production surfaces that print parse errors — the two loops in
-    /// `reify-cli/src/main.rs` and `CliToolContext::load_file` — all want exactly this, and
+    /// The two production surfaces that print parse errors — the two loops in
+    /// `reify-cli/src/main.rs` — both want exactly this, and
     /// this is where they get it, so no caller has to rebuild the loop or re-derive positions
     /// its own way.
     ///
@@ -956,7 +956,7 @@ where
 ///
 /// `visitor` sees each member parent-before-children, and the walk never exits
 /// early. Takes a `&[MemberDecl]` rather than the `&SubDecl` its sibling
-/// [`walk_specialization_scope_members`] takes, because its caller applies it
+/// [`walk_specialization_scope_members`] takes, because its callers apply it
 /// to whole declaration bodies (structure / occurrence / trait / purpose, plus
 /// each structure nested in a purpose) rather than to one sub's scope.
 pub fn walk_all_member_bodies<'a, F>(members: &'a [MemberDecl], visitor: &mut F)
@@ -1049,10 +1049,13 @@ impl MemberRecursionSet {
         port_body: false,
         sketch_body: false,
     };
-    /// Used by [`walk_all_member_bodies`] — today, `priv_redundant_lint.rs`'s
-    /// E_PRIV_REDUNDANT pass, which asks "does any `let`/`constraint` anywhere
-    /// under this declaration carry `priv`?" and so may skip no optional body
-    /// at all. Every cell `true`: the widest set in the table above.
+    /// Used by [`walk_all_member_bodies`], whose two consumers may each skip no
+    /// optional body at all: `priv_redundant_lint.rs`'s E_PRIV_REDUNDANT pass,
+    /// which asks "does any `let`/`constraint` anywhere under this declaration
+    /// carry `priv`?", and `dot_chain_lint.rs`'s deep-dot-chain lint, which must
+    /// reach every user expression (spec §5.7; task #7127). Every cell `true`:
+    /// the widest set in the table above. Narrowing it would silently cut both
+    /// passes' coverage.
     const ALL_MEMBER_BODIES: Self = Self {
         sub_overrides: true,
         port_body: true,

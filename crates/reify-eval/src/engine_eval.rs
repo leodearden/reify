@@ -42,8 +42,8 @@ use crate::{
 };
 
 /// Resolve a sub-component's `structure_name` against the user module's
-/// templates first (module definitions shadow the prelude), then fall back to
-/// the engine's compiled stdlib prelude modules.
+/// templates and the engine's prelude modules, by the NS-P1 rule in
+/// [`reify_compiler::name_env`].
 ///
 /// Stdlib occurrence templates (e.g. `STLOutput`, `stdlib/io.ri`) live in
 /// `Engine::prelude` and are deliberately NOT merged into
@@ -56,15 +56,15 @@ use crate::{
 ///
 /// `pub(crate)` so the io-export δ occurrence-driven export driver
 /// ([`Engine::build_outputs`], `engine_build.rs`) resolves each `sub`'s
-/// occurrence template through the SAME module-first/prelude-fallback rule the
-/// evaluator uses — stdlib `Output` occurrence templates (`STLOutput` et al.)
-/// live in the prelude, not `CompiledModule::templates`.
+/// occurrence template through the SAME rule the evaluator uses — stdlib
+/// `Output` occurrence templates (`STLOutput` et al.) live in the prelude, not
+/// `CompiledModule::templates`.
 /// This is a thin `&CompiledModule` adapter over
-/// [`crate::unfold::find_template_in_scope`], which is the single source of
-/// truth for the module-first/prelude-fallback rule. `unfold.rs` cannot call
-/// this overload — its recursion carries `&[TopologyTemplate]`, not the owning
-/// `CompiledModule` — so the rule lives there and this delegates. Keep it that
-/// way: the two sites diverging is exactly the defect esc-5360-9 reported (the
+/// [`crate::unfold::find_template_in_scope`], the evaluator's one entry to that
+/// rule. `unfold.rs` cannot call this overload — its recursion carries
+/// `&[TopologyTemplate]`, not the owning `CompiledModule` — so this delegates
+/// there. Keep it that way: the two sites diverging is exactly the defect
+/// esc-5360-9 reported (the
 /// instance-scope nesting recursion resolved module-only, so a prelude-typed
 /// nested sub was silently skipped AND then falsely reported "not found in this
 /// module").
@@ -846,9 +846,9 @@ fn build_combined_param_let_graph(
 /// why that probe is not a flat membership test over the readers.
 ///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
-/// `has_active_solver` gate so the warning surfaces on `reify check` even
-/// when no constraint solver is attached (exactly as `detect_scope_coupling`
-/// does).
+/// `has_active_solver` gate so the warning surfaces on a solver-free engine
+/// (reify-lsp's cold path) as well as on `reify check` / `reify eval`
+/// (exactly as `detect_scope_coupling` does).
 ///
 /// **Global vs per-template scan:** the global read-set prevents false positives
 /// for cross-scope-referenced auto cells (e.g. `Leaf.k` read by a sibling
@@ -1158,8 +1158,9 @@ fn auto_is_pinned_through_a_reader(
 /// (task δ #4825; PRD `docs/prds/v0_6/objective-scope-inheritance.md` §3.4/§6.4, BT8).
 ///
 /// Called in `Engine::eval` AFTER the resolution loop and OUTSIDE the
-/// `has_active_solver` gate, so the warning surfaces on `reify check` (no
-/// solver attached) as well as `reify eval`.  `eval_cached` (the LSP cached
+/// `has_active_solver` gate, so the warning surfaces on a solver-free engine
+/// (reify-lsp's cold path) as well as `reify check` / `reify eval`.
+/// `eval_cached` (the LSP cached
 /// path) intentionally does NOT call this — same asymmetry as W_SCOPE_COUPLING
 /// (see the `eval_cached` call site comment at engine_eval.rs:4495).
 ///
@@ -5987,63 +5988,11 @@ impl Engine {
             }
         }
 
-        // Self-datum projection pass (geometric-relations η, task 4387).
-        //
-        // `self.origin / .frame / .x / .y / .z / .xy_plane / .yz_plane /
-        // .zx_plane` lower to a `MethodCall` on the `__self` StructureRef ref
-        // (η step-8). There is no `__self` value cell at eval time, so the pure
-        // `eval_expr` short-circuits each projection to `Undef` during the main
-        // pass. Here we rewrite every such projection node to its intrinsic
-        // identity-frame constant (kernel-free) and re-evaluate the containing
-        // Let cell — mirroring the structural-query expansion above. The rewrite
-        // is a full tree-walk, so nested operands resolve too (e.g.
-        // `midplane(self.xy_plane, self.zx_plane)`).
-        for template in &module.templates {
-            for cell in &template.value_cells {
-                if !matches!(cell.kind, ValueCellKind::Let) {
-                    continue;
-                }
-                let expr = match &cell.default_expr {
-                    Some(e) => e,
-                    None => continue,
-                };
-                if !crate::geometry_ops::contains_self_datum_projection(expr) {
-                    continue;
-                }
-                let mut rewritten = expr.clone();
-                crate::geometry_ops::rewrite_self_datum_projections(&mut rewritten);
-                let val = reify_expr::eval_expr(
-                    &rewritten,
-                    &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                        .with_determinacy(&snapshot.values),
-                );
-                // Commit-only migration (task γ #5053, impl-5): the
-                // determinacy-only eval ctx above is left as-is. CacheLeg::Skip
-                // makes the pre-existing no-cache decision explicit + auditable
-                // instead of silently omitting the cache leg.
-                commit_cell_result(
-                    CommitLegs {
-                        values: &mut values,
-                        snapshot_values: &mut snapshot.values,
-                        cache: &mut self.cache,
-                        journal: &mut self.journal,
-                    },
-                    cell.id.clone(),
-                    val,
-                    DeterminacyRule::UnconditionalDetermined,
-                    TraceSource::PostPassOverwrite,
-                    DependencyTrace::default(),
-                    version,
-                    CacheLeg::Skip("self-datum projection overwrite"),
-                );
-            }
-        }
-
         // Resolution phase: resolve auto params using the constraint solver.
         //
         // `resolve_solver_for_module` consults `module.solver_pragma` against the
         // named-solver registry (`Engine::register_solver`, Task 2300) and falls
-        // back to `self.solver` if the named back-end isn't registered. It is
+        // back to the default solver if the named back-end isn't registered. It is
         // called once before the template loop so the "not registered" warning
         // is emitted at most once per eval call. The inner loop re-looks-up the
         // active solver via `lookup_solver_for_module` (no warning, single
@@ -6070,7 +6019,7 @@ impl Engine {
         // `cost(self.descendants)` is expanded).
         //
         // PRECONDITION — `values` is fully populated here: the field, Param+Let,
-        // Auto-preseed, sub-component, structural-query and self-datum phases
+        // Auto-preseed, sub-component and structural-query phases
         // have all run above, so the `__count_*` collection cells cluster-time
         // `enumerate_descendants` needs are live (the same precondition the
         // Let-cell structural-query pass above documents). Autos are still
@@ -6279,7 +6228,7 @@ impl Engine {
                 // routing without re-emitting the warning.
                 //
                 // Cost: per-iteration this is one `solver_pragma.as_ref()` match
-                // plus at most one `HashMap::get` plus an `or(self.solver.as_deref())`
+                // plus at most one `HashMap::get` plus an `or(self.default_solver())`
                 // — negligible relative to the `.solve(&problem)` call that follows.
                 // Hoisting the resolved name outside the loop would require either
                 // (a) a slimmer inner helper taking `Option<&str>`, or
@@ -6622,7 +6571,7 @@ impl Engine {
         // Inactive-branch Auto-cell policy: skip (preserve solver value).
         // Canonical rule documented on `engine_edit.rs`'s module-level `//!` doc
         // and `deactivate_if_not_auto`.
-        if self.solver.is_some() {
+        if self.solve_stage.is_some() {
             for template in &module.templates {
                 for group in &template.guarded_groups {
                     let guard_val = reify_expr::eval_expr(
@@ -7069,7 +7018,8 @@ impl Engine {
         // cycle-only coupling_diagnostics (irreducible SCC crossings only).
         // Acyclic crossings are resolved by the ordering itself and do NOT warn.
         // Placed OUTSIDE the `has_active_solver` gate so cycle warnings surface
-        // on `reify check` (which attaches no solver) — same placement as before.
+        // on a solver-free engine (reify-lsp's cold path) as well as `reify
+        // check` / `reify eval` — same placement as before.
         // `ro` was bound before the gate above so it is in scope here.
         diagnostics.extend(std::mem::take(&mut ro.coupling_diagnostics));
 
@@ -7078,8 +7028,9 @@ impl Engine {
         // BT2). For each over-cap / un-mergeable cluster (ApproximatedFallback),
         // emit ONE named warning by reading `ro.clusters` (populated by
         // resolve_order's structural clustering pass). Placed at the same site +
-        // gate as the coupling_diagnostics extend above, so it surfaces on
-        // `reify check` (no solver) and `reify eval` alike. This is the non-test
+        // gate as the coupling_diagnostics extend above, so it surfaces on a
+        // solver-free engine (reify-lsp's cold path) as well as `reify check` /
+        // `reify eval`. This is the non-test
         // consumer of ro.clusters, so the field is not dead code — β consumes
         // the identical field to drive the merged solve. eval_cached deliberately
         // does NOT emit (mirrors its existing no-W_SCOPE_COUPLING policy — eval
@@ -7120,7 +7071,8 @@ impl Engine {
 
         // Ambiguous objective inheritance detection (task δ #4825 — W_OBJECTIVE_INHERIT_AMBIGUOUS,
         // PRD §3.4/§6.4, BT8). Placed OUTSIDE the `has_active_solver` gate so the warning
-        // surfaces on `reify check` (no solver) and `reify eval` alike. Emits one warning per
+        // surfaces on a solver-free engine (reify-lsp's cold path) as well as `reify check` /
+        // `reify eval`. Emits one warning per
         // objective-less structure reachable under ≥2 distinct-objective containers.
         diagnostics.extend(detect_ambiguous_inherited_objectives(&module.templates));
 
@@ -10793,8 +10745,8 @@ impl Engine {
                                 // diagnostic, then fall through to body-inlining.
                                 // Task 5311: Warning when this engine's compute
                                 // registry is entirely EMPTY (a declared
-                                // trampoline-free posture, e.g. `reify check` /
-                                // reify-lsp), Error otherwise (a driver that
+                                // trampoline-free posture, e.g. reify-lsp),
+                                // Error otherwise (a driver that
                                 // registered some trampolines is genuinely missing
                                 // this one). Wording, code AND that emptiness
                                 // predicate all live in the constructor — see
@@ -11911,7 +11863,7 @@ impl Engine {
                         // body-inlining.
                         // Task 5311: Warning when this engine's compute registry
                         // is entirely EMPTY (a declared trampoline-free posture,
-                        // e.g. `reify check` / reify-lsp), Error otherwise (a
+                        // e.g. reify-lsp), Error otherwise (a
                         // driver that registered some trampolines is genuinely
                         // missing this one). Wording, code AND that emptiness
                         // predicate all live in the constructor — see
@@ -12806,7 +12758,7 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     #[test]
     fn reeval_cone_cell_undef_records_undetermined_with_cone_reeval_provenance() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let vcid = ValueCellId::new("S", "cone_cell");
         let node_id = NodeId::Value(vcid.clone());
         let expr = CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar());
@@ -12842,7 +12794,7 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     #[test]
     fn reeval_cone_cell_non_undef_records_determined_with_cone_reeval_provenance() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let vcid = ValueCellId::new("S", "cone_cell");
         let node_id = NodeId::Value(vcid.clone());
         let expr = CompiledExpr::literal(Value::Real(2.5), Type::dimensionless_scalar());
@@ -14188,7 +14140,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     fn evaluate_let_bindings_main_let_provenance_and_freshness() {
         let module = two_cell_module();
         let template = &module.templates[0];
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let mut snapshot = Snapshot::from_compiled_module(&module);
 
         let e = "T";
@@ -14365,7 +14317,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     #[test]
     fn evaluate_let_bindings_non_migrated_subpaths_emit_paired_started_events() {
         let module = two_cell_module();
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let mut snapshot = Snapshot::from_compiled_module(&module);
 
         let a_id = ValueCellId::new("T", "a");
@@ -14556,12 +14508,12 @@ structure LetSiteProbe {
         diagnostics
     }
 
-    /// EMPTY registry ⇒ `Severity::Warning`, coded. This is `reify check`'s and
-    /// `reify-lsp`'s posture: no trampolines registered at all, so a missing one
-    /// is the declared posture rather than a defect.
+    /// EMPTY registry ⇒ `Severity::Warning`, coded. This is `reify-lsp`'s
+    /// posture: no trampolines registered at all, so a missing one is the
+    /// declared posture rather than a defect.
     #[test]
     fn evaluate_let_bindings_unregistered_target_warns_on_an_empty_registry() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let diagnostics = drive_let_site(&mut engine);
 
@@ -14602,7 +14554,7 @@ structure LetSiteProbe {
     /// unconditional one.
     #[test]
     fn evaluate_let_bindings_unregistered_target_stays_an_error_on_a_nonempty_registry() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(NONEMPTY_REGISTRY_PROBE, probe_fn as ComputeFn);
 
         let diagnostics = drive_let_site(&mut engine);

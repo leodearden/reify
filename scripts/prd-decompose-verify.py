@@ -24,7 +24,7 @@ CLI subcommands:
                                     `total` before trusting it.
 
 Reuses α (`prd-capability-check.py`) in-process via importlib — the same loader
-pattern used by `test_prd_capability_check.py`.  α's file is NOT edited.
+pattern used by `_pcc_test_support.py`.  α's file is NOT edited.
 
 Design decisions:
   D1: negative-assertion mandate — a `rejection` premise binds probe_kind="check"
@@ -40,6 +40,8 @@ Design decisions:
       rather than tabulated as a premise falsification.  HARNESS_ERROR is
       exempt and always blocks: it is the verdict that reports "nothing could
       be run at all", so absent evidence is its message, not a defect in it.
+      A record α measured as having no fixture (`fixture_present: false`) is
+      set aside as fixture-absent rather than blocking; see classify_record.
   D3: reuse α's exact output shape via importlib — no re-implementation.
 """
 
@@ -49,15 +51,15 @@ import argparse
 import importlib.util
 import json
 import os
-import re
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from types import MappingProxyType
+from typing import Any, Dict, List, Mapping, Optional
 
 # ---------------------------------------------------------------------------
 # Load α (prd-capability-check.py) via importlib
 # ---------------------------------------------------------------------------
-# Mirror the loader pattern in test_prd_capability_check.py so α is reused
+# Mirror the loader pattern in _pcc_test_support.py so α is reused
 # in-process without editing the locked/merged file.
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -81,9 +83,10 @@ class Premise:
 
     Fields:
         text            — human-readable assertion statement
-        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir"
+        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir" | "value"
         fixture         — repo-relative path to the .ri fixture file
-        match           — match predicate dict for α's probe (exit_code, stderr_contains, …)
+        match           — the premise's own match keys for α's probe (stderr_contains, …);
+                          premise_to_probe adds the ones its assertion kind requires
         capability      — optional human name; falls back to text if None
     """
     text: str
@@ -94,37 +97,64 @@ class Premise:
 
 
 # ---------------------------------------------------------------------------
-# Assertion-kind → (probe_kind, observation) mapping
+# Assertion-kind → binding table
 # ---------------------------------------------------------------------------
 
-# Deterministic binding table (PRD D1 / negative-assertion mandate):
-#   rejection → check / present  — the rejection FIRES → exit_code 1 → match satisfied → PRESENT
-#                                   if reify accepts silently (exit 0) → match fails → ABSENT → FAIL
-#   parses    → grammar / present — tree-sitter exits 0 (no parse errors) → PRESENT → PASS
-#   resolves  → check / present  — reify check exits 0 → match {exit_code:0} satisfied → PRESENT
-#   produces  → ir / present     — reify eval exits ≠ 0 with signature → PRESENT → PASS
-#   ir        → ir / absent      — reify eval exits 0 (clean) → ABSENT → expected absent → PASS
-#   value     → value / present  — reify eval exits 0 AND the stdout capture satisfies the
-#                                   numeric constraint → PRESENT → PASS; exits 0 and a capture
-#                                   was read but is wrong or undef → ABSENT → FAIL; exits ≠ 0,
-#                                   or the pattern located nothing → INDETERMINATE → UNPROVABLE
-#                                   (ABSENT is reserved for a value actually read: a mis-aimed
-#                                   pattern is a broken probe, not a negative finding)
-_ASSERTION_KIND_MAP: Dict[str, tuple] = {
-    "rejection": ("check",   "present"),
-    "parses":    ("grammar", "present"),
-    "resolves":  ("check",   "present"),
-    "produces":  ("ir",      "present"),
-    "ir":        ("ir",      "absent"),
-    "value":     ("value",   "present"),
-}
+@dataclass(frozen=True)
+class AssertionBinding:
+    """How every premise of one assertion kind becomes an α probe.
+
+    probe_kind and observation name the probe.  required_match holds the match
+    keys every premise of the kind probes, whatever the premise wrote: the row's
+    own statement of what makes it non-vacuous.  It is read-only, so no probe
+    handed to a caller can rewrite the row.
+    """
+    probe_kind: str
+    observation: str
+    required_match: Mapping[str, Any]
+
+
+_NO_REQUIRED_MATCH: Mapping[str, Any] = MappingProxyType({})
+
+# Deterministic binding table (PRD D1 / D4).  α's load_probe_set holds the rest
+# of each probe's non-vacuity, by the rules tests/prd-gate/README.md states.
+_ASSERTION_KIND_MAP: Mapping[str, AssertionBinding] = MappingProxyType({
+    # The rejection FIRES → exit 1 → match satisfied → PRESENT → PASS; reify
+    # accepting silently (exit 0) misses it → ABSENT → expected present → FAIL.
+    # Negative-assertion mandate: "present", NOT "absent" (see premise_to_probe).
+    "rejection": AssertionBinding(
+        "check", "present", MappingProxyType({"exit_code": 1})
+    ),
+    # reify check exits 0 → match satisfied → PRESENT.
+    "resolves": AssertionBinding(
+        "check", "present", MappingProxyType({"exit_code": 0})
+    ),
+    # tree-sitter exits 0 (no parse errors) → PRESENT → PASS.
+    "parses": AssertionBinding("grammar", "present", _NO_REQUIRED_MATCH),
+    # reify eval exits ≠ 0 with the premise's stderr signature → PRESENT → PASS.
+    # No fixed key: the signature is the premise's own, and α refuses its lack.
+    "produces": AssertionBinding("ir", "present", _NO_REQUIRED_MATCH),
+    # reify eval exits 0 (clean) → ABSENT → expected absent → PASS.
+    "ir": AssertionBinding("ir", "absent", _NO_REQUIRED_MATCH),
+    # reify eval exits 0 AND the stdout capture satisfies the numeric
+    # constraint → PRESENT → PASS; exits 0 and a capture was read but is wrong
+    # or undef → ABSENT → FAIL; exits ≠ 0, or the pattern located nothing →
+    # INDETERMINATE → UNPROVABLE (ABSENT is reserved for a value actually read:
+    # a mis-aimed pattern is a broken probe, not a negative finding).  α's value
+    # predicate rules are what make this row non-vacuous.
+    "value": AssertionBinding("value", "present", _NO_REQUIRED_MATCH),
+})
 
 
 def premise_to_probe(premise: Premise) -> Dict[str, Any]:
     """Bind a Premise record to an α probe dict.
 
-    The binding is deterministic — assertion_kind → (probe_kind, observation) from
-    _ASSERTION_KIND_MAP; the match dict is passed through verbatim from the premise.
+    The binding is deterministic — assertion_kind → the AssertionBinding row in
+    _ASSERTION_KIND_MAP.  The emitted match is a new dict: the row's required_match
+    united with the premise's match (required ∪ premise).  A premise that sets a
+    required key to a different value is mis-kinded and refused rather than
+    honoured: `resolves` with exit_code 1 would otherwise silently become a
+    rejection.
 
     Negative-assertion mandate (D1): a "rejection" premise binds observation="present"
     (NOT "absent").  A "revolute rejects a non-axis arg" assertion must probe that the
@@ -147,7 +177,8 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
         A dict in α's committed-probe-set shape, accepted by pcc.load_probe_set.
 
     Raises:
-        ValueError: if the assertion_kind is unknown.
+        ValueError: if the assertion_kind is unknown, the premise's match is not
+                    an object, or it contradicts the row's required_match.
     """
     kind = premise.assertion_kind
     if kind not in _ASSERTION_KIND_MAP:
@@ -155,17 +186,31 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
             f"unknown assertion_kind {kind!r}; "
             f"must be one of {sorted(_ASSERTION_KIND_MAP)}"
         )
+    binding = _ASSERTION_KIND_MAP[kind]
 
-    probe_kind, observation = _ASSERTION_KIND_MAP[kind]
+    if not isinstance(premise.match, Mapping):
+        raise ValueError(
+            f"{kind} premise {premise.text!r} has a match of type "
+            f"{type(premise.match).__name__}; match must be an object"
+        )
+    for key, required in binding.required_match.items():
+        if key in premise.match and premise.match[key] != required:
+            raise ValueError(
+                f"{kind} premise {premise.text!r} sets match.{key} = "
+                f"{premise.match[key]!r}, but every {kind} premise binds "
+                f"{key} = {required!r}.  The premise is mis-kinded: change its "
+                f"assertion_kind, or drop match.{key}"
+            )
+
     capability = premise.capability if premise.capability is not None else premise.text
 
     return {
         "capability": capability,
-        "probe_kind": probe_kind,
+        "probe_kind": binding.probe_kind,
         "fixture": premise.fixture,
         "expected": {
-            "observation": observation,
-            "match": premise.match,
+            "observation": binding.observation,
+            "match": {**premise.match, **binding.required_match},
         },
     }
 
@@ -182,14 +227,14 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
         {"probes": [probe_dict, ...]}
 
     Negative-assertion enforcement:
-        A `rejection` premise with an empty fixture string is a gap — a
-        rejection assertion with no probe target would silently pass, masking
-        the missing check.  Such a premise raises ValueError.
+        Each binding row in _ASSERTION_KIND_MAP writes the match its kind
+        requires (a rejection always probes exit_code 1), so a premise cannot
+        bind a probe that a silent accept would pass.
 
     Validation:
-        The assembled probe-set is validated by pcc.load_probe_set so any
-        binding error (unknown probe_kind, missing observation) surfaces here
-        rather than at probe-run time.
+        The assembled probe-set goes through pcc.load_probe_set, and that is
+        the only validation, so a probe α refuses (tests/prd-gate/README.md
+        states the rules) surfaces here rather than at probe-run time.
 
     Args:
         premises: List of Premise records (may be empty → empty probe-set).
@@ -198,33 +243,10 @@ def bind_premises(premises: List[Premise]) -> Dict[str, Any]:
         A dict {"probes": [...]}.  Round-trips through pcc.load_probe_set.
 
     Raises:
-        ValueError: if a rejection premise has an empty fixture path, or if
-                    the assembled probe dict is rejected by α's validation.
+        ValueError: if premise_to_probe refuses a premise, or if α's
+                    validation rejects the assembled probe set.
     """
-    probes = []
-    for premise in premises:
-        # Negative-assertion mandate: a rejection with no fixture is a gap.
-        if premise.assertion_kind == "rejection" and not premise.fixture.strip():
-            raise ValueError(
-                f"rejection premise {premise.text!r} has no fixture path — "
-                "a rejection assertion with no probe target is a gap, not a pass"
-            )
-
-        # Negative-assertion mandate: a rejection with an empty match dict is
-        # satisfied unconditionally (α's match_predicate returns True for {}) —
-        # reify can silently accept and the probe still PASSes.  That is the
-        # exact 4575 silent-accept class this harness exists to catch.
-        if premise.assertion_kind == "rejection" and not premise.match:
-            raise ValueError(
-                f"rejection premise {premise.text!r} has no match constraints — "
-                "an empty match is satisfied unconditionally and cannot detect "
-                "silent-accept (add e.g. match={{\"exit_code\": 1}} or "
-                "match={{\"exit_code\": 1, \"stderr_contains\": \"<diag>\"}})"
-            )
-
-        probe = premise_to_probe(premise)
-        probes.append(probe)
-
+    probes = [premise_to_probe(premise) for premise in premises]
     probe_set = {"probes": probes}
 
     # Validate through α so binding errors surface here, not at probe-run time.
@@ -317,158 +339,28 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
     return rec.get("exit_code") is not None
 
 
-# ENOENT signatures, matched case-insensitively.  Both spellings occur: Rust's
-# io::Error renders ENOENT as "(os error 2)", while Python/CLI wrappers render
-# the strerror text.  A signature counts only on a stderr line that also names
-# the probe's own fixture (pcc.fixture_argument), because an ENOENT about any
-# other path is not evidence that the probe's target was absent.
-#
-# The two are deliberately NOT the same kind of pattern.  The strerror text is a
-# complete phrase, so a plain substring test carries no prefix hazard.  The
-# errno rendering does: `"os error 2"` as a bare substring is a PREFIX test, not
-# an errno test, and swallows ENOTDIR(20) / EISDIR(21) / EINVAL(22) /
-# EMFILE(24) / ENOSPC(28) and the whole 2XX range.  The negative lookahead is
-# what makes it mean ENOENT specifically.  It must be a lookahead rather than a
-# required closing paren, because a bare trailing `os error 2` at end-of-string
-# is a spelling that occurs in the wild and must still match.
-_FIXTURE_ABSENT_PHRASE = "no such file or directory"
-_FIXTURE_ABSENT_ERRNO_RE = re.compile(r"os error 2(?![0-9])")
-
-
-def _reports_enoent(line: str) -> bool:
-    lowered = line.lower()
-    return (_FIXTURE_ABSENT_PHRASE in lowered
-            or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
-
-
-def _path_token_re(path: str) -> "re.Pattern[str]":
-    """Match `path` as a whole path token, never as the tail of a longer path.
-
-    `/` is deliberately not a left delimiter, so `leaf.ri` does not match
-    inside `/other/leaf.ri` or `fixtures/subleaf.ri`.
-    """
-    return re.compile(r"(?:^|[\s'\"`])" + re.escape(path) + r"(?=[\s'\"`:]|$)")
-
-
-def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
-    """True iff the record's captured stderr says the probe's fixture did not exist.
-
-    Detection is STDERR-SIGNATURE based, not filesystem based, deliberately.
-    Re-stat-ing the fixture here would be a time-of-check/time-of-run split: the
-    synthesize step runs after the probes, potentially in a different working
-    directory, a different worktree, or after the leaf's own deliverable has
-    since been written.  A filesystem answer at synthesize time is therefore an
-    answer to a different question than "could this probe find its target when
-    it ran".  The captured stderr IS the record of what happened at run time,
-    and PRD §6 decision 4 exists precisely so this is answerable from the
-    record alone.
-
-    Carve-out for α's binary-not-found sentinel: a missing `reify` binary makes
-    the OS emit the SAME ENOENT text (α wraps it as
-    `f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}"`), but nothing was probed at all, so
-    it is a real harness failure that must keep blocking.  The sentinel is read
-    from α rather than re-declared as a literal so the two cannot drift.  α
-    itself always classifies that case HARNESS_ERROR (observe() checks the
-    sentinel before any kind-specific logic), and classify_record now short-
-    circuits HARNESS_ERROR to BLOCKING before calling this function at all — so
-    for α-produced records this carve-out is belt-and-braces.  It is kept
-    because these records reach the harness via a relay agent, which can
-    mislabel a launch failure as a bare FAIL; then this is the only thing
-    standing between "the binary is missing" and "the fixture is the leaf's own
-    deliverable".
-
-    The errno signature is ANCHORED (`os error 2(?![0-9])`).  ENOENT is errno 2,
-    and an unanchored `"os error 2"` substring is a prefix test that also fires
-    on ENOTDIR(20), EISDIR(21), EINVAL(22), EMFILE(24), ENOSPC(28) and every
-    3-digit 2XX errno — each a genuine, executed falsification that would
-    silently stop blocking, inverting the carve-out into a hole that swallows
-    real findings.  The lookahead (rather than a required closing paren) is
-    load-bearing: a bare trailing `os error 2` at end-of-string is a real
-    spelling and must still match.
-
-    The signature is ANCHORED TO THE TARGET: it must sit on a stderr line that
-    also names the probe's own fixture as a whole path token, read from the
-    record's argv by pcc.fixture_argument (reify renders `Error reading
-    <fixture>: ...`).  That excludes ENOENT text quoted on a line that does not
-    name the fixture, an ENOENT about some other path (an imported module, a
-    data file, the α script itself, or a longer path that merely ends in the
-    fixture's name), and a signature on a line that does not name the fixture.
-    An argv naming no fixture never qualifies.
-
-    RESIDUAL LIMITATION: the anchor narrows the quoting hazard but does not
-    close it.  A genuine FAIL whose diagnostic line both names the fixture and
-    quotes the ENOENT text (`<fixture>:3: expected "No such file or
-    directory"`) is still mis-routed to FIXTURE_ABSENT, which downgrades BLOCKS
-    to INCOMPLETE and never reaches PASS.  The principled fix is for α to tag
-    the record structurally at probe time; follow-up ticket
-    tkt_0RVA2VQZR806G3PZTQVH0JCDXG.
-
-    GRAMMAR PROBES ARE NOT COVERED: tree-sitter reports a missing file as
-    `Error: No files were found at or matched by the provided pathname/glob`,
-    which names neither the path nor ENOENT.  A never-written grammar fixture
-    therefore still blocks, failing closed.  Tracked by #8122.
-
-    Args:
-        rec: An α --json result record.
-
-    Returns:
-        True when a stderr line names the probe's fixture and carries an ENOENT
-        signature, and the stderr is not α's binary-not-found sentinel.
-    """
-    stderr = str(rec.get("stderr", ""))
-    if pcc._BINARY_NOT_FOUND_SENTINEL in stderr:
-        return False
-    fixture = pcc.fixture_argument(normalize_command(rec.get("command")))
-    if not fixture:
-        return False
-    names_fixture = _path_token_re(fixture)
-    return any(names_fixture.search(line) and _reports_enoent(line)
-               for line in stderr.splitlines())
-
-
 def classify_record(rec: Dict[str, Any]) -> str:
     """Classify a result record into one of the CAT_* categories.
 
-    Precedence (first match wins):
+    PRD docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.2, first match wins:
 
-      1. NON_BLOCKING   — the verdict is not one of FAIL / UNPROVABLE /
-                          HARNESS_ERROR.  This covers PASS and also
-                          premise-shaped records that carry no `verdict` key at
-                          all (RESULTS_SCHEMA is loose enough today that a
-                          premise validates as a result).  The evidence gate
-                          deliberately does NOT re-litigate a non-blocking
-                          record: it exists to stop unexecuted promises from
-                          being tabulated as falsifications.
-      2. BLOCKING (HARNESS_ERROR) — see the carve-out below; checked before
-                          BOTH downgrade branches.
-      3. MALFORMED      — a FAIL/UNPROVABLE with no executed-probe evidence.
-                          A harness defect, not a premise falsification.
-      4. FIXTURE_ABSENT — a FAIL/UNPROVABLE whose probe ran but whose target
-                          file did not exist.  Ordered AFTER malformed so an
-                          evidence-free record is never reclassified on the
-                          strength of a stderr string no process produced.
+      1. NON_BLOCKING   — the verdict is not FAIL / UNPROVABLE / HARNESS_ERROR
+                          and the fixture was not absent.  Covers PASS and
+                          premise-shaped records with no `verdict` key; the
+                          evidence gate does not re-litigate them.
+      2. BLOCKING       — HARNESS_ERROR: the machinery could not run, so absent
+                          evidence is its message rather than a defect in it
+                          (the Prover's no-process fallback carries none).
+      3. MALFORMED      — no executed-probe evidence: an unexecuted promise.
+      4. FIXTURE_ABSENT — α measured the fixture absent when the probe launched,
+                          whatever the remaining verdict, including a relayed
+                          PASS that rule 1's guard let through.
       5. BLOCKING       — an evidence-backed falsification.
 
-    HARNESS_ERROR CARVE-OUT (task #7257 amendment).  Both downgrade branches
-    exist to stop a *premise falsification* being claimed on no evidence.
-    HARNESS_ERROR does not make that claim — it says "the probe machinery
-    itself could not run", which is the one verdict for which absent evidence
-    is the message rather than a defect in the message.  Routing it through
-    either downgrade inverts its meaning:
-
-      - MALFORMED: the Prover prompt's documented fallback for "I could not run
-        anything at all" is literally `{verdict: "HARNESS_ERROR", command: [],
-        exit_code: -1}`.  Under a blanket evidence gate that record stops
-        blocking, so the one path meaning "python3 missing / α script path
-        wrong / the shell step died" silently downgrades the batch to
-        INCOMPLETE.
-      - FIXTURE_ABSENT: a harness-level ENOENT (e.g. `python3: can't open file
-        'scripts/prd-capability-check.py': [Errno 2] No such file or
-        directory`, or a mis-resolved repo root) can carry the fixture-absent
-        signature and would be reported as "the fixture is the leaf's own deliverable" — the
-        opposite diagnosis, and it stops blocking.  The carve-out's rationale
-        (a not-yet-written `.ri` deliverable) is about a PROBE verdict; it has
-        no purchase on a harness error.
+    Only α's boolean `fixture_present: false` is an absent fixture (PRD D3).  A
+    missing or null field, or any non-bool value, reads as present: this is the
+    one branch that can stop a block, so it fires only on α's own unambiguous
+    answer.  No stderr text is consulted.
 
     Args:
         rec: An α --json result record.
@@ -478,13 +370,14 @@ def classify_record(rec: Dict[str, Any]) -> str:
         CAT_BLOCKING.
     """
     verdict = rec.get("verdict", "")
-    if verdict not in _BLOCKING_VERDICTS:
+    fixture_absent = rec.get("fixture_present") is False
+    if verdict not in _BLOCKING_VERDICTS and not fixture_absent:
         return CAT_NON_BLOCKING
     if verdict == "HARNESS_ERROR":
         return CAT_BLOCKING
     if not has_probe_evidence(rec):
         return CAT_MALFORMED
-    if fixture_absent_evidence(rec):
+    if fixture_absent:
         return CAT_FIXTURE_ABSENT
     return CAT_BLOCKING
 
@@ -508,8 +401,9 @@ class BatchVerdict:
                          they mean the batch was not actually verified.
                          HARNESS_ERROR is never routed here — it always blocks
                          (see classify_record).
-        fixture_absent — capability strings whose probe could not run because
-                         the fixture does not exist (populated from step-06).
+        fixture_absent — capability strings whose probe ran without its
+                         fixture: α measured it absent at launch.  Not a
+                         falsification, so these do NOT set `blocks`.
         executed       — number of records carrying executed-probe evidence
         total          — total number of records synthesized
 
@@ -576,7 +470,8 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
     """Synthesize Prover + Adversary α result records into a BatchVerdict.
 
     Consumes α's --json result records (shape:
-        {capability, probe_kind, verdict, command, exit_code, stdout, stderr}
+        {capability, probe_kind, verdict, command, exit_code, stdout, stderr,
+         fixture, fixture_present, harness_failure}
     ) keyed by role ("prover" / "adversary").
 
     Union semantics (PRD decision 5):
@@ -596,17 +491,14 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         the verdict that *reports* "nothing could be run", so absent evidence is
         its message rather than a defect in its message.  See classify_record.
 
-    Fixture-absent carve-out (task #7257 ARM 1):
-        A FAIL/UNPROVABLE probe that ran but could not find its target file has
-        falsified nothing — during decompose the fixture is very often the
-        leaf's own deliverable.  Such records are routed to `fixture_absent`,
-        reported under their own label, and do NOT set `blocks`.  Detection is
-        stderr-signature based rather than filesystem based; see
-        fixture_absent_evidence for the time-of-check/time-of-run rationale and
-        for the binary-not-found carve-out that keeps a missing `reify` binary
-        blocking.  A HARNESS_ERROR is never routed here either: a harness-level
-        ENOENT means the machinery is broken, not that a deliverable is
-        unwritten.
+    Fixture-absent carve-out (PRD §5.2 / D3):
+        A probe whose fixture did not exist has falsified nothing — during
+        decompose the fixture is very often the leaf's own deliverable.  α
+        measures that when the probe launches; a record it marks
+        `fixture_present: false` is routed to `fixture_absent`, reported under
+        its own label, and does NOT set `blocks`.  A HARNESS_ERROR is never
+        routed here: the machinery failing is the louder fact.  See
+        classify_record for the full precedence.
 
     Args:
         role_results: dict with "prover" and "adversary" keys, each mapping to
@@ -692,8 +584,8 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         )
     if fixture_absent_parts:
         sections.append(
-            "FIXTURE ABSENT (probe could not run — the fixture is the leaf's own "
-            "deliverable; not a falsification):\n\n"
+            "FIXTURE ABSENT (the probe ran, but its fixture did not exist — "
+            "typically the leaf's own deliverable; not a falsification):\n\n"
             + "\n\n".join(fixture_absent_parts)
         )
     report = "\n\n".join(sections)
@@ -721,9 +613,9 @@ def _parse_premises_file(path: str) -> List[Premise]:
             "premises": [
                 {
                     "text": "...",
-                    "assertion_kind": "rejection|parses|resolves|produces|ir",
+                    "assertion_kind": "rejection|parses|resolves|produces|ir|value",
                     "fixture": "...",
-                    "match": {...},
+                    "match": {...},            // optional; see premise_to_probe
                     "capability": "..."   // optional
                 }
             ]

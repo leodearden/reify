@@ -16,7 +16,7 @@ use reify_core::Type;
 use reify_eval::persistent_cache::ShellChannels;
 use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};
 use reify_solver_elastic::constitutive::IsotropicElastic;
-use reify_solver_elastic::shell_assembly::build_shell_frame;
+use reify_solver_elastic::build_shell_frame;
 use reify_solver_elastic::shell_result::shell_element_stress;
 
 // 3-node right triangle in the XY plane; side length 1m.

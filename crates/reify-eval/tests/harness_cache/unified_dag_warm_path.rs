@@ -42,7 +42,7 @@ fn engine_with_recording_kernel(
     let exported = kernel.exported_handles_ref();
     let compounds = kernel.compound_members_ref();
     let mut engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel) as Box<dyn GeometryKernel>));
+        Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel) as Box<dyn GeometryKernel>));
     engine.set_build_scheduler(scheduler);
     (engine, exported, compounds)
 }
@@ -250,6 +250,7 @@ fn tessellate_snapshot_matches_cold_and_is_scheduler_agnostic() {
     // ── LegacyMultiPass ──
     let mut legacy_engine = {
         let mut e = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>),
         );
@@ -265,6 +266,7 @@ fn tessellate_snapshot_matches_cold_and_is_scheduler_agnostic() {
     // ── UnifiedDag ──
     let mut unified_engine = {
         let mut e = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new()) as Box<dyn reify_ir::GeometryKernel>),
         );

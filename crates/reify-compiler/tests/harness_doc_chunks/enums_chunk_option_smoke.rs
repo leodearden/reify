@@ -16,9 +16,9 @@
 //!
 //! Lives in `reify-compiler` (not `reify-mcp`, where `enums.md` itself lives)
 //! because `reify-mcp` does not depend on `reify-compiler` and so cannot
-//! invoke `compile_source_with_stdlib`; `language_chunks::get_chunk` is
-//! unreachable from here in turn, so the chunk is read by path — the same
-//! cross-crate placement #5347 and #5364 arrived at independently.
+//! invoke `compile_source_with_stdlib` — the same cross-crate placement #5347
+//! and #5364 arrived at independently. The chunk is read by path through
+//! `chunk_io`, like every corpus gate in this harness.
 //!
 //! # Coverage boundary
 //!

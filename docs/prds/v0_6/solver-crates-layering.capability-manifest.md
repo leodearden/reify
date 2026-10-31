@@ -33,7 +33,7 @@ blocks queueing.
 | δ | `AssemblyElement` fields private | grep: `pub connectivity: &'a [usize]`. After #8373 the `dofs_per_node()` derivation is single, but the checks are still asymmetric. | PASS | grep absent |
 | δ | callers moved first | producer: #8375 (upstream edge) | PASS | manual |
 | ε | `ElementStiffness` storage private | grep: `pub data: Vec<f64>`; 72 `.data[` sites | PASS | grep absent |
-| ε | no external readers | measured: none outside reify-solver-elastic | PASS | manual |
+| ε | no external readers | **corrected by R2 M4:** the original grep searched only `k_e.data`; one external reader exists, `crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs` (`ke.data` / `ke.n_dofs`, :330, :347). ε migrates it to `get()`/`n_dofs()` in the same diff (file added to ε's files); re-run the grep as `\.data\[\|\.n_dofs\b` over `crates/*/{src,tests}` outside reify-solver-elastic before closing | FAIL→corrected | manual |
 | ζ | copied helpers gone | grep: `fn member_force_delta` in `tensegrity_load.rs` | PASS | grep absent |
 | ζ | thin call | `membrane_load_analysis(` is absent from `tensegrity_load.rs` | PASS | grep present |
 | ζ | types alias cleanly | read: the Options and Error types are identical; the Solve types differ by `member_slack` and the surface fields | PASS | manual |
@@ -48,9 +48,6 @@ blocks queueing.
 | ι | per-file `dedup_bcs` gone | grep: 5 top-level definitions | PASS | grep absent (5 files) |
 | ι | determinism rebuilt first | producer: #8375 | PASS | manual |
 | ι | conflicting-BC fixtures | unmeasured; the leaf runs the suites and fixes any real fixture defect | **OPEN** | manual |
-| κ | `GeometryError::BackendUnavailable` | the variant is absent; no exhaustive match outside Display | PASS | grep present |
-| κ | substring parsers gone | grep: 2 `msg.contains(…STUB_UNAVAILABLE_MARKER)` | PASS | grep absent |
-| κ | stub arm compilable | `build.rs` omits `has_gmsh` when `GMSH_LIB_DIR` is empty | PASS | manual |
 | λ | `TetSpatialIndex<'a>` | no lifetime today; the only users are in `resample.rs` | PASS | grep present |
 | μ | `tests/qoi.rs` | the record's h14 partition: tests use only crate-root re-exports | PASS | path present |
 | μ | inline module gone | grep: `#[cfg(test)]` appears once in `qoi.rs` | PASS | grep absent |
@@ -65,7 +62,41 @@ blocks queueing.
 | ο | core renamed | grep: `fn solve_core_with_sd_tolerance`; all 5 callers pass `NM_SD_TOLERANCE` | PASS | grep absent |
 | π | inline test module gone | grep: `mod tests {` in `solver.rs` (7,046 lines) | PASS | grep absent |
 | π | uniqueness layer | the record's partition: downward-only | PASS | path present `solver/uniqueness.rs` |
+| π | no stitched solver tests file | R2 polarity: the inline-module check alone goes green on a verbatim `#[cfg(test)] mod tests;` + `src/solver/tests.rs` stitch (D19 forbids it); absent at main, a guard that holds before and after | PASS | path absent `crates/reify-constraints/src/solver/tests.rs` |
 | ρ | terminal status | the overlay's freeze shape | PASS | manual |
+
+κ #8632 has no rows: it was cancelled on 2026-10-14 and subsumed by S10 β₁ #8935 (S10 R5 removes the
+gmsh-free build), so its checks were dead and left the twins under retro-critic ruling R2.
+
+One verdict is **FAIL→corrected** (ε, no external readers; R2 M4): the binding was false and the
+leaf's scope was widened to migrate the one external reader.
 
 The adopted task #8528 (ShellStress, fk-824124d1e74e) is not a batch block: it was filed by the
 run and carries no manifest block of its own.
+
+## Gap-fill leaves (2026-10-16)
+
+Rulings: `plans/gap-fill-deliberation-reify-20261016.md` §K3-D3, §K6-D1 (uncontested block), §K6-D2,
+§K6-D3. Every mechanical check below was run with `git grep -E` against main `c7bbfe2519`
+(2026-10-17): each `present` check has no match and each `absent` check matches.
+
+| leaf | capability | evidence | verdict | delivered check |
+|---|---|---|---|---|
+| ξ₂ #9267 | `ParamDomain` carrier | no `ParamDomain`/`DomainTable` in crates/; `AutoParam.bounds` written `None` by all three production builders | PASS | grep present `struct ParamDomain` in `crates/reify-constraints/src` |
+| ξ₂ #9267 | `AutoParam.bounds` gone | grep: `pub bounds: Option<(f64, f64)>` on `AutoParam` in `reify-ir/src/constraint.rs` | PASS | grep absent `pub bounds: Option<` |
+| ξ₂ #9267 | HC4 and ξ land first | producers: #6655, #8653 (dep edges; G1, neither widened) | PASS | manual |
+| ξ₃ #9268 | `leaf_verdicts` | no `fn leaf_verdicts`; inequality acceptance is `magnitude <= FEASIBILITY_THRESHOLD`, `Gt` scores 0 at l == r | PASS | grep present `fn leaf_verdicts` |
+| ξ₃ #9268 | NaN-accepted arm gone | grep: `magnitude.is_nan() \|\|` in `RowResidual::inequality` (only match) | PASS | grep absent |
+| η₂ #9271 | `GroupSpec` | no `GroupSpec`; the group guard is copied in two kernels | PASS | grep present `struct GroupSpec` |
+| η₂ #9271 | `NonFinite { what, index }` | no `NonFinite {` variant in `reify-solver-elastic/src`; R2 polarity: anchored on the field so φ-ff's `SpectrumError` cannot satisfy it | PASS | grep present `NonFinite \{ what` |
+| η₂ #9271 | warp_dir guard replaced | grep: `wip_norm_sq < 1e-16 * wd_norm_sq` (`form_find.rs:887`) | PASS | grep absent `wip_norm_sq < 1e-16` |
+| η₃ #9272 | gauge measured | the 2^±20 suite is Explicit-only; outcome conditional (StiffnessScale if red, lock if green) | PASS | manual |
+| φ-ff #9273 | `SymmetricSpectrum` | no spectrum type; `NULLITY_REL_TOL` defined twice | PASS | grep present `struct SymmetricSpectrum` |
+| φ-ff #9273 | eigen calls leave the solvers | grep: `.self_adjoint_eigen(` in `form_find_free.rs` (1) and `prestress_stability.rs` (3); R2 polarity: the bare word also matched 3 doc-prose lines in `prestress_stability.rs` | PASS | grep absent `\.self_adjoint_eigen\(` in those two files |
+| χ-ff #9274 | `QSource` | no `QSource`; 3 inline spec branches in `form_find_free_surfaces` | PASS | grep present `(enum\|trait) QSource` |
+| ψ-ff #9275 | test assembler gone | grep: `fn reassemble_d(` in `form_find.rs` tests | PASS | grep absent `fn reassemble_d\b` |
+| ψ-ff #9275 | test residual gone | grep: `fn equilibrium_residual_scaled` in `form_find.rs` tests | PASS | grep absent |
+
+#7801 is adopted into this stream (K6-D2) but keeps its own record: it has no block here, and its
+delivered check (`fn certify` present in `crates/reify-solver-elastic/src`) lives in its task
+metadata only.

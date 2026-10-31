@@ -14,39 +14,10 @@
 // Shared mesh fixture (closed 2.0-unit cube centred at origin)
 // ---------------------------------------------------------------------------
 
-/// Build a closed 2.0-unit cube mesh centred at the origin (8 corner vertices,
-/// 12 outward-wound triangles). Identical to the cube fixture in
-/// `dispatcher_integration.rs::openvdb_two_stage_chain_voxelize_primitive_executes`.
+/// Closed 2.0-unit cube mesh centred at the origin.
 #[cfg(has_openvdb)]
 fn cube_2unit_mesh() -> reify_ir::Mesh {
-    reify_ir::Mesh {
-        vertices: vec![
-            -1.0_f32, -1.0, -1.0, // 0
-             1.0,     -1.0, -1.0, // 1
-             1.0,      1.0, -1.0, // 2
-            -1.0,      1.0, -1.0, // 3
-            -1.0,     -1.0,  1.0, // 4
-             1.0,     -1.0,  1.0, // 5
-             1.0,      1.0,  1.0, // 6
-            -1.0,      1.0,  1.0, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // Bottom (-Z)
-            0, 2, 1,  0, 3, 2,
-            // Top (+Z)
-            4, 5, 6,  4, 6, 7,
-            // Front (-Y)
-            0, 1, 5,  0, 5, 4,
-            // Back (+Y)
-            2, 3, 7,  2, 7, 6,
-            // Left (-X)
-            0, 4, 7,  0, 7, 3,
-            // Right (+X)
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
+    reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
 }
 
 /// Build a voxel grid from the closed cube mesh and return the kernel + handle.
@@ -304,6 +275,93 @@ fn realize_mesh_from_voxel_rejects_nonfinite_iso_level() {
 #[cfg(not(has_openvdb))]
 #[test]
 fn realize_mesh_from_voxel_rejects_nonfinite_iso_level() {
+    println!("voxel_to_mesh_tests: has_openvdb cfg not set, skip");
+    assert!(true);
+}
+
+// ---------------------------------------------------------------------------
+// (f) export_stl_of_registered_mesh_handle_writes_its_triangles
+// ---------------------------------------------------------------------------
+
+/// A mesh registered via `register_mesh_handle` (how the engine hands an
+/// isosurface terminal to OpenVDB) exports to STL as exactly that mesh: its 12
+/// triangles, and its 2 m extent written as 2000 mm on every axis
+/// (`write_stl_binary` emits millimetres; ±1 m → ±1000 mm is f32-exact).
+#[cfg(has_openvdb)]
+#[test]
+fn export_stl_of_registered_mesh_handle_writes_its_triangles() {
+    use reify_ir::{ExportFormat, GeometryKernel};
+    use reify_kernel_openvdb::OpenVdbKernel;
+    use reify_test_support::stl_bytes::binary_stl_aabb;
+
+    let mut kernel = OpenVdbKernel::new();
+    let handle = kernel
+        .register_mesh_handle(&cube_2unit_mesh())
+        .expect("register_mesh_handle must accept a closed cube mesh");
+
+    let mut stl = Vec::new();
+    kernel
+        .export(handle.id, ExportFormat::Stl, &mut stl)
+        .expect("STL export of a registered mesh handle must succeed");
+
+    let aabb = binary_stl_aabb(&stl);
+    assert_eq!(aabb.triangles, 12, "the cube fixture has 12 triangles");
+    for (axis, extent) in aabb.extent().into_iter().enumerate() {
+        assert!(
+            (extent - 2000.0).abs() < 1e-3,
+            "axis {axis}: a 2 m cube must export as 2000 mm, got {extent} mm ({aabb:?})",
+        );
+    }
+}
+
+/// `cfg(not(has_openvdb))` skip-stub.
+#[cfg(not(has_openvdb))]
+#[test]
+fn export_stl_of_registered_mesh_handle_writes_its_triangles() {
+    println!("voxel_to_mesh_tests: has_openvdb cfg not set, skip");
+    assert!(true);
+}
+
+// ---------------------------------------------------------------------------
+// (g) export_stl_of_voxel_grid_matches_its_tessellation
+// ---------------------------------------------------------------------------
+
+/// A voxel grid exports to STL as the kernel's own tessellation of it: the
+/// file's triangle count equals `tessellate`'s, and is non-zero.
+#[cfg(has_openvdb)]
+#[test]
+fn export_stl_of_voxel_grid_matches_its_tessellation() {
+    use reify_ir::{ExportFormat, GeometryKernel};
+    use reify_test_support::stl_bytes::binary_stl_aabb;
+
+    let (kernel, grid) = build_cube_voxel_grid();
+    let tessellated_triangles = kernel
+        .tessellate(grid, 0.0)
+        .expect("tessellate must succeed for a valid voxel grid")
+        .indices
+        .len()
+        / 3;
+
+    let mut stl = Vec::new();
+    kernel
+        .export(grid, ExportFormat::Stl, &mut stl)
+        .expect("STL export of a voxel grid must succeed");
+
+    let exported_triangles = binary_stl_aabb(&stl).triangles;
+    assert!(
+        exported_triangles > 0,
+        "the cube grid's STL must not be empty"
+    );
+    assert_eq!(
+        exported_triangles, tessellated_triangles,
+        "the STL must carry exactly the kernel's own tessellation of the grid",
+    );
+}
+
+/// `cfg(not(has_openvdb))` skip-stub.
+#[cfg(not(has_openvdb))]
+#[test]
+fn export_stl_of_voxel_grid_matches_its_tessellation() {
     println!("voxel_to_mesh_tests: has_openvdb cfg not set, skip");
     assert!(true);
 }

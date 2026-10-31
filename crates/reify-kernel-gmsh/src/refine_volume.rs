@@ -94,7 +94,7 @@ use crate::background_size_field::BackgroundSizeField;
 use crate::options::MeshingOptions;
 
 #[cfg(has_gmsh)]
-use crate::kernel_real::{ClassifyAngles, build_meshable_region, read_back_tet_mesh};
+use crate::meshable_region::{ClassifyAngles, build_meshable_region, read_back_tet_mesh};
 #[cfg(has_gmsh)]
 use crate::log_capture::LogCapture;
 #[cfg(has_gmsh)]

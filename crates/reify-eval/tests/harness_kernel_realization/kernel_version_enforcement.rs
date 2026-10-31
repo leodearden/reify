@@ -26,6 +26,7 @@ fn with_manifest_version_mismatch_produces_error() {
         .expect("valid manifest");
 
     let (_engine, diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(&manifest),
     );
@@ -74,6 +75,7 @@ fn with_manifest_version_match_produces_no_mismatch_error() {
     let manifest = Manifest::from_toml_str(&toml).expect("valid manifest");
 
     let (_engine, diags) = Engine::with_registered_kernels_and_manifest(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(&manifest),
     );

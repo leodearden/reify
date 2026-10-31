@@ -419,9 +419,9 @@ fn loft_guided_rejects_unsupported_section_type() {
     let mut kernel = OcctKernel::new();
     let solid = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("Box should build")
         .id;

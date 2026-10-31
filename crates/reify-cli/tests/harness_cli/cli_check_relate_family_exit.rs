@@ -3,7 +3,7 @@
 //! PRD docs/prds/v0_6/placement-relations-belt.md task ε / boundary B3).
 //!
 //! These pins add no relate-specific exit logic. The allowlist guard lives in
-//! crates/reify-cli/src/main.rs `check_error_gate_tests`, because the allowlist
+//! crates/reify-cli/src/check_verdict/check_error_gate_tests.rs, because the allowlist
 //! is private to the binary.
 
 use crate::common;

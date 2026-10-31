@@ -30,45 +30,15 @@ use reify_solver_elastic::{
     AnisoFormFindSolve, AnisotropicSurfaceStress, FormFindSolve, MemberKind,
     form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
+use reify_test_support::tensegrity_fixtures::{CATENOID_SEED_PERTURB, catenoid_tube};
 
 // ---------------------------------------------------------------------------
-// Catenoid-tube fixture (adapted from tensegrity_gamma_membrane_form_find.rs
-// at the cheap 8-azimuthal × 2-axial resolution) plus ring line-members so
-// `q` genuinely enters `D_ff` — a pure-membrane fixture would leave the line
-// contribution trivially zero and under-test the gauge argument.
-//
-// DUPLICATION, tracked not silent (task 6119 review): `C` / `H` /
-// `catenoid_radius` / `jitter` and the ring+triangulation body below are a
-// SECOND copy of `tensegrity_gamma_membrane_form_find.rs:56-130`, differing
-// only by the added ring members. The two copies are coupled — that file is
-// where `SURFACE_EQUILIBRIUM_REL_TOL` was calibrated, and this one is the
-// covariance lock on the same constant — so a mesh change in either silently
-// decorrelates them.
-// WHAT BLOCKS THE COLLAPSE HERE: hoisting the mesh (to a shared `tests/`
-// module or to `reify-test-support`) is only a net win if the γ golden's copy
-// is DELETED in the same change, and that file is outside task 6119's locked
-// module set. Adding a third copy in a new shared file without removing it
-// would raise the drift surface, not lower it — the same reasoning that left
-// #6152 owning its own fixture collapse. Filed as a follow-up (agent-followup
-// escalation id `agent-followup-6119`), with both files in ITS scope.
+// Catenoid-tube fixture: the shared catenoid tube at the cheap 8-azimuthal ×
+// 2-axial resolution, plus ring line-members so `q` genuinely enters `D_ff` — a
+// pure-membrane fixture would leave the line contribution trivially zero and
+// under-test the gauge argument. Same mesh and seed as the γ golden, where
+// `SURFACE_EQUILIBRIUM_REL_TOL` was calibrated, now shared by construction.
 // ---------------------------------------------------------------------------
-
-/// Catenoid waist parameter `c` in `r(z) = c·cosh(z/c)`.
-const C: f64 = 1.0;
-
-/// Half-height: boundary rings sit at `z = ±H` (same stable-branch choice as
-/// the γ golden — well below the `t·tanh(t) = 1` existence limit).
-const H: f64 = 0.8;
-
-fn catenoid_radius(z: f64) -> f64 {
-    C * (z / C).cosh()
-}
-
-/// Deterministic, RNG-free perturbation in `[-1, 1]` keyed on two indices (RNG
-/// is unavailable to workflow/golden code and would break reproducibility).
-fn jitter(a: usize, b: usize) -> f64 {
-    ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
-}
 
 /// Build the 8-azimuthal × 2-axial catenoid tube: 3 rings × 8 nodes = 24
 /// nodes. The two boundary rings (16 nodes) are anchored exactly on the
@@ -82,9 +52,7 @@ fn jitter(a: usize, b: usize) -> f64 {
 ///
 /// Returns `(nodes, surfaces, anchors, members, kinds)`.
 #[allow(clippy::type_complexity)]
-fn build_catenoid_tube_with_ring_members(
-    perturb: f64,
-) -> (
+fn build_catenoid_tube_with_ring_members() -> (
     Vec<[f64; 3]>,
     Vec<(usize, usize, usize)>,
     Vec<usize>,
@@ -93,46 +61,10 @@ fn build_catenoid_tube_with_ring_members(
 ) {
     const N_THETA: usize = 8;
     const N_AXIAL: usize = 2;
-    let n_rings = N_AXIAL + 1;
-    let node_id = |ring: usize, j: usize| ring * N_THETA + (j % N_THETA);
-
-    let mut nodes = vec![[0.0_f64; 3]; n_rings * N_THETA];
-    let mut anchors = Vec::new();
-
-    for ring in 0..n_rings {
-        let z = -H + 2.0 * H * (ring as f64) / (N_AXIAL as f64);
-        let r_true = catenoid_radius(z);
-        let is_boundary = ring == 0 || ring == n_rings - 1;
-        for j in 0..N_THETA {
-            let theta = 2.0 * std::f64::consts::PI * (j as f64) / (N_THETA as f64);
-            let id = node_id(ring, j);
-            if is_boundary {
-                // Anchors stay EXACTLY on the catenoid — the fixed BVP data.
-                nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
-                anchors.push(id);
-            } else {
-                let r = r_true + perturb * jitter(ring, j);
-                let dz = 0.5 * perturb * jitter(j, ring);
-                nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
-            }
-        }
-    }
-
-    // Triangulate each quad between adjacent rings (consistent diagonal split).
-    let mut surfaces = Vec::new();
-    for ring in 0..N_AXIAL {
-        for j in 0..N_THETA {
-            let a = node_id(ring, j);
-            let b = node_id(ring, j + 1);
-            let c = node_id(ring + 1, j);
-            let d = node_id(ring + 1, j + 1);
-            surfaces.push((a, b, c));
-            surfaces.push((b, d, c));
-        }
-    }
+    let tube = catenoid_tube(N_THETA, N_AXIAL, CATENOID_SEED_PERTURB);
 
     // The only interior (non-boundary) ring is ring 1 for N_AXIAL=2.
-    let ring1 = |j: usize| node_id(1, j);
+    let ring1 = |j: usize| tube.node_id(1, j);
     let mut members = Vec::new();
     let mut kinds = Vec::new();
     // 4 struts across the ring diameters (opposite nodes, N_THETA/2 apart).
@@ -146,7 +78,7 @@ fn build_catenoid_tube_with_ring_members(
         kinds.push(MemberKind::Cable);
     }
 
-    (nodes, surfaces, anchors, members, kinds)
+    (tube.nodes, tube.surfaces, tube.anchors, members, kinds)
 }
 
 /// Force density magnitudes for the ring members: struts compressive, cables
@@ -174,11 +106,6 @@ const ANISO_PRESTRESS: AnisotropicSurfaceStress = AnisotropicSurfaceStress {
     sigma_warp: 1.0,
     sigma_weft: 0.4,
 };
-
-/// Perturbation off the analytic catenoid — large enough that the solve must
-/// do real work, small enough to stay in the basin of attraction (matches the
-/// γ golden's choice).
-const PERTURB: f64 = 0.02;
 
 /// Gauge factor `λ = 2^20`, chosen as a power of two on purpose: `λ·q` and
 /// `λ·σ` are then exact in IEEE-754, so the assembled `D_λ = λ·D` holds
@@ -286,7 +213,7 @@ fn assert_scales_by_lambda(context: &str, label: &str, lambda: f64, base: &[f64]
 }
 
 /// Floor for "the base-gauge solve actually moved off the seed geometry",
-/// comparable to [`PERTURB`] but well below it (task 6119 review). Without
+/// comparable to [`CATENOID_SEED_PERTURB`] but well below it (task 6119 review). Without
 /// this check, a regression that made the convergence criterion trivially
 /// satisfiable would have BOTH gauges break out of the fixed point at
 /// iteration 0 and echo the unperturbed seed back as `converged == true`;
@@ -414,8 +341,7 @@ fn assert_gauge_covariant(
 /// premature-stop direction), so both halves of the pre-fix defect are
 /// covered without duplicating the solve-and-assert body (task 6119).
 fn check_iso_surfaces_gauge_covariance(lambda: f64) {
-    let (nodes, surfaces, anchors, members, kinds) =
-        build_catenoid_tube_with_ring_members(PERTURB);
+    let (nodes, surfaces, anchors, members, kinds) = build_catenoid_tube_with_ring_members();
     let q = ring_member_q(&kinds);
     let sigmas = vec![ISO_SIGMA; surfaces.len()];
 
@@ -472,8 +398,7 @@ fn iso_surfaces_form_find_is_gauge_covariant_small_lambda() {
 /// Called at both [`LAMBDA`] and [`LAMBDA_SMALL`] — see
 /// [`check_iso_surfaces_gauge_covariance`] for why both directions matter.
 fn check_aniso_surfaces_gauge_covariance(lambda: f64) {
-    let (nodes, surfaces, anchors, members, kinds) =
-        build_catenoid_tube_with_ring_members(PERTURB);
+    let (nodes, surfaces, anchors, members, kinds) = build_catenoid_tube_with_ring_members();
     let q = ring_member_q(&kinds);
     let prestress = vec![ANISO_PRESTRESS; surfaces.len()];
 
@@ -559,7 +484,7 @@ struct DecoupledPairFixture {
 
 fn build_catenoid_tube_with_decoupled_cable_pair() -> DecoupledPairFixture {
     let (mut nodes, surfaces, mut anchors, mut members, mut kinds) =
-        build_catenoid_tube_with_ring_members(PERTURB);
+        build_catenoid_tube_with_ring_members();
     let mut q = ring_member_q(&kinds);
 
     let pair_anchors = [nodes.len(), nodes.len() + 1];

@@ -69,7 +69,7 @@ fn example_structural_query_bom_ri_evals_to_golden_counts() {
 
     // ── eval ──
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

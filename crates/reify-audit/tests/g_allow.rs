@@ -20,7 +20,7 @@
 //! a note to stderr and returns. Mirrors
 //! `crates/reify-kernel-gmsh/tests/rpath_smoke.rs`. The shared helper is
 //! `reify_test_support::run_orphan_audit`. That skip has exactly one
-//! exception, gated on `common::git_env::replay_child_expects_envelope`.
+//! exception, gated on `common::replay::replay_child_expects_envelope`.
 //!
 //! # The hook-git-env trio
 //!
@@ -50,7 +50,7 @@ use reify_test_support::{ORPHAN_AUDIT_SKIP_MARKER, run_orphan_audit};
 
 mod common;
 
-use common::git_env::{ReplayMark, SummaryField};
+use common::replay::{ReplayMark, SummaryField};
 
 /// The audit scope every test in this file uses.
 ///
@@ -68,7 +68,7 @@ const SCOPE: &str = "crates/reify-audit/src";
 const TARGET_TEST: &str = "reify_audit_pub_fns_are_g_allow_marked";
 
 /// The test [`replay_child_refusal_fires_inside_a_replay_child`] selects in
-/// order to watch [`common::git_env::assert_not_in_replay_child`] refuse.
+/// order to watch [`common::replay::assert_not_in_replay_child`] refuse.
 ///
 /// One home for the same reason as [`TARGET_TEST`], plus one of its own: the
 /// refusal's `helper` argument and the filter that selects it must name the
@@ -81,7 +81,7 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     // breadcrumb is out regardless of what this run then does. A no-op outside
     // an envelope-marked replay child; inside one it is the child's half of the
     // round trip `orphan_audit_survives_ambient_hook_git_env` relies on.
-    common::git_env::announce_replay_mark();
+    common::replay::announce_replay_mark();
 
     let audit = run_orphan_audit(SCOPE);
 
@@ -93,7 +93,7 @@ fn reify_audit_pub_fns_are_g_allow_marked() {
     // reporting `1 passed` — status, `passed + ignored == listed` and floor
     // checks ALL hold on a run that exercised nothing. Only the child can tell
     // the two apart, by refusing to skip.
-    if audit.is_none() && common::git_env::replay_child_expects_envelope() {
+    if audit.is_none() && common::replay::replay_child_expects_envelope() {
         panic!(
             "run_orphan_audit returned None inside a replay child stamped with \
              the envelope mark — stamped only by a parent that got an envelope \
@@ -173,7 +173,7 @@ fn orphan_audit_survives_ambient_hook_git_env() {
         return;
     }
 
-    common::git_env::replay_self_under_hook_git_env_expecting_envelope(&[TARGET_TEST], 1);
+    common::replay::replay_self_under_hook_git_env_expecting_envelope(&[TARGET_TEST], 1);
 }
 
 /// Spawn ONE replay child in an environment that genuinely CANNOT run the
@@ -183,7 +183,7 @@ fn orphan_audit_survives_ambient_hook_git_env() {
 /// [`replay_child_hard_fails_only_when_the_parent_verified_an_envelope`]: it
 /// holds everything fixed except `mark`, so that test's two children differ
 /// only in what the mark claims. The command body is shared with the real
-/// replay via [`common::git_env::replay_child_command`].
+/// replay via [`common::replay::replay_child_command`].
 ///
 /// An EMPTY `PATH` makes `reify_test_support::run_orphan_audit`'s prerequisite
 /// probes fail with `NotFound`, so it takes its documented skip path — a
@@ -198,7 +198,7 @@ fn spawn_child_lacking_audit_prereqs(filters: &[&str], mark: ReplayMark) -> Outp
     // and is empty rather than one pointing at a deleted directory.
     let empty_path = tempfile::tempdir().expect("create empty PATH dir for the deprived child");
 
-    common::git_env::replay_child_command(filters, mark)
+    common::replay::replay_child_command(filters, mark)
         .env("PATH", empty_path.path())
         .output()
         .expect("re-exec self with the orphan audit's prerequisites removed")
@@ -235,14 +235,16 @@ fn spawn_child_lacking_audit_prereqs(filters: &[&str], mark: ReplayMark) -> Outp
 /// bounded claim rather than a hole, since the tightening branches on the MARK
 /// and never on the cause. The work-tree cause is in particular NOT reachable
 /// by pointing the child's `current_dir` at a non-git tempdir:
-/// `run_orphan_audit` resolves `repo_root` at compile time from
-/// `env!("CARGO_MANIFEST_DIR")`, so the child's own cwd never enters it.
+/// `run_orphan_audit` resolves `repo_root` from the runtime
+/// `CARGO_MANIFEST_DIR` the replay child inherits
+/// (`reify_test_support::workspace_root`), which takes precedence over the
+/// cwd, so the child's own cwd never enters it.
 #[test]
 fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     // Same refusal, and for the same reason, as the sibling fixture below: this
     // test spawns children of its own, so widening the replay filter to select
     // it must fail on the precondition rather than quietly nest a generation.
-    common::git_env::assert_not_in_replay_child(
+    common::replay::assert_not_in_replay_child(
         REFUSING_TEST,
         "it would spawn grandchildren inside an already-nested child for no \
          signal the outer run does not have",
@@ -287,7 +289,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
         plain_stderr,
     );
     assert_eq!(
-        common::git_env::libtest_summary_count(&plain_stdout, SummaryField::Passed),
+        common::replay::libtest_summary_count(&plain_stdout, SummaryField::Passed),
         Some(1),
         "the PLAIN-mark child exited 0, but its libtest summary does not report \
          exactly 1 passing test — so the skip was not what made it green. \
@@ -324,7 +326,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
         envelope_stderr,
     );
     assert_eq!(
-        common::git_env::libtest_summary_count(&envelope_stdout, SummaryField::Failed),
+        common::replay::libtest_summary_count(&envelope_stdout, SummaryField::Failed),
         Some(1),
         "the ENVELOPE-mark child exited non-zero, but its libtest summary does \
          not report exactly 1 FAILING test — so the tightening is not what made \
@@ -337,7 +339,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
     );
 }
 
-/// [`common::git_env::assert_not_in_replay_child`] really does refuse inside a
+/// [`common::replay::assert_not_in_replay_child`] really does refuse inside a
 /// replay child — the one branch of that helper that does anything, and one no
 /// ordinary run of this binary reaches.
 ///
@@ -353,7 +355,7 @@ fn replay_child_hard_fails_only_when_the_parent_verified_an_envelope() {
 /// child panics before spawning anything of its own and this fixture costs one
 /// short-lived process. The mark is [`ReplayMark::Plain`] on purpose: it is the
 /// weaker claim, so a refusal mis-keyed on
-/// `common::git_env::replay_child_expects_envelope` — the one other predicate
+/// `common::replay::replay_child_expects_envelope` — the one other predicate
 /// within reach — would let this child run to completion, and only a PLAIN
 /// child can tell the two predicates apart.
 ///
@@ -366,7 +368,7 @@ fn replay_child_refusal_fires_inside_a_replay_child() {
     // This test spawns a child of its own, so it takes the same refusal it
     // pins: a filter widened to select it must fail here rather than quietly
     // nest a generation.
-    common::git_env::assert_not_in_replay_child(
+    common::replay::assert_not_in_replay_child(
         "replay_child_refusal_fires_inside_a_replay_child",
         "it would spawn a grandchild to watch a refusal that this nested child \
          has already demonstrated by refusing",
@@ -376,7 +378,7 @@ fn replay_child_refusal_fires_inside_a_replay_child() {
     // cannot pin the behaviour of a process the replay no longer spawns. No
     // decoy and no poison: the refusal fires on the guard variable alone, long
     // before anything reads the git environment.
-    let child = common::git_env::replay_child_command(&[REFUSING_TEST], ReplayMark::Plain)
+    let child = common::replay::replay_child_command(&[REFUSING_TEST], ReplayMark::Plain)
         .output()
         .expect("re-exec self as a replay child selecting the refusing test");
 
@@ -398,7 +400,7 @@ fn replay_child_refusal_fires_inside_a_replay_child() {
         stderr,
     );
     assert_eq!(
-        common::git_env::libtest_summary_count(&stdout, SummaryField::Failed),
+        common::replay::libtest_summary_count(&stdout, SummaryField::Failed),
         Some(1),
         "the child reported the refusal but its libtest summary does not report \
          exactly 1 FAILING test, so the refusal did not fail the test it fired \
@@ -448,7 +450,7 @@ struct AuditRun {
 /// judgement to the caller. Refuses to run inside a replay child, where all
 /// three runs would repeat for no signal the outer run does not have.
 fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, AuditRun)> {
-    common::git_env::assert_not_in_replay_child(
+    common::replay::assert_not_in_replay_child(
         "audit_script_stdout_poisoned_and_sanitized",
         "it would re-run the audit script three more times inside an \
          already-nested child, for no signal the outer run does not have",

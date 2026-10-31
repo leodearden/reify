@@ -11,8 +11,8 @@
 //   (e.g. curvature(s, pt)) still type Scalar<Curvature>; this is intentional.
 //
 // User-observable signals:
-//   curvature(face_of_sphere_r5mm, pt)  → Matrix<2,2,Curvature>, mean ≈ 1/5mm = 200 m⁻¹
-//   curvature(circular_edge_r10mm, pt)  → Scalar<Curvature> ≈ 1/10mm = 100 m⁻¹
+//   curvature(face_of_sphere_r5mm, pt)  → Matrix<2,2,Curvature>, mean ≈ 1/5mm = 200 rad·m⁻¹
+//   curvature(circular_edge_r10mm, pt)  → Scalar<Curvature> ≈ 1/10mm = 100 rad·m⁻¹
 //
 // Compile-type summary (task 3621 + task 4315):
 //   k_surf        → Scalar<Curvature>        (let-bound solid s; default)

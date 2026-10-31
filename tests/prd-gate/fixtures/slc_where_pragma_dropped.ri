@@ -1,0 +1,2 @@
+structure S { param x : Length = 2mm
+ where x > 1mm { #frobnicate(1) } }

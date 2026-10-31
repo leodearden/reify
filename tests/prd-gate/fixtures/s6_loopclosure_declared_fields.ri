@@ -1,0 +1,20 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): kinematic.ri LoopClosure/Snapshot declared fields vs runtime (C7)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_loopclosure_declared_fields
+
+// Probe (seat L, S6): kinematic.ri declares LoopClosure{parent,child,joint,residual_dim};
+// the runtime record carries {body_id, closing_joint, kind, path_a, path_b}.
+structure def Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let m1  = body(mechanism(), "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_x, j_a)
+    let m2b = body(m2, "solid_c", j_b)
+    let m3  = body(m2b, "solid_d", j_x, j_b)
+    let lc0      = m3.loop_closures[0]
+    let lc_joint = m3.loop_closures[0].joint
+    let s        = snapshot(m3, [bind(j_a, 500mm)])
+    let sing     = s.is_singular
+    let fv       = s.free_values
+}

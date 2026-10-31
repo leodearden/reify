@@ -161,7 +161,7 @@ minimising `nest_sheet_parts(...).cost`.
 
 | Mechanism | Consumer (G1) |
 |---|---|
-| Classification pass + coded refusal (α) | Every eval path. `reify eval` / GUI: the refusal or the not-resolved cause replaces today's NoProgress, residual-1.0, silent first-model pick and objective mis-routing (§2.3). `reify check` / LSP / `reify test` / reify-cli MCP: the continuous refusal (Error) and, for finite scopes, `W_GEOMETRY_COUPLED_NOT_RESOLVED` with its reason. Consumed in-engine by the sweep (γ) as its work-list. |
+| Classification pass + coded refusal (α) | Every eval path. `reify eval` / GUI: the refusal or the not-resolved cause replaces today's NoProgress, residual-1.0, silent first-model pick and objective mis-routing (§2.3). `reify check` / LSP / `reify test` / reify-cli MCP *(deleted by bbfbc7dd29 (#6665), after this PRD was authored)*: the continuous refusal (Error) and, for finite scopes, `W_GEOMETRY_COUPLED_NOT_RESOLVED` with its reason. Consumed in-engine by the sweep (γ) as its work-list. |
 | Auto pinning (β) | The sweep (γ) — sole writer of pins; the warm-edit path (δ) and Export read them. Not user-surfaced. |
 | Candidate sweep (γ) | `reify eval` (γ) and the GUI load / commit / Export (δ) — the paths that run a solver with a kernel. User surface = resolved values + `I_GEOMETRY_SWEEP` + the existing `W_SOLVER_OPTIMALITY_UNPROVEN` gate. |
 | Verdict diagnostics (γ2) | `reify eval` / GUI: strict-tie Error, free-tie Warning, partial-sweep Warning per P3 §3.4. |
@@ -256,7 +256,7 @@ mis-attributed.
 `realize_for_check`) and the GUI (load / commit: `check_with_solve_slot` then `tessellate_snapshot`;
 Export: `engine.build`) run a solver with a kernel. `reify check` and `reify build` run **without** a
 solver by design (`cmd_build`'s documented posture), so every auto is unresolved there today;
-`reify test`, the LSP and the reify-cli MCP (`ensure_engine`) run with neither solver nor kernel. The
+`reify test`, the LSP and the reify-cli MCP (`ensure_engine`) *(deleted by bbfbc7dd29 (#6665), after this PRD was authored)* run with neither solver nor kernel. The
 GUI load path never reaches `build_with_geometry_output`, and the GUI surfaces **no** eval-time
 diagnostic today (#6724).
 
@@ -724,7 +724,7 @@ diff (§8 test layout).
 | B12 | consumer (α, γ) | scope rule | two templates with geometry objectives; a coupled template instantiated twice | `E_GEOMETRY_SWEEP_SCOPE_UNSUPPORTED` naming them, on every path |
 | B13 | consumer (δ) | GUI shows the winner; drags keep it | GUI load of B5's fixture via the debug-MCP harness; a slider drag on a price; then commit | after load, `engine_state` values = the winner; after the drag, values unchanged and `I_GEOMETRY_SWEEP_STALE` present in the eval-diagnostics field #6724 adds; after commit, the re-swept winner |
 | B14 | producer (β) | pins act as concrete values, through subs | `mwaste_parent_auto_to_sub.ri` with `thin` pinned | `Panel.a.t = 0.002 m`, `Panel.a.ez` and `Panel.ma` evaluate — identical to the same file with `thin` a concrete `true` — and a geometry constraint over a pinned auto gets a definite post-geometry verdict |
-| B15 | consumer (α) | kernel-less paths say why | B5's fixture under the reify-cli MCP / LSP / `reify test` (no kernel) and `reify check` (no solver) | `W_GEOMETRY_COUPLED_NOT_RESOLVED` with the matching reason and an `UndefCause` per auto; continuous fixtures still give B1's Error |
+| B15 | consumer (α) | kernel-less paths say why | B5's fixture under the ~~reify-cli MCP /~~ LSP / `reify test` (no kernel) and `reify check` (no solver) *(the reify-cli MCP host was deleted by bbfbc7dd29 (#6665), after this PRD was authored, so it is not a B15 arm; whether another MCP host takes that arm is open in esc-6714-1)* | `W_GEOMETRY_COUPLED_NOT_RESOLVED` with the matching reason and an `UndefCause` per auto; continuous fixtures still give B1's Error |
 | B16 | consumer (α) | warm paths classify too | an *unswept* coupled template edited through `edit_param` (e.g. after a cancelled or not-run sweep) | no silent first-model pick, no NoProgress: the warm builder applies the same classification |
 | B17 | producer (ε) | exact extents and blank lets | `blank_volume` of a 40×30×10 mm box (a `Stocked` structure); a pocketed block | `|offcut_volume| ≤ 1e-10 × volume` for the box (today ≈ 3.2e-5 × volume from the padding); `offcut_volume / (π r² h) − 1` within 1e-9 for the pocket; every pre-existing `bounding_box` consumer test green |
 | B18 | consumer (ζ, ζ2) | nesting | four 500×500 mm squares on a 1000×1000 mm sheet, kerf 0, then kerf 2 mm; a group with no matching stock; the descendants form over three `SheetPart` subs and a collection sub | kerf 0: `sheets_used = 1`, `utilisation = 1.0`, `cost` = one sheet; kerf 2 mm: the hand-computed count under §4.6 item 4's kerf rule; no-stock: `E_NEST_NO_STOCK` naming material + thickness and `cost` undef with that cause; ζ2 equals the explicit list; the collection sub gets `W_NEST_SUB_NOT_NESTED` |

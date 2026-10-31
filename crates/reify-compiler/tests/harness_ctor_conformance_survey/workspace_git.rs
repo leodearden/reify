@@ -12,9 +12,9 @@ use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
 ///
-/// Same rooting idiom as `reify_test_support::examples_corpus::examples_dir()`,
-/// pointed one level higher: β's whole point is that the sweep is NOT
-/// examples-scoped.
+/// Rooted at the workspace root rather than
+/// `reify_test_support::examples_corpus::examples_dir()`'s corpus
+/// subdirectory: β's whole point is that the sweep is NOT examples-scoped.
 pub(crate) const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 // ─── step 21/22: one sanitized git constructor for every call site ───────────

@@ -32,9 +32,10 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame,
+    FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
+    pose_from_frame, solve_scaling,
 };
+use reify_constraints::scaling::RelateTolerance;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
@@ -161,7 +162,7 @@ fn occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)))
 }
 
 /// A placeholder seed Frame for one `at auto` unknown, at `origin` with the given
@@ -475,6 +476,70 @@ fn remainder_violated_relation_emits_diagnostic() {
     assert!(
         errors.iter().any(|m| m.contains("perpendicular")),
         "the assertion diagnostic must name the violated relation `perpendicular`, got: {errors:?}"
+    );
+}
+
+/// The redundant-remainder re-check judges a metre row against the SCALED assertion
+/// rung `assertion · max(L / R_ref, 1)` (PRD §7.3 "Coherence at every scale"), so a
+/// large model's solver-satisfied geometry does not fail its own re-check.
+///
+/// The redundant `offset` repeats the driving one's rows with a target 5e-5 m
+/// further out, so its residual at the solved placement is 5e-5 m. At `L` ≈ 20 m the
+/// metre rung is ≈ 2e-4 m and the remainder is consistent; at `L` ≈ 0.5 m it is
+/// the absolute 1e-5 m and the same 5e-5 m is a colocated conflict.
+#[test]
+fn large_model_redundant_relation_is_judged_against_the_scaled_assertion_rung() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping large_model_redundant_relation_is_judged_against_the_scaled_assertion_rung: \
+             OCCT not available"
+        );
+        return;
+    }
+    let solve_offset_pair = |driving: &str, redundant: &str| {
+        solve_bolt_plate(&bolt_plate_scope_source(
+            None,
+            &[
+                "concentric(bolt.shank_axis, plate.hole_axis)",
+                &format!("offset(bolt.seat_plane, plate.top_plane, {driving})"),
+                &format!("offset(bolt.seat_plane, plate.top_plane, {redundant})"),
+            ],
+        ))
+    };
+    let errors = |solution: &RelateSolution| -> Vec<String> {
+        solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect()
+    };
+
+    let large = solve_offset_pair("20m", "20.00005m");
+    assert_eq!(
+        large.redundant, 1,
+        "the second offset repeats the first's rows"
+    );
+    assert!(
+        matches!(large.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the driving set solves; the bolt is placed"
+    );
+    assert!(
+        errors(&large).is_empty(),
+        "a 5e-5 m remainder is within the metre rung at L ≈ 20 m, got: {:?}",
+        errors(&large)
+    );
+
+    let small = solve_offset_pair("0.5m", "0.50005m");
+    assert_eq!(
+        small.redundant, 1,
+        "the second offset repeats the first's rows"
+    );
+    assert!(
+        errors(&small).iter().any(|m| m.contains("offset")),
+        "a 5e-5 m remainder exceeds the 1e-5 m metre rung at L ≈ 0.5 m and must be \
+         reported as a conflict naming `offset`, got: {:?}",
+        errors(&small)
     );
 }
 
@@ -1253,9 +1318,9 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // ── (b) the solve CONVERGED and the tangency holds within the assertion tol ──
     //
     // This is THE assertion the pre-task silent no-solve would have passed vacuously:
-    // with no residual rows `max_relation_residual` reads a flat 0.0 whatever the
-    // placement. It is meaningful only because (c) proves the rows exist and (e)
-    // proves they measure the right geometry.
+    // with no residual rows the exceedance reads a flat 0.0 whatever the placement.
+    // It is meaningful only because (c) proves the rows exist and (e) proves they
+    // measure the right geometry. Each row is judged against its own unit's rung.
     let solve_errors: Vec<&str> = solution
         .diagnostics
         .iter()
@@ -1273,13 +1338,19 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     };
     let solved_pose = pose_from_frame(roller_pose)
         .expect("the solved roller Frame must convert back to a Pose");
-    let residual = max_relation_residual(&instances, &unknown, &solved_pose);
-    let tol = RelateTolerance::kernel_default();
+    let scaling = solve_scaling(
+        &instances,
+        &unknown,
+        &Pose::identity(),
+        RelateTolerance::kernel_default(),
+    );
+    let exceedance = max_relation_exceedance(&instances, &unknown, &solved_pose, |u| {
+        scaling.assertion_rung(u)
+    });
     assert!(
-        residual < tol.assertion(),
-        "both tangency relations must hold at the solved placement: residual {residual:e} \
-         exceeds the assertion tolerance {:e}",
-        tol.assertion()
+        exceedance <= 1.0,
+        "both tangency relations must hold at the solved placement: the worst row is \
+         {exceedance:e}× its unit's assertion rung"
     );
 
     // ── (c) DOF accounting is OPERAND-CONDITIONAL, per relation ─────────────────
@@ -1287,8 +1358,7 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // The exact integers, not a range: cylinder/plane is codimension 2 and
     // cylinder/cylinder codimension 1, so the scope spends 3 and leaves 3. A silent
     // no-solve measures individual_rank 0 for BOTH.
-    let partition =
-        partition_driving_set(&instances, &unknown, &Pose::identity(), tol.solver_convergence());
+    let partition = partition_driving_set(&instances, &unknown, &Pose::identity(), &scaling);
     assert_eq!(
         partition.per_relation[0].individual_rank, 2,
         "tangent(cylinder, plane) is codimension 2 — one rotational row (axis ⟂ normal) \

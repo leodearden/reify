@@ -120,7 +120,9 @@ impl Default for NewtonConfig {
 /// midpoint via [`crate::loop_closure::joint_range_midpoint`].
 #[derive(Debug, Clone)]
 pub enum StartStrategy {
-    /// Re-use a prior solution.  Vector length must match the free-variable count.
+    /// Re-use a prior solution: the flat Newton state, whose length is
+    /// [`flat_width`](crate::loop_closure_value::flat_width) of the free
+    /// joints' kinds.
     WarmStart(Vec<f64>),
     /// Initialise from each free joint's range midpoint.
     Midpoint,
@@ -560,9 +562,14 @@ where
 ///
 /// `chain_a` / `vals_a` is the reference side (held fixed for the solve).
 /// `chain_b` / `vals_b_initial` is the free side; the indices in `free_b`
-/// select which entries of `vals_b_initial` the solver moves.  `strategy`
+/// select which entries of `vals_b_initial` the solver moves.  A `chain_b`
+/// coupling whose parent occupies a free slot is re-derived from that slot
+/// every iterate (`loop_closure::propagate_to_couplings`).  A `chain_a`
+/// coupling is not: it keeps its `vals_a` seed even when its parent is free
+/// on `chain_b` (both-chain unknowns are #8837).  `strategy`
 /// picks the initial guess: [`StartStrategy::WarmStart`] uses the supplied
-/// vector directly (must match `free_b.len()`); [`StartStrategy::Midpoint`]
+/// vector directly (its length must equal the flat Newton-state width,
+/// `flat_width` of the free joints' kinds); [`StartStrategy::Midpoint`]
 /// queries each free joint's `joint_range_midpoint` from `chain_b`.
 ///
 /// **`InvalidInput` contract** — the following are detected before the Newton
@@ -571,7 +578,10 @@ where
 /// - any `free_b` index ≥ `chain_b.len()` (index addresses a non-existent joint);
 /// - any `free_b` index ≥ `vals_b_initial.len()` (index addresses a
 ///   non-existent initial value);
-/// - [`StartStrategy::WarmStart`] vector length ≠ `free_b.len()`.
+/// - any `free_b` index addressing a non-driving joint (`fixed` or
+///   `coupling`), which has no free motion variable of its own;
+/// - [`StartStrategy::WarmStart`] vector length ≠ the flat Newton-state width
+///   (`flat_width` of the free joints' kinds).
 ///
 /// Internally builds a residual+jacobian closure that calls
 /// [`crate::loop_closure::loop_residual_twist`] and
@@ -643,7 +653,7 @@ pub fn solve_loop_closure(
     let x0: Vec<f64> = match strategy {
         StartStrategy::WarmStart(v) => v.clone(),
         StartStrategy::Midpoint => {
-            let mut x = Vec::with_capacity(free_shapes.iter().map(|k| k.flat_len()).sum());
+            let mut x = Vec::with_capacity(crate::loop_closure_value::flat_width(&free_shapes));
             for &i in free_b {
                 // Validated above — joint_range_midpoint returns Some.
                 let mid = crate::loop_closure::joint_range_midpoint(&chain_b[i])
@@ -669,10 +679,10 @@ pub fn solve_loop_closure(
     // 1-DOF / 2-DOF / 3-DOF (planar) chain Newton paths are byte-for-byte
     // unchanged (verified by the unchanged-output expectation of the existing
     // `solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain`
-    // test in `crates/reify-constraints/tests/loop_closure_diagnostics_tests.rs`).
+    // test in `crates/reify-stdlib/tests/loop_closure_diagnostics_tests.rs`).
     let mut effective_config = config.clone();
     if effective_config.regularization_per_diag.is_empty() {
-        let total_width: usize = free_shapes.iter().map(|k| k.flat_len()).sum();
+        let total_width = crate::loop_closure_value::flat_width(&free_shapes);
         let mut reg = vec![0.0; total_width];
         let mut cursor = 0;
         for &k in &free_shapes {
@@ -700,9 +710,9 @@ pub fn solve_loop_closure(
     let free_shapes_proj = free_shapes_vec.clone();
 
     let closure = move |x: &[f64]| -> Option<(Vec<f64>, Vec<Vec<f64>>)> {
-        // Expected width = Σ free_shapes[k].flat_len().  The Newton state
-        // is the flat concatenation of per-free-joint storage payloads.
-        let expected_width: usize = free_shapes_vec.iter().map(|k| k.flat_len()).sum();
+        // The Newton state is the flat concatenation of per-free-joint
+        // storage payloads.
+        let expected_width = crate::loop_closure_value::flat_width(&free_shapes_vec);
         if x.len() != expected_width {
             return None;
         }
@@ -726,6 +736,7 @@ pub fn solve_loop_closure(
             .ok()?;
             cursor += width;
             vals_b_scratch[i] = jv;
+            crate::loop_closure::propagate_to_couplings(&chain_b_vec, &mut vals_b_scratch, i);
         }
         let twist = crate::loop_closure::loop_residual_twist(
             &chain_a_vec,
@@ -797,7 +808,7 @@ const SPHERE_TIKHONOV_DAMPING: f64 = 1e-8;
 /// are upstream-validated by `extract_loop_closure_chains` /
 /// `is_joint_value`, but a hand-built fixture might slip a malformed
 /// joint Map through).
-fn free_joint_shapes(
+pub(crate) fn free_joint_shapes(
     chain_b: &[reify_ir::Value],
     free_b: &[usize],
 ) -> Option<Vec<crate::loop_closure_value::JointKind>> {
@@ -819,25 +830,29 @@ fn free_joint_shapes(
     Some(out)
 }
 
-/// Manifold DOF count per joint kind, used by the over/under-constrained
-/// pre-check in `solve_loop_closure_with_diagnostics`.  Differs from
-/// `JointKind::flat_len` (storage width) for `Spherical` (3 manifold DOF
-/// vs 4 quaternion storage components) and `Fixed` (0 DOF vs 1-element
-/// sentinel slot).
-///
-/// Returns 1 for Prismatic / Revolute / Coupling, 0 for Fixed, 2 for
-/// Cylindrical, 3 for Planar, 3 for Spherical.  Sum across `free_b`
-/// gives the kinematic free-DOF count that balances against the
-/// 6-component loop residual: `< 6` = over-constrained, `== 6` =
-/// well-posed, `> 6` = under-constrained.
+/// Free DOF a `free_b` joint of `kind` contributes to the over/under-constrained
+/// pre-check in `solve_loop_closure_with_diagnostics`: its [`motion_dof`] when
+/// it is a driving joint, none otherwise (a coupling's motion is its parent's).
+/// Summed across `free_b` it balances against the 6-component loop residual:
+/// `< 6` = over-constrained, `== 6` = well-posed, `> 6` = under-constrained.
 fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
+    if crate::loop_closure::is_driving_kind(kind) {
+        motion_dof(kind)
+    } else {
+        0
+    }
+}
+
+/// Manifold DOF of a joint's motion.  Differs from `JointKind::flat_len`
+/// (storage width) for `Spherical` (3 manifold DOF vs 4 quaternion storage
+/// components) and `Fixed` (0 DOF vs a 1-element sentinel slot).
+fn motion_dof(kind: crate::loop_closure_value::JointKind) -> usize {
     use crate::loop_closure_value::JointKind;
     match kind {
         JointKind::Prismatic | JointKind::Revolute | JointKind::Coupling => 1,
         JointKind::Fixed => 0,
         JointKind::Cylindrical => 2,
-        JointKind::Planar => 3,
-        JointKind::Spherical => 3,
+        JointKind::Planar | JointKind::Spherical => 3,
     }
 }
 
@@ -853,7 +868,7 @@ fn dof_count_for_balance(kind: crate::loop_closure_value::JointKind) -> usize {
 ///   `{ kind: "fixed", origin: <pose> }` rigid link — the transform of the
 ///   closing edge's rigid TIE `parent --pose--> at` (task 7186). It
 ///   contributes its transform to the residual but NO free variable
-///   (`is_zero_dof_joint` keeps it out of `free_b`), so callers must not
+///   (non-driving joints never enter `free_b`), so callers must not
 ///   assume `chain_b.len()` equals the free-variable count. `chain_a` never
 ///   carries such a link.
 ///   `chain_b` is also guaranteed NON-EMPTY for a builder-produced record:
@@ -1197,9 +1212,9 @@ pub fn solve_loop_closure_with_diagnostics(
 
     // KCC-γ step-12: count manifold DOF (`dof_count`) rather than free_b
     // slots so a 3-DOF planar joint balances correctly against the 6-component
-    // loop residual.  `dof_count_for_balance` returns 1/1/1/0/2/3/3 for
-    // prismatic/revolute/coupling/fixed/cylindrical/planar/spherical (manifold
-    // DOF; fixed is 0-DOF and does not contribute to free DOFs).
+    // loop residual.  `dof_count_for_balance` returns 1/1/2/3/3 for
+    // prismatic/revolute/cylindrical/planar/spherical (manifold DOF); the
+    // non-driving coupling and fixed contribute no free DOF.
     //
     // The "any multi-DOF joint present" discriminator distinguishes:
     //   - 1 prismatic vs 6 (1 < 6, single-DOF only) → over-constrained
@@ -1338,8 +1353,10 @@ pub fn solve_loop_closure_with_diagnostics(
 /// the first failed check, or `None` if every input is well-formed.
 ///
 /// Checks: every `free_b` index addresses a valid joint in `chain_b` AND a
-/// valid initial value in `vals_b_initial`, the `WarmStart` vector length
-/// matches `free_b.len()`, and `Midpoint`'s joint-range lookup succeeds for
+/// valid initial value in `vals_b_initial`, that joint is not a recognised
+/// non-driving kind (`loop_closure::is_driving_kind`), the `WarmStart` vector
+/// length equals the flat Newton-state width (`flat_width` of the free joints'
+/// kinds), and `Midpoint`'s joint-range lookup succeeds for
 /// each free joint.  The diagnostic wrapper short-circuits on DOF balance only
 /// AFTER this validation passes, so a structurally over-constrained AND
 /// malformed input surfaces `InvalidInput` (the more accurate signal) rather
@@ -1365,6 +1382,14 @@ fn validate_loop_closure_inputs(
                 vals_b_initial.len()
             ));
         }
+        if let Some(kind) = crate::loop_closure::joint_kind(&chain_b[i])
+            && !crate::loop_closure::is_driving_kind(kind)
+        {
+            return Some(format!(
+                "free_b index {i} addresses a non-driving joint (kind {kind:?}) — fixed and \
+                 coupling joints have no free motion variable"
+            ));
+        }
     }
     match strategy {
         StartStrategy::WarmStart(v) => {
@@ -1374,7 +1399,7 @@ fn validate_loop_closure_inputs(
             // single-DOF chain still validates as len == free_b.len() and a
             // multi-DOF chain validates against the wider Newton state.
             let expected: usize = match free_joint_shapes(chain_b, free_b) {
-                Some(shapes) => shapes.iter().map(|k| k.flat_len()).sum(),
+                Some(shapes) => crate::loop_closure_value::flat_width(&shapes),
                 None => {
                     return Some(
                         "free_b joint kind is unknown to JointKind::from_str".to_string(),
@@ -1383,7 +1408,7 @@ fn validate_loop_closure_inputs(
             };
             if v.len() != expected {
                 return Some(format!(
-                    "WarmStart length {} != free_b length {}",
+                    "WarmStart length {} != Newton state width {} (sum of JointKind::flat_len over free_b)",
                     v.len(),
                     expected,
                 ));

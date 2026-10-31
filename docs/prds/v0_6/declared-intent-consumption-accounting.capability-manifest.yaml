@@ -163,7 +163,7 @@ tasks:
       kind: grep
       pattern: fn finish_check
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: producers-all-upstream
     binding: DAG-direction — ζ ← {α, γ, δ, ε}; every ledger fact class delivered by

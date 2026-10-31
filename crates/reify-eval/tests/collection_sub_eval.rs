@@ -64,7 +64,7 @@ fn make_bolt_parent_engine(n_default: Option<i64>) -> (reify_compiler::CompiledM
         .build();
 
     let checker = MockConstraintChecker::new();
-    let engine = Engine::new(Box::new(checker), None);
+    let engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     (module, engine)
 }
 
@@ -339,7 +339,7 @@ fn eval_collection_list_aggregation() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // The per-member synthetic __list_bolts__grade cell should exist as a List of instance grade values.
@@ -408,7 +408,7 @@ fn eval_dynamic_index_collection_member_access_from_source() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // d = bolts[0].diameter should be 10mm = 0.01m, NOT Undef
@@ -458,7 +458,7 @@ fn eval_collection_aggregate_from_source() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // grades should be a List of 3 values (the bolt grades), not Undef
@@ -907,7 +907,7 @@ fn grown_collection_instances_track_upstream_param_edits() {
         .template(bolt)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let n_id = ValueCellId::new("Parent", "n");
     let bolt_d_id = ValueCellId::new("Parent", "bolt_d");
 
@@ -1027,7 +1027,7 @@ fn grown_forall_constraints_trigger_solver_on_later_upstream_edit() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     let n_id = ValueCellId::new("Parent", "n");
     let bolt_d_id = ValueCellId::new("Parent", "bolt_d");

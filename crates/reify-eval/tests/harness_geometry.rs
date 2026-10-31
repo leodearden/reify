@@ -23,6 +23,8 @@
 //! eval-side consumer of those builtins (`kinematic_stdlib_smoke.rs`): that unit is
 //! within ~700 lines of the 20 kLOC C1 cap (tests/infra/test_harness_kloc_cap.sh), while
 //! this one has ample headroom.
+#[path = "harness_geometry/box_positional_axes_e2e.rs"]
+mod box_positional_axes_e2e;
 #[path = "harness_geometry/dimensionless_sub_pose_diagnostic_e2e.rs"]
 mod dimensionless_sub_pose_diagnostic_e2e;
 #[path = "harness_geometry/empty_boolean_result_diagnostic_e2e.rs"]

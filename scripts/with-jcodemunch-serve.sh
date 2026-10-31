@@ -801,10 +801,10 @@ say "$READY_MARKER  serve is live at $SERVE_URL (pgid $SERVE_PGID)"
 # ── Run the wrapped command ──────────────────────────────────────────────────
 #
 # NOT `exec`. `exec` replaces this shell with the wrapped command and DESTROYS
-# the EXIT trap that reaps the serve — the same trap-killing hazard
-# `scripts/run-gui-dev.sh:165-173` calls out explicitly for reify-gui. Every
-# path out of here has to run teardown, so the command runs as an ordinary
-# foreground child and this script survives it.
+# the EXIT trap that reaps the serve — the hazard scripts/run-gui-dev.sh names
+# for reify-gui in its header's "does NOT `exec`" note and its step-8 block
+# "Run reify-gui as a backgrounded CHILD (not exec)". Every path out of here
+# has to run teardown, so it runs as a foreground child this script outlives.
 #
 # FOREGROUND, with stdin/stdout/stderr INHERITED UNTOUCHED. Backgrounding it
 # would be the usual way to keep signal handlers prompt, but in a non-

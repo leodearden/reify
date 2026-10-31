@@ -40,6 +40,13 @@
 #                  rejected once (task #6087) at a 48% false-positive rate, so
 #                  its guards are proven at the binary level, not only in unit
 #                  tests.
+#   (h) LANE δ-C HARD GATE (task #7098) — an ordinary comment naming a task as
+#                  the OWNER of future work, in any `//`-comment language, with
+#                  that task terminal is classified orphaned→High → reify-audit
+#                  exits non-zero.  Hermetic, mirrors (g) including its BENIGN
+#                  control repo; it sweeps the COMMITTED scenario21/22 fixtures
+#                  so the binary reds on a committed fixture, plus one
+#                  runtime-assembled .ri file for the non-Rust path.
 #
 # Design invariant (PRD 6.6): fingerprint derivation lives ONLY in the
 # ptodo-baseline-gen binary (the same ptodo::fingerprint path the ratchet uses).
@@ -736,6 +743,8 @@ FIX_F=""       # scenario (f) δ-A hard-gate fixture temp dir
 FIX_F2=""      # scenario (f) δ-A benign control repo temp dir
 FIX_G=""       # scenario (g) δ-B hard-gate fixture temp dir
 FIX_G2=""      # scenario (g) δ-B benign control repo temp dir
+FIX_H=""       # scenario (h) δ-C hard-gate fixture temp dir
+FIX_H2=""      # scenario (h) δ-C benign control repo temp dir
 cleanup_all() {
     # Use "|| true" to ensure each line exits 0 even when the variable is empty
     # ([ -n "" ] && rm exits 1 from the short-circuit, which would propagate as
@@ -754,6 +763,8 @@ cleanup_all() {
     [ -n "$FIX_F2"      ] && rm -rf "$FIX_F2"       || true
     [ -n "$FIX_G"       ] && rm -rf "$FIX_G"        || true
     [ -n "$FIX_G2"      ] && rm -rf "$FIX_G2"       || true
+    [ -n "$FIX_H"       ] && rm -rf "$FIX_H"        || true
+    [ -n "$FIX_H2"      ] && rm -rf "$FIX_H2"       || true
 }
 trap cleanup_all EXIT
 
@@ -1560,9 +1571,156 @@ INSERT INTO tasks (tag, id, status) VALUES ('master', 8888, 'done');
     # Emit passing-branch sentinel for scenario (g).  Gated on FAIL counter
     # unchanged — suppressed if any (g) assert failed (fixes silent_pass_on_failure).
     [ "$FAIL" -eq "$_fail_before_g" ] && echo "@@HARDGATE_G_PASSED@@"
+
+    # -----------------------------------------------------------------------
+    # (h) LANE δ-C HARD GATE (task #7098): an ordinary `//` comment that names
+    #     a TERMINAL task as the OWNER of future work (`owned by #N`,
+    #     `deferred to task N`, `#N will …`, `until #N lands`) is classified
+    #     orphaned→High → reify-audit exits NON-ZERO.  Grammar: PRD §8.1, §21.
+    #
+    #     A direct transposition of scenario (g), inheriting its fixes and its
+    #     orphan/control/benign triple, with two differences:
+    #       * it sweeps the COMMITTED fixtures
+    #         crates/reify-audit/tests/fixtures/ptodo/scenario21_prose_promise.rs
+    #         (four owner lines) and scenario22_prose_promise_negatives.rs
+    #         (all-negative), so reify-audit reds on a committed fixture and
+    #         the binary-level guard and the check()-level tests in
+    #         tests/ptodo.rs pin the same text;
+    #       * it adds one runtime-assembled .ri file, because δ-C — unlike
+    #         δ-A/δ-B — is not .rs-gated, and the committed fixtures are .rs
+    #         only (a committed .ri would join repo-wide .ri sweeps).
+    #
+    #       (h-orphan)  scenario21 + .ri, owners done → one High per owner line
+    #       (h-control) UPDATE the owners to pending    → exit 0
+    #       (h-benign)  scenario22, every cite terminal → exit 0
+    #
+    #     SELF-MATCH SAFETY: this .sh is swept but δ-C never reads a
+    #     `#`-comment language; the .ri owner phrase and cite are still
+    #     assembled from shell variables, as in (d)-(g).
+    # -----------------------------------------------------------------------
+    echo ""
+    echo "--- (h) Lane δ-C hard gate: owner-position task cite in an ordinary comment + terminal owner → High → non-zero exit ---"
+
+    FIXTURES_H="$REPO_ROOT/crates/reify-audit/tests/fixtures/ptodo"
+    FIX_H="$(mktemp -d)"
+    git -C "$FIX_H" init -q
+    mkdir -p "$FIX_H/src" "$FIX_H/stdlib"
+    cp "$FIXTURES_H/scenario21_prose_promise.rs" "$FIX_H/src/"
+
+    OWNER_H="owned by"
+    CITE_ID_H_RI="8899"
+    printf '// Growth of `Part` is %s #%s (hermetic fixture)\nstructure def Part { }\n' \
+        "$OWNER_H" "$CITE_ID_H_RI" > "$FIX_H/stdlib/promise.ri"
+    git -C "$FIX_H" add -A
+
+    # Owner lines: scenario21's four (pinned by tests/ptodo.rs
+    # committed_prose_promise_fixture_orphans_each_owner_line) + the .ri one.
+    H_FIXTURE_OWNER_LINES=4
+    H_RI_OWNER_LINES=1
+    H_EXPECTED_HIGH=$(( H_FIXTURE_OWNER_LINES + H_RI_OWNER_LINES ))
+
+    mkdir -p "$FIX_H/.taskmaster/tasks"
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_H/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4578, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', ${CITE_ID_H_RI}, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 7097, 'pending');
+"
+
+    FIX_H_TASKS_FILE="$FIX_H/tasks.json"
+    printf '[]' > "$FIX_H_TASKS_FILE"
+
+    # Snapshot FAIL before scenario (h) begins.  @@HARDGATE_H_PASSED@@ is emitted
+    # ONLY when the counter is unchanged after all (h) asserts.
+    _fail_before_h=$FAIL
+
+    # (h-orphan) terminal owners → one orphaned High per owner line.
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_H" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_H_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_h_orphan=$?
+    set -e
+
+    assert "(h-orphan) scenario21 + .ri owner lines, owners done → ${H_EXPECTED_HIGH} orphaned High → reify-audit exits ${H_EXPECTED_HIGH}" \
+        bash -c '[ "$1" -eq "$2" ]' -- "$_exit_h_orphan" "$H_EXPECTED_HIGH"
+
+    # (h-control) owners pending → every promise honest → exit 0.
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_H/.taskmaster/tasks/tasks.db" \
+        "UPDATE tasks SET status='pending' WHERE id IN (4578, ${CITE_ID_H_RI});"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_H" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_H_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_h_live=$?
+    set -e
+
+    assert "(h-control) owners pending → live owners → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_h_live"
+
+    # (h-benign) the committed all-negative fixture, every cite seeded TERMINAL,
+    # so an over-firing lane flips the exit code: the control can fail.
+    FIX_H2="$(mktemp -d)"
+    git -C "$FIX_H2" init -q
+    mkdir -p "$FIX_H2/src"
+    cp "$FIXTURES_H/scenario22_prose_promise_negatives.rs" "$FIX_H2/src/"
+    git -C "$FIX_H2" add -A
+
+    mkdir -p "$FIX_H2/.taskmaster/tasks"
+    LD_LIBRARY_PATH="" sqlite3 "$FIX_H2/.taskmaster/tasks/tasks.db" "
+CREATE TABLE tasks (
+    tag TEXT NOT NULL DEFAULT 'master',
+    id INTEGER NOT NULL,
+    title TEXT,
+    status TEXT NOT NULL,
+    metadata TEXT,
+    PRIMARY KEY (tag, id)
+);
+INSERT INTO tasks (tag, id, status) VALUES ('master', 10, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 3441, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4168, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 4578, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 5907, 'cancelled');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 5951, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 6082, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 6890, 'done');
+INSERT INTO tasks (tag, id, status) VALUES ('master', 7778, 'done');
+"
+
+    FIX_H2_TASKS_FILE="$FIX_H2/tasks.json"
+    printf '[]' > "$FIX_H2_TASKS_FILE"
+
+    set +e
+    run_audit \
+        --pattern PTODO \
+        --project-root "$FIX_H2" \
+        --runs-db "$FIX2_RUNS" \
+        --tasks-file "$FIX_H2_TASKS_FILE" \
+        --no-jcodemunch
+    _exit_h_benign=$?
+    set -e
+
+    assert "(h-benign) scenario22 provenance / guard lines, all cites seeded terminal → reify-audit exits 0" \
+        bash -c '[ "$1" -eq 0 ]' -- "$_exit_h_benign"
+
+    [ "$FAIL" -eq "$_fail_before_h" ] && echo "@@HARDGATE_H_PASSED@@"
 else
     echo ""
-    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e)+(f)+(g) hard gate could not run" >&2
+    echo "test_reify_audit_ptodo.sh: reify-audit binary absent at '$REIFY_AUDIT_BIN' — (c)+(d)+(e)+(f)+(g)+(h) hard gate could not run" >&2
 fi
 
 # -----------------------------------------------------------------------

@@ -57,7 +57,7 @@ const BOUNDARY_GATE: &str = "crates/reify-cli/tests/harness_cli/units_length_bou
 const CLOSURE_GUARD: &str =
     "crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs";
 const GEOMETRY_OPS: &str = "crates/reify-eval/src/geometry_ops/tests.rs";
-const OCCT_KERNEL: &str = "crates/reify-kernel-occt/src/lib.rs";
+const OCCT_KERNEL: &str = "crates/reify-kernel-occt/tests/harness_occt_kernel/length_tripwire.rs";
 const FIDGET_KERNEL: &str = "crates/reify-kernel-fidget/src/kernel.rs";
 const GUI_ENGINE: &str = "gui/src-tauri/src/tests/engine_tests.rs";
 
@@ -519,9 +519,10 @@ fn every_cited_file_resolves() {
 /// otherwise silent: the suite it lived in stays green with one fewer test, and every
 /// prose citation of it goes stale without any gate noticing. Here it reds.
 ///
-/// Definition alone is not enough, and the gap is not hypothetical: four of these rows
-/// (13 and 14) cite `fn`s living in the `src/lib.rs` and `src/kernel.rs` of two kernel
-/// crates, where a non-test `fn` is the norm. Dropping a `#[test]` there, or adding an
+/// Definition alone is not enough, and the gap is not hypothetical: rows 13 and 14 cite
+/// `fn`s in the fidget kernel's `src/kernel.rs`, where a non-test `fn` is the norm, and in
+/// the OCCT kernel's `tests/harness_occt_kernel/length_tripwire.rs`, a test file that can
+/// hold helper `fn`s as easily. Dropping a `#[test]` in either, or adding an
 /// `#[ignore = "blocked on #NNNN"]`, un-covers the row at zero cost while leaving the
 /// identifier exactly where the ledger expects it. Both are rejected, and reported
 /// distinctly, because the fix differs.

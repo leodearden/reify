@@ -48,26 +48,18 @@
     ],
     "reify-ir": [
       [
-        "boundary_attachment",
-        "expr",
-        "geometry",
-        "value"
-      ],
-      [
         "completeness",
         "ranked"
+      ],
+      [
+        "expr",
+        "value"
       ]
     ],
     "reify-kernel-gmsh": [
       [
         "init",
         "log_capture"
-      ]
-    ],
-    "reify-lsp": [
-      [
-        "analysis",
-        "diagnostics"
       ]
     ],
     "reify-shell-extract": [
@@ -80,7 +72,6 @@
       [
         "assembly",
         "elements",
-        "shell_assembly",
         "shell_kinematics"
       ]
     ],

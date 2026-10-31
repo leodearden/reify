@@ -104,13 +104,11 @@ fn compile_pipeline_invokes_specialization_scope_validator() {
 ///   - one for the arm's `sub head` (forbidden bare-sub in outer scope), and
 ///   - one for the leaf `param x` inside the arm's sub body (forbidden in inner scope).
 ///
-/// This scenario is not covered by the unit tests in `specialization_scope_check.rs`.
+/// The test uses `iter().any(...)` rather than positional indexing because it
+/// deliberately does not pin the order in which `walk_specialization_scope_members`
+/// visits the two forbidden decls.
 ///
-/// The test uses `iter().any(...)` rather than positional indexing because the
-/// exact ordering of diagnostics through `MatchArmDeclGroup` traversal is an
-/// internal detail of `walk_members_depth` not pinned by prior tests.
-///
-/// Shape (nested for validator reachability — see design decisions in plan.json):
+/// Shape:
 /// ```text
 /// structure S {
 ///   sub motor : Foo {
@@ -121,10 +119,12 @@ fn compile_pipeline_invokes_specialization_scope_validator() {
 /// }
 /// ```
 ///
-/// The `MatchArmDeclGroup` is placed inside an outer `sub motor`-with-body so
-/// the validator's top-level walker (`find_specialization_scopes`) reaches it.
-/// Placing the match-arm-group at top-level would silently miss the inner
-/// forbidden decls (see plan.json design decisions for rationale).
+/// Nesting the group inside `sub motor` routes it through
+/// `walk_specialization_scope_members`' own match-arm recursion rather than the
+/// root-finder `find_specialization_scopes`.  The root-finder's match-arm
+/// recursion is covered by the unit test
+/// `validate_module_reports_forbidden_decls_in_a_top_level_match_arm_scope`
+/// in `specialization_scope_check.rs`.
 #[test]
 fn forbidden_decl_in_match_arm_sub_body_emits_diagnostic() {
     let arm_sub_span = SourceSpan::new(90, 110);

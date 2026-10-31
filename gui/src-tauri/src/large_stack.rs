@@ -37,17 +37,13 @@
 //!    Head-of-line blocking among queries is bounded at [`LSP_POOL_SIZE`]: the
 //!    fifth simultaneous in-flight query queues. Notifications serialize
 //!    against each other, which is a requirement; see [`Lane`]'s ORDERING.
+//!    The queries one cursor move issues against ONE document share ONE
+//!    parse: the first parses, and the others wait out the rest of that parse
+//!    on their own consumer, never running a second one. So against a single
+//!    document the bound holds with at most a one-parse wait; the contract is
+//!    `reify_lsp::document::DocumentState::parsed_module`'s.
 //! 2. **No drop-cancellation.** An abandoned submission still runs to
 //!    completion; see [`dispatch_async`]'s "Abandonment".
-//! 3. **Same-document queries share one parse.**
-//!    `crates/reify-lsp/src/document.rs`'s `DocumentState::parsed_module` holds a
-//!    `std::sync::Mutex` across the whole `parse_with_stdlib` call, and every
-//!    `didChange` replaces the document's parse cache. So the hover,
-//!    `documentHighlight` and completion that one cursor move issues against ONE
-//!    uri serialize on that lock right after a keystroke, each parking a pool
-//!    consumer; item 1's bound holds exactly only across DIFFERENT documents.
-//!    The fix, computing the parse outside the lock, is a `reify-lsp` change
-//!    tracked as task #7272.
 //!
 //! # The degradation invariant
 //!

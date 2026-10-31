@@ -32,7 +32,7 @@ fn occt_engine_via_holder() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)))
 }
 
 /// Build a real-OCCT engine using `OcctKernelHandle` directly (no holder).
@@ -47,6 +47,7 @@ fn occt_engine_via_holder() -> reify_eval::Engine {
 fn occt_engine_direct() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     )
@@ -1272,7 +1273,7 @@ structure HolderAt {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_realizations(&compiled);
     let tess_errors: Vec<_> = result
@@ -1324,7 +1325,7 @@ structure HolderAt {
     // Assert the Box's `len`-axis width is the OVERRIDDEN 600mm (0.6m in SI),
     // NOT the 200mm (0.2m) definition default.
     let width_si = match &box_rec.op {
-        GeometryOp::Box { width, .. } => match width {
+        GeometryOp::Box { size_x: width, .. } => match width {
             Value::Scalar { si_value, .. } => *si_value,
             other => panic!("expected Scalar width in Box op; got {:?}", other),
         },
@@ -1489,7 +1490,7 @@ structure Asm {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_realizations(&compiled);
     let tess_errors: Vec<_> = result
@@ -1543,7 +1544,7 @@ structure Asm {
         .filter(|rec| {
             matches!(
                 &rec.op,
-                GeometryOp::Box { width, .. }
+                GeometryOp::Box { size_x: width, .. }
                 if matches!(width, Value::Scalar { si_value, .. } if (*si_value - 0.02_f64).abs() < 1e-9)
             )
         })

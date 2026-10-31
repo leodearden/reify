@@ -1,0 +1,12 @@
+// CLI test fixture for solver-driver parity B8
+// (docs/prds/v0_6/solver-driver-parity.md §5): `reify test` resolves autos,
+// so a @test constraint reading an auto gets a real verdict, not Indeterminate.
+//
+// The auto is bounded on BOTH sides because a one-sided strict auto is a
+// compile error (#6692).
+// Used by test_command_reports_a_real_verdict_for_a_test_reading_an_auto.
+
+@test structure TestSolvedAuto {
+    param x: Length = auto
+    constraint x > 1mm && x < 10mm
+}

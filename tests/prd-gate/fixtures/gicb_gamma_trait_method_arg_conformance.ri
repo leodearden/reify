@@ -1,0 +1,19 @@
+// /prd generic-instantiation-and-call-binding γ₁ evidence: a trait instance
+// method call's arguments are checked against the chosen callee like a free
+// function call's. Today `sc.(Weigher::weigh)(Foam())` checks clean (the
+// callee is not yet in any function table when check_expr_fn_calls runs),
+// while the free-function spelling is rejected.
+module gicb_gamma_trait_method_arg_conformance
+
+trait Rigid {}
+trait Weigher {
+    fn weigh(self, other: Rigid) -> Real { 1.0 }
+}
+structure def Bolt : Rigid { param d : Real = 1.0 }
+structure def Foam { param f : Real = 1.0 }
+structure def Scale : Weigher { param s : Real = 1.0 }
+structure def Top {
+  sub sc = Scale()
+  let ok  = sc.(Weigher::weigh)(Bolt())
+  let bad = sc.(Weigher::weigh)(Foam())
+}

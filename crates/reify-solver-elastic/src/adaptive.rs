@@ -686,7 +686,7 @@ pub fn refine_marked_elements(
     // walking the whole tet index buffer twice for an identical result on
     // every adaptive iteration.
     let shape = tet_shape(volume_mesh)?;
-    let n_elements = shape.n_elements;
+    let n_elements = shape.n_elements();
 
     // Length guard BEFORE any gmsh work: one current size per element.
     if current_sizes.len() != n_elements {
@@ -711,7 +711,7 @@ pub fn refine_marked_elements(
 
     // Canonical h/2 for marked elements; unmarked keep their current size.
     let size_hints = dorfler_size_hints(marked, current_sizes);
-    refine_with_size_field_validated(surface, volume_mesh, shape, &size_hints, options)
+    refine_with_size_field_validated(surface, shape, &size_hints, options)
 }
 
 #[cfg(test)]

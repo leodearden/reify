@@ -15,7 +15,7 @@ use reify_test_support::{bracket_compiled_module, cnid, vcid};
 fn check_snapshot_returns_constraint_results_from_current_values() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new(); // default: all Satisfied
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval to establish baseline snapshot
     let eval_result = engine.eval(&module);
@@ -63,7 +63,7 @@ fn build_snapshot_produces_geometry_from_current_values() {
     let checker = MockConstraintChecker::new();
     let mock_kernel = MockGeometryKernel::new();
     let ops_ref = mock_kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(mock_kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(mock_kernel)));
 
     // Cold-start eval
     let _eval_result = engine.eval(&module);
@@ -103,7 +103,7 @@ fn build_snapshot_produces_geometry_from_current_values() {
 fn edit_param_then_check_snapshot_reflects_updated_values() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     let _eval_result = engine.eval(&module);
@@ -178,7 +178,7 @@ fn edit_param_constraint_violation_detected() {
     let module = bracket_compiled_module();
     // Use SimpleConstraintChecker to actually evaluate constraint expressions
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval — all constraints satisfied with defaults
     let _eval_result = engine.eval(&module);
@@ -235,7 +235,7 @@ fn edit_param_then_build_snapshot_updates_geometry() {
     let checker = MockConstraintChecker::new();
     let mock_kernel = MockGeometryKernel::new();
     let ops_ref = mock_kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(mock_kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(mock_kernel)));
 
     // Cold-start eval + initial build_snapshot
     let _eval_result = engine.eval(&module);
@@ -280,7 +280,7 @@ fn edit_param_then_build_snapshot_updates_geometry() {
     let ops = ops_ref.lock().unwrap();
     let last_op = &ops[ops.len() - 1];
     match &last_op.op {
-        reify_ir::GeometryOp::Box { width, .. } => {
+        reify_ir::GeometryOp::Box { size_x: width, .. } => {
             assert_eq!(
                 *width,
                 Value::length(0.1),
@@ -295,7 +295,7 @@ fn edit_param_then_build_snapshot_updates_geometry() {
 fn journal_records_full_edit_cycle_events() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     let _eval_result = engine.eval(&module);

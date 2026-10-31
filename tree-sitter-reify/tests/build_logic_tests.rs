@@ -10,9 +10,9 @@
 //! and both `build.rs` and this test target `include!` it. A test that passes
 //! here is a statement about the code cargo actually runs.
 //!
-//! The remaining local duplicates (`content_hash`, `stamp_write`,
-//! `verify_outputs`, `run_with_timeout`) are logic this task does not touch;
-//! they stay hand-copied and are still labelled as such.
+//! Every build.rs function this file exercises comes from that shared file, so
+//! redefining one here is a duplicate-definition compile error, not a silent
+//! replica.
 //!
 //! DO NOT ASSERT ON build.rs's OR build_support.rs's SOURCE TEXT HERE. A
 //! `contains("write_shell_stamps(")`-style scan is satisfied by a comment or a
@@ -33,18 +33,7 @@
 //! text are a different thing and stay — they pin this file's conventions.
 include!("../build_support.rs");
 
-use std::hash::{Hash, Hasher};
 use std::path::Path;
-
-/// Duplicates the content_hash logic from build.rs for testability.
-/// Returns hex-encoded u64 hash of file contents.
-fn content_hash(path: &Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
 
 #[test]
 fn test_content_hash_deterministic() {
@@ -122,18 +111,6 @@ fn make_attested_src_dir(base: &Path) -> std::path::PathBuf {
     )
     .unwrap();
     src_dir
-}
-
-/// Duplicates stamp-write logic from build.rs for testability.
-/// Writes the grammar hash to the stamp file, warning on failure instead of panicking.
-fn stamp_write(stamp_path: &Path, grammar_hash: &str) {
-    std::fs::write(stamp_path, grammar_hash).unwrap_or_else(|e| {
-        eprintln!(
-            "cargo:warning=Failed to write stamp file {}: {}",
-            stamp_path.display(),
-            e
-        );
-    });
 }
 
 #[test]
@@ -223,47 +200,50 @@ fn test_needs_generate_true_when_output_missing() {
     );
 }
 
-/// Duplicates verify_outputs logic from build.rs for testability.
-/// Returns Err with a message naming the missing file(s).
-fn verify_outputs(src_dir: &Path) -> Result<(), String> {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
-        }
-    }
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "tree-sitter generate succeeded but these output files are missing: {}",
-            missing.join(", ")
-        ))
-    }
-}
-
 #[test]
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
     let src_dir = make_populated_src_dir(dir.path());
-    assert!(
-        verify_outputs(&src_dir).is_ok(),
+    assert_eq!(
+        verify_outputs(&src_dir),
+        Ok(()),
         "all files present should verify ok"
     );
 
-    // Remove each file in turn and verify it's detected as missing.
+    // Remove each file in turn: the error names exactly that file.
     for name in EXPECTED_OUTPUTS {
         let path = src_dir.join(name);
         std::fs::remove_file(&path).unwrap();
         let err = verify_outputs(&src_dir).unwrap_err();
         assert!(
             err.contains(name),
-            "error message should name the missing file '{}', got: {}",
+            "error should name the missing file '{}', got: {}",
             name,
             err
         );
-        // Restore for next iteration
+        for present in EXPECTED_OUTPUTS.iter().filter(|p| *p != name) {
+            assert!(
+                !err.contains(present),
+                "error must not name '{}', which is still present, got: {}",
+                present,
+                err
+            );
+        }
         std::fs::write(&path, b"placeholder").unwrap();
+    }
+
+    // Remove all of them: the error names every one.
+    for name in EXPECTED_OUTPUTS {
+        std::fs::remove_file(src_dir.join(name)).unwrap();
+    }
+    let err = verify_outputs(&src_dir).unwrap_err();
+    for name in EXPECTED_OUTPUTS {
+        assert!(
+            err.contains(name),
+            "error should name every missing file, '{}' absent from: {}",
+            name,
+            err
+        );
     }
 }
 
@@ -307,7 +287,7 @@ fn test_gating_predicates_converge_after_one_regeneration() {
     // OUT_DIR stamp written — exactly what build.rs's branch does.
     let sha = sha256_of_path(&grammar).unwrap().unwrap();
     write_shell_stamps(&src_dir, &sha);
-    std::fs::write(&out_stamp, &grammar_hash).unwrap();
+    write_out_dir_grammar_stamp(&out_stamp, &grammar_hash);
 
     // Round 2: settled. And round 3, so "settled" is a fixed point rather than
     // an alternation.
@@ -323,227 +303,6 @@ fn test_gating_predicates_converge_after_one_regeneration() {
              read back as current"
         );
     }
-}
-
-/// Find the Err(e) arm in source code using brace-depth tracking.
-/// Returns the slice from `Err(e) =>` through the arm's closing `}`.
-/// Tracks brace depth, skipping braces inside double-quoted string literals
-/// so that format strings like `format!("hint: '}}'")` don't fool the counter.
-fn find_err_arm_braced(source: &str) -> Option<&str> {
-    let err_start = source.find("Err(e) =>")?;
-    let after_arrow = &source[err_start..];
-
-    // Find the opening brace of the arm body.
-    let brace_offset = after_arrow.find('{')?;
-    let body_start = err_start + brace_offset;
-
-    let bytes = source.as_bytes();
-    let mut depth: usize = 0;
-    let mut i = body_start;
-
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                // Skip string literal contents — braces inside strings don't count.
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2; // skip escaped character (e.g. \")
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break; // closing quote
-                    }
-                    i += 1;
-                }
-            }
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&source[err_start..=i]);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    None // unbalanced braces
-}
-
-/// Duplicates run_with_timeout logic from build.rs for testability.
-/// Returns Ok(()) on success, Err(message) on failure or timeout.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
-    }
-}
-
-#[test]
-fn test_try_wait_error_path_kills_child() {
-    // Source-level regression guard: the Err(e) arm of try_wait() in run_with_timeout
-    // must contain child.kill() and child.wait() to prevent orphan processes on I/O errors.
-    let build_rs = std::fs::read_to_string(BUILD_RS)
-        .expect("should be able to read build.rs from tree-sitter-reify crate root");
-
-    // Extract the Err(e) arm using brace-depth tracking with string-literal awareness.
-    // This precisely captures the arm body without the fragility of a fixed-size window.
-    let err_arm = find_err_arm_braced(&build_rs)
-        .expect("build.rs should contain an Err(e) arm in try_wait match");
-
-    assert!(
-        err_arm.contains("child.kill()"),
-        "Err(e) arm of try_wait() must contain child.kill() to prevent orphan processes. \
-         Window: {}",
-        err_arm
-    );
-    assert!(
-        err_arm.contains("child.wait()"),
-        "Err(e) arm of try_wait() must contain child.wait() to reap the child process. \
-         Window: {}",
-        err_arm
-    );
-}
-
-#[test]
-fn test_err_arm_extraction_not_fooled_by_format_braces() {
-    // Synthetic source where child.kill()/child.wait() appear AFTER a format string with '}'.
-    // This demonstrates the fragility of the naive .find('}') approach and validates
-    // that find_err_arm_braced handles it correctly.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                return Err(format!("Error: '{}'", e));
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    "#;
-
-    // The naive .find('}') approach finds the '}' inside the format string,
-    // not the arm's closing brace.
-    let err_start = source.find("Err(e) =>").unwrap();
-    let err_section = &source[err_start..];
-    let naive_end = err_section.find('}').unwrap();
-    let naive_slice = &err_section[..=naive_end];
-
-    // The naive approach misses child.kill() and child.wait() because they
-    // appear after the format string's '}'.
-    assert!(
-        !naive_slice.contains("child.kill()"),
-        "naive .find('}}') should NOT capture child.kill() — it stops at format string brace"
-    );
-
-    // The brace-depth tracker with string-literal awareness captures the full arm.
-    let braced = find_err_arm_braced(source).expect("should find Err(e) arm");
-    assert!(
-        braced.contains("child.kill()"),
-        "find_err_arm_braced should capture child.kill(). Got: {}",
-        braced
-    );
-    assert!(
-        braced.contains("child.wait()"),
-        "find_err_arm_braced should capture child.wait(). Got: {}",
-        braced
-    );
-}
-
-#[test]
-fn test_find_err_arm_braced_simple() {
-    // Simple match block with Err(e) arm — no format strings or nested braces.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("error: {}", e));
-            }
-        }
-    "#;
-
-    let arm = find_err_arm_braced(source).expect("should find Err(e) arm in simple match block");
-
-    assert!(
-        arm.contains("child.kill()"),
-        "extracted arm should contain child.kill(). Got: {}",
-        arm
-    );
-    assert!(
-        arm.contains("child.wait()"),
-        "extracted arm should contain child.wait(). Got: {}",
-        arm
-    );
-}
-
-#[test]
-fn test_find_err_arm_braced_skips_format_braces() {
-    // Err(e) arm contains format!() with '}}' (Rust escaped brace) BEFORE child.kill()/child.wait().
-    // The '}}' in source text is two literal '}' characters — the naive brace counter
-    // decrements depth to 0 at the first '}', stopping before child.kill()/child.wait().
-    // A string-literal-aware tracker must skip braces inside "..." to extract the full arm.
-    let source = r#"
-        match child.try_wait() {
-            Ok(Some(status)) => { return Ok(()); }
-            Ok(None) => { /* polling */ }
-            Err(e) => {
-                let msg = format!("err={}, hint: '}}' escapes", e);
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(msg);
-            }
-        }
-    "#;
-
-    let arm = find_err_arm_braced(source).expect("should find Err(e) arm with format strings");
-
-    assert!(
-        arm.contains("child.kill()"),
-        "brace-depth tracker must not stop at format string braces. Got: {}",
-        arm
-    );
-    assert!(
-        arm.contains("child.wait()"),
-        "brace-depth tracker must capture full arm past format strings. Got: {}",
-        arm
-    );
 }
 
 #[test]
@@ -602,16 +361,104 @@ fn test_subprocess_timeout_kills_hung_process() {
     );
 }
 
+/// Whether this test binary's own descriptor `fd` is /dev/null, compared by
+/// device and inode exactly as the shell's `-ef` does. On /dev/null a
+/// discarded child descriptor and an inherited one are the same file, so the
+/// stdio probes below cannot tell them apart.
+#[cfg(target_os = "linux")]
+fn own_fd_is_dev_null(fd: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (
+        std::fs::metadata(format!("/proc/self/fd/{fd}")),
+        std::fs::metadata("/dev/null"),
+    ) {
+        (Ok(own), Ok(null)) => own.dev() == null.dev() && own.ino() == null.ino(),
+        _ => false,
+    }
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_run_with_timeout_discards_child_stdout() {
+    assert!(
+        !own_fd_is_dev_null(1),
+        "precondition: this test binary's own stdout is /dev/null, so a \
+         discarded and an inherited child stdout are indistinguishable; rerun \
+         without redirecting stdout to /dev/null"
+    );
+    let result = run_with_timeout(
+        "sh",
+        &[
+            "-c",
+            r#"[ /dev/fd/1 -ef /dev/null ] && ! [ /dev/fd/1 -ef "/proc/$PPID/fd/1" ]"#,
+        ],
+        10,
+    );
+    assert_eq!(
+        result,
+        Ok(()),
+        "child stdout must be discarded (/dev/null, not the build script's own \
+         stdout): cargo parses build-script stdout for `cargo:` directives, and a \
+         pipe nobody drains can deadlock"
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn test_run_with_timeout_inherits_child_stderr() {
+    assert!(
+        !own_fd_is_dev_null(2),
+        "precondition: this test binary's own stderr is /dev/null, so an \
+         inherited and a discarded child stderr are indistinguishable; rerun \
+         without redirecting stderr to /dev/null"
+    );
+    let result = run_with_timeout(
+        "sh",
+        &[
+            "-c",
+            r#"[ /dev/fd/2 -ef "/proc/$PPID/fd/2" ] && ! [ /dev/fd/2 -ef /dev/null ]"#,
+        ],
+        10,
+    );
+    assert_eq!(
+        result,
+        Ok(()),
+        "child stderr must be the build script's own stderr, so `tree-sitter \
+         generate` diagnostics stay visible"
+    );
+}
+
+#[test]
+fn test_run_with_timeout_reports_nonzero_exit_code() {
+    let err = run_with_timeout("sh", &["-c", "exit 97"], 10).unwrap_err();
+    assert!(
+        err.contains("exit code 97"),
+        "a failing child's error should carry its exit code 97, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_run_with_timeout_reports_spawn_failure() {
+    let missing = "reify-no-such-binary-8553";
+    let err = run_with_timeout(missing, &[], 10).unwrap_err();
+    assert!(
+        err.contains(missing),
+        "a spawn failure should name the binary '{}', got: {}",
+        missing,
+        err
+    );
+}
+
 #[test]
 #[cfg(unix)] // set_readonly(true) on a directory only prevents file creation on Unix (POSIX);
 // on Windows the readonly attribute does NOT block creating files within the directory.
-fn test_stamp_write_failure_no_panic() {
+fn test_out_dir_grammar_stamp_write_failure_does_not_panic() {
     if is_root() {
         eprintln!("skipping: test requires non-root user (root bypasses DAC permissions)");
         return;
     }
-    // Verify that stamp_write does not panic when the destination is read-only.
-    // This mirrors build.rs behavior where write failure emits a warning instead of panicking.
+    // A write failure on the OUT_DIR stamp warns instead of panicking.
     let dir = tempfile::tempdir().unwrap();
     let readonly_dir = dir.path().join("readonly");
     std::fs::create_dir_all(&readonly_dir).unwrap();
@@ -627,7 +474,7 @@ fn test_stamp_write_failure_no_panic() {
     let stamp_path = readonly_dir.join("grammar_hash.stamp");
 
     // Should not panic — just warn
-    stamp_write(&stamp_path, "somehash");
+    write_out_dir_grammar_stamp(&stamp_path, "somehash");
 
     // Verify the stamp was NOT written (write should have failed)
     assert!(
@@ -637,8 +484,8 @@ fn test_stamp_write_failure_no_panic() {
 }
 
 #[test]
-fn test_stamp_write_exact_content() {
-    // Validates that stamp_write produces exact hash bytes with no trailing
+fn test_out_dir_grammar_stamp_exact_content() {
+    // Validates that the OUT_DIR stamp holds exact hash bytes with no trailing
     // whitespace, newline, or other content corruption. Since needs_generate
     // uses .trim() when reading, corruption would be silently masked without
     // this direct content assertion.
@@ -646,12 +493,12 @@ fn test_stamp_write_exact_content() {
     let stamp_path = dir.path().join("grammar_hash.stamp");
     let hash = "a1b2c3d4e5f60708";
 
-    stamp_write(&stamp_path, hash);
+    write_out_dir_grammar_stamp(&stamp_path, hash);
 
     let raw_content = std::fs::read_to_string(&stamp_path).unwrap();
     assert_eq!(
         raw_content, hash,
-        "stamp_write must produce exact hash bytes — no trailing newline, whitespace, or BOM. \
+        "the OUT_DIR stamp must hold exact hash bytes — no trailing newline, whitespace, or BOM. \
          Got {:?}, expected {:?}",
         raw_content, hash
     );
@@ -682,9 +529,9 @@ fn test_stamp_path_is_profile_independent() {
     // Write matching stamp to both profiles
     let debug_stamp = debug_out.join("grammar_hash.stamp");
     let release_stamp = release_out.join("grammar_hash.stamp");
-    stamp_write(&debug_stamp, &hash);
+    write_out_dir_grammar_stamp(&debug_stamp, &hash);
     assert_eq!(std::fs::read_to_string(&debug_stamp).unwrap(), hash);
-    stamp_write(&release_stamp, &hash);
+    write_out_dir_grammar_stamp(&release_stamp, &hash);
     assert_eq!(std::fs::read_to_string(&release_stamp).unwrap(), hash);
 
     // Both profiles report no regeneration needed
@@ -736,7 +583,7 @@ fn test_stamp_shared_across_simulated_profiles() {
     let stamp_2 = out_dir_2.join("grammar_hash.stamp");
 
     // Write stamp to only OUT_DIR_1
-    stamp_write(&stamp_1, &hash);
+    write_out_dir_grammar_stamp(&stamp_1, &hash);
     assert_eq!(std::fs::read_to_string(&stamp_1).unwrap(), hash);
 
     // OUT_DIR_1 has matching stamp — no regeneration needed
@@ -751,7 +598,7 @@ fn test_stamp_shared_across_simulated_profiles() {
     );
 
     // Now write the same stamp to OUT_DIR_2
-    stamp_write(&stamp_2, &hash);
+    write_out_dir_grammar_stamp(&stamp_2, &hash);
     assert_eq!(std::fs::read_to_string(&stamp_2).unwrap(), hash);
 
     // Both locations now report no regeneration needed
@@ -1057,7 +904,6 @@ fn test_unix_permission_tests_have_root_guard() {
 fn test_readonly_guard_drop_logs_error() {
     // Source-level regression guard: ReadonlyGuard::drop must log errors from
     // set_permissions via eprintln! rather than silently discarding with `let _ =`.
-    // Follows the established source-level test pattern (test_try_wait_error_path_kills_child).
     //
     // Design decision: the two assertions below enforce a semantic (not syntactic) invariant:
     //   (1) errors must not be silently discarded (no `let _ = set_permissions`)

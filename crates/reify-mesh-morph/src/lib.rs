@@ -1,7 +1,7 @@
 //! Mesh morphing classifier and engine for Reify.
 //!
-//! This crate provides the combined eligibility predicate for mesh morphing
-//! (PRD `docs/prds/v0_3/mesh-morphing.md`, tasks #3 and #10).
+//! This crate is the mesh-morph pipeline (PRD `docs/prds/v0_3/mesh-morphing.md`),
+//! entered through [`compose_morph`].
 //!
 //! ## PRD task #5 — boundary-node correspondence + closest-point projection — boundary module
 //!
@@ -74,7 +74,7 @@
 //!
 //! [`quality::QualityVerdict::Unsupported`] means `morphed`/`source` is a
 //! non-tet (hex/wedge) mesh; [`quality_check`] returns it instead of
-//! panicking. `compose_morph` intercepts it before [`record_quality_remesh`]
+//! panicking. `compose_morph` intercepts it before `record_quality_remesh`
 //! and returns a structured [`MorphFailure::SolverError`].
 //!
 //! The intercept is unreachable through any constructible `compose_morph`
@@ -85,16 +85,9 @@
 //! upstream ordering ever changes, and has no behaviour test for the same
 //! reason: no constructible input reaches it.
 //!
-//! It also records no diagnostic counter, unlike the sibling Ineligible /
-//! Panicked / HardFail / SoftFail arms — there is no `MorphOutcome` bucket
-//! for a branch that cannot fire today, and the failure still reaches the
-//! caller via the structured `Err`, so this is silent-from-diagnostics, not
-//! silent-from-the-API. [`record_quality_remesh`]'s own `Unsupported` arm
-//! mirrors this with a `debug_assert!` instead of a counter, since this
-//! intercept always fires first. If the upstream guards are ever relaxed and
-//! this path becomes reachable, add a dedicated `MorphOutcome` bucket (or
-//! reuse an existing failure bucket) so it is observable in release
-//! diagnostics rather than silent.
+//! Like every other non-panic `SolverError` exit, the intercept records the
+//! `remeshed_solver_error` diagnostic bucket, so it stays observable if it
+//! ever becomes reachable.
 pub mod boundary;
 pub mod diagnostics;
 pub mod elasticity;
@@ -102,19 +95,14 @@ pub mod eligibility;
 pub mod laplacian;
 pub mod options;
 pub mod quality;
-pub mod stats;
 pub mod types;
 
-pub use stats::{MorphStats, record_morph_attempt, record_rejection, record_remesh, snapshot};
-// Bare diagnostics re-exports. Two symbols are deliberately omitted:
-//   - `snapshot` stays reachable as `diagnostics::snapshot()` to avoid
-//     colliding with the `stats::snapshot` re-export above; and
-//   - `MorphOutcome` is kept crate-internal — it carries no external behaviour
-//     (its only consumer is the private bucket-routing `fn counter`), so it is
-//     not part of the public API surface.
-pub use diagnostics::{
-    DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
-    record_quality_remesh,
+// Bare diagnostics re-exports: the read side only. The recorders are
+// crate-private (`compose_morph` is their sole caller), while `snapshot`,
+// `reset` and the test-seeding `MorphOutcome` stay under `diagnostics::`.
+pub use diagnostics::{DiagnosticSnapshot, format_summary};
+use diagnostics::{
+    record_ineligible, record_morphed, record_panicked, record_quality_remesh, record_solver_error,
 };
 pub use boundary::{
     BoundaryAssociation, NodeAttachment, ProjectionFailure, Projector, ProjectorPayload,
@@ -136,67 +124,6 @@ pub use reify_eval::{
 /// `CgSolverOptions` without depending on `reify-solver-elastic` directly.
 pub use reify_solver_elastic::CgSolverOptions;
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
-/// Bool-only wrapper around [`morph_eligible`] per PRD task #4.
-///
-/// Returns `true` if both Stage A and Stage B pass (the edit is morphable),
-/// `false` otherwise. The structured rejection [`Reason`] is discarded;
-/// callers that need it for failure-mode visibility counters (PRD task #11)
-/// should call [`morph_eligible`] directly.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer task #4744 (done) — the §8 task β morph arm landed via `morph_eligible` directly, not this bool-only `eligible` wrapper; remains an in-scope orphan BY DESIGN (convenience wrapper with no current caller — see PINS in engine_seam_orphans_g_allow.rs); re-homed from cancelled #3429/#2947
-pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
-    // `BRep` is `Copy` (alias for `MorphSnapshot<'a>`); pass by value matches
-    // `morph_eligible`'s signature directly.
-    matches!(
-        eligibility::morph_eligible(old_brep, new_brep),
-        Eligibility::Eligible(_)
-    )
-}
-
-/// Morph `old_mesh` to the shape described by `new_brep`, returning the
-/// deformed [`reify_types::VolumeMesh`] on success.
-///
-/// ## API contract (task #4)
-///
-/// The function commits the full public signature. The engine logic is deferred:
-///
-/// | Path | Behaviour |
-/// |------|-----------|
-/// | Ineligible edit | Returns `Err(MorphFailure::Ineligible(reason))` immediately |
-/// | Eligible edit | Returns `Err(MorphFailure::SolverError(...))` until PRD tasks #5–#9 land the engine |
-///
-/// ## Parameters
-///
-/// - `old_mesh` — the current tetrahedral mesh to deform.
-/// - `old_brep` / `new_brep` — boundary-rep snapshots for eligibility and
-///   boundary-node projection (PRD task #5).
-/// - `options` — quality thresholds and fictitious-stiffness parameters;
-///   see [`MorphOptions`].
-///
-/// ## Failure modes
-///
-/// See [`MorphFailure`] for the four-variant taxonomy. Only `Ineligible` is
-/// produced by this skeleton; the remaining three variants are wired in PRD
-/// tasks #7 and #9.
-pub fn morph(
-    old_mesh: &reify_ir::VolumeMesh,
-    old_brep: BRep,
-    new_brep: BRep,
-    options: &MorphOptions,
-) -> Result<reify_ir::VolumeMesh, MorphFailure> {
-    let _ = old_mesh;
-    let _ = options;
-    match eligibility::morph_eligible(old_brep, new_brep) {
-        Eligibility::Ineligible(reason) => Err(MorphFailure::Ineligible(reason)),
-        Eligibility::Eligible(_correspondence_map) => {
-            Err(MorphFailure::SolverError(SolverErrorPayload::new(
-                "engine not yet implemented (PRD docs/prds/v0_3/mesh-morphing.md tasks #5-#9)",
-            )))
-        }
-    }
-}
-
 // ── compose_morph: the real morph pipeline (task 4744 β) ───────────────────────
 
 /// Fraction of the source mesh's bounding-box diagonal below which the cheap
@@ -210,10 +137,10 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// Compose the landed morph primitives into the full morph pipeline used at the
 /// engine seam (task 4744 β / PRD `docs/prds/v0_3/mesh-morphing.md` task #10).
 ///
-/// Distinct from the [`morph`] skeleton: this fn additionally takes the source
-/// mesh's [`BoundaryAssociation`] (from the 4092 attributed VolumeMesh producer)
-/// and a `&dyn GeometryKernel` for the **new** BRep, so it can actually project
-/// boundary nodes and deform the mesh. Pipeline:
+/// This is the crate's morph entry point. It takes the source mesh's
+/// [`BoundaryAssociation`] (from the 4092 attributed VolumeMesh producer) and a
+/// `&dyn GeometryKernel` for the **new** BRep, so it can project boundary nodes
+/// and deform the mesh. Pipeline:
 ///
 /// 1. [`morph_eligible`] — Stage A + Stage B → [`CorrespondenceMap`].
 /// 2. [`compute_dirichlet_bcs`] over a [`KernelProjector`] — project each
@@ -222,11 +149,11 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// 3. Displacement-magnitude rule → [`laplacian_smooth`] (small) or
 ///    [`elasticity_morph`] (large). The solve is wrapped in
 ///    [`std::panic::catch_unwind`] so a solver panic is recorded
-///    ([`record_panicked`]) and degraded to a structured failure rather than
+///    (`record_panicked`) and degraded to a structured failure rather than
 ///    unwinding through the engine dispatch.
 /// 4. [`quality_check`] — on [`QualityVerdict::Pass`], attach the source's
 ///    [`BoundaryAssociation`] re-keyed onto the NEW BRep
-///    ([`rekey_boundary_association`]), then [`record_morphed`] and return the
+///    ([`rekey_boundary_association`]), then `record_morphed` and return the
 ///    deformed mesh.
 ///
 /// Connectivity is preserved by construction (both solvers deform vertices in
@@ -245,9 +172,11 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// handle yields `None`, degrading the next tick to an honest remesh rather
 /// than a silent misprojection.
 ///
-/// The eligibility-reject and quality-reject failure arms return a structured
-/// [`MorphFailure`]; their diagnostic counters (`record_ineligible` /
-/// `record_quality_remesh`) are wired by task 4744 step-10.
+/// Every failure arm records exactly one diagnostic bucket before returning its
+/// structured [`MorphFailure`]: ineligible (`record_ineligible`), quality remesh
+/// (`record_quality_remesh`), solver error (`record_solver_error`, for a
+/// projection failure, a solver `Err` or an unsupported mesh) or panicked
+/// (`record_panicked`).
 pub fn compose_morph(
     source_mesh: &reify_ir::VolumeMesh,
     boundary: &BoundaryAssociation,
@@ -272,7 +201,7 @@ pub fn compose_morph(
     let projector = boundary::KernelProjector(kernel);
     let prescribed = compute_dirichlet_bcs(source_mesh, boundary, &correspondence, &projector)
         .map_err(|failure| {
-            MorphFailure::SolverError(SolverErrorPayload::new(format!(
+            solver_failure(SolverErrorPayload::new(format!(
                 "boundary-node projection failed: {failure:?}"
             )))
         })?;
@@ -292,7 +221,7 @@ pub fn compose_morph(
     });
     let mut morphed = match std::panic::catch_unwind(solve) {
         Ok(Ok(mesh)) => mesh,
-        Ok(Err(payload)) => return Err(MorphFailure::SolverError(payload)),
+        Ok(Err(payload)) => return Err(solver_failure(payload)),
         Err(panic) => {
             let detail = panic_detail(panic.as_ref());
             record_panicked(&detail);
@@ -324,7 +253,7 @@ pub fn compose_morph(
     // caller as `MorphFailure::SolverError`. Full rationale: module docs
     // above (`Task #5007`).
     if matches!(verdict, QualityVerdict::Unsupported) {
-        return Err(MorphFailure::SolverError(SolverErrorPayload::new(
+        return Err(solver_failure(SolverErrorPayload::new(
             "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
         )));
     }
@@ -374,6 +303,14 @@ fn bbox_diagonal(mesh: &reify_ir::VolumeMesh) -> f64 {
     let dy = (max[1] - min[1]) as f64;
     let dz = (max[2] - min[2]) as f64;
     (dx * dx + dy * dy + dz * dz).sqrt()
+}
+
+/// Record a non-panic solver failure's diagnostic bucket and wrap it as a
+/// [`MorphFailure::SolverError`]. The panic arm records `panicked` instead and
+/// builds its failure directly, so no exit is counted twice.
+fn solver_failure(payload: SolverErrorPayload) -> MorphFailure {
+    record_solver_error(payload.message());
+    MorphFailure::SolverError(payload)
 }
 
 /// Best-effort extraction of a panic message from a caught panic payload.
@@ -497,6 +434,17 @@ mod tests {
         g
     }
 
+    /// The one-cell `Part.width` graph and its value map. Clone the graph for an
+    /// identical new side (Stage A passes) or hand it to [`diverged_graph`] for a
+    /// Stage-A structural change.
+    fn width_graph_and_values() -> (EvaluationGraph, ValueMap) {
+        let id = ValueCellId::new("Part", "width");
+        let graph = graph_with_cell(&id, Type::length());
+        let mut values = ValueMap::new();
+        values.insert(id, Value::length(0.05));
+        (graph, values)
+    }
+
     fn diverged_graph(base: &EvaluationGraph) -> EvaluationGraph {
         let mut g = base.clone();
         let rnid = RealizationNodeId::new("Extra", 0);
@@ -519,25 +467,22 @@ mod tests {
         values: &'a ValueMap,
         table: &'a TopologyAttributeTable,
     ) -> BRep<'a> {
+        brep_with_faces(graph, values, table, &[])
+    }
+
+    fn brep_with_faces<'a>(
+        graph: &'a EvaluationGraph,
+        values: &'a ValueMap,
+        table: &'a TopologyAttributeTable,
+        faces: &'a [GeometryHandleId],
+    ) -> BRep<'a> {
         BRep {
             graph,
             values,
             topology_attributes: table,
-            faces: &[],
+            faces,
             edges: &[],
             vertices: &[],
-        }
-    }
-
-    fn empty_mesh() -> reify_ir::VolumeMesh {
-        reify_ir::VolumeMesh {
-            vertices: Vec::new(),
-            connectivity: reify_ir::VolumeConnectivity::Tet {
-                indices: Vec::new(),
-                order: reify_ir::ElementOrderTag::P1,
-            },
-            normals: None,
-            boundary: None,
         }
     }
 
@@ -545,6 +490,13 @@ mod tests {
 
     fn h(n: u64) -> GeometryHandleId {
         GeometryHandleId(n)
+    }
+
+    fn occt_handle(n: u64) -> KernelHandle {
+        KernelHandle {
+            kernel: KernelId::Occt,
+            id: h(n),
+        }
     }
 
     fn feat() -> FeatureId {
@@ -559,76 +511,6 @@ mod tests {
             user_label: None,
             mod_history: Vec::new(),
         }
-    }
-
-    // ── Step-5: eligible() contract ───────────────────────────────────────────
-
-    #[test]
-    fn eligible_returns_true_when_morph_eligible_yields_eligible() {
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(eligible(old_brep, new_brep));
-    }
-
-    #[test]
-    fn eligible_returns_false_on_stage_a_structural_change() {
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = diverged_graph(&old_graph);
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        assert!(!eligible(old_brep, new_brep));
-    }
-
-    // ── Step-7/amendment: morph() Ineligible and Eligible paths ─────────────
-
-    #[test]
-    fn morph_returns_solver_error_on_eligible_path() {
-        // Verifies the Eligible arm of morph() returns SolverError (not panics)
-        // until the engine lands in PRD tasks #5–#9.
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(
-            matches!(result, Err(MorphFailure::SolverError(_))),
-            "eligible path should return SolverError (unimplemented), got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn morph_returns_ineligible_failure_on_stage_a_structural_change() {
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = diverged_graph(&old_graph);
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-        let table = TopologyAttributeTable::default();
-        let old_brep = make_brep(&old_graph, &values, &table);
-        let new_brep = make_brep(&new_graph, &values, &table);
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(matches!(
-            result,
-            Err(MorphFailure::Ineligible(Reason::StructuralChange))
-        ));
     }
 
     // ── Step-31: lib re-exports make boundary module public surface accessible ─
@@ -760,153 +642,16 @@ mod tests {
 
     // ── task 2948: lib re-export fence for the diagnostics surface ───────────
 
-    // Compile fence: verifies the diagnostics surface is re-exported from the
-    // crate root. Two symbols are intentionally absent from the bare re-export
-    // (and therefore from this fence): `snapshot`, reached via the
-    // `diagnostics::` module path to avoid colliding with the existing
-    // `stats::snapshot` re-export; and `MorphOutcome`, kept crate-internal
-    // (internal bucket-routing only). Dropping any bare re-export breaks
-    // compilation immediately.
+    // Compile fence: pins the public diagnostics surface — the crate-root
+    // `DiagnosticSnapshot` / `format_summary` re-exports plus the module-path
+    // `diagnostics::snapshot` / `diagnostics::reset`. Dropping any of them, or
+    // drifting a signature, breaks compilation immediately.
     const _: fn() = || {
-        use crate::{
-            DiagnosticSnapshot, format_summary, record_ineligible, record_morphed, record_panicked,
-            record_quality_remesh,
-        };
-        let _: fn() = record_morphed;
-        let _: fn(&crate::QualityVerdict) = record_quality_remesh;
-        let _: fn(&crate::Reason) = record_ineligible;
-        let _: fn(&str) = record_panicked;
+        use crate::{DiagnosticSnapshot, format_summary};
         let _: fn(&DiagnosticSnapshot) -> String = format_summary;
-        // `snapshot` via the module path, not a bare re-export (avoids the
-        // collision with `stats::snapshot`).
         let _: fn() -> DiagnosticSnapshot = crate::diagnostics::snapshot;
+        let _: fn() = crate::diagnostics::reset;
     };
-
-    // ── Step 1 (task 3153): pin the by-value `eligible` signature ────────────
-
-    // Compile fence: fails to compile until `eligible` takes `BRep` by value.
-    // Mirrors the boundary/laplacian/quality fence discipline above.
-    #[allow(unused)]
-    const _: fn() = || {
-        let _fn_ref: fn(BRep, BRep) -> bool = eligible;
-        let _ = _fn_ref;
-    };
-
-    // ── Step 3 (task 3153): pin the by-value `morph` signature ───────────────
-
-    // Compile fence: fails to compile until `morph` takes `BRep` by value.
-    // `old_mesh` and `options` remain `&`-bound (not `Copy`).
-    #[allow(unused)]
-    const _: fn() = || {
-        let _fn_ref: fn(
-            &reify_ir::VolumeMesh,
-            BRep,
-            BRep,
-            &MorphOptions,
-        ) -> Result<reify_ir::VolumeMesh, MorphFailure> = morph;
-        let _ = _fn_ref;
-    };
-
-    // ── Steps 1-2 (task 3142): Stage-B regression guards ─────────────────────
-
-    #[test]
-    fn morph_returns_ineligible_bijection_failure_on_stage_b_count_mismatch() {
-        // Regression guard: morph() must project Stage-B CountMismatch into
-        // MorphFailure::Ineligible(Reason::BijectionFailure(_)), not SolverError
-        // or panic.
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-
-        // old: 1 face with Cap(Top); new: 2 faces Cap(Top)+Cap(Bottom).
-        // Stage A passes (identical graphs); Stage B rejects on CountMismatch.
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
-
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20), h(21)],
-            edges: &[],
-            vertices: &[],
-        };
-
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(
-            matches!(
-                result,
-                Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
-            ),
-            "Stage-B CountMismatch should project to MorphFailure::Ineligible(BijectionFailure), got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn morph_returns_ineligible_naming_layer_error_on_stage_b_imported_geometry() {
-        // Regression guard: morph() must project Stage-B NamingLayerError::Imported
-        // into MorphFailure::Ineligible(Reason::NamingLayerError {..}), not into
-        // Reason::BijectionFailure or SolverError.
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
-
-        // Empty tables + non-empty face slices → Stage B surfaces
-        // BijectionFailure::NamingLayerError { kind: Face, reason: Imported },
-        // which morph_eligible projects to top-level Reason::NamingLayerError.
-        let old_table = TopologyAttributeTable::default();
-        let new_table = TopologyAttributeTable::default();
-
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20)],
-            edges: &[],
-            vertices: &[],
-        };
-
-        let mesh = empty_mesh();
-        let options = MorphOptions::default();
-        let result = morph(&mesh, old_brep, new_brep, &options);
-        assert!(
-            matches!(
-                result,
-                Err(MorphFailure::Ineligible(Reason::NamingLayerError {
-                    kind: SubShapeKind::Face,
-                    reason: NamingLayerErrorReason::Imported,
-                }))
-            ),
-            "Stage-B NamingLayerError::Imported should project to \
-             MorphFailure::Ineligible(Reason::NamingLayerError), got: {result:?}"
-        );
-    }
 
     // ── Step-7 (task 4744 β): compose_morph success path ─────────────────────
 
@@ -995,53 +740,110 @@ mod tests {
         f();
     }
 
+    /// Eligible old/new `BRep` fixture pair: identical graphs (Stage A passes)
+    /// and one matching `Cap(Top)` face each, which Stage B pairs `h(10) -> h(20)`
+    /// by `TopologyAttribute` equality. [`Self::cap_face_and_side_edge`] adds a
+    /// matching `Side` edge pair `h(30) -> h(40)`.
+    struct BijectionFixture {
+        old_graph: EvaluationGraph,
+        new_graph: EvaluationGraph,
+        values: ValueMap,
+        old_table: TopologyAttributeTable,
+        new_table: TopologyAttributeTable,
+        // Owned so the `BRep` borrows below outlive the accessor call.
+        old_faces: [GeometryHandleId; 1],
+        new_faces: [GeometryHandleId; 1],
+        old_edges: Vec<GeometryHandleId>,
+        new_edges: Vec<GeometryHandleId>,
+    }
+
+    impl BijectionFixture {
+        fn cap_face() -> Self {
+            let (old_graph, values) = width_graph_and_values();
+            let new_graph = old_graph.clone();
+
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(occt_handle(10), attr(Role::Cap(CapKind::Top), 0));
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(occt_handle(20), attr(Role::Cap(CapKind::Top), 0));
+
+            Self {
+                old_graph,
+                new_graph,
+                values,
+                old_table,
+                new_table,
+                old_faces: [h(10)],
+                new_faces: [h(20)],
+                old_edges: Vec::new(),
+                new_edges: Vec::new(),
+            }
+        }
+
+        fn cap_face_and_side_edge() -> Self {
+            let mut fixture = Self::cap_face();
+            fixture
+                .old_table
+                .record(occt_handle(30), attr(Role::Side, 0));
+            fixture
+                .new_table
+                .record(occt_handle(40), attr(Role::Side, 0));
+            fixture.old_edges.push(h(30));
+            fixture.new_edges.push(h(40));
+            fixture
+        }
+
+        fn old_brep(&self) -> BRep<'_> {
+            BRep {
+                graph: &self.old_graph,
+                values: &self.values,
+                topology_attributes: &self.old_table,
+                faces: &self.old_faces,
+                edges: &self.old_edges,
+                vertices: &[],
+            }
+        }
+
+        fn new_brep(&self) -> BRep<'_> {
+            BRep {
+                graph: &self.new_graph,
+                values: &self.values,
+                topology_attributes: &self.new_table,
+                faces: &self.new_faces,
+                edges: &self.new_edges,
+                vertices: &[],
+            }
+        }
+    }
+
+    /// Boundary association attaching all four [`single_tet_mesh`] nodes to the
+    /// fixture's old `Cap(Top)` face `h(10)`: every node is prescribed, so the
+    /// Laplacian quick-pass applies [`ShiftingKernel`]'s tiny `+x` shift with no
+    /// free interior nodes (a shape-preserving translation: connectivity-identical,
+    /// quality-safe).
+    fn all_nodes_on_cap_face() -> BoundaryAssociation {
+        let mut boundary = BoundaryAssociation::default();
+        for n in 0..4u32 {
+            boundary.associate(n, NodeAttachment::OnFace(h(10)));
+        }
+        boundary
+    }
+
     #[test]
     fn compose_morph_eligible_small_displacement_preserves_connectivity_and_records_morphed() {
         with_diag_lock(|| {
-            // Eligible old/new BRep: identical graphs (Stage A passes) + one
-            // matching Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
-            let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20)],
-                edges: &[],
-                vertices: &[],
-            };
-
-            // All four nodes attached to the (matching) face → all prescribed, so the
-            // Laplacian quick-pass deforms by the tiny +x shift with no free interior
-            // nodes (a shape-preserving translation: connectivity-identical, quality-safe).
-            let mut boundary = BoundaryAssociation::default();
-            for n in 0..4u32 {
-                boundary.associate(n, NodeAttachment::OnFace(h(10)));
-            }
-
+            let fixture = BijectionFixture::cap_face();
             let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
-            let options = MorphOptions::default();
 
-            let morphed = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options)
-                .expect("eligible small-displacement morph should succeed");
+            let morphed = compose_morph(
+                &source,
+                &all_nodes_on_cap_face(),
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &MorphOptions::default(),
+            )
+            .expect("eligible small-displacement morph should succeed");
 
             // Connectivity preserved: identical tet_indices (the defining property of morph).
             assert_eq!(
@@ -1064,47 +866,96 @@ mod tests {
 
     // ── Step-9 (task 4744 β): compose_morph failure arms record one counter ───
 
+    /// Run [`compose_morph`] on an old/new BRep pair, everything else fixed: one
+    /// boundary node on face `h(10)`, the unit tet, [`ShiftingKernel`] and default
+    /// options. Each Ineligible-projection test below states only its BRep pair
+    /// and the `Reason` and diagnostic bucket it expects.
+    fn compose_ineligible(
+        old_brep: BRep,
+        new_brep: BRep,
+    ) -> Result<reify_ir::VolumeMesh, MorphFailure> {
+        let mut boundary = BoundaryAssociation::default();
+        boundary.associate(0, NodeAttachment::OnFace(h(10)));
+        compose_morph(
+            &single_tet_mesh(),
+            &boundary,
+            old_brep,
+            new_brep,
+            &ShiftingKernel,
+            &MorphOptions::default(),
+        )
+    }
+
+    fn assert_no_morph_recorded() {
+        assert_eq!(
+            diagnostics::snapshot().morphed,
+            0,
+            "a rejected edit must not record a morph"
+        );
+    }
+
+    /// A non-panic solver failure records exactly the `remeshed_solver_error`
+    /// bucket — no morph, no quality remesh, no panic.
+    fn assert_only_solver_error_recorded() {
+        assert_eq!(
+            diagnostics::snapshot(),
+            DiagnosticSnapshot {
+                remeshed_solver_error: 1,
+                ..Default::default()
+            },
+            "a non-panic solver failure must record only the solver-error bucket"
+        );
+    }
+
+    #[test]
+    fn compose_morph_stage_a_structural_change_returns_ineligible_and_records_structural_bucket() {
+        with_diag_lock(|| {
+            // Diverged realization graphs → Stage-A StructuralChange.
+            let (old_graph, values) = width_graph_and_values();
+            let new_graph = diverged_graph(&old_graph);
+            let table = TopologyAttributeTable::default();
+
+            let result = compose_ineligible(
+                make_brep(&old_graph, &values, &table),
+                make_brep(&new_graph, &values, &table),
+            );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(MorphFailure::Ineligible(Reason::StructuralChange))
+                ),
+                "Stage-A structural change must be Ineligible(StructuralChange), got: {result:?}"
+            );
+            assert_eq!(
+                diagnostics::snapshot().ineligible_structural_change,
+                1,
+                "compose_morph must record the structural-change ineligible bucket"
+            );
+            assert_no_morph_recorded();
+        });
+    }
+
     #[test]
     fn compose_morph_stage_b_count_mismatch_returns_ineligible_and_records_bijection_bucket() {
         with_diag_lock(|| {
             // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
             // CountMismatch → Ineligible(BijectionFailure).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
+            let (old_graph, values) = width_graph_and_values();
             let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(occt_handle(10), attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
+            new_table.record(occt_handle(20), attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(occt_handle(21), attr(Role::Cap(CapKind::Bottom), 1));
 
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20), h(21)],
-                edges: &[],
-                vertices: &[],
-            };
-
-            let mut boundary = BoundaryAssociation::default();
-            boundary.associate(0, NodeAttachment::OnFace(h(10)));
-
-            let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
-            let options = MorphOptions::default();
-            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+            let old_faces = [h(10)];
+            let new_faces = [h(20), h(21)];
+            let result = compose_ineligible(
+                brep_with_faces(&old_graph, &values, &old_table, &old_faces),
+                brep_with_faces(&new_graph, &values, &new_table, &new_faces),
+            );
 
             assert!(
                 matches!(
@@ -1113,57 +964,55 @@ mod tests {
                 ),
                 "Stage-B count mismatch must be Ineligible(BijectionFailure), got: {result:?}"
             );
-            // The matching diagnostic bucket is incremented exactly once.
             assert_eq!(
-                diagnostics::snapshot().ineligible_bijection_failure, 1,
+                diagnostics::snapshot().ineligible_bijection_failure,
+                1,
                 "compose_morph must record the bijection-failure ineligible bucket"
             );
-            assert_eq!(
-                diagnostics::snapshot().morphed, 0,
-                "an ineligible edit must not record a morph"
+            assert_no_morph_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_stage_b_imported_geometry_returns_ineligible_naming_layer_error_and_records_naming_bucket() {
+        with_diag_lock(|| {
+            // Identical graphs (Stage A passes); an empty attribute table with
+            // non-empty face slices → Stage-B NamingLayerError { Face, Imported }.
+            let (old_graph, values) = width_graph_and_values();
+            let new_graph = old_graph.clone();
+            let table = TopologyAttributeTable::default();
+
+            let old_faces = [h(10)];
+            let new_faces = [h(20)];
+            let result = compose_ineligible(
+                brep_with_faces(&old_graph, &values, &table, &old_faces),
+                brep_with_faces(&new_graph, &values, &table, &new_faces),
             );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(MorphFailure::Ineligible(Reason::NamingLayerError {
+                        kind: SubShapeKind::Face,
+                        reason: NamingLayerErrorReason::Imported,
+                    }))
+                ),
+                "Stage-B imported geometry must be Ineligible(NamingLayerError {{ Face, Imported }}), \
+                 got: {result:?}"
+            );
+            assert_eq!(
+                diagnostics::snapshot().ineligible_naming_error,
+                1,
+                "compose_morph must record the naming-layer ineligible bucket"
+            );
+            assert_no_morph_recorded();
         });
     }
 
     #[test]
     fn compose_morph_quality_soft_fail_returns_quality_failure_and_records_soft_bucket() {
         with_diag_lock(|| {
-            // Same eligible setup as the success path (one matching Cap(Top) face).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
-            let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-
-            let old_brep = BRep {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &[h(10)],
-                edges: &[],
-                vertices: &[],
-            };
-            let new_brep = BRep {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &[h(20)],
-                edges: &[],
-                vertices: &[],
-            };
-
-            let mut boundary = BoundaryAssociation::default();
-            for n in 0..4u32 {
-                boundary.associate(n, NodeAttachment::OnFace(h(10)));
-            }
-
-            let source = single_tet_mesh();
-            let kernel = ShiftingKernel;
+            let fixture = BijectionFixture::cap_face();
             // An impossibly high scaled-Jacobian floor (> the valid [-1, 1] range)
             // makes every morphed element trip the soft-fail metric → guaranteed
             // QualityVerdict::SoftFail, independent of the deformation magnitude.
@@ -1171,7 +1020,14 @@ mod tests {
                 quality_floor_min_scaled_jacobian: 2.0,
                 ..MorphOptions::default()
             };
-            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
+            let result = compose_morph(
+                &single_tet_mesh(),
+                &all_nodes_on_cap_face(),
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &options,
+            );
 
             assert!(
                 matches!(result, Err(MorphFailure::QualitySoftFail(_))),
@@ -1182,10 +1038,108 @@ mod tests {
                 diagnostics::snapshot().remeshed_quality_soft_fail, 1,
                 "compose_morph must record the soft-fail remesh bucket"
             );
-            assert_eq!(
-                diagnostics::snapshot().morphed, 0,
-                "a quality reject must not record a morph"
+            assert_no_morph_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_projection_failure_returns_solver_error_and_records_only_solver_error_bucket()
+    {
+        with_diag_lock(|| {
+            let fixture = BijectionFixture::cap_face();
+            // Node 5 is out of range for the 4-node tet, so boundary projection
+            // fails with `ProjectionFailure::InvalidNodeIndex(5)`.
+            let mut boundary = BoundaryAssociation::default();
+            boundary.associate(5, NodeAttachment::OnFace(h(10)));
+
+            let result = compose_morph(
+                &single_tet_mesh(),
+                &boundary,
+                fixture.old_brep(),
+                fixture.new_brep(),
+                &ShiftingKernel,
+                &MorphOptions::default(),
             );
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "a boundary-projection failure must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
+        });
+    }
+
+    /// [`single_tet_mesh`] re-tagged P2: both `laplacian_smooth` and
+    /// `elasticity_morph` reject a non-P1 mesh at entry, so whichever solver
+    /// arm the displacement rule picks returns `Err`.
+    fn p2_tagged_single_tet_mesh() -> reify_ir::VolumeMesh {
+        let mut mesh = single_tet_mesh();
+        mesh.connectivity = reify_ir::VolumeConnectivity::Tet {
+            indices: vec![0, 1, 2, 3],
+            order: reify_ir::ElementOrderTag::P2,
+        };
+        mesh
+    }
+
+    /// The position [`ShiftingKernel`] prescribes for node 0, which sits at the
+    /// origin in every [`single_tet_mesh`]-derived fixture: lets a test assert
+    /// which solver arm [`displacement_is_small`] routes its source to.
+    const SHIFTED_ORIGIN_NODE: [(u32, [f64; 3]); 1] = [(0, [SHIFT_EPS as f64, 0.0, 0.0])];
+
+    /// Run [`compose_morph`] on `source` over the eligible cap-face fixture with
+    /// every node prescribed by [`ShiftingKernel`] and default options.
+    fn compose_cap_face_shift(
+        source: &reify_ir::VolumeMesh,
+    ) -> Result<reify_ir::VolumeMesh, MorphFailure> {
+        let fixture = BijectionFixture::cap_face();
+        compose_morph(
+            source,
+            &all_nodes_on_cap_face(),
+            fixture.old_brep(),
+            fixture.new_brep(),
+            &ShiftingKernel,
+            &MorphOptions::default(),
+        )
+    }
+
+    #[test]
+    fn compose_morph_solver_err_returns_solver_error_and_records_only_solver_error_bucket() {
+        with_diag_lock(|| {
+            let source = p2_tagged_single_tet_mesh();
+            assert!(
+                displacement_is_small(&source, &SHIFTED_ORIGIN_NODE),
+                "fixture precondition: the unit tet must route the Laplacian arm"
+            );
+
+            let result = compose_cap_face_shift(&source);
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "a Laplacian solver Err must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
+        });
+    }
+
+    #[test]
+    fn compose_morph_elasticity_err_returns_solver_error_and_records_only_solver_error_bucket() {
+        with_diag_lock(|| {
+            // Shrink the tet until ShiftingKernel's fixed SHIFT_EPS is a large
+            // displacement relative to its bbox diagonal.
+            let mut source = p2_tagged_single_tet_mesh();
+            source.vertices.iter_mut().for_each(|c| *c *= 1.0e-4);
+            assert!(
+                !displacement_is_small(&source, &SHIFTED_ORIGIN_NODE),
+                "fixture precondition: the shrunken tet must route the elasticity arm"
+            );
+
+            let result = compose_cap_face_shift(&source);
+
+            assert!(
+                matches!(result, Err(MorphFailure::SolverError(_))),
+                "an elasticity solver Err must surface as SolverError, got: {result:?}"
+            );
+            assert_only_solver_error_recorded();
         });
     }
 
@@ -1198,9 +1152,9 @@ mod tests {
     /// installed impl wraps `req.kernel` in a [`KernelProjector`] and drives the
     /// step-8 [`compose_morph`] composition.
     ///
-    /// Mirrors the `compose_morph` success-path fixture (one matching `Cap(Top)`
-    /// face each, the `ShiftingKernel`'s tiny `+x` shift, the single unit tet),
-    /// but built as `reify_eval::BRepSnapshot`s — the `MorphRequest` snapshot
+    /// Uses the `compose_morph` success-path fixture ([`BijectionFixture::cap_face`],
+    /// the `ShiftingKernel`'s tiny `+x` shift, the single unit tet), but wraps the
+    /// BRep pair as `reify_eval::BRepSnapshot`s — the `MorphRequest` snapshot
     /// type — rather than the `reify_mesh_morph::BRep` alias.
     ///
     /// No process-global counter assertion here (the counter increment is
@@ -1217,50 +1171,30 @@ mod tests {
         // `with_diag_lock`'s doc comment above), or it can corrupt one of
         // those tests' reset-then-assert windows.
         with_diag_lock(|| {
-            // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
-            // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
-            let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
-
-            let old_faces = [h(10)];
-            let new_faces = [h(20)];
+            let fixture = BijectionFixture::cap_face();
             let old_brep = BRepSnapshot {
-                graph: &old_graph,
-                values: &values,
-                topology_attributes: &old_table,
-                faces: &old_faces,
-                edges: &[],
+                graph: &fixture.old_graph,
+                values: &fixture.values,
+                topology_attributes: &fixture.old_table,
+                faces: &fixture.old_faces,
+                edges: &fixture.old_edges,
                 vertices: &[],
             };
             let new_brep = BRepSnapshot {
-                graph: &new_graph,
-                values: &values,
-                topology_attributes: &new_table,
-                faces: &new_faces,
-                edges: &[],
+                graph: &fixture.new_graph,
+                values: &fixture.values,
+                topology_attributes: &fixture.new_table,
+                faces: &fixture.new_faces,
+                edges: &fixture.new_edges,
                 vertices: &[],
             };
 
-            // All four nodes on the matching face → all prescribed → the Laplacian
-            // quick-pass applies the tiny +x shift (a shape-preserving translation).
-            let mut boundary = BoundaryAssociation::default();
-            for n in 0..4u32 {
-                boundary.associate(n, NodeAttachment::OnFace(h(10)));
-            }
-
+            let boundary = all_nodes_on_cap_face();
             let source = single_tet_mesh();
             let kernel = ShiftingKernel;
 
             // The seam under test: register_morph_producer installs the producer.
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             crate::register_morph_producer(&mut engine);
 
             let producer = engine
@@ -1339,97 +1273,6 @@ mod tests {
         }
     }
 
-    /// Old/new `BRep` fixture pair with a face bijection `h(10) -> h(20)` and an
-    /// edge bijection `h(30) -> h(40)`. Stage A passes (identical graphs) and
-    /// Stage B pairs both kinds by `TopologyAttribute` equality.
-    struct BijectionFixture {
-        old_graph: EvaluationGraph,
-        new_graph: EvaluationGraph,
-        values: ValueMap,
-        old_table: TopologyAttributeTable,
-        new_table: TopologyAttributeTable,
-        // Owned so the `BRep` borrows below outlive the accessor call.
-        old_faces: [GeometryHandleId; 1],
-        new_faces: [GeometryHandleId; 1],
-        old_edges: [GeometryHandleId; 1],
-        new_edges: [GeometryHandleId; 1],
-    }
-
-    impl BijectionFixture {
-        fn new() -> Self {
-            let id = ValueCellId::new("Part", "width");
-            let old_graph = graph_with_cell(&id, Type::length());
-            let new_graph = old_graph.clone();
-            let mut values = ValueMap::new();
-            values.insert(id, Value::length(0.05));
-
-            let mut old_table = TopologyAttributeTable::default();
-            old_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(10),
-                },
-                attr(Role::Cap(CapKind::Top), 0),
-            );
-            old_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(30),
-                },
-                attr(Role::Side, 0),
-            );
-            let mut new_table = TopologyAttributeTable::default();
-            new_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(20),
-                },
-                attr(Role::Cap(CapKind::Top), 0),
-            );
-            new_table.record(
-                KernelHandle {
-                    kernel: KernelId::Occt,
-                    id: h(40),
-                },
-                attr(Role::Side, 0),
-            );
-
-            Self {
-                old_graph,
-                new_graph,
-                values,
-                old_table,
-                new_table,
-                old_faces: [h(10)],
-                new_faces: [h(20)],
-                old_edges: [h(30)],
-                new_edges: [h(40)],
-            }
-        }
-
-        fn old_brep(&self) -> BRep<'_> {
-            BRep {
-                graph: &self.old_graph,
-                values: &self.values,
-                topology_attributes: &self.old_table,
-                faces: &self.old_faces,
-                edges: &self.old_edges,
-                vertices: &[],
-            }
-        }
-
-        fn new_brep(&self) -> BRep<'_> {
-            BRep {
-                graph: &self.new_graph,
-                values: &self.values,
-                topology_attributes: &self.new_table,
-                faces: &self.new_faces,
-                edges: &self.new_edges,
-                vertices: &[],
-            }
-        }
-    }
-
     /// Boundary association for [`single_tet_mesh`] leaving node 3 FREE. Node 3
     /// sits at (0, 0, 1) while the centroid of its three topological
     /// neighbours is (1/3, 1/3, 0) — maximally irregular, which is exactly
@@ -1454,7 +1297,7 @@ mod tests {
     fn compose_morph_no_op_tick_on_an_irregular_mesh_returns_ok_unchanged_and_records_one_morphed()
     {
         with_diag_lock(|| {
-            let fixture = BijectionFixture::new();
+            let fixture = BijectionFixture::cap_face_and_side_edge();
             let source = single_tet_mesh();
             let before = diagnostics::snapshot();
 
@@ -1506,7 +1349,7 @@ mod tests {
     fn compose_morph_returns_a_mesh_whose_boundary_is_the_source_association_rekeyed_to_the_new_brep()
      {
         with_diag_lock(|| {
-            let fixture = BijectionFixture::new();
+            let fixture = BijectionFixture::cap_face_and_side_edge();
             let source = single_tet_mesh();
             let boundary = irregular_boundary();
 

@@ -24,11 +24,31 @@
 // work for the nurbs_surface class: #6545 (ticket
 // tkt_0RSV7JNW3WXWDSFJGRDMHDT63T).
 //
-// The subject below is nonetheless the swept Bezier: its numbers — 100 mm
-// 0.003, 50 mm 0.007, 20 mm 0.013 (§1.1 summary row and §1.5 d-ladder of
-// docs/notes/precision-refine-envelope-calibration.md) — are already
-// committed to the calibration tables, and swapping the subject now would
-// invalidate them.
+// The subject below is nonetheless the swept Bezier.  Its committed calibration
+// numbers — 100 mm 0.003, 50 mm 0.007, 20 mm 0.013 (§1.1 summary row and §1.5
+// d-ladder of docs/notes/precision-refine-envelope-calibration.md) — PREDATE
+// task #7248 and no longer describe this fixture: see "WHY THE PROFILE IS
+// POSED" below.  They are marked stale at each of those rows; re-measuring the
+// spline class is tracked separately, by #7251.  Swapping the subject for a different
+// CLASS would still invalidate them and is still not on the table.
+//
+// ── WHY THE PROFILE IS POSED ──
+//
+// `sweep` transports the profile AS POSED.  The bezier spine's every pole has
+// z = 0, so it lies entirely in the z = 0 plane, and a bare `circle(100mm)`
+// carries its own +Z normal — EXACTLY in that plane (|t.n| = 0, measured under
+// #7248).  The section therefore swept edge-on and this fixture realized a flat
+// ribbon of 1.775123576545368e-21 m^3, contradicting the "measurable spline
+// surface" its own subject comment claims.  Posing the circle normal to the
+// bezier start tangent makes it the tube the header describes:
+// 4.189969160084972e-2 m^3.  The two rotations are "stand the disc up" (-90 deg
+// about +X takes its +Z normal to +Y) then "yaw it onto the start tangent"
+// (the start tangent is the first pole leg (500, 800, 0), at
+// atan2(800, 500) = 57.9946168 deg from +X, i.e. -32.0053832 deg from +Y).
+// #7248's pose guard rejects the unposed spelling outright.  The posed profile
+// is bound with a plain `let`, not `aux let`: the GUI's Lezer grammar does not
+// parse `aux let`, and gui/src/__tests__/reifyGrammarCorpus.test.ts pins this
+// file as parsing clean.
 //
 // NOT wired into any probe set or auto-run gate.
 
@@ -40,7 +60,8 @@ module pnrg_envelope_spline
 // surface.  For the nurbs_surface alternative, see
 // tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri.
 structure PnrgSpline {
-    let g = sweep(circle(100mm), bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
+    let profile = rotate(rotate(circle(100mm), 1.0, 0.0, 0.0, -90deg), 0.0, 0.0, 1.0, -32.0053832deg)
+    let g = sweep(profile, bezier(0mm, 0mm, 0mm, 500mm, 800mm, 0mm, 1000mm, 0mm, 0mm))
 }
 
 structure PnrgSplineCheck {

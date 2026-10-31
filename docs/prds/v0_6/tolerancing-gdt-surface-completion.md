@@ -1,6 +1,6 @@
 # PRD: `std.tolerancing` §7 GD&T / Surface / ISO-grade completion
 
-**Status:** Draft · **Author session:** 2026-06-03 · **Milestone:** v0_6
+**Status: SHIPPED.** All 5 decomposition leaves have landed — α #4265, β #4266, γ #4267, δ #3116, ε #4268; the zone-REGION follow-up #4269 was absorbed by `gdt-geometric-zones-and-containment.md` (its γ+δ). **Author session:** 2026-06-03 · **Milestone:** v0_6 · shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its gap descriptions, substrate measurements and anchors are dated 2026-06-03 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — code and examples cite §7 as leaf provenance only; the shipped `std.tolerancing` surface is stated by `docs/reify-stdlib-reference.md` §7, reconciled by ε #4268.
 **Closes:** gap-register `docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md` cluster **P13 tolerancing** (all 7 rows).
 **Source doc:** `docs/reify-stdlib-reference.md` §7 (`std.tolerancing`).
 **Substrate file under change:** `crates/reify-compiler/stdlib/tolerancing.ri` (+ a new `crates/reify-stdlib/src/tolerancing.rs` builtin module).

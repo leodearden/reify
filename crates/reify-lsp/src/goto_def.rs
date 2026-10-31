@@ -2,9 +2,8 @@ use reify_ast::ImportKind;
 use reify_core::{ModulePath, SourceSpan};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::analysis::{
-    enclosing_decl_at, find_named_member_span, module_name_from_uri, name_token_span,
-};
+use crate::analysis::find_named_member_span;
+use crate::decl_oracle::{enclosing_decl_at, module_name_from_uri, name_token_span};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 /// Compute go-to-definition for the symbol at the given position.
@@ -144,7 +143,7 @@ pub fn compute_goto_definition_with_parsed(
 /// plus the `structure def`s nested one level inside a `purpose` body. The
 /// nested ones are not `Declaration`s (they live in `PurposeDef.structures`)
 /// but the compiler registers them in the MODULE-LEVEL structure namespace, so
-/// they are file-wide navigable; [`crate::analysis::purpose_nested_decl_names`]
+/// they are file-wide navigable; [`crate::decl_oracle::purpose_nested_decl_names`]
 /// carries that evidence and owns the descent. Pinned by
 /// `goto_def_resolves_a_purpose_nested_structure_file_wide`. And
 /// same-file only: cross-file goto-def runs [`decl_name_span_in`] instead. The
@@ -174,8 +173,8 @@ fn resolve_decl_name(
     let candidates = parsed
         .declarations
         .iter()
-        .filter_map(crate::analysis::decl_name_and_span)
-        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+        .filter_map(crate::decl_oracle::decl_name_and_span)
+        .chain(crate::decl_oracle::purpose_nested_decl_names(parsed));
 
     for (name, span) in candidates {
         if name != word {
@@ -211,7 +210,7 @@ fn resolve_decl_name(
 /// [`decl_name_span_in`], which select a declaration by different kind lists but
 /// narrow its token the same way.
 ///
-/// Narrowing uses [`crate::analysis::name_token_span`] — whole-word, bounded to
+/// Narrowing uses [`crate::decl_oracle::name_token_span`] — whole-word, bounded to
 /// the declaration's own span, UTF-8-boundary-snapping. Its ZERO-WIDTH fallback
 /// (the name is absent within the span, e.g. a recovered AST node) becomes
 /// `None`: a zero-width `Location` is never a useful jump target, and an empty
@@ -364,7 +363,7 @@ fn find_declaration_in_source(source: &str, name: &str, uri: &Url) -> Option<Loc
 /// task 2525) and delegates.
 ///
 /// TEST-ONLY, and deliberately so. Every production caller — cross-file
-/// goto-def, and the three points in `references.rs` this once fed (the
+/// goto-def, and the three points in `references/` this once fed (the
 /// `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2, the
 /// cross-file rename producer) — already holds the document's `ParsedModule`,
 /// so each of those calls was a SECOND full parse of a string the caller had
@@ -383,7 +382,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 
 /// Scan an already-parsed module for the name-token span of the declaration
 /// named `name`, returning the byte [`SourceSpan`] of just the NAME identifier
-/// (located via [`crate::analysis::name_token_span`], which matches
+/// (located via [`crate::decl_oracle::name_token_span`], which matches
 /// whole-word and only within the declaration's own span — a declaration span
 /// starts at its keyword, so an unbounded substring search finds the `s` of
 /// `structure` before the `s` of `structure s`).
@@ -396,7 +395,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///
 /// # This scan feeds REFERENCES, not just cross-file goto-def
 ///
-/// It serves CROSS-FILE go-to-definition *and* three points in `references.rs`:
+/// It serves CROSS-FILE go-to-definition *and* three points in `references/`:
 /// the `collect_decl_name_spans` home token, `resolve_cross_file_home` step 2,
 /// and — through the first — the cross-file rename producer. So **adding a kind
 /// here changes what the REFERENCE SET reports**, and a kind whose use sites are
@@ -414,18 +413,18 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// is WILDCARD-FREE over all 14 [`reify_ast::Declaration`] variants, so a new
 /// declaration kind is a compile error rather than a silently unresolvable one.
 ///
-/// That makes this list narrower than [`crate::analysis::decl_name_and_span`],
+/// That makes this list narrower than [`crate::decl_oracle::decl_name_and_span`],
 /// the wildcard-free SAME-FILE source, by exactly one kind — but the two must
 /// still not be "unified", because they answer different questions: that one
 /// asks what a declaration is NAMED, this one asks whether renaming it is SAFE.
 ///
 /// The full argument, the measurement behind it, and the separate allowlist
-/// that gates rename itself (`references::classify_decl_name_in`) live on the
-/// guard test `references::tests::
+/// that gates rename itself (`references::cross_file::classify_decl_name_in`) live on the
+/// guard test `references::cross_file::tests::
 /// cross_file_declaration_kind_admission_tracks_use_site_coverage`.
 ///
 /// It also DESCENDS one level into purpose bodies, via
-/// [`crate::analysis::purpose_nested_decl_names`] — the crate's single source of
+/// [`crate::decl_oracle::purpose_nested_decl_names`] — the crate's single source of
 /// purpose-nested names, which also owns the single-level assumption and names
 /// its invariant owner in the compiler. That descent is sound here for the same
 /// reason any kind is admitted: a purpose-nested structure's use sites are
@@ -444,7 +443,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// Admitting `Unit` would hand the rename producer a reference set holding the
 /// declaration token ALONE and silently leave every suffixed literal stale.
 /// Measured and pinned by
-/// `references::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
+/// `references::cross_file::tests::cross_file_declaration_kind_admission_tracks_use_site_coverage`
 /// and by `goto_def_unit_suffixed_literal_does_not_resolve_to_its_unit_declaration`.
 /// Tasks #6341, #6539.
 ///
@@ -454,7 +453,7 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// A matched declaration whose span does not actually contain its own name
 /// token is REFUSED — `None`, and without resuming the scan. The previous
 /// locator instead fell back to a `name.len()`-wide span anchored at the
-/// declaration start; that bogus WIDE span flowed into the `references.rs`
+/// declaration start; that bogus WIDE span flowed into the `references/`
 /// rename write path and emitted a destructive edit over the declaration's
 /// leading keyword. Resuming the scan would be the mirror-image hazard, letting
 /// a later same-named declaration donate its token — exactly what bounding the
@@ -463,11 +462,11 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 /// What a refusal costs is enumerated per consumer rather than summarised,
 /// because they do not all behave alike:
 /// - [`find_declaration_in_source`] (goto-def) is read-only: no jump. Inert.
-/// - `references.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
+/// - `references/cross_file.rs::resolve_cross_file_home` step 2 tests only `.is_some()`,
 ///   so a declaration in the primary document stops being recognised as the
 ///   home and the query falls through to the import arm — which, in the home
 ///   document itself, resolves to nothing. A wholesale `None`. Inert.
-/// - `references.rs::compute_references_cross_file` REFUSES THE WHOLE QUERY
+/// - `references/cross_file.rs::compute_references_cross_file` REFUSES THE WHOLE QUERY
 ///   (`None`) when this function declines a name the home document does
 ///   declare — the condition it checks via `classify_decl_name_in`. It used to
 ///   use the value only to drop the declaration token under
@@ -478,8 +477,8 @@ pub(crate) fn find_declaration_name_span(source: &str, name: &str) -> Option<Sou
 ///   came back as B's import token ALONE — one "reference" that is not the
 ///   declaration, with the declaration itself missing even under
 ///   `include_declaration = true`. Pinned by
-///   `references::tests::cross_file_references_refuse_a_home_whose_kind_this_oracle_declines`.
-/// - `references.rs::collect_decl_name_spans` pushes this token into the
+///   `references::cross_file::tests::cross_file_references_refuse_a_home_whose_kind_this_oracle_declines`.
+/// - `references/decl_uses.rs::collect_decl_name_spans` pushes this token into the
 ///   span set that `compute_rename_cross_file` turns into edits, so a refusal
 ///   would silently OMIT it and leave a rename driven from an importing
 ///   document rewriting every use while the declaration stayed behind. The
@@ -502,7 +501,7 @@ pub(crate) fn decl_name_span_in(
         .declarations
         .iter()
         .filter_map(admitted_decl_name_and_span)
-        .chain(crate::analysis::purpose_nested_decl_names(parsed));
+        .chain(crate::decl_oracle::purpose_nested_decl_names(parsed));
 
     for (decl_name, span) in candidates {
         if decl_name == name {
@@ -547,11 +546,8 @@ fn admitted_decl_name_and_span(decl: &reify_ast::Declaration) -> Option<(&str, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decl_oracle::test_fixtures::test_uri;
     use tower_lsp::lsp_types::Url;
-
-    fn test_uri() -> Url {
-        Url::parse("file:///test.ri").unwrap()
-    }
 
     /// Test helper: return the UTF-16 code unit count of the Nth line of `source`.
     ///
@@ -984,8 +980,8 @@ mod tests {
     // --- task 6388: uniform same-file declaration-name resolution ---
 
     /// The snippet table and `occurrences` are SHARED, not mirrored — see
-    /// `crate::analysis::test_fixtures`.
-    use crate::analysis::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences};
+    /// `crate::decl_oracle::test_fixtures`.
+    use crate::decl_oracle::test_fixtures::{NAMED_DECL_SNIPPETS, occurrences};
 
     /// Convert an LSP range back to the `[start, end)` byte range it covers.
     fn range_to_byte_range(source: &str, range: Range) -> (usize, usize) {
@@ -1333,7 +1329,7 @@ mod tests {
         // for the last two rows, a lexical-context oracle that this task's
         // declaration-name remit does not build; and every PARTIAL fix (say, a
         // `Declaration::Function`-only parameter check) reintroduces the
-        // wildcard per-kind allowlist that `analysis::decl_name_and_span`
+        // wildcard per-kind allowlist that `decl_oracle::decl_name_and_span`
         // exists to remove. Owner: #7607 — FLIP these assertions there rather
         // than deleting them; each row already names the target it should get.
         //
@@ -1904,10 +1900,10 @@ mod tests {
     fn enclosing_decl_at_integration_scoped_member_in_second_decl() {
         // Verify that using enclosing_decl_at from goto_def's context
         // correctly identifies the enclosing declaration for scoped member resolution.
-        use crate::analysis::enclosing_decl_at;
+        use crate::decl_oracle::enclosing_decl_at;
         let source = "structure A {\n    param x: Length = 5mm\n}\nstructure B {\n    param x: Bool = true\n    let y = x\n}";
         let uri = test_uri();
-        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let module_name = crate::decl_oracle::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset inside B's 'let y = x'
@@ -1928,10 +1924,10 @@ mod tests {
     fn enclosing_decl_at_integration_cursor_outside_returns_none() {
         // Cursor outside all declarations — enclosing_decl_at should return None,
         // and goto_def should fall back to searching all declarations.
-        use crate::analysis::enclosing_decl_at;
+        use crate::decl_oracle::enclosing_decl_at;
         let source = "structure A {\n    param x: Length = 5mm\n}\nx\nstructure B {\n    param y: Length = 20mm\n}";
         let uri = test_uri();
-        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let module_name = crate::decl_oracle::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset on 'x' standalone between declarations
@@ -1952,10 +1948,10 @@ mod tests {
     fn enclosing_decl_at_integration_missing_member_falls_back() {
         // Cursor in A on 'y', which doesn't exist in A but exists in B.
         // enclosing_decl_at finds A, but member not found → falls back.
-        use crate::analysis::enclosing_decl_at;
+        use crate::decl_oracle::enclosing_decl_at;
         let source = "structure A {\n    param x: Length = 5mm\n    let z = y\n}\nstructure B {\n    param y: Length = 20mm\n}";
         let uri = test_uri();
-        let module_name = crate::analysis::module_name_from_uri(&uri);
+        let module_name = crate::decl_oracle::module_name_from_uri(&uri);
         let parsed = reify_syntax::parse(source, reify_core::ModulePath::single(module_name));
 
         // Offset inside A
@@ -1989,7 +1985,7 @@ mod tests {
 
         let parsed = reify_compiler::parse_with_stdlib(
             source,
-            reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri)),
+            reify_core::ModulePath::single(crate::decl_oracle::module_name_from_uri(&uri)),
         );
 
         let via_parsed = compute_goto_definition_with_parsed(&parsed, source, &uri, position);
@@ -2028,7 +2024,7 @@ mod tests {
 
         let parsed = reify_compiler::parse_with_stdlib(
             source,
-            reify_core::ModulePath::single(crate::analysis::module_name_from_uri(&uri)),
+            reify_core::ModulePath::single(crate::decl_oracle::module_name_from_uri(&uri)),
         );
 
         let via_parsed = compute_goto_definition_cross_file_with_parsed(
@@ -2262,7 +2258,7 @@ mod tests {
     ///
     /// Tree-sitter error recovery can produce a declaration node whose span is
     /// truncated short of the name. Any span this function returns reaches the
-    /// `references.rs` rename write path, so the only answer that cannot
+    /// `references/` rename write path, so the only answer that cannot
     /// corrupt a buffer is a refusal.
     ///
     /// The fixture carries TWO same-named declarations on purpose: with a
@@ -2322,7 +2318,7 @@ mod tests {
     /// `trait`, `occurrence def`), and the grammar admits one-character
     /// identifiers, so a locator that is not whole-word matches the `s` of
     /// `structure` before the `s` of `structure s`. The resulting span reaches
-    /// the `references.rs` rename write path, where it rewrites byte 0 of the
+    /// the `references/` rename write path, where it rewrites byte 0 of the
     /// user's file.
     #[test]
     fn find_declaration_name_span_short_name_is_name_token_not_keyword_prefix() {

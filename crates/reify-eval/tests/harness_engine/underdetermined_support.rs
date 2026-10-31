@@ -37,8 +37,9 @@ pub fn workspace_root() -> std::path::PathBuf {
         .to_path_buf()
 }
 
-/// Compile + eval `src` through the REAL `SolverRegistry::production()`, and
-/// assert the eval produced zero `Severity::Error` diagnostics.
+/// Compile + eval `src` through the REAL `SolverRegistry::production()` (what a
+/// `SolverPosture::Solve` engine wires), and assert the eval produced zero
+/// `Severity::Error` diagnostics.
 ///
 /// LOAD-BEARING — the solver MUST be `SolverRegistry::production()`, never a
 /// bare `DimensionalSolver`. `decompose_into_components` is reached ONLY from
@@ -60,8 +61,7 @@ pub fn eval_through_production_registry(src: &str, what: &str) -> EvalResult {
         "the {what} source must compile without errors; got {errors:#?}",
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&compiled);
 
     let eval_errors: Vec<_> = result

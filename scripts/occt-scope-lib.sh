@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# scripts/occt-scope-lib.sh — shared OCCT-touching crate-set logic, and host
-# of the shared cargo-accurate compile-closure primitive.
+# scripts/occt-scope-lib.sh — shared OCCT-touching crate-set logic, and the
+# bash entry point to the shared cargo-accurate compile closure.
 #
 # This library is the SINGLE implementation of "which workspace crates touch
 # reify-kernel-occt". It is sourced by both:
@@ -10,10 +10,11 @@
 # definition — divergence between the verify entrypoint and the drift test
 # becomes impossible by construction.
 #
-# It also hosts `_reify_compile_closure`, the single shared implementation of
-# the cargo-accurate compile-closure model (adj_normal/adj_dev +
-# normal_closure). scripts/affected-crates-lib.sh sources this file to reach
-# it, so the model has exactly one definition shared by both callers.
+# It also names `_reify_compile_closure`, the bash entry point to the
+# cargo-accurate compile-closure model (normal/build vs dev edges), whose one
+# home is compile_closure in scripts/reify_path_attribution.py.
+# scripts/affected-crates-lib.sh sources this file to reach it, so
+# occt_touching_set and affected_crates share that one model.
 #
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/occt-scope-lib.sh"
@@ -25,7 +26,7 @@
 #                           trimmed.
 #   occt_touching_set       prints the cargo-metadata-derived OCCT-touching
 #                           workspace members (sorted, one per line).
-#   _reify_compile_closure  shared compile-closure primitive: reads `cargo
+#   _reify_compile_closure  the shared compile closure: reads `cargo
 #                           metadata --format-version 1` JSON on stdin and
 #                           seed crate NAMES from argv, prints the workspace
 #                           member names whose test-compile closure reaches a
@@ -36,6 +37,10 @@
 # Environment:
 #   OCCT_TOUCHING_CRATES_FILE  Override the declared-list path. Defaults to
 #                              occt-touching-crates.txt next to this library.
+#
+# Requires scripts/reify_path_attribution.py next to this file: sourcing fails
+# without it, naming it, rather than leaving a caller that silences
+# _reify_compile_closure's stderr to fail opaquely later.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_OCCT_SCOPE_LIB_SOURCED:-}" = "1" ]; then
@@ -44,6 +49,7 @@ fi
 _REIFY_OCCT_SCOPE_LIB_SOURCED=1
 
 _OCCT_SCOPE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$_OCCT_SCOPE_LIB_DIR/reify_path_attribution.py" ] || { echo "occt-scope-lib.sh: ERROR — scripts/reify_path_attribution.py not found next to occt-scope-lib.sh" >&2; return 1; }
 OCCT_TOUCHING_CRATES_FILE="${OCCT_TOUCHING_CRATES_FILE:-$_OCCT_SCOPE_LIB_DIR/occt-touching-crates.txt}"
 
 # occt_declared_set — print the declared OCCT-touching crate list, one crate per
@@ -60,87 +66,9 @@ occt_declared_set() {
         | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
-# _REIFY_COMPILE_CLOSURE_PY / _reify_compile_closure — the SINGLE shared
-# implementation of the cargo-accurate compile-closure model, used by both
-# occt_touching_set (below) and scripts/affected-crates-lib.sh:_reverse_closure.
-#
-# Reads `cargo metadata --format-version 1` JSON on stdin and seed crate
-# NAMES from argv (sys.argv[1:]). Builds separate adjacency maps for
-# normal/build vs dev deps (dep_kinds[].kind: null -> normal, 'build' ->
-# build dep, 'dev' -> dev dep — these must NOT be conflated: dev-deps of a
-# transitive dep are never compiled when testing a crate that only has a
-# normal dep on it). A workspace member is affected iff its test-compile
-# closure — normal_closure(member) UNION normal_closure(each DIRECT dev-dep
-# of member) — intersects the seed ids. Prints the affected workspace member
-# names, sorted-unique, one per line.
-#
-# No try/except: malformed stdin/JSON raises and exits non-zero. Each caller
-# applies its own error policy at the call site (occt_touching_set leaves
-# stderr as-is; _reverse_closure suppresses stderr and falls back to ALL).
-_REIFY_COMPILE_CLOSURE_PY=$(cat <<'PYEOF'
-import sys, json
-
-seed_names = set(sys.argv[1:])
-
-m = json.load(sys.stdin)
-members = set(m['workspace_members'])
-id_to_name = {p['id']: p['name'] for p in m['packages']}
-name_to_ids = {}
-for p in m['packages']:
-    name_to_ids.setdefault(p['name'], []).append(p['id'])
-
-# Build separate adjacency maps for normal/build vs dev deps.
-# dep_kinds[].kind: null -> normal, 'build' -> build dep, 'dev' -> dev dep.
-# We must NOT conflate them: dev-deps of a transitive dep are never compiled when
-# testing a crate that only has a normal dep on it.
-adj_normal = {}  # kind=null or kind='build' (compiled transitively)
-adj_dev = {}     # kind='dev' (only the DIRECT dev-deps of the tested crate matter)
-for node in m['resolve']['nodes']:
-    adj_normal[node['id']] = set()
-    adj_dev[node['id']] = set()
-    for d in node['deps']:
-        kinds = {dk.get('kind') for dk in d.get('dep_kinds', [])}
-        if None in kinds or 'build' in kinds:
-            adj_normal[node['id']].add(d['pkg'])
-        if 'dev' in kinds:
-            adj_dev[node['id']].add(d['pkg'])
-
-def normal_closure(start):
-    '''All packages reachable via normal/build edges only.'''
-    visited, queue = set(), [start]
-    while queue:
-        curr = queue.pop()
-        if curr in visited:
-            continue
-        visited.add(curr)
-        queue.extend(adj_normal.get(curr, []))
-    return visited
-
-seed_ids = set()
-for sn in seed_names:
-    seed_ids.update(name_to_ids.get(sn, []))
-
-result = []
-for pkg_id in members:
-    # A crate's test compilation includes:
-    #   - normal/build closure of the crate itself, PLUS
-    #   - normal/build closure of each DIRECT dev-dep of the crate
-    # Dev-deps of transitive normal deps do NOT propagate (Cargo does not
-    # propagate dev-deps transitively).
-    compiled = normal_closure(pkg_id)
-    for dev_dep_id in adj_dev.get(pkg_id, []):
-        compiled |= normal_closure(dev_dep_id)
-    if compiled & seed_ids:
-        result.append(id_to_name[pkg_id])
-
-for name in sorted(set(result)):
-    print(name)
-PYEOF
-)
-
-_reify_compile_closure() {
-    python3 -c "$_REIFY_COMPILE_CLOSURE_PY" "$@"
-}
+# _reify_compile_closure SEED... < metadata.json — see this file's header. It
+# inherits the caller's stdin by design: every caller pipes the metadata in.
+_reify_compile_closure() { python3 -S "$_OCCT_SCOPE_LIB_DIR/reify_path_attribution.py" closure "$@"; }
 
 # occt_touching_set — derive the ACTUAL OCCT-touching set from a SINGLE
 # `cargo metadata` invocation (the workspace-unified resolve graph), via the

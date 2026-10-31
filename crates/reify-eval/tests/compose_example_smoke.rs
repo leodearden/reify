@@ -75,7 +75,7 @@ fn compose_constraints_all_satisfied() {
     let compiled = compile_compose_fixture();
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No eval-level errors.

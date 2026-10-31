@@ -24,16 +24,32 @@
 //! `#[cfg(test)]`-in-src symbols are NOT path-excludable; the live
 //! `get_dead_code_v2` server already defaults `include_tests=False`, and PDEAD
 //! is advisory/Low — over-engineering an attribute-aware exclude is unwarranted.
+//!
+//! A FAILED `get_dead_code_v2` query is not a repo with no dead code: it
+//! replaces the run's result with one Low [`Pattern::PDeadCodeUnexamined`]
+//! ([`crate::model::corpus_unexamined`]).
 
-use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
+use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, pattern_flag};
 
 const DEFAULT_MIN_CONFIDENCE: f64 = 0.5;
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
+    let symbols = match ctx.jcodemunch.get_dead_code(DEFAULT_MIN_CONFIDENCE) {
+        Ok(symbols) => symbols,
+        Err(failure) => {
+            return vec![crate::model::corpus_unexamined(
+                Pattern::PDeadCodeUnexamined,
+                pattern_flag::PDEAD,
+                "dead-code",
+                &failure,
+            )];
+        }
+    };
     let mut findings = Vec::new();
 
-    for sym in ctx.jcodemunch.get_dead_code(DEFAULT_MIN_CONFIDENCE) {
-        // Mirror P1's stdlib/test scope-excludes (see p1_producer_orphan.rs:136-138).
+    for sym in symbols {
+        // Mirror P1's stdlib/test scope-excludes (see
+        // `crate::jcodemunch_ops::is_symbol_suppressed` and `crate::is_test_path`).
         if sym.file.starts_with("crates/reify-stdlib/") {
             continue;
         }

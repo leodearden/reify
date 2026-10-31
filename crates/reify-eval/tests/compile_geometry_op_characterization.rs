@@ -335,9 +335,9 @@ const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
 fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
     let args = match k {
         PrimitiveKind::Box => vec![
-            ("width".to_string(), lit_len(0.01)),
-            ("height".to_string(), lit_len(0.02)),
-            ("depth".to_string(), lit_len(0.03)),
+            ("size_x".to_string(), lit_len(0.01)),
+            ("size_y".to_string(), lit_len(0.02)),
+            ("size_z".to_string(), lit_len(0.03)),
         ],
         PrimitiveKind::Cylinder => vec![
             ("radius".to_string(), lit_len(0.01)),
@@ -388,7 +388,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
         PrimitiveKind::Box => r#"Ok(
     Box {
-        width: Scalar {
+        size_x: Scalar {
             si_value: 0.01,
             dimension: DimensionVector(
                 [
@@ -435,7 +435,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
                 ],
             ),
         },
-        height: Scalar {
+        size_y: Scalar {
             si_value: 0.02,
             dimension: DimensionVector(
                 [
@@ -482,7 +482,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
                 ],
             ),
         },
-        depth: Scalar {
+        size_z: Scalar {
             si_value: 0.03,
             dimension: DimensionVector(
                 [

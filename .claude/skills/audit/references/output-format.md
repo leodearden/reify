@@ -30,7 +30,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
   "timestamp": "2026-05-16T07:30:45Z",     // ISO-8601 UTC, full colons (not filename-safe form)
   "scope": { /* see scope examples below */ },
   "cli": {
-    "argv": ["--since", "2026-05-02", "--tasks-file", "…"],  // exact argv passed to reify-audit
+    "argv": ["--since", "2026-05-02", "--runs-db", "…"],  // exact argv passed to reify-audit
     "exit_code": 0                           // 0, 1-254, or 125
   },
   "findings": [
@@ -40,7 +40,7 @@ Use UTC (`Z` suffix). `ls data/audit-runs/` produces chronological order because
       "pattern": "P5PhantomDone",            // from Finding.pattern (CLI value)
       "task_id": "3242",                     // from Finding.task_id
       "summary": "task marked done but …",   // from Finding.summary
-      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see EvidenceRef enum in crates/reify-audit/src/lib.rs)
+      "evidence_refs": [{/* EvidenceRef */}],  // from Finding.evidence (list of EvidenceRef tagged-enum objects; see EvidenceRef enum in crates/reify-audit/src/model.rs)
 
       // Action taken by the skill for this finding:
       "action_taken": "escalated",           // "escalated" | "filed" | "deduped" | "logged"
@@ -121,7 +121,7 @@ When `--task` and `--since` are both given, include both keys:
 { "task": "3242", "window": "2026-05-02..now" }
 ```
 
-**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/lib.rs`.
+**Source:** `Finding` struct and `EvidenceRef` enum in `crates/reify-audit/src/model.rs`.
 
 ---
 
@@ -132,7 +132,7 @@ When `--task` and `--since` are both given, include both keys:
   "timestamp": "2026-05-16T07:30:45Z",
   "scope": { "window": "14d" },
   "cli": {
-    "argv": ["--since", "2026-05-02", "--tasks-file", "/tmp/reify-audit-snapshot-a1b2c3.json",
+    "argv": ["--since", "2026-05-02",
              "--runs-db", "data/orchestrator/runs.db", "--project-root", "."],
     "exit_code": 1
   },

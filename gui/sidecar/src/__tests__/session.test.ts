@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import type { OutboundMessage, InboundMessage, NoticeMessage } from '../types.js';
+import type { OutboundMessage, NoticeMessage } from '../types.js';
 
 // Mock the claude CLI subprocess spawning
 vi.mock('node:child_process', () => ({
@@ -201,67 +201,6 @@ function waitForOutput(
 }
 
 /**
- * Event-driven helper: resolves when `count` outbounds matching predicate have been emitted.
- * Hooks session.onOutput, restores the original after the nth match, and resolves with the
- * last matching message. Decouples match counting from the predicate so the predicate stays
- * side-effect-free.
- *
- * Accepts an optional `options.timeoutMs` (default 5000ms). If the nth match is never
- * reached within that window, rejects with a named error and restores session.onOutput
- * so test isolation is preserved.
- */
-function waitForOutputs(
-  session: SidecarSession,
-  predicate: (m: OutboundMessage) => boolean,
-  count: number,
-  options: { timeoutMs?: number } = {}
-): Promise<OutboundMessage> {
-  const timeoutMs = options.timeoutMs ?? 5000;
-  const prev = session.onOutput;
-  return new Promise((resolve, reject) => {
-    let matched = 0;
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      session.onOutput = prev;
-      reject(new Error('waitForOutputs timed out waiting for predicate'));
-    }, timeoutMs);
-    session.onOutput = (msg: OutboundMessage) => {
-      prev(msg);
-      if (predicate(msg)) {
-        matched++;
-        if (matched >= count) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          session.onOutput = prev;
-          resolve(msg);
-        }
-      }
-    };
-  });
-}
-
-/**
- * Event-driven helper: resolves when stdinLines.length reaches at least `count`.
- * Hooks stdin's 'data' event and resolves immediately if the threshold is already met.
- * Must be called AFTER the stdinLines accumulator listener is attached to stdin.
- */
-function waitForStdinLines(stdin: PassThrough, stdinLines: unknown[], count: number): Promise<void> {
-  if (stdinLines.length >= count) return Promise.resolve();
-  return new Promise((resolve) => {
-    const onData = () => {
-      if (stdinLines.length >= count) {
-        stdin.removeListener('data', onData);
-        resolve();
-      }
-    };
-    stdin.on('data', onData);
-  });
-}
-
-/**
  * Create a hand-rolled mock subprocess with a PassThrough trio (stdout/stderr/stdin),
  * a stdin-line accumulator (attached BEFORE spawn), and a vi.mocked(spawn) setup that
  * pushes one assistant message with the given content blocks on process.nextTick and
@@ -282,6 +221,7 @@ function makeMockProc(assistantContent: object[]): {
   mockProc.stderr = new PassThrough();
   mockProc.stdin = new PassThrough();
   mockProc.exitCode = null;
+  mockProc.kill = vi.fn();
 
   // Attach stdin accumulator BEFORE spawn-triggering handleMessage call
   const stdinLines: unknown[] = [];
@@ -313,19 +253,20 @@ function makeMockProc(assistantContent: object[]): {
 
 /**
  * Create a mock child process that emits streaming JSON events on stdout,
- * then closes with the given exit code.
+ * then closes with the given exit code. A string entry is emitted verbatim as one line.
  */
-function createMockProcess(events: object[], exitCode = 0): any {
+function createMockProcess(events: (object | string)[], exitCode = 0): any {
   const proc = new EventEmitter() as any;
   const stdout = new PassThrough();
   proc.stdout = stdout;
   proc.stderr = new PassThrough();
   proc.stdin = new PassThrough();
   proc.exitCode = null;
+  proc.kill = vi.fn();
 
   process.nextTick(() => {
     for (const event of events) {
-      stdout.push(JSON.stringify(event) + '\n');
+      stdout.push((typeof event === 'string' ? event : JSON.stringify(event)) + '\n');
     }
     stdout.push(null);
     proc.stderr.push(null);
@@ -684,145 +625,6 @@ describe('SidecarSession', () => {
     });
   });
 
-  it('tool_result inbound is forwarded to claude CLI stdin with the matching tool_use_id', async () => {
-    // Create a process that emits a tool_use block and stays open
-    const mockProc = new EventEmitter() as any;
-    const stdout = new PassThrough();
-    mockProc.stdout = stdout;
-    mockProc.stderr = new PassThrough();
-    mockProc.stdin = new PassThrough();
-    mockProc.exitCode = null;
-
-    // Attach stdin accumulator BEFORE the spawn-triggering handleMessage call so no
-    // writes are missed even if the PassThrough drains before a late listener attaches.
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
-
-    vi.mocked(spawn).mockImplementation((() => {
-      process.nextTick(() => {
-        stdout.push(JSON.stringify({
-          type: 'assistant',
-          message: { content: [
-            { type: 'tool_use', id: 'toolu_xyz', name: 'reify_get_diagnostics', input: {} },
-          ] },
-        }) + '\n');
-        // stdout stays open — don't push null yet
-      });
-      return mockProc;
-    }) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    // Set up event-driven wait for tool_call BEFORE the spawn-triggering handleMessage call
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    // Start message without awaiting it (it will hang until stdin closes)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'msg-tr-fwd',
-      text: 'Check diagnostics',
-    });
-
-    // Wait for the tool_call outbound (event-driven, no polling)
-    await toolCallWait;
-
-    // Send the tool_result inbound
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'msg-1',
-      tool_use_id: 'toolu_xyz',
-      tool_name: 'reify_get_diagnostics',
-      result: { diagnostics: [] },
-    });
-
-    // Event-driven wait for the second stdin line (no setTimeout flush wait)
-    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
-
-    // Close the process
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-tr-fwd' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-
-    // After the initial user-text message, a second JSON line should have been written
-    // with the tool_result content block
-    expect(stdinLines.length).toBeGreaterThanOrEqual(2);
-    expect(stdinLines[1]).toEqual({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{
-          type: 'tool_result',
-          tool_use_id: 'toolu_xyz',
-          content: { diagnostics: [] },
-        }],
-      },
-    });
-  });
-
-  it('tool_result inbound with no matching tool_use emits error outbound', async () => {
-    // No send_message dispatched — pendingToolUseIds is empty
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({
-      type: 'tool_result',
-      id: 'msg-orphan',
-      tool_use_id: 'toolu_orphan',
-      tool_name: 'reify_unknown',
-      result: 'x',
-    });
-
-    // Should emit exactly one error with id='msg-orphan' and matching message
-    const errors = outputs.filter((o) => o.type === 'error');
-    expect(errors).toHaveLength(1);
-    expect((errors[0] as any).id).toBe('msg-orphan');
-    expect((errors[0] as any).message).toMatch(/no in-flight|no pending tool_use|no matching tool_use/i);
-
-    // Should NOT have spawned any subprocess
-    expect(vi.mocked(spawn)).not.toHaveBeenCalled();
-  });
-
-  it('tool_result inbound preserves queue entry when no in-flight stdin', async () => {
-    // Simulate stale tool_use carryover: pendingToolUseIds has an entry but currentStdin is null
-    // (no invokeSdk in flight). This tests that handleToolResult does NOT shift the queue
-    // before confirming currentStdin is available.
-    (session as any).pendingToolUseIds.set('reify_get_source', ['toolu_carry']);
-    (session as any).toolNameById.set('toolu_carry', 'reify_get_source');
-    // currentStdin remains null (no invokeSdk active)
-
-    await session.handleMessage({
-      type: 'tool_result',
-      id: 'msg-stale',
-      tool_use_id: 'toolu_carry',
-      tool_name: 'reify_get_source',
-      result: 'x',
-    });
-
-    // (a) exactly one outbound error should be emitted with matching id and message
-    const errors = outputs.filter((o) => o.type === 'error');
-    expect(errors).toHaveLength(1);
-    expect((errors[0] as any).id).toBe('msg-stale');
-    expect((errors[0] as any).message).toMatch(/no pending tool_use|no in-flight|no matching/i);
-
-    // (b) CRITICAL: the queue entry must still be present — currentStdin was null so
-    // handleToolResult must return early WITHOUT consuming (shifting) the FIFO queue.
-    // This is a regression guard: if the check order is ever reverted to shift-before-check,
-    // this assertion will fail because the queue will be empty.
-    const queue = (session as any).pendingToolUseIds.get('reify_get_source');
-    expect(queue).toEqual(['toolu_carry']);
-  });
-
   it('invokeSdk uses --input-format stream-json and writes prompt to stdin', async () => {
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Hi' }] } },
@@ -923,13 +725,9 @@ describe('SidecarSession multi-turn streaming', () => {
   });
 
   it('text_delta events emitted for both turns in a multi-turn invocation', async () => {
-    // Simulate two assistant turns within a single SDK invocation:
-    // Turn 1: thinking + text + tool_use (message.id = 'msg_t1')
-    // Turn 2: new text, shorter than turn-1 accumulated length (message.id = 'msg_t2')
-    //
-    // The new-turn boundary is detected by the message.id change: when event.message.id
-    // switches from 'msg_t1' to 'msg_t2', both lastTextLen and lastThinkingLen reset to 0,
-    // so turn-2's first delta emits from offset 0 regardless of relative length.
+    // Two assistant turns (message.id msg_t1, then msg_t2) in one invocation. The
+    // turn-boundary and delta cases are pinned on the reducer in streamEvents.test.ts;
+    // this is the end-to-end smoke through the spawned child's stdout.
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
       // Turn 1 partial events (message.id = 'msg_t1')
       { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Let' }] } },
@@ -976,243 +774,34 @@ describe('SidecarSession multi-turn streaming', () => {
     expect(deltaContents).toContain(' there!');
   });
 
-  it('text_delta counters reset on new message.id even when turn-2 text is longer than turn-1', async () => {
-    // Turn 1: short text 'Hi' (len 2) + tool_use, under message.id='msg_t1'
-    // Turn 2: longer text (len 46) under message.id='msg_t2'
-    //
-    // Bug (shrink heuristic only): turn-2 text is LONGER than turn-1 accumulated length,
-    // so `block.text.length < lastTextLen` never fires. lastTextLen stays at 2 from turn-1.
-    // Turn-2 first delta = text.slice(2) = 'llo world this is a much longer turn-2 reply'
-    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastTextLen=0.
-    // Turn-2 first delta = full turn-2 text.
+  it('forwards the missing-message.id notice once, correlated to the turn, and mirrors it to stderr', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Turn 1: short text + tool_use under msg_t1
-      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hi' }] } },
-      { type: 'assistant', message: { id: 'msg_t1', content: [
-        { type: 'text', text: 'Hi' },
-        { type: 'tool_use', id: 'toolu_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
-      ] } },
-      // Turn 2: longer text under msg_t2 — no length shrink, only id changes
-      { type: 'assistant', message: { id: 'msg_t2', content: [
-        { type: 'text', text: 'Hello world this is a much longer turn-2 reply' },
-      ] } },
-      { type: 'result', session_id: 'sess-longer-text' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-longer-text', text: 'Test longer turn-2' });
-
-    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
-    const deltaContents = textDeltas.map((o) => (o as any).content);
-
-    // Turn 1 delta present
-    expect(deltaContents).toContain('Hi');
-
-    // Turn 2 first delta must be the FULL text — not a slice from offset 2
-    // Broken: 'llo world this is a much longer turn-2 reply'
-    // Fixed:  'Hello world this is a much longer turn-2 reply'
-    expect(deltaContents).toContain('Hello world this is a much longer turn-2 reply');
-  });
-
-  it('thinking_delta counters reset on new message.id even when turn-2 thinking is longer than turn-1', async () => {
-    // Turn 1: short thinking 'Hm' (len 2) + tool_use, under message.id='msg_t1'
-    // Turn 2: longer thinking (len 63) under message.id='msg_t2'
-    //
-    // Bug (shrink heuristic only): turn-2 thinking is LONGER than turn-1 accumulated length,
-    // so `block.thinking.length < lastThinkingLen` never fires. lastThinkingLen stays at 2.
-    // Turn-2 first delta = thinking.slice(2) = 'et me carefully reason about a much longer-form chain of thought'
-    // Fix (id-based reset): message.id change from 'msg_t1' → 'msg_t2' resets lastThinkingLen=0.
-    // Turn-2 first delta = full turn-2 thinking string.
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Turn 1: short thinking + tool_use under msg_t1
-      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'thinking', thinking: 'Hm' }] } },
-      { type: 'assistant', message: { id: 'msg_t1', content: [
-        { type: 'thinking', thinking: 'Hm' },
-        { type: 'tool_use', id: 'toolu_think_longer1', name: 'reify_get_source', input: { file: 'f.ri' } },
-      ] } },
-      // Turn 2: longer thinking under msg_t2 — no length shrink, only id changes
-      { type: 'assistant', message: { id: 'msg_t2', content: [
-        { type: 'thinking', thinking: 'Let me carefully reason about a much longer-form chain of thought' },
-      ] } },
-      { type: 'result', session_id: 'sess-longer-thinking' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-longer-thinking', text: 'Test longer turn-2 thinking' });
-
-    const thinkingDeltas = outputs.filter((o) => o.type === 'thinking_delta');
-    const deltaContents = thinkingDeltas.map((o) => (o as any).content);
-
-    // Turn 1 delta present
-    expect(deltaContents).toContain('Hm');
-
-    // Turn 2 first delta must be the FULL thinking string — not a slice from offset 2
-    // Broken: 'et me carefully reason about a much longer-form chain of thought'
-    // Fixed:  'Let me carefully reason about a much longer-form chain of thought'
-    expect(deltaContents).toContain('Let me carefully reason about a much longer-form chain of thought');
-  });
-
-  it('handles assistant event without message.id gracefully — no crash, deltas emit correctly', async () => {
-    // Suppress console.error noise from the no-id warning branch
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    // Verify the fallback branch (event.message.id absent):
-    // (a) No exception thrown — session completes normally.
-    // (b) Deltas emit correctly for monotonically growing text within a single turn.
-    // (c) Counters do not reset spuriously between partial updates.
-    //
-    // Without message.id the `typeof event.message.id === 'string'` guard never fires,
-    // so lastTextLen accumulates normally (no reset) and only incremental deltas emit.
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // No message.id on any event — exercises the fallback path
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello' }] } },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'ab' }] } },
       { type: 'result', session_id: 'sess-no-id' },
     ])) as any);
 
-    await session.init();
-    outputs.length = 0;
+    try {
+      await session.handleMessage({ type: 'send_message', id: 'msg-no-id', text: 'Test no id' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.join(' ')).toMatch(/degraded_turn_boundary.*missing message\.id/);
+    } finally {
+      warn.mockRestore();
+    }
 
-    // (a) Must complete without throwing
-    await expect(
-      session.handleMessage({ type: 'send_message', id: 'msg-no-id', text: 'Test no id' }),
-    ).resolves.toBeUndefined();
-
-    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
-    const deltaContents = textDeltas.map((o) => (o as any).content);
-
-    // (b) Deltas emit correctly: first partial → 'Hello', second partial → ' world' (incremental only)
-    expect(deltaContents).toContain('Hello');
-    expect(deltaContents).toContain(' world');
-
-    // (c) No spurious reset: the full 'Hello world' must NOT appear as a single delta,
-    // proving lastTextLen was NOT zeroed between the two partial events.
-    expect(deltaContents).not.toContain('Hello world');
-
-    // (d) Notice event emitted to host via onOutput — one-shot, first no-id event triggers it.
-    // Acceptance criterion #3: existing test must assert the new notice-event surface.
-    const noticeEvents = outputs.filter((o) => o.type === 'notice');
-    expect(noticeEvents).toHaveLength(1);
-    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
-    expect((noticeEvents[0] as any).message).toContain('message.id');
-    expect((noticeEvents[0] as any).id).toBe('msg-no-id');
-
-    // (e) console.error fires exactly once across two no-id events (one-shot guard),
-    // and the warning text references 'missing message.id' — the sole human-debugging
-    // signal that turn-boundary detection has degraded.
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('missing message.id'));
-
-    consoleSpy.mockRestore();
-  });
-
-  it('emits onOutput error event exactly once when assistant events lack message.id (one-shot semantics)', async () => {
-    // Verify one-shot guard: across multiple no-id events in a single invokeSdk call,
-    // exactly one error event is emitted (the guard must not fire on subsequent no-id events).
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // Three assistant events, all lacking message.id — exercises the one-shot guard
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'ab' }] } },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'abc' }] } },
-      { type: 'result', session_id: 'sess-no-id-oneshot' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-oneshot', text: 'Test' });
-
-    consoleSpy.mockRestore();
-
-    // Exactly one notice emission across three no-id events (one-shot guard fires only once)
-    const noticeEvents = outputs.filter((o) => o.type === 'notice');
-    expect(noticeEvents).toHaveLength(1);
-
-    // Notice correlates to the in-flight send_message id
-    expect((noticeEvents[0] as any).id).toBe('msg-oneshot');
-
-    // Structured discriminator via code field; message references message.id for human readability
-    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
-    expect((noticeEvents[0] as any).message).toContain('message.id');
-
-    // Sanity: text deltas still emit — notice event must NOT short-circuit normal streaming
-    expect(outputs.some((o) => o.type === 'text_delta')).toBe(true);
-
-    // NOTE: Host-side non-terminal contract is verified by the claudeIntegration test
-    // 'claude-notice event preserves in-flight turn (non-terminal)' in
-    // gui/src/__tests__/claudeIntegration.test.ts. The 'notice' variant is handled by a
-    // dedicated non-terminal case in claudeStore.ts — no cancelAndFlush, no sessionStatus
-    // change, no in-flight assistant message mutation.
-  });
-
-  it('mixed id-presence within a single invocation: warning fires exactly once, no-id event does not reset, msg_t2 reset emits full delta', async () => {
-    // Verify mixed id-presence semantics across a 3-event sequence:
-    //   event 1: id='msg_t1'  → id-change reset, currentAssistantMessageId='msg_t1', delta='Hello'
-    //   event 2: no id        → one-shot warning fires (console.error + notice), NO reset,
-    //                           lastTextLen stays at 5, delta=' world' (continuation)
-    //   event 3: id='msg_t2'  → id-change reset (msg_t2 != msg_t1), delta='Goodbye' (full)
-    //
-    // Key invariants:
-    //  - console.error fires exactly once (one-shot across the whole invocation)
-    //  - no-id event does NOT reset lastTextLen (delta is ' world', not 'Hello world')
-    //  - id-change reset on msg_t2 produces the full 'Goodbye' from offset 0
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      // event 1: id-bearing, triggers turn-1 reset; text 'Hello' (len=5)
-      { type: 'assistant', message: { id: 'msg_t1', content: [{ type: 'text', text: 'Hello' }] } },
-      // event 2: no message.id, triggers one-shot warning; text 'Hello world' (len=11, delta=' world')
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'Hello world' }] } },
-      // event 3: new id 'msg_t2', triggers id-change reset; text 'Goodbye' (delta='Goodbye' from offset 0)
-      { type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Goodbye' }] } },
-      { type: 'result', session_id: 'sess-mixed-id' },
-    ])) as any);
-
-    await session.init();
-    outputs.length = 0;
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-mixed', text: 'Mixed id test' });
-
-    // 1. console.error fires exactly once across the entire invocation (one-shot guard spans
-    //    both the no-id event and the subsequent id-bearing event without re-triggering).
-    expect(consoleSpy).toHaveBeenCalledTimes(1);
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('missing message.id'));
-
-    // 2. Exactly one notice event, correlating to the in-flight send_message id.
-    const noticeEvents = outputs.filter((o) => o.type === 'notice');
-    expect(noticeEvents).toHaveLength(1);
-    expect((noticeEvents[0] as any).code).toBe('degraded_turn_boundary');
-    expect((noticeEvents[0] as any).message).toContain('message.id');
-    expect((noticeEvents[0] as any).id).toBe('msg-mixed');
-
-    // 3. Text delta assertions — verify all three externally observable deltas.
-    const textDeltas = outputs.filter((o) => o.type === 'text_delta');
-    const deltaContents = textDeltas.map((o) => (o as any).content);
-
-    // event 1 (msg_t1): id-change reset → lastTextLen=0 → full 'Hello' emits as delta
-    expect(deltaContents).toContain('Hello');
-
-    // event 2 (no id): no reset → lastTextLen stays at 5 → only ' world' slice emits
-    expect(deltaContents).toContain(' world');
-
-    // Absence check: 'Hello world' as a single delta would indicate a spurious reset on the
-    // no-id event (i.e. lastTextLen wrongly zeroed), producing a full-string delta from offset 0.
-    expect(deltaContents).not.toContain('Hello world');
-
-    // event 3 (msg_t2): id-change reset (msg_t2 !== msg_t1) → lastTextLen=0 → 'Goodbye' from offset 0
-    expect(deltaContents).toContain('Goodbye');
-
-    consoleSpy.mockRestore();
+    expect(outputs.filter((o) => o.type === 'notice')).toEqual([{
+      type: 'notice',
+      id: 'msg-no-id',
+      code: 'degraded_turn_boundary',
+      message: expect.stringContaining('message.id'),
+    }]);
+    expect(outputs.filter((o) => o.type === 'text_delta').map((o) => (o as any).content)).toEqual(['a', 'b']);
+    expect(outputs.at(-1)).toEqual({ type: 'done', id: 'msg-no-id' });
   });
 });
 
-describe('SidecarSession reset-boundary tool correlation preservation', () => {
+describe('SidecarSession in-flight invocation', () => {
   let session: SidecarSession;
   let outputs: OutboundMessage[];
 
@@ -1227,220 +816,133 @@ describe('SidecarSession reset-boundary tool correlation preservation', () => {
     vi.mocked(spawn).mockReset();
   });
 
-  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (text channel)', async () => {
-    // Turn 1: long text + tool_use (registers toolu_pending in toolNameById).
-    // Turn 2: new message.id triggers id-change reset (length counters only).
-    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
-    // so a subsequent tool_result for toolu_pending forwards correctly.
-    const { mockProc, stdout, stdinLines } = makeMockProc([
-      { type: 'text', text: 'Hello world!' },
-      { type: 'tool_use', id: 'toolu_pending', name: 'reify_x', input: {} },
+  it("clear_session during an in-flight invocation keeps naming that invocation's tool_result blocks", async () => {
+    // clear_session does not abort the claude child, which keeps streaming; its later
+    // tool_result blocks must still be named after the tool_use they answer.
+    const { mockProc, stdout } = makeMockProc([
+      { type: 'tool_use', id: 'toolu_cs', name: 'reify_x', input: {} },
     ]);
-
-    // Set up wait for tool_call BEFORE dispatching so we don't miss the event
     const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-rb-text',
-      text: 'Reset boundary text test',
-    });
-
-    // Wait for tool_call outbound — guarantees tool_use is registered in toolNameById
+    const msgPromise = session.handleMessage({ type: 'send_message', id: 'msg-cs', text: 'Hi' });
     await toolCallWait;
-
-    // Set up wait for text_delta 'Hi' BEFORE pushing the turn-2 event
-    const textDeltaHiWait = waitForOutput(
-      session,
-      (m) => m.type === 'text_delta' && (m as any).content === 'Hi',
-    );
-
-    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
-    stdout.push(
-      JSON.stringify({ type: 'assistant', message: { id: 'msg_t2', content: [{ type: 'text', text: 'Hi' }] } }) + '\n',
-    );
-
-    // Wait for text_delta 'Hi' — guarantees the id-change reset has been processed
-    await textDeltaHiWait;
-
-    // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
-    // toolNameById was cleared by the shrink branch; on fixed code it forwards correctly.
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-pending',
-      tool_name: 'reify_x',
-      result: 'result-ok',
-      tool_use_id: 'toolu_pending',
-    });
-
-    // Race: if the unknown-id error fires before stdin line 2, fail immediately with a
-    // clear message rather than waiting for vitest's default timeout.  On buggy code
-    // (maps cleared at reset boundary) the error fires first; on fixed code the stdin
-    // line arrives first.
-    const unexpectedErrorWait = waitForOutput(
-      session,
-      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
-    );
-    const winner = await Promise.race([
-      waitForStdinLines(mockProc.stdin, stdinLines, 2).then(() => 'stdin' as const),
-      unexpectedErrorWait.then(() => 'error' as const),
-    ]);
-    expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
-    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
-
-    // Assert the tool_result was forwarded with the correct tool_use_id
-    expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_pending');
-
-    // Cleanup: close stdout so msgPromise can resolve
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-rb-text' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-    // Pin the contract over the full output stream: exactly one text_delta 'Hi' across the
-    // entire turn (guards against duplicate emissions if the streaming loop restarts).
-    expect(outputs.filter((m) => m.type === 'text_delta' && (m as any).content === 'Hi').length).toBe(1);
-  });
-
-  it('new-turn reset-boundary preserves pending tool_use for subsequent tool_result (thinking channel)', async () => {
-    // Turn 1: long thinking + tool_use (registers toolu_th_pending in toolNameById).
-    // Turn 2: new message.id triggers id-change reset (length counters only).
-    // Invariant: the id-change reset must NOT clear toolNameById/pendingToolUseIds,
-    // so a subsequent tool_result for toolu_th_pending forwards correctly.
-    const { mockProc, stdout, stdinLines } = makeMockProc([
-      { type: 'thinking', thinking: 'Let me reason about this for a while' },
-      { type: 'tool_use', id: 'toolu_th_pending', name: 'reify_x', input: {} },
-    ]);
-
-    // Set up wait for tool_call BEFORE dispatching so we don't miss the event
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-rb-think',
-      text: 'Reset boundary thinking test',
-    });
-
-    // Wait for tool_call outbound — guarantees tool_use is registered in toolNameById
-    await toolCallWait;
-
-    // Set up wait for thinking_delta 'Hm' BEFORE pushing the turn-2 event
-    const thinkingDeltaHmWait = waitForOutput(
-      session,
-      (m) => m.type === 'thinking_delta' && (m as any).content === 'Hm',
-    );
-
-    // Push turn 2: new message.id triggers id-change reset (lastTextLen=0, lastThinkingLen=0)
-    stdout.push(
-      JSON.stringify({
-        type: 'assistant',
-        message: { id: 'msg_t2', content: [{ type: 'thinking', thinking: 'Hm' }] },
-      }) + '\n',
-    );
-
-    // Wait for thinking_delta 'Hm' — guarantees the id-change reset has been processed
-    await thinkingDeltaHmWait;
-
-    // Now dispatch tool_result for the pending tool_use. On buggy code this fails because
-    // toolNameById was cleared by the thinking-shrink branch; on fixed code it forwards correctly.
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-th-pending',
-      tool_name: 'reify_x',
-      result: 'result-ok',
-      tool_use_id: 'toolu_th_pending',
-    });
-
-    // Race: if the unknown-id error fires before stdin line 2, fail immediately with a
-    // clear message rather than waiting for vitest's default timeout.  On buggy code
-    // (maps cleared at reset boundary) the error fires first; on fixed code the stdin
-    // line arrives first.
-    const unexpectedErrorWait = waitForOutput(
-      session,
-      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
-    );
-    const winner = await Promise.race([
-      waitForStdinLines(mockProc.stdin, stdinLines, 2).then(() => 'stdin' as const),
-      unexpectedErrorWait.then(() => 'error' as const),
-    ]);
-    expect(winner).toBe('stdin'); // fails fast with a clear message if maps were cleared
-    unexpectedErrorWait.cancel(); // release session.onOutput immediately; don't wait for the 5s default timeout
-
-    // Assert the tool_result was forwarded with the correct tool_use_id
-    expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_th_pending');
-
-    // Cleanup: close stdout so msgPromise can resolve
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-rb-think' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-    // Pin the contract over the full output stream: exactly one thinking_delta 'Hm' across
-    // the entire turn (guards against duplicate emissions if the streaming loop restarts).
-    expect(outputs.filter((m) => m.type === 'thinking_delta' && (m as any).content === 'Hm').length).toBe(1);
-  });
-});
-
-describe('SidecarSession stale-state lifecycle', () => {
-  let session: SidecarSession;
-  let outputs: OutboundMessage[];
-
-  beforeEach(() => {
-    outputs = [];
-    session = new SidecarSession({
-      model: 'claude-opus-4-6',
-      workingDirectory: '/tmp/test-project',
-      systemPrompt: 'Test.',
-    });
-    session.onOutput = (msg) => outputs.push(msg);
-    vi.mocked(spawn).mockReset();
-  });
-
-  it('invokeSdk start clears stale maps from a previous turn', async () => {
-    // Pre-populate stale state from a hypothetical prior turn that left data behind
-    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
-    (session as any).toolNameById.set('toolu_stale', 'reify_old');
-
-    // Configure spawn mock to return a process that emits no tool_use (just text + result)
-    vi.mocked(spawn).mockImplementation((() => createMockProcess([
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'OK' }] } },
-      { type: 'result', session_id: 'sess-clean' },
-    ])) as any);
-
-    await session.handleMessage({ type: 'send_message', id: 'msg-fresh', text: 'Hi' });
-
-    // After the invocation completes, the stale entries must have been cleared at start
-    expect((session as any).pendingToolUseIds.has('reify_old')).toBe(false);
-    expect((session as any).toolNameById.has('toolu_stale')).toBe(false);
-  });
-
-  it('destroy() clears toolNameById and pendingToolUseIds maps', () => {
-    // Pre-populate both maps
-    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
-    (session as any).toolNameById.set('toolu_stale', 'reify_old');
-
-    session.destroy();
-
-    expect((session as any).toolNameById.size).toBe(0);
-    expect((session as any).pendingToolUseIds.size).toBe(0);
-  });
-
-  it('clear_session clears toolNameById and pendingToolUseIds maps', async () => {
-    // Pre-populate both maps
-    (session as any).pendingToolUseIds.set('reify_old', ['toolu_stale']);
-    (session as any).toolNameById.set('toolu_stale', 'reify_old');
-
-    await session.init();
-    outputs.length = 0;
 
     await session.handleMessage({ type: 'clear_session' });
 
-    expect((session as any).toolNameById.size).toBe(0);
-    expect((session as any).pendingToolUseIds.size).toBe(0);
+    const toolResultWait = waitForOutput(session, (m) => m.type === 'tool_result');
+    stdout.push(
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_cs', content: 'ok' }] },
+      }) + '\n',
+    );
+    expect(await toolResultWait).toEqual({ type: 'tool_result', id: 'msg-cs', tool_name: 'reify_x', result: 'ok' });
 
-    // Verify the existing handleClearSession contract is preserved: ready is still emitted
-    expect(outputs).toHaveLength(1);
-    expect(outputs[0]).toEqual({ type: 'ready' });
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-cs' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+
+  it('the prompt is the only stdin write: stdin is ended right after it while the invocation is still in flight', async () => {
+    const { mockProc, stdout, stdinLines } = makeMockProc([{ type: 'text', text: 'Hi' }]);
+    const textDeltaWait = waitForOutput(session, (m) => m.type === 'text_delta');
+    const msgPromise = session.handleMessage({ type: 'send_message', id: 'msg-eof', text: 'Hello' });
+    await textDeltaWait;
+
+    expect(mockProc.stdin.writableEnded).toBe(true);
+    await new Promise<void>((resolve) => {
+      if (mockProc.stdin.readableEnded) resolve();
+      else mockProc.stdin.once('end', resolve);
+    });
+    expect(stdinLines).toEqual([
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] } },
+    ]);
+    expect(session.isInvocationActive()).toBe(true);
+
+    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-eof' }) + '\n');
+    stdout.push(null);
+    mockProc.exitCode = 0;
+    mockProc.emit('close', 0);
+    await msgPromise;
+  });
+});
+
+describe('SidecarSession stream failures surface as error', () => {
+  let session: SidecarSession;
+  let outputs: OutboundMessage[];
+
+  const assistantText = (text: string) =>
+    ({ type: 'assistant', message: { id: 'msg_1', content: [{ type: 'text', text }] } });
+  const spawnedProc = () => vi.mocked(spawn).mock.results[0]?.value as any;
+
+  beforeEach(() => {
+    outputs = [];
+    session = new SidecarSession({
+      model: 'claude-opus-4-6',
+      workingDirectory: '/tmp/test-project',
+      systemPrompt: 'Test.',
+    });
+    session.onOutput = (msg) => outputs.push(msg);
+    vi.mocked(spawn).mockReset();
+  });
+
+  it('a throwing host sink ends the turn with an error and kills the claude child', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      assistantText('Hi'),
+      assistantText('Hi there'),
+      { type: 'result', session_id: 's' },
+    ])) as any);
+    session.onOutput = (msg) => {
+      outputs.push(msg);
+      if (msg.type === 'text_delta') throw new Error('host sink failed');
+    };
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-b13', text: 'Hi' });
+
+    const errors = outputs.filter((o) => o.type === 'error' && o.id === 'msg-b13');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toContain('host sink failed');
+    expect(outputs.filter((o) => o.type === 'done' && o.id === 'msg-b13')).toHaveLength(0);
+    expect(outputs.filter((o) => o.type === 'text_delta')).toHaveLength(1);
+    expect(spawnedProc().kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('a malformed assistant event ends the turn with an error and kills the claude child', async () => {
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      { type: 'assistant', message: { id: 'msg_1', content: { type: 'text', text: 'x' } } },
+      { type: 'result', session_id: 's' },
+    ])) as any);
+
+    await session.handleMessage({ type: 'send_message', id: 'msg-bad', text: 'Hi' });
+
+    const errors = outputs.filter((o) => o.type === 'error' && o.id === 'msg-bad');
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toMatch(/message\.content/);
+    expect(outputs.filter((o) => o.type === 'done')).toHaveLength(0);
+    expect(spawnedProc().kill).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unparseable line is skipped with a warning and the turn completes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(spawn).mockImplementation((() => createMockProcess([
+      'not json',
+      assistantText('Hi'),
+      { type: 'result', session_id: 's' },
+    ])) as any);
+
+    try {
+      await session.handleMessage({ type: 'send_message', id: 'msg-skip', text: 'Hi' });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]?.join(' ')).toMatch(/unparseable/);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(outputs).toContainEqual({ type: 'text_delta', id: 'msg-skip', content: 'Hi' });
+    expect(outputs).toContainEqual({ type: 'done', id: 'msg-skip' });
+    expect(outputs.filter((o) => o.type === 'error')).toHaveLength(0);
+    expect(spawnedProc().kill).not.toHaveBeenCalled();
   });
 });
 
@@ -1952,120 +1454,6 @@ describe('entrypoint wiring', () => {
     expect(msgs[0]).toEqual({ type: 'ready' });
   });
 
-  it('tool_result inbound is accepted end-to-end via entrypoint and forwarded to claude CLI stdin', async () => {
-    // Create a mock process that emits a tool_use and stays open
-    const mockProc = new EventEmitter() as any;
-    const mockStdout = new PassThrough();
-    mockProc.stdout = mockStdout;
-    mockProc.stderr = new PassThrough();
-    mockProc.stdin = new PassThrough();
-    mockProc.exitCode = null;
-
-    vi.mocked(spawn).mockImplementation(((_cmd: string, _args: string[], opts: any) => {
-      process.nextTick(() => {
-        // Emit a tool_use event and leave stdout open
-        mockStdout.push(JSON.stringify({
-          type: 'assistant',
-          message: { id: 'msg_e2e_1', content: [
-            { type: 'tool_use', id: 'toolu_e2e', name: 'reify_get_diagnostics', input: {} },
-          ] },
-        }) + '\n');
-      });
-      if (opts?.signal) {
-        opts.signal.addEventListener('abort', () => {
-          mockStdout.end();
-          mockProc.exitCode = null;
-          mockProc.emit('close', null);
-        });
-      }
-      return mockProc;
-    }) as any);
-
-    const input = new PassThrough();
-    const output = new PassThrough();
-
-    // Collect outbound messages as they arrive
-    const receivedMsgs: OutboundMessage[] = [];
-    let outputBuf = '';
-    output.on('data', (chunk: Buffer) => {
-      outputBuf += chunk.toString();
-      let idx: number;
-      while ((idx = outputBuf.indexOf('\n')) !== -1) {
-        const line = outputBuf.slice(0, idx);
-        outputBuf = outputBuf.slice(idx + 1);
-        if (line.length > 0) receivedMsgs.push(JSON.parse(line));
-      }
-    });
-
-    const mainPromise = main(input, output);
-
-    // Wait for ready
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Set up stdin capture BEFORE writing the send_message
-    const stdinLines: unknown[] = [];
-    let stdinBuf = '';
-    mockProc.stdin.on('data', (chunk: Buffer | string) => {
-      stdinBuf += chunk.toString();
-      let nlIdx: number;
-      while ((nlIdx = stdinBuf.indexOf('\n')) !== -1) {
-        stdinLines.push(JSON.parse(stdinBuf.slice(0, nlIdx)));
-        stdinBuf = stdinBuf.slice(nlIdx + 1);
-      }
-    });
-
-    // Send a send_message through the entrypoint input
-    input.write(JSON.stringify({ type: 'send_message', id: 'e2e-tr-1', text: 'Check diagnostics' }) + '\n');
-
-    // Wait for tool_call outbound to arrive (signals tool_use was parsed and pendingToolUseIds populated)
-    const toolCallDeadline = Date.now() + 500;
-    while (Date.now() < toolCallDeadline) {
-      if (receivedMsgs.some((m) => m.type === 'tool_call')) break;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    expect(receivedMsgs.some((m) => m.type === 'tool_call')).toBe(true);
-
-    // Send tool_result through the entrypoint input (the previous failure mode: parseInboundMessage threw)
-    input.write(JSON.stringify({
-      type: 'tool_result',
-      id: 'e2e-tr-1',
-      tool_use_id: 'toolu_e2e',
-      tool_name: 'reify_get_diagnostics',
-      result: { diagnostics: [] },
-    }) + '\n');
-
-    // Give time for the write to propagate through the session
-    await new Promise((r) => setTimeout(r, 50));
-
-    // (a) NO outbound error event was emitted
-    const errors = receivedMsgs.filter((m) => m.type === 'error');
-    expect(errors).toHaveLength(0);
-
-    // (b) The mock claude CLI's stdin received the tool_result content block
-    // stdinLines[0] = initial user prompt; stdinLines[1] = tool_result block
-    expect(stdinLines.length).toBeGreaterThanOrEqual(2);
-    expect(stdinLines[1]).toEqual({
-      type: 'user',
-      message: {
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_e2e', content: { diagnostics: [] } }],
-      },
-    });
-
-    // Clean up: close the mock process and end input
-    mockStdout.push(JSON.stringify({ type: 'result', session_id: 'sess-e2e-tr' }) + '\n');
-    mockStdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-
-    await new Promise((r) => setTimeout(r, 50));
-    input.end();
-
-    await Promise.race([mainPromise, new Promise((r) => setTimeout(r, 500))]);
-
-    vi.mocked(spawn).mockReset();
-  });
-
   it('abort message is processed while send_message is in-flight (non-blocking input loop)', async () => {
     // Create a mock process that hangs until the abort signal fires
     const hangingProc = new EventEmitter() as any;
@@ -2134,184 +1522,22 @@ describe('entrypoint wiring', () => {
   });
 });
 
-describe('close-on-result race', () => {
-  let session: SidecarSession;
-  let outputs: OutboundMessage[];
-
-  beforeEach(() => {
-    outputs = [];
-    session = new SidecarSession({
-      model: 'claude-opus-4-6',
-      workingDirectory: '/tmp/test-project',
-      systemPrompt: 'Test.',
-    });
-    session.onOutput = (msg) => outputs.push(msg);
-    vi.mocked(spawn).mockReset();
-  });
-
-  it('tool_result after result event produces "no in-flight" error, not "stdin write error"', async () => {
-    const { mockProc, stdout } = makeMockProc([
-      { type: 'tool_use', id: 'toolu_race', name: 'reify_get_diagnostics', input: {} },
-    ]);
-
-    // Set up wait for tool_call BEFORE dispatch
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    // Start send_message (don't await — will hang waiting for stdout to close)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-race',
-      text: 'Check diagnostics',
-    });
-
-    // Wait for tool_call outbound (event-driven)
-    await toolCallWait;
-
-    // Push the 'result' event to stdout, but do NOT close stdout yet.
-    // This triggers proc.stdin?.end() inside the for-await loop,
-    // but currentStdin is not nulled until the finally block (Bug #2).
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-race' }) + '\n');
-
-    // Wait for proc.stdin to finish (stdin.end() has been called by the result branch).
-    // This confirms the result branch executed before we send the tool_result.
-    await new Promise<void>((resolve) => {
-      if (mockProc.stdin.writableEnded) {
-        resolve();
-      } else {
-        mockProc.stdin.once('finish', resolve);
-      }
-    });
-
-    // Set up wait for error outbound BEFORE dispatching tool_result
-    const errorWait = waitForOutput(session, (m) => m.type === 'error');
-
-    // Dispatch tool_result AFTER the result event fired (race window).
-    // Bug #2: currentStdin is still non-null (not yet cleared), so the write
-    // proceeds against an ended stream → "stdin write error"
-    // Fix: currentStdin is nulled immediately after proc.stdin?.end() → "no in-flight"
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tool-race',
-      tool_use_id: 'toolu_race',
-      tool_name: 'reify_get_diagnostics',
-      result: { diagnostics: [] },
-    });
-
-    // Wait for the error outbound
-    const errorMsg = await errorWait;
-
-    // THE KEY ASSERTION: must be the clean "no in-flight" error, NOT "stdin write error"
-    expect((errorMsg as any).message).toMatch(/no in-flight claude CLI process/i);
-    expect((errorMsg as any).message).not.toMatch(/stdin write error/i);
-
-    // Cleanup: close stdout so msgPromise can resolve
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-  });
-});
-
-describe('stdin write error correlation', () => {
-  let session: SidecarSession;
-  let outputs: OutboundMessage[];
-
-  beforeEach(() => {
-    outputs = [];
-    session = new SidecarSession({
-      model: 'claude-opus-4-6',
-      workingDirectory: '/tmp/test-project',
-      systemPrompt: 'Test.',
-    });
-    session.onOutput = (msg) => outputs.push(msg);
-    vi.mocked(spawn).mockReset();
-  });
-
-  it('async stdin error after tool_result write is tagged with tool_result id, not send_message id', async () => {
-    const { mockProc, stdout } = makeMockProc([
-      { type: 'tool_use', id: 'toolu_x', name: 'reify_get_diagnostics', input: {} },
-    ]);
-
-    // Set up wait for tool_call BEFORE dispatch so we don't miss it
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    // Start send_message (don't await — will hang waiting for stdout to close)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-A',
-      text: 'Check diagnostics',
-    });
-
-    // Wait for the tool_call outbound (event-driven, not polling)
-    await toolCallWait;
-
-    // Override mockProc.stdin.write to simulate an async EPIPE error on the NEXT write.
-    // The error fires on process.nextTick via both the 'error' event and the write callback.
-    let errorOverrideActive = false;
-    const originalWrite = mockProc.stdin.write.bind(mockProc.stdin);
-    mockProc.stdin.write = (chunk: any, encodingOrCb?: any, callback?: any) => {
-      if (errorOverrideActive) {
-        const cb = typeof encodingOrCb === 'function' ? encodingOrCb : callback;
-        const err = new Error('write EPIPE');
-        process.nextTick(() => {
-          // Fire the async stream 'error' event (current code's listener uses wrong id)
-          mockProc.stdin.emit('error', err);
-          // Also invoke the per-write callback with the error (fix target)
-          if (typeof cb === 'function') cb(err);
-        });
-        return false;
-      }
-      return originalWrite(chunk, encodingOrCb, callback);
-    };
-    errorOverrideActive = true;
-
-    // Set up wait for error outbound BEFORE dispatching tool_result
-    const errorWait = waitForOutput(session, (m) => m.type === 'error');
-
-    // Dispatch tool_result with id='tool-B' — the write override fires async EPIPE
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tool-B',
-      tool_use_id: 'toolu_x',
-      tool_name: 'reify_get_diagnostics',
-      result: { diagnostics: [] },
-    });
-
-    // Wait for the error outbound (event-driven)
-    const errorMsg = await errorWait;
-
-    // THE KEY ASSERTION: error must be tagged with the tool_result id, NOT the send_message id.
-    // On current code this fails because the async 'error' listener captures the outer
-    // send_message id ('send-A') rather than the tool_result id ('tool-B').
-    expect((errorMsg as any).id).toBe('tool-B');
-    expect((errorMsg as any).id).not.toBe('send-A');
-    expect((errorMsg as any).message).toMatch(/stdin write error|EPIPE/i);
-
-    // Cleanup: close stdout so msgPromise can resolve
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-  });
-});
-
 /**
- * Shared setup for orphan-stdin-error tests. Creates a mock proc with one tool_use,
- * installs a console.warn spy, dispatches handleMessage, and awaits the tool_call
- * output to confirm the stdin 'error' listener is attached before returning.
+ * Shared setup for orphan-stdin-error tests. Installs a console.warn spy, dispatches
+ * handleMessage, and awaits the first text_delta. By then the prompt has been written and
+ * stdin ended, so the 'error' listener is attached and no write callback is pending: any
+ * 'error' the test emits on stdin is an orphan.
  *
  * Returns { mockProc, warnSpy, finish } where finish() restores the spy, closes the
  * mock process (using stdout/msgPromise captured in its closure), and resolves the
  * pending handleMessage.
  */
 async function setupOrphanStdinErrorScenario(session: SidecarSession) {
-  const { mockProc, stdout } = makeMockProc([
-    { type: 'tool_use', id: 'toolu_orphan', name: 'reify_x', input: {} },
-  ]);
+  const { mockProc, stdout } = makeMockProc([{ type: 'text', text: 'Hi' }]);
 
   const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-  const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
+  const textDeltaWait = waitForOutput(session, (m) => m.type === 'text_delta');
 
   const msgPromise = session.handleMessage({
     type: 'send_message',
@@ -2319,8 +1545,7 @@ async function setupOrphanStdinErrorScenario(session: SidecarSession) {
     text: 'Hi',
   });
 
-  // Await tool_call — proves the prompt has been written to stdin and the 'error' listener is attached
-  await toolCallWait;
+  await textDeltaWait;
 
   const finish = async () => {
     warnSpy.mockRestore();
@@ -2369,20 +1594,21 @@ describe('stdin orphan-error diagnostic', () => {
 
   it('orphan stdin error one-shot guard fires console.warn exactly once across multiple emits', async () => {
     const { mockProc, warnSpy, finish } = await setupOrphanStdinErrorScenario(session);
+    // Guard fires, identified by the synthetic error message they carry (robust to prefix
+    // changes and to unrelated warns such as notices).
+    const guardWarns = () =>
+      warnSpy.mock.calls.filter((args) => args.join(' ').includes('synthetic orphan EPIPE'));
 
     // First orphan EPIPE — wait until the warn fires before dispatching the second emit,
     // so the ordering invariant holds even if the handler ever becomes async.
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 1'));
-    await vi.waitFor(() => expect(warnSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(guardWarns()).toHaveLength(1));
 
     // Second orphan EPIPE with a distinct message — one-shot guard must suppress this
     mockProc.stdin.emit('error', new Error('synthetic orphan EPIPE 2 distinct'));
     await new Promise(setImmediate);
 
-    // Filter to guard fires (identified by the synthetic error message they carry; robust to prefix changes)
-    const stdinErrorWarns = warnSpy.mock.calls.filter((args) =>
-      args.join(' ').includes('synthetic orphan EPIPE')
-    );
+    const stdinErrorWarns = guardWarns();
 
     // One-shot guard: exactly one warn fired despite two error emits
     expect(stdinErrorWarns).toHaveLength(1);
@@ -2397,295 +1623,7 @@ describe('stdin orphan-error diagnostic', () => {
   });
 });
 
-describe('echoed tool_use_id validation', () => {
-  let session: SidecarSession;
-  let outputs: OutboundMessage[];
-
-  beforeEach(() => {
-    outputs = [];
-    session = new SidecarSession({
-      model: 'claude-opus-4-6',
-      workingDirectory: '/tmp/test-project',
-      systemPrompt: 'Test.',
-    });
-    session.onOutput = (msg) => outputs.push(msg);
-    vi.mocked(spawn).mockReset();
-  });
-
-  /**
-   * Shared setup: mock subprocess that emits ONE tool_use (id="toolu_real", name="reify_x")
-   * and leaves stdout open. Returns { mockProc, stdout, stdinLines, msgPromise, toolCallWait }.
-   * Uses makeMockProc to avoid boilerplate duplication.
-   */
-  function setupValidationTest() {
-    const { mockProc, stdout, stdinLines } = makeMockProc([
-      { type: 'tool_use', id: 'toolu_real', name: 'reify_x', input: {} },
-    ]);
-
-    // Set up wait for tool_call BEFORE dispatch
-    const toolCallWait = waitForOutput(session, (m) => m.type === 'tool_call');
-
-    // Start send_message (don't await — hangs until stdout closes)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-val',
-      text: 'Trigger tool call',
-    });
-
-    return { mockProc, stdout, stdinLines, msgPromise, toolCallWait };
-  }
-
-  it('emits structured error and does not forward when echoed tool_use_id is unknown', async () => {
-    const { stdout, stdinLines, msgPromise, toolCallWait, mockProc } = setupValidationTest();
-
-    // Wait for tool_call outbound (event-driven)
-    await toolCallWait;
-
-    // Set up wait for error outbound BEFORE dispatching the bad tool_result
-    const errorWait = waitForOutput(session, (m) => m.type === 'error');
-
-    // Dispatch tool_result with a BOGUS tool_use_id (not in toolNameById)
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tool-bogus',
-      tool_name: 'reify_x',
-      result: 'ok',
-      tool_use_id: 'toolu_BOGUS',
-    });
-
-    // Wait for the error outbound
-    const errorMsg = await errorWait;
-
-    // Assertions: structured error with correct id and matching message
-    expect((errorMsg as any).id).toBe('tool-bogus');
-    expect((errorMsg as any).message).toMatch(/unknown.*tool_use_id|invalid.*tool_use_id/i);
-
-    // No tool_result was forwarded to stdin (only the initial prompt write).
-    // Yield all pending microtasks so any stray write has time to land in stdinLines
-    // before we assert — waitForStdinLines(1) would be a no-op here because stdinLines
-    // is already at length 1 from the initial prompt write.
-    await new Promise(setImmediate);
-    expect(stdinLines.length).toBe(1);
-
-    // Cleanup
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-  });
-
-  it('emits structured error and does not forward when echoed tool_use_id name does not match tool_name', async () => {
-    const { stdout, stdinLines, msgPromise, toolCallWait, mockProc } = setupValidationTest();
-
-    // Wait for tool_call outbound (event-driven)
-    await toolCallWait;
-
-    // Set up wait for error outbound BEFORE dispatching the mismatched tool_result
-    const errorWait = waitForOutput(session, (m) => m.type === 'error');
-
-    // Dispatch tool_result with the REAL tool_use_id but WRONG tool_name (mismatch)
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tool-mismatch',
-      tool_name: 'reify_OTHER',  // registered id maps to 'reify_x', not 'reify_OTHER'
-      result: 'ok',
-      tool_use_id: 'toolu_real',
-    });
-
-    // Wait for the error outbound
-    const errorMsg = await errorWait;
-
-    // Assertions: structured error with correct id and name-mismatch message
-    expect((errorMsg as any).id).toBe('tool-mismatch');
-    // Message must indicate a structural name-mismatch (not just incidentally contain a tool name)
-    expect((errorMsg as any).message).toMatch(/does not match tool_name=/);
-    expect((errorMsg as any).message).toContain('reify_OTHER');
-    expect((errorMsg as any).message).toContain('reify_x');
-
-    // No tool_result was forwarded to stdin (only the initial prompt write).
-    // Yield all pending microtasks so any stray write has time to land in stdinLines
-    // before we assert — waitForStdinLines(1) would be a no-op here because stdinLines
-    // is already at length 1 from the initial prompt write.
-    await new Promise(setImmediate);
-    expect(stdinLines.length).toBe(1);
-
-    // Cleanup
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-  });
-
-  it('stale tool_use_id re-dispatch emits structured error and does not forward a second stdin line', async () => {
-    // This test covers the "toolNameById drain" property through observable behavior:
-    // once a tool_result has been successfully forwarded for a given tool_use_id, the id is
-    // deleted from toolNameById (the toolNameById.delete after the FIFO splice/shift).
-    // Re-dispatching a tool_result with the same id must hit the unknown-id guard in
-    // handleToolResult and emit a structured error — not forward a second stdin line.
-    const { mockProc, stdout, stdinLines, msgPromise, toolCallWait } = setupValidationTest();
-
-    // (1) Wait for tool_call outbound — tool_use is now registered in toolNameById
-    await toolCallWait;
-
-    // (2) Dispatch first tool_result — this is a valid forward
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-first',
-      tool_name: 'reify_x',
-      result: 'ok-1',
-      tool_use_id: 'toolu_real',
-    });
-
-    // (3) Wait for stdin line 2 (initial prompt = line 1, forwarded tool_result = line 2)
-    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
-
-    // (4) Assert first forward used the correct tool_use_id
-    expect((stdinLines[1] as any).message.content[0].tool_use_id).toBe('toolu_real');
-
-    // (5) Set up wait for error outbound BEFORE dispatching the stale re-dispatch
-    const errorWait = waitForOutput(session, (m) => m.type === 'error');
-
-    // (6) Re-dispatch a tool_result with the SAME (already consumed) tool_use_id
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-stale',
-      tool_name: 'reify_x',
-      result: 'ok-2',
-      tool_use_id: 'toolu_real',
-    });
-
-    // (7) Wait for the structured error outbound
-    const errorMsg = await errorWait;
-
-    // (8) Assert correct id and unknown-id error message
-    expect((errorMsg as any).id).toBe('tr-stale');
-    expect((errorMsg as any).message).toMatch(/unknown.*tool_use_id|invalid.*tool_use_id/i);
-
-    // (9) Yield microtasks so any stray write would land in stdinLines before we assert
-    await new Promise(setImmediate);
-
-    // (10) Assert no extra stdin line was written (stale re-dispatch must not forward)
-    expect(stdinLines.length).toBe(2);
-
-    // Cleanup
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-  });
-});
-
-describe('FIFO consumption on echoed-id path', () => {
-  let session: SidecarSession;
-  let outputs: OutboundMessage[];
-
-  beforeEach(() => {
-    outputs = [];
-    session = new SidecarSession({
-      model: 'claude-opus-4-6',
-      workingDirectory: '/tmp/test-project',
-      systemPrompt: 'Test.',
-    });
-    session.onOutput = (msg) => outputs.push(msg);
-    vi.mocked(spawn).mockReset();
-  });
-
-  it('echoed-id forward drains its id from both maps; subsequent fallback uses correct remaining id', async () => {
-    // Two tool_use blocks with same name, different ids — makeMockProc wires up stdin
-    // accumulator before spawn and leaves stdout open.
-    const { mockProc, stdout, stdinLines } = makeMockProc([
-      { type: 'tool_use', id: 'toolu_1', name: 'reify_x', input: {} },
-      { type: 'tool_use', id: 'toolu_2', name: 'reify_x', input: {} },
-    ]);
-
-    // Wait for BOTH tool_call outbounds before dispatching any tool_result.
-    // waitForOutputs decouples the count from the predicate, avoiding the
-    // side-effect-in-predicate pattern that is fragile when non-tool_call
-    // outbounds are interspersed.
-    const bothToolCallsWait = waitForOutputs(session, (m) => m.type === 'tool_call', 2);
-
-    // Start send_message (don't await)
-    const msgPromise = session.handleMessage({
-      type: 'send_message',
-      id: 'send-fifo',
-      text: 'Trigger two tool calls',
-    });
-
-    await bothToolCallsWait;
-
-    // --- Step (a): Dispatch tool_result with ECHOED tool_use_id toolu_1 ---
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-1',
-      tool_name: 'reify_x',
-      result: 'result-1',
-      tool_use_id: 'toolu_1',
-    });
-
-    // Wait for the second stdin line (initial prompt = line 1, this = line 2)
-    await waitForStdinLines(mockProc.stdin, stdinLines, 2);
-
-    // Verify correct tool_use_id was forwarded
-    const line2 = stdinLines[1] as any;
-    expect(line2.message.content[0].tool_use_id).toBe('toolu_1');
-
-    // --- Step (b): Dispatch tool_result WITHOUT tool_use_id (fallback path) ---
-    /**
-     * Test-local relaxed shape that lets THIS test deliberately bypass the
-     * wire-contract type to exercise the FIFO-by-tool_name fallback path
-     * inside `handleToolResult`. The public `InboundToolResult` requires
-     * `tool_use_id`; this is the one site where the runtime fallback (kept
-     * as defense-in-depth) is exercised, by-design.
-     */
-    type FifoFallbackToolResult = { type: 'tool_result'; id: string; tool_name: string; result: unknown };
-    const fallbackMsg: FifoFallbackToolResult = {
-      type: 'tool_result',
-      id: 'tr-2',
-      tool_name: 'reify_x',
-      result: 'result-2',
-      // no tool_use_id — fallback to FIFO
-    };
-    session.handleMessage(fallbackMsg as unknown as InboundMessage);
-
-    // Wait for the third stdin line
-    await waitForStdinLines(mockProc.stdin, stdinLines, 3);
-
-    // Verify the fallback used toolu_2 (the remaining id), NOT toolu_1 (already consumed).
-    // This proves toolu_1 was drained from the FIFO on the echoed-id forward above.
-    const line3 = stdinLines[2] as any;
-    expect(line3.message.content[0].tool_use_id).toBe('toolu_2');
-
-    // --- Step (c): Prove toolNameById was drained for toolu_2 on the fallback path ---
-    // Re-dispatch an echoed-id tool_result for toolu_2 (already consumed by the FIFO
-    // fallback above). If toolNameById was correctly drained it must hit the unknown-id
-    // guard and emit a structured error with no extra stdin write.
-    const staleIdErrorWait = waitForOutput(
-      session,
-      (m) => m.type === 'error' && /unknown.*tool_use_id/i.test((m as any).message ?? ''),
-    );
-    session.handleMessage({
-      type: 'tool_result',
-      id: 'tr-stale-2',
-      tool_name: 'reify_x',
-      result: 'result-stale',
-      tool_use_id: 'toolu_2',
-    });
-    const staleIdError = await staleIdErrorWait;
-    expect((staleIdError as any).id).toBe('tr-stale-2');
-    // Yield microtasks so any stray write would land before we assert length
-    await new Promise(setImmediate);
-    expect(stdinLines.length).toBe(3); // no extra forward
-
-    // Cleanup: close stdout so msgPromise can resolve
-    stdout.push(JSON.stringify({ type: 'result', session_id: 'sess-fifo' }) + '\n');
-    stdout.push(null);
-    mockProc.exitCode = 0;
-    mockProc.emit('close', 0);
-    await msgPromise;
-  });
-});
-
-describe('waitForOutput / waitForOutputs deadline', () => {
+describe('waitForOutput deadline', () => {
   let session: SidecarSession;
 
   beforeEach(() => {
@@ -2702,14 +1640,6 @@ describe('waitForOutput / waitForOutputs deadline', () => {
     await expect(
       waitForOutput(session, () => false, { timeoutMs: 50 })
     ).rejects.toThrow(/waitForOutput timed out waiting for predicate/);
-    expect(session.onOutput).toBe(originalOnOutput);
-  });
-
-  it('waitForOutputs rejects with named timeout error when predicate never matches; restores session.onOutput', async () => {
-    const originalOnOutput = session.onOutput;
-    await expect(
-      waitForOutputs(session, () => false, 1, { timeoutMs: 50 })
-    ).rejects.toThrow(/waitForOutputs timed out waiting for predicate/);
     expect(session.onOutput).toBe(originalOnOutput);
   });
 });

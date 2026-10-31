@@ -1,0 +1,14 @@
+// PRD docs/prds/v0_6/cell-eval-transaction-closure.md, leaf ι (one
+// activate_guarded_group). An active guarded param whose default emits a
+// runtime diagnostic. Before ι the guarded Param path evaluates without a
+// runtime-diagnostics sink, so `reify eval` prints `S.xs = undef` and exits 0.
+// After ι it also prints `error: generate: count must be a non-negative Int`
+// and exits 1.
+module cell_eval_guarded_param_runtime_diag
+
+structure S {
+    param on : Bool = true
+    where on {
+        param xs : List<Int> = generate(-1, |i: Int| i * 2)
+    }
+}

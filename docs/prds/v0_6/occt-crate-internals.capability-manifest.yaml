@@ -15,7 +15,7 @@ tasks:
       - crates/reify-kernel-occt/src/handle.rs
       expect: absent
   - name: harness-layout-contract-and-cap
-    binding: 'grep:tests/infra/test_harness_kloc_cap.sh CAP_LINES=20000 and the #[path] rule; harness_occt is 12,292 module lines and harness_occt_measurement 9,275 (wc at 8e6ffcac9d), so ~6-7k moved lines likely need a new harness unit.'
+    binding: 'grep:tests/infra/test_harness_kloc_cap.sh CAP_LINES=20000 and the #[path] rule; harness_occt is 12,292 module lines and harness_occt_measurement 9,275 (wc at 8e6ffcac9d), so ~6-7k moved lines likely need a new harness unit. [retro-critic R11, 2026-10-20] at main 2026-10-19 harness_occt is 14,733 lines (5.3k headroom) against ~8-9k moved lines, so the new harness_occt_kernel unit is mandatory.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -158,7 +158,7 @@ tasks:
       kind: manual
       reason: 'an external task dependency, wired by add_dependency at decompose time.'
   - name: docs-truth-chunk-lines
-    binding: 'crates/reify-mcp/src/tools/chunks/geometry.md documents transforms and fillet(solid, ...) but says nothing about kind preservation; measurement.md documents centroid(solid). No reify fence added, so fence_gate counts are unchanged.'
+    binding: '[retro-critic R11, 2026-10-20] m2: the two lines go to crates/reify-mcp/src/tools/chunks/stdlib.md **Transform:** and **Modify:** sections (geometry.md has neither). crates/reify-mcp/src/tools/chunks/geometry.md documents transforms and fillet(solid, ...) but says nothing about kind preservation; measurement.md documents centroid(solid). No reify fence added, so fence_gate counts are unchanged.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -168,7 +168,7 @@ tasks:
   title: 'occt-internals ε: extract ShapeStore with a pub(crate) interface'
   capabilities:
   - name: get-shape-erasure-fix-upstream
-    binding: 'producer:task-7379 upstream (pending, carries fk-baae0532b743; adds shape_for_query and export/tess siblings). ε moves them into ShapeStore and holds the erasing idiom at 0 with a ratchet row.'
+    binding: 'producer:task-7379 upstream (carries fk-baae0532b743). [retro-critic R11, 2026-10-20] #7379 landed (4095ba9c2e) as ? plus reify-ir From<GeometryError> for Query/Export/Tess with no shape_for_query helpers, so the helper move is a no-op (m1); ratchet row (vii) is already 0 at main and is a regression ban, not ε''s adoption ratchet.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -218,7 +218,7 @@ tasks:
       - crates/reify-kernel-occt/src/handle.rs
       expect: present
   - name: meshing-service-alpha-upstream
-    binding: 'producer:task-8284 upstream (in-progress; edits handle.rs/ffi.rs/lib.rs/cpp). θ depends on it.'
+    binding: 'producer:task-8284 upstream (pending since 2026-10-16, no longer in-progress [retro-critic R11, 2026-10-20]; edits handle.rs/ffi.rs/lib.rs/cpp). θ depends on it.'
     verdict: PASS
     delivered_check:
       kind: manual
@@ -263,6 +263,121 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'the golden file name is the implementer''s.'
+- label: κ
+  task_id: 9300
+  title: 'occt-internals κ: typed shape kind across the FFI (FfiShapeKind) and one ShapeStore entry {shape, repr}'
+  capabilities:
+  - name: typed-shape-kind-enum
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D5; fk-d09e31d2ef9d) — brep_kind_of_shape decodes the String from ffi shape_type_name at main c7bbfe2519; no FfiShapeKind exists'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum FfiShapeKind'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: string-kind-decoder-retired
+    binding: 'fn shape_type_name(shape: &OcctShape) -> Result<String> declared in ffi.rs today; its deletion is not a safe anchor because ζ #8669 (esc-8669-3) renames the C++ fn to body_type_name first. [retro-critic R11, 2026-10-20] re-anchored on κ''s own product: the TryFrom<FfiShapeKind> for BRepKind conversion (absent at main, present only when κ lands).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'TryFrom<FfiShapeKind> for BRepKind'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: repr-absent-unrepresentable
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D5; fk-2281cf9afc51) — unwrap_or(BRepKind::Solid) at fuse_all, apply_transform_to_handle and the warm-state fallback (3 matches; ε deletes the warm-state one)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'unwrap_or\(BRepKind::Solid\)'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
+  - name: shape-store-upstream
+    binding: 'producer: ε #8682 (ShapeStore) upstream; κ refines its interior'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an upstream task dependency, wired by add_dependency.'
+- label: λ1
+  task_id: 9304
+  title: 'occt-internals λ1: one typed C++ fault envelope (FfiFault) encoded in wrap_occt_call, decoded once in Rust; one live_topology accessor'
+  capabilities:
+  - name: fault-envelope-type
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4fdd3e5ffbc1) — wrap_occt_call rethrows Standard_Failure / ContractViolation / std::exception / unknown as one runtime_error(String) at main c7bbfe2519; no FfiFault exists'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'struct FfiFault'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: one-live-topology-accessor
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-11b120086a30) — 14 DEFENSE-IN-DEPTH IsNull lines with two exception types; no live_topology accessor today. [retro-critic R11, 2026-10-20] polarity: anchored on the definition, not the bare token (a comment or call site no longer satisfies it).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'live_topology\(const OcctShape'
+      paths:
+      - crates/reify-kernel-occt/cpp
+      expect: present
+- label: λ2
+  task_id: 9306
+  title: 'occt-internals λ2: production map_err(to_string) sites become ?; ShapeStore::get and the actor return typed GeometryError variants; RUST_GUARD_MARKER deleted'
+  capabilities:
+  - name: stringly-map-err-retired
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4fdd3e5ffbc1) — 75 OperationFailed(e.to_string()) matches in lib.rs at main c7bbfe2519 (74 production, 1 in the in-file test module). [retro-critic R11, 2026-10-20] M3 widened: all 139 stringly sites (OperationFailed 75, QueryFailed 49, IoError 7, FormatError 7, TessellationFailed 1) plus From<FfiFault> for QueryError/ExportError/TessError; check and ratchet row are the five-variant pattern.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '(OperationFailed|QueryFailed|IoError|FormatError|TessellationFailed)\(e\.to_string\(\)\)'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: absent
+  - name: guard-marker-deleted
+    binding: 'RUST_GUARD_MARKER in floor_constants.rs, lib.rs and two harness tests (28 matches); fault class becomes the variant, tests match! on it'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'RUST_GUARD_MARKER'
+      paths:
+      - crates/reify-kernel-occt
+      expect: absent
+  - name: typed-variants-upstream
+    binding: 'producers: ι #8684 (lib.rs partition), S10 α₆ (GeometryError::{CorruptHandle, ContractViolation, KernelFailure}), λ1 (FfiFault decoder), μ (chan_died)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'upstream task dependencies, wired by add_dependency.'
+- label: μ
+  task_id: 9305
+  title: 'occt-internals μ: OCCT actor death modelled — ActorState cell, catch_unwind per request, one chan_died(op)'
+  capabilities:
+  - name: actor-state-cell
+    binding: 'gap-fill 2026-10-16 (plans/gap-fill-deliberation-reify-20261016.md §K4-D6; fk-4325229a297a) — no ActorState and no catch_unwind in crates/reify-kernel-occt/src at main c7bbfe2519; 35 kernel thread died literals in handle.rs (39 at main 2026-10-19). [retro-critic R11, 2026-10-20] M1: no literal-count row; μ''s ratchet row counts ChannelDied conversions outside impl From<ChannelDied>, and call<R> returns ChannelDied with one From per error type (Geometry, Query, Export, Tess).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'enum ActorState'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: panic-captured-per-request
+    binding: 'catch_unwind appears only in a harness test today (boolean_parallel_determinism.rs)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'catch_unwind'
+      paths:
+      - crates/reify-kernel-occt/src
+      expect: present
+  - name: call-primitive-upstream
+    binding: 'producer: θ #8672 (call<R>, the one send/recv site) upstream; θ is not widened (G1)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'an upstream task dependency, wired by add_dependency.'
 - label: ω
   task_id: 8688
   title: 'occt-internals ω: PRD close — SHIPPED stamp with landed leaf ids'

@@ -57,13 +57,16 @@
 //! under-count, so they can weaken the gate but not manufacture a RED. The
 //! three honest exceptions are the first bullet (a quoted anchor IS counted),
 //! the false-RED tail of the probe-bound bullet (an interleaved binding), and
-//! the tail of the comment-mask bullet (a string-literal `/*` can mask a site's
-//! own `.with_code(` line, which [`code_in_window`] then never sees). All three
-//! are accepted rather than lexed away because none occurs in the swept corpus
-//! and one `pdiag:allow` clears any of them. (THREE FURTHER false-RED routes
-//! were real defects and are closed rather than accepted: a nested
-//! `/* /* */ */` region reading as live code, by [`comment_mask`]'s depth
-//! counter; a type whose name merely ENDS in `Diagnostic` —
+//! the tail of the comment-mask bullet (a literal the per-line lexer cannot
+//! see whole can open a region that masks a site's own `.with_code(` line,
+//! which [`code_in_window`] then never sees, or miss one that should mask a
+//! commented-out constructor). All three are accepted rather than lexed away
+//! because none occurs in the swept corpus and one `pdiag:allow` clears any of
+//! them. (FOUR FURTHER false-RED routes were real defects and are closed
+//! rather than accepted: a nested `/* /* */ */` region reading as live code,
+//! by [`comment_mask`]'s depth counter; a `/*` or `//` inside a single-line
+//! string or char literal moving that region, by [`crate::comment_lex`]'s
+//! literal awareness; a type whose name merely ENDS in `Diagnostic` —
 //! `FeaDiagnostic::error(` — anchoring as a site, by [`anchor_positions`]' left
 //! word boundary; and a `;` inside a diagnostic MESSAGE arming the probe's
 //! bound a statement early, by [`statement_end`]'s literal skip — that last
@@ -100,17 +103,19 @@
 //!   non-whitespace token, so nothing mid-line is ever stripped. That is
 //!   deliberate: stripping `//`-to-end-of-line would let a `//` inside a string
 //!   literal (`"a//b"`) swallow a real `.with_code(` and produce a false RED.
-//!   The cost is that a `//` or `/*` inside a string literal can still nudge
-//!   the block-region state (a string-literal `/*` opens a region rustc would
-//!   not and then needs a `*/` to pop it; a stray `*/` at depth zero is simply
-//!   ignored). Masking MORE lines is permissive in every direction but ONE:
-//!   [`code_in_window`] SKIPS masked lines, so a spurious region opened on an
-//!   ANCHOR line that swallows the `.with_code(` below it censuses a genuinely
-//!   coded site as code-less — `Diagnostic::error(format!("p {}", "/*"))` with
-//!   its `.with_code(c);` on the next line. That is this list's third
-//!   false-RED route; latent rather than live (no swept file ends at non-zero
-//!   depth, and no masked line in the corpus carries a `.with_code(`), and
-//!   `pdiag:allow` clears it.
+//!   The region state comes from [`crate::comment_lex`], so a `/*` or `//`
+//!   inside a string or char literal no longer moves it. What remains is a
+//!   literal that per-line lexer cannot see whole — a string spanning a line
+//!   break, or a raw string with an embedded `"` or a trailing `\` — which
+//!   desyncs quote state for the rest of THAT line only. A real `/*` after it
+//!   can then be missed, under-masking so a commented-out constructor is
+//!   censused; or a quoted one honoured, over-masking. Masking MORE lines is
+//!   permissive in every direction but ONE: [`code_in_window`] SKIPS masked
+//!   lines, so a spurious region opened on an ANCHOR line that swallows the
+//!   `.with_code(` below it censuses a genuinely coded site as code-less.
+//!   Either way is this list's third false-RED route; latent rather than live
+//!   (no swept file ends at non-zero depth, and no masked line in the corpus
+//!   carries a `.with_code(`), and `pdiag:allow` clears it.
 //! - A `.with_code(` sitting in a trailing `//` comment on the anchor line
 //!   itself marks the site coded. Permissive, and vanishingly rare.
 //! - The `* ` block-comment-continuation form also matches a WRAPPED
@@ -192,6 +197,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::comment_lex::{self, BlockDepth};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
 
 /// One `Diagnostic::error(...)` / `Diagnostic::warning(...)` construction site.
@@ -276,8 +282,8 @@ fn line_escaped(line: &str) -> bool {
 /// therefore invisible to BOTH anchoring and the `.with_code(` probe.
 ///
 /// Line-granular and keyed on the line's first non-whitespace token, which is
-/// what keeps it safe without a lexer: nothing mid-line is ever stripped, so a
-/// `//` or `/*` inside a string literal can never TRUNCATE a real
+/// what keeps it safe: nothing mid-line is ever stripped, so a `//` or `/*`
+/// inside a literal the lexer misreads can never TRUNCATE a real
 /// `.with_code(`. A line is comment-only when it begins inside an unclosed
 /// `/* ... */` region, or its first non-whitespace token is `//` (covering
 /// `///` and `//!`), `/*`, or `* ` (a block-comment continuation — the
@@ -286,9 +292,10 @@ fn line_escaped(line: &str) -> bool {
 /// Over-masking is NOT unconditionally safe, though, because
 /// [`code_in_window`] skips masked lines outright: a line this mask wrongly
 /// marks as comment hides its own `.with_code(` from the code probe, so a
-/// coded site is censused as code-less. A string-literal `/*` on an anchor
-/// line reaches exactly that (module header, comment-mask bullet); it is
-/// latent in the corpus today and `pdiag:allow` clears it.
+/// coded site is censused as code-less. A literal the per-line lexer cannot
+/// see whole, on an anchor line, can still reach exactly that (module header,
+/// comment-mask bullet); it is latent in the corpus today and `pdiag:allow`
+/// clears it.
 ///
 /// The trailing space does NOT separate a block-comment continuation from a
 /// WRAPPED MULTIPLICATION (`let x = a\n    * b\n    + c;`), which is masked
@@ -304,59 +311,23 @@ fn line_escaped(line: &str) -> bool {
 /// diagnostic-emitting block that already contains a `/* … */` note censused
 /// the commented-out constructor as a real code-less site, a hard-gate High on
 /// a new file. Depth-counting matches rustc's own left-to-right pairing.
-/// [`crate::pdoccover`] tracks the same depth for its (quote-aware, mid-line-
-/// stripping) purposes; sharing one tracker would mean exporting it across
-/// detectors and inheriting a stripping policy this mask deliberately refuses,
-/// so the two stay separate and the divergence is stated here instead.
+/// Region depth comes from [`comment_lex::lex_line`], whose code spans this
+/// mask deliberately discards (the no-op sink), so it stays line-granular.
 fn comment_mask(lines: &[&str]) -> Vec<bool> {
-    let mut mask = Vec::with_capacity(lines.len());
-    let mut depth = 0usize;
-    for line in lines {
-        let started_in_block = depth > 0;
-        // Walk the line for `/*` / `*/` tokens to carry the region state
-        // forward. `//` ends the scan: the rest of the line is a comment, so a
-        // `/*` after it must not open a region.
-        // Byte comparison rather than `&line[i..]` slicing: `/` and `*` are
-        // ASCII and so can never be a UTF-8 continuation byte, which keeps an
-        // em-dash in a comment from panicking on a non-boundary index.
-        let bytes = line.as_bytes();
-        let mut i = 0usize;
-        while i < bytes.len() {
-            let pair = (bytes[i], bytes.get(i + 1).copied());
-            if depth > 0 {
-                // Nested opener FIRST: inside a region, `/*` deepens it and
-                // only the matching `*/` pops back out. A stray `*/` at depth
-                // 0 is ignored rather than underflowing.
-                if pair == (b'/', Some(b'*')) {
-                    depth += 1;
-                    i += 2;
-                    continue;
-                }
-                if pair == (b'*', Some(b'/')) {
-                    depth -= 1;
-                    i += 2;
-                    continue;
-                }
-            } else if pair == (b'/', Some(b'*')) {
-                depth = 1;
-                i += 2;
-                continue;
-            } else if pair == (b'/', Some(b'/')) {
-                break;
-            }
-            i += 1;
-        }
-
-        let head = line.trim_start();
-        mask.push(
+    let mut depth = BlockDepth::default();
+    lines
+        .iter()
+        .map(|line| {
+            let started_in_block = depth.is_open();
+            depth = comment_lex::lex_line(line, depth, |_| {});
+            let head = line.trim_start();
             started_in_block
                 || head.starts_with("//")
                 || head.starts_with("/*")
                 || head.starts_with("* ")
-                || head == "*",
-        );
-    }
-    mask
+                || head == "*"
+        })
+        .collect()
 }
 
 /// Byte offsets of every anchor constructor occurrence in `line`, ascending.
@@ -610,7 +581,8 @@ fn probe_segment(
 }
 
 /// Byte offset of the first statement terminator in `line` at or after `from`,
-/// skipping any `;` that sits inside a string or char literal.
+/// skipping any `;` that sits inside a string or char literal
+/// ([`comment_lex::literal_len`] measures both).
 ///
 /// Literal awareness is load-bearing rather than fastidious: a `;` inside a
 /// diagnostic MESSAGE arms [`probe_segment`]'s bound one statement early, which
@@ -619,44 +591,33 @@ fn probe_segment(
 /// inside the message of a two-arm constructor shape — and flips no verdict
 /// there only because both of its arms happen to be code-less today.
 ///
-/// Byte comparison rather than `&line[i..]` slicing, for [`comment_mask`]'s
-/// reason: every byte matched here is ASCII, so it can never be a UTF-8
-/// continuation byte, and the returned offset is always a char boundary.
+/// Byte comparison rather than `&line[i..]` slicing: every byte matched here
+/// is ASCII, so it can never be a UTF-8 continuation byte, and the returned
+/// offset is always a char boundary.
 ///
 /// The scan is per-segment and deliberately shallow — a string spanning a line
-/// break is re-read from scratch on its continuation lines, a raw string's
-/// `r#"…"#` delimiters read as plain quotes, and a `'"'` char literal opens a
-/// phantom string. None of that can cost a false RED, and the reason is
-/// structural rather than a survey of shapes: this scan only ever DECLINES to
-/// report a `;`, so its answer is always the bare `line[from..].find(';')` it
-/// replaced, or a later `;`, or `None`. Since [`probe_segment`] bounds only on
-/// anchors strictly AFTER the terminator, a later-or-absent `;` admits a
-/// SUBSET of the bounds the unfiltered scan admitted. Every mis-read is
-/// therefore permissive by construction, whatever the literal does.
+/// break is re-read from scratch on its continuation lines, and a raw string's
+/// `r#"…"#` delimiters read as plain quotes. Neither can cost a false RED, and
+/// the reason is structural rather than a survey of shapes: this scan only
+/// ever DECLINES to report a `;`, so its answer is always the bare
+/// `line[from..].find(';')` it replaced, or a later `;`, or `None`. Since
+/// [`probe_segment`] bounds only on anchors strictly AFTER the terminator, a
+/// later-or-absent `;` admits a SUBSET of the bounds the unfiltered scan
+/// admitted. Every mis-read is therefore permissive by construction, whatever
+/// the literal does.
 fn statement_end(line: &str, from: usize) -> Option<usize> {
     let bytes = line.as_bytes();
-    let mut in_string = false;
     let mut i = from;
     while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_string => i += 1,
-            b'"' => in_string = !in_string,
-            b';' if !in_string && !is_quoted_semicolon(bytes, i) => return Some(i),
-            _ => {}
+        if let Some(len) = comment_lex::literal_len(bytes, i) {
+            i += len;
+        } else if bytes[i] == b';' {
+            return Some(i);
+        } else {
+            i += 1;
         }
-        i += 1;
     }
     None
-}
-
-/// `true` when the `;` at `at` is the body of a `';'` char literal.
-///
-/// Matching the two delimiters is exact, because `';'` is the ONLY char
-/// literal that can hold a `;` at all. A general char-literal scanner would
-/// have to tell `'a` the lifetime from `'a'` the char — an ambiguity this
-/// module has no need to take on.
-fn is_quoted_semicolon(bytes: &[u8], at: usize) -> bool {
-    at > 0 && bytes[at - 1] == b'\'' && bytes.get(at + 1) == Some(&b'\'')
 }
 
 /// `true` when a `.with_code(` reachable from `anchor_line` (a 0-based index
@@ -2015,9 +1976,7 @@ mod tests {
         );
 
         // (ii) The `';'` char literal — the only char literal that can hold a
-        //      `;`, and the reason `is_quoted_semicolon` matches delimiters
-        //      rather than running a char-literal scanner that would have to
-        //      tell `'a` the lifetime from `'a'` the char.
+        //      `;`.
         let src = file(&[
             "    let d = if bad {",
             "        Diagnostic::error(fmt(';'))",
@@ -2033,6 +1992,18 @@ mod tests {
         //       the fix would trade a false RED for the hole it just closed.
         let src = file(&[
             "    out.push(Diagnostic::error(\"plain; message\".into()));",
+            "    out.push(Diagnostic::warning(m2).with_code(c));",
+        ]);
+        assert_eq!(sites(&src), vec![(1, false), (2, true)]);
+    }
+
+    #[test]
+    fn a_double_quote_char_literal_does_not_hide_a_real_terminator() {
+        // `'"'` is a char literal, not a string opener. Read as an opener it
+        // would hide this line's real `;`, so the next statement's
+        // `.with_code(` would absorb the code-less site above it.
+        let src = file(&[
+            "    out.push(Diagnostic::error(quote('\"')));",
             "    out.push(Diagnostic::warning(m2).with_code(c));",
         ]);
         assert_eq!(sites(&src), vec![(1, false), (2, true)]);
@@ -2149,6 +2120,43 @@ mod tests {
         // masked and contributes nothing.
         let unclosed = file(&["/* a /* b */ c", "let y = Diagnostic::warning(m);"]);
         assert_eq!(sites(&unclosed), none());
+    }
+
+    #[test]
+    fn string_literal_block_opener_does_not_mask_the_next_lines_code() {
+        // A `/*` inside a string opens no comment, so the `.with_code(` below
+        // stays visible to the window probe.
+        let src = file(&[
+            "    let d = Diagnostic::error(format!(\"p {}\", \"/*\"))",
+            "        .with_code(c);",
+        ]);
+        assert_eq!(sites(&src), vec![(1, true)]);
+    }
+
+    #[test]
+    fn string_literal_line_comment_does_not_hide_a_real_block_opener() {
+        // A `//` inside a string ends nothing, so the real `/*` after it still
+        // masks the commented-out constructor.
+        let src = file(&[
+            "let u = \"a//b\"; /* begin",
+            "   diagnostics.push(Diagnostic::error(msg));",
+            "*/",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(4, false)]);
+    }
+
+    /// A quote-aware tracker that read `'"'` as a string opener would hide the
+    /// real `/*` after it and census the commented-out constructor.
+    #[test]
+    fn char_literal_quote_does_not_desync_the_region_tracker() {
+        let src = file(&[
+            "let q = '\"'; /* begin",
+            "   diagnostics.push(Diagnostic::error(msg));",
+            "*/",
+            "let real = Diagnostic::error(m);",
+        ]);
+        assert_eq!(sites(&src), vec![(4, false)]);
     }
 
     #[test]

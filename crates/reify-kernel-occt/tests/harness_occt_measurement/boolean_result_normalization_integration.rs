@@ -53,7 +53,7 @@
 //!
 //! # Observability note
 //!
-//! `ffi::ffi::shape_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
+//! `ffi::ffi::body_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
 //! integration test cannot read the raw `TopAbs` name. The reachable
 //! equivalents, via `OcctKernel::repr_of` and `GeometryQuery::IsWatertight`:
 //!
@@ -77,9 +77,9 @@ use reify_kernel_occt::OcctKernel;
 fn cube(kernel: &mut OcctKernel, side: f64) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(side),
-            height: Value::Real(side),
-            depth: Value::Real(side),
+            size_x: Value::Real(side),
+            size_y: Value::Real(side),
+            size_z: Value::Real(side),
         })
         .expect("box creation should succeed")
         .id
@@ -119,7 +119,7 @@ fn real_query(kernel: &OcctKernel, q: GeometryQuery) -> f64 {
 }
 
 /// Assert that `id` is a genuinely closed single body: `BRepKind::Solid` (which
-/// only `shape_type_name == "Solid"` maps to) plus `IsWatertight` and
+/// only a `body_type_name` of `"Solid"` maps to) plus `IsWatertight` and
 /// `IsClosed`, both of which reject a bare COMPOUND at their
 /// `SOLID|COMPSOLID|SHELL` type guard.
 fn assert_watertight_solid(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
@@ -336,17 +336,17 @@ const RB_FILLETED_VOLUME: f64 = 118218.498221;
 fn rounded_box_fuse_chain(kernel: &mut OcctKernel) -> GeometryHandleId {
     let body_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(RB_WIDTH),
-            height: Value::Real(RB_DEPTH - 2.0 * RB_CORNER_R),
-            depth: Value::Real(RB_HEIGHT),
+            size_x: Value::Real(RB_WIDTH),
+            size_y: Value::Real(RB_DEPTH - 2.0 * RB_CORNER_R),
+            size_z: Value::Real(RB_HEIGHT),
         })
         .expect("rounded_box body A should build")
         .id;
     let body_b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(RB_WIDTH - 2.0 * RB_CORNER_R),
-            height: Value::Real(RB_DEPTH),
-            depth: Value::Real(RB_HEIGHT),
+            size_x: Value::Real(RB_WIDTH - 2.0 * RB_CORNER_R),
+            size_y: Value::Real(RB_DEPTH),
+            size_z: Value::Real(RB_HEIGHT),
         })
         .expect("rounded_box body B should build")
         .id;

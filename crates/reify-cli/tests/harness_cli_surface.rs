@@ -21,7 +21,7 @@
 //! What the rule selects, descriptively: the tests that exercise the `reify` executable's
 //! external surface — how it is linked, what argv and help output it accepts and prints, and
 //! the machine-facing protocols and interchange formats it speaks over stdio. Several
-//! members DO drive a `.ri` fixture through that surface (`mcp_integration` and `cli_cache`
+//! members DO drive a `.ri` fixture through that surface (`cli_cache` and `cli_broken_pipe`
 //! both run `tests/fixtures/bracket.ri`), so "evaluates no `.ri` design" is NOT the
 //! criterion and never was: both harnesses share `tests/fixtures/`, which costs nothing
 //! under C2 — it counts only `.rs` files reached by a `mod` / `#[path]` declaration.
@@ -55,8 +55,6 @@ mod cli_lsp;
 mod cli_lsp_protocol;
 #[path = "harness_cli_surface/cli_smoke.rs"]
 mod cli_smoke;
-#[path = "harness_cli_surface/mcp_integration.rs"]
-mod mcp_integration;
 #[cfg(target_os = "linux")]
 #[path = "harness_cli_surface/rpath_smoke.rs"]
 mod rpath_smoke;

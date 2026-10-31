@@ -69,7 +69,7 @@ fn scalar_conversion_does_not_leave_a_stale_geometry_handle() {
     let compiled_geo = compile_source_with_stdlib(SRC_GEOMETRY_LET);
     assert_no_compile_errors(&compiled_geo);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let baseline = engine.eval(&compiled_geo);
 
     let loc_box = ValueCellId::new("Widget", "loc_box");
@@ -166,7 +166,7 @@ fn removed_realization_donates_invalidation_to_surviving_let_backed_geometry_cel
     let compiled_a = compile_source_with_stdlib(SRC_A);
     assert_no_compile_errors(&compiled_a);
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let baseline = engine.eval(&compiled_a);
 
     let b = ValueCellId::new("Widget", "b");

@@ -161,9 +161,9 @@ fn mm_literal(v: f64) -> CompiledExpr {
 
 fn box_args() -> Vec<(String, CompiledExpr)> {
     vec![
-        ("width".into(), mm_literal(10.0)),
-        ("height".into(), mm_literal(10.0)),
-        ("depth".into(), mm_literal(10.0)),
+        ("size_x".into(), mm_literal(10.0)),
+        ("size_y".into(), mm_literal(10.0)),
+        ("size_z".into(), mm_literal(10.0)),
     ]
 }
 
@@ -220,6 +220,7 @@ fn engine_build_invokes_kernel_attribute_hook_for_parent_having_ops_and_skips_pr
         calls: Arc::clone(&calls),
     });
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -294,6 +295,7 @@ fn engine_build_kernel_attribute_hook_query_error_surfaces_diagnostic_warning_wi
     let module = wiring_test_module();
     let kernel = HookKernel::new(FailingHookStub);
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -510,6 +512,7 @@ fn engine_build_kernel_attribute_hook_respects_brep_first_ordering() {
     let event_log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
     let kernel = OrderingKernel::new(Arc::clone(&event_log));
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );

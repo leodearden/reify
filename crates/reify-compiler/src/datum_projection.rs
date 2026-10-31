@@ -177,6 +177,14 @@ pub(crate) fn datum_projection_unavailable_hint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::ValueCellId;
+    use reify_core::ty::TypeDiscriminants;
+    use reify_expr::{EvalContext, eval_expr};
+    use reify_ir::{CompiledExpr, Value, ValueMap};
+    use reify_test_support::{
+        axis_val, frame_val, orientation_val, plane_val, point3, vec3_dimensionless,
+    };
+    use strum::IntoEnumIterator;
 
     /// `Point3<Length>` codomain shorthand used by the `.origin` projections.
     fn point3_length() -> Type {
@@ -349,6 +357,200 @@ mod tests {
                 DATUM_PROJECTION_MEMBERS.contains(&m),
                 "DATUM_PROJECTION_MEMBERS should contain {m:?}"
             );
+        }
+    }
+
+    // ── task #6100: projection table ⇔ evaluator lockstep ──
+
+    /// Whether `v` has the kind of value `codomain` denotes, for every codomain a
+    /// datum receiver's `Resolved` arm yields. A codomain with no check here
+    /// panics, so a new codomain must extend this helper.
+    fn has_codomain_kind(v: &Value, codomain: &Type) -> bool {
+        match codomain {
+            Type::Direction => matches!(v, Value::Direction { .. }),
+            Type::Plane => matches!(
+                v,
+                Value::Plane { normal, .. } if matches!(&**normal, Value::Vector(c) if c.len() == 3)
+            ),
+            Type::Frame(_) => matches!(v, Value::Frame { .. }),
+            t if *t == point3_length() => matches!(v, Value::Point(c) if c.len() == 3),
+            t if *t == Type::dimensionless_scalar() => matches!(v, Value::Real(_)),
+            other => panic!("has_codomain_kind has no check for codomain {other}; extend it"),
+        }
+    }
+
+    /// How the lockstep test below treats a receiver type.
+    enum ReceiverFixture {
+        /// A datum receiver whose projections reify-expr evaluates purely: the
+        /// expression the test projects from.
+        Pure(CompiledExpr),
+        /// A feature receiver: its projections are kernel-backed in reify-eval,
+        /// not pure, so the test does not evaluate them.
+        KernelBacked(Type),
+        /// A type the projection table gives no datum projection.
+        NonDatum(Type),
+    }
+
+    impl ReceiverFixture {
+        fn ty(&self) -> &Type {
+            match self {
+                Self::Pure(receiver) => &receiver.result_type,
+                Self::KernelBacked(ty) | Self::NonDatum(ty) => ty,
+            }
+        }
+    }
+
+    /// One receiver fixture per `Type` variant. EXHAUSTIVE, with NO `_` arm: a
+    /// new `Type` variant does not compile until it has a fixture here.
+    fn receiver_fixture(d: TypeDiscriminants) -> ReceiverFixture {
+        use ReceiverFixture::{KernelBacked, NonDatum, Pure};
+        use TypeDiscriminants as D;
+        let literal = |value: Value, ty: Type| Pure(CompiledExpr::literal(value, ty));
+        match d {
+            D::Axis => literal(
+                axis_val(point3(1.0, 2.0, 3.0), vec3_dimensionless(1.0, 0.0, 0.0)),
+                Type::Axis,
+            ),
+            D::Plane => literal(
+                plane_val(point3(0.0, 0.0, 0.0), vec3_dimensionless(0.0, 0.0, 1.0)),
+                Type::Plane,
+            ),
+            D::Direction => literal(
+                Value::Direction {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+                Type::Direction,
+            ),
+            // 120° about (1,1,1): frame x/y/z = world y/z/x.
+            D::Frame => literal(
+                frame_val(point3(4.0, 5.0, 6.0), orientation_val(0.5, 0.5, 0.5, 0.5)),
+                Type::Frame(3),
+            ),
+            // The `self` anchor, exactly as expr.rs lowers `self.<datum>`: a ref
+            // to the `__self` cell, which never exists at eval time.
+            D::StructureRef => Pure(CompiledExpr::value_ref(
+                ValueCellId::new("S", "__self"),
+                Type::StructureRef("S".to_string()),
+            )),
+            D::Geometry => KernelBacked(Type::Geometry),
+            D::Selector => KernelBacked(Type::Selector(reify_core::ty::SelectorKind::Face)),
+            D::AnySelector => KernelBacked(Type::AnySelector),
+            D::Bool => NonDatum(Type::Bool),
+            D::Int => NonDatum(Type::Int),
+            D::String => NonDatum(Type::String),
+            D::Scalar => NonDatum(Type::length()),
+            D::Enum => NonDatum(Type::Enum("E".to_string())),
+            D::List => NonDatum(Type::List(Box::new(Type::Axis))),
+            D::Set => NonDatum(Type::Set(Box::new(Type::Axis))),
+            D::Map => NonDatum(Type::Map(Box::new(Type::String), Box::new(Type::Axis))),
+            D::Keyed => NonDatum(Type::Keyed(Box::new(Type::Axis))),
+            D::Option => NonDatum(Type::Option(Box::new(Type::Axis))),
+            D::Function => NonDatum(Type::Function {
+                params: vec![],
+                return_type: Box::new(Type::Axis),
+            }),
+            D::TypeParam => NonDatum(Type::TypeParam("T".to_string())),
+            D::TraitObject => NonDatum(Type::TraitObject("Tr".to_string())),
+            D::Field => NonDatum(Type::Field {
+                domain: Box::new(point3_length()),
+                codomain: Box::new(Type::length()),
+            }),
+            D::Feature => NonDatum(Type::Feature),
+            D::Point => NonDatum(point3_length()),
+            D::Vector => NonDatum(Type::Vector {
+                n: 3,
+                quantity: Box::new(Type::length()),
+            }),
+            D::Tensor => NonDatum(Type::Tensor {
+                rank: 2,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            }),
+            D::Complex => NonDatum(Type::Complex(Box::new(Type::dimensionless_scalar()))),
+            D::Orientation => NonDatum(Type::Orientation(3)),
+            D::Transform => NonDatum(Type::Transform(3)),
+            D::AffineMap => NonDatum(Type::AffineMap(3)),
+            D::Range => NonDatum(Type::Range(Box::new(Type::length()))),
+            D::BoundingBox => NonDatum(Type::BoundingBox),
+            D::ScalarParam => NonDatum(Type::ScalarParam("Q".to_string())),
+            D::Matrix => NonDatum(Type::Matrix {
+                m: 3,
+                n: 3,
+                quantity: Box::new(Type::dimensionless_scalar()),
+            }),
+            D::Error => NonDatum(Type::Error),
+            D::Union => NonDatum(Type::Union(vec![
+                Type::StructureRef("A".to_string()),
+                Type::StructureRef("B".to_string()),
+            ])),
+            D::Relation => NonDatum(Type::Relation),
+            D::Applied => NonDatum(Type::Applied {
+                name: "C".to_string(),
+                args: vec![Type::Axis],
+            }),
+            D::Projection => NonDatum(Type::Projection {
+                base: Box::new(Type::TypeParam("T".to_string())),
+                member: "M".to_string(),
+            }),
+        }
+    }
+
+    /// Every `Resolved` row of the projection table evaluates, through
+    /// reify-expr's public `eval_expr`, to a value of its codomain's kind, so a
+    /// member typed here without an eval arm reds instead of evaluating to a
+    /// silent `Undef` — the drift that left `Frame.yz_plane`/`.zx_plane` typed
+    /// `Plane` while they evaluated `Undef`. Every `Type` variant has a
+    /// [`receiver_fixture`], and a `NonDatum` one that starts resolving a
+    /// projection reds, so a new receiver arm cannot skip the lockstep. Feature
+    /// receivers (`Geometry`/`Selector`) are not evaluated: their projections
+    /// are kernel-backed in reify-eval, not pure.
+    #[test]
+    fn every_resolved_datum_projection_evaluates_to_its_codomain_kind() {
+        let values = ValueMap::new();
+        let ctx = EvalContext::simple(&values);
+        for d in TypeDiscriminants::iter() {
+            let fixture = receiver_fixture(d);
+            let receiver_ty = fixture.ty();
+            let resolved: Vec<(&str, Type)> = DATUM_PROJECTION_MEMBERS
+                .iter()
+                .filter_map(
+                    |member| match datum_projection_result_type(receiver_ty, member) {
+                        DatumProjectionResolution::Resolved(codomain) => Some((*member, codomain)),
+                        _ => None,
+                    },
+                )
+                .collect();
+            match &fixture {
+                ReceiverFixture::NonDatum(_) => assert!(
+                    resolved.is_empty(),
+                    "{receiver_ty} resolves {resolved:?}; give {d:?} a Pure or KernelBacked fixture"
+                ),
+                ReceiverFixture::KernelBacked(_) => assert!(
+                    !resolved.is_empty(),
+                    "{receiver_ty} is fixtured KernelBacked but resolves no projection"
+                ),
+                ReceiverFixture::Pure(receiver) => {
+                    assert!(
+                        !resolved.is_empty(),
+                        "{receiver_ty} is fixtured Pure but resolves no projection"
+                    );
+                    for (member, codomain) in resolved {
+                        let call = CompiledExpr::method_call(
+                            receiver.clone(),
+                            member.to_string(),
+                            vec![],
+                            codomain.clone(),
+                        );
+                        let value = eval_expr(&call, &ctx);
+                        assert!(
+                            has_codomain_kind(&value, &codomain),
+                            "{receiver_ty}.{member} is typed {codomain} but evaluated to {value:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

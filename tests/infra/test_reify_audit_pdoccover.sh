@@ -60,7 +60,7 @@ _ratchet_exit_ok() {
         printf 'PDOCCOVER RATCHET RED — reify-audit --pattern PDOCCOVER exited %s against the committed ledger.\n' \
             "$_rc" >&2
         printf 'Fix the finding: document the name, correct the chunk, or mark the line `pdoccover:allow — <reason>`.\n' >&2
-        printf 'A stale-baseline-entry: delete the row, or rerun `cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . > crates/reify-audit/pdoccover-baseline.txt`.\n' >&2
+        printf 'A stale-baseline-entry: delete the row, or rerun `cargo run -p reify-audit --bin pdoccover-baseline-gen -- --project-root . --write`.\n' >&2
         printf 'Only deliberate, review-justified debt goes in via `--admit-new`.\n' >&2
         if [ -s "$_errfile" ]; then
             printf -- '---- reify-audit stderr (tail -40) ----\n' >&2

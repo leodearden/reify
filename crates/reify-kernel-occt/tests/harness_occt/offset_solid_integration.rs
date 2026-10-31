@@ -24,9 +24,9 @@ fn cube(kernel: &mut OcctKernel, side: f64) -> GeometryHandleId {
     execute(
         kernel,
         GeometryOp::Box {
-            width: Value::Real(side),
-            height: Value::Real(side),
-            depth: Value::Real(side),
+            size_x: Value::Real(side),
+            size_y: Value::Real(side),
+            size_z: Value::Real(side),
         },
     )
 }

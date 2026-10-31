@@ -500,6 +500,12 @@ subprojects:
       - what: "FDM R1–R3 rungs and GUI zone/contour visualization"
         why: "R1–R3 are stub PRDs marked deferred; no FDM viz exists under gui/."
         tracking: "docs/prds/v0_5/fdm-print-{mesostructure-r1,rve-homogenization-r2,thermal-bondsag-r3}.md"
+      - what: "FDM as_printed_material from .ri is R-fast only; R0 pending #7087"
+        why: "select_rungs and rung_compute_key have no production caller, so no .ri reaches the R0 rung; fdm_progressive_refinement_e2e.rs calls both trampolines directly and is a seam-level test, not reachability proof. The key_scenarios 'refines to R0' line describes the intended ladder, not today's DSL path (gap-fill 2026-10-16 K5-6, plans/gap-fill-deliberation-reify-20261016.md)."
+        tracking: "#7087 (wire-or-delete ruling for target_fidelity and the rung ladder)"
+      - what: "Shell/tet interface partition is unit-tested only, pending #6371"
+        why: "reify_shell_extract::partition_body produces the ShellTetInterface but has no production caller; its only consumer build_mixed_region_mesh is unwired. The key_scenarios 'shell/tet interface partition' line is not yet reachable from a .ri solve (gap-fill 2026-10-16 K5-7 R8)."
+        tracking: "#6371"
       - what: "Composites/laminates, buckling K_g, varying-thickness beyond the activated constitutive-law portion"
         why: "GR-041 is the one deliberately partially-activated gap in the register."
         tracking: "gap-register GR-041 / GR-024"
@@ -509,7 +515,7 @@ subprojects:
   tooling:
     purpose: >
       User-facing tools: the CLI (check, test, build, run/eval, report, doc,
-      lsp, gui, gui-debug, explain, dev, mcp-server, cache), an LSP server
+      lsp, gui, gui-debug, explain, dev, cache), an LSP server
       with cross-file rename/references/goto-def and workspace-wide doc
       indexing, an MCP server exposing read/write/navigation tools plus the
       language-reference chunks that design agents read, the reify.toml
@@ -521,22 +527,20 @@ subprojects:
       - "`reify test` counts Pass/Fail/Indeterminate and fails only on Fail — the trampoline+constraint seam; flip a constraint FALSE to tell a verdict from a shrug"
       - "An engineer gets live diagnostics, hover, F2 rename (version-stamped edits), Shift+F12 references and document symbols via LSP, in-process for the GUI"
       - "An LLM reads/modifies designs via MCP and looks up syntax in the language-reference chunks — those chunks are the highest-value doc surface; a stale chunk steers every design agent wrong"
-      - "reify.toml is parsed by reify-config and consumed by reify-eval (kernel pin, [warm_state] budget, [[node_overrides]] commitment policy), reify-compiler (auto-type-param config) and the CLI cache"
+      - "reify.toml is parsed and validated by reify-config but INERT today (no runtime effect); see docs/notes/reify-toml-schema.md"
       - "`reify doc <file>.ri` emits faithful Markdown/HTML/JSON reference output, including generic type params, with alphabetic meta-key ordering"
 
     what_working_means:
       - "check/test/build exit codes match the contract above; build produces non-empty STEP"
       - "LSP diagnostics carry correct spans; rename across files applies atomically"
       - "MCP tools/list returns the advertised set; set_parameter is visible in subsequent get_parameters; tool errors use isError:true in the result body"
-      - "reify-config rejects a malformed reify.toml with a clear diagnostic"
+      - "reify-config's `Manifest::from_toml_str` rejects a malformed reify.toml with a clear diagnostic (library-level only; no binary loads the file, so a CLI probe proves nothing — see docs/notes/reify-toml-schema.md)"
       - "Doc output is deterministic across re-runs"
       - "All tests pass for reify-lsp, reify-mcp, reify-cli, reify-config, reify-doc, reify-doc-build"
 
     key_decisions:
       - decision: "`check` is conditionally kernel-backed (task 5748, check-diagnostic-truthfulness PRD) via realize_for_check, never build()"
         why: "Otherwise geometry-dependent constraints silently degraded to Indeterminate. The export walk and provenance diagnostics still never run on check."
-      - decision: "CliToolContext does not support geometry export — reify_export always errors in headless mode"
-        why: "Export needs the kernel initialised as in build; the tool exists for the GUI's MCP context."
       - decision: "NotificationSink decouples diagnostic publication from transport; language-reference chunks are include_str!'d into the binary"
         why: "Same server on stdio, embedded in Tauri, or recording in tests. A .md chunk under crates/ is therefore CODE for landing purposes."
       - decision: "Doc-build is non-editorial: structured extraction only"

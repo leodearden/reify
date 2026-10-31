@@ -298,9 +298,11 @@ fn registry_result_type_is_arity_insensitive_like_the_legacy_arms() {
 ///
 /// This pins that implication in both directions it admits:
 ///
-/// - Row-derived, never a restated list: every registered name is `owns`,
-///   swept over `reify_builtins::rows()` so a name added by a later τ is
-///   covered without touching this test.
+/// - Row-derived, never a restated list: every registered name outside the
+///   Relation kind is `owns`, swept over `reify_builtins::rows()` so a name
+///   added by a later τ is covered without touching this test. Relation rows
+///   are declined by the seam on purpose; see
+///   `relation_rows_are_not_typed_through_the_registry_seam`.
 /// - `!owns(n)` ⇒ `registry_result_type(n, args) == None`, checked over the
 ///   unregistered names AND at several arities, since the guard drops the
 ///   argument types entirely.
@@ -315,7 +317,15 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
     let t = pressure_tensor();
     let arg_shapes: [&[Type]; 3] = [&[], std::slice::from_ref(&t), &[t.clone(), t.clone()]];
 
-    for r in reify_builtins::rows() {
+    let typed_rows: Vec<_> = reify_builtins::rows()
+        .iter()
+        .filter(|r| r.binding != reify_builtins::BindingKind::Relation)
+        .collect();
+    assert!(
+        !typed_rows.is_empty(),
+        "premise guard: no non-Relation row exists, so the sweep asserts nothing"
+    );
+    for r in typed_rows {
         assert!(
             registry_owns(r.name),
             "registry row {:?} must be claimed by registry_owns — otherwise \
@@ -340,6 +350,52 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
             );
         }
     }
+}
+
+/// **Relation rows are declined by the compiler seam.**
+///
+/// expr.rs reaches the registry arm only after the relation, datum-constructor
+/// and geometry-query arms have declined, and the seam does not look at argc.
+/// If it answered for a relation name it would claim calls those arity-gated
+/// arms deliberately decline — `offset(x)` at argc 1 would type as
+/// `Relation` instead of reaching the first-arg fallback. Relation typing
+/// stays in relation_signatures until S9 λ #8741 rewires it onto the rows.
+#[test]
+fn relation_rows_are_not_typed_through_the_registry_seam() {
+    use reify_compiler::__registry_owns_for_test as registry_owns;
+
+    let relation_rows: Vec<_> = reify_builtins::rows()
+        .iter()
+        .filter(|r| r.binding == reify_builtins::BindingKind::Relation)
+        .collect();
+    assert!(
+        !relation_rows.is_empty(),
+        "premise guard: no Relation row exists, so the sweep asserts nothing"
+    );
+    for r in relation_rows {
+        assert!(
+            !registry_owns(r.name),
+            "Relation row {:?} must not be claimed by registry_owns",
+            r.name
+        );
+        for argc in 0..=4 {
+            assert_eq!(
+                registry_result_type(r.name, &vec![Type::Plane; argc]),
+                None,
+                "Relation row {:?} must not be typed through the registry seam \
+                 at argc {argc}",
+                r.name
+            );
+        }
+    }
+
+    assert_eq!(
+        registry_result_type("offset", &[Type::Plane]),
+        None,
+        "`offset(plane)` at argc 1 must keep reaching expr.rs's first-arg \
+         fallback, as before the relation rows existed; relation typing stays \
+         in relation_signatures until S9 λ #8741"
+    );
 }
 
 // ── (c) #6577's Field-argument contract reaches the resolver ────────────────

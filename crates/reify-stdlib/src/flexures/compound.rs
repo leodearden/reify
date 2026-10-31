@@ -18,6 +18,13 @@
 //! Two single stages in mirror-symmetric series cancel the first-order parasitic
 //! term; the residual scales as (δ/L)³ instead of (δ/L):
 //!   δ_rot_double = δ_rot_single · (δ_max/L)²
+//!
+//! ### Constrained-DOF compliance
+//! `radial_stiffness` (kinematic.ri, task 7163) is ONE isotropic spring on both
+//! directions ⊥ the motion axis, but the stage's in-plane (4·E·b·t/L, blade
+//! axial stretching) and out-of-plane (4·E·t·b³/L³, strong-axis fixed-guided
+//! bending) stiffnesses differ by (b/L)². The seed is therefore their minimum —
+//! a conservative lower bound. `transverse_stiffness` stays the in-plane value.
 
 use std::collections::BTreeMap;
 
@@ -123,6 +130,10 @@ where
     let k_blade = FIXED_GUIDED_GAMMA * c.e * c.i / c.length.powi(3);
     let k_stage = 4.0 * k_blade / series_divisor;
     let k_transverse = 4.0 * c.e * (c.width * c.thickness) / c.length / series_divisor;
+    let i_strong = c.thickness * c.width.powi(3) / 12.0;
+    let k_out_of_plane =
+        4.0 * FIXED_GUIDED_GAMMA * c.e * i_strong / c.length.powi(3) / series_divisor;
+    let k_radial = k_transverse.min(k_out_of_plane);
 
     // Auto SAFE displacement δ_auto = yield·L²/(3·E·t) (the fixed-guided
     // surface-yield deflection; no yield_stress ⇒ 0.1·L). Retained as the SAFE
@@ -168,6 +179,13 @@ where
             si_value: k_transverse,
             dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
         },
+    );
+    m.insert(
+        Value::String("radial_stiffness".to_string()),
+        Value::Option(Some(Box::new(Value::Scalar {
+            si_value: k_radial,
+            dimension: DimensionVector::TRANSLATIONAL_STIFFNESS,
+        }))),
     );
     m.insert(
         Value::String("parasitic_error".to_string()),
@@ -362,7 +380,8 @@ fn prb_cartwheel_flexure(args: &[Value]) -> Value {
 ///
 /// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
 /// - `spring_rate` = k_stage = 48·E·I/L³ (TRANSLATIONAL_STIFFNESS)
-/// - `transverse_stiffness` = 4·E·(b·t)/L (axial blade stretching)
+/// - `transverse_stiffness` = 4·E·(b·t)/L, the in-plane (blade-axial) stiffness
+/// - `radial_stiffness` = some(min(4·E·b·t/L, 4·E·t·b³/L³)) (TRANSLATIONAL_STIFFNESS)
 /// - `range` = ±δ_max (symmetric LENGTH-bounded range)
 /// - `parasitic_error` = Option(Some(Length(δ_rot))) where δ_rot = L·(1−cos(δ_max/L))
 ///
@@ -382,7 +401,8 @@ fn prb_parallelogram_flexure(args: &[Value]) -> Value {
 ///
 /// Returns a joint `Value::Map` (`kind == "prismatic"`) with:
 /// - `spring_rate` = k_stage/2 = 24·E·I/L³ (series composition halves)
-/// - `transverse_stiffness` = (4·E·(b·t)/L)/2
+/// - `transverse_stiffness` = (4·E·(b·t)/L)/2, the in-plane (blade-axial) stiffness
+/// - `radial_stiffness` = some(min(4·E·b·t/L, 4·E·t·b³/L³)/2) (TRANSLATIONAL_STIFFNESS)
 /// - `range` = ±δ_max (same per-stage range as single, for apples-to-apples §10.1 comparison)
 /// - `parasitic_error` = Option(Some(Length(δ_rot_double))) (added in step-12)
 ///
@@ -1186,6 +1206,115 @@ mod tests {
                 panic!("no-yield: expected double parasitic Option(Some(_)), got {other:?}")
             }
         }
+    }
+
+    // ── task 7191: constrained-DOF radial_stiffness seed ──────────────────────
+
+    /// Read the seeded `radial_stiffness` — `Option(Some(TRANSLATIONAL_STIFFNESS
+    /// Scalar))`, the shape the `Prismatic(radial_stiffness: some(..))` ctor stores.
+    fn radial_stiffness_si(joint: &Value) -> f64 {
+        match map_get(joint, "radial_stiffness") {
+            Some(Value::Option(Some(inner))) => match inner.as_ref() {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } if *dimension == DimensionVector::TRANSLATIONAL_STIFFNESS => *si_value,
+                other => panic!(
+                    "expected radial_stiffness Option(Some(TRANSLATIONAL_STIFFNESS Scalar)), got Option(Some({other:?}))"
+                ),
+            },
+            other => panic!(
+                "expected radial_stiffness Option(Some(TRANSLATIONAL_STIFFNESS Scalar)), got {other:?}"
+            ),
+        }
+    }
+
+    /// Read the bare-Scalar in-plane `transverse_stiffness`.
+    fn transverse_si(joint: &Value) -> f64 {
+        match map_get(joint, "transverse_stiffness") {
+            Some(Value::Scalar { si_value, .. }) => *si_value,
+            other => panic!("expected transverse_stiffness Scalar, got {other:?}"),
+        }
+    }
+
+    /// [`compound_args`] with the blade width widened to b = 40 mm > L = 20 mm,
+    /// so the in-plane (axial-stretch) stiffness is the smaller radial one.
+    fn wide_blade_args() -> Vec<Value> {
+        let mut args = compound_args();
+        args[1] = Value::length(0.040);
+        args
+    }
+
+    fn assert_rel_close(actual: f64, expected: f64, tol: f64, label: &str) {
+        let rel = (actual - expected).abs() / expected.abs();
+        assert!(rel < tol, "{label}: {actual} vs {expected} (rel {rel})");
+    }
+
+    #[test]
+    fn prb_parallelogram_flexure_seeds_radial_stiffness_lower_bound() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+
+        // Narrow blades (b < L): the out-of-plane strong-axis bending branch.
+        let narrow = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+        let radial = radial_stiffness_si(&narrow);
+        let transverse = transverse_si(&narrow);
+        let k_out_of_plane = 4.0 * e * thick * width.powi(3) / length.powi(3);
+        assert_rel_close(radial, k_out_of_plane, 1e-9, "radial == 4·E·t·b³/L³");
+        assert!(
+            radial < transverse,
+            "radial {radial} < in-plane transverse {transverse} for b < L"
+        );
+        assert_rel_close(
+            radial / transverse,
+            (width / length).powi(2),
+            1e-9,
+            "radial/transverse == (b/L)²",
+        );
+
+        // Wide blades (b > L): the in-plane axial-stretch branch.
+        let wide = crate::eval_builtin("prb_parallelogram_flexure", &wide_blade_args());
+        assert_rel_close(
+            radial_stiffness_si(&wide),
+            transverse_si(&wide),
+            1e-12,
+            "wide-blade radial == transverse",
+        );
+    }
+
+    #[test]
+    fn prb_double_parallelogram_flexure_seeds_halved_radial_stiffness() {
+        let length = 0.02_f64;
+        let width = 0.005_f64;
+        let thick = 0.0005_f64;
+        let e = 205e9_f64;
+
+        let narrow = crate::eval_builtin("prb_double_parallelogram_flexure", &compound_args());
+        let radial = radial_stiffness_si(&narrow);
+        let k_out_of_plane_double = 2.0 * e * thick * width.powi(3) / length.powi(3);
+        assert_rel_close(
+            radial,
+            k_out_of_plane_double,
+            1e-9,
+            "double radial == 2·E·t·b³/L³",
+        );
+        let single = crate::eval_builtin("prb_parallelogram_flexure", &compound_args());
+        assert_rel_close(
+            radial,
+            radial_stiffness_si(&single) / 2.0,
+            1e-12,
+            "double radial == single radial / 2",
+        );
+
+        let wide = crate::eval_builtin("prb_double_parallelogram_flexure", &wide_blade_args());
+        assert_rel_close(
+            radial_stiffness_si(&wide),
+            transverse_si(&wide),
+            1e-12,
+            "wide-blade double radial == transverse",
+        );
     }
 
     // ── step-19: RED — compound-family compliance population ──────────────────

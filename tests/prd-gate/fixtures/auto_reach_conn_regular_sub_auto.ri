@@ -1,0 +1,8 @@
+module auto_reach_conn_regular_sub_auto
+structure Bolt {
+    param length : Length = 5mm
+}
+
+structure P {
+    sub bolt = Bolt(length: auto)
+}

@@ -526,8 +526,7 @@ MaximizeDeclaration {
 
 // ── Port ────────────────────────────────────────────────
 // grammar.js:957-993. The direction and the body are both optional, so the
-// bodyless `port output : out FullTrait`
-// (examples/integration_corner_cases.ri:45) and the directionless
+// bodyless `port output : out FullTrait` and the directionless
 // `port p : Fluid` are both admitted. The type is a bare `Identifier`
 // upstream, not a TypeExpr, and is kept that way — every committed port names
 // a plain trait.
@@ -605,7 +604,7 @@ PortMapping {
 // use it as an ordinary name and were left unparseable by that:
 // examples/tolerance-stackup-3part.ri:45 and examples/tolerance-stackup-rss.ri:35
 // (`let chain = [...]`, then `stackup_worst_case(chain)` / `stackup_rss(chain)`
-// at rss:40,44), and examples/integration_corner_cases.ri:131. MEASURED before
+// at rss:40,44), and examples/integration_corner_cases.ri:130. MEASURED before
 // the change: `structure def S { let chain = a }` → 3 error nodes, the first ON
 // the word itself, while `structure def S { let y = [x] }` was already clean —
 // so the list literal the round-3 ledger blamed was never involved.
@@ -1661,7 +1660,7 @@ IndexAccess {
 }
 
 // The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
-// (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
+// (examples/integration_corner_cases.ri:98), `map_or(some(5mm), …)`
 // (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
 // (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri) all call one.
 //

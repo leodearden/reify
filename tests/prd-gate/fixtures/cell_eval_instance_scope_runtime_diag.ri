@@ -1,0 +1,16 @@
+// PRD docs/prds/v0_6/cell-eval-transaction-closure.md, leaf η (one per-cell
+// elaboration primitive). The template-scope let evaluates cleanly
+// (Child.xs = [0, 2]); the instance-scope let under `sub c` gets k = -1 and
+// emits a runtime diagnostic. Before η, unfold.rs drops the instance runtime
+// sink, so `reify eval` prints `Top.c.xs = undef` and exits 0. After η it also
+// prints `error: generate: count must be a non-negative Int` and exits 1.
+module cell_eval_instance_scope_runtime_diag
+
+structure Child {
+    param k : Int = 2
+    let xs = generate(k, |i: Int| i * 2)
+}
+
+structure Top {
+    sub c = Child(k: -1)
+}

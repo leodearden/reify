@@ -1,4 +1,5 @@
 import type { DiagnosticEntry } from './DiagnosticsPanel';
+import type { DiagnosticInfo, SourceLocation } from '../types';
 
 // ────────────────────────────────────────────────────────────
 // Types
@@ -74,4 +75,21 @@ export function groupDiagnostics(diags: DiagnosticEntry[]): GroupedDiagnostic[] 
   }
 
   return order.map((k) => seen.get(k)!);
+}
+
+// ────────────────────────────────────────────────────────────
+// diagnosticSourceLocation
+// ────────────────────────────────────────────────────────────
+
+/** The editor location a diagnostic points at, or null for a span-less one
+ *  (`has_location === false`; absent means line-tied). */
+export function diagnosticSourceLocation(d: DiagnosticInfo): SourceLocation | null {
+  if (d.has_location === false) return null;
+  return {
+    file_path: d.file_path,
+    line: d.line,
+    column: d.column,
+    end_line: d.end_line,
+    end_column: d.end_column,
+  };
 }

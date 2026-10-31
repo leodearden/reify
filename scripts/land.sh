@@ -15,10 +15,11 @@
 #      hooks/pre-merge-commit gate runs the full `--scope all --profile both`
 #      verification. No bypass.
 #
-# It also marks the main-gate sentinel (hooks/main-gate-lib.sh) so the
-# hooks/reference-transaction tripwire records the resulting refs/heads/main move
-# as SANCTIONED instead of flagging it; on any failure it removes that mark so a
-# move that did not happen cannot falsely sanction a later one.
+# It neither marks nor removes the main-gate sentinel. hooks/pre-merge-commit
+# marks it after the gate passes, immediately before the merge commit moves
+# refs/heads/main, and a token another marker (dark-factory's advance_main) mints
+# during the gate must survive a failed land. Token rules: hooks/main-gate-lib.sh
+# and PRD D9.
 #
 # Usage: scripts/land.sh <task-branch>
 
@@ -82,11 +83,6 @@ fi
 git config --worktree core.hooksPath hooks \
     || { echo 'land.sh: ERROR — could not set per-worktree core.hooksPath (extensions.worktreeConfig missing, or read-only/locked config); aborting before the main move to avoid landing with a dark gate.' >&2; exit 1; }
 
-# Sanction the upcoming refs/heads/main move for hooks/reference-transaction.
-# shellcheck source=hooks/main-gate-lib.sh
-. "$ROOT/hooks/main-gate-lib.sh"
-main_gate_mark
-
 # Run the merge gate as role=merge so the held test-run slot and PSI gate exempt
 # the manual-land path — without this a manual land queues behind a task slot
 # (merge-starvation / livelock; PRD §5 D5). Exporting propagates the role to the
@@ -114,17 +110,15 @@ main_gate_mark
 export DF_VERIFY_ROLE=merge
 export REIFY_GATE_EXCLUDE_HEAVY="${REIFY_GATE_EXCLUDE_HEAVY:-1}"
 echo "land.sh: merging '$BRANCH' into main (--no-ff; pre-merge-commit runs the full gate)..." >&2
-if git merge --no-ff "$BRANCH"; then
+rc=0
+git merge --no-ff "$BRANCH" || rc=$?
+if [ "$rc" -eq 0 ]; then
     landed="$(git rev-parse HEAD)"
     echo "land.sh: landed '$BRANCH' on main as $landed" >&2
     echo "$landed"
     exit 0
 fi
 
-rc=$?
 echo "land.sh: ERROR — merge failed (exit $rc). Aborting; main is left unchanged." >&2
 git merge --abort 2>/dev/null || true
-# Drop our pre-mark: the sanctioned move did not happen, so the sentinel must not
-# linger and falsely sanction a later, unsanctioned main move.
-rm -f "$(main_gate_sentinel)" 2>/dev/null || true
 exit "$rc"

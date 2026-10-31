@@ -114,8 +114,11 @@ mod tests {
             Pattern::P1TaskUnexamined,
             Pattern::P5MetadataFilesGitignored,
             Pattern::PDeadCode,
+            Pattern::PDeadCodeUnexamined,
             Pattern::PUntested,
+            Pattern::PUntestedUnexamined,
             Pattern::PLayerViolation,
+            Pattern::PLayerViolationUnexamined,
             Pattern::P5TestsAssertEmpty,
             Pattern::P5LivePathStranded,
             Pattern::P5LivePathUnexamined,
@@ -126,6 +129,7 @@ mod tests {
             Pattern::PDeliveredCheckPath,
             Pattern::PManifestCite,
             Pattern::PPrdStatus,
+            Pattern::PLineCite,
         ] {
             match p {
                 Pattern::P5PhantomDone => {}
@@ -134,8 +138,11 @@ mod tests {
                 Pattern::P1TaskUnexamined => {}
                 Pattern::P5MetadataFilesGitignored => {}
                 Pattern::PDeadCode => {}
+                Pattern::PDeadCodeUnexamined => {}
                 Pattern::PUntested => {}
+                Pattern::PUntestedUnexamined => {}
                 Pattern::PLayerViolation => {}
+                Pattern::PLayerViolationUnexamined => {}
                 Pattern::P5TestsAssertEmpty => {}
                 Pattern::P5LivePathStranded => {}
                 Pattern::P5LivePathUnexamined => {}
@@ -146,6 +153,7 @@ mod tests {
                 Pattern::PDeliveredCheckPath => {}
                 Pattern::PManifestCite => {}
                 Pattern::PPrdStatus => {}
+                Pattern::PLineCite => {}
             }
         }
 
@@ -667,6 +675,39 @@ mod tests {
             .optional()
             .expect("query_row event_type filter case");
         assert_eq!(other_event_type, None);
+    }
+
+    /// Schema pin for the sweep's batched runs.db query, held to the seeded
+    /// schema the way `runs_db_schema_pin` holds `PRODUCTION_QUERY`: it must
+    /// list each task with a `task_completed` event exactly once, and nothing
+    /// else — not a task with only another event type, and not a NULL id.
+    #[test]
+    fn runs_db_completed_tasks_query_pin() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "a");
+        insert_task_completed_event(&conn, "a");
+        insert_task_completed_event(&conn, "b");
+        insert_event(&conn, "c", "task_started");
+        conn.execute(
+            "INSERT INTO events (task_id, event_type) VALUES (NULL, 'task_completed')",
+            [],
+        )
+        .expect("insert a NULL-id event");
+
+        let mut stmt = conn
+            .prepare(p5_phantom_done::PRODUCTION_COMPLETED_TASKS_QUERY)
+            .expect("the batched query must prepare against the seeded schema");
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .expect("query_map")
+            .collect::<Result<_, _>>()
+            .expect("every row decodes as a task id");
+        let completed: std::collections::HashSet<String> = rows.iter().cloned().collect();
+        assert_eq!(rows.len(), completed.len(), "each task is listed once; got {rows:?}");
+        assert_eq!(
+            completed,
+            ["a", "b"].map(str::to_string).into_iter().collect(),
+        );
     }
 
     /// Coverage gap pin — verifies the Err arm of `has_task_completed_event`
@@ -2744,6 +2785,17 @@ mod tests {
         path: &str,
         added_lines: Vec<(usize, String)>,
     ) -> Vec<Finding> {
+        run_h1_single_file_with(task_id, path, added_lines, |_, _| {})
+    }
+
+    /// [`run_h1_single_file`], letting `seed` add answers to the mock; it is
+    /// handed the derived commit sha.
+    fn run_h1_single_file_with(
+        task_id: &str,
+        path: &str,
+        added_lines: Vec<(usize, String)>,
+        seed: impl FnOnce(&mut MockGitOps, &str),
+    ) -> Vec<Finding> {
         let conn = seed_db();
         insert_task_completed_event(&conn, task_id);
 
@@ -2752,6 +2804,7 @@ mod tests {
         git.set_diff_changed_paths("main", &commit, vec![path.to_string()]);
         git.set_log_grep("main", task_id, vec![]);
         git.set_diff_added_lines_in_commit(&commit, path, added_lines);
+        seed(&mut git, &commit);
 
         let mut task_metadata = HashMap::new();
         task_metadata.insert(
@@ -2792,6 +2845,164 @@ mod tests {
             .collect()
     }
     // ── end H1 test helper ────────────────────────────────────────────────────
+
+    /// The added lines of a placeholder test that arms all three H1 signals.
+    fn firing_h1_lines() -> Vec<(usize, String)> {
+        vec![
+            (1, "fn placeholder_returns_empty_list() {".to_string()),
+            (2, "    assert!(result.is_empty());".to_string()),
+            (3, "}".to_string()),
+        ]
+    }
+
+    /// The H1 prefilter is authoritative for "no candidate": when the task's
+    /// one added-lines superset declares no fn that arms H1, the per-path
+    /// walk is skipped. The per-path answer here WOULD fire, so a finding
+    /// proves the walk ran anyway.
+    #[test]
+    fn h1_prefilter_without_an_armed_fn_skips_the_per_path_walk() {
+        let findings = run_h1_single_file_with(
+            "9355",
+            "crates/x/tests/h1.rs",
+            firing_h1_lines(),
+            |git, commit| {
+                git.set_added_lines_in_commit_superset(
+                    commit,
+                    Ok(vec![(1, "    let unrelated = 1;".to_string())]),
+                );
+            },
+        );
+        assert!(findings.is_empty(), "the prefilter found no candidate; got {findings:?}");
+    }
+
+    /// A failed superset query answers nothing, so the per-path walk decides.
+    #[test]
+    fn h1_prefilter_failure_falls_back_to_the_per_path_walk() {
+        let findings = run_h1_single_file_with(
+            "9356",
+            "crates/x/tests/h1.rs",
+            firing_h1_lines(),
+            |git, commit| {
+                git.set_added_lines_in_commit_superset(commit, Err("boom".to_string()));
+            },
+        );
+        assert_eq!(findings.len(), 1, "the per-path walk must still run; got {findings:?}");
+    }
+
+    /// Unseeded, the mock's superset is the concatenation of its per-path
+    /// answers, so a firing fn reaches the walk.
+    #[test]
+    fn h1_prefilter_with_an_armed_fn_runs_the_per_path_walk() {
+        let findings = run_h1_single_file("9357", "crates/x/tests/h1.rs", firing_h1_lines());
+        assert_eq!(findings.len(), 1, "an armed fn must reach the walk; got {findings:?}");
+    }
+
+    /// A seam that declares itself inert and panics on any query, so a test
+    /// using it proves H2 asked nothing.
+    struct InertJc;
+
+    impl reify_audit::JCodemunchOps for InertJc {
+        fn is_inert(&self) -> bool {
+            true
+        }
+        fn get_changed_symbols(
+            &self,
+            _since_sha: &str,
+            _until_sha: &str,
+        ) -> Result<Vec<ChangedSymbol>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_changed_symbols")
+        }
+        fn find_references(
+            &self,
+            _symbol: &ChangedSymbol,
+        ) -> Result<Vec<reify_audit::SymbolReference>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked find_references")
+        }
+        fn get_dead_code(
+            &self,
+            _min_confidence: f64,
+        ) -> Result<Vec<reify_audit::DeadSymbol>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_dead_code")
+        }
+        fn get_untested_symbols(
+            &self,
+            _min_confidence: f64,
+        ) -> Result<Vec<reify_audit::UntestedSymbol>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_untested_symbols")
+        }
+        fn get_layer_violations(
+            &self,
+        ) -> Result<Vec<reify_audit::LayerViolation>, reify_audit::JCodemunchCallFailed> {
+            panic!("an inert seam was asked get_layer_violations")
+        }
+    }
+
+    /// H2 skips an inert seam outright, in the sweep and at pre-done: a
+    /// cross-crate done task H2 would otherwise query completes with no query
+    /// made and no live-path finding of either kind.
+    #[test]
+    fn h2_never_queries_an_inert_seam() {
+        use reify_audit::JCodemunchOps;
+
+        let files = vec![
+            "crates/reify-eval/src/lib.rs".to_string(),
+            "crates/reify-compiler/src/compile.rs".to_string(),
+        ];
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "9355");
+        let mut git = MockGitOps::new();
+        git.set_is_ancestor("c1", "main", true);
+        git.set_changed_paths_in_commit("c1", files.clone());
+        git.set_log_grep("main", "9355", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "9355".to_string(),
+            TaskMetadata {
+                task_id: "9355".to_string(),
+                status: "done".to_string(),
+                files,
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("c1".to_string()),
+                    note: None,
+                }),
+                title: "cross-crate task under an inert seam".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+        let jc = InertJc;
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        for (caller, findings) in [
+            ("check", p5_phantom_done::check(&ctx)),
+            ("check_pre_done", p5_phantom_done::check_pre_done(&ctx, "9355")),
+        ] {
+            assert!(
+                !findings.iter().any(|f| matches!(
+                    f.pattern,
+                    Pattern::P5LivePathStranded | Pattern::P5LivePathUnexamined
+                )),
+                "{caller} must emit no live-path finding under an inert seam; got {findings:?}",
+            );
+        }
+
+        assert!(reify_audit::NoopJCodemunchOps.is_inert());
+        assert!(!MockJCodemunchOps::new().is_inert());
+    }
 
     /// H1 integration test: a done task whose file-level corroboration is clean
     /// (diff covers metadata.files, task_completed event present) but whose added
@@ -3668,6 +3879,143 @@ mod tests {
             f.summary.contains("timed out reading response"),
             "the summary must carry the failure detail; got {:?}",
             f.summary
+        );
+    }
+
+    /// H2's failed lookup: a `find_references` call that FAILS is not an
+    /// answer of "no caller", so the symbol is SKIPPED rather than stranded.
+    /// The task's other symbol is still examined (`beta` is stranded), and the
+    /// skip surfaces as the task's one Low `P5LivePathUnexamined`, naming the
+    /// skipped symbol and citing its declaration — P1's contract for the same
+    /// failure.
+    #[test]
+    fn h2_failed_find_references_skips_the_symbol_and_reports_the_task_unexamined() {
+        let conn = seed_db();
+        insert_task_completed_event(&conn, "H2FP6");
+
+        let mut git = MockGitOps::new();
+        git.set_diff_changed_paths(
+            "main",
+            "h2fp6_commit",
+            vec![
+                "crates/reify-compiler/src/compile.rs".to_string(),
+                "crates/reify-eval/src/lib.rs".to_string(),
+            ],
+        );
+        git.set_log_grep("main", "H2FP6", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "H2FP6".to_string(),
+            TaskMetadata {
+                task_id: "H2FP6".to_string(),
+                status: "done".to_string(),
+                // Two distinct crates/<name>/ roots satisfy the cross-crate gate.
+                files: vec![
+                    "crates/reify-compiler/src/compile.rs".to_string(),
+                    "crates/reify-eval/src/lib.rs".to_string(),
+                ],
+                done_provenance: Some(DoneProvenance {
+                    kind: Some("merged".to_string()),
+                    commit: Some("h2fp6_commit".to_string()),
+                    note: None,
+                }),
+                title: "Cross-crate whose first reference lookup fails".to_string(),
+                prd: None,
+                consumer_ref: None,
+                audit_foundation: None,
+                done_at: None,
+            },
+        );
+
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            "h2fp6_commit^1",
+            "h2fp6_commit",
+            vec![
+                ChangedSymbol {
+                    name: "alpha".to_string(),
+                    file: "crates/reify-eval/src/lib.rs".to_string(),
+                    line: 100,
+                    suppression: Some(DeclSuppression::default()),
+                },
+                ChangedSymbol {
+                    name: "beta".to_string(),
+                    file: "crates/reify-compiler/src/compile.rs".to_string(),
+                    line: 20,
+                    suppression: Some(DeclSuppression::default()),
+                },
+            ],
+        );
+        jc.fail_find_references(
+            "crates/reify-eval/src/lib.rs",
+            "alpha",
+            "read body: timed out reading response",
+        );
+        jc.set_find_references("crates/reify-compiler/src/compile.rs", "beta", vec![]);
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata,
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = p5_phantom_done::check(&ctx);
+        let stranded: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathStranded)
+            .collect();
+        assert_eq!(
+            stranded.len(),
+            1,
+            "only the symbol whose lookup ANSWERED can be stranded; \
+             got {findings:?}",
+        );
+        assert!(
+            stranded[0].summary.contains("`beta`") && !stranded[0].summary.contains("`alpha`"),
+            "the stranded finding must be `beta`'s alone; got {:?}",
+            stranded[0].summary
+        );
+
+        let unexamined: Vec<_> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P5LivePathUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "the skipped symbol must surface as exactly one \
+             P5LivePathUnexamined; got {findings:?}",
+        );
+        let f = unexamined[0];
+        assert_eq!(f.severity, Severity::Low, "Low keeps the exit code neutral");
+        assert_eq!(f.task_id, "H2FP6");
+        for needle in [
+            "`alpha`",
+            "h2fp6_commit^1..h2fp6_commit",
+            "timed out reading response",
+        ] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the skipped symbol, the \
+                 range and the failure); got {:?}",
+                f.summary
+            );
+        }
+        assert_eq!(
+            f.evidence,
+            vec![EvidenceRef::FileLine {
+                path: "crates/reify-eval/src/lib.rs".to_string(),
+                line: 100,
+                symbol: Some("alpha".to_string()),
+            }],
+            "the evidence must cite the skipped symbol's declaration"
         );
     }
 
