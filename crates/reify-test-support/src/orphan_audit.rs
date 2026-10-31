@@ -360,6 +360,25 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
     }
 }
 
+/// [`run_orphan_audit`] over the wide `crates/reify-*/src` corpus, run once per
+/// test process and cached. Only that scope sees cross-crate callers.
+///
+/// `None` when the environment cannot run the audit, unless
+/// `REIFY_REQUIRE_ORPHAN_AUDIT` is set (non-empty, not `0`): then the skip is a
+/// panic.
+pub fn wide_orphan_audit() -> Option<&'static serde_json::Value> {
+    static AUDIT: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+    let audit = AUDIT.get_or_init(|| run_orphan_audit("crates/reify-*/src"));
+    let required = std::env::var("REIFY_REQUIRE_ORPHAN_AUDIT")
+        .is_ok_and(|flag| !flag.is_empty() && flag != "0");
+    assert!(
+        audit.is_some() || !required,
+        "REIFY_REQUIRE_ORPHAN_AUDIT is set but the orphan audit could not run \
+         (python3, git, or scripts/audit-orphan-producers.sh missing)."
+    );
+    audit.as_ref()
+}
+
 /// Resolve the on-disk path to `scripts/audit-orphan-producers.sh` and the
 /// repo root it lives under. The root is resolved at run time by
 /// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
@@ -1069,8 +1088,10 @@ mod tests {
 
     /// Ties [`EXCLUDE_CRATES`] to the gate that keeps its premise true: every
     /// excluded crate must be named by a `scripts/crate-strata.json` crate rule
-    /// that forbids it from EVERY stratum. Matched on the rule's structure, not
-    /// its name, so renaming the rule cannot silence this.
+    /// that forbids it from EVERY stratum, and no `exceptions[]` row may excuse
+    /// an edge into it (one row excuses every rule its edge breaks). Matched on
+    /// the rule's structure, not its name, so renaming the rule cannot silence
+    /// this.
     #[test]
     fn exclude_crates_are_dev_only_under_a_crate_strata_rule() {
         use std::collections::BTreeSet;
@@ -1104,6 +1125,9 @@ mod tests {
         let rules = table["crate_rules"]
             .as_array()
             .unwrap_or_else(|| panic!("{table_path:?}: `crate_rules` must be an array"));
+        let exceptions = table["exceptions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `exceptions` must be an array"));
 
         for crate_name in EXCLUDE_CRATES {
             let gated = rules.iter().any(|rule| {
@@ -1117,6 +1141,18 @@ mod tests {
                  {table_path:?} has no crate rule with `from.strata` = every \
                  stratum {all_strata:?} and `never.packages` naming \
                  `{crate_name}`. Rules seen: {rules:#?}"
+            );
+
+            let excused: Vec<&serde_json::Value> = exceptions
+                .iter()
+                .filter(|row| row["to"].as_str() == Some(*crate_name))
+                .collect();
+            assert!(
+                excused.is_empty(),
+                "{table_path:?} excepts a normal/build edge into EXCLUDE_CRATES crate \
+                 `{crate_name}`, which re-opens a production path the orphan sweep \
+                 cannot see. Drop the edge, or drop `{crate_name}` from EXCLUDE_CRATES. \
+                 Offending rows: {excused:#?}"
             );
         }
     }

@@ -16,28 +16,12 @@
 //! These tests assert classification only, never marker prose.
 //!
 //! A missing python3, git or audit script skips these pins, unless
-//! `REIFY_REQUIRE_ORPHAN_AUDIT` is set (non-empty, not `0`); then the skip
-//! becomes a panic, matching the sibling `*_g_allow.rs` pin files.
+//! `REIFY_REQUIRE_ORPHAN_AUDIT` is set; see [`wide_orphan_audit`].
 
-use std::sync::OnceLock;
-
-use reify_test_support::run_orphan_audit;
+use reify_test_support::wide_orphan_audit;
 
 const LEAF_SRC: &str = "crates/reify-git-env/src/";
 const LEAF_LIB: &str = "crates/reify-git-env/src/lib.rs";
-
-fn wide_audit() -> Option<&'static serde_json::Value> {
-    static AUDIT: OnceLock<Option<serde_json::Value>> = OnceLock::new();
-    let audit = AUDIT.get_or_init(|| run_orphan_audit("crates/reify-*/src"));
-    let required = std::env::var("REIFY_REQUIRE_ORPHAN_AUDIT")
-        .is_ok_and(|flag| !flag.is_empty() && flag != "0");
-    assert!(
-        audit.is_some() || !required,
-        "REIFY_REQUIRE_ORPHAN_AUDIT is set but the orphan audit could not run \
-         (python3, git, or scripts/audit-orphan-producers.sh missing)."
-    );
-    audit.as_ref()
-}
 
 fn entries<'a>(audit: &'a serde_json::Value, list: &str) -> &'a [serde_json::Value] {
     audit[list]
@@ -54,7 +38,9 @@ fn rows(audit: &serde_json::Value, list: &str, file: &str, name: &str) -> usize 
 
 #[test]
 fn reify_git_env_has_no_orphan_rows() {
-    let Some(audit) = wide_audit() else { return };
+    let Some(audit) = wide_orphan_audit() else {
+        return;
+    };
     let offenders: Vec<String> = entries(audit, "orphans")
         .iter()
         .filter_map(|entry| {
@@ -77,7 +63,9 @@ fn reify_git_env_has_no_orphan_rows() {
 
 #[test]
 fn reify_git_env_test_side_fns_are_allow_listed() {
-    let Some(audit) = wide_audit() else { return };
+    let Some(audit) = wide_orphan_audit() else {
+        return;
+    };
     let failures: Vec<String> = ["sanitize", "removed_vars"]
         .iter()
         .filter_map(|&name| {
