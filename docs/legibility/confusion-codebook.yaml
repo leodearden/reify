@@ -8727,6 +8727,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Turn 67: `tail -c 6000 $d/iterations.jsonl 2>/dev/null` exited 1 because the per-lane iterations.jsonl is absent from the resolved .task-meta/_lane-35 directory, whose listing shows only agent_session.json, metadata.json, plan.json, plan.json.mutex, plan.lock, reviews and verdicts.'
+  - date: '2026-10-30'
+    project: reify
+    session: 32bc0c62-36e9-4c8e-b622-80b3e3ad2a25
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 56 probes .task-meta/_lane-3/iterations.jsonl with wc and gets 'No such file or directory'. The directory listing shows the lane's task-meta without that file, matching the missing per-lane iterations.jsonl at the expected path. The digest does not show the phase.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260727-8
@@ -12288,6 +12294,12 @@ entries:
     origin_phase: merge
     manifested_phase: ops
     evidence_quote: Read(.../worktrees/_lane-13/.task/metadata.json) -> File does not exist; Bash(tail .../worktrees/_lane-13/.task/iterations.jsonl) -> No such file or directory; Bash(ls .../worktrees/_lane-13/.task/reviews/) -> exit 2
+  - date: '2026-10-30'
+    project: reify
+    session: 3c2bb42f-719a-40b4-b54f-b3edf1f26f08
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. The error-neighborhood command chains `test -f .task/plan.json && python3 ...` after an ls of the .task-meta/_lane-30/ directory, which lists no plan or iterations artifact. The exit 1 is consistent with plan.json being absent at bootstrap, but the digest never shows the test result directly.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
