@@ -73,21 +73,53 @@ fn pressure_tensor_type() -> Type {
     }
 }
 
-/// One probe of one row: the `(value, static type)` pair for each ARGUMENT of a
-/// single call.
-///
-/// Paired rather than two parallel lists so "same length" and "describes the
-/// same argument" are unrepresentable-when-wrong instead of asserted at runtime
-/// (house heuristic 10 — enforce an invariant in the type wherever the type can
-/// carry it). `ResultSpec::ArgAware` resolves the declared type from the types
-/// alone, while the executed call takes each pair whole as a typed literal
-/// argument; the pairing is what guarantees those two views describe the same
-/// arguments.
-pub(super) type Probe = Vec<(Value, Type)>;
+/// One probe of one row: the arguments of a single call and, when the row
+/// declares a Field result for them, the point that result is sampled at.
+pub(super) struct Probe {
+    /// The `(value, static type)` pair for each ARGUMENT of the call.
+    ///
+    /// Paired rather than two parallel lists so "same length" and "describes
+    /// the same argument" are unrepresentable-when-wrong instead of asserted at
+    /// runtime (house heuristic 10 — enforce an invariant in the type wherever
+    /// the type can carry it). `ResultSpec::ArgAware` resolves the declared
+    /// type from the types alone, while the executed call takes each pair whole
+    /// as a typed literal argument; the pairing is what guarantees those two
+    /// views describe the same arguments.
+    pub(super) args: Vec<(Value, Type)>,
+    /// Where a Field result is sampled, so its codomain claim is executed and
+    /// not only its Field-ness. `Some` exactly when the row's resolver answers
+    /// a `Type::Field` for these arguments, which the harness's
+    /// `representative_probes_are_well_formed_for_every_row` check (e) pins.
+    pub(super) sample_at: Option<Value>,
+}
+
+impl Probe {
+    /// A probe of a concrete argument shape, compared at its call only.
+    fn concrete(args: Vec<(Value, Type)>) -> Self {
+        Probe {
+            args,
+            sample_at: None,
+        }
+    }
+
+    /// A probe of a Field argument shape, compared at its call and at one
+    /// sample of the call's result, taken at `sample_at`.
+    fn field(args: Vec<(Value, Type)>, sample_at: Value) -> Self {
+        Probe {
+            args,
+            sample_at: Some(sample_at),
+        }
+    }
+
+    /// The arguments' static types, which is all `ResultSpec::resolve` reads.
+    pub(super) fn arg_types(&self) -> Vec<Type> {
+        self.args.iter().map(|(_, ty)| ty.clone()).collect()
+    }
+}
 
 /// The one-argument concrete-tensor probe the analysis reductions share.
 fn concrete_tensor_probe() -> Probe {
-    vec![(uniaxial_stress(), pressure_tensor_type())]
+    Probe::concrete(vec![(uniaxial_stress(), pressure_tensor_type())])
 }
 
 /// `safety_factor`'s second argument: a PRESSURE yield strength, the same for
@@ -117,6 +149,16 @@ fn stress_field_type() -> Type {
         domain: Box::new(field_domain_type()),
         codomain: Box::new(pressure_tensor_type()),
     }
+}
+
+/// The point every Field probe's result is sampled at. The Callable probe's
+/// field is constant, so any point of its domain serves.
+fn field_sample_point() -> Value {
+    let half_metre = Value::Scalar {
+        si_value: 0.5,
+        dimension: DimensionVector::LENGTH,
+    };
+    Value::Point(vec![half_metre; 3])
 }
 
 /// A Callable-backed stress field: `Analytical`, with a lambda that ignores its
@@ -207,7 +249,10 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // `parse::parse_length` matches on `Value::String` and returns
         // `Value::Undef` for any other argument kind.
         EvalBuiltinId::ParseLength | EvalBuiltinId::ParseLengthR => {
-            vec![vec![(Value::String("12mm".to_string()), Type::String)]]
+            vec![Probe::concrete(vec![(
+                Value::String("12mm".to_string()),
+                Type::String,
+            )])]
         }
 
         // `analysis::{von_mises, max_shear}` read a 3×3 window through
@@ -215,14 +260,20 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // element dimension. Over a tensor FIELD, reify-expr wraps the field
         // lazily instead of reducing it, which is the resolver's Field branch.
         EvalBuiltinId::VonMises | EvalBuiltinId::MaxShear => {
-            vec![concrete_tensor_probe(), vec![callable_stress_field()]]
+            vec![
+                concrete_tensor_probe(),
+                Probe::field(vec![callable_stress_field()], field_sample_point()),
+            ]
         }
 
         // `analysis::principal_stresses` needs the same 3×3 window; it returns
         // the three eigenvalues as a `Value::List`, and over a field a field
         // whose samples are that list.
         EvalBuiltinId::PrincipalStresses => {
-            vec![concrete_tensor_probe(), vec![callable_stress_field()]]
+            vec![
+                concrete_tensor_probe(),
+                Probe::field(vec![callable_stress_field()], field_sample_point()),
+            ]
         }
 
         // `analysis::safety_factor` is `binary(tensor, yield)`: arg0 is the
@@ -231,11 +282,14 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // `Value::Real` whatever dimension arg1 carries. Its Field branch is
         // gated on exactly two arguments, so the Field probe keeps the yield.
         EvalBuiltinId::SafetyFactor => vec![
-            vec![
+            Probe::concrete(vec![
                 (uniaxial_stress(), pressure_tensor_type()),
                 yield_strength(),
-            ],
-            vec![callable_stress_field(), yield_strength()],
+            ]),
+            Probe::field(
+                vec![callable_stress_field(), yield_strength()],
+                field_sample_point(),
+            ),
         ],
 
         // `analysis::stress_invariants` returns `Value::Undef` for ANYTHING

@@ -196,7 +196,7 @@ use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value, ValueMap
 use strum::{EnumCount, IntoEnumIterator};
 
 mod probes;
-use probes::representative_probes;
+use probes::{Probe, representative_probes};
 
 // ── the verdict vocabulary ──────────────────────────────────────────────────
 
@@ -600,10 +600,10 @@ fn representative_probes_are_well_formed_for_every_row() {
 ///
 /// Driven over synthetic [`ProbeOutcome`]s rather than real rows, in the same
 /// dialect as the synthetic-table adjudication tests below and for the same
-/// reason: every α row registers exactly ONE probe, so the aggregation rule
-/// would otherwise be unobservable — a rule that silently reported the row's
-/// BEST probe would pass the whole suite today and hollow the harness out the
-/// moment a τ row registered a second shape.
+/// reason: every real row matches on every probe and leg, so the aggregation
+/// rule would otherwise be unobservable — a rule that silently reported the
+/// row's BEST outcome would pass the whole suite today and hollow the harness
+/// out the moment one shape of a multi-probe row stopped matching.
 #[test]
 fn worst_probe_reports_the_most_severe_and_breaks_ties_to_the_first() {
     let outcome = |index, verdict| ProbeOutcome {
@@ -905,11 +905,83 @@ fn evaluate_call(name: &str, args: Vec<(Value, Type)>, result_type: Type) -> Val
     reify_expr::eval_expr(&call, &reify_expr::EvalContext::simple(&no_bindings))
 }
 
-/// What the sweep observed at ONE probe of one row.
+/// reify-expr's field-sampling intercept, through which the Sample leg reads a
+/// Field result at a point. Not a registry row, and never passed to
+/// `eval_builtin`.
+const FIELD_SAMPLE_CALL: &str = "sample";
+
+/// Which comparison of a probe an outcome reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leg {
+    /// The call's result against the row's declared type.
+    Call,
+    /// One sample of a Field result against the declared Field's codomain.
+    /// [`crate::value_type_kind_matches`] maps a `Value::Field` onto ANY
+    /// `Type::Field`, so this is the only leg that executes a Field claim's
+    /// codomain — which is all that tells the analysis rows' Field claims
+    /// apart.
+    Sample,
+}
+
+/// One leg of one probe: what executed, what it was judged against, and the
+/// verdict.
+struct LegOutcome {
+    leg: Leg,
+    observed: Value,
+    declared: Type,
+    verdict: ParityVerdict,
+}
+
+/// Execute one probe of the builtin `name` and compare it on every leg it has.
+///
+/// The Call leg always runs: [`evaluate_call`] at `declared`, classified
+/// against `declared`. The Sample leg runs only when the probe names a sample
+/// point AND the call produced a `Value::Field` AND `declared` is a
+/// `Type::Field`: it evaluates `sample(result, point)` through the same
+/// [`evaluate_call`] and classifies the sample against the declared codomain
+/// with the same [`classify`], so there is no second kind matcher (I-REG-4).
+/// A Field result against a non-Field declared type has already diverged on
+/// the Call leg, and a non-Field result has nothing to sample.
+fn probe_legs(name: &str, probe: Probe, declared: Type) -> Vec<LegOutcome> {
+    let Probe { args, sample_at } = probe;
+    let observed = evaluate_call(name, args, declared.clone());
+    let call = LegOutcome {
+        leg: Leg::Call,
+        verdict: classify(&observed, &declared),
+        observed,
+        declared,
+    };
+
+    let sample = match (sample_at, &call.observed, &call.declared) {
+        (Some(point), Value::Field { .. }, Type::Field { domain, codomain }) => {
+            let sampled = evaluate_call(
+                FIELD_SAMPLE_CALL,
+                vec![
+                    (call.observed.clone(), call.declared.clone()),
+                    (point, (**domain).clone()),
+                ],
+                (**codomain).clone(),
+            );
+            Some(LegOutcome {
+                leg: Leg::Sample,
+                verdict: classify(&sampled, codomain),
+                observed: sampled,
+                declared: (**codomain).clone(),
+            })
+        }
+        _ => None,
+    };
+
+    std::iter::once(call).chain(sample).collect()
+}
+
+/// What the sweep observed at ONE leg of one probe of one row.
 struct ProbeOutcome {
     /// 1-based position in the row's probe list, so a failure line points at
     /// the shape that actually failed.
     index: usize,
+    /// Which comparison of that probe this is.
+    leg: Leg,
     observed: Value,
     declared: Type,
     verdict: ParityVerdict,
@@ -919,8 +991,10 @@ struct ProbeOutcome {
 ///
 /// A row is only as certified as its WEAKEST probe (see
 /// [`ParityVerdict::severity`]), so a row with one `Vacuous` shape is reported
-/// `Vacuous` and needs a ledger entry even when its other shapes match. Ties
-/// resolve to the first so the reported line is stable across runs.
+/// `Vacuous` and needs a ledger entry even when its other shapes match. The
+/// outcomes are every LEG of every probe, so a Field probe is likewise only as
+/// certified as its weaker leg. Ties resolve to the first so the reported line
+/// is stable across runs.
 ///
 /// `None` only for an empty probe list, which [`observe_row`] rejects outright:
 /// a row swept at no shape has not been checked, and must not read as a pass.
@@ -942,12 +1016,15 @@ struct RowObservation {
     /// 1-based index of the reported probe, and how many the row was swept at.
     probe_index: usize,
     probe_count: usize,
+    /// The reported probe's leg.
+    leg: Leg,
     observed: Value,
     declared: Type,
     verdict: ParityVerdict,
 }
 
-/// Sweep one row at every probe it registers, and report its most severe.
+/// Sweep one row at every leg of every probe it registers, and report its most
+/// severe.
 fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObservation {
     let probes = representative_probes(id);
     let probe_count = probes.len();
@@ -955,25 +1032,22 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
     let outcomes: Vec<ProbeOutcome> = probes
         .into_iter()
         .enumerate()
-        .map(|(i, probe)| {
-            let types: Vec<Type> = probe.iter().map(|(_, ty)| ty.clone()).collect();
-
+        .flat_map(|(i, probe)| {
             let declared = row
                 .result
-                .resolve(&types)
+                .resolve(&probe.arg_types())
                 .expect("probe well-formedness (d) guarantees the resolver answers");
 
-            // The engine's evaluator, compiled at the declared type. `row.name`
-            // is a VARIABLE — see the sweep's doc.
-            let observed = evaluate_call(row.name, probe, declared.clone());
-            let verdict = classify(&observed, &declared);
-
-            ProbeOutcome {
-                index: i + 1,
-                observed,
-                declared,
-                verdict,
-            }
+            // `row.name` is a VARIABLE — see the sweep's doc.
+            probe_legs(row.name, probe, declared)
+                .into_iter()
+                .map(move |outcome| ProbeOutcome {
+                    index: i + 1,
+                    leg: outcome.leg,
+                    observed: outcome.observed,
+                    declared: outcome.declared,
+                    verdict: outcome.verdict,
+                })
         })
         .collect();
 
@@ -991,6 +1065,7 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
         name: row.name,
         probe_index: worst.index,
         probe_count,
+        leg: worst.leg,
         observed: worst.observed,
         declared: worst.declared,
         verdict: worst.verdict,
@@ -1037,9 +1112,10 @@ fn describe_failure(
     match failure {
         Failure::Unledgered { observed, .. } => format!(
             "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?} at probe \
-             {} of {}; observed {:?}, declared {:?}",
+             {} of {}, {:?} leg; observed {:?}, declared {:?}",
             observation.probe_index,
             observation.probe_count,
+            observation.leg,
             observation.observed,
             observation.declared
         ),
