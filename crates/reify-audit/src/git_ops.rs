@@ -698,7 +698,7 @@ impl RealGitOps {
     /// The paths are written from a scoped thread while this one collects
     /// stdout, so a full stdout pipe cannot deadlock the write.
     fn check_ignore_batch(&self, paths: &[String]) -> Result<Vec<u8>, String> {
-        let mut child = crate::git_env::command(&self.project_root)
+        let mut child = reify_git_env::command(&self.project_root)
             .args(["check-ignore", "--stdin", "-z"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
