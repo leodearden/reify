@@ -1,13 +1,14 @@
 //! The workspace root, and the only sanctioned way this survey reaches git.
 
+use std::path::Path;
 use std::process::Command;
 
 // The workspace's SINGLE definition of the repo-redirect sanitizer, not a local
-// twin: `sanitize` is what `git_at_workspace_root` below applies, and
+// twin: `command` is what `git_at_workspace_root` below builds on, and
 // `REPO_REDIRECT_VARS`/`removed_vars` are what its contract tests read, so this
 // survey cannot drift from the set it is supposed to remove.
 // (`crates/reify-git-env/src/lib.rs`.)
-use reify_git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
+use reify_git_env::{REPO_REDIRECT_VARS, removed_vars};
 
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
@@ -33,20 +34,10 @@ pub(crate) const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..
 /// one carve-out is a bare `git --version` availability probe — which is
 /// exactly [`git_is_available`] below, and the ONLY spawn in this survey that
 /// does not come from here; every repo-targeting call site routes through this
-/// constructor.
-///
-/// This hand-rolls the same `git -C <root>` shape `reify_git_env::command`
-/// builds, through the same single [`sanitize`], so the two are
-/// interchangeable.
-///
-/// Returns an owned `Command` rather than borrowing `sanitize`'s `&mut` return,
-/// because two of the three consumers need `.output()` and one needs only
-/// `.status`.
+/// constructor, which is `reify_git_env::command` pinned to [`WORKSPACE_ROOT`].
 pub(crate) fn git_at_workspace_root(args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(WORKSPACE_ROOT);
+    let mut cmd = reify_git_env::command(Path::new(WORKSPACE_ROOT));
     cmd.args(args);
-    sanitize(&mut cmd);
     cmd
 }
 
