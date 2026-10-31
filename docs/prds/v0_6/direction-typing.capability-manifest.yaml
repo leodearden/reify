@@ -1,0 +1,2592 @@
+prd: docs/prds/v0_6/direction-typing.md
+schema_version: 1
+signal_leaves:
+- μ
+tasks:
+- label: α
+  task_id: 9633
+  title: 'direction-typing α: Direction value contract (UnitVec3 newtype, decode_direction, frame_basis,
+    DIRECTION_DEGENERACY_FLOOR, DegenerateDirection code, Display dir(x, y, z))'
+  capabilities:
+  - name: display-prints-dir-form
+    binding: 'delivered by this leaf: `Value::format_display` and `impl Display for Value` Direction arms
+      in crates/reify-ir/src/value.rs; today both print `direction(..)` (observed `Main.d = direction(1,
+      0, 0)` running target/debug/reify eval on a decompose-time probe) Accepted gap: Narrowed to the
+      format-string literal. Accepted gap: an implementer who builds the string without that literal shape;
+      the harness_cli stdout assertion `dir(1, 0, 0)` is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"dir\(\{\}, \{\}, \{\}\)"'
+      expect: present
+      paths:
+      - crates/reify-ir/src/value.rs
+  - name: legacy-direction-display-literal-removed
+    binding: 'delivered by this leaf: both old `direction({}, {}, {})` format strings in value.rs (format_display
+      and impl Display) are replaced Accepted gap: Bound to the format-string construct, not the token
+      `direction(` (the value.rs test and docs may still say it in prose).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"direction\(\{\}, \{\}, \{\}\)"'
+      expect: absent
+      paths:
+      - crates/reify-ir/src/value.rs
+  - name: unit-vec3-newtype
+    binding: 'delivered by this leaf (C2): `pub struct UnitVec3` in the new crates/reify-ir/src/direction.rs;
+      path fixed by PRD C2'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct UnitVec3
+      expect: present
+      paths:
+      - crates/reify-ir/src/direction.rs
+  - name: value-direction-newtype-variant
+    binding: 'delivered by this leaf: `Value::Direction(UnitVec3)` replaces the struct variant in crates/reify-ir/src/value.rs'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Direction\(UnitVec3\)
+      expect: present
+      paths:
+      - crates/reify-ir/src/value.rs
+  - name: value-direction-struct-fields-removed
+    binding: 'delivered by this leaf: the public-field variant `Direction { x: f64, y: f64, z: f64 }`
+      is gone from the Value enum Accepted gap: Bound to the variant declaration shape; the doc comment
+      above it does not contain this text.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Direction \{ x: f64, y: f64, z: f64 \}'
+      expect: absent
+      paths:
+      - crates/reify-ir/src/value.rs
+  - name: unit-vec3-single-constructor
+    binding: 'delivered by this leaf (C2): `UnitVec3::from_vector(v: [f64;3]) -> Result<UnitVec3, DirectionFault>`
+      in crates/reify-ir/src/direction.rs, the only way to make one'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn from_vector\(
+      expect: present
+      paths:
+      - crates/reify-ir/src/direction.rs
+  - name: non-finite-fault-pinned-in-rust
+    binding: 'delivered by this leaf: `DirectionFault::NonFinite` returned by from_vector; unreachable
+      from .ri (observed: `0.0 / 0.0` evals to undef on main, a decompose-time probe), so only a Rust
+      test can pin it Accepted gap: Matches the production return as well as the test; the Rust unit test
+      asserting from_vector([NAN,0,0]) == Err(NonFinite) is the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DirectionFault::NonFinite
+      expect: present
+      paths:
+      - crates/reify-ir/src/direction.rs
+  - name: decode-direction-single-decoder
+    binding: 'delivered by this leaf (C3): `pub fn decode_direction(&Value) -> Result<UnitVec3, DecodeDirectionError>`
+      accepting only Value::Direction. Open Q1 lets α choose reify-ir or reify-core, so both paths are
+      listed. Production consumer at landing: stdlib frame_at (recommended, see notes); the rest are ε/ζ/θ
+      leaves'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn decode_direction\(
+      expect: present
+      paths:
+      - crates/reify-ir/src/direction.rs
+      - crates/reify-core/src/direction.rs
+  - name: frame-basis-helper
+    binding: 'delivered by this leaf (C8): `pub fn frame_basis(&Value) -> Result<[[f64;3];3], DecodeDirectionError>`;
+      declared-only until η wires the FEA material reader (consumer η is downstream, so not a G6 FAIL)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn frame_basis\(
+      expect: present
+      paths:
+      - crates/reify-ir/src/direction.rs
+      - crates/reify-core/src/direction.rs
+  - name: degeneracy-floor-constant-in-reify-core
+    binding: 'delivered by this leaf (C2/D4): `pub const DIRECTION_DEGENERACY_FLOOR: f64 = 1e-12` in the
+      new crates/reify-core/src/direction.rs. Numeric identity: |v| at or below 1e-12 is degenerate; matches
+      eval''s 1e-12-on-|v| and the branch constant; on the branch it lives in reify-stdlib direction.rs,
+      so it is a RELOCATION'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub const DIRECTION_DEGENERACY_FLOOR: f64'
+      expect: present
+      paths:
+      - crates/reify-core/src/direction.rs
+  - name: degenerate-direction-diagnostic-code
+    binding: 'delivered by this leaf: `DiagnosticCode::DegenerateDirection` variant in crates/reify-core/src/diagnostics.rs
+      (port of the 6090 hunk + serde test); emitted by β (consumer)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    DegenerateDirection,$
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: construction-sites-reify-expr-via-from-vector
+    binding: 'delivered by this leaf: `vec3_to_direction` and `frame_axis_direction` in crates/reify-expr/src/datum_projection.rs
+      mint through from_vector (production entry: `.dir`/`.normal`/`.x/.y/.z` projection eval)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: from_vector\(
+      expect: present
+      paths:
+      - crates/reify-expr/src/datum_projection.rs
+  - name: construction-site-solver-transform-datum-via-from-vector
+    binding: 'delivered by this leaf: the Direction arm of `transform_datum` in crates/reify-constraints/src/relate_solve.rs
+      (Axis/Plane arms are ε''s)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: from_vector\(
+      expect: present
+      paths:
+      - crates/reify-constraints/src/relate_solve.rs
+  - name: construction-site-feature-datum-via-from-vector
+    binding: 'delivered by this leaf: `direction_value` in crates/reify-eval/src/feature_datum.rs Accepted
+      gap: feature_datum.rs also has inline test modules; a test-only call could satisfy this. Behavioural
+      cover: the reshaped feature_datum_tests.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: from_vector\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/feature_datum.rs
+  - name: construction-sites-kernel-occt-via-from-vector
+    binding: 'delivered by this leaf: `analytic_surface_datum_to_value` and `analytic_curve_datum_to_value`
+      in crates/reify-kernel-occt/src/lib.rs (compiled only under has_occt)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: from_vector\(
+      expect: present
+      paths:
+      - crates/reify-kernel-occt/src/lib.rs
+  - name: rest-pattern-sites-reshaped
+    binding: 'delivered by this leaf: every `Value::Direction { .. }` rest-pattern (eval lib.rs value_matches_type,
+      relate_solve is_datum/residual arms, kernel_validation kind_name, dual_eval kind name, compiler
+      datum_projection has_codomain_kind, value.rs arms) becomes the tuple form'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Direction \{ \.\. \}
+      expect: absent
+      paths:
+      - crates/reify-eval/src/lib.rs
+      - crates/reify-constraints/src/relate_solve.rs
+      - crates/reify-ir/src/kernel_validation.rs
+      - crates/reify-expr/src/dual_eval.rs
+      - crates/reify-compiler/src/datum_projection.rs
+      - crates/reify-ir/src/value.rs
+  - name: destructuring-and-literal-sites-reshaped
+    binding: 'delivered by this leaf: struct-form destructures/constructions at the remaining production
+      files (stdlib geometry.rs decode_direction, helpers.rs sanitize_value, feature_datum.rs, as_printed_material.rs
+      field_vec3, reify-expr datum_projection.rs and sanitize.rs, relate_solve.rs, kernel-occt lib.rs).
+      value.rs is excluded because a test-module comment there quotes the old shape Accepted gap: The
+      tuple variant cannot compile with a brace pattern, so no later leaf can reintroduce it; only a prose
+      mention could, none exists today in these files.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Direction \{
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      - crates/reify-stdlib/src/helpers.rs
+      - crates/reify-eval/src/feature_datum.rs
+      - crates/reify-eval/src/compute_targets/as_printed_material.rs
+      - crates/reify-expr/src/datum_projection.rs
+      - crates/reify-expr/src/sanitize.rs
+      - crates/reify-constraints/src/relate_solve.rs
+      - crates/reify-kernel-occt/src/lib.rs
+  - name: renormalisation-preserves-unit-input-bits
+    binding: 'PRD premise C2: ''Kernel-minted and solver-rotated vectors are unit by upstream construction;
+      re-normalising them costs one divide and makes the invariant unconditional''. Numeric identity needed:
+      from_vector(c) == c bitwise when c is already unit. FALSE as written: plain v/|v| changed bits for
+      64885 of 200000 random unit vectors (a decompose-time probe). Affects Value equality/Ord/content_hash
+      (bit-keyed), per-iteration transform_datum drift, and β''s ri_literal bit-exact round trip. Fix
+      is inside α (fixed-point fast path) — Resolved at decompose: C2 amended and α delivers bit-idempotence,
+      pinned by a Rust test.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Not greppable by name. Covered by a Rust unit test in crates/reify-ir/src/direction.rs asserting
+        from_vector(u.components()) == u bitwise over a seeded sample of at least 10000 unit vectors,
+        plus the axis-aligned and (0.6,0.8,0) cases.
+  - name: negated-preserves-zero-sign
+    binding: 'PRD C2 says negated() is ''exact; needs no re-normalisation''. FALSE for zero components:
+      (-0.0).to_bits() != 0.0.to_bits() and Display prints `-0` (rustc scratch a decompose-time probe),
+      so -dir(0,0,1) would print dir(-0, -0, -1) and compare unequal to dir(0,0,-1). γ''s `-d` (C6) consumes
+      it — Resolved at decompose: C2 amended and α canonicalises -0.0.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Covered by a Rust unit test: negated(from_vector([0,0,1])) == from_vector([0,0,-1]) and
+        its Display equals `dir(0, 0, -1)`.'
+  - name: stdlib-frame-at-reads-through-shared-decoder
+    binding: 'C3 lists frame_at''s stdlib decode_direction as replaced by the shared decoder but no PRD
+      leaf owns it; α must reshape its Direction arm anyway (crates/reify-stdlib/src/geometry.rs `fn decode_direction`,
+      used by classify_frame_at_args and decode_plane). Recommended owner: α — Owner assigned at decompose:
+      α.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^fn decode_direction\(
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      - crates/reify-stdlib/src/geometry
+  - name: direction-migration-hint-constant
+    binding: 'Delivered by this leaf: one home for the fix hint (C3).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub const DIRECTION_MIGRATION_HINT
+      expect: present
+      paths:
+      - crates/reify-core/src/direction.rs
+- label: β
+  task_id: 9634
+  title: 'direction-typing β: `dir(x, y, z)` / `dir(v)` builtin with E_DegenerateDirection and DimensionedArgRejected'
+  capabilities:
+  - name: dir-static-type-direction
+    binding: 'delivered by this leaf: `datum_constructor_result_type` arm for `dir` in crates/reify-compiler/src/units.rs
+      (arity-blind like frame_at); wired into expr.rs via DATUM_CONSTRUCTOR_NAMES/is_known_builtin. Today
+      `dir` is unresolved (observed warning + undef, a decompose-time probe)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"dir" => Some\('
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-compiler/src/builtin_families.rs
+      - crates/reify-compiler/src/builtin_families
+  - name: dir-in-datum-constructor-names
+    binding: 'delivered by this leaf: `"dir"` member of DATUM_CONSTRUCTOR_NAMES in crates/reify-compiler/src/units.rs;
+      the pairwise-disjointness test over builtin name families must stay green (no other family contains
+      `dir`)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    "dir",$
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-compiler/src/builtin_families.rs
+      - crates/reify-compiler/src/builtin_families
+  - name: dir-eval-arm-and-dispatch
+    binding: 'delivered by this leaf: `eval_direction` in the new crates/reify-stdlib/src/direction.rs
+      (path fixed by D14) reached from `eval_builtin` in crates/reify-stdlib/src/lib.rs'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn eval_direction\(
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/direction.rs
+  - name: dir-eval-dispatch-linked
+    binding: 'delivered by this leaf: the `direction::eval_direction(name, args)` link in eval_builtin''s
+      chain (stdlib lib.rs); without it the arm is declared-only'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: direction::eval_direction\(name, args\)
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/lib.rs
+  - name: dir-arity-3-literal-form
+    binding: 'delivered by this leaf (D11): arity-3 `dir(x, y, z)` over Int|Real|dimensionless Scalar;
+      the branch only has arity 1, so this is new code'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'No stable greppable token. Behavioural cover: a CLI harness test on `dir(0, 1, 0)` and
+        `dir(0.0, 2.0, 0.0)` printing `dir(0, 1, 0)` (B1).'
+  - name: degenerate-dir-is-coded-error
+    binding: 'rejection premise (B2): mechanism = `DiagnosticCode::DegenerateDirection` emitted by direction.rs
+      `diagnose` via the reify-expr hook, on UnitVec3::from_vector''s Degenerate fault; variant and constructor
+      delivered by α (prereq, genuinely upstream). Nothing fires today because dir is unresolved'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DiagnosticCode::DegenerateDirection
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/direction.rs
+  - name: dimensioned-dir-arg-rejected
+    binding: 'rejection premise (B3): mechanism = existing `DiagnosticCode::DimensionedArgRejected` emitted
+      by direction.rs `diagnose` (per-component dimension test); the loop in reify-expr emit_undef_builtin_diagnostics
+      records it as the undef cause'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DiagnosticCode::DimensionedArgRejected
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/direction.rs
+  - name: direction-diagnose-hook-wired
+    binding: 'delivered by this leaf: `reify_stdlib::direction_diagnose(name, args)` in the `classified`
+      array of emit_undef_builtin_diagnostics (crates/reify-expr/src/lib.rs); without it a degenerate
+      dir() is bare undef at rc 0'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: direction_diagnose
+      expect: present
+      paths:
+      - crates/reify-expr/src/lib.rs
+  - name: lsp-completion-row-dir
+    binding: 'delivered by this leaf: BuiltinFunctionInfo `dir` in crates/reify-lsp/src/completion.rs
+      BUILTIN_FUNCTIONS (04-linalg group); no lockstep test requires it but the PRD lists it'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'name: "dir",'
+      expect: present
+      paths:
+      - crates/reify-lsp/src/completion.rs
+  - name: ri-literal-direction-arm
+    binding: 'delivered by this leaf: Direction arm in value_to_ri_literal_in_scope (crates/reify-ir/src/ri_literal.rs)
+      emitting `dir(..)`; narrowed to the string-literal prefix because α''s reshaped test also contains
+      `Value::Direction(` and would satisfy a symbol pattern before β lands Accepted gap: Accepted gap:
+      any `"dir(` literal in a test satisfies it; behavioural cover is the Direction row in crates/reify-compiler/tests/harness_units/ri_literal_roundtrip.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"dir\('
+      expect: present
+      paths:
+      - crates/reify-ir/src/ri_literal.rs
+  - name: ri-literal-direction-roundtrip-identical-bits
+    binding: 'ri_literal contract (same variant, same bits) for Direction needs the exactness identity
+      from_vector(c) == c bitwise on already-unit c; measured NOT to hold for plain division (see α capability
+      renormalisation-preserves-unit-input-bits). Resolved only if α adds the fixed-point fast path —
+      Resolved: α delivers bit-idempotence upstream.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Covered by the harness_units/ri_literal_roundtrip.rs Direction row over non-axis-aligned
+        unit vectors; depends on α's idempotence fix.
+  - name: mcp-stdlib-chunk-lists-dir
+    binding: 'delivered by this leaf: the Key Math Functions line in crates/reify-mcp/src/tools/chunks/stdlib.md
+      gains `dir`; not a compiled fence'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '`dir`'
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/stdlib.md
+  - name: user-fn-direction-slot-exact-match
+    binding: 'already wired on main: resolve_function_overload exact match for user fns. Observed (a decompose-time probe):
+      `f(vec3(0.0, 1.0, 0.0))` -> `no matching overload for f(Vector3<Real>), candidates: f(Direction)
+      -> Real`, `f(a.dir)` accepted. The new accept for `dir(0,1,0)` follows from dir-static-type-direction'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Wired on main, so any present-check would be vacuous. Behavioural cover: the B7 CLI test.'
+  - name: vector-int-literal-accepted-by-dir
+    binding: 'already wired on main: reify-stdlib helpers.rs `tensor_components_f64` -> `uniform_components_f64`
+      reads Int components through as_f64 (`vec3(0, 0, 3)` is Vector3<Int>, normalize(vec3(0,0,3)) = vec(0,
+      0, 1) observed)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Wired on main; vacuous as a present-check. Behavioural cover: B1 third example.'
+  - name: alpha-deliverables-for-beta
+    binding: 'upstream leaf α (in β''s prereqs): DiagnosticCode::DegenerateDirection, UnitVec3::from_vector
+      with Degenerate fault, DIRECTION_DEGENERACY_FLOOR in reify-core, Display dir(x, y, z); extent covers
+      everything β calls'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Checked on α's own capabilities.
+  - name: dir-has-no-arg-slots-by-design
+    binding: 'Delivered by this leaf: per-component classification at eval through the post-Undef hook.
+      ExpectedArg has no Int|Real|dimensionless-Scalar kind, so no slot rows exist (PRD §8 β amended).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Negative design fact; B1-B3 are the behavioural cover.
+- label: γ
+  task_id: 9635
+  title: 'direction-typing γ: vector(d) conversion builtin and the Direction operator table (C5, C6)'
+  capabilities:
+  - name: vector-conversion-builtin
+    binding: 'delivered by this leaf: ''vector'' arm in math_fn_result_type/MATH_OPERATION_NAMES (reify-compiler
+      math_signatures.rs) and eval_linalg (reify-stdlib linalg.rs). Absent today: probe pg_vec.ri warns
+      ''unresolved function: vector''. Accepted gap: Matches the const slice entry (and the mirrored EXPECTED
+      list in the frozen-set test, which must also change). Accepted gap: does not prove the eval arm.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*"vector",\s*$
+      expect: present
+      paths:
+      - crates/reify-compiler/src/math_signatures.rs
+  - name: vector-conversion-eval-arm
+    binding: 'delivered by this leaf in reify-stdlib linalg.rs eval_linalg beside the normalize arm (Direction
+      -> Value::Vector of three Real). Accepted gap: Assumes the arm lives in linalg.rs as the PRD says
+      (math-family builtin beside normalize). Behavioural cover: B20 fixture and the stdlib unit test.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"vector"\s*=>'
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/linalg.rs
+  - name: direction-negation-eval
+    binding: 'delivered by this leaf: reify-expr lib.rs negate_value has no Direction arm (falls to _
+      => Undef; probe pg_ops3 ''n = undef''). Uses UnitVec3::negated from upstream α (C2 fixes the name;
+      α is in prereqs). Accepted gap: Relies on C2''s fixed UnitVec3::negated name. Behavioural cover:
+      negation unit test + B18.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \.negated\(\)
+      expect: present
+      paths:
+      - crates/reify-expr/src/lib.rs
+  - name: scalar-times-direction-static-and-eval
+    binding: 'delivered by this leaf: infer_mul_div_result (type_compat.rs) + eval_mul (reify-expr lib.rs)
+      + both parity tables. Today 2mm*d and d*2.0 are ArithOperandKind errors.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Arm shape is implementer-chosen (no fixed symbol); behavioural cover is the Direction rows
+        in mul_div_runtime_truth_table.rs / mul_div_static_runtime_parity.rs plus B18 in μ.
+  - name: direction-addsub-and-mixed-form-rejection
+    binding: 'Add/Sub: mechanism exists (poison_arith_operand_kind + add_sub guard in expr.rs), this leaf
+      extends it. Mixed dot/cross/magnitude: NO rejection mechanism exists for math fns on main (math_fn_result_type
+      has no diagnostics), delivered new by this leaf. Today d+e and magnitude(d) check CLEAN (probe pg_ops2)
+      and eval undef.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Hint text 'write vector(' has no fixed file (expr.rs, type_compat.rs or a new module), so
+        a grep path list could wedge dependents; behavioural cover is the Add/Sub and mixed-form compile
+        tests and B19 in μ.
+  - name: dot-cross-normalize-direction-eval
+    binding: delivered by this leaf in linalg.rs; today dot/cross/normalize of Directions eval to undef
+      (probe pg_ops3).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: No fixed symbol; covered by linalg.rs unit tests ported from the branch (rewritten to C6)
+        and B18.
+  - name: direction-value-shape-and-negated
+    binding: 'upstream α: Value::Direction(UnitVec3) with negated()/components(); α is in prereqs and
+      C2 covers the extent.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream α's deliverable.
+  - name: relation-vector-operand-rejection
+    binding: 'wired on main: relation operand lift in relation_signatures.rs; probe pg_rel.ri: ''parallel:
+      operand Vector3<Real> has no Direction projection'', rc=1, via reify check.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Already wired; covered by existing relate tests.
+  - name: dir-builtin-upstream
+    binding: producer:β upstream (edge γ ← β added at decompose) for dir(...) in the B16/B18 fixtures.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream fact; the wired edge is the guarantee.
+- label: σ
+  task_id: 9636
+  title: 'direction-typing σ: ExpectedArg::Direction slot kind for builtins, frame_at rows'
+  capabilities:
+  - name: expected-arg-direction-variant
+    binding: 'delivered by this leaf: a Direction variant of ExpectedArg in crates/reify-compiler/src/builtin_signatures.rs;
+      main has only Scalar/Int/Enum'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    Direction( \{|,)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: direction-check-arm
+    binding: 'delivered by this leaf: the `ExpectedArg::Direction` arm in check_builtin_arg_types accepting
+      Type::Direction, skipping Error/TypeParam, emitting ArgTypeMismatch otherwise Accepted gap: Matches
+      the line-initial arm head only (row construction is `expected: ExpectedArg::Direction`, not line-initial).
+      Behavioural cover: the frame_at slot tests.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s+ExpectedArg::Direction
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: frame-at-slot-rows
+    binding: 'delivered by this leaf: arity-guarded `"frame_at"` row in builtin_arg_slots with Direction
+      slots at indices 1 and 2; today frame_at is absent from the table (units.rs resolver is arity/type-blind)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"frame_at"( if [^=]*)? =>'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: frame-at-slot-row-uses-direction-kind
+    binding: 'delivered by this leaf: the frame_at row''s slots use ExpectedArg::Direction (directly or
+      through a direction_arg helper)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'expected: ExpectedArg::Direction'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: frame-at-vector-args-rejected-at-check
+    binding: 'rejection premise (B23): mechanism = the Direction arm plus the frame_at rows, delivered
+      by this leaf. Substrate observed today: `frame_at(o, vec3(1, 0, 0), vec3(0, 0, 1))` -> `All constraints
+      satisfied.` rc=0 and eval `Main.f = undef` (a decompose-time probe), i.e. rejection-absent
+      until σ lands'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Behavioural: a harness_type_checking test that frame_at with Vector3 at slots 1 and 2 yields
+        two ArgTypeMismatch Errors mentioning Direction and that the positive forms stay clean.'
+  - name: coverage-registry-entries-for-frame-at
+    binding: 'delivered by this leaf: `"frame_at",` entries in NON_SELECTOR_ARG_SLOT_KEYS and ARITY_UNOBSERVABLE_SLOT_KEYS
+      in the tests module of builtin_signatures.rs (or a LOWERING_ACCEPTED_ARITIES tuple); required or
+      arg_slot_keys_are_registered_builtin_names and every_slotted_name_is_ledgered_or_recorded_unobservable
+      go red'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"frame_at",'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: frame-at-existing-callers-are-direction-typed
+    binding: 'already wired on main: every frame_at call site passes a Direction-typed value (probe a decompose-time probe
+      self.x, a.dir, frame_at(..).x, frame3_identity().x all report Direction); examples/first_class_frame_datums.ri
+      checks clean (rc 0)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Wired on main so a present-check would be vacuous. Covered by the existing corpus (examples/first_class_frame_datums.ri,
+        tests/prd-gate/fixtures/s8_frame_datum_planes.ri) staying green.
+  - name: dir-hint-names-an-existing-builtin
+    binding: 'upstream leaf β (in σ''s prereqs): `dir` is a real builtin before σ''s ''write dir(x, y,
+      z)'' hint can point at it; covers the extent (arity 3 and 1)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Verified on β's capabilities (dir-static-type-direction, dir-eval-arm-and-dispatch).
+  - name: offset-curve-stays-unslotted
+    binding: 'PRD C7 amended: third arg is Surface | Direction; offset_curve_third_argument_is_never_slotted
+      stays green; θ-b keeps it eval-checked.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Existing test is the cover.
+- label: δ
+  task_id: 9637
+  title: 'direction-typing δ: datum-slot conformance for Direction/Axis/Plane/Frame at ctor and param-default
+    sites (C7, D8)'
+  capabilities:
+  - name: direction-axis-plane-frame-rows-in-acceptance-relation
+    binding: 'delivered by this leaf in #8739''s type_acceptance.rs (general_leaf_param_family_is_validated
+      / conformance_accepts). Upstream #8739 is a declared out-of-batch prereq (in-progress; branch contains
+      the relation). Today the four types are unexamined: probes p_axis_int.ri/p_frame_str.ri accept everything.
+      Accepted gap: File does not exist on main (never_existed, not stale); #8739''s own record fixes
+      this path and its branch version has no Type::Direction. Three sibling checks cover Axis, Plane,
+      Frame.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Type::Direction
+      expect: present
+      paths:
+      - crates/reify-compiler/src/type_acceptance.rs
+  - name: axis-row
+    binding: 'delivered by this leaf (same relation). Accepted gap: As above; absent in #8739 branch version.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Type::Axis
+      expect: present
+      paths:
+      - crates/reify-compiler/src/type_acceptance.rs
+  - name: plane-row
+    binding: 'delivered by this leaf (same relation). Accepted gap: As above; absent in #8739 branch version.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Type::Plane
+      expect: present
+      paths:
+      - crates/reify-compiler/src/type_acceptance.rs
+  - name: frame-row
+    binding: 'delivered by this leaf (same relation). Accepted gap: Uses (_) because #8739''s branch test
+      uses the literal Type::Frame(3); assumes the idiomatic (_) spelling used throughout the compiler.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Type::Frame\(_\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/type_acceptance.rs
+  - name: vector-at-direction-slot-hint
+    binding: delivered by this leaf in the walker's emit_arg_type_mismatch; names builtin dir, which β
+      (prereq) delivers. Message text fixed by C7/B6.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DIRECTION_MIGRATION_HINT
+      expect: present
+      paths:
+      - crates/reify-compiler/src/conformance/mod.rs
+      - crates/reify-compiler/src/type_acceptance.rs
+  - name: known-limitation-7958-bullet-shrinks
+    binding: 'docs/reify-language-spec.md §4.9 bullet is the only surviving ''unexamined'' list after
+      #8739. Accepted gap: Bound to the exact leading list; rc 0 on main and on the #8739 branch.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'These field types are not yet checked and accept any argument: `Frame`, `Transform3`,
+        `Direction`, `Axis`, `Plane`'
+      expect: absent
+      paths:
+      - docs/reify-language-spec.md
+  - name: default-site-reaches-the-relation
+    binding: 'wired on main: check_param_default_conformance general arm -> walk_param_against_arg (same
+      walker as ctor); reached by reify check on param defaults.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Wired today; B8 test covers it.
+  - name: upstream-8739-relation
+    binding: 'NOT on main: type_acceptance.rs and ArgVerdict exist only on branch task/8739 (task in-progress).
+      Genuinely in δ''s declared prereqs. — producer:task-8739 upstream, in progress, edge wired; δ''s
+      path is fixed by that task''s record.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Gate on #8739 landing; its own delivered_check is fn conformance_accepts in crates/reify-compiler/src.'
+  - name: dir-builtin-for-hint
+    binding: upstream β (in prereqs); dir is unresolved today (pg_vec.ri).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream β's deliverable.
+- label: ε
+  task_id: 9638
+  title: 'direction-typing ε: value-shape SPOT for datums, Axis.direction and Plane.normal are always
+    Value::Direction (C9)'
+  capabilities:
+  - name: stdlib-constructors-mint-direction
+    binding: 'delivered by this leaf: make_axis, make_plane (locals dir_vec/normal_vec), eval_axis_through,
+      eval_plane_through, plus eval_midplane and eval_offset_plane (PRD omission) in reify-stdlib geometry.rs
+      mint Value::Vector today; mint through α''s UnitVec3::from_vector (α in prereqs, C2).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Box::new\(make_real_vec3\(
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      - crates/reify-stdlib/src/geometry
+  - name: make-axis-plane-locals
+    binding: delivered by this leaf (make_plane normal_vec, make_axis dir_vec).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let (dir_vec|normal_vec) = Value::Vector\(
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+      - crates/reify-stdlib/src/geometry
+  - name: frame-plane-mints-direction
+    binding: 'delivered by this leaf: frame_plane in reify-expr datum_projection.rs (not stdlib). Reached
+      by production path .xy_plane/.yz_plane/.zx_plane on a Frame. Accepted gap: Only frame_plane matches.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'normal: Box::new\(Value::Vector\(vec!\['
+      expect: absent
+      paths:
+      - crates/reify-expr/src/datum_projection.rs
+  - name: solver-transform-datum-mints-direction
+    binding: 'delivered by this leaf: transform_datum in reify-constraints relate_solve.rs mints vector_value
+      for Axis/Plane. Accepted gap: Two matches on main, both in transform_datum; none in tests.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '(direction|normal): Box::new\(vector_value\('
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/relate_solve.rs
+  - name: eval-decoders-read-direction
+    binding: 'delivered by this leaf: decode_plane/decode_axis in reify-eval geometry_ops.rs read through
+      decode_direction (C3, defined by α) instead of point3_components+unit_vector3. Today a kernel-minted
+      plane/axis makes mirror/circular_pattern fail and .normal/.dir undef (probes pe_b17c.ri, pe_b17d.ri).
+      Accepted gap: decode_direction is C3''s fixed name; absent from geometry_ops.rs on main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: decode_direction
+      expect: present
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: eval-decoders-drop-unit-vector3
+    binding: 'delivered by this leaf (call sites only; the fn survives for θ-b''s modify_offset_curve).
+      Accepted gap: Bound to the two decoder call sites, not the fn.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: unit_vector3\((normal_raw|dir_raw)\)
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: pinned-test-decode-axis-inverted
+    binding: 'exists on main: fn decode_axis_direction_variant_still_fails_the_pre_delta_way in crates/reify-eval/src/geometry_ops/tests.rs
+      (confirmed). Accepted gap: Bound to the test name; accepted gap: inverting the body but keeping
+      the (now false) name. Cover: the replacement accept test.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn decode_axis_direction_variant_still_fails_the_pre_delta_way
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops/tests.rs
+  - name: pinned-test-has-codomain-kind-inverted
+    binding: 'exists on main: has_codomain_kind in #[cfg(test)] of crates/reify-compiler/src/datum_projection.rs,
+      Plane row matches normal as Value::Vector (confirmed). Accepted gap: Bound to the Plane->Vector
+      row.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Plane \{ normal, \.\. \} if matches!\(&\*\*normal, Value::Vector
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/datum_projection.rs
+  - name: kernel-minted-datums-already-direction
+    binding: 'wired on main: reify-kernel-occt lib.rs and reify-eval feature_datum.rs datum_to_value mint
+      Value::Direction; reached via cyl.axis / face.plane in reify eval (probes show axis(.., direction(0,1,0))).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Already wired; ε's behavioural cover is B17 on feature datums.
+  - name: decode-direction-and-from-vector
+    binding: 'upstream α (in prereqs): decode_direction, UnitVec3::from_vector.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream α's deliverable.
+  - name: b17-stdlib-axis-half
+    binding: 'already true on main: circular_pattern(g, axis_through(..), 4, 90deg) builds today (pe_b17a:
+      84 triangles). Only kernel-minted datums fail.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: No transition; B17's first expression is not a RED signal.
+- label: η
+  task_id: 9639
+  title: 'direction-typing η: Frames collapse to the Frame datum; delete Frame3, MaterialFrame and MassProperties.origin'
+  capabilities:
+  - name: frame-typed-struct-param-and-frame-at-ctor
+    binding: 'already wired: type_resolution.rs `"Frame" => Some(Type::Frame(3))`; eval_frame_at in reify-stdlib
+      geometry.rs reached by reify eval (probe eta_frame_param.ri prints Holder.f = frame(point(0 m, 0
+      m, 0 m), [1, 0, 0, 0]q), trait param `Frame` + conformer default also resolves: eta_trait_frame.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Already on main; any grep would be vacuous. Behavioural cover: probes eta_frame_param.ri
+        / eta_trait_frame.ri and B5.'
+  - name: dir-literal-and-frame-basis-and-decode-direction
+    binding: 'delivered by upstream α (frame_basis, decode_direction, Value::Direction display `dir(..)`)
+      and β (dir(x,y,z)); both are in η''s §8 prereqs (α, β). Extent check: frame_basis(&Value)->rows
+      covers Frame->basis only; the basis->quaternion inverse the as-printed minters need is NOT in α''s
+      C8 (producer-extent-short) so η delivers it (next capability).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream deliverables; α/β own their own checks.
+  - name: as-printed-minters-emit-value-frame
+    binding: 'delivered by this leaf: material_frame (as_printed_material.rs) and r0_material_frame (as_printed_material_r0.rs)
+      currently mint structure("MaterialFrame", ..); they must mint Value::Frame{origin: Point3<Length>,
+      basis: Value::Orientation} via a new pure-f64 matrix->quaternion helper (not the orient_basis builtin).
+      Accepted gap: Bound to the quoted minter literal on its own line, which doc comments cannot be.
+      Accepted gap: does not prove a Value::Frame is minted; as_printed_r0_trampoline.rs / as_printed_trampoline.rs
+      (frame read back via frame_basis) are the behavioural cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*"MaterialFrame",\s*$
+      expect: absent
+      paths:
+      - crates/reify-eval/src/compute_targets/as_printed_material.rs
+      - crates/reify-eval/src/compute_targets/as_printed_material_r0.rs
+  - name: fea-material-reader-reads-value-frame-via-frame-basis
+    binding: 'delivered by this leaf: anisotropic_material_from_value (elastic_static.rs) currently reads
+      x_axis/y_axis/z_axis fields through extract_vec3_si; must read AnisotropicMaterial.frame as Value::Frame
+      through α''s frame_basis.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: frame_basis\(
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: identity-frame-bitwise-contract-kept
+    binding: 'numeric/exactness premise, floor: frame_at(o, dir(1,0,0), dir(0,0,1)) -> orient_basis Shepperd
+      gives exactly [1,0,0,0] (probe prints `[1, 0, 0, 0]q`); frame_basis of that quaternion is exactly
+      I (1-2*(0)=1, 2*(0*0-1*0)=+0.0), so rotate_voigt''s identity no-op stays to_bits-equal. Existing
+      pin: material_field.rs `anisotropic_material_from_law_with_identity_frame_d_global_is_bitwise_d_local`
+      (reify-solver-elastic).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Exactness is behavioural; covered by the reify-solver-elastic pin above plus a new eval-level
+        to_bits test through AnisotropicMaterial(frame: frame_at(..)).'
+  - name: frame3-struct-deleted
+    binding: 'delivered by this leaf: ports.ri `structure def Frame3`. Rust dynamics::spatial::Frame3
+      is a different type and stays. Accepted gap: Line-anchored: the header comment `//   - structure
+      def Frame3  {` does not match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^structure def Frame3 \{
+      expect: absent
+      paths:
+      - crates/reify-compiler/stdlib/ports.ri
+  - name: materialframe-struct-deleted
+    binding: 'delivered by this leaf: constitutive.ri `structure def MaterialFrame`. Accepted gap: Line-anchored
+      against the explanatory comment block.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^structure def MaterialFrame \{
+      expect: absent
+      paths:
+      - crates/reify-compiler/stdlib/constitutive.ri
+  - name: located-port-frame-is-frame
+    binding: 'delivered by this leaf; substrate: trait param `Frame` with conformer default frame_at(..)
+      compiles today (eta_trait_frame.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^    param frame : Frame\s*$'
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/ports.ri
+  - name: anisotropic-material-frame-is-frame
+    binding: 'delivered by this leaf; today AnisotropicMaterial(frame: <Frame>) is rejected: `argument
+      ''frame'' has type ''Frame3'' but param ''frame'' requires structure type ''MaterialFrame''` (eta_aniso_frame.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^    param frame : Frame\s*$'
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/constitutive.ri
+  - name: mass-properties-origin-field-deleted
+    binding: 'delivered by this leaf: dynamics.ri `param origin : Frame3`. Accepted gap: Line-anchored;
+      header comment `//   origin  : Frame3` does not match.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^    param origin : Frame3\s*$'
+      expect: absent
+      paths:
+      - crates/reify-compiler/stdlib/dynamics.ri
+  - name: default-frame3-minter-deleted
+    binding: 'delivered by this leaf: pub fn default_frame3 (reify-stdlib dynamics/eval.rs) and its two
+      callers (make_mass_properties; dynamics_ops.rs assemble_mass_properties).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn default_frame3\(
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src
+      - crates/reify-eval/src
+  - name: fence-test-inverted
+    binding: 'delivered by this leaf: elastic_static.rs `material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global`
+      replaced by an orthonormality-through-frame_basis test.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn material_frame_is_not_normalised_so_a_non_unit_axis_moves_d_global
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: unknown-origin-field-rejection-mechanism
+    binding: 'rejection premise: E_CTOR_UNKNOWN_FIELD (''unknown named argument .. has no parameter with
+      that name'') is wired and fires today for any unknown ctor field (probe eta_unknown_field.ri, rc
+      1); it will fire for `origin:` once the param is gone.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Mechanism already on main; behavioural cover is the B10 fixture asserting E_CTOR_UNKNOWN_FIELD
+        naming 'origin'.
+  - name: s15-mass-properties-single-owner-upstream
+    binding: producer:task-8697 upstream, edge wired.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream task.
+  - name: fea-reader-transposes-frame-basis
+    binding: 'Delivered by this leaf: PRD C8 amended; rotate_voigt takes columns, frame_basis returns
+      rows, so the reader transposes. Floor for orthonormality: 1e-12 over f64 Gram-Schmidt; identity
+      contract is bitwise via the existing to_bits test.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Direction of a transpose is not greppable; B11 is the behavioural cover.
+  - name: quat-basis-axis-deleted
+    binding: Delivered by this leaf (PRD C8 amended).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn quat_basis_axis\(
+      expect: absent
+      paths:
+      - crates/reify-expr/src/datum_projection.rs
+- label: ζ-a
+  task_id: 9640
+  title: 'direction-typing ζ-a: joints and flexures take Direction (kinematic.ri/ports_mechanical.ri fields,
+    joint+prb_* builtins, validators, corpus)'
+  capabilities:
+  - name: dir-constructor-and-display
+    binding: 'producer:β (dir builtin, via α Display dir(x, y, z)); β is in ζ-a prereqs and β depends
+      on α. Absent today: probe p9 prints ''unresolved function: dir'' and eval undef.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'delivered by β/α and gated by their own checks; behavioural cover: joint_axis print assertion
+        in this leaf''s e2e and μ B1'
+  - name: builtin-direction-slot-kind
+    binding: 'producer:σ (ExpectedArg::Direction in builtin_signatures.rs ExpectedArg + check arm); σ
+      is in ζ-a prereqs; extent: σ delivers the kind and arm, this leaf delivers the per-name rows'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivered by σ; gated by σ's checks
+  - name: ctor-default-direction-conformance
+    binding: 'producer:δ (Direction row in ArgVerdict relation, type_acceptance.rs after #8739); δ in
+      prereqs. Mechanism reachable for stdlib struct ctors: today Revolute(axis: "up") is rejected by
+      the same walker (probe p1_revolute_ctor), only Direction/Axis rows are missing.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivered by δ; B6 type half is covered by a compiler test in this leaf plus μ
+  - name: driving-joint-axis-params-direction
+    binding: 'this leaf: kinematic.ri structure defs Prismatic/Revolute/Cylindrical param axis Accepted
+      gap: one match proves any of the three driving joints; the vec3_type_tests.rs inversions are the
+      behavioural cover'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*param axis[[:space:]]*:[[:space:]]*Direction([[:space:]]|$|/)
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/kinematic.ri
+  - name: planar-joint-axis-params-direction
+    binding: 'this leaf: kinematic.ri structure def Planar params axis_x/axis_y'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*param axis_y[[:space:]]*:[[:space:]]*Direction([[:space:]]|$|/)
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/kinematic.ri
+  - name: port-axis-trait-params-direction
+    binding: 'this leaf: ports_mechanical.ri traits RotaryPort and LinearPort param axis (trait-required
+      params, no corpus implementer) Accepted gap: RotaryPort and LinearPort lines are textually identical
+      so one match cannot prove both; covered by the inverted RotaryPort/LinearPort assertions in ports_stdlib_compile.rs'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*param axis[[:space:]]*:[[:space:]]*Direction([[:space:]]|$|/)
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/ports_mechanical.ri
+  - name: joint-builtin-direction-slot-rows
+    binding: 'this leaf: builtin_arg_slots arms for prismatic, revolute, cylindrical, planar (not present
+      on main: git grep of those names in builtin_signatures.rs is empty); fires through σ''s check arm
+      Accepted gap: matches an arm head only (tuple/list entries like "prismatic", do not match); accepted
+      gap: does not prove the index or ExpectedArg kind, covered by the per-name slot tests this leaf
+      adds'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*(\|[[:space:]]*)?"(prismatic|revolute|cylindrical|planar)"[[:space:]]*(\||=>|if
+        )
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: flexure-builtin-direction-slot-rows
+    binding: 'this leaf: builtin_arg_slots arms for the 13 prb_* names (flexure_signatures.rs only classifies
+      the result type today, no arg rows) Accepted gap: proves at least one prb_ arm; the 13-name coverage
+      is pinned by a test this leaf adds iterating the 13 names'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*(\|[[:space:]]*)?"prb_[a-z_]+"[[:space:]]*(\||=>|if )
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: vector-axis-rejected-at-joint-builtins
+    binding: 'rejection premise: mechanism = σ check arm + this leaf''s rows. rejection-absent TODAY (probe
+      p1b: revolute("up"), zero axis and vec3(1mm,0,0) check clean with ''All constraints satisfied.''
+      and eval undef/OpContractViolation); fires once σ and the rows land, both upstream/this leaf.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'no sound single-line grep for ''rejection fires''; behavioural cover: a compiler test per
+        fn asserting ArgTypeMismatch naming Direction on vec3/String/zero axes, plus μ B6 fixture'
+  - name: vector-axis-rejected-at-joint-ctors
+    binding: 'rejection premise: mechanism = δ rows reached from the ctor/default walker (struct ctor
+      Revolute(axis: vec3(0,1,0)) and (axis: vec3(0,0,0)) are ACCEPTED silently today, probe p1_revolute_ctor;
+      only the String case errors). Delivered by δ (prereq) once the field type is Direction.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural cover: B6 compiler test (ctor ArgTypeMismatch naming Direction, hint ''write
+        dir(x, y, z)'') asserted in this leaf and μ'
+  - name: flexure-axis-validators-decode-direction
+    binding: 'this leaf: the 7 flexure parse fns (beam.rs parse_beam_inputs et al.) call decode_direction
+      instead of validate_dimensionless_unit_axis_vec3; decode_direction from α via β Accepted gap: code-line
+      match only (// and /// lines excluded); beam.rs is one of five flexure files, others covered by
+      the flexure e2e tests'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*[^/_A-Za-z]decode_direction\(
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/flexures/beam.rs
+  - name: support-axis-validator-decodes-direction
+    binding: 'this leaf: supports.rs RollerSupport normal arg validated via decode_direction'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*[^/_A-Za-z]decode_direction\(
+      expect: present
+      paths:
+      - crates/reify-stdlib/src/supports.rs
+  - name: vector-axis-validator-helper-retired
+    binding: 'this leaf: helpers.rs validate_dimensionless_unit_axis_vec3 has no remaining caller once
+      joints, flexures and supports use decode_direction (callers enumerated by git grep: joints.rs wrapper,
+      7 flexure sites, supports.rs) Accepted gap: anchored to the fn definition so a doc comment naming
+      it cannot keep the check red; S6 ι #8836 (Joint::from_value) may also consume this helper: whichever
+      lands second adapts'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*pub\(crate\) fn validate_dimensionless_unit_axis_vec3\(
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/helpers.rs
+  - name: joint-fk-bit-identity-for-corpus-axes
+    binding: 'numeric/identity premise: FK outputs unchanged for the corpus. Identity: single normalisation
+      x/sqrt(x*x+y*y+z*z) in UnitVec3::from_vector equals joints.rs unit_normalize on the raw input; exact
+      for basis axes (norm 1.0); for (1,1,0)/(1,-1,0) holds iff the at-use unit_normalize is deleted (no
+      second pass). Floor: carriage_a baseline [[0.07071067811865475, 0.21213203435595915]] measured on
+      main by reify eval.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value identity; covered by the corexy fixture value assertion and joints.rs transform_at
+        tests re-expressed with Direction axes
+  - name: gui-joint-descriptor-reads-direction-axis
+    binding: 'UNOWNED in PRD: gui/src-tauri/src/engine.rs extract_axis matches Value::Vector only; Direction
+      gives JointDescriptor.axis None. Recommend ζ-a absorbs it (same-diff). S6 λ₀ #8838 rewrites extract_joint_descriptor
+      via JointKind, so a grep check on engine.rs could wedge. — Owner assigned at decompose: ζ-a, same
+      diff. Manual because #8838 rewrites extract_joint_descriptor.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'S6 #8838 may relocate the reader; behavioural cover: gui/src-tauri engine_tests descriptor
+        axis assertions with dir(...) axes'
+  - name: corpus-joint-call-sites-migrated
+    binding: 'this leaf: 51 prismatic + 18 revolute + 2 planar .ri call sites (sampled by file) Accepted
+      gap: one representative file; whole-corpus coverage is examples_smoke and the ctor-conformance corpus
+      survey in μ'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: prismatic\(dir\(1, 0, 0\)
+      expect: present
+      paths:
+      - examples/kinematic/dock_pickup.ri
+  - name: corpus-nonunit-axis-sites-migrated
+    binding: 'this leaf: s6_corexy_tie_orientation.ri axes (1,1,0)/(1,-1,0) become dir(1, 1, 0)/dir(1,
+      -1, 0)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: prismatic\(dir\(1, 1, 0\)
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/s6_corexy_tie_orientation.ri
+  - name: corpus-struct-ctor-sites-migrated
+    binding: 'this leaf (callee Prismatic/Revolute/Cylindrical/Planar retyped): 5 ctor sites not counted
+      in the PRD'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'Prismatic\(axis: dir\('
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/joint_constrained_dof_compliance.ri
+  - name: slider-write-back-gate-lockstep
+    binding: 'this leaf: sliderWriteBackGate.mjs JOINT_RANGE_DECL must equal the migrated slider_write_back.ri
+      declaration (vitest pins one occurrence)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: prismatic\(dir\(1, 0, 0\)
+      expect: present
+      paths:
+      - gui/test/visual/sliderWriteBackGate.mjs
+- label: ζ-b
+  task_id: 9641
+  title: 'direction-typing ζ-b: FEA loads (PointLoad/Gravity.direction -> Direction; extract_loads via
+    decode_direction; read_direction_or_neg_z deleted)'
+  capabilities:
+  - name: dir-constructor-for-stdlib-defaults
+    binding: producer:β (dir builtin usable in stdlib default expressions); in prereqs. Absent today (probe
+      p9).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivered by β; this leaf's default-expr pin (FunctionCall dir) covers it
+  - name: ctor-default-direction-conformance
+    binding: 'producer:δ rows (Direction at ctor/default); in prereqs. Rejection premise: PointLoad(direction:
+      vec3(0.0,0.0,-2.0)) and Gravity(direction: vec3(0,0,0)) are accepted silently today (probe p5b);
+      and a Direction at the Vector3 field is REJECTED today (probe p5), so rejection fires only after
+      the field is retyped (this leaf) and δ lands.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural cover: B9 second row (check error, old silent x2 unreachable) asserted by a
+        compiler test in this leaf and μ'
+  - name: load-direction-fields-direction
+    binding: 'this leaf: fea_multi_case.ri PointLoad.direction and Gravity.direction params (PressureLoad.direction
+      is κ''s and is not `: Direction`) Accepted gap: PointLoad and Gravity lines match the same text,
+      one match cannot prove both; multi_load_case_stdlib_tests.rs pins each by structure name'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*param direction[[:space:]]*:[[:space:]]*Direction([[:space:]]|$|=)
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+  - name: extract-loads-decodes-direction
+    binding: 'this leaf: elastic_static.rs extract_loads PointLoad and Gravity arms read direction via
+      decode_direction (decode_direction from α via β)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Decoder home is #8683''s choice (S15 stdlib_inputs), so a path-bound present check could
+        wedge dependents. Cover: B9 and the inverted pin.'
+  - name: neg-z-silent-default-reader-deleted
+    binding: 'this leaf: elastic_static.rs fn read_direction_or_neg_z removed (its absent-vs-wrong -Z
+      default is the C3 ''no consumer may default on a mismatch'' violation)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn read_direction_or_neg_z\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: unit-direction-force-exactness
+    binding: 'numeric/identity premise (B9 first row): tip force [0,0,-force] exactly. Identity: |dir(0,0,-1)|
+      = 1.0 so from_vector divides by exactly 1.0 and force*dir[axis] reproduces the old product bit-for-bit
+      for basis directions; holds for every explicit corpus direction ((0,-1,0), (0,0,-1)).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value identity; covered by extract_loads unit test with to_bits equality on basis directions
+  - name: corpus-explicit-direction-sites-migrated
+    binding: 'this leaf: examples/multi_load_bracket.ri (3 sites) and examples/fea_multi_case_smoke.ri
+      (2 sites)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'direction: dir\('
+      expect: present
+      paths:
+      - examples/multi_load_bracket.ri
+  - name: corpus-smoke-direction-sites-migrated
+    binding: 'this leaf: fea_multi_case_smoke.ri PointLoad and Gravity explicit directions'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '(PointLoad|Gravity)\([^)]*direction: dir\('
+      expect: present
+      paths:
+      - examples/fea_multi_case_smoke.ri
+  - name: structure-instance-golden-regenerated
+    binding: 'this leaf (needs α Display dir(x, y, z)): crates/reify-eval/tests/golden/structure_instance.txt
+      PointLoad default prints dir(0, 0, -1)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'direction: dir\(0, 0, -1\)'
+      expect: present
+      paths:
+      - crates/reify-eval/tests/golden/structure_instance.txt
+  - name: s15-load-decoder-upstream
+    binding: producer:task-8683 upstream, edge wired. Delivers LoadSpec decoders and InputDecodeError
+      → ComputeInputMalformed; Undef → Unresolved stays quiet.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream task; its own delivered checks gate this leaf.
+  - name: malformed-direction-is-coded-decode-failure
+    binding: 'Delivered by this leaf: a direction neither Direction nor Undef is ComputeInputMalformed
+      naming the field.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Decoder home is #8683''s choice, so a path-bound grep could wedge; the inverted pin extract_loads_malformed_direction_defaults_to_neg_z
+        is the behavioural cover.'
+- label: ζ-c
+  task_id: 9642
+  title: 'direction-typing ζ-c: modal (ModalOptions.reference_direction, forcing-function direction, displacement_at
+    direction -> Direction; modal_ops readers via decode_direction)'
+  capabilities:
+  - name: dir-constructor-for-stdlib-and-corpus
+    binding: producer:β in prereqs (absent today, probe p9)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivered by β
+  - name: ctor-and-fn-direction-conformance
+    binding: 'producer:δ rows for struct ctor/default; user fn-call slots (displacement_at) already use
+      exact type match (resolve_function_overload), so StepForce.direction typed Direction passes displacement_at(..,
+      Direction) only after both retype in this leaf. Rejection premise observed: zero and non-unit reference_direction
+      accepted today, Direction rejected (probe p8).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural cover: compiler test asserting ModalOptions/StepForce vec3 arg ArgTypeMismatch
+        + modal fixtures running with dir(..)'
+  - name: modal-direction-fields-direction
+    binding: 'this leaf: modal_analysis.ri ModalOptions.reference_direction and the four forcing structures''
+      direction params Accepted gap: any one of five fields satisfies it; modal_options_validation_tests.rs
+      inversions are the per-field cover'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*param (reference_)?direction[[:space:]]*:[[:space:]]*Direction([[:space:]]|$|/)
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/modal_analysis.ri
+  - name: displacement-at-direction-params-direction
+    binding: 'this leaf: modal_analysis_fns.ri displacement_at (String overload) and displacement_at (FaceSelector
+      overload) direction params Accepted gap: two overloads share identical text; one match cannot prove
+      both; the transient example evaluating (FaceSelector overload) plus the String-location test cover
+      it'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*direction[[:space:]]*:[[:space:]]*Direction[[:space:]]*,?[[:space:]]*$
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/modal_analysis_fns.ri
+  - name: modal-direction-readers-decode-direction
+    binding: 'this leaf: modal_ops.rs extract_reference_direction, the transient forcing-source direction
+      read and displacement_at_trampoline direction read all via decode_direction (separate from read_vec3
+      which keeps mode-shape reads)'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Decoder home is #8679''s choice; a path-bound present check could wedge dependents. Cover:
+        the modal example identity and the inverted pins.'
+  - name: reference-direction-plus-z-fallback-deleted
+    binding: 'this leaf: the `let default_dir = [0.0, 0.0, 1.0];` fallback in extract_reference_direction
+      is removed (C3: no defaulting on mismatch) Accepted gap: anchored to the exact local; #8679 (deletes
+      decode fallbacks) could satisfy it first; behavioural cover is the inverted extract_reference_direction
+      test'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*let default_dir = \[0\.0, 0\.0, 1\.0\];
+      expect: absent
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+  - name: modal-example-numeric-identity
+    binding: 'numeric/identity premise: dir(0.0, 0.0, 1.0) has |v| = 1.0 exactly so participation-mass
+      projection and forcing coefficients are bit-identical to the vec3 form; floor: assert to_bits equality
+      of first_frequency and participation values on cantilever_beam_modes.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value identity covered by existing modal e2e fixtures run with dir(..)
+  - name: corpus-modal-options-sites-migrated
+    binding: 'this leaf: 16 reference_direction .ri sites'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'reference_direction: dir\('
+      expect: present
+      paths:
+      - examples/modal/cantilever_beam_modes.ri
+  - name: corpus-step-force-site-migrated
+    binding: 'this leaf: StepForce direction in transient_step_response.ri (and r3b_displacement_at_selector_grammar.ri)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'direction: dir\('
+      expect: present
+      paths:
+      - examples/modal/transient_step_response.ri
+  - name: s15-modal-decoder-upstream
+    binding: producer:task-8679 upstream, edge wired. Delivers the typed ModalOptions decoder and InputDecodeError
+      channel.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream task.
+- label: ζ-d
+  task_id: 9643
+  title: 'direction-typing ζ-d: FDM (FDMProcess.build_direction -> Direction; shared field_vec3 reader
+    via decode_direction; +Z fallbacks deleted)'
+  capabilities:
+  - name: dir-constructor-for-stdlib-default
+    binding: producer:β in prereqs (absent today, probe p9)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivered by β
+  - name: ctor-default-direction-conformance
+    binding: 'producer:δ rows. Rejection premise observed: zero build_direction accepted silently today
+      (probe p5b), Direction rejected (probe p6: "argument ''build_direction'' has type ''Direction''
+      but param ... requires vector type ''Vector3<Real>''").'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural cover: compiler test asserting vec3 and String build_direction ArgTypeMismatch;
+        fdm_stdlib_compile.rs pin inversion'
+  - name: build-direction-field-direction
+    binding: 'this leaf: fdm.ri FDMProcess param build_direction Accepted gap: does not match build_direction_provenance
+      (colon must follow the name)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[[:space:]]*param build_direction[[:space:]]*:[[:space:]]*Direction([[:space:]]|$|=)
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/fdm.ri
+  - name: as-printed-reader-decodes-direction
+    binding: 'this leaf: as_printed_material.rs field_vec3 (shared by R-fast and R0 via import) reads
+      through decode_direction'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Decoder home is #9293''s choice; a path-bound present check could wedge dependents. Cover:
+        the eval identity on examples/fdm_bracket.ri and the rejected vector form.'
+  - name: r-fast-plus-z-fallback-deleted
+    binding: 'this leaf: R-fast `unit3(build_direction).unwrap_or([0.0, 0.0, 1.0])` removed Accepted gap:
+      bound to the exact construct; r0_material_frame''s differently-spelled fallback is η''s and is not
+      matched'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: unit3\(build_direction\)\.unwrap_or\(\[0\.0, 0\.0, 1\.0\]\)
+      expect: absent
+      paths:
+      - crates/reify-eval/src/compute_targets/as_printed_material.rs
+  - name: r0-plus-z-fallback-deleted
+    binding: 'this leaf: R0 `unit3(build_direction).unwrap_or([0.0, 0.0, 1.0])` removed'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: unit3\(build_direction\)\.unwrap_or\(\[0\.0, 0\.0, 1\.0\]\)
+      expect: absent
+      paths:
+      - crates/reify-eval/src/compute_targets/as_printed_material_r0.rs
+  - name: as-printed-zone-identity-for-default
+    binding: 'numeric/identity premise: dir(0,0,1) has |v| = 1.0 so build_unit and material_frame(build_unit)
+      are bit-identical to unit3(vec3(0,0,1)); holds for any axis-aligned build direction.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: value identity; covered by as_printed_trampoline.rs / as_printed_r0_trampoline.rs fixtures
+        re-run with Direction build_direction
+  - name: s15-fdm-decoder-upstream
+    binding: producer:task-9293 upstream, edge wired. Delivers the FDM decoder and failure channel.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream task.
+- label: θ-a
+  task_id: 9644
+  title: 'direction-typing θ-a: orientation builtins (orient_axis_angle / orient_look_at / orient_basis)
+    take Direction; orient_to_axis_angle map axis becomes Direction'
+  capabilities:
+  - name: orient-slot-rows-reject-vector-at-check
+    binding: 'delivered by this leaf: arity-guarded arms for orient_axis_angle/orient_look_at/orient_basis
+      in builtin_arg_slots (none exist on main: `git grep ''"orient_axis_angle"'' main -- builtin_signatures.rs`
+      rc=1). Mechanism is check_builtin_arg_types, which runs on every builtin call (expr.rs NoUserFunctions
+      arm); today `orient_axis_angle(vec3(1m,0mm,0mm), 90deg)` checks clean rc=0 (probe 2), so the rejection
+      is absent until this leaf adds the rows. Accepted gap: Accepted gap: a comment or test-list mention
+      would also satisfy it; behavioural cover is a builtin_arg_signature_tests-style test asserting ArgTypeMismatch
+      for vec3 at orient_axis_angle.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"orient_axis_angle"'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: orient-axis-angle-reads-direction
+    binding: 'delivered by this leaf: orient_axis_angle arm of eval_orientation (crates/reify-stdlib/src/orientation.rs)
+      reads arg 0 via decode_direction instead of tensor_components_f64. Today a Direction gives undef
+      (probe 1: q_dir = undef, op contract failed). Numeric identity: dir(1,0,0) must give exactly [0.7071067811865476,
+      0.7071067811865475, 0, 0]q (same as vec3(1.0,0.0,0.0) on main, verified); bitwise only for exact
+      basis vectors, ulp-level for computed axes. Accepted gap: Bound to the orient_axis_angle arm''s
+      exact binding (orient_exp uses `(comps, dim)`, unaffected). Accepted gap: indirection (renaming
+      the binding while still calling tensor_components_f64); covered by the orientation.rs unit tests
+      asserting Direction -> quaternion and Vector -> undef/diagnostic.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let \(comps, _dim\) = match tensor_components_f64\(&args\[0\]\)
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/orientation.rs
+  - name: orient-basis-reads-directions
+    binding: 'delivered by this leaf: orient_basis arm reads args 0-2 via decode_direction. `tensor_components_f64(&args[2])`
+      occurs only in the orient_basis arm (orient_exp/diagnose use args[0]). Today orient_basis(d,d,d)
+      = undef (probe 1). Accepted gap: Accepted gap: a test fixture could re-introduce the token; behavioural
+      cover is the orient_basis unit tests (Direction accepted, Vector rejected).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: tensor_components_f64\(&args\[2\]\)
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/orientation.rs
+  - name: orient-look-at-reads-directions-and-delegates-directions
+    binding: 'delivered by this leaf: orient_look_at arm reads forward/up via decode_direction AND its
+      internal delegation to orient_basis (currently builds Value::Vector x/y/z at orientation.rs) must
+      stop passing Vectors, else look_at goes undef once orient_basis rejects Vectors. Accepted gap: Unique
+      to the look_at delegation (one match, in the arm). Cover: orientation_tests.rs look_at cases.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Vector\(vec!\[Value::Real\(x\[0\]\), Value::Real\(x\[1\]\), Value::Real\(x\[2\]\)\]\),
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/orientation.rs
+  - name: frame-at-keeps-working-after-orient-basis-retype
+    binding: 'delivered by this leaf as a same-diff companion edit in crates/reify-stdlib/src/geometry.rs
+      `eval_frame_at`, the only non-test caller of eval_orientation("orient_basis", make_real_vec3(...)).
+      No PRD 8 leaf owns this call site (D13 gap). Accepted gap: Unique to eval_frame_at''s orient_basis
+      argument list. Cover: frame_at / B5 / datum_projections fixtures (frame_at(...).y == dir(0,1,0)).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: make_real_vec3\(x_hat\),
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/geometry.rs
+  - name: orient-to-axis-angle-axis-is-direction
+    binding: 'delivered by this leaf: the `axis` entry of the Value::Map built by the orient_to_axis_angle
+      arm (orientation.rs) becomes a Direction; readers of the key are the 3 test sites listed in implementer_notes;
+      no production or .ri reader exists. Static type of `.axis` stays Real until task 6004 declares AxisAngle
+      (probe 3), so no Direction-slot consumer of `.axis` can exist in .ri yet. Accepted gap: The only
+      place in orientation.rs that wraps axis[0] in Value::Real is the Map builder. Cover: axis_angle_extract
+      round-trip tests + kinematic_stdlib_smoke sj_aa_back.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Value::Real\(axis\[0\]\),
+      expect: absent
+      paths:
+      - crates/reify-stdlib/src/orientation.rs
+  - name: lsp-rows-say-direction
+    binding: 'delivered by this leaf: the three BuiltinFunctionInfo rows in crates/reify-lsp/src/completion.rs
+      currently read `axis: Vector` / `forward: Vector` / `x_axis: Vector`. Accepted gap: Cover: completion.rs
+      tests that every BUILTIN_FUNCTIONS name resolves.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'orient_axis_angle\(axis: Direction'
+      expect: present
+      paths:
+      - crates/reify-lsp/src/completion.rs
+  - name: printer-corpus-migrated-to-dir
+    binding: 'delivered by this leaf: prj/printer_v01/printer.ri 16 orient_axis_angle + 3 orient_look_at
+      sites (verified counts) rewritten to dir(...); 5 of them (1388, 1389, 1395-1397) are computed Length
+      vectors needing dimensionless components, not a `dir(vec3(<Length>))` wrap. Accepted gap: Companion
+      cover for the other 12 sites: examples_smoke / ctor-conformance corpus survey in mu.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: orient_axis_angle\(dir\(
+      expect: present
+      paths:
+      - prj/printer_v01/printer.ri
+  - name: runtime-notadirection-diagnostic-for-orient-builtins
+    binding: 'C3 says a non-Direction argument yields a message ending `write dir(x, y, z)`, but eval_builtin
+      returns bare Undef and the only post-Undef channel is orientation::diagnose, which handles orient_exp
+      only. The PRD assigns the diagnostic to no leaf; nothing on main provides it. — Owner assigned at
+      decompose: θ-a extends orientation::diagnose.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Decision for the lead: either theta-a adds diagnose arms (recommended; INV-SF-1/6 want
+        a coded diagnostic, and Type::Error/TypeParam args escape the static slot check) or the PRD states
+        the static check is the only loud path. Behavioural cover would be an orientation.rs/CLI test
+        asserting a coded diagnostic for a gradual-typed Vector argument.'
+  - name: dir-and-slot-upstream
+    binding: producer:β, σ upstream, edges wired.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream.
+- label: θ-b
+  task_id: 9645
+  title: 'direction-typing θ-b: selectors (faces_by_normal/edges_parallel_to/*_perpendicular_to), build-path
+    angle(a, b), normal(surface, at) and offset_curve''s direction arm take/return Direction'
+  capabilities:
+  - name: selector-slots-reject-vector-at-check
+    binding: 'delivered by this leaf: add a Direction slot (index 1) to the shared selector arm in builtin_arg_slots
+      (today `=> const { &[angle_arg(2, "tol")] }`, tol only; Vector currently accepted). Probe: vec3
+      and Direction both pass check rc=0 today. Accepted gap: Matches only the selector arm line (unique).
+      Accepted gap: a reformat that keeps tol-only slots under another spelling; behavioural cover is
+      a check test for vec3 at faces_by_normal.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: => const \{ &\[angle_arg\(2, "tol"\)\] \}
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: selectors-read-direction
+    binding: 'delivered by this leaf: the 4 selector arms stop using resolve_vec3_arg (Vector-only closure
+      `as_vec3`) and read via decode_direction. Today a Direction at faces_by_normal/edges_parallel_to
+      is an uncoded Warning + undef rc 0 (probe tb_sel_dir.ri). Accepted gap: The Vector-accepting closure
+      inside resolve_vec3_arg; present once on main. Accepted gap: if the implementer keeps resolve_vec3_arg''s
+      name but drops the closure the check still passes correctly; if they keep the closure the leaf is
+      wrong. Cover: selector runtime tests with dir(..).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'let as_vec3 = \|v: &reify_ir::Value\|'
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: angle-build-path-reads-direction
+    binding: 'delivered by this leaf: TopologySelectorHelper::Angle in geometry_ops.rs reads ''a'',''b''
+      via decode_direction. The ONLY implementation of angle(a, b) is this build-path arm (no angle in
+      reify-stdlib/reify-expr: `git grep ''"angle"'' crates/reify-stdlib crates/reify-expr` empty). Result
+      for unit inputs: acos(clamp(dot)) = 1.5707963267948966 rad for dir(1,0,0), dir(0,1,0), identical
+      to today''s vec3 result (probe tb_angle_vec.ri). Accepted gap: Exact call-site line of the angle
+      arm. Cover: kernel_queries_angle_smoke.rs (retargeted to dir) and the geometry_ops angle unit tests.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: resolve_vec3_arg\(&args\[0\], values, &function\.name, "a"
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: angle-check-time-rejection-of-vectors
+    binding: 'delivered by this leaf: arity-guarded `"angle" if arg_count == 2` arm with two Direction
+      slots (arity 3 is the relation verb and must stay slot-free). Not delivered by any other leaf: gamma''s
+      text covers neither slots nor angle. Today angle(vec3, vec3) checks clean in a geometry module (probe
+      tb_angle_vec.ri) and angle(Direction, Direction) warns+undef at build (tb_angle_dir.ri). Accepted
+      gap: Assumes the idiom used by every other overloaded name in the table (`"name" if arg_count ==
+      N`). Cover: a check test that angle(vec3,vec3) is ArgTypeMismatch and that the arity-3 relation
+      form is unaffected.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"angle" if arg_count == 2'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: normal-returns-direction-statically
+    binding: 'delivered by this leaf: units.rs `geometry_query_result_type` `"normal" => Type::vec3(Type::dimensionless_scalar())`
+      (and the doc/test beside it) -> Type::Direction.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"normal" => Type::Direction'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-compiler/src/builtin_families.rs
+      - crates/reify-compiler/src/builtin_families
+  - name: normal-dispatcher-mints-direction
+    binding: 'delivered by this leaf: `dispatch_normal_vector3` (geometry_ops.rs) builds Value::Vector
+      from the kernel''s xyz reply today; must mint via UnitVec3::from_vector (Err -> existing Warning+Undef).
+      Accepted gap: Unique line in dispatch_normal_vector3. Cover: the mock-kernel dispatch tests (FaceNormalAt
+      reply -> Value::Direction).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Ok\(\[x, y, z\]\) => Some\(reify_ir::Value::Vector
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: offset-curve-direction-arm
+    binding: 'delivered by this leaf for the eval arm: modify_offset_curve''s fallback (`match point3_components(&v)`
+      + unit_vector3) -> decode_direction. The C7 claim that offset_curve rejects a Vector at CHECK is
+      not deliverable via a single-kind Direction slot because the third arg is `Surface | Direction`;
+      no B-row tests it, so the capability is the eval arm only. — Eval arm only, per amended C7. Accepted
+      gap: Unique to modify_offset_curve (one match). OPEN because the static half (union slot) needs
+      a decision: eval-only Warning vs a ''reject Vector type'' slot.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: match point3_components\(&v\) \{
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: unfenced-signature-fixture-migrated
+    binding: 'delivered by this leaf: crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri
+      (signature fixture held to compile-clean by harness_doc_chunks) uses vec3 lets `up`/`across` for
+      angle and all four selectors; after the slot rows they are check errors, so the lets must become
+      dir(...) in the same diff. Accepted gap: Matches both `up` lets once migrated. Cover: unfenced_signature_gate
+      / signature_fixtures ''compiles clean''.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let up += dir\(
+      expect: present
+      paths:
+      - crates/reify-compiler/tests/fixtures/unfenced_signatures_smoke.ri
+  - name: b25-is-theta-b-with-sigma-slot
+    binding: 'Delivered by this leaf with σ upstream: the build path is the only angle implementation
+      (TopologySelectorHelper::Angle). Hint is σ''s shared constant.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Behaviour covered by B25 fixtures.
+  - name: normal-static-and-rust-pin
+    binding: Delivered by this leaf. Sub-handle queries are undef at DSL level on main, so B4 is amended
+      to a static rejection plus a Rust mock-kernel test.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: normal-returns-direction-statically and normal-dispatcher-mints-direction are the mechanical
+        twins.
+  - name: dir-and-slot-upstream
+    binding: producer:β, σ upstream, edges wired.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream.
+- label: ι-a
+  task_id: 9646
+  title: 'direction-typing ι-a: Direction-taking rotate/3, rotate_around/4, mirror/3; retire scalar rotate/5,
+    rotate_around/8, mirror/7'
+  capabilities:
+  - name: dir-constructor-from-beta
+    binding: delivered by upstream β (dir(x,y,z)/dir(v), DATUM_CONSTRUCTOR_NAMES + datum_constructor_result_type);
+      β is an explicit §8 prereq of ι-a; extent covers both arities ι-a's corpus needs (literal scalars).
+      Today `dir(0,0,1)` is an unresolved-function warning with undef (probe p_dir_unres.ri).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by β's own delivered_checks; ι-a gates on the β prereq edge; behavioural cover is
+        PRD rows B1-B3
+  - name: direction-slot-kind-from-sigma
+    binding: 'delivered by upstream σ (ExpectedArg::Direction in builtin_signatures.rs + its check arm);
+      σ is an explicit §8 prereq (σ ''Unlocks ι-a/b/c''). Extent: ι-a only needs the kind plus its own
+      arity-guarded rows, which this leaf adds. Name `ExpectedArg::Direction` is from PRD C7, not yet
+      on main.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by σ's delivered_checks; behavioural cover is B14/B15/B23 and this leaf's builtin_arg_signature_tests
+  - name: decode-direction-reader-from-alpha-and-epsilon
+    binding: delivered by upstream α (reify-ir decode_direction, UnitVec3) and ε (decode_plane/decode_axis/datum_vec3
+      read via decode_direction, stdlib axes/planes minted as Value::Direction); α is transitive via β
+      and ε, ε explicit. mirror's 2-arg plane form consumes ε's decode_plane; today decode_plane rejects
+      Value::Direction (pinned test).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'owned by α/ε; cannot be a grep here because ε makes decode_direction( appear in geometry_ops.rs
+        before ι-a lands (would false-pass). Behavioural cover: B4/B17 and this leaf''s rotate/mirror
+        e2e tests'
+  - name: rotate-direction-arity-ledgered
+    binding: 'delivered by this leaf: compile_transform_op `rotate` arm (today 5|2, observed `rotate()
+      expects 2 or 5 arguments, got 3`) gains arity 3, drops 5; LOWERING_ACCEPTED_ARITIES row `("rotate",
+      Exactly(&[2, 5]))` becomes [2, 3].'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("rotate", AcceptedArities::Exactly\(&\[2, ?3\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: rotate-around-direction-arity-ledgered
+    binding: 'delivered by this leaf: compile_transform_op `rotate_around` (check_arg_count_exact 8 today)
+      becomes arity 4 (target, pivot Point3<Length>, axis Direction, angle); ledger row [8] -> [4] (PRD
+      lists only /4; Appendix E''s optional Axis form /3 is NOT in ι-a''s row).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("rotate_around", AcceptedArities::Exactly\(&\[4\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: mirror-direction-arity-ledgered
+    binding: 'delivered by this leaf: geometry.rs `mirror` arm (7|2 today) becomes 2|3 (target, origin
+      Point3<Length>, normal Direction); ledger `("mirror", Exactly(&[2, 7]))` -> [2, 3]. The 2-arg plane
+      arm and decode_plane stay.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("mirror", AcceptedArities::Exactly\(&\[2, ?3\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: rotate-direction-slot-row
+    binding: 'delivered by this leaf using σ''s kind: arity-guarded arm `"rotate" if arg_count == 3` (Direction@1,
+      angle@2). Rejection premise ''a Vector3 at the axis slot is a check error'' is carried by σ''s check
+      arm (exists once σ lands) plus this row; no row exists today (only `"rotate" if arg_count == 5`).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"rotate" if arg_count == 3'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: mirror-direction-slot-row
+    binding: 'delivered by this leaf using σ''s kind: `"mirror" if arg_count == 3` (Direction@2); the
+      existing `"mirror" if arg_count == 7` LENGTH origin arm is deleted with the scalar form.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"mirror" if arg_count == 3'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: rotate-scalar-slot-arm-retired
+    binding: 'delivered by this leaf: the `"rotate" if arg_count == 5` angle arm is the scalar form''s
+      slot row; it must go with the arity (else the coupling test reports a ledger/slot mismatch).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"rotate" if arg_count == 5'
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: scalar-lowering-arms-retired
+    binding: 'delivered by this leaf: the `("ax".to_string(), it.next().unwrap())` tuple appears only
+      in the rotate-5 arm and the rotate_around arm of geometry_transform.rs (the only other `"ax"` in
+      the file is a vec![&str] inside a #[cfg(test)] test); both disappear. Accepted gap: accepted gap:
+      a re-added scalar arm using a different binding name is missed; behavioural cover is B13 (rotate(g,0,0,1,90deg)
+      is a check error) in the μ matrix and this leaf''s arity tests'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("ax"\.to_string\(\), it\.next\(\)\.unwrap\(\)\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry_transform.rs
+  - name: rotate-arity-error-names-direction-form
+    binding: 'rejection premise (B13): mechanism is the existing `n =>` arm of the rotate match (push_labeled_arg_count_error),
+      observed firing today for arity 3; this leaf rewords it. Mechanism exists, so not rejection-absent.
+      Accepted gap: binds to the format! literal with the {n} placeholder, not the bare token; the unit-test
+      literal ''got 3'' is a different string'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: rotate\(\) expects 2 or 5 arguments, got \{n\}
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry_transform.rs
+  - name: mirror-arity-error-names-direction-form
+    binding: 'rejection premise (B13): mechanism is the existing else-branch push_labeled_arg_count_error
+      in the geometry.rs mirror arm (observed text ''mirror() expects 7 arguments (scalar) or 2 (plane-value),
+      got N''); this leaf rewords it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: mirror\(\) expects 7 arguments
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: smoke-fixture-and-chunks-migrated-same-diff
+    binding: 'delivered by this leaf (D13): crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri
+      is gated by stdlib_chunk_geometry_ops_smoke.rs at (name, arity) granularity, so ro5/mi7/rar must
+      change in the same diff as the arity retirement or the gate reds.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: rotate\(solid, 0, 0, 1, 90deg\)|mirror\(solid, 0mm, 0mm, 0mm, 1, 0, 0\)|rotate_around\(solid,
+        0mm, 0mm, 0mm, 0, 0, 1, 90deg\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri
+  - name: b12-geometry-byte-identity
+    binding: 'numeric/exactness premise. Identity: for every corpus .ri call the direction is a signed
+      basis vector, so from_vector''s |v| = sqrt(1) = 1.0 exactly and each component c/1.0 == c bit-for-bit
+      (sign of zero preserved); angle and pivot pass through untouched. Floor: none needed (equality,
+      not tolerance). Verified: 33 .ri direction triples enumerated by paren-balanced scan of all 917+
+      tracked .ri files; zero non-basis. Witness: crates/reify-eval/tests/compile_geometry_op_characterization.rs
+      + tests/golden/*.txt (IR unchanged).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: a Rust boundary test comparing GeometryOp / volume between retired scalar
+        fixtures and Direction fixtures (μ row B12) and the unchanged characterization goldens; no grep
+        can express IR equality'
+  - name: arity-gate-control-tests-retargeted
+    binding: 'delivered by this leaf: arity_gate_probe.rs, call_arity_gate.rs and fence_gate.rs use rotate/3
+      as the canonical rejected control and assert the text ''rotate() expects 2 or 5 arguments, got 3'';
+      they are red the moment rotate/3 is valid.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: test edits; covered by `cargo test -p reify-compiler --test harness_doc_chunks` staying
+        green
+  - name: bare-origin-length-gate-on-point-forms
+    binding: 'rejection premise NOT preserved by any mechanism the PRD names: `mirror(g,0,0,0,1,0,0)`
+      is rejected at reify check today (probe p_mirror7_bare.ri: three ''ox/oy/oz argument expects Length''
+      errors, rc=1) but `point3(10,0,0)` passes check (probe p_point3_bare.ri: `P.p = point(10, 0, 0)`),
+      ExpectedArg has no Point kind, so a bare origin/pivot on rotate_around/4 and mirror/3 is rejected
+      only at build through accept_length_point3 (wired: reached by pattern_mirror''s plane arm via decode_plane).
+      Not claimed by B12/B13, but it is a regression of check-time coverage the PRD does not mention.
+      — Accepted narrowing recorded in PRD §8 amendments: check-time slot becomes accept_length_point3
+      at build, reached by CLI reify check on a geometry-bearing module; pinned in ι-a.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'needs a ruling: accept build-only (recommended, consistent with the ''STRUCTURAL EXCLUSION
+        OF THE DECODED-VALUE ROUTE'' comment in builtin_signatures.rs) and record it, or add a Point3
+        slot kind (out of scope). Behavioural cover if accepted: a build-time test that mirror(g, point3(10,0,0),
+        dir(1,0,0)) is rejected'
+- label: ι-b
+  task_id: 9647
+  title: 'direction-typing ι-b: Direction-taking revolve/4 (+Axis /3), revolve_full/3, extrude_infinite/2
+    and extrude_infinite_symmetric/2; retire scalar sweeps and the String sense'
+  capabilities:
+  - name: dir-constructor-from-beta
+    binding: delivered by upstream β; explicit §8 prereq; extent sufficient (literal scalar form and Real-param
+      form `dir(ax, ay, az)` both fall under D11's x,y,z over dimensionless scalars).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by β's delivered_checks
+  - name: direction-slot-kind-from-sigma
+    binding: delivered by upstream σ (ExpectedArg::Direction + check arm); explicit §8 prereq; ι-b adds
+      the rows.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by σ's delivered_checks
+  - name: axis-value-decoder-from-epsilon
+    binding: 'delivered by upstream ε: eval decode_axis (geometry_ops.rs) reads via decode_direction and
+      stdlib axis_x/y/z/axis_through mint Value::Direction; needed only by the optional revolve/3 Axis
+      form. ε is an explicit prereq; extent covers decode_axis. Today `circular_pattern(g, axis_z(..),
+      ..)` works because axis holds a Vector (probe p_circ_kernel_axis.ri) - ε flips that representation.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by ε; behavioural cover B17
+  - name: revolve-direction-arity-ledgered
+    binding: 'delivered by this leaf: geometry.rs revolve arm (exactly 8 today) becomes /4 (+ /3 Axis
+      form per §8); ledger row `("revolve", Exactly(&[8]))` -> [3,4] (or [4]).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("revolve", AcceptedArities::Exactly\(&\[(3, ?)?4\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: revolve-full-direction-arity-ledgered
+    binding: 'delivered by this leaf: revolve_full (exactly 7 today) becomes /3 (profile, origin, axis);
+      ledger [7] -> [3] (PRD lists no revolve_full Axis form; the regex tolerates [2,3] if the implementer
+      adds it).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("revolve_full", AcceptedArities::Exactly\(&\[(2, ?)?3\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: extrude-infinite-direction-arity-ledgered
+    binding: 'delivered by this leaf: extrude_infinite (exactly 5, String sense) becomes /2 (profile,
+      dir). No ledger row exists today (no slots); gaining the σ Direction slot makes it a slotted name
+      that needs one.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("extrude_infinite", AcceptedArities::Exactly\(&\[2\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: extrude-infinite-symmetric-arity-ledgered
+    binding: 'delivered by this leaf (D10): new sibling builtin /2, slotted like extrude_infinite; `extrude_infinite_symmetric`
+      is unresolved today (probe p_eis.ri: ''unresolved function'', cell undef).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("extrude_infinite_symmetric", AcceptedArities::Exactly\(&\[2\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: extrude-infinite-symmetric-registered-as-geometry-fn
+    binding: 'delivered by this leaf: GEOMETRY_FUNCTION_NAMES (crates/reify-compiler/src/units.rs) is
+      the source of truth for is_geometry_function; without the entry the call is silently ignored (stdlib_chunk_geometry_ops_smoke
+      documents that an unknown name in a structure body gets no diagnostic).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    "extrude_infinite_symmetric",
+      expect: present
+      paths:
+      - crates/reify-compiler/src/units.rs
+      - crates/reify-compiler/src/builtin_families.rs
+      - crates/reify-compiler/src/builtin_families
+  - name: extrude-infinite-symmetric-traits-dispatch-arm
+    binding: 'delivered by this leaf: every name in GEOMETRY_FUNCTION_NAMES needs an explicit arm in geometry_traits_inference.rs
+      (test every_geometry_function_name_has_explicit_dispatch_arm); the sibling must infer the same unbounded
+      traits as extrude_infinite.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"extrude_infinite_symmetric"'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/geometry_traits_inference.rs
+  - name: extrude-infinite-symmetric-lowering-arm
+    binding: 'delivered by this leaf: a `"extrude_infinite_symmetric" =>` (possibly or-patterned) arm
+      in compile_geometry_call in geometry.rs, sharing SweepKind::ExtrudeInfinite.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"extrude_infinite_symmetric" =>'
+      expect: present
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: revolve-scalar-lowering-retired
+    binding: 'delivered by this leaf: `("ax".to_string(), ax)` appears exactly in the revolve and revolve_full
+      scalar arms of geometry.rs (the circular_pattern arm uses `it.next().unwrap()`, a different RHS).
+      Accepted gap: accepted gap: a re-added scalar arm with another local name is missed; behavioural
+      cover is B13 in the μ matrix'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("ax"\.to_string\(\), ax\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: extrude-infinite-scalar-and-string-sense-lowering-retired
+    binding: 'delivered by this leaf (D10): the `("dx".to_string(), dx_expr)` tuple is unique to the extrude_infinite
+      scalar arm (other `"dx"` tuples use different RHS).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("dx"\.to_string\(\), dx_expr\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: scalar-sweep-arity-errors-reworded
+    binding: 'rejection premise (B13 `"both"` and 8-arg revolve): mechanism is the existing hand-rolled
+      arity Diagnostic::error in the three arms (observed: ''revolve() expects exactly 8 arguments ...
+      got 4'' when called with the new layout); this leaf rewords them to name the Direction form.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: revolve\(\) expects exactly 8 arguments|extrude_infinite\(\) expects exactly 5 arguments|revolve_full\(\)
+        expects exactly 7 arguments
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: eval-zero-axis-warning-paths-retired
+    binding: 'delivered by this leaf (C10): sweep_revolve and sweep_extrude_infinite Warning-and-drop
+      blocks become unreachable because a Direction is unit by construction (α). Today observed: revolve
+      with axis 0,0,0 -> `warning: revolve dropped: rotation axis [0, 0, 0] has degenerate magnitude=0
+      ...` + error, rc=1 (probe p_b2_revolve_zero_axis.ri). The angle-degenerate warning is a different
+      construct and stays. Accepted gap: narrowed to the axis messages, not the bare ''revolve dropped''
+      (the angle Warning keeps that prefix); tests live in a separate file (geometry_ops/tests.rs) so
+      they cannot satisfy or violate this'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'revolve dropped: rotation axis|extrude_infinite dropped: axis'
+      expect: absent
+      paths:
+      - crates/reify-eval/src/geometry_ops.rs
+  - name: smoke-fixture-migrated-same-diff
+    binding: 'delivered by this leaf: rv/rvf/exi lines of crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri
+      are gated at (name, arity) by stdlib_chunk_geometry_ops_smoke.rs; add an extrude_infinite_symmetric
+      line as well (the chunk will document it).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: revolve\(prof, 0mm, 0mm, 0mm, 0, 1, 0, 360deg\)|revolve_full\(prof, 0mm, 0mm, 0mm, 0, 1,
+        0\)|extrude_infinite\(prof, 0, 0, 1, "positive"\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri
+  - name: b12-prime-geometry-byte-identity
+    binding: 'numeric/exactness premise. Same identity as ι-a: all 6 corpus revolve/revolve_full/extrude_infinite
+      direction triples are signed basis vectors (0,1,0 / 0.0,1.0,0.0 / 0,0,1; sweep_degenerate.ri passes
+      params ax,ay,az with defaults 0.0,0.0,1.0); ''negative'' sense = dir(0,0,-1) is exact negation.
+      Equality, no tolerance. Baseline measured today: revolve 90deg of translate(rectangle(2mm,2mm),5mm,0,0)
+      about y plus clipped extrude_infinite(circle(3mm),0,0,1,"both") gives `P.v = 0.0000005654866776461628
+      m^3` (probe p_b1_revolve_extinf.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: Rust boundary test over Direction vs retired-scalar fixtures (μ row B12'');
+        extrude_infinite_e2e.rs positive/negative/both pipelines retargeted to dir(...)/symmetric sibling'
+  - name: bare-origin-length-gate-on-point-forms
+    binding: 'same regression as ι-a: revolve/revolve_full origin moves from three LENGTH-slotted scalars
+      (rejected at reify check today) to a Point3 value gated only at build via accept_length_point3;
+      PRD silent. — Accepted narrowing, as ι-a.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: needs a ruling to accept build-only (recommended) and record it; cover = build-time test
+        that revolve(prof, point3(0,0,0), dir(0,0,1), 90deg) is rejected
+  - name: revolve-axis-value-form
+    binding: 'PRD §8 lists `revolve(profile, axis: Axis, angle)/3` but no §6 row (B12'' names only revolve/4,
+      revolve_full/3, extrude_infinite, extrude_infinite_symmetric) asserts it, no corpus .ri uses it
+      (documented only as spec text at reify-stdlib-reference lines ~712-713), and the Axis-form revolve_full
+      that Appendix E also proposes is absent from §8. Nothing observable binds it. — B12′ now asserts
+      it.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: add a Rust e2e (axis_through/axis_z Axis -> revolve) or drop the form from the leaf; decide
+        at implementation. If dropped, the ledger regex above still passes ([4])
+- label: ι-c
+  task_id: 9648
+  title: 'direction-typing ι-c: Direction-taking linear_pattern/4, linear_pattern_2d/7, half_space/2,
+    arc/5 and Axis-primary circular_pattern; retire scalar forms (absorbs #5351)'
+  capabilities:
+  - name: dir-constructor-from-beta
+    binding: delivered by upstream β; explicit §8 prereq; extent sufficient for all migrated literal sites.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by β's delivered_checks
+  - name: direction-slot-kind-from-sigma
+    binding: delivered by upstream σ (ExpectedArg::Direction + check arm); explicit §8 prereq; ι-c adds
+      its arity-guarded rows.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by σ's delivered_checks
+  - name: axis-value-decoder-and-stdlib-axis-minting-from-epsilon
+    binding: 'delivered by upstream ε: decode_axis reads via decode_direction and axis_z/axis_through
+      mint Value::Direction; ι-c''s migrated circular_pattern corpus (m5_geometry_flange.ri, smoke, prd-gate
+      fixture, gui engine_tests, circular_pattern_angle.rs) all go through the Axis form. ε is an explicit
+      prereq; extent covers decode_axis. Today the Axis form already evaluates (probe p_circ_kernel_axis.ri)
+      with a Vector inside the Axis.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: owned by ε; behavioural cover B17
+  - name: linear-pattern-direction-value-form
+    binding: '#5351 absorbed and CONFIRMED absent: linear_pattern value form does not exist on main (geometry.rs
+      requires exactly 6; probe p_lp4.ri: `linear_pattern() expects 6 arguments, got 4`; no branch in
+      pattern_linear). Delivered by this leaf; ledger row [6] -> [4].'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("linear_pattern", AcceptedArities::Exactly\(&\[4\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: linear-pattern-2d-direction-form
+    binding: 'delivered by this leaf: /7 (target, dir1, count1, spacing1, dir2, count2, spacing2); ledger
+      [11] -> [7]; index 5 is count2 (Int), so spacing slots are at 3 and 6.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("linear_pattern_2d", AcceptedArities::Exactly\(&\[7\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: half-space-origin-normal-form
+    binding: 'delivered by this leaf: half_space/2 (origin Point3<Length>, normal Direction); ledger [6]
+      -> [2]; GeometryOp::HalfSpace IR unchanged.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("half_space", AcceptedArities::Exactly\(&\[2\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: arc-direction-form
+    binding: 'delivered by this leaf: arc/5 (center, radius, start, end, normal Direction); ledger [9]
+      -> [5]; the arity-agnostic `arc` arm (angles at 4,5) misfires at arity 5 today (probe p_arc5.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("arc", AcceptedArities::Exactly\(&\[5\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: circular-pattern-axis-primary-9arg-retired
+    binding: 'delivered by this leaf: ledger `("circular_pattern", Exactly(&[4, 9]))` -> [4] (or [4,5]
+      only if the optional Direction form of §10 Q3 is added).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("circular_pattern", AcceptedArities::Exactly\(&\[4(, ?5)?\]\)\)
+      expect: present
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: scalar-slot-arms-retired
+    binding: 'delivered by this leaf: the arity-guarded scalar slot arms for the retired forms disappear
+      (a stale arm would make the coupling test report a ledger/slot mismatch).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"linear_pattern" if arg_count == 6|"linear_pattern_2d" if arg_count == 11|"circular_pattern"
+        if arg_count == 9'
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/builtin_signatures.rs
+  - name: scalar-lowering-arms-retired-geometry
+    binding: 'delivered by this leaf: `("dx"|"dx1"|"px".to_string(), it.next().unwrap())` appear in geometry.rs
+      only in the linear_pattern, linear_pattern_2d and half_space scalar arms (the arbitrary_pattern
+      arm builds names with format!). Accepted gap: accepted gap: a re-added scalar arm using other names
+      is missed; behavioural cover is B13 (linear_pattern 6-arg is a check error) in the μ matrix'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("(dx|dx1|px)"\.to_string\(\), it\.next\(\)\.unwrap\(\)\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: scalar-lowering-arm-retired-arc
+    binding: 'delivered by this leaf: `("ax".to_string(), it.next().unwrap())` is unique to the arc arm
+      in geometry_curve.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \("ax"\.to_string\(\), it\.next\(\)\.unwrap\(\)\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry_curve.rs
+  - name: circular-9arg-arity-error-reworded
+    binding: 'rejection premise (B13 spirit; PRD names linear_pattern): mechanism is the existing circular_pattern
+      else-branch push_labeled_arg_count_error (''circular_pattern() expects 9 arguments (scalar) or 4
+      (axis-value), got {n}''); linear_pattern/half_space/arc/lp2d use check_arg_count_exact whose generic
+      text must also gain the Direction-form hint (edit at the call or wrap).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: circular_pattern\(\) expects 9 arguments
+      expect: absent
+      paths:
+      - crates/reify-compiler/src/geometry.rs
+  - name: lsp-half-space-triple-site-updated
+    binding: 'delivered by this leaf: the BUILTIN_FUNCTIONS signature `half_space(px: Length, py: Length,
+      pz: Length, nx: Real, ...)` and the LENGTH_GATED_EXAMPLES example string `half_space(0mm, 0mm, 0mm,
+      0, 0, 1)` (completion.rs); behavioural pins are gated_length_builtins_advertise_their_dimension_requirement
+      and length_gated_tables_stay_in_sync. Accepted gap: the test row `half_space(0, 0, 0, 0, 0, 1)`
+      (no mm) is a different string; accepted gap: a reworded signature keeping the old prefix is missed,
+      covered by the two completion tests'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'half_space\(px: Length, py: Length, pz: Length|"half_space\(0mm, 0mm, 0mm, 0, 0, 1\)"'
+      expect: absent
+      paths:
+      - crates/reify-lsp/src/completion.rs
+  - name: smoke-fixture-migrated-same-diff
+    binding: 'delivered by this leaf: lp/lp2/cp9/ar lines of the stdlib smoke fixture are gated at (name,
+      arity) by stdlib_chunk_geometry_ops_smoke.rs (keep cp4).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: linear_pattern\(solid, 1, 0, 0, 3, 5mm\)|linear_pattern_2d\(solid, 1, 0, 0, 3, 20mm, 0,
+        1, 0, 3, 20mm\)|circular_pattern\(solid, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg\)|arc\(0mm, 0mm, 0mm,
+        5mm, 0deg, 90deg, 0, 0, 1\)
+      expect: absent
+      paths:
+      - crates/reify-compiler/tests/fixtures/stdlib_geometry_ops_smoke.ri
+  - name: b12-double-prime-geometry-identity
+    binding: 'numeric/exactness premise: identity (not tolerance) holds for the 28 corpus .ri direction
+      triples (all signed basis). It does NOT hold for embedded .rs sites with a non-unit or dimensioned
+      axis (half_space 0.25,0.5,1 pin; four arc sources with 0mm,0mm,1mm): kernel geometry equal, IR Values
+      differ - re-baseline with the reason recorded (PRD §10 Q6).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'behavioural: Rust boundary test + unchanged characterization goldens (pattern_linear_base.txt
+        etc.); the non-basis .rs pins are re-measured by the implementer'
+  - name: bare-origin-length-gate-on-point-forms
+    binding: 'same regression as ι-a/ι-b for half_space origin, arc center and (via the Axis datum) circular
+      origin: compile-time Length gate lost, build-time accept_length_point3 gate remains; PRD silent;
+      LSP row for half_space must be classified BuildOnly. — Accepted narrowing, as ι-a.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: needs a ruling to accept build-only (recommended); cover = build-time rejection test for
+        a bare Point3 origin on half_space/arc
+  - name: circular-pattern-direction-form-decision
+    binding: 'PRD §10 Q3 (cited as ''Open Q4'' in §8) is deferred to this leaf; D7 lists circular_pattern
+      among ''gain Direction-taking signatures'' while §8 makes the Axis form primary and the 9-arg retired
+      - ambiguous whether a (g, origin, axis: Direction, count, angle) arity 5 must exist. B12''''/B13
+      have no circular row. — Decided at decompose: Axis form only.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'implementer decides (recommend: no Direction form); if added use a named arg other than
+        `axis`, add ledger arity 5 and a boundary test'
+- label: κ
+  task_id: 9649
+  title: 'direction-typing κ: PressureLoad.direction becomes PressureDirection { Normal, Fixed { dir:
+    Direction } }'
+  capabilities:
+  - name: pressure-direction-enum-declared
+    binding: 'delivered by this leaf in fea_multi_case.ri; substrate: payload-bearing enum with Direction
+      field declares/defaults/matches today (k0_dot_default.ri).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^(pub )?enum PressureDirection \{
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+  - name: pressure-load-direction-param-retyped
+    binding: 'delivered by this leaf: param direction : PressureDirection = PressureDirection.Normal;
+      the String default is the construct removed. Accepted gap: Companion absent check: pattern ^    param
+      direction : String = "normal" in the same file, rc_on_main 0 (comment lines start with //).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^    param direction : PressureDirection = PressureDirection\.Normal'
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+  - name: string-direction-rejected-at-enum-slot
+    binding: 'rejection premise: mechanism already wired for enum-typed slots (user structure probe k_enum_slot_string.ri:
+      `argument ''s'' has type ''String'' but param ''s'' requires type ''Enum(Sense)''`, rc 1); after
+      the retype it fires for PressureLoad(direction: "normal"). Today PressureLoad(direction: 5) is rejected
+      only as Int-vs-String (k_pressure_bad.ri) and "normal" is accepted.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Needs the retype to flip; the grep on the param line above is the structural half, the B21
+        fixture (check rc 1 naming the enum type) is the behavioural half.
+  - name: runtime-payload-fixed-direction-constructible
+    binding: 'upstream κ₀ (in κ''s §8 prereqs) supplies the runtime variant node; frame.z is typed Direction
+      (projection, wired). Extent: κ₀ covers non-literal named-field payloads, which is what `Fixed {
+      dir: frame.z }` needs.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream deliverable; κ₀ owns its check.
+  - name: pressure-spec-reader-matches-enum-payload
+    binding: 'delivered by this leaf: parse_pressure_spec (elastic_static.rs) reading Value::Enum PressureDirection
+      instead of Value::String.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Decoder home is #8683''s choice; "Fixed" already occurs in reify-eval/src, so no sound
+        present check exists. Cover: the Fixed-vs-Normal box fixture.'
+  - name: runtime-variant-construction-upstream
+    binding: producer:task-7456 upstream, edge wired; replaces the κ₀ label. Delivers CompiledExprKind::VariantCtor
+      and retires the non-constant payload diagnostic.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: '#7456 carries its own delivered checks.'
+  - name: s15-pressure-decoder-upstream
+    binding: producer:task-8683 upstream, edge wired. Rust PressureDirection decoder that κ extends with
+      Fixed.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream task.
+  - name: fixed-payload-consumed-as-traction
+    binding: Delivered by this leaf. assemble_box_face_pressures ignores PressureSpec.direction on main;
+      κ consumes Fixed { dir } as traction = magnitude * dir (lead reading of D9, PROPOSED). Normal stays
+      byte-identical.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Behaviour: a box fixture whose Fixed reaction differs from Normal. INV-SF-3.'
+- label: λ
+  task_id: 9650
+  title: 'direction-typing λ: docs-truth — chunk prose, stdlib reference, spec, ty.rs rule, directions.ri
+    exemplar, cheatsheet index'
+  capabilities:
+  - name: units-chunk-bare-axis-rule-rewritten
+    binding: 'Delivered by λ. Stale text is the ''What legitimately stays bare'' paragraph and ''Measured
+      2026-08-30'' sentence in crates/reify-mcp/src/tools/chunks/units.md. ι-a (upstream, in prereqs)
+      owns the compiled mirror fence. Accepted gap: Narrowed to the two stale phrases, not the bare word
+      axis. Gap: a rewrite that keeps the claim in different words passes; behavioural cover is harness_doc_chunks
+      (prose_idiom_gate, units_chunk_smoke) plus review.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: axis-direction components, repeat counts|as is a dimensioned axis direction
+      expect: absent
+      paths:
+      - crates/reify-mcp/src/tools/chunks/units.md
+  - name: stdlib-reference-rotate-family-takes-direction
+    binding: 'Delivered by λ (ι-a retypes the builtin; the doc line is λ''s). Today docs/reify-stdlib-reference.md
+      section 3.7 shows rotate and rotate_around with axis: Vector3<Dimensionless> marked ''not implemented''.
+      Accepted gap: Bound to the signature construct. Gap: other direction lines (prismatic, faces_by_normal,
+      ...) are not covered; the compile-in-smoke-.ri acceptance covers them.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn (rotate|rotate_around)<G: Transformable>\(.*axis: Vector3<Dimensionless>'
+      expect: absent
+      paths:
+      - docs/reify-stdlib-reference.md
+  - name: stdlib-reference-frame3-block-removed
+    binding: 'Delivered by λ after η deletes the stdlib struct. Today `structure def Frame3 {` is documented
+      in docs/reify-stdlib-reference.md. Accepted gap: Anchored to the declaration line, so a historical
+      prose mention does not trip it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^structure def Frame3 \{
+      expect: absent
+      paths:
+      - docs/reify-stdlib-reference.md
+  - name: stdlib-reference-documents-direction-surface
+    binding: 'Delivered by λ. frame_at has zero mentions in docs/reify-stdlib-reference.md today; the
+      function exists (eval_frame_at). Accepted gap: Assumes the file''s existing `fn name(...)` signature-line
+      style; the compile-in-smoke acceptance covers correctness of the signature.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn frame_at\(
+      expect: present
+      paths:
+      - docs/reify-stdlib-reference.md
+  - name: language-spec-direction-semantics
+    binding: 'Delivered by λ. docs/reify-language-spec.md has no vector(d) or dir( mention today; the
+      Direction row in section 4.9 and the semantic paragraph are new. δ may add a `write dir(x, y, z)`
+      hint string to the diagnostics table, so the check keys on the conversion name, which only λ writes.
+      Accepted gap: Wording risk: an author who spells the parameter vector(v) fails the check; the task
+      text cites C5 which spells it vector(d).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: vector\(d\)
+      expect: present
+      paths:
+      - docs/reify-language-spec.md
+  - name: ty-rs-unit-not-dimensionless-rule
+    binding: 'Delivered by λ in the crates/reify-core/src/ty.rs module doc (`//!`). No inner-doc line
+      mentions Direction today. Accepted gap: Type::Direction variant docs are `///` so they cannot satisfy
+      it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^//!.*\bDirection\b
+      expect: present
+      paths:
+      - crates/reify-core/src/ty.rs
+  - name: lsp-datum-constructor-rows-corrected
+    binding: 'Delivered by λ. crates/reify-lsp/src/completion.rs lists plane_xy/xz/yz as `() -> Frame`
+      and axis_x/y/z as `() -> Vector`; the compiler types them Plane and Axis (units.rs) and the real
+      forms take one argument (probe a decompose-time probe evaluates axis_x(point3(..)) and plane_xy(0mm)).
+      Accepted gap: Bound to the wrong-signature construct; no test pins the corrected text, so review
+      is the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'signature: "(plane_(xy|xz|yz)\(\) -> Frame|axis_[xyz]\(\) -> Vector)"'
+      expect: absent
+      paths:
+      - crates/reify-lsp/src/completion.rs
+  - name: topology-chunk-rotate-phantom-note-retired
+    binding: Delivered by λ. The note citing the rotate(geo, axis, angle) phantom is an HTML comment in
+      crates/reify-mcp/src/tools/chunks/topology.md.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: documented at a|2026-07-24 finding
+      expect: absent
+      paths:
+      - crates/reify-mcp/src/tools/chunks/topology.md
+  - name: directions-exemplar-and-indexes
+    binding: 'Delivered by λ. PRD section 8 fixes the path examples/best_practices/directions.ri; INDEX.md
+      and SKILL.md lines are mandated by the docs-truth overlay. Needs dir (β), vector and operators (γ),
+      Direction slots (δ, σ), which are all in λ''s transitive prereqs. Accepted gap: The file does not
+      exist on main (git grep exits 1). INDEX.md and SKILL.md rows are covered by examples_smoke''s bidirectional
+      index test and by review, not a second check, to avoid filename-shaped patterns.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: let [a-z_]+ += dir\(
+      expect: present
+      paths:
+      - examples/best_practices/directions.ri
+  - name: geometric-relations-design-pointer
+    binding: 'Delivered by λ: one-line pointer in docs/design/geometric-relations.md section 2 to docs/prds/v0_6/direction-typing.md.
+      Accepted gap: A cite in a doc other than the PRD itself, so the PRD text cannot satisfy it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: direction-typing\.md
+      expect: present
+      paths:
+      - docs/design/geometric-relations.md
+  - name: point-a-load-discoverable-in-chunks
+    binding: 'Delivered by λ. No MCP chunk mentions PointLoad today (git grep rc=1 over chunks/*.md),
+      so ζ-b adds no chunk lines and λ must author the prose. Accepted gap: Pathspec glob over the chunk
+      dir (PRD fixes the dir). ζ-b could in principle add the first chunk mention; λ depends on ζ-b so
+      a premature pass only weakens, not wedges. Findability for axis/normal/direction is covered by harness_doc_chunks
+      plus review.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PointLoad\(
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks/*.md
+  - name: doc-signatures-compile-in-smoke
+    binding: 'B24 whole-surface acceptance: harness_doc_chunks (fence_gate, call_arity_gate, unfenced_signature_gate,
+      chunk_cite_gate) over the updated chunks. Upstream slices migrate their own fences.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Compilation of every documented signature is behavioural; covered by `cargo test -p reify-compiler
+        --test harness_doc_chunks` and examples_smoke, not expressible as a single grep.
+- label: μ
+  task_id: 9651
+  title: 'direction-typing μ: integration gate — §6 boundary matrix as direction_*.ri fixtures plus Rust
+    boundary tests, with same-diff gate registrations'
+  capabilities:
+  - name: boundary-matrix-fixtures-committed
+    binding: 'Delivered by μ. PRD s6 fixes the row literals; B2 requires `dir(1e-13, 0, 0)` verbatim.
+      Pathspec glob is the PRD''s own `tests/prd-gate/fixtures/direction_*.ri`; none of the 13 existing
+      direction_typing_*.ri contains that literal. Accepted gap: Task text instructs placing the B2 fixture
+      under that glob. Gap: proves one row''s fixture exists, not that every row is asserted; behavioural
+      cover is the gate running the probe set / boundary tests. If B2 is implemented as an inline Rust
+      source instead, this check wedges ν: the implementer notes forbid that.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: dir\(1e-13, ?0, ?0\)
+      expect: present
+      paths:
+      - tests/prd-gate/fixtures/direction_*.ri
+  - name: coupled-fixture-registration-same-diff
+    binding: 'Delivered by μ per the overlay: PG-DRIFT (tests/infra/test_verify_scope.sh) reds when a
+      *.rs names tests/prd-gate/fixtures/<name>.ri that is not in verify.sh _RUST_COUPLED_RI_FIXTURES.
+      Conditional on #9112 not having removed the list.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Conditional: the registration exists only while verify.sh still holds the bash list (task
+        9112 pending deletes it and derives coupling in scripts/reify_verify/scope.py). A grep on verify.sh
+        would wedge or go vacuous across that cutover. Behavioural cover: test_verify_scope.sh PG-DRIFT
+        reds an unregistered reference.'
+  - name: ctor-rejection-fixtures-registered
+    binding: 'Delivered by μ: B6/B8/B22 rejection fixtures are surveyed sites (ctor survey enumerates
+      all tracked .ri) and need CTOR_CONFORMANCE_REJECTION_FIXTURES rows in crates/reify-compiler/tests/harness_ctor_conformance_survey/disposition.rs
+      plus probes in tests/prd-gate/struct-ctor-conformance-probe-set.json.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'Paths and fixture names are chosen by μ. Behavioural cover: every_rejection_fixture_is_asserted_by_a_committed_cli_probe
+        and the #[ignore]d survey generator.'
+  - name: degenerate-direction-errors-nonzero
+    binding: 'B2 exit != 0 and a coded diagnostic: delivered by α (DegenerateDirection DiagnosticCode,
+      DIRECTION_DEGENERACY_FLOOR, UnitVec3::from_vector) and β (dir eval raising it). Absent on main:
+      git grep DegenerateDirection / UnitVec3 over crates is empty. Rejection mechanism: Severity::Error
+      gating in cmd_eval/cmd_check exists on main (check_verdict.rs). Floor 1e-12 on |v| (identity: magnitude
+      <= floor degenerate; 1e-13 degenerate, 1e-12 boundary stated in C2).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Symbol owners are α/β seats' checks; μ asserts it behaviourally through the B2 fixture.
+  - name: datum-and-frame-producers-feed-decode-direction
+    binding: 'B4/B5/B17: stdlib datum constructors mint Value::Vector today (probe p1.ri prints direction
+      from a stdlib axis_x but the stored value is a Vector); ε (in prereqs) and α deliver. stdlib geometry.rs
+      has a private decode_direction today that α/ε replace.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Owned by ε/α checks; μ asserts through fixtures.
+  - name: b24-docs-row-upstream
+    binding: producer:λ upstream (edge μ ← λ added at decompose).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Upstream.
+- label: ν
+  task_id: 9652
+  title: 'direction-typing ν: PRD-close — stamp docs/prds/v0_6/direction-typing.md SHIPPED with landed
+    leaf IDs, freeze paragraph, LIVE/AS-AUTHORED map, matching manifest header'
+  capabilities:
+  - name: prd-status-stamped-shipped
+    binding: 'Delivered by ν. Header today is `**Status:** active`; no SHIPPED token anywhere in docs/prds/v0_6/direction-typing.md
+      (the s8 ν row says ''stamp SHIPPED'' without the Status label, so it cannot satisfy a Status-anchored
+      pattern). Accepted gap: Anchored on the bold Status label, not the bare word. Gap: does not prove
+      landed IDs; the next capability covers that.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \*\*Status:\*\* \*{0,2}SHIPPED
+      expect: present
+      paths:
+      - docs/prds/v0_6/direction-typing.md
+  - name: prd-header-names-landed-leaf-ids
+    binding: 'Delivered by ν (IDs backfilled into s8 rows by the lead at decompose-close, then copied
+      into the header). Accepted gap: Requires the SHIPPED token and a #NNNN cite on the same line; pairs
+      with prd-status-stamped-shipped. If the header wraps the ID list onto a following line, the implementer
+      must keep a first #NNNN on the Status line.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \*\*Status:\*\* .*SHIPPED.*#[0-9]{4,5}
+      expect: present
+      paths:
+      - docs/prds/v0_6/direction-typing.md
+  - name: prd-as-authored-freeze-paragraph
+    binding: 'Delivered by ν. The exact ratified sentence is absent from the PRD today (the PRD only mentions
+      ''AS-AUTHORED freeze paragraph'' in its own s8 plan, which the pattern does not match). Accepted
+      gap: Sentence copied from docs/prds/v0_6/data-carrying-enums.md header.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: The body below is the AS-AUTHORED design record
+      expect: present
+      paths:
+      - docs/prds/v0_6/direction-typing.md
+  - name: manifest-carries-matching-freeze-header
+    binding: 'Delivered by ν. The manifest .md is committed beside the PRD by the lead at decompose Step
+      5.5 (path convention docs/prds/<vM_N>/<slug>.capability-manifest.md); it does not exist on main
+      today, so git grep exits 1. Accepted gap: Path is fixed by the overlay and by the s8 ν row; if commit_planning
+      is run before the manifest is committed the lint still reads NEVER_EXISTED, not a stale-path reject.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: The body below is the AS-AUTHORED design record
+      expect: present
+      paths:
+      - docs/prds/v0_6/direction-typing.capability-manifest.md
+  - name: live-vs-as-authored-map
+    binding: 'Delivered by ν; the map is prose (sections named LIVE: s5, s7).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A grep for the word LIVE already matches the PRD text today (rc 0 on main), so it cannot
+        be a sound present-check. Covered by review against the overlay's freeze-header definition and
+        by PPRDSTATUS.
