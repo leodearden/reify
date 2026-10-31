@@ -1,7 +1,7 @@
 //! Real-git-ops integration tests.
 //!
 //! These tests build a real temporary git repository using `tempfile::tempdir()`
-//! and `common::git_env::git_cmd` — the shared `reify_audit::git_env`
+//! and `common::git_env::git_cmd` — the shared `reify_git_env`
 //! constructor, which yields a `git -C <dir>` with the repo-redirect
 //! environment variables stripped — to validate that `RealGitOps` shells out
 //! the correct git command with the correct argument form.  They exist because a
@@ -51,7 +51,7 @@ fn real_git_ops_helpers_survive_ambient_hook_git_env() {
 /// Run `git <args…>` against the repository at `dir` and assert it succeeded.
 ///
 /// The single entry point for every repo-targeting git invocation in this
-/// file, so the `reify_audit::git_env` sanitizing is applied in exactly one
+/// file, so the `reify_git_env` sanitizing is applied in exactly one
 /// place. Without it an ambient hook `GIT_INDEX_FILE`/`GIT_DIR` overrides
 /// `-C <dir>` and the command silently operates on the parent repository.
 fn git_run(dir: &std::path::Path, args: &[&str]) {

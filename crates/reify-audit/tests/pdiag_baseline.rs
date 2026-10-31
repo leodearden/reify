@@ -125,7 +125,7 @@ const REGEN: &str = "cargo run -p reify-audit --bin pdiag-baseline-gen -- \
 /// `git` on PATH. `false` means "skipped", with the reason already on stderr.
 ///
 /// A bare `--version` probe opens no repository, so it is the one invocation
-/// `reify_audit::git_env`'s rule exempts from the `git -C <root>` constructor.
+/// `reify_git_env`'s rule exempts from the `git -C <root>` constructor.
 fn git_available(check: &str) -> bool {
     if Command::new("git").arg("--version").output().is_err() {
         eprintln!("pdiag_baseline: skipping {check} — git not available");
@@ -440,12 +440,12 @@ fn render_baseline_emits_the_preamble_then_ascending_rows() {
 
 /// Run `git` in `root`, panicking on failure.
 ///
-/// Built through `reify_audit::git_env` rather than a bare `Command::new`:
+/// Built through `reify_git_env` rather than a bare `Command::new`:
 /// an ambient `GIT_INDEX_FILE` — which `hooks/pre-commit` exports down through
 /// the whole test run — otherwise overrides `-C <tempdir>` and stages into the
 /// PARENT repository's index.
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -479,11 +479,11 @@ fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
 ///
 /// Sanitized DIRECTLY rather than through the `git -C <root>` constructor: the
 /// program here is a reify binary that runs git internally, not git itself,
-/// which is the other-shape case `git_env::sanitize` sanctions.
+/// which is the other-shape case `reify_git_env::sanitize` sanctions.
 fn run_generator(root: &Path, extra: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_pdiag-baseline-gen"));
     cmd.arg("--project-root").arg(root).args(extra);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     cmd.output().expect("pdiag-baseline-gen spawns")
 }
 

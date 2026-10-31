@@ -191,7 +191,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) {
 ///
 /// Builds every invocation through `common::git_env::git_cmd`, as does
 /// `tests/real_git_ops.rs` — both now share the single
-/// `reify_audit::git_env` constructor. That is load-bearing, not tidiness:
+/// `reify_git_env::command` constructor. That is load-bearing, not tidiness:
 /// under a git hook, `GIT_INDEX_FILE` (a *temporary* index, especially for
 /// `git commit --only`) and `GIT_DIR` are exported into the whole process
 /// tree and override `-C <tempdir>`, so a bare `git -C <tempdir> add .`
