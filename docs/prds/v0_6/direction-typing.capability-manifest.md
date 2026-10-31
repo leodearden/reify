@@ -8,7 +8,7 @@ Every grep check was executed against main at decompose: each `present` pattern 
 
 **Filed:** 20 leaves, including PRD-close ν and integration gate μ. Label κ₀ is not filed: existing task #7456 owns it, and κ's `runtime-variant-construction-upstream` binding names it.
 
-**Out-of-batch edges:** δ ← #8739; κ ← #7456, #8683; ζ-b ← #8683; ζ-c ← #8679; ζ-d ← #9293; η ← #8697. **Inbound:** #9568 ← β; #9571 ← δ; #6944 ← β, σ (re-homes its edge on the cancelled #6090, found by a complete dependency scan: 9592 of 9592 tasks examined).
+**Out-of-batch edges:** δ ← #8739; κ ← #7456, #8683; ζ-b ← #8683; ζ-c ← #8679; ζ-d ← #9293; η ← #8697. **Inbound:** #9568 ← β; #9571 ← δ; #6944 ← β, σ (re-homes its edge on the cancelled #6090, found by a complete dependency scan: 9592 of 9592 tasks examined). #8256, #6880, #7453 ← β; #8070 ← σ, θ-b; #8906 ← ε; #6879, #7164 ← η; #6004 ← θ-a.
 
 **D3 verification.** `scripts/prd-decompose-verify.mjs` from a scratch copy (Adversary sonnet/high, `REIFY_BIN` = debug binary of 2026-10-30), run `wf_7c88c89d-010`, over the 17 leaves `reify check`/`eval` can observe: `disposition: BLOCKS`, 17 of 17 probed, 0 malformed, 0 fixture-absent, 14 blocking records. λ, μ and ν are out of the harness's reach (docs, gate, close) and were not submitted. Disposition of the 14, read item by item:
 - 7 are the leaves' own future deliverables probed on today's binary (σ's `frame_at` rejection; δ's six slot rejections). These confirm the silent accept the leaves remove. Not findings.
@@ -17,7 +17,7 @@ Every grep check was executed against main at decompose: each `present` pattern 
 
 **Critic.** One fable/high adversarial pass over the assembled draft: 1 blocker (δ's hint check would have wedged Phase 2, now anchored on `DIRECTION_MIGRATION_HINT`) and 3 majors, all folded. No separate fold-verifier ran: the fold after the critic was small, and the checks were re-executed and re-linted after it.
 
-**PROPOSED, not ruled:** D9′ (`Fixed` traction semantics and sign). Whether the let-annotation row and the Add/Sub guard join #9571 is Leo's call.
+**PROPOSED, not ruled:** D9′ (`Fixed` traction semantics and sign). **Ruled by Leo 2026-10-31:** the let-annotation row, the Add/Sub guard and the fn-call hint are in #9571's scope; the downstream edges below are wired; #5955 cancelled.
 
 
 ## α #9633: Direction value contract (UnitVec3 newtype, decode_direction, frame_basis, DIRECTION_DEGENERACY_FLOOR, DegenerateDirection code, Display dir(x, y, z))
