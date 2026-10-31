@@ -498,7 +498,7 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
 
-/// Every probe must be well-formed for the row it probes, checked four ways —
+/// Every probe must be well-formed for the row it probes, checked five ways —
 /// and every row must have at least one.
 ///
 /// This test exists so that a defective probe fails AT THE PROBE instead of
@@ -510,7 +510,7 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 /// this file.
 ///
 /// The "same number of values as types" check this test used to open with is
-/// gone, deliberately: [`probes::Probe`] is a list of PAIRS, so that invariant
+/// gone, deliberately: [`Probe::args`] is a list of PAIRS, so that invariant
 /// is now carried by the type and cannot be violated.
 #[test]
 fn representative_probes_are_well_formed_for_every_row() {
@@ -533,27 +533,27 @@ fn representative_probes_are_well_formed_for_every_row() {
             // return Value::Undef on the wrong argc, so a mis-counted probe
             // reads as Vacuous with no bearing on the row.
             assert!(
-                row.arity.matches(probe.len()),
+                row.arity.matches(probe.args.len()),
                 "{at}: {} argument(s) do not match the row's declared arity \
                  {:?} — the kernel would short-circuit to Value::Undef and \
                  the sweep would blame the row for this file's mistake",
-                probe.len(),
+                probe.args.len(),
                 row.arity
             );
 
             // (b) one probe argument per declared slot.
             assert_eq!(
-                probe.len(),
+                probe.args.len(),
                 row.arg_slots.len(),
                 "{at}: {} argument(s) against {} declared arg_slots",
-                probe.len(),
+                probe.args.len(),
                 row.arg_slots.len()
             );
 
             // (c) each pair is internally consistent under the SAME oracle the
             // verdict uses, so a value typed as something it is not cannot
             // make a row look like it diverges.
-            for (slot, (value, ty)) in probe.iter().enumerate() {
+            for (slot, (value, ty)) in probe.args.iter().enumerate() {
                 assert!(
                     crate::value_type_kind_matches(value, ty, None),
                     "{at}: argument {slot} is mis-paired — its Value does not \
@@ -566,12 +566,31 @@ fn representative_probes_are_well_formed_for_every_row() {
             // An ArgAware resolver answering None means the probe is
             // mis-shaped for the row, which would otherwise surface as an
             // unexplained skip.
-            let types: Vec<Type> = probe.iter().map(|(_, ty)| ty.clone()).collect();
-            assert!(
-                row.result.resolve(&types).is_some(),
-                "{at}: the row's ResultSpec declined these arg types \
-                 {types:?}, so this probe cannot produce a declared type to \
-                 compare against"
+            let types = probe.arg_types();
+            let declared = row.result.resolve(&types).unwrap_or_else(|| {
+                panic!(
+                    "{at}: the row's ResultSpec declined these arg types \
+                     {types:?}, so this probe cannot produce a declared type \
+                     to compare against"
+                )
+            });
+
+            // (e) a sample point exactly when the declared type is a Field.
+            // A Field-shaped probe with no point would leave its codomain
+            // claim unexecuted, and a point on any other probe names a Sample
+            // leg that can never run.
+            let declares_field = matches!(declared, Type::Field { .. });
+            assert_eq!(
+                probe.sample_at.is_some(),
+                declares_field,
+                "{at}: the probe {} a sample point but the row's resolver \
+                 answers {declared:?} — a probe names a sample point exactly \
+                 when its declared type is a Type::Field",
+                if probe.sample_at.is_some() {
+                    "names"
+                } else {
+                    "names no"
+                }
             );
         }
     }
@@ -589,6 +608,7 @@ fn representative_probes_are_well_formed_for_every_row() {
 fn worst_probe_reports_the_most_severe_and_breaks_ties_to_the_first() {
     let outcome = |index, verdict| ProbeOutcome {
         index,
+        leg: Leg::Call,
         observed: Value::Undef,
         declared: Type::String,
         verdict,
@@ -632,6 +652,77 @@ fn worst_probe_reports_the_most_severe_and_breaks_ties_to_the_first() {
     // No probe at all is not a pass. `observe_row` panics on this rather than
     // manufacturing a verdict for a row it never executed.
     assert!(worst_probe(vec![]).is_none());
+}
+
+// ── a Field probe is compared twice: at its call and at a sample ───────────
+
+/// A Field probe is compared on TWO legs — the call's result against the
+/// declared `Type::Field`, then one sample of that result against the declared
+/// codomain — both through the same [`classify`].
+///
+/// Driven over REAL execution of the `VonMises` row's Callable Field probe.
+/// Part (b) is the teeth: [`crate::value_type_kind_matches`] maps a
+/// `Value::Field` onto ANY `Type::Field`, so the Call leg alone cannot tell a
+/// right codomain from a wrong one — and the codomain is the only thing that
+/// distinguishes the four analysis rows' Field claims. Only the Sample leg
+/// executes it.
+#[test]
+fn a_field_probe_is_compared_at_its_call_and_at_a_sample_of_its_result() {
+    let (_, row) = eval_builtin_rows()
+        .into_iter()
+        .find(|(id, _)| *id == EvalBuiltinId::VonMises)
+        .expect("VonMises is a BindingKind::EvalBuiltin row");
+    let field_probe = || {
+        representative_probes(EvalBuiltinId::VonMises)
+            .into_iter()
+            .find(|probe| probe.sample_at.is_some())
+            .expect("VonMises registers a Field probe that names a sample point")
+    };
+    let declared = row
+        .result
+        .resolve(&field_probe().arg_types())
+        .expect("probe well-formedness (d) guarantees the resolver answers");
+    let Type::Field { domain, codomain } = &declared else {
+        panic!("premise: the resolver answers a Type::Field for a Field probe, got {declared:?}")
+    };
+    let legs_of = |outcomes: &[LegOutcome]| outcomes.iter().map(|o| o.leg).collect::<Vec<_>>();
+    let verdicts_of =
+        |outcomes: &[LegOutcome]| outcomes.iter().map(|o| o.verdict).collect::<Vec<_>>();
+
+    // (a) the declared type the row really answers: both legs match, and the
+    // Sample leg is judged against the Field's codomain.
+    let outcomes = probe_legs(row.name, field_probe(), declared.clone());
+    assert_eq!(legs_of(&outcomes), vec![Leg::Call, Leg::Sample]);
+    assert_eq!(
+        verdicts_of(&outcomes),
+        vec![ParityVerdict::Matches, ParityVerdict::Matches],
+        "the row's own Field claim must agree with its execution on both legs"
+    );
+    assert_eq!(
+        outcomes[1].declared, **codomain,
+        "the Sample leg must be judged against the declared Field's codomain"
+    );
+
+    // (b) a WRONG codomain: the Call leg still matches (Field-vs-Field is
+    // shallow), and only the Sample leg sees the lie.
+    let wrong = Type::Field {
+        domain: domain.clone(),
+        codomain: Box::new(Type::List(codomain.clone())),
+    };
+    let outcomes = probe_legs(row.name, field_probe(), wrong);
+    assert_eq!(
+        verdicts_of(&outcomes),
+        vec![ParityVerdict::Matches, ParityVerdict::Diverges],
+        "a wrong codomain must be caught by the Sample leg and only there"
+    );
+
+    // (c) no sample point: the Call leg alone.
+    let mut unsampled = field_probe();
+    unsampled.sample_at = None;
+    assert_eq!(
+        legs_of(&probe_legs(row.name, unsampled, declared)),
+        vec![Leg::Call]
+    );
 }
 
 // ── the exemption ledger ────────────────────────────────────────────────────
