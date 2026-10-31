@@ -10,7 +10,7 @@ pub(crate) use sub_component_validation::check_sub_structure_existence;
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
-use crate::type_acceptance::{ArgVerdict, conformance_accepts};
+use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
 
 /// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
@@ -1212,8 +1212,9 @@ fn dimensioned_scalar_migration_hint(dimension: &DimensionVector) -> String {
 
 /// Type-level walker: recurse `param_type` against `arg_type` through wrapper pairs and the
 /// implicit-Some unwrap, and judge every other pair with [`judge_leaf`], whose verdicts all
-/// come from [`conformance_accepts`]. `literal` is the compiled arg while `arg_type` is
-/// still its un-peeled top-level type.
+/// come from [`conformance_accepts`]. Recursing first is that relation's precondition.
+/// `literal` is the compiled arg at the top-level pair only: every recursion, the
+/// implicit-Some unwrap included, passes `None`.
 fn walk_param_against_arg_type(
     param_type: &Type,
     arg_type: &Type,
@@ -1252,7 +1253,7 @@ fn judge_leaf(
 ) {
     match conformance_accepts(param_type, arg_ty, ctx.registries.enum_defs) {
         ArgVerdict::Accept | ArgVerdict::Unverifiable => {}
-        ArgVerdict::Reject => emit_rejection(param_type, arg_ty, ctx),
+        ArgVerdict::Reject(family) => emit_rejection(family, param_type, arg_ty, ctx),
         ArgVerdict::QuantityConflict { param_q, arg_q } => {
             emit_quantity_conflict(param_type, arg_ty, param_q, arg_q, ctx);
         }
@@ -1293,16 +1294,18 @@ fn check_type_level_trait_conformance(required_trait: &str, arg_ty: &Type, ctx: 
     }
 }
 
-/// Emits the param family's mismatch diagnostic for an [`ArgVerdict::Reject`].
-fn emit_rejection(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
-    match param_type {
-        Type::StructureRef(_) => emit_structure_ref_mismatch(param_type, arg_ty, ctx),
-        Type::Vector { .. } => emit_vector_mismatch(param_type, arg_ty, ctx),
-        Type::Selector(_) | Type::AnySelector => emit_selector_mismatch(param_type, arg_ty, ctx),
-        Type::List(_) | Type::Set(_) | Type::Map(..) => {
-            emit_wrapper_shape_mismatch(param_type, arg_ty, ctx);
-        }
-        _ => emit_arg_type_mismatch(param_type, arg_ty, ctx),
+/// Emits the mismatch diagnostic of the param `family` an [`ArgVerdict::Reject`] names.
+fn emit_rejection(family: ParamFamily, param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    match family {
+        ParamFamily::StructureRef => emit_structure_ref_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Vector => emit_vector_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Selector => emit_selector_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Wrapper => emit_wrapper_shape_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Point
+        | ParamFamily::MatrixTensor
+        | ParamFamily::Field
+        | ParamFamily::Enum
+        | ParamFamily::ScalarFamily => emit_arg_type_mismatch(param_type, arg_ty, ctx),
     }
 }
 

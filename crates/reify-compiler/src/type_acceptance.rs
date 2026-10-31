@@ -1,6 +1,6 @@
 //! The leaf acceptance relation the conformance walker consults, beside `type_compatible`:
-//! one verdict per param/arg type pair. Wrapper recursion and trait conformance belong to
-//! the caller. Contract: docs/prds/v0_6/compiler-declaration-passes.md D7 and
+//! one verdict per leaf param/arg type pair. Wrapper recursion and trait conformance belong
+//! to the caller. Contract: docs/prds/v0_6/compiler-declaration-passes.md D7 and
 //! docs/reify-language-spec.md §4.9.
 
 use reify_core::{DimensionVector, Type};
@@ -8,14 +8,14 @@ use reify_ir::EnumDef;
 
 use crate::type_compat::{base_enum_name, type_compatible};
 
-/// What [`conformance_accepts`] decides for one param/arg type pair.
+/// What [`conformance_accepts`] decides for one leaf param/arg type pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArgVerdict<'t> {
     /// The arg conforms: the caller stays silent.
     Accept,
-    /// The arg does not conform: the caller emits its param family's mismatch.
-    Reject,
-    /// Not judged here: the caller stays silent, or recurses into the wrapper pair.
+    /// The arg does not conform: the caller emits the mismatch for the param family named.
+    Reject(ParamFamily),
+    /// Not judged here: the caller stays silent.
     Unverifiable,
     /// The shapes agree but the quantity slots conflict: the caller emits the quantity mismatch.
     QuantityConflict { param_q: &'t Type, arg_q: &'t Type },
@@ -23,12 +23,40 @@ pub(crate) enum ArgVerdict<'t> {
     RequiresTraitConformance(&'t str),
 }
 
-/// Judges `arg` against `param`; `enum_defs` tells an applied enum from an applied structure.
+/// The param family whose arm rejected the arg. A caller picks its diagnostic from this,
+/// so it never re-derives the family from the param type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParamFamily {
+    /// `List`, `Set` or `Map` given an arg of another shape. An `Option` param lands here
+    /// only when a caller breaks [`conformance_accepts`]'s precondition.
+    Wrapper,
+    StructureRef,
+    /// `Selector` or `AnySelector`.
+    Selector,
+    Vector,
+    Point,
+    MatrixTensor,
+    Field,
+    /// A declared enum, bare or applied.
+    Enum,
+    /// `Bool`, `Int`, `String` and `Scalar`.
+    ScalarFamily,
+}
+
+/// Judges the leaf pair `arg` against `param`; `enum_defs` tells an applied enum from an
+/// applied structure.
+///
+/// Precondition: the caller has already recursed into every [`is_wrapper_pair`]. A wrapper
+/// param therefore arrives only with an arg of another shape, and is rejected.
 pub(crate) fn conformance_accepts<'t>(
     param: &'t Type,
     arg: &'t Type,
     enum_defs: &[EnumDef],
 ) -> ArgVerdict<'t> {
+    debug_assert!(
+        !is_wrapper_pair(param, arg),
+        "conformance_accepts judges leaf pairs: the caller recurses into '{param}' <- '{arg}'"
+    );
     if let Type::TraitObject(required_trait) = param {
         return ArgVerdict::RequiresTraitConformance(required_trait);
     }
@@ -39,14 +67,16 @@ pub(crate) fn conformance_accepts<'t>(
         param,
         Type::Option(_) | Type::List(_) | Type::Set(_) | Type::Map(..)
     ) {
-        return wrapper_shape_verdict(param, arg);
+        // Spec §4.9 collection rows: the arg left at a wrapper param has the wrong shape.
+        return ArgVerdict::Reject(ParamFamily::Wrapper);
     }
     if arg_type_is_unverifiable(arg) {
         return ArgVerdict::Unverifiable;
     }
     match param {
-        Type::StructureRef(_) | Type::Selector(_) | Type::AnySelector => {
-            by_type_compatible(param, arg)
+        Type::StructureRef(_) => by_type_compatible(param, arg, ParamFamily::StructureRef),
+        Type::Selector(_) | Type::AnySelector => {
+            by_type_compatible(param, arg, ParamFamily::Selector)
         }
         Type::Vector { .. } => vector_verdict(param, arg),
         Type::Point { .. } => point_verdict(param, arg),
@@ -61,16 +91,17 @@ pub(crate) fn conformance_accepts<'t>(
     }
 }
 
-/// `Option` and same-constructor collection pairs are the caller's to recurse; any other arg
-/// at a collection param is a wrapper-shape mismatch (spec §4.9 collection rows).
-fn wrapper_shape_verdict(param: &Type, arg: &Type) -> ArgVerdict<'static> {
-    match (param, arg) {
+/// The pairs a caller recurses into rather than judging (spec §4.9 `Option<T>` and
+/// collection rows). An `Option` param checks a bare arg against `T` (implicit-Some), and
+/// a `List`, `Set` or `Map` arg at a param of the same constructor is checked element-wise.
+fn is_wrapper_pair(param: &Type, arg: &Type) -> bool {
+    matches!(
+        (param, arg),
         (Type::Option(_), _)
-        | (Type::List(_), Type::List(_))
-        | (Type::Set(_), Type::Set(_))
-        | (Type::Map(..), Type::Map(..)) => ArgVerdict::Unverifiable,
-        _ => ArgVerdict::Reject,
-    }
+            | (Type::List(_), Type::List(_))
+            | (Type::Set(_), Type::Set(_))
+            | (Type::Map(..), Type::Map(..))
+    )
 }
 
 fn vector_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
@@ -80,7 +111,7 @@ fn vector_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
         }
         // Spec §4.9 VectorN row: a rank-1 tensor is legal whatever its element count.
         (_, Type::Tensor { rank: 1, .. }) => quantity_verdict(param, arg),
-        _ => ArgVerdict::Reject,
+        _ => ArgVerdict::Reject(ParamFamily::Vector),
     }
 }
 
@@ -91,7 +122,7 @@ fn point_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
         }
         // Spec §4.9 Known limitation (#8121): a scalar at a Point field is not rejected.
         _ if is_numeric_placeholder_leaf(arg) => ArgVerdict::Accept,
-        _ => ArgVerdict::Reject,
+        _ => ArgVerdict::Reject(ParamFamily::Point),
     }
 }
 
@@ -102,10 +133,9 @@ fn matrix_tensor_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
         }
         // Nested-list erasure: Unverifiable until #9570 (PRD esc-8739-2 amendment).
         Type::List(_) if list_bottoms_out_numeric(arg) => ArgVerdict::Unverifiable,
-        Type::List(_) => ArgVerdict::Reject,
         // Spec §4.9 Matrix/Tensor row lists "a scalar"; #8317 narrows it to a rank-0 match.
         _ if is_numeric_placeholder_leaf(arg) => ArgVerdict::Accept,
-        _ => ArgVerdict::Reject,
+        _ => ArgVerdict::Reject(ParamFamily::MatrixTensor),
     }
 }
 
@@ -114,7 +144,7 @@ fn matrix_tensor_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
 fn field_verdict(arg: &Type) -> ArgVerdict<'static> {
     match arg {
         Type::Field { .. } | Type::Function { .. } => ArgVerdict::Unverifiable,
-        _ => ArgVerdict::Reject,
+        _ => ArgVerdict::Reject(ParamFamily::Field),
     }
 }
 
@@ -128,7 +158,7 @@ fn enum_verdict(
     if base_enum_name(arg, enum_defs) == Some(param_enum) {
         ArgVerdict::Accept
     } else {
-        by_type_compatible(param, arg)
+        by_type_compatible(param, arg, ParamFamily::Enum)
     }
 }
 
@@ -136,7 +166,7 @@ fn scalar_family_or_unexamined(param: &Type, arg: &Type) -> ArgVerdict<'static> 
     if scalar_param_arg_defers_at_scalar_slot(param, arg) {
         ArgVerdict::Unverifiable
     } else if general_leaf_param_family_is_validated(param) {
-        by_type_compatible(param, arg)
+        by_type_compatible(param, arg, ParamFamily::ScalarFamily)
     } else {
         // Spec §4.9 Known limitation (#7958): this field type is not yet checked.
         ArgVerdict::Unverifiable
@@ -160,11 +190,11 @@ fn quantity_verdict<'t>(param: &'t Type, arg: &'t Type) -> ArgVerdict<'t> {
     }
 }
 
-fn by_type_compatible(param: &Type, arg: &Type) -> ArgVerdict<'static> {
+fn by_type_compatible(param: &Type, arg: &Type, family: ParamFamily) -> ArgVerdict<'static> {
     if type_compatible(param, arg) {
         ArgVerdict::Accept
     } else {
-        ArgVerdict::Reject
+        ArgVerdict::Reject(family)
     }
 }
 
@@ -352,45 +382,43 @@ mod tests {
     }
 
     #[test]
-    fn wrapper_params_leave_recursion_to_the_caller_and_reject_other_shapes() {
+    fn collection_params_reject_an_arg_of_another_shape() {
+        let wrapper = ArgVerdict::Reject(ParamFamily::Wrapper);
         assert_rows(&[
-            (
-                "option param",
-                Type::Option(Box::new(Type::Int)),
-                Type::Int,
-                ArgVerdict::Unverifiable,
-            ),
-            (
-                "list pair",
-                list(Type::Int),
-                list(Type::String),
-                ArgVerdict::Unverifiable,
-            ),
-            (
-                "list <- leaf",
-                list(Type::Int),
-                Type::Int,
-                ArgVerdict::Reject,
-            ),
+            ("list <- leaf", list(Type::Int), Type::Int, wrapper),
             (
                 "wrapper shape precedes the unverifiable-arg skip",
                 list(Type::Int),
                 Type::TypeParam("T".to_string()),
-                ArgVerdict::Reject,
+                wrapper,
             ),
             (
                 "map <- set",
                 Type::Map(Box::new(Type::String), Box::new(Type::Int)),
                 Type::Set(Box::new(Type::Int)),
-                ArgVerdict::Reject,
+                wrapper,
             ),
             (
-                "set pair",
+                "set <- list",
                 Type::Set(Box::new(Type::Int)),
-                Type::Set(Box::new(Type::Int)),
-                ArgVerdict::Unverifiable,
+                list(Type::Int),
+                wrapper,
             ),
         ]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "judges leaf pairs")]
+    fn an_option_param_is_the_callers_to_recurse_into() {
+        conformance_accepts(&Type::Option(Box::new(Type::Int)), &Type::Int, &enum_defs());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "judges leaf pairs")]
+    fn a_same_constructor_collection_pair_is_the_callers_to_recurse_into() {
+        conformance_accepts(&list(Type::Int), &list(Type::String), &enum_defs());
     }
 
     #[test]
@@ -430,13 +458,19 @@ mod tests {
         let a = || Type::StructureRef("A".to_string());
         assert_rows(&[
             ("same structure", a(), a(), ArgVerdict::Accept),
-            ("string arg", a(), Type::String, ArgVerdict::Reject),
+            (
+                "string arg",
+                a(),
+                Type::String,
+                ArgVerdict::Reject(ParamFamily::StructureRef),
+            ),
         ]);
     }
 
     #[test]
     fn vector_checks_arity_and_quantity_slot() {
         let (length, mass, real) = (length(), mass(), real());
+        let reject = ArgVerdict::Reject(ParamFamily::Vector);
         assert_rows(&[
             (
                 "same arity and quantity",
@@ -448,7 +482,7 @@ mod tests {
                 "other arity",
                 Type::vec3(length.clone()),
                 Type::vec2(length.clone()),
-                ArgVerdict::Reject,
+                reject,
             ),
             (
                 "rank-1 tensor of any n",
@@ -457,10 +491,19 @@ mod tests {
                 ArgVerdict::Accept,
             ),
             (
+                "rank-1 tensor quantity conflict",
+                Type::vec3(length.clone()),
+                Type::tensor(1, 2, mass.clone()),
+                ArgVerdict::QuantityConflict {
+                    param_q: &length,
+                    arg_q: &mass,
+                },
+            ),
+            (
                 "rank-2 tensor",
                 Type::vec3(length.clone()),
                 Type::tensor(2, 3, length.clone()),
-                ArgVerdict::Reject,
+                reject,
             ),
             (
                 "arg side tolerates a dimensionless slot",
@@ -490,7 +533,7 @@ mod tests {
                 "scalar-family arg",
                 Type::vec3(length.clone()),
                 Type::Int,
-                ArgVerdict::Reject,
+                reject,
             ),
         ]);
     }
@@ -499,14 +542,10 @@ mod tests {
     fn point_checks_arity_and_quantity_slot_and_accepts_numeric_placeholders() {
         let (length, mass) = (length(), mass());
         let p3 = || Type::point3(length.clone());
+        let reject = ArgVerdict::Reject(ParamFamily::Point);
         assert_rows(&[
             ("same arity and quantity", p3(), p3(), ArgVerdict::Accept),
-            (
-                "other arity",
-                p3(),
-                Type::point2(length.clone()),
-                ArgVerdict::Reject,
-            ),
+            ("other arity", p3(), Type::point2(length.clone()), reject),
             ("int placeholder", p3(), Type::Int, ArgVerdict::Accept),
             (
                 "dimensioned scalar placeholder",
@@ -520,7 +559,7 @@ mod tests {
                 Type::ScalarParam("Q".to_string()),
                 ArgVerdict::Accept,
             ),
-            ("string arg", p3(), Type::String, ArgVerdict::Reject),
+            ("string arg", p3(), Type::String, reject),
             (
                 "quantity conflict",
                 p3(),
@@ -537,6 +576,7 @@ mod tests {
     fn matrix_and_tensor_accept_nominal_shapes_numeric_lists_and_scalars() {
         let (length, mass) = (length(), mass());
         let m33 = || Type::matrix(3, 3, length.clone());
+        let reject = ArgVerdict::Reject(ParamFamily::MatrixTensor);
         assert_rows(&[
             ("same matrix", m33(), m33(), ArgVerdict::Accept),
             (
@@ -566,14 +606,20 @@ mod tests {
                 list(list(real())),
                 ArgVerdict::Unverifiable,
             ),
-            ("string list", m33(), list(Type::String), ArgVerdict::Reject),
+            ("string list", m33(), list(Type::String), reject),
             (
                 "scalar of any dimension",
                 m33(),
                 mass.clone(),
                 ArgVerdict::Accept,
             ),
-            ("string arg", m33(), Type::String, ArgVerdict::Reject),
+            ("string arg", m33(), Type::String, reject),
+            (
+                "point arg: a quantity slot is not a nominal shape",
+                m33(),
+                Type::point3(length.clone()),
+                reject,
+            ),
             (
                 "rank-0 tensor <- matching scalar",
                 Type::tensor(0, 3, length.clone()),
@@ -602,7 +648,12 @@ mod tests {
                 },
                 ArgVerdict::Unverifiable,
             ),
-            ("string arg", f(), Type::String, ArgVerdict::Reject),
+            (
+                "string arg",
+                f(),
+                Type::String,
+                ArgVerdict::Reject(ParamFamily::Field),
+            ),
         ]);
     }
 
@@ -615,7 +666,7 @@ mod tests {
                 "other kind",
                 face(),
                 Type::Selector(SelectorKind::Edge),
-                ArgVerdict::Reject,
+                ArgVerdict::Reject(ParamFamily::Selector),
             ),
             (
                 "any selector <- face",
@@ -656,7 +707,7 @@ mod tests {
                 "other enum",
                 Type::Enum("Hue".to_string()),
                 choice(),
-                ArgVerdict::Reject,
+                ArgVerdict::Reject(ParamFamily::Enum),
             ),
             (
                 "applied generic structure is unexamined",
@@ -673,6 +724,7 @@ mod tests {
     #[test]
     fn scalar_family_defers_scalar_params_and_uses_type_compatible() {
         let q = || Type::ScalarParam("Q".to_string());
+        let reject = ArgVerdict::Reject(ParamFamily::ScalarFamily);
         assert_rows(&[
             (
                 "dimensioned slot <- scalar param",
@@ -686,19 +738,14 @@ mod tests {
                 q(),
                 ArgVerdict::Unverifiable,
             ),
-            (
-                "dimensioned slot <- int",
-                length(),
-                Type::Int,
-                ArgVerdict::Reject,
-            ),
+            ("dimensioned slot <- int", length(), Type::Int, reject),
             (
                 "dimensionless slot <- int",
                 real(),
                 Type::Int,
                 ArgVerdict::Accept,
             ),
-            ("string <- int", Type::String, Type::Int, ArgVerdict::Reject),
+            ("string <- int", Type::String, Type::Int, reject),
             ("bool <- bool", Type::Bool, Type::Bool, ArgVerdict::Accept),
         ]);
     }
