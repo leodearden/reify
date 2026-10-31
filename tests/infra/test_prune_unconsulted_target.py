@@ -454,12 +454,17 @@ class DeadUnitRecords(PruneHarness):
 
     def test_a_failed_unlink_leaves_the_fingerprint(self):
         self.write_stub("rm", STUB_FAILING_RM.format(real_rm=shutil.which("rm")))
+        deps, fingerprint = self.debug / "deps", self.debug / ".fingerprint"
+        # (failing kind, the stage's noun and dir, kinds an earlier stage removed,
+        # kinds no stage reached)
         stages = (
-            ("deps stage", "gone_deps", re.escape(str(self.debug / "deps"))),
-            ("dwo stage", "gone_shards", r"\.dwo"),
+            ("gone_deps", "deps files", deps, [], ["gone_shards"]),
+            ("gone_shards", ".dwo shards", deps, ["gone_deps"], []),
+            ("gone_record_dir", "fingerprint records", fingerprint,
+             ["gone_deps", "gone_shards"], []),
         )
-        for label, failing_kind, names_stage in stages:
-            with self.subTest(label):
+        for failing_kind, what, stage_dir, removed, untouched in stages:
+            with self.subTest(what):
                 shutil.rmtree(self.target, ignore_errors=True)
                 shapes = make_record_shapes(self.debug)
                 fail_on = shapes[failing_kind][0].name
@@ -468,11 +473,13 @@ class DeadUnitRecords(PruneHarness):
 
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertPresent(shapes["gone_record_file"])
-                if failing_kind == "gone_deps":
-                    self.assertPresent(shapes["gone_shards"])
-                else:
-                    self.assertAbsent(shapes["gone_deps"])
-                self.assertRegex(result.stderr, re.compile(rf"^\[error\].*{names_stage}", re.M))
+                for kind in removed:
+                    self.assertAbsent(shapes[kind])
+                for kind in untouched:
+                    self.assertPresent(shapes[kind])
+                self.assertRegex(result.stderr, re.compile(
+                    rf"^\[error\] removing the {re.escape(what)} in "
+                    rf"{re.escape(str(stage_dir))} failed", re.M))
                 self.assertEqual(list(self.scratch_tmp.iterdir()), [],
                                  "the prune's work dir outlived the failed run")
 

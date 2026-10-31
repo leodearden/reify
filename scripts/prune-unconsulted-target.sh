@@ -267,8 +267,8 @@ _select_unconsulted_victims() {
             }
             # A split-debuginfo shard, <stem>-<h>.<crate>.<cgu>-cgu.N.rcgu.dwo, is
             # keyed on its name cut at the FIRST dot: its later 16-hex cgu token
-            # is not a unit hash.
-            if ($3 !~ /\.dwo$/) next
+            # is not a unit hash. Only prune_records ever reads a shard.
+            if (prune_records != 1 || $3 !~ /\.dwo$/) next
             stem = $3
             sub(/\..*$/, "", stem)
             h = unit_hash(stem)
