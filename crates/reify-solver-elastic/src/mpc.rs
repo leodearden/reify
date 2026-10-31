@@ -1,52 +1,36 @@
-//! Multi-point constraint (MPC) types for the structural-analysis solver.
-//!
-//! # PRD reference
-//!
-//! See `docs/prds/v0_4/structural-analysis-shells.md` tasks **T10 / T11**.
-//! Task T11 (this commit) ships the global mixed-element assembler and
-//! the typed `MpcRow` placeholder that T10 will populate.
+//! Multi-point constraints (MPCs) for the structural-analysis solver.
 //!
 //! # Constraint form
 //!
-//! Each `MpcRow` represents a single linear equality constraint
+//! Each [`MpcRow`] is one linear equality constraint
 //!
 //! ```text
 //!     Σᵢ coeffs[i] · u[dofs[i]] = rhs
 //! ```
 //!
-//! over the global displacement vector `u`. A typical MPC connects
-//! `n ≥ 2` DOFs at distinct global indices; e.g. a shell-tet rotation
-//! ↔ tet-displacement-gradient tying constraint at one through-thickness
-//! sampling point produces one `MpcRow` (with the shell rotation DOF
-//! plus the displacement DOFs of the tet nodes spanned by the
-//! through-thickness offset).
+//! over the global displacement vector `u`. `dofs[0]` is the pivot DOF and
+//! `coeffs[0]` is non-zero, so each row solves for its pivot as
+//! `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i] · u[dofs[i]]) / coeffs[0]`.
 //!
-//! # Application strategy
+//! # Surface
 //!
-//! T10 will apply MPCs **post-assembly via row-elimination**, reusing
-//! Task 2917's Dirichlet plumbing in `crate::boundary::dirichlet`.
-//! Concretely: each row of K (and the corresponding entry of f) is
-//! eliminated by substituting `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i] ·
-//! u[dofs[i]]) / coeffs[0]` (or any alternative pivot DOF with non-zero
-//! coefficient), then the substituted equation is plugged back into K's
-//! other rows. The KKT-style penalty / Lagrange-multiplier alternative is
-//! out of scope; row-elimination matches the v0.3 Dirichlet code path
-//! and avoids growing the linear system.
+//! - [`MpcRow`]: one constraint row. [`MpcRow::new`] validates it,
+//!   [`MpcRow::shell_tet_tying`] builds the canonical six shell/tet junction
+//!   rows, and [`MpcRow::dofs`], [`MpcRow::coeffs`] and [`MpcRow::rhs`] read it.
+//! - [`apply_mpc_row_elimination`]: post-assembly row elimination of the rows
+//!   on `K` and `f` in place, in the shape of the Dirichlet row elimination in
+//!   `crate::boundary::dirichlet`. It keeps the system size unchanged, unlike
+//!   a penalty or Lagrange-multiplier formulation.
 //!
-//! # T11 / T10 split
+//! MPCs are applied after assembly; `assemble_global_stiffness` never takes
+//! them as input. The buckling kernel consumes the same rows by master-slave
+//! reduction ([`crate::buckling_kernel`]).
 //!
-//! - **T11 (this commit)** — ship the `MpcRow` placeholder type and the
-//!   `pub mod mpc;` declaration so the file the orchestrator's
-//!   file-list expects exists, the type is callable from downstream
-//!   crates, and the round-trip contract on the public fields is locked.
-//! - **T10 (Task 3020, pending)** — populate construction methods (e.g.
-//!   `MpcRow::shell_tet_tying(shell_node, tet_nodes, offset, ...)`) and
-//!   the row-elimination application function. T10's edits are
-//!   insertion-only on the public surface of this module.
+//! # PRD reference
 //!
-//! `assemble_global_stiffness` does **not** take MPCs as input — MPCs
-//! are applied post-assembly. See the design decision in the task plan
-//! for the rationale.
+//! `docs/prds/v0_4/structural-analysis-shells.md` tasks T10 / T11 for the
+//! formulation; `docs/prds/v0_6/solver-crates-layering.md` D10 / C6 for the
+//! private-field invariant.
 
 use faer::sparse::SparseRowMat;
 
@@ -160,7 +144,7 @@ pub fn apply_mpc_row_elimination(k: &mut SparseRowMat<usize, f64>, f: &mut [f64]
         k.ncols(),
     );
     for row in rows {
-        for &dof in &row.dofs {
+        for &dof in row.dofs() {
             assert!(
                 dof < k.nrows(),
                 "MpcRow has dof = {} but k.nrows() = {}; DOF index out of range",
@@ -173,7 +157,7 @@ pub fn apply_mpc_row_elimination(k: &mut SparseRowMat<usize, f64>, f: &mut [f64]
     // Debug-only: duplicate pivot DOFs produce undefined output. Surface eagerly.
     #[cfg(debug_assertions)]
     {
-        let mut pivots: Vec<usize> = rows.iter().map(|r| r.dofs[0]).collect();
+        let mut pivots: Vec<usize> = rows.iter().map(|r| r.dofs()[0]).collect();
         pivots.sort_unstable();
         for w in pivots.windows(2) {
             assert_ne!(
@@ -215,12 +199,12 @@ pub fn apply_mpc_row_elimination(k: &mut SparseRowMat<usize, f64>, f: &mut [f64]
     }
 
     for mpc in rows {
-        let p = mpc.dofs[0];
-        let c0 = mpc.coeffs[0];
-        let beta = mpc.rhs / c0;
+        let p = mpc.dofs()[0];
+        let c0 = mpc.coeffs()[0];
+        let beta = mpc.rhs() / c0;
         // αᵢ = −coeffs[i] / c0 for i > 0
-        let alphas: Vec<f64> = mpc.coeffs[1..].iter().map(|&c| -c / c0).collect();
-        let other_dofs = &mpc.dofs[1..];
+        let alphas: Vec<f64> = mpc.coeffs()[1..].iter().map(|&c| -c / c0).collect();
+        let other_dofs = &mpc.dofs()[1..];
 
         let (sym, vals) = k.parts_mut();
         let row_ptr = sym.row_ptr();
@@ -320,25 +304,25 @@ pub fn apply_mpc_row_elimination(k: &mut SparseRowMat<usize, f64>, f: &mut [f64]
 }
 
 /// One linear multi-point constraint row of the form
-/// `Σᵢ coeffs[i] · u[dofs[i]] = rhs`.
+/// `Σᵢ coeffs[i] · u[dofs[i]] = rhs`, with `dofs[0]` as the pivot DOF.
 ///
-/// `dofs` and `coeffs` must agree in length. Constructors that enforce
-/// this invariant are deferred to T10 (Task 3020); for now consumers
-/// build via struct-literal initialization. The `Debug` / `Clone` /
-/// `PartialEq` derives are needed for downstream test assertions and
-/// caller-side bookkeeping.
+/// Every `MpcRow` satisfies one invariant: `dofs.len() == coeffs.len() > 0`,
+/// `coeffs[0]` is finite and non-zero, and `rhs` is finite. The fields are
+/// private, so [`MpcRow::new`], which checks the invariant, and
+/// [`MpcRow::shell_tet_tying`], which builds every row through `new`, are the
+/// only constructors. Values are read through [`dofs`](Self::dofs),
+/// [`coeffs`](Self::coeffs) and [`rhs`](Self::rhs); there are no mutators.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MpcRow {
-    /// Global DOF indices participating in this constraint. Order is
-    /// significant only insofar as it matches `coeffs` element-wise;
-    /// the constraint equation itself is symmetric in summation order.
-    pub dofs: Vec<usize>,
-    /// Coefficients corresponding to `dofs` element-wise. Must have the
-    /// same length as `dofs`.
-    pub coeffs: Vec<f64>,
+    /// Global DOF indices participating in this constraint. Order matches
+    /// `coeffs` element-wise and puts the pivot first; the constraint
+    /// equation itself is symmetric in summation order.
+    dofs: Vec<usize>,
+    /// Coefficients corresponding to `dofs` element-wise.
+    coeffs: Vec<f64>,
     /// Right-hand side scalar. For homogeneous constraints (e.g.
     /// shell-tet tying with no imposed offset) this is `0.0`.
-    pub rhs: f64,
+    rhs: f64,
 }
 
 impl MpcRow {
@@ -353,6 +337,26 @@ impl MpcRow {
     ///   `u[dofs[0]] = (rhs − Σᵢ>0 coeffs[i]·u[dofs[i]]) / coeffs[0]`
     ///   is well-defined. See the module-level doc on the pivot convention.
     /// - `rhs` is not finite — `rhs` must be a finite number.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use reify_solver_elastic::MpcRow;
+    ///
+    /// let row = MpcRow::new(vec![0, 6], vec![1.0, -1.0], 0.0);
+    /// assert_eq!(row.dofs(), [0, 6]);
+    /// assert_eq!(row.coeffs(), [1.0, -1.0]);
+    /// assert_eq!(row.rhs(), 0.0);
+    /// ```
+    ///
+    /// Outside this module the fields are private, so a zero-pivot row cannot
+    /// be built by struct literal:
+    ///
+    /// ```compile_fail,E0451
+    /// use reify_solver_elastic::MpcRow;
+    ///
+    /// let _ = MpcRow { dofs: vec![0], coeffs: vec![0.0], rhs: 0.0 };
+    /// ```
     pub fn new(dofs: Vec<usize>, coeffs: Vec<f64>, rhs: f64) -> Self {
         assert_eq!(
             dofs.len(),
@@ -381,6 +385,21 @@ impl MpcRow {
             rhs,
         );
         MpcRow { dofs, coeffs, rhs }
+    }
+
+    /// The global DOF indices, pivot first.
+    pub fn dofs(&self) -> &[usize] {
+        &self.dofs
+    }
+
+    /// The coefficients, element-wise with [`dofs`](Self::dofs).
+    pub fn coeffs(&self) -> &[f64] {
+        &self.coeffs
+    }
+
+    /// The right-hand side.
+    pub fn rhs(&self) -> f64 {
+        self.rhs
     }
 
     /// Build the canonical 6 `MpcRow`s for a shell/tet junction constraint.
@@ -516,80 +535,6 @@ impl MpcRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Compile-only smoke that `MpcRow` is reachable and struct-literal
-    /// constructible with the documented field shape.
-    ///
-    /// Once Task 3020 (T10) adds real constructors / validators (e.g.
-    /// `MpcRow::shell_tet_tying`, length-equality assertions), the
-    /// behavioural tests live alongside that logic. This test exists
-    /// solely to lock that the public-field shape is the one downstream
-    /// crates will compile against — no behaviour to assert until T10
-    /// owns it.
-    #[test]
-    fn mpc_row_type_compiles_with_documented_field_shape() {
-        let _: MpcRow = MpcRow {
-            dofs: vec![3, 7, 11],
-            coeffs: vec![1.0, -0.5, 0.5],
-            rhs: 0.0,
-        };
-    }
-
-    // -----------------------------------------------------------------------
-    // Step 1 (RED): MpcRow::new constructor contract tests
-    // -----------------------------------------------------------------------
-
-    /// `MpcRow::new` must panic when `dofs.len() != coeffs.len()`.
-    #[test]
-    #[should_panic(expected = "dofs.len()")]
-    fn mpc_row_new_panics_on_length_mismatch() {
-        // len 2 vs len 1 — must panic
-        let _ = MpcRow::new(vec![1, 2], vec![1.0], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `coeffs[0]` (the pivot coefficient) is zero.
-    #[test]
-    #[should_panic(expected = "pivot")]
-    fn mpc_row_new_panics_on_zero_pivot_coefficient() {
-        // zero pivot — must panic
-        let _ = MpcRow::new(vec![3, 7], vec![0.0, 1.0], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `dofs` is empty (zero DOFs).
-    #[test]
-    #[should_panic(expected = "at least one")]
-    fn mpc_row_new_panics_on_empty_dofs() {
-        // len-equality passes (0 == 0), but is_empty check fires.
-        let _ = MpcRow::new(vec![], vec![], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `coeffs[0]` is NaN.
-    ///
-    /// NaN passes the `!= 0.0` guard (IEEE 754: `NaN == 0.0` is false, so
-    /// `NaN != 0.0` is true), so this test pins that the `is_finite` guard
-    /// is the one that catches NaN.  Reordering those two pivot-coefficient
-    /// asserts would silently break this contract.
-    #[test]
-    #[should_panic(expected = "finite")]
-    fn mpc_row_new_panics_on_nan_pivot() {
-        let _ = MpcRow::new(vec![1], vec![f64::NAN], 0.0);
-    }
-
-    /// `MpcRow::new` must panic when `rhs` is infinite.
-    #[test]
-    #[should_panic(expected = "rhs")]
-    fn mpc_row_new_panics_on_infinite_rhs() {
-        let _ = MpcRow::new(vec![1], vec![1.0], f64::INFINITY);
-    }
-
-    /// `MpcRow::new` constructs and the fields round-trip exactly.
-    #[test]
-    fn mpc_row_new_round_trips_dofs_coeffs_rhs() {
-        let row = MpcRow::new(vec![3, 7, 11], vec![1.0, -0.5, 0.5], 0.25);
-        assert_eq!(row.dofs, vec![3, 7, 11]);
-        assert_eq!(row.coeffs, vec![1.0, -0.5, 0.5]);
-        assert_eq!(row.rhs.to_bits(), 0.25_f64.to_bits());
-    }
 
     // -----------------------------------------------------------------------
     // Step 3 (RED): apply_mpc_row_elimination — homogeneous single MPC
@@ -1058,36 +1003,36 @@ mod tests {
         assert_eq!(rows.len(), 6, "shell_tet_tying must produce 6 rows");
 
         // (0) displacement x
-        assert_eq!(rows[0].dofs, vec![0, 9], "row 0 dofs");
-        assert_eq!(rows[0].coeffs, vec![1.0, -1.0], "row 0 coeffs");
-        assert_eq!(rows[0].rhs.to_bits(), 0.0_f64.to_bits(), "row 0 rhs");
+        assert_eq!(rows[0].dofs(), vec![0, 9], "row 0 dofs");
+        assert_eq!(rows[0].coeffs(), vec![1.0, -1.0], "row 0 coeffs");
+        assert_eq!(rows[0].rhs().to_bits(), 0.0_f64.to_bits(), "row 0 rhs");
 
         // (1) displacement y
-        assert_eq!(rows[1].dofs, vec![1, 10], "row 1 dofs");
-        assert_eq!(rows[1].coeffs, vec![1.0, -1.0], "row 1 coeffs");
-        assert_eq!(rows[1].rhs.to_bits(), 0.0_f64.to_bits(), "row 1 rhs");
+        assert_eq!(rows[1].dofs(), vec![1, 10], "row 1 dofs");
+        assert_eq!(rows[1].coeffs(), vec![1.0, -1.0], "row 1 coeffs");
+        assert_eq!(rows[1].rhs().to_bits(), 0.0_f64.to_bits(), "row 1 rhs");
 
         // (2) displacement z
-        assert_eq!(rows[2].dofs, vec![2, 11], "row 2 dofs");
-        assert_eq!(rows[2].coeffs, vec![1.0, -1.0], "row 2 coeffs");
-        assert_eq!(rows[2].rhs.to_bits(), 0.0_f64.to_bits(), "row 2 rhs");
+        assert_eq!(rows[2].dofs(), vec![2, 11], "row 2 dofs");
+        assert_eq!(rows[2].coeffs(), vec![1.0, -1.0], "row 2 coeffs");
+        assert_eq!(rows[2].rhs().to_bits(), 0.0_f64.to_bits(), "row 2 rhs");
 
         // (3) rot/grad axis x: -θ_y·1 + (u_top_x - u_bot_x) = 0
         // pivot is shell_rot[1]=4, coeff=-1
-        assert_eq!(rows[3].dofs, vec![4, 6, 12], "row 3 dofs");
-        assert_eq!(rows[3].coeffs, vec![-1.0, 1.0, -1.0], "row 3 coeffs");
-        assert_eq!(rows[3].rhs.to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
+        assert_eq!(rows[3].dofs(), vec![4, 6, 12], "row 3 dofs");
+        assert_eq!(rows[3].coeffs(), vec![-1.0, 1.0, -1.0], "row 3 coeffs");
+        assert_eq!(rows[3].rhs().to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
 
         // (4) rot/grad axis y: +θ_x·1 + (u_top_y - u_bot_y) = 0
         // pivot is shell_rot[0]=3, coeff=+1
-        assert_eq!(rows[4].dofs, vec![3, 7, 13], "row 4 dofs");
-        assert_eq!(rows[4].coeffs, vec![1.0, 1.0, -1.0], "row 4 coeffs");
-        assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
+        assert_eq!(rows[4].dofs(), vec![3, 7, 13], "row 4 dofs");
+        assert_eq!(rows[4].coeffs(), vec![1.0, 1.0, -1.0], "row 4 coeffs");
+        assert_eq!(rows[4].rhs().to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
 
         // (5) drilling z: tet-only u_top_z - u_bot_z = 0 (fallback)
-        assert_eq!(rows[5].dofs, vec![8, 14], "row 5 dofs");
-        assert_eq!(rows[5].coeffs, vec![1.0, -1.0], "row 5 coeffs");
-        assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
+        assert_eq!(rows[5].dofs(), vec![8, 14], "row 5 dofs");
+        assert_eq!(rows[5].coeffs(), vec![1.0, -1.0], "row 5 coeffs");
+        assert_eq!(rows[5].rhs().to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
     }
 
     /// With normal=[1,0,0] (x-normal), the drilling axis is x, and the
@@ -1117,34 +1062,34 @@ mod tests {
         assert_eq!(rows.len(), 6, "must produce 6 rows");
 
         // Displacement rows unchanged regardless of normal
-        assert_eq!(rows[0].dofs, vec![0, 9]);
-        assert_eq!(rows[1].dofs, vec![1, 10]);
-        assert_eq!(rows[2].dofs, vec![2, 11]);
+        assert_eq!(rows[0].dofs(), vec![0, 9]);
+        assert_eq!(rows[1].dofs(), vec![1, 10]);
+        assert_eq!(rows[2].dofs(), vec![2, 11]);
 
         // Row 3 — axis 0 is the drilling axis (parallel to normal=[1,0,0]):
         // tet-only fallback u_top_x - u_bot_x = 0, pivot = tet_top[0]=6
         assert_eq!(
-            rows[3].dofs,
+            rows[3].dofs(),
             vec![6, 12],
             "row 3: drilling fallback for axis 0"
         );
-        assert_eq!(rows[3].coeffs, vec![1.0, -1.0], "row 3: coeffs");
+        assert_eq!(rows[3].coeffs(), vec![1.0, -1.0], "row 3: coeffs");
 
         // Row 4 — axis 1 (y): pivot = shell_rot[2]=5 (b2=2, largest |coeff| for n_x=1)
         // rot_data[1]: (b1=0,c1=2,sign1=-1), (b2=2,c2=0,sign2=+1)
         // coeff_b1 = -(-1)·n[2]·h = 0;  coeff_b2 = -(+1)·n[0]·h = -1.0
         // → two-term row: pivot shell_rot[2]=5, coeffs=[-1, +1, -1]
-        assert_eq!(rows[4].dofs, vec![5, 7, 13], "row 4: dofs");
-        assert_eq!(rows[4].coeffs, vec![-1.0, 1.0, -1.0], "row 4: coeffs");
-        assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs=0");
+        assert_eq!(rows[4].dofs(), vec![5, 7, 13], "row 4: dofs");
+        assert_eq!(rows[4].coeffs(), vec![-1.0, 1.0, -1.0], "row 4: coeffs");
+        assert_eq!(rows[4].rhs().to_bits(), 0.0_f64.to_bits(), "row 4 rhs=0");
 
         // Row 5 — axis 2 (z): pivot = shell_rot[1]=4 (b2=1, largest |coeff| for n_x=1)
         // rot_data[2]: (b1=0,c1=1,sign1=+1), (b2=1,c2=0,sign2=-1)
         // coeff_b1 = -(+1)·n[1]·h = 0;  coeff_b2 = -(-1)·n[0]·h = +1.0
         // → two-term row: pivot shell_rot[1]=4, coeffs=[+1, +1, -1]
-        assert_eq!(rows[5].dofs, vec![4, 8, 14], "row 5: dofs");
-        assert_eq!(rows[5].coeffs, vec![1.0, 1.0, -1.0], "row 5: coeffs");
-        assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs=0");
+        assert_eq!(rows[5].dofs(), vec![4, 8, 14], "row 5: dofs");
+        assert_eq!(rows[5].coeffs(), vec![1.0, 1.0, -1.0], "row 5: coeffs");
+        assert_eq!(rows[5].rhs().to_bits(), 0.0_f64.to_bits(), "row 5 rhs=0");
     }
 
     // -----------------------------------------------------------------------
@@ -1191,94 +1136,98 @@ mod tests {
 
         // ── Displacement rows (sanity check) ────────────────────────────────
         for a in 0..3 {
-            assert_eq!(rows[a].dofs, vec![a, 9 + a], "disp row {a} dofs");
-            assert_eq!(rows[a].coeffs, vec![1.0, -1.0], "disp row {a} coeffs");
-            assert_eq!(rows[a].rhs.to_bits(), 0.0_f64.to_bits(), "disp row {a} rhs");
+            assert_eq!(rows[a].dofs(), vec![a, 9 + a], "disp row {a} dofs");
+            assert_eq!(rows[a].coeffs(), vec![1.0, -1.0], "disp row {a} coeffs");
+            assert_eq!(
+                rows[a].rhs().to_bits(),
+                0.0_f64.to_bits(),
+                "disp row {a} rhs"
+            );
         }
 
         // ── Rotation row 3 (a=0): rot_data (1,2,+1, 2,1,-1) ────────────────
         // coeff_b1 = -(+1)·n[2]·h = -inv_sqrt3   → pivot_b=1 (|abs1|>=|abs2|)
         // coeff_b2 = -(-1)·n[1]·h = +inv_sqrt3   → other_b=2
         // dofs = [shell_rot[1]=4, shell_rot[2]=5, tet_top[0]=6, tet_bot[0]=12]
-        assert_eq!(rows[3].dofs, vec![4, 5, 6, 12], "row 3 dofs");
-        assert_eq!(rows[3].coeffs.len(), 4, "row 3 must be four-term");
+        assert_eq!(rows[3].dofs(), vec![4, 5, 6, 12], "row 3 dofs");
+        assert_eq!(rows[3].coeffs().len(), 4, "row 3 must be four-term");
         assert_eq!(
-            rows[3].coeffs[0].to_bits(),
+            rows[3].coeffs()[0].to_bits(),
             (-inv_sqrt3).to_bits(),
             "row 3 pivot_coeff"
         );
         assert_eq!(
-            rows[3].coeffs[1].to_bits(),
+            rows[3].coeffs()[1].to_bits(),
             inv_sqrt3.to_bits(),
             "row 3 other_coeff"
         );
         assert_eq!(
-            rows[3].coeffs[2].to_bits(),
+            rows[3].coeffs()[2].to_bits(),
             1.0_f64.to_bits(),
             "row 3 tet_top coeff"
         );
         assert_eq!(
-            rows[3].coeffs[3].to_bits(),
+            rows[3].coeffs()[3].to_bits(),
             (-1.0_f64).to_bits(),
             "row 3 tet_bot coeff"
         );
-        assert_eq!(rows[3].rhs.to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
+        assert_eq!(rows[3].rhs().to_bits(), 0.0_f64.to_bits(), "row 3 rhs");
 
         // ── Rotation row 4 (a=1): rot_data (0,2,-1, 2,0,+1) ────────────────
         // coeff_b1 = -(-1)·n[2]·h = +inv_sqrt3   → pivot_b=0 (|abs1|>=|abs2|)
         // coeff_b2 = -(+1)·n[0]·h = -inv_sqrt3   → other_b=2
         // dofs = [shell_rot[0]=3, shell_rot[2]=5, tet_top[1]=7, tet_bot[1]=13]
-        assert_eq!(rows[4].dofs, vec![3, 5, 7, 13], "row 4 dofs");
-        assert_eq!(rows[4].coeffs.len(), 4, "row 4 must be four-term");
+        assert_eq!(rows[4].dofs(), vec![3, 5, 7, 13], "row 4 dofs");
+        assert_eq!(rows[4].coeffs().len(), 4, "row 4 must be four-term");
         assert_eq!(
-            rows[4].coeffs[0].to_bits(),
+            rows[4].coeffs()[0].to_bits(),
             inv_sqrt3.to_bits(),
             "row 4 pivot_coeff"
         );
         assert_eq!(
-            rows[4].coeffs[1].to_bits(),
+            rows[4].coeffs()[1].to_bits(),
             (-inv_sqrt3).to_bits(),
             "row 4 other_coeff"
         );
         assert_eq!(
-            rows[4].coeffs[2].to_bits(),
+            rows[4].coeffs()[2].to_bits(),
             1.0_f64.to_bits(),
             "row 4 tet_top coeff"
         );
         assert_eq!(
-            rows[4].coeffs[3].to_bits(),
+            rows[4].coeffs()[3].to_bits(),
             (-1.0_f64).to_bits(),
             "row 4 tet_bot coeff"
         );
-        assert_eq!(rows[4].rhs.to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
+        assert_eq!(rows[4].rhs().to_bits(), 0.0_f64.to_bits(), "row 4 rhs");
 
         // ── Rotation row 5 (a=2): rot_data (0,1,+1, 1,0,-1) ────────────────
         // coeff_b1 = -(+1)·n[1]·h = -inv_sqrt3   → pivot_b=0 (|abs1|>=|abs2|)
         // coeff_b2 = -(-1)·n[0]·h = +inv_sqrt3   → other_b=1
         // dofs = [shell_rot[0]=3, shell_rot[1]=4, tet_top[2]=8, tet_bot[2]=14]
-        assert_eq!(rows[5].dofs, vec![3, 4, 8, 14], "row 5 dofs");
-        assert_eq!(rows[5].coeffs.len(), 4, "row 5 must be four-term");
+        assert_eq!(rows[5].dofs(), vec![3, 4, 8, 14], "row 5 dofs");
+        assert_eq!(rows[5].coeffs().len(), 4, "row 5 must be four-term");
         assert_eq!(
-            rows[5].coeffs[0].to_bits(),
+            rows[5].coeffs()[0].to_bits(),
             (-inv_sqrt3).to_bits(),
             "row 5 pivot_coeff"
         );
         assert_eq!(
-            rows[5].coeffs[1].to_bits(),
+            rows[5].coeffs()[1].to_bits(),
             inv_sqrt3.to_bits(),
             "row 5 other_coeff"
         );
         assert_eq!(
-            rows[5].coeffs[2].to_bits(),
+            rows[5].coeffs()[2].to_bits(),
             1.0_f64.to_bits(),
             "row 5 tet_top coeff"
         );
         assert_eq!(
-            rows[5].coeffs[3].to_bits(),
+            rows[5].coeffs()[3].to_bits(),
             (-1.0_f64).to_bits(),
             "row 5 tet_bot coeff"
         );
-        assert_eq!(rows[5].rhs.to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
+        assert_eq!(rows[5].rhs().to_bits(), 0.0_f64.to_bits(), "row 5 rhs");
     }
 
     // -----------------------------------------------------------------------
@@ -1345,12 +1294,12 @@ mod tests {
         // Verify each constraint Σ coeffs[i] · u[dofs[i]] = rhs
         for (k_idx, row) in mpc_rows.iter().enumerate() {
             let residual: f64 = row
-                .coeffs
+                .coeffs()
                 .iter()
-                .zip(row.dofs.iter())
+                .zip(row.dofs().iter())
                 .map(|(&c, &d)| c * u[d])
                 .sum::<f64>()
-                - row.rhs;
+                - row.rhs();
             assert!(
                 residual.abs() < 1e-9,
                 "MpcRow {k_idx} constraint not satisfied: residual = {residual:.2e}",
