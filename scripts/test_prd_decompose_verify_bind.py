@@ -433,8 +433,8 @@ class TestValueAssertionKind(unittest.TestCase):
             pdv.premise_to_probe(self._premise(assertion_kind="nonsense"))
         message = str(ctx.exception)
         self.assertIn("nonsense", message)
-        for kind in ("rejection", "parses", "resolves", "produces", "ir", "value"):
-            self.assertIn(kind, message)
+        for kind in pdv.AssertionKind:
+            self.assertIn(kind.value, message)
 
     # ── bind_premises → α round-trip ──────────────────────────────────────────
 

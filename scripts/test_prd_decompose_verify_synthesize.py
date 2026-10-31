@@ -540,7 +540,7 @@ class TestFixtureAbsent(unittest.TestCase):
             with self.subTest(verdict=verdict):
                 cap = f"{verdict} on a missing fixture"
                 rec = self._record(cap, verdict, fixture_present=False)
-                self.assertEqual(pdv.classify_record(rec), pdv.CAT_FIXTURE_ABSENT)
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.FIXTURE_ABSENT)
                 bv = self._synthesize(rec)
                 self.assertFalse(bv.blocks)
                 self.assertEqual(bv.blocking, [])
@@ -557,7 +557,7 @@ class TestFixtureAbsent(unittest.TestCase):
         cases = (
             ("a relayed PASS on a missing fixture (M1)",
              self._record(verdict="PASS", fixture_present=False),
-             pdv.CAT_FIXTURE_ABSENT),
+             pdv.RecordCategory.FIXTURE_ABSENT),
             ("a harness failure outranks the absence",
              self._record(verdict="HARNESS_ERROR", exit_code=127,
                           fixture_present=False,
@@ -565,22 +565,22 @@ class TestFixtureAbsent(unittest.TestCase):
                                            "detail": "[Errno 2] No such file or "
                                                      "directory: 'reify'",
                                            "cache_denied": False}),
-             pdv.CAT_BLOCKING),
+             pdv.RecordCategory.BLOCKING),
             ("no executed evidence outranks the absence",
              self._record(evidence=False, fixture_present=False),
-             pdv.CAT_MALFORMED),
+             pdv.RecordCategory.MALFORMED),
             ("B3: a present fixture whose FAIL quotes ENOENT on its own line",
              self._record(stderr=f'{_LEAF_FIXTURE}:3: expected '
                                  '"No such file or directory (os error 2)"',
                           fixture_present=True),
-             pdv.CAT_BLOCKING),
+             pdv.RecordCategory.BLOCKING),
             ("#8122: tree-sitter's missing-file report",
              self._record(probe_kind="grammar",
                           command=["tree-sitter", "parse", "--quiet", _LEAF_FIXTURE],
                           stderr="Error: No files were found at or matched by the "
                                  "provided pathname/glob",
                           fixture_present=False),
-             pdv.CAT_FIXTURE_ABSENT),
+             pdv.RecordCategory.FIXTURE_ABSENT),
         )
         for label, rec, category in cases:
             with self.subTest(case=label):
@@ -609,7 +609,7 @@ class TestFixtureAbsent(unittest.TestCase):
         for label, fields in variants.items():
             with self.subTest(variant=label):
                 rec = self._record(f"{label} cap", stderr=self._ENOENT, **fields)
-                self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.BLOCKING)
                 bv = self._synthesize(rec)
                 self.assertTrue(bv.blocks)
                 self.assertEqual(bv.fixture_absent, [])
@@ -624,7 +624,7 @@ class TestFixtureAbsent(unittest.TestCase):
         }.items():
             with self.subTest(variant=label):
                 rec = self._record(verdict="PASS", stderr=self._ENOENT, **fields)
-                self.assertEqual(pdv.classify_record(rec), pdv.CAT_NON_BLOCKING)
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.NON_BLOCKING)
 
 
 # ---------------------------------------------------------------------------
@@ -703,7 +703,7 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
     def test_prompt_fallback_record_is_classified_blocking(self):
         """Unit-level, so a regression localises to classify_record."""
         self.assertEqual(pdv.classify_record(self._prompt_fallback_record()),
-                         pdv.CAT_BLOCKING)
+                         pdv.RecordCategory.BLOCKING)
 
     def test_the_mjs_prompt_still_emits_this_shape(self):
         """Drift guard: the record above is a COPY of the .mjs prompt template.
@@ -762,7 +762,7 @@ class TestHarnessErrorAlwaysBlocks(unittest.TestCase):
         """Unit-level pin on the classify_record precedence order."""
         rec = self._executed("harness enoent cap", "HARNESS_ERROR",
                              stderr="No such file or directory")
-        self.assertEqual(pdv.classify_record(rec), pdv.CAT_BLOCKING)
+        self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.BLOCKING)
 
     # ── (3) blast radius: neither downgrade is disabled for probe verdicts ───
 

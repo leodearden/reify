@@ -12,7 +12,7 @@ import os
 import sys
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-_HARNESS_PATH = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.py")
+PDV_PY = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.py")
 REPO_ROOT = os.path.dirname(_SCRIPTS_DIR)
 PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
 
@@ -20,7 +20,7 @@ PDV_MJS = os.path.join(_SCRIPTS_DIR, "prd-decompose-verify.mjs")
 @functools.cache
 def load_pdv():
     """Load prd-decompose-verify.py as `pdv` (the module under test), once per process."""
-    pdv_spec = importlib.util.spec_from_file_location("prd_decompose_verify", _HARNESS_PATH)
+    pdv_spec = importlib.util.spec_from_file_location("prd_decompose_verify", PDV_PY)
     pdv = importlib.util.module_from_spec(pdv_spec)
     sys.modules["prd_decompose_verify"] = pdv
     pdv_spec.loader.exec_module(pdv)
