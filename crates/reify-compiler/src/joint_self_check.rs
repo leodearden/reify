@@ -111,7 +111,7 @@ fn body_has_undecidable_kind_split(body: &[CompiledExpr]) -> bool {
 ///   `N(N-1)/2` rotational DOF, but only `N=3` is inhabited today
 ///   (`Value::Orientation` is a quaternion, and `try_infer_type` returns
 ///   `Orientation(3)` unconditionally), so every other arity falls through to
-///   `None` below rather than being answered,
+///   `None` below rather than being answered (#6336 owns widening this arm),
 /// - anything else → `None` — a DOF field that is neither an angle, a length,
 ///   nor an orientation has no kind to match against the residual.
 ///
