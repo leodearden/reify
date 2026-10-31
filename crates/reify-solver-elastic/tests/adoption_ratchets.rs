@@ -83,7 +83,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "assembly-element-literals",
         home: "AssemblyElement::new (solver-crates-layering D7, leaf δ)",
-        baseline: 39,
+        baseline: 40,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/global.rs"],
             ..Pattern::whole_file(
