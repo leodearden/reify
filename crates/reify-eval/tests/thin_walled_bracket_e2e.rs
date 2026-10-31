@@ -17,6 +17,7 @@
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;
+use reify_test_support::scalar_si;
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,7 @@ fn thin_walled_bracket_surfaces_shell_stress_with_in_band_max_von_mises() {
         .get(&mvm_cell)
         .unwrap_or_else(|| panic!("cell ThinWalledBracket.max_von_mises not found"));
 
-    let mvm = reify_test_support::scalar_si(mvm_val, "ThinWalledBracket.max_von_mises");
+    let mvm = scalar_si(mvm_val, "ThinWalledBracket.max_von_mises");
     assert!(
         mvm.is_finite() && mvm > 0.0,
         "max_von_mises must be finite and > 0, got {mvm}"

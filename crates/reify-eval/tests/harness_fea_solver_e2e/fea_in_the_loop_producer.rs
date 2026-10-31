@@ -178,10 +178,12 @@ fn solve_elastic_static_dispatches_real_result_inside_minimize_where_loop() {
         .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
-    // An Undef here is the RED state: without the compute-dispatch hook the
-    // auto-resolution reports Infeasible and never writes `thickness`. See the
-    // module doc's RED/GREEN section.
-    let thickness_si = scalar_si(thickness_val, "FeaOptimizedBracket.thickness");
+    let thickness_si = scalar_si(
+        thickness_val,
+        "FeaOptimizedBracket.thickness (Undef => RED state: without the compute-dispatch \
+         hook `solve_elastic_static` body-evals to Undef, auto-resolution reports \
+         Infeasible and never writes `thickness`; see module doc RED/GREEN section)",
+    );
 
     assert!(
         thickness_si.is_finite(),

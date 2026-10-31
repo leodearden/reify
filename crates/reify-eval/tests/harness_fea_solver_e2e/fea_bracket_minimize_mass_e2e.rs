@@ -150,9 +150,14 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
-    // An Undef here means the auto-resolution reported Infeasible and never
-    // wrote a value. See the module doc for the failure modes.
-    let thickness_si = scalar_si(thickness_val, &format!("{TEMPLATE_NAME}.thickness"));
+    let thickness_si = scalar_si(
+        thickness_val,
+        &format!(
+            "{TEMPLATE_NAME}.thickness (Undef => auto-resolution reported Infeasible: the \
+             stress constraint never decomposed into a satisfiable numeric residual; see \
+             module doc)"
+        ),
+    );
 
     // ── (c) Finite ───────────────────────────────────────────────────────────
 
@@ -192,7 +197,13 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         .get(&mass_id)
         .expect("mass should be in values after eval — it is the compiled objective");
 
-    let mass_si = scalar_si(mass_val, &format!("{TEMPLATE_NAME}.mass"));
+    let mass_si = scalar_si(
+        mass_val,
+        &format!(
+            "{TEMPLATE_NAME}.mass (the minimize objective; Undef => the optimiser has no \
+             gradient to descend)"
+        ),
+    );
     assert!(
         mass_si.is_finite() && mass_si > 0.0,
         "mass must be finite and positive, got {mass_si:?}"
