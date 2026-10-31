@@ -944,7 +944,7 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """A wedged derived cache path → exit 127 + SETUP naming the wedged path.
 
         Deliberately NOT a silent ambient fallback: observe() classifies the
-        failure as _HARNESS_ERROR, which is the loud, attributable outcome.
+        failure as HARNESS_ERROR, which is the loud, attributable outcome.
         SETUP rather than LAUNCH because no process was ever started: the
         environment it needed could not be built.
         """

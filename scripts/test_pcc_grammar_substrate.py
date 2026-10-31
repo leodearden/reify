@@ -230,7 +230,7 @@ class TestGrammarCacheDenied(unittest.TestCase):
     negatives are the load-bearing half: a genuine grammar regression is a
     *parse* error (no load failure at all, so None), and a load failure with no
     permission indicator is a missing or corrupt grammar (GRAMMAR_LOAD with
-    cache_denied False).  Both keep reaching _HARNESS_ERROR / exit 70; the skip
+    cache_denied False).  Both keep reaching HARNESS_ERROR / exit 70; the skip
     a denial authorizes happens in the CALLERS, never in the probe verdict.
     """
 
@@ -330,7 +330,7 @@ class TestGrammarCacheDenied(unittest.TestCase):
                 failure = pcc.grammar_load_failure(stderr)
                 self.assertIsNotNone(failure, "precondition: a load failure")
                 run = pcc.ProbeRun(1, "", stderr, harness_failure=failure)
-                self.assertEqual(pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR)
+                self.assertEqual(pcc.observe("grammar", run, {}), pcc.Observation.HARNESS_ERROR)
 
 
 class TestGrammarCacheDenialAnchoring(unittest.TestCase):
@@ -632,7 +632,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             )
         self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT)
         self.assertEqual(
-            pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
+            pcc.observe("grammar", run, {}), pcc.Observation.HARNESS_ERROR,
             "a probe that never finished cannot be trusted as PRESENT/ABSENT",
         )
 

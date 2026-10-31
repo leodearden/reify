@@ -28,15 +28,15 @@ class TestVerdictTruthTable(unittest.TestCase):
 
     def test_observation_constants_exist(self):
         """Observation constants PRESENT, ABSENT, INDETERMINATE must exist."""
-        self.assertTrue(hasattr(pcc, "PRESENT"), "missing PRESENT")
-        self.assertTrue(hasattr(pcc, "ABSENT"), "missing ABSENT")
-        self.assertTrue(hasattr(pcc, "INDETERMINATE"), "missing INDETERMINATE")
+        self.assertTrue(hasattr(pcc.Observation, "PRESENT"), "missing PRESENT")
+        self.assertTrue(hasattr(pcc.Observation, "ABSENT"), "missing ABSENT")
+        self.assertTrue(hasattr(pcc.Observation, "INDETERMINATE"), "missing INDETERMINATE")
 
     def test_verdict_constants_exist(self):
         """Verdict constants PASS, FAIL, UNPROVABLE must exist."""
-        self.assertTrue(hasattr(pcc, "PASS"), "missing PASS")
-        self.assertTrue(hasattr(pcc, "FAIL"), "missing FAIL")
-        self.assertTrue(hasattr(pcc, "UNPROVABLE"), "missing UNPROVABLE")
+        self.assertTrue(hasattr(pcc.Verdict, "PASS"), "missing PASS")
+        self.assertTrue(hasattr(pcc.Verdict, "FAIL"), "missing FAIL")
+        self.assertTrue(hasattr(pcc.Verdict, "UNPROVABLE"), "missing UNPROVABLE")
 
     def test_verdict_function_exists(self):
         self.assertTrue(hasattr(pcc, "verdict"), "missing verdict()")
@@ -46,37 +46,37 @@ class TestVerdictTruthTable(unittest.TestCase):
 
     def test_present_expected_present_is_pass(self):
         """PRESENT + expected present → PASS."""
-        v = pcc.verdict(pcc.PRESENT, "present")
-        self.assertEqual(v, pcc.PASS)
+        v = pcc.verdict(pcc.Observation.PRESENT, "present")
+        self.assertEqual(v, pcc.Verdict.PASS)
 
     def test_absent_expected_absent_is_pass(self):
         """ABSENT + expected absent → PASS."""
-        v = pcc.verdict(pcc.ABSENT, "absent")
-        self.assertEqual(v, pcc.PASS)
+        v = pcc.verdict(pcc.Observation.ABSENT, "absent")
+        self.assertEqual(v, pcc.Verdict.PASS)
 
     # ── FAIL cases ────────────────────────────────────────────────────────────
 
     def test_present_expected_absent_is_fail(self):
         """PRESENT + expected absent → FAIL."""
-        v = pcc.verdict(pcc.PRESENT, "absent")
-        self.assertEqual(v, pcc.FAIL)
+        v = pcc.verdict(pcc.Observation.PRESENT, "absent")
+        self.assertEqual(v, pcc.Verdict.FAIL)
 
     def test_absent_expected_present_is_fail(self):
         """ABSENT + expected present → FAIL."""
-        v = pcc.verdict(pcc.ABSENT, "present")
-        self.assertEqual(v, pcc.FAIL)
+        v = pcc.verdict(pcc.Observation.ABSENT, "present")
+        self.assertEqual(v, pcc.Verdict.FAIL)
 
     # ── UNPROVABLE cases ──────────────────────────────────────────────────────
 
     def test_indeterminate_expected_present_is_unprovable(self):
         """INDETERMINATE + expected present → UNPROVABLE."""
-        v = pcc.verdict(pcc.INDETERMINATE, "present")
-        self.assertEqual(v, pcc.UNPROVABLE)
+        v = pcc.verdict(pcc.Observation.INDETERMINATE, "present")
+        self.assertEqual(v, pcc.Verdict.UNPROVABLE)
 
     def test_indeterminate_expected_absent_is_unprovable(self):
         """INDETERMINATE + expected absent → UNPROVABLE."""
-        v = pcc.verdict(pcc.INDETERMINATE, "absent")
-        self.assertEqual(v, pcc.UNPROVABLE)
+        v = pcc.verdict(pcc.Observation.INDETERMINATE, "absent")
+        self.assertEqual(v, pcc.Verdict.UNPROVABLE)
 
     # ── HARNESS_ERROR: verdict() is total over Observation ───────────────────
 
@@ -92,15 +92,15 @@ class TestVerdictTruthTable(unittest.TestCase):
 
     def test_observation_constants_are_distinct(self):
         """PRESENT, ABSENT, INDETERMINATE must be pairwise distinct."""
-        self.assertNotEqual(pcc.PRESENT, pcc.ABSENT)
-        self.assertNotEqual(pcc.PRESENT, pcc.INDETERMINATE)
-        self.assertNotEqual(pcc.ABSENT, pcc.INDETERMINATE)
+        self.assertNotEqual(pcc.Observation.PRESENT, pcc.Observation.ABSENT)
+        self.assertNotEqual(pcc.Observation.PRESENT, pcc.Observation.INDETERMINATE)
+        self.assertNotEqual(pcc.Observation.ABSENT, pcc.Observation.INDETERMINATE)
 
     def test_verdict_constants_are_distinct(self):
         """PASS, FAIL, UNPROVABLE must be pairwise distinct."""
-        self.assertNotEqual(pcc.PASS, pcc.FAIL)
-        self.assertNotEqual(pcc.PASS, pcc.UNPROVABLE)
-        self.assertNotEqual(pcc.FAIL, pcc.UNPROVABLE)
+        self.assertNotEqual(pcc.Verdict.PASS, pcc.Verdict.FAIL)
+        self.assertNotEqual(pcc.Verdict.PASS, pcc.Verdict.UNPROVABLE)
+        self.assertNotEqual(pcc.Verdict.FAIL, pcc.Verdict.UNPROVABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -210,13 +210,13 @@ class TestObservation(unittest.TestCase):
         """grammar: exit 0 → PRESENT (no parse errors)."""
         run = self._run(0)
         obs = pcc.observe("grammar", run, {})
-        self.assertEqual(obs, pcc.PRESENT)
+        self.assertEqual(obs, pcc.Observation.PRESENT)
 
     def test_grammar_exit1_with_error_node_is_absent(self):
         """grammar: exit 1 with '(ERROR' in output → ABSENT."""
         run = self._run(1, stderr="(ERROR [1,12]-[1,32])")
         obs = pcc.observe("grammar", run, {})
-        self.assertEqual(obs, pcc.ABSENT)
+        self.assertEqual(obs, pcc.Observation.ABSENT)
 
     def test_grammar_exit1_with_failed_to_load_language_is_harness_error(self):
         """grammar: the boundary's GRAMMAR_LOAD failure → harness-error observation."""
@@ -224,8 +224,8 @@ class TestObservation(unittest.TestCase):
         run = pcc.ProbeRun(1, "", stderr, harness_failure=pcc.grammar_load_failure(stderr))
         obs = pcc.observe("grammar", run, {})
         # Must not be PRESENT or ABSENT — it must be a harness-error signal
-        self.assertNotEqual(obs, pcc.PRESENT)
-        self.assertNotEqual(obs, pcc.ABSENT)
+        self.assertNotEqual(obs, pcc.Observation.PRESENT)
+        self.assertNotEqual(obs, pcc.Observation.ABSENT)
 
     # ── observe() for check kind ──────────────────────────────────────────────
 
@@ -234,21 +234,21 @@ class TestObservation(unittest.TestCase):
         # exit_code=1 predicate satisfied
         run = self._run(1, stderr="error: type mismatch")
         obs = pcc.observe("check", run, {"exit_code": 1})
-        self.assertEqual(obs, pcc.PRESENT)
+        self.assertEqual(obs, pcc.Observation.PRESENT)
 
     def test_check_match_not_satisfied_is_absent(self):
         """check: match predicate not satisfied → ABSENT."""
         # The §3 4575 case: reify exits 0 + 'All constraints satisfied.', no rejection diag
         run = self._run(0, stdout="All constraints satisfied.")
         obs = pcc.observe("check", run, {"exit_code": 1})
-        self.assertEqual(obs, pcc.ABSENT)
+        self.assertEqual(obs, pcc.Observation.ABSENT)
 
     def test_check_4575_silent_accept_is_absent(self):
         """§3 4575: exit 0, 'All constraints satisfied.', empty stderr → no rejection → ABSENT."""
         run = self._run(0, stdout="All constraints satisfied.", stderr="")
         # We probe for presence of a rejection diagnostic (exit_code: 1)
         obs = pcc.observe("check", run, {"exit_code": 1})
-        self.assertEqual(obs, pcc.ABSENT)
+        self.assertEqual(obs, pcc.Observation.ABSENT)
 
     # ── observe() for ir kind ─────────────────────────────────────────────────
 
@@ -256,19 +256,19 @@ class TestObservation(unittest.TestCase):
         """ir: exit 0 clean → ABSENT (sound by determinism §6 G6(b))."""
         run = self._run(0, stdout="a = 0.01 m", stderr="")
         obs = pcc.observe("ir", run, {"stderr_contains": "CrossSubGeometryRef"})
-        self.assertEqual(obs, pcc.ABSENT)
+        self.assertEqual(obs, pcc.Observation.ABSENT)
 
     def test_ir_exit_nonzero_with_signature_is_present(self):
         """ir: exit ≠ 0 with asserted signature in stderr → PRESENT."""
         run = self._run(101, stderr="thread panicked: CrossSubGeometryRef would panic in eval_expr")
         obs = pcc.observe("ir", run, {"stderr_contains": "CrossSubGeometryRef"})
-        self.assertEqual(obs, pcc.PRESENT)
+        self.assertEqual(obs, pcc.Observation.PRESENT)
 
     def test_ir_exit_nonzero_without_signature_is_indeterminate(self):
         """ir: exit ≠ 0 with an UNRELATED error (signature absent) → INDETERMINATE."""
         run = self._run(1, stderr="error: unresolved type: Transform3")
         obs = pcc.observe("ir", run, {"stderr_contains": "CrossSubGeometryRef"})
-        self.assertEqual(obs, pcc.INDETERMINATE)
+        self.assertEqual(obs, pcc.Observation.INDETERMINATE)
 
 
 # ---------------------------------------------------------------------------
@@ -301,13 +301,13 @@ class TestValueObservation(unittest.TestCase):
     def test_exit_zero_predicate_satisfied_is_present(self):
         run = self._run(0, stdout="damping_ratio = 0.018\n")
         self.assertEqual(
-            pcc.observe("value", run, self._value(self._DAMPING)), pcc.PRESENT
+            pcc.observe("value", run, self._value(self._DAMPING)), pcc.Observation.PRESENT
         )
 
     def test_exit_zero_value_out_of_range_is_absent(self):
         run = self._run(0, stdout="damping_ratio = 0\n")
         self.assertEqual(
-            pcc.observe("value", run, self._value(self._DAMPING)), pcc.ABSENT
+            pcc.observe("value", run, self._value(self._DAMPING)), pcc.Observation.ABSENT
         )
 
     def test_exit_zero_pattern_missing_is_indeterminate(self):
@@ -320,7 +320,7 @@ class TestValueObservation(unittest.TestCase):
         run = self._run(0, stdout="something_else = 0.018\n")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
-            pcc.INDETERMINATE,
+            pcc.Observation.INDETERMINATE,
         )
 
     def test_absent_is_reserved_for_a_value_that_was_actually_read(self):
@@ -335,11 +335,11 @@ class TestValueObservation(unittest.TestCase):
         read = self._run(0, stdout="damping_ratio = 0\n")
         unread = self._run(0, stdout="something_else = 0.018\n")
         self.assertEqual(
-            pcc.observe("value", read, self._value(self._DAMPING)), pcc.ABSENT
+            pcc.observe("value", read, self._value(self._DAMPING)), pcc.Observation.ABSENT
         )
         self.assertEqual(
             pcc.observe("value", unread, self._value(self._DAMPING)),
-            pcc.INDETERMINATE,
+            pcc.Observation.INDETERMINATE,
         )
         # And the mis-aimed probe is UNPROVABLE under BOTH polarities, so no
         # expectation can launder it into a pass.
@@ -350,13 +350,13 @@ class TestValueObservation(unittest.TestCase):
                         pcc.observe("value", unread, self._value(self._DAMPING)),
                         polarity,
                     ),
-                    pcc.UNPROVABLE,
+                    pcc.Verdict.UNPROVABLE,
                 )
 
     def test_exit_zero_undef_capture_is_absent(self):
         run = self._run(0, stdout="damping_ratio = undef\n")
         spec = {"pattern": r"damping_ratio = (\S+)", "finite": True}
-        self.assertEqual(pcc.observe("value", run, self._value(spec)), pcc.ABSENT)
+        self.assertEqual(pcc.observe("value", run, self._value(spec)), pcc.Observation.ABSENT)
 
     def test_nonzero_exit_is_indeterminate_even_with_satisfying_stdout(self):
         """An eval error means no value was produced.
@@ -372,14 +372,14 @@ class TestValueObservation(unittest.TestCase):
                 run = self._run(code, stdout="damping_ratio = 0.018\n")
                 self.assertEqual(
                     pcc.observe("value", run, self._value(self._DAMPING)),
-                    pcc.INDETERMINATE,
+                    pcc.Observation.INDETERMINATE,
                 )
 
     def test_nonzero_exit_with_empty_stdout_is_indeterminate(self):
         run = self._run(1, stderr="EvalError: boom\n")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
-            pcc.INDETERMINATE,
+            pcc.Observation.INDETERMINATE,
         )
 
     # ── a harness failure still beats the kind dispatch ───────────────────────
@@ -393,22 +393,22 @@ class TestValueObservation(unittest.TestCase):
         run = self._failed(127, pcc.HarnessFailureKind.LAUNCH, "[Errno 2] reify")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
-            pcc._HARNESS_ERROR,
+            pcc.Observation.HARNESS_ERROR,
         )
 
     def test_timeout_is_harness_error_not_indeterminate(self):
         run = self._failed(124, pcc.HarnessFailureKind.TIMEOUT, "timed out after 30s")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
-            pcc._HARNESS_ERROR,
+            pcc.Observation.HARNESS_ERROR,
         )
 
     # ── verdict() composition ─────────────────────────────────────────────────
 
     def test_verdict_composition(self):
-        self.assertEqual(pcc.verdict(pcc.PRESENT, "present"), pcc.PASS)
-        self.assertEqual(pcc.verdict(pcc.ABSENT, "present"), pcc.FAIL)
-        self.assertEqual(pcc.verdict(pcc.INDETERMINATE, "present"), pcc.UNPROVABLE)
+        self.assertEqual(pcc.verdict(pcc.Observation.PRESENT, "present"), pcc.Verdict.PASS)
+        self.assertEqual(pcc.verdict(pcc.Observation.ABSENT, "present"), pcc.Verdict.FAIL)
+        self.assertEqual(pcc.verdict(pcc.Observation.INDETERMINATE, "present"), pcc.Verdict.UNPROVABLE)
 
     # ── THE VACUITY-CLOSURE CONTRACT ──────────────────────────────────────────
 
@@ -417,8 +417,8 @@ class TestValueObservation(unittest.TestCase):
         run = self._run(0, stdout="ValueCleanEvalCells.degenerate_ratio = 0\n")
 
         ir_obs = pcc.observe("ir", run, {"stderr_contains": "EvalError"})
-        self.assertEqual(ir_obs, pcc.ABSENT)
-        self.assertEqual(pcc.verdict(ir_obs, "absent"), pcc.PASS)
+        self.assertEqual(ir_obs, pcc.Observation.ABSENT)
+        self.assertEqual(pcc.verdict(ir_obs, "absent"), pcc.Verdict.PASS)
 
         value_obs = pcc.observe(
             "value",
@@ -427,60 +427,60 @@ class TestValueObservation(unittest.TestCase):
                 {"pattern": r"degenerate_ratio = ([-+0-9.eE]+)", "min": 0.01}
             ),
         )
-        self.assertEqual(value_obs, pcc.ABSENT)
-        self.assertEqual(pcc.verdict(value_obs, "present"), pcc.FAIL)
+        self.assertEqual(value_obs, pcc.Observation.ABSENT)
+        self.assertEqual(pcc.verdict(value_obs, "present"), pcc.Verdict.FAIL)
 
     def test_undef_cell_ir_passes_vacuously_but_value_fails(self):
         """The same contrast for 'prints garbage with exit 0'."""
         run = self._run(0, stdout="ValueCleanEvalCells.undef_ratio = undef\n")
 
         ir_obs = pcc.observe("ir", run, {"stderr_contains": "EvalError"})
-        self.assertEqual(ir_obs, pcc.ABSENT)
-        self.assertEqual(pcc.verdict(ir_obs, "absent"), pcc.PASS)
+        self.assertEqual(ir_obs, pcc.Observation.ABSENT)
+        self.assertEqual(pcc.verdict(ir_obs, "absent"), pcc.Verdict.PASS)
 
         value_obs = pcc.observe(
             "value",
             run,
             self._value({"pattern": r"undef_ratio = (\S+)", "finite": True}),
         )
-        self.assertEqual(value_obs, pcc.ABSENT)
-        self.assertEqual(pcc.verdict(value_obs, "present"), pcc.FAIL)
+        self.assertEqual(value_obs, pcc.Observation.ABSENT)
+        self.assertEqual(pcc.verdict(value_obs, "present"), pcc.Verdict.FAIL)
 
     # ── REGRESSION: the three existing arms, on the same synthetic runs ───────
 
     def test_existing_arms_undisturbed(self):
         clean = self._run(0, stdout="damping_ratio = 0.018\n")
-        self.assertEqual(pcc.observe("ir", clean, {}), pcc.ABSENT)
+        self.assertEqual(pcc.observe("ir", clean, {}), pcc.Observation.ABSENT)
         self.assertEqual(
-            pcc.observe("ir", clean, {"stderr_contains": "EvalError"}), pcc.ABSENT
+            pcc.observe("ir", clean, {"stderr_contains": "EvalError"}), pcc.Observation.ABSENT
         )
 
         signed = self._run(1, stderr="EvalError: contract violated\n")
         self.assertEqual(
-            pcc.observe("ir", signed, {"stderr_contains": "EvalError"}), pcc.PRESENT
+            pcc.observe("ir", signed, {"stderr_contains": "EvalError"}), pcc.Observation.PRESENT
         )
         unsigned = self._run(1, stderr="something unrelated\n")
         self.assertEqual(
             pcc.observe("ir", unsigned, {"stderr_contains": "EvalError"}),
-            pcc.INDETERMINATE,
+            pcc.Observation.INDETERMINATE,
         )
 
         self.assertEqual(
-            pcc.observe("check", self._run(1), {"exit_code": 1}), pcc.PRESENT
+            pcc.observe("check", self._run(1), {"exit_code": 1}), pcc.Observation.PRESENT
         )
         self.assertEqual(
-            pcc.observe("check", self._run(0), {"exit_code": 1}), pcc.ABSENT
+            pcc.observe("check", self._run(0), {"exit_code": 1}), pcc.Observation.ABSENT
         )
 
-        self.assertEqual(pcc.observe("grammar", self._run(0), {}), pcc.PRESENT)
-        self.assertEqual(pcc.observe("grammar", self._run(1), {}), pcc.ABSENT)
+        self.assertEqual(pcc.observe("grammar", self._run(0), {}), pcc.Observation.PRESENT)
+        self.assertEqual(pcc.observe("grammar", self._run(1), {}), pcc.Observation.ABSENT)
         load_failure = pcc.ProbeRun(
             1, "", "", harness_failure=pcc.HarnessFailure(
                 pcc.HarnessFailureKind.GRAMMAR_LOAD, "Failed to load language: reify"
             ),
         )
         self.assertEqual(
-            pcc.observe("grammar", load_failure, {}), pcc._HARNESS_ERROR
+            pcc.observe("grammar", load_failure, {}), pcc.Observation.HARNESS_ERROR
         )
 
     def test_grammar_arm_reads_the_field_not_the_text(self):
@@ -490,7 +490,7 @@ class TestValueObservation(unittest.TestCase):
         harness_failure; observe() reads only that field, never stderr.
         """
         run = self._run(1, stderr="Error: Failed to load language for path \"x.ri\"\n")
-        self.assertEqual(pcc.observe("grammar", run, {}), pcc.ABSENT)
+        self.assertEqual(pcc.observe("grammar", run, {}), pcc.Observation.ABSENT)
 
 
 class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
@@ -515,13 +515,13 @@ class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
             with self.subTest(kind=kind):
                 present = pcc.ProbeRun(exit_code, stdout, stderr)
                 self.assertIn(
-                    pcc.observe(kind, present, match), (pcc.PRESENT, pcc.ABSENT),
+                    pcc.observe(kind, present, match), (pcc.Observation.PRESENT, pcc.Observation.ABSENT),
                     "precondition: with its fixture present the run is decisive",
                 )
                 absent = pcc.ProbeRun(exit_code, stdout, stderr, fixture_present=False)
                 self.assertEqual(
                     pcc.observe_with_evidence(kind, absent, match),
-                    (pcc.INDETERMINATE, None),
+                    (pcc.Observation.INDETERMINATE, None),
                     "no value reading is taken from a run with no target",
                 )
 
@@ -540,7 +540,7 @@ class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
                         exit_code, stdout, stderr, fixture_present=False
                     ),
                 )
-                self.assertEqual(result.verdict, pcc.UNPROVABLE)
+                self.assertEqual(result.verdict, pcc.Verdict.UNPROVABLE)
                 self.assertEqual(pcc.harness_exit_code([result]), 2)
 
     def test_a_harness_failure_outranks_an_absent_fixture(self):
@@ -554,7 +554,7 @@ class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
         )
         for kind, _, match in self._DECISIVE_RUNS:
             with self.subTest(kind=kind):
-                self.assertEqual(pcc.observe(kind, run, match), pcc._HARNESS_ERROR)
+                self.assertEqual(pcc.observe(kind, run, match), pcc.Observation.HARNESS_ERROR)
 
 
 class TestEvaluate(unittest.TestCase):
@@ -600,7 +600,7 @@ class TestEvaluate(unittest.TestCase):
         """grammar probe, run exit 0, expected present → PASS."""
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
-        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertEqual(result.verdict, pcc.Verdict.PASS)
 
     # ── (b) check probe = §3 4575 → FAIL ─────────────────────────────────────
 
@@ -612,7 +612,7 @@ class TestEvaluate(unittest.TestCase):
             probe,
             runner=self._stub_runner(0, stdout="All constraints satisfied.", stderr=""),
         )
-        self.assertEqual(result.verdict, pcc.FAIL)
+        self.assertEqual(result.verdict, pcc.Verdict.FAIL)
 
     # ── (c) ir probe, unrelated error, expected absent → UNPROVABLE ──────────
 
@@ -623,7 +623,7 @@ class TestEvaluate(unittest.TestCase):
             probe,
             runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
         )
-        self.assertEqual(result.verdict, pcc.UNPROVABLE)
+        self.assertEqual(result.verdict, pcc.Verdict.UNPROVABLE)
 
     # ── mandatory evidence: command, exit_code, stdout, stderr ───────────────
 
@@ -669,7 +669,7 @@ class TestEvaluate(unittest.TestCase):
         """Result must carry the observation value."""
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
-        self.assertEqual(result.observation, pcc.PRESENT)
+        self.assertEqual(result.observation, pcc.Observation.PRESENT)
 
 
 class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
@@ -695,7 +695,7 @@ class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
 
     def test_a_bare_load_failure_is_a_harness_error_not_a_pass(self):
         result = self._evaluate_grammar("absent", 1, self._LOAD_FAILURE)
-        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
         self.assertEqual(pcc.harness_exit_code([result]), 70)
         self.assertEqual(
             result.run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD,
@@ -705,13 +705,13 @@ class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
 
     def test_a_bare_cache_denial_is_typed_as_one(self):
         result = self._evaluate_grammar("present", 1, _CACHE_DENIED_STDERR)
-        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
         self.assertTrue(result.run.harness_failure.cache_denied)
 
     def test_a_parse_error_still_answers_absent(self):
         """Narrowness: exit 1 with no load-failure signature is the grammar's answer."""
         result = self._evaluate_grammar("absent", 1, "")
-        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertEqual(result.verdict, pcc.Verdict.PASS)
         self.assertIsNone(result.run.harness_failure)
 
     def test_a_runners_own_failure_is_kept(self):
@@ -740,7 +740,7 @@ class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
         result = pcc.evaluate(
             probe, runner=lambda _p: pcc.ProbeRun(1, "", self._LOAD_FAILURE)
         )
-        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertEqual(result.verdict, pcc.Verdict.PASS)
         self.assertIsNone(result.run.harness_failure)
 
 
@@ -766,7 +766,7 @@ class TestHarnessExitCode(unittest.TestCase):
             probe=probe,
             command=["reify", "check", "some/fixture.ri"],
             run=pcc.ProbeRun(0, "", ""),
-            observation=pcc.PRESENT,
+            observation=pcc.Observation.PRESENT,
             verdict=verdict,
         )
 
@@ -775,33 +775,33 @@ class TestHarnessExitCode(unittest.TestCase):
     def test_all_pass_exits_0(self):
         """All PASS results → exit code 0."""
         results = [
-            self._make_result(pcc.PASS),
-            self._make_result(pcc.PASS),
-            self._make_result(pcc.PASS),
+            self._make_result(pcc.Verdict.PASS),
+            self._make_result(pcc.Verdict.PASS),
+            self._make_result(pcc.Verdict.PASS),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 0)
 
     def test_single_pass_exits_0(self):
         """Single PASS → exit code 0."""
-        self.assertEqual(pcc.harness_exit_code([self._make_result(pcc.PASS)]), 0)
+        self.assertEqual(pcc.harness_exit_code([self._make_result(pcc.Verdict.PASS)]), 0)
 
     # ── 1: ≥1 FAIL (FAIL beats UNPROVABLE) ───────────────────────────────────
 
     def test_one_fail_exits_1(self):
         """≥1 FAIL result (with PASSes) → exit code 1."""
         results = [
-            self._make_result(pcc.PASS),
-            self._make_result(pcc.FAIL),
-            self._make_result(pcc.PASS),
+            self._make_result(pcc.Verdict.PASS),
+            self._make_result(pcc.Verdict.FAIL),
+            self._make_result(pcc.Verdict.PASS),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 1)
 
     def test_fail_with_unprovable_exits_1(self):
         """≥1 FAIL + ≥1 UNPROVABLE → exit code 1 (FAIL beats UNPROVABLE)."""
         results = [
-            self._make_result(pcc.FAIL),
-            self._make_result(pcc.UNPROVABLE),
-            self._make_result(pcc.PASS),
+            self._make_result(pcc.Verdict.FAIL),
+            self._make_result(pcc.Verdict.UNPROVABLE),
+            self._make_result(pcc.Verdict.PASS),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 1)
 
@@ -810,16 +810,16 @@ class TestHarnessExitCode(unittest.TestCase):
     def test_unprovable_only_exits_2(self):
         """≥1 UNPROVABLE and 0 FAIL → exit code 2."""
         results = [
-            self._make_result(pcc.PASS),
-            self._make_result(pcc.UNPROVABLE),
+            self._make_result(pcc.Verdict.PASS),
+            self._make_result(pcc.Verdict.UNPROVABLE),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 2)
 
     def test_multiple_unprovable_exits_2(self):
         """Multiple UNPROVABLE (no FAIL) → exit code 2."""
         results = [
-            self._make_result(pcc.UNPROVABLE),
-            self._make_result(pcc.UNPROVABLE),
+            self._make_result(pcc.Verdict.UNPROVABLE),
+            self._make_result(pcc.Verdict.UNPROVABLE),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 2)
 
@@ -827,22 +827,22 @@ class TestHarnessExitCode(unittest.TestCase):
 
     def test_harness_error_exits_70(self):
         """≥1 harness-error result → exit code 70."""
-        results = [self._make_result(pcc._HARNESS_ERROR)]
+        results = [self._make_result(pcc.Verdict.HARNESS_ERROR)]
         self.assertEqual(pcc.harness_exit_code(results), 70)
 
     def test_harness_error_beats_fail(self):
         """harness-error + FAIL → exit code 70 (harness error takes highest priority)."""
         results = [
-            self._make_result(pcc._HARNESS_ERROR),
-            self._make_result(pcc.FAIL),
+            self._make_result(pcc.Verdict.HARNESS_ERROR),
+            self._make_result(pcc.Verdict.FAIL),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 70)
 
     def test_harness_error_beats_unprovable(self):
         """harness-error + UNPROVABLE → exit code 70."""
         results = [
-            self._make_result(pcc._HARNESS_ERROR),
-            self._make_result(pcc.UNPROVABLE),
+            self._make_result(pcc.Verdict.HARNESS_ERROR),
+            self._make_result(pcc.Verdict.UNPROVABLE),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 70)
 
@@ -886,10 +886,10 @@ class TestHarnessExitCode(unittest.TestCase):
     def test_harness_error_full_precedence(self):
         """PASS + FAIL + UNPROVABLE + HARNESS_ERROR → exit 70 (highest priority wins)."""
         results = [
-            self._make_result(pcc.PASS),
-            self._make_result(pcc.FAIL),
-            self._make_result(pcc.UNPROVABLE),
-            self._make_result(pcc._HARNESS_ERROR),
+            self._make_result(pcc.Verdict.PASS),
+            self._make_result(pcc.Verdict.FAIL),
+            self._make_result(pcc.Verdict.UNPROVABLE),
+            self._make_result(pcc.Verdict.HARNESS_ERROR),
         ]
         self.assertEqual(pcc.harness_exit_code(results), 70)
 
@@ -913,7 +913,7 @@ class TestHarnessExitCode(unittest.TestCase):
             )
 
         result = pcc.evaluate(probe, runner=launch_failure_runner)
-        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
         self.assertEqual(pcc.harness_exit_code([result]), 70)
 
 

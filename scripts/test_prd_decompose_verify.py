@@ -535,7 +535,7 @@ class TestFixtureAbsentBoundary(unittest.TestCase):
     def test_b1_rejection_on_a_missing_fixture_is_fixture_absent(self):
         run = _bind_probe_synthesize([self._rejection("B1 rejection")], self._tmpdir)
         [record] = run.records
-        self.assertEqual(record["verdict"], pcc.UNPROVABLE, record)
+        self.assertEqual(record["verdict"], pcc.Verdict.UNPROVABLE, record)
         self.assertIs(record["fixture_present"], False)
         self.assertEqual(record["fixture"], self._fixture)
         self.assertEqual(run.alpha_rc, 2)

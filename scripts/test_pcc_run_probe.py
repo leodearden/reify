@@ -224,7 +224,7 @@ class TestRunProbe(unittest.TestCase):
             result = pcc.evaluate(probe)  # uses the real run_probe default
         self.assertNotIn(
             result.verdict,
-            (pcc.PASS, pcc.FAIL, pcc.UNPROVABLE),
+            (pcc.Verdict.PASS, pcc.Verdict.FAIL, pcc.Verdict.UNPROVABLE),
             "missing binary must produce harness-error verdict, not PASS/FAIL/UNPROVABLE",
         )
 
@@ -273,10 +273,10 @@ class TestRunProbe(unittest.TestCase):
             result = pcc.evaluate(probe)  # uses the real run_probe default
         self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
         self.assertFalse(run.harness_failure.cache_denied)
-        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
         self.assertNotIn(
             result.verdict,
-            (pcc.PASS, pcc.FAIL, pcc.UNPROVABLE),
+            (pcc.Verdict.PASS, pcc.Verdict.FAIL, pcc.Verdict.UNPROVABLE),
             "grammar load failure must produce harness-error verdict",
         )
 

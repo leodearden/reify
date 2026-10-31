@@ -156,7 +156,7 @@ class TestMain(_MainHarness, unittest.TestCase):
 
         # The kinds that ARE steerable are exactly the harness's known kinds,
         # which are exactly the probe kinds the loader admits.
-        self.assertEqual(set(self._PASSING_RUNS), set(pcc._VALID_PROBE_KINDS))
+        self.assertEqual(set(self._PASSING_RUNS), set(pcc.ProbeKind))
 
     # ── arg / IO errors → 64 ─────────────────────────────────────────────────
 
@@ -412,7 +412,7 @@ class TestMain(_MainHarness, unittest.TestCase):
             [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
         )
         self.assertEqual(rc, 0)
-        self.assertIn(pcc.PASS, out)
+        self.assertIn(pcc.Verdict.PASS, out)
 
     def test_bad_probe_set_without_flag_still_exits_64(self):
         """A missing probe set still returns 64, not the new 75."""
@@ -442,7 +442,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         rc, out, _ = self._run_main_capturing(
             [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
         )
-        self.assertIn(pcc.PASS, out, "output must contain 'PASS' verdict")
+        self.assertIn(pcc.Verdict.PASS, out, "output must contain 'PASS' verdict")
 
     def test_main_output_contains_command(self):
         """Human output contains the probe command (reify or tree-sitter)."""
@@ -708,7 +708,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         self.assertEqual(rc, 2, "a probe set naming a missing fixture never exits 0")
         check = [r for r in json.loads(out)["results"] if r["probe_kind"] == "check"][0]
         self.assertIs(check["fixture_present"], False)
-        self.assertEqual(check["verdict"], pcc.UNPROVABLE)
+        self.assertEqual(check["verdict"], pcc.Verdict.UNPROVABLE)
 
     def test_text_renderer_marks_an_absent_fixture(self):
         rc, out, _ = self._run_main_capturing(
@@ -753,7 +753,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         finally:
             os.unlink(tmp)
         self.assertEqual(rc, 1, "revolute silent-accept → FAIL (exit 1)")
-        self.assertIn(pcc.FAIL, out)
+        self.assertIn(pcc.Verdict.FAIL, out)
 
     # ── skip-guarded real e2e (tree-sitter grammar) ───────────────────────────
 
@@ -780,7 +780,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         # tree-sitter exits 1 for arrow_type.ri (grammar rejects it) → ABSENT
         # expected present → FAIL
         self.assertEqual(rc, 1, "arrow_type.ri with expected present → FAIL (exit 1)")
-        self.assertIn(pcc.FAIL, out)
+        self.assertIn(pcc.Verdict.FAIL, out)
 
 
 class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
@@ -814,7 +814,7 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
         rc, out, err = self._run_main_capturing(["--json", self._probe_set(kind, fixture)])
         self.assertEqual(rc, 70, out + err)
         [record] = json.loads(out)["results"]
-        self.assertEqual(record["verdict"], pcc._HARNESS_ERROR)
+        self.assertEqual(record["verdict"], pcc.Verdict.HARNESS_ERROR)
         self.assertEqual(record["harness_failure"]["kind"], expected_kind)
         for label, text in (("record stderr", record["stderr"]),
                             ("stdout", out), ("stderr", err)):
@@ -1092,7 +1092,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         """
         rc, out, _ = self._run_main(value_stdout="something else entirely\n")
         self.assertEqual(rc, 2, out)
-        self.assertIn(f"[{pcc.UNPROVABLE}]", out)
+        self.assertIn(f"[{pcc.Verdict.UNPROVABLE}]", out)
         line = self._value_lines(out)[0]
         self.assertIn("pattern", line)
 
@@ -1138,7 +1138,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             argv_prefix=["--json"], value_stdout="something else entirely\n"
         )
         record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
-        self.assertEqual(record["verdict"], pcc.UNPROVABLE)
+        self.assertEqual(record["verdict"], pcc.Verdict.UNPROVABLE)
         self.assertEqual(
             record["value_observation"],
             {"satisfied": False, "captured": None, "failed_constraint": "pattern"},
@@ -1148,7 +1148,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         """A non-zero exit produced no stdout to read, so there is no reading."""
         _, out, _ = self._run_main(argv_prefix=["--json"], value_exit=1)
         record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
-        self.assertEqual(record["verdict"], pcc.UNPROVABLE)
+        self.assertEqual(record["verdict"], pcc.Verdict.UNPROVABLE)
         self.assertNotIn("value_observation", record)
 
     def test_json_value_observation_present_on_pass(self):
@@ -1170,7 +1170,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             row for row in self._rows(out) if "kind:      value" in row
         ]
         self.assertEqual(len(value_rows), 1, out)
-        self.assertTrue(value_rows[0].startswith(f"[{pcc.PASS}]"), value_rows[0])
+        self.assertTrue(value_rows[0].startswith(f"[{pcc.Verdict.PASS}]"), value_rows[0])
 
     def test_committed_example_value_row_points_at_the_fixture(self):
         with open(_EXAMPLE_PROBE_SET) as fh:
@@ -1203,7 +1203,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             "stdout_value": dict(_DAMPING_SPEC)
         })
         self.assertEqual(rc, 0, out)
-        self.assertIn(f"[{pcc.PASS}]", out)
+        self.assertIn(f"[{pcc.Verdict.PASS}]", out)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_degenerate_ratio_is_fail(self):
@@ -1215,7 +1215,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             }
         })
         self.assertEqual(rc, 1, out)
-        self.assertIn(f"[{pcc.FAIL}]", out)
+        self.assertIn(f"[{pcc.Verdict.FAIL}]", out)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_undef_ratio_is_fail(self):
@@ -1227,7 +1227,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             }
         })
         self.assertEqual(rc, 1, out)
-        self.assertIn(f"[{pcc.FAIL}]", out)
+        self.assertIn(f"[{pcc.Verdict.FAIL}]", out)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_same_fixture_still_passes_an_ir_probe_vacuously(self):
@@ -1235,7 +1235,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         change `ir`."""
         rc, out, _ = self._e2e("ir", "absent", {"stderr_contains": "EvalError"})
         self.assertEqual(rc, 0, out)
-        self.assertIn(f"[{pcc.PASS}]", out)
+        self.assertIn(f"[{pcc.Verdict.PASS}]", out)
 
 
 # ---------------------------------------------------------------------------
