@@ -7,8 +7,9 @@
 //!   Satisfied, so `--strict` passes it too.
 //! - B3: an auto pinned by an equality against a derived let is Satisfied at
 //!   its ~6e-16 solve residual, not reported violated.
-//! - B6: two equalities that pin one auto to different values are an
-//!   infeasible solve, which fails both drivers; build still writes the file.
+//! - B6: two equalities that pin one auto to different values are proven
+//!   infeasible before any solve, which fails both drivers; build still
+//!   writes the file.
 
 use std::process::ExitStatus;
 
@@ -18,7 +19,8 @@ const AUTO_CTL: &str = "tests/prd-gate/fixtures/driver_parity_auto_ctl.ri";
 const DERIVED_EQUALITY: &str = "auto_derived_equality.ri";
 const INFEASIBLE_PAIR: &str = "infeasible_equality_pair.ri";
 
-const INFEASIBLE_RESIDUAL: &str = "max absolute residual: 5.00e-3";
+const INFEASIBLE_REFUTATION: &str = "proven infeasible: no solution exists in the searched domain \
+     (narrowed to empty by constraint Bracket#constraint[1])";
 
 fn auto_ctl_path() -> String {
     common::workspace_root()
@@ -133,8 +135,8 @@ fn check_fails_an_infeasible_equality_pair() {
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains(INFEASIBLE_RESIDUAL),
-        "B6: stderr must report the infeasible solve's residual.\n\
+        stderr.contains(INFEASIBLE_REFUTATION),
+        "B6: stderr must report the refutation naming the narrowing equality.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 }
@@ -170,8 +172,8 @@ fn build_fails_an_infeasible_equality_pair_but_writes_the_file() {
         result.stderr
     );
     assert!(
-        result.stderr.contains(INFEASIBLE_RESIDUAL),
-        "B6: stderr must report the infeasible solve's residual.\nstdout: {}\nstderr: {}",
+        result.stderr.contains(INFEASIBLE_REFUTATION),
+        "B6: stderr must report the refutation naming the narrowing equality.\nstdout: {}\nstderr: {}",
         result.stdout,
         result.stderr
     );
