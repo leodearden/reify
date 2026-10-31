@@ -354,7 +354,20 @@ fn at_most(hi: f64) -> Interval {
     Interval::new(f64::NEG_INFINITY, hi).unwrap_or(Interval::ENTIRE)
 }
 
+/// A sub-expression after lowering: still constant over the box, left
+/// unevaluated so that only a MAXIMAL constant subtree is evaluated; or the
+/// node computing it, with its operands already placed.
+#[derive(Clone, Copy, Debug)]
+enum Lowered {
+    Fixed,
+    Computed(Node),
+}
+
 /// Lowers a [`CompiledExpr`] into [`Node`]s, children before parents.
+///
+/// Fixedness is decided bottom-up, once per node: a node the builder descends
+/// into is Fixed when all its operands are, and a node it does not descend
+/// into is asked once, by its refs. Lowering is therefore linear in the tree.
 struct TreeBuilder<'c, C> {
     classifier: &'c C,
     nodes: Vec<Node>,
@@ -363,7 +376,20 @@ struct TreeBuilder<'c, C> {
 impl<C: OperandClassifier> TreeBuilder<'_, C> {
     /// Lower `expr` and return its node's index.
     fn node(&mut self, expr: &CompiledExpr) -> usize {
-        let node = self.lower(expr);
+        let lowered = self.lower(expr);
+        self.place(expr, lowered)
+    }
+
+    /// Push `expr`'s node, evaluating it if it is still Fixed.
+    fn place(&mut self, expr: &CompiledExpr, lowered: Lowered) -> usize {
+        let node = match lowered {
+            Lowered::Fixed => self
+                .classifier
+                .evaluate(expr)
+                .and_then(Interval::point)
+                .map_or(Node::Opaque, Node::Const),
+            Lowered::Computed(node) => node,
+        };
         self.push(node)
     }
 
@@ -372,88 +398,138 @@ impl<C: OperandClassifier> TreeBuilder<'_, C> {
         self.nodes.len() - 1
     }
 
-    fn lower(&mut self, expr: &CompiledExpr) -> Node {
-        if self.is_fixed(expr) {
-            return self
-                .classifier
-                .evaluate(expr)
-                .and_then(Interval::point)
-                .map_or(Node::Opaque, Node::Const);
-        }
+    fn lower(&mut self, expr: &CompiledExpr) -> Lowered {
         match &expr.kind {
             CompiledExprKind::ValueRef(id) => match self.classifier.classify(id) {
-                RefClass::Variable(i) => Node::Var(i),
-                RefClass::Varying | RefClass::Fixed => Node::Opaque,
+                RefClass::Variable(i) => Lowered::Computed(Node::Var(i)),
+                RefClass::Varying => Lowered::Computed(Node::Opaque),
+                RefClass::Fixed => Lowered::Fixed,
             },
             CompiledExprKind::BinOp { op, left, right }
                 if is_numeric(left) && is_numeric(right) =>
             {
-                self.arithmetic(*op, left, right)
+                self.arithmetic(expr, *op, left, right)
             }
             CompiledExprKind::UnOp {
                 op: UnOp::Neg,
                 operand,
-            } if is_numeric(operand) => Node::Neg(self.node(operand)),
+            } if is_numeric(operand) => self.compose([operand], |_, [a]| Node::Neg(a)),
             CompiledExprKind::FunctionCall { function, args } if args.iter().all(is_numeric) => {
-                self.builtin(&function.name, args)
+                self.builtin(expr, &function.name, args)
             }
             CompiledExprKind::Conditional {
+                condition,
                 then_branch,
                 else_branch,
-                ..
             } if is_numeric(then_branch) && is_numeric(else_branch) => {
-                Node::Hull(self.node(then_branch), self.node(else_branch))
+                self.conditional(condition, then_branch, else_branch)
             }
-            _ => Node::Opaque,
+            _ => self.by_refs(expr),
+        }
+    }
+
+    /// A node over `operands`: Fixed when every operand is, otherwise `make`
+    /// over the operands' placed indices.
+    fn compose<const N: usize>(
+        &mut self,
+        operands: [&CompiledExpr; N],
+        make: impl FnOnce(&mut Self, [usize; N]) -> Node,
+    ) -> Lowered {
+        let lowered = operands.map(|operand| (operand, self.lower(operand)));
+        if lowered
+            .iter()
+            .all(|(_, state)| matches!(state, Lowered::Fixed))
+        {
+            return Lowered::Fixed;
+        }
+        let placed = lowered.map(|(operand, lowered)| self.place(operand, lowered));
+        Lowered::Computed(make(self, placed))
+    }
+
+    /// An expression the builder does not descend into: Fixed when every ref
+    /// it holds is, otherwise opaque.
+    fn by_refs(&self, expr: &CompiledExpr) -> Lowered {
+        if self.is_fixed(expr) {
+            Lowered::Fixed
+        } else {
+            Lowered::Computed(Node::Opaque)
         }
     }
 
     fn is_fixed(&self, expr: &CompiledExpr) -> bool {
-        expr.collect_value_refs()
-            .iter()
-            .all(|id| self.classifier.classify(id) == RefClass::Fixed)
+        !expr.contains_value_ref_matching(|id| self.classifier.classify(id) != RefClass::Fixed)
     }
 
-    fn arithmetic(&mut self, op: BinOp, left: &CompiledExpr, right: &CompiledExpr) -> Node {
+    fn arithmetic(
+        &mut self,
+        expr: &CompiledExpr,
+        op: BinOp,
+        left: &CompiledExpr,
+        right: &CompiledExpr,
+    ) -> Lowered {
         match op {
-            BinOp::Add => Node::Add(self.node(left), self.node(right)),
-            BinOp::Sub => Node::Sub(self.node(left), self.node(right)),
-            BinOp::Mul if left.content_hash == right.content_hash => Node::Powi(self.node(left), 2),
-            BinOp::Mul => Node::Mul(self.node(left), self.node(right)),
-            BinOp::Div => Node::Div(self.node(left), self.node(right)),
-            BinOp::Pow => match self.integer_exponent(right) {
-                Some(n) => Node::Powi(self.node(left), n),
-                None => Node::Opaque,
-            },
-            _ => Node::Opaque,
+            BinOp::Add => self.compose([left, right], |_, [a, b]| Node::Add(a, b)),
+            BinOp::Sub => self.compose([left, right], |_, [a, b]| Node::Sub(a, b)),
+            BinOp::Mul if left.content_hash == right.content_hash => {
+                self.compose([left], |_, [a]| Node::Powi(a, 2))
+            }
+            BinOp::Mul => self.compose([left, right], |_, [a, b]| Node::Mul(a, b)),
+            BinOp::Div => self.compose([left, right], |_, [a, b]| Node::Div(a, b)),
+            BinOp::Pow => self.power(left, right),
+            _ => self.by_refs(expr),
         }
     }
 
-    /// A Fixed exponent that evaluates to an integer in `0..=MAX_INTEGER_EXPONENT`.
-    fn integer_exponent(&self, exponent: &CompiledExpr) -> Option<u32> {
+    /// `base ^ exponent` is a [`Node::Powi`] when the exponent is Fixed and
+    /// evaluates to an integer in `0..=MAX_INTEGER_EXPONENT`; any other power
+    /// is opaque unless the whole of it is Fixed.
+    fn power(&mut self, base: &CompiledExpr, exponent: &CompiledExpr) -> Lowered {
         if !self.is_fixed(exponent) {
-            return None;
+            return Lowered::Computed(Node::Opaque);
         }
+        match self.integer_exponent(exponent) {
+            Some(n) => self.compose([base], |_, [a]| Node::Powi(a, n)),
+            None => self.by_refs(base),
+        }
+    }
+
+    /// The value of a Fixed exponent, when it is an integer in
+    /// `0..=MAX_INTEGER_EXPONENT`.
+    fn integer_exponent(&self, exponent: &CompiledExpr) -> Option<u32> {
         let value = self.classifier.evaluate(exponent)?;
         let in_range =
             value.fract() == 0.0 && (0.0..=f64::from(MAX_INTEGER_EXPONENT)).contains(&value);
         in_range.then_some(value as u32)
     }
 
+    /// A conditional is the hull of its branches; it is Fixed only when its
+    /// condition is too.
+    fn conditional(
+        &mut self,
+        condition: &CompiledExpr,
+        then_branch: &CompiledExpr,
+        else_branch: &CompiledExpr,
+    ) -> Lowered {
+        if self.is_fixed(condition) {
+            return self.compose([then_branch, else_branch], |_, [a, b]| Node::Hull(a, b));
+        }
+        let [a, b] = [then_branch, else_branch].map(|branch| self.node(branch));
+        Lowered::Computed(Node::Hull(a, b))
+    }
+
     /// The stdlib builtins recognised by `(name, arity)`, the keys reify-expr's
     /// `dual_builtin_rules` uses.
-    fn builtin(&mut self, name: &str, args: &[CompiledExpr]) -> Node {
+    fn builtin(&mut self, expr: &CompiledExpr, name: &str, args: &[CompiledExpr]) -> Lowered {
         match (name, args) {
-            ("sqrt", [x]) => Node::Sqrt(self.node(x)),
-            ("abs", [x]) => Node::Abs(self.node(x)),
-            ("min", [a, b]) => Node::Min(self.node(a), self.node(b)),
-            ("max", [a, b]) => Node::Max(self.node(a), self.node(b)),
-            ("clamp", [x, lo, hi]) => {
-                let floored = Node::Max(self.node(x), self.node(lo));
-                let floored = self.push(floored);
-                Node::Min(floored, self.node(hi))
-            }
-            _ => Node::Opaque,
+            ("sqrt", [x]) => self.compose([x], |_, [a]| Node::Sqrt(a)),
+            ("abs", [x]) => self.compose([x], |_, [a]| Node::Abs(a)),
+            ("min", [a, b]) => self.compose([a, b], |_, [a, b]| Node::Min(a, b)),
+            ("max", [a, b]) => self.compose([a, b], |_, [a, b]| Node::Max(a, b)),
+            ("clamp", [x, lo, hi]) => self.compose([x, lo, hi], |builder, [x, lo, hi]| {
+                let floored = builder.push(Node::Max(x, lo));
+                Node::Min(floored, hi)
+            }),
+            _ => self.by_refs(expr),
         }
     }
 }

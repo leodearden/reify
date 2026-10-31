@@ -661,6 +661,53 @@ mod hc4_over_compiled_exprs {
         assert!(supported.is_fully_representable());
     }
 
+    /// Compiling decides each sub-expression's fixedness once, bottom-up: the
+    /// classifier is asked about each reference a bounded number of times,
+    /// not once per enclosing node. `c1 + (c2 + (… + (ck + x)))` over Fixed
+    /// `ci` is the shape a per-node ref walk makes quadratic.
+    #[test]
+    fn compile_classifies_each_reference_a_bounded_number_of_times() {
+        struct Counting {
+            inner: Classes,
+            classify_calls: std::cell::Cell<usize>,
+        }
+        impl OperandClassifier for Counting {
+            fn classify(&self, id: &ValueCellId) -> RefClass {
+                self.classify_calls.set(self.classify_calls.get() + 1);
+                self.inner.classify(id)
+            }
+            fn evaluate(&self, expr: &CompiledExpr) -> Option<f64> {
+                self.inner.evaluate(expr)
+            }
+        }
+
+        const FIXED_TERMS: usize = 40;
+        let mut inner = Classes::of(&["x"]);
+        let mut sum = real_ref("x");
+        for i in 0..FIXED_TERMS {
+            let name = format!("c{i}");
+            inner.values.insert(vcid("m", &name), real_val(1.0));
+            sum = binop(BinOp::Add, real_ref(&name), sum);
+        }
+        let classifier = Counting {
+            inner,
+            classify_calls: std::cell::Cell::new(0),
+        };
+        let leaf = le(sum, num(FIXED_TERMS as f64 + 5.0));
+        let relation = Relation::compile(&leaf, &classifier).expect("compiles");
+
+        let references = FIXED_TERMS + 1;
+        assert!(
+            classifier.classify_calls.get() <= 2 * references,
+            "{} classify calls for {references} references: fixedness must be decided \
+             once per node, not re-walked at every enclosing node",
+            classifier.classify_calls.get()
+        );
+        let mut bx = vec![Interval::ENTIRE];
+        assert_eq!(relation.revise(&mut bx, Slack::Exact), Revision::Consistent);
+        assert_eq!(bx[0].hi(), 5.0, "every Fixed term is still evaluated");
+    }
+
     #[test]
     fn non_relations_do_not_compile() {
         let classes = Classes::of(&["x"]);
