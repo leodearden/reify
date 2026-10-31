@@ -79,9 +79,9 @@ fn pressure_tensor_type() -> Type {
 /// Paired rather than two parallel lists so "same length" and "describes the
 /// same argument" are unrepresentable-when-wrong instead of asserted at runtime
 /// (house heuristic 10 — enforce an invariant in the type wherever the type can
-/// carry it). The two halves are unzipped at the two call sites, because
-/// `ResultSpec::ArgAware` resolves from `&[Type]` while `eval_builtin` takes
-/// `&[Value]`; the pairing is what guarantees those two views describe the same
+/// carry it). `ResultSpec::ArgAware` resolves the declared type from the types
+/// alone, while the executed call takes each pair whole as a typed literal
+/// argument; the pairing is what guarantees those two views describe the same
 /// arguments.
 pub(super) type Probe = Vec<(Value, Type)>;
 

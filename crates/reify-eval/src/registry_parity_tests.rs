@@ -8,25 +8,25 @@
 //! For every `BindingKind::EvalBuiltin` row in `reify_builtins::rows()`:
 //!
 //! ```text
-//! representative args  ->  reify_stdlib::eval_builtin(row.name, &args)  ->  Value
+//! representative args  ->  reify_expr::eval_expr(`row.name(args…)`)  ->  Value
 //!                                                                          |
 //!                      crate::value_type_kind_matches(value, declared, None)
 //!                                                                          |
 //!            declared = row.result.resolve(&arg types)                  verdict
 //! ```
 //!
-//! The registry's `result` column is a STATIC claim; `eval_builtin` is the
-//! RUNTIME answer. Everything α's own tests pin is one side or the other — the
-//! row table is checked for internal consistency, and the eval kernels are
+//! The registry's `result` column is a STATIC claim; reify-expr's evaluator,
+//! running the call exactly as the engine would, is the RUNTIME answer (see
+//! [`evaluate_call`]). Everything α's own tests pin is one side or the other —
+//! the row table is checked for internal consistency, and the eval kernels are
 //! checked value-for-value against their legacy string path. Neither closes the
 //! residue PRD decision 12 names: **a buggy eval body returning the wrong
 //! kind**, which is invisible to a table-only test and invisible to a
 //! value-only test whose expectation was authored from the same buggy body.
 //! This module is the join — the only place the two sides meet under execution
-//! — but it is a join over the argument shapes it actually probes, and not
-//! every shape a row declares is reachable through the `eval_builtin` path.
-//! Read "What this harness cannot see" below before treating a green sweep as
-//! closing decision 12 for a whole row.
+//! — but it is a join over the argument shapes it actually probes. Read "What
+//! this harness cannot see" below before treating a green sweep as closing
+//! decision 12 for a whole row.
 //!
 //! Membership is DERIVED, never declared: no builtin name, id, or count is
 //! restated here. A τ migration that adds rows is swept with no edit to this
@@ -57,9 +57,9 @@
 //!    This module is hooked immediately after it so the two registry guards
 //!    read as siblings.
 //! 3. **No new production dependency edge.** reify-eval already normal-deps
-//!    both reify-compiler and reify-stdlib; reify-builtins is a DEV-dep only
-//!    (`crates/reify-eval/Cargo.toml`), so `cargo tree -e no-dev -p reify-eval`
-//!    is unchanged and `engine_hash_closure.txt` needed no edit.
+//!    reify-compiler, reify-expr and reify-stdlib; reify-builtins is a DEV-dep
+//!    only (`crates/reify-eval/Cargo.toml`), so `cargo tree -e no-dev -p
+//!    reify-eval` is unchanged and `engine_hash_closure.txt` needed no edit.
 //! 4. **It creates no new gate artifact.** An in-crate `#[cfg(test)] mod` is
 //!    neither a `crates/*/tests/*.rs` integration binary nor a
 //!    `tests/infra/test_*.sh` script, so it fires neither the overlay rule's
@@ -191,8 +191,8 @@
 use std::collections::HashSet;
 
 use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows};
-use reify_core::Type;
-use reify_ir::Value;
+use reify_core::{ContentHash, Type};
+use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value, ValueMap};
 use strum::{EnumCount, IntoEnumIterator};
 
 mod probes;
@@ -785,6 +785,35 @@ fn adjudicate(
         .collect()
 }
 
+// ── the executor: the engine's own evaluator ────────────────────────────────
+
+/// Execute one call of the builtin `name` the way the engine does: as a
+/// `FunctionCall` expression evaluated by `reify_expr::eval_expr`, each argument
+/// a typed literal.
+///
+/// `name` is always a VARIABLE taken from the row table, never a literal (see
+/// the sweep's "I-REG-1 is satisfied twice over"). `result_type` is the type
+/// the call is compiled at; only the few reify-expr arms that read the call's
+/// own type consult it. No value cells are bound: every argument is a literal.
+fn evaluate_call(name: &str, args: Vec<(Value, Type)>, result_type: Type) -> Value {
+    let call = CompiledExpr {
+        kind: CompiledExprKind::FunctionCall {
+            function: ResolvedFunction {
+                name: name.to_string(),
+                qualified_name: format!("std::{name}"),
+            },
+            args: args
+                .into_iter()
+                .map(|(value, ty)| CompiledExpr::literal(value, ty))
+                .collect(),
+        },
+        result_type,
+        content_hash: ContentHash::of_str(name),
+    };
+    let no_bindings = ValueMap::new();
+    reify_expr::eval_expr(&call, &reify_expr::EvalContext::simple(&no_bindings))
+}
+
 /// What the sweep observed at ONE probe of one row.
 struct ProbeOutcome {
     /// 1-based position in the row's probe list, so a failure line points at
@@ -836,15 +865,16 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
         .into_iter()
         .enumerate()
         .map(|(i, probe)| {
-            let (values, types): (Vec<Value>, Vec<Type>) = probe.into_iter().unzip();
+            let types: Vec<Type> = probe.iter().map(|(_, ty)| ty.clone()).collect();
 
             let declared = row
                 .result
                 .resolve(&types)
                 .expect("probe well-formedness (d) guarantees the resolver answers");
 
-            // The public path. `row.name` is a VARIABLE — see the sweep's doc.
-            let observed = reify_stdlib::eval_builtin(row.name, &values);
+            // The engine's evaluator, compiled at the declared type. `row.name`
+            // is a VARIABLE — see the sweep's doc.
+            let observed = evaluate_call(row.name, probe, declared.clone());
             let verdict = classify(&observed, &declared);
 
             ProbeOutcome {
@@ -944,20 +974,32 @@ fn describe_failure(
 /// **The headline assertion** (PRD §3 decision 12 / §7.2 I-REG-4 / §8 row 9).
 ///
 /// For every `BindingKind::EvalBuiltin` row: synthesize representative args,
-/// evaluate them through the PUBLIC `reify_stdlib::eval_builtin`, resolve the
-/// row's declared result type from the same args' static types, and classify
-/// the pair. Only [`ParityVerdict::Matches`] is a pass; anything else must be
-/// named in [`PARITY_EXEMPTION_LEDGER`].
+/// evaluate the call through reify-expr's PUBLIC evaluator ([`evaluate_call`]),
+/// resolve the row's declared result type from the same args' static types,
+/// and classify the pair. Only [`ParityVerdict::Matches`] is a pass; anything
+/// else must be named in [`PARITY_EXEMPTION_LEDGER`].
 ///
-/// # Why the public path, not α's id-keyed shim
+/// # Why reify-expr's evaluator, not `eval_builtin` or α's id-keyed shim
 ///
-/// `reify_stdlib::eval_builtin` runs the full 26-arm dispatch chain with the
-/// registry hoisted to its front (`registry_dispatch::try_dispatch`), so it
-/// asserts strictly more than `__registry_dispatch_for_test` would: a later
-/// family arm that shadowed a registered name — a live migration hazard while
-/// the great majority of builtin names are still string-matched — surfaces here
-/// as a kind mismatch. The shim takes an `EvalBuiltinId` and therefore bypasses
-/// name resolution by construction, as its own doc-comment says.
+/// `reify_expr::eval_expr` is the path the engine evaluates a builtin call
+/// through. For every argument shape reify-expr does not intercept, it reaches
+/// `reify_stdlib::eval_builtin` through its catch-all arm, and that runs the
+/// full dispatch chain with the registry hoisted to its front
+/// (`registry_dispatch::try_dispatch`). So everything a direct `eval_builtin`
+/// call asserted is still asserted: a later family arm that shadowed a
+/// registered name — a live migration hazard while the great majority of
+/// builtin names are still string-matched — surfaces here as a kind mismatch.
+///
+/// It additionally reaches what `eval_builtin` cannot: reify-expr's named
+/// intercepts, which answer the four analysis rows over a `Value::Field`
+/// argument by wrapping the field lazily (`crates/reify-expr/src/analysis.rs`).
+/// Called directly, `eval_builtin` has no Field handling and answers those
+/// shapes `Value::Undef`, so the resolvers' `Type::Field` branch would read
+/// `Vacuous` and certify nothing.
+///
+/// α's `__registry_dispatch_for_test` shim asserts strictly less than either:
+/// it takes an `EvalBuiltinId` and therefore bypasses name resolution by
+/// construction, as its own doc-comment says.
 ///
 /// # I-REG-1 is satisfied twice over
 ///
