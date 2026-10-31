@@ -695,10 +695,6 @@ _RELAY_REQUIRED = ["capability", "verdict", "command", "exit_code", "fixture_pre
 _VERDICT_REQUIRED = ["blocks", "blocking", "report", "executed", "total"]
 
 
-def _enum_schema(vocabulary) -> Dict[str, Any]:
-    return {"type": "string", "enum": [member.value for member in vocabulary]}
-
-
 def _string_list() -> Dict[str, Any]:
     return {"type": "array", "items": {"type": "string"}}
 
@@ -709,7 +705,7 @@ def _premises_schema() -> Dict[str, Any]:
         "required": ["text", "assertion_kind", "fixture", "match"],
         "properties": {
             "text": {"type": "string"},
-            "assertion_kind": _enum_schema(AssertionKind),
+            "assertion_kind": pcc.enum_schema(AssertionKind),
             "fixture": {"type": "string"},
             "match": {"type": "object"},
             "capability": {"type": "string"},
@@ -810,49 +806,42 @@ def _aggregate_input_schema() -> Dict[str, Any]:
     }
 
 
-def _aggregate_schema() -> Dict[str, Any]:
-    """PRD §5.4's aggregate stdout: a serialised WorkflowVerdict."""
-    row = {
-        "type": "object",
-        "required": [
-            "label", "disposition", "blocks", "blocking", "executed", "total",
-            "malformed", "fixture_absent",
-        ],
-        "properties": {
-            "label": {"type": "string"},
-            "disposition": _enum_schema(LeafDisposition),
-            "blocks": {"type": "boolean"},
-            "blocking": _string_list(),
-            "executed": {"type": "integer"},
-            "total": {"type": "integer"},
-            "malformed": _string_list(),
-            "fixture_absent": _string_list(),
-        },
-    }
+def _every_field_required(dataclass_type: type, properties: Dict[str, Any]) -> Dict[str, Any]:
+    """A serialised `dataclass_type`: its fields, every one required, typed by `properties`."""
     return {
         "type": "object",
-        "required": [
-            "disposition", "blocks", "blocking", "summary", "leaf_dispositions",
-            "leaves_total", "leaves_probed", "leaves_unenumerated",
-            "leaves_not_verified", "unenumerated_leaves", "not_verified_leaves",
-            "malformed_records", "fixture_absent_records",
-        ],
-        "properties": {
-            "disposition": _enum_schema(BatchDisposition),
-            "blocks": {"type": "boolean"},
-            "blocking": _string_list(),
-            "summary": {"type": "string"},
-            "leaf_dispositions": {"type": "array", "items": row},
-            "leaves_total": {"type": "integer"},
-            "leaves_probed": {"type": "integer"},
-            "leaves_unenumerated": {"type": "integer"},
-            "leaves_not_verified": {"type": "integer"},
-            "unenumerated_leaves": _string_list(),
-            "not_verified_leaves": _string_list(),
-            "malformed_records": {"type": "integer"},
-            "fixture_absent_records": {"type": "integer"},
-        },
+        "required": [f.name for f in dataclasses.fields(dataclass_type)],
+        "properties": properties,
     }
+
+
+def _aggregate_schema() -> Dict[str, Any]:
+    """PRD §5.4's aggregate stdout: a serialised WorkflowVerdict."""
+    row = _every_field_required(LeafDispositionRow, {
+        "label": {"type": "string"},
+        "disposition": pcc.enum_schema(LeafDisposition),
+        "blocks": {"type": "boolean"},
+        "blocking": _string_list(),
+        "executed": {"type": "integer"},
+        "total": {"type": "integer"},
+        "malformed": _string_list(),
+        "fixture_absent": _string_list(),
+    })
+    return _every_field_required(WorkflowVerdict, {
+        "disposition": pcc.enum_schema(BatchDisposition),
+        "blocks": {"type": "boolean"},
+        "blocking": _string_list(),
+        "summary": {"type": "string"},
+        "leaf_dispositions": {"type": "array", "items": row},
+        "leaves_total": {"type": "integer"},
+        "leaves_probed": {"type": "integer"},
+        "leaves_unenumerated": {"type": "integer"},
+        "leaves_not_verified": {"type": "integer"},
+        "unenumerated_leaves": _string_list(),
+        "not_verified_leaves": _string_list(),
+        "malformed_records": {"type": "integer"},
+        "fixture_absent_records": {"type": "integer"},
+    })
 
 
 def published_schemas() -> Dict[str, Dict[str, Any]]:

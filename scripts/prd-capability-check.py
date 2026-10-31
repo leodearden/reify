@@ -1745,7 +1745,12 @@ def _json_record(r: Result) -> Dict[str, Any]:
     return record
 
 
-def _enum_schema(vocabulary) -> Dict[str, Any]:
+def enum_schema(vocabulary) -> Dict[str, Any]:
+    """The JSON schema of one member of `vocabulary`, listed in its own order.
+
+    Public because prd-decompose-verify.py spells its own vocabularies' schemas
+    with it too, so every published enum has one shape.
+    """
     return {"type": "string", "enum": [member.value for member in vocabulary]}
 
 
@@ -1757,13 +1762,13 @@ def _probe_set_schema() -> Dict[str, Any]:
         "required": ["capability", "probe_kind", "fixture", "expected"],
         "properties": {
             "capability": {"type": "string"},
-            "probe_kind": _enum_schema(ProbeKind),
+            "probe_kind": enum_schema(ProbeKind),
             "fixture": {"type": "string", "minLength": 1},
             "expected": {
                 "type": "object",
                 "required": ["observation"],
                 "properties": {
-                    "observation": _enum_schema(expectable),
+                    "observation": enum_schema(expectable),
                     "match": {"type": "object"},
                 },
             },
@@ -1787,8 +1792,8 @@ def _result_record_schema() -> Dict[str, Any]:
         ],
         "properties": {
             "capability": {"type": "string"},
-            "probe_kind": _enum_schema(ProbeKind),
-            "verdict": _enum_schema(Verdict),
+            "probe_kind": enum_schema(ProbeKind),
+            "verdict": enum_schema(Verdict),
             "command": {"type": "array", "items": {"type": "string"}},
             "exit_code": {"type": "integer"},
             "stdout": {"type": "string"},
@@ -1799,7 +1804,7 @@ def _result_record_schema() -> Dict[str, Any]:
                 "type": ["object", "null"],
                 "required": ["kind", "detail", "cache_denied"],
                 "properties": {
-                    "kind": _enum_schema(HarnessFailureKind),
+                    "kind": enum_schema(HarnessFailureKind),
                     "detail": {"type": "string"},
                     "cache_denied": {"type": "boolean"},
                 },
