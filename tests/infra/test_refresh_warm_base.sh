@@ -34,7 +34,7 @@
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
 #   LAND — landed-ness guard: a --landed-commit that is not an ancestor of refs/heads/main (or a repo without it, or an ancestry check git cannot evaluate) is refused before any copy; main's tip and its strict ancestors are accepted
 #   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
-#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
+#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen, together with their .fingerprint records and depth-1 .dwo shards unless the hash has a build/ dir; live variants, non-candidates and other dirs survive
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -1055,6 +1055,10 @@ assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filen
 # within 7 days of the copied tree's newest consult, the ANCHOR. Cargo reads a
 # unit's fingerprint on every build whose graph contains the unit, so a hash
 # the lanes still build is consulted continuously whatever its artefact mtime.
+# The refresh passes --prune-dead-unit-records, so a pruned hash with no
+# debug/build/<pkg>-<hash> dir also loses its .fingerprint record and its
+# depth-1 .dwo shards, keyed on the shard name cut at its first dot (LIVE7,
+# LIVE8b); a hash with a build/ dir keeps both (LIVE8).
 #
 # Fixtures use fixed past dates: no sleeps, and the window being anchored on
 # the tree rather than on `date` is itself under test (LIVE1).
@@ -1264,7 +1268,9 @@ assert "LIVE6: the dead control is pruned" \
 # never candidates. Each near-miss that carries a hash-like token is tied to a
 # DEAD fingerprint dir a looser grammar would key on, so its survival is
 # discriminating rather than vacuous; the dead unit's own conforming file is
-# the control.
+# the control. A .dwo shard is keyed on its name cut at the FIRST dot, never on
+# its 16-hex cgu token: the dead hash's shard goes with the dead unit, and a
+# live hash's shard whose cgu token is the dead hash stays.
 _live_case
 _mint_anchor "$LIVE_PROFILE"
 LIVE7_DEAD=deadbeef00000007
@@ -1277,17 +1283,26 @@ _mint_unit "$LIVE_PROFILE" foo 0123456789abcdef "$LIVE_DEAD" "$LIVE_DEAD" foo-01
 LIVE7_SHARD="axum-$LIVE7_DEAD.axum.7a7a7a7a7a7a7a7a-cgu.09.rcgu.dwo"
 echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_SHARD"
 touch -d "$LIVE_DEAD" "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+LIVE7_LIVE_SHARD="anchor-00000000000000a1.anchor.${LIVE7_DEAD}-cgu.03.rcgu.dwo"
+echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_LIVE_SHARD"
 _live_refresh
 assert "LIVE7: refresh exits 0" test "$RC" -eq 0
-assert "LIVE7: README, a .json, a short hash, an uppercase hash, a 17-hex hash and a split-debuginfo shard all survive" \
+assert "LIVE7: grammar near-misses all survive: README, a .json, a short hash, an uppercase hash, a 17-hex hash" \
     _all_present "$LIVE_GEN/debug/deps" README build-plan.json foo-abc123.rlib foo-AAAABBBBCCCCDDDD \
-        foo-0123456789abcdef0.rlib "$LIVE7_SHARD"
-assert "LIVE7: the dead unit's own conforming file is pruned" \
-    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib"
+        foo-0123456789abcdef0.rlib
+assert "LIVE7: the dead unit's own conforming file and the dead hash's shard are pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib" "$LIVE7_SHARD"
+assert "LIVE7: a live hash's shard survives although its cgu token is the dead hash" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE7_LIVE_SHARD"
+assert "LIVE7: the dead unit's .fingerprint record is pruned" \
+    _none_present "$LIVE_GEN/debug/.fingerprint" "dead-$LIVE7_DEAD"
+assert "LIVE7: a dead record with no grammar deps file pruned for it survives (foo's 17-hex near-miss)" \
+    _all_present "$LIVE_GEN/debug/.fingerprint" foo-0123456789abcdef/lib-foo
 
 # LIVE8 — scope: only debug/deps at depth 1 is ever pruned. A dead hash's files
-# elsewhere — build/, the profile root, a nested deps dir, the whole release
-# profile, and the fingerprint dir (the evidence itself) — are untouched.
+# elsewhere — build/, the profile root, a nested deps dir and the whole release
+# profile — are untouched, and its debug fingerprint record is kept because the
+# hash has a debug/build/dead-<hash> dir.
 _live_case
 _mint_anchor "$LIVE_PROFILE"
 LIVE8_DEAD=deadbeef00000008
@@ -1300,7 +1315,7 @@ _mint_anchor "$LIVE_ADV/release"
 _mint_unit "$LIVE_ADV/release" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
 _live_refresh
 assert "LIVE8: refresh exits 0" test "$RC" -eq 0
-assert "LIVE8: the dead hash's files outside debug/deps depth 1 all survive (build/, profile root, nested, release/, .fingerprint)" \
+assert "LIVE8: the dead hash's files outside debug/deps depth 1 survive (build/, profile root, nested, release/), and its debug .fingerprint record is kept by the build/ guard" \
     _all_present "$LIVE_GEN" "debug/build/dead-$LIVE8_DEAD/out.txt" "debug/dead-$LIVE8_DEAD" \
         "debug/deps/nested/libdead-$LIVE8_DEAD.rlib" "release/deps/libdead-$LIVE8_DEAD.rlib" \
         "release/.fingerprint/dead-$LIVE8_DEAD/lib-dead" "debug/.fingerprint/dead-$LIVE8_DEAD/lib-dead"
@@ -1308,6 +1323,25 @@ assert "LIVE8: the dead hash's debug/deps/ file is pruned (control)" \
     _none_present "$LIVE_GEN" "debug/deps/libdead-$LIVE8_DEAD.rlib"
 assert "LIVE8: only the depth-1 file is counted as a victim (files=1) — the nested twin is never even a candidate" \
     _stderr_matches 'prune deps=.*files=1( |$)'
+
+# LIVE8b — record scope: a dead unit with NO build/ dir loses its debug
+# .fingerprint record, and only that one: the release profile and a nested
+# deps twin are untouched, since the refresh prunes debug/deps depth 1 only.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE8B_DEAD=deadbeef0000008b
+_mint_unit "$LIVE_PROFILE" nobuild "$LIVE8B_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libnobuild-$LIVE8B_DEAD.rlib"
+mkdir -p "$LIVE_PROFILE/deps/nested"
+echo "nested" > "$LIVE_PROFILE/deps/nested/libnobuild-$LIVE8B_DEAD.rlib"
+_mint_anchor "$LIVE_ADV/release"
+_mint_unit "$LIVE_ADV/release" nobuild "$LIVE8B_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libnobuild-$LIVE8B_DEAD.rlib"
+_live_refresh
+assert "LIVE8b: refresh exits 0" test "$RC" -eq 0
+assert "LIVE8b: the dead unit's debug .fingerprint record is pruned" \
+    _none_present "$LIVE_GEN" "debug/.fingerprint/nobuild-$LIVE8B_DEAD"
+assert "LIVE8b: release/'s record and deps file, and the nested debug twin, survive" \
+    _all_present "$LIVE_GEN" "release/.fingerprint/nobuild-$LIVE8B_DEAD/lib-nobuild" \
+        "release/deps/libnobuild-$LIVE8B_DEAD.rlib" "debug/deps/nested/libnobuild-$LIVE8B_DEAD.rlib"
 
 # LIVE9 — operator contract: stderr carries the machine-greppable summary
 # `prune deps=<path> files=N victim_bytes=N`, the byte figure being the summed
@@ -1324,12 +1358,14 @@ LIVE9_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live9-tmp-XXXXXX)"
 _TMPDIRS+=("$LIVE9_TMPDIR")
 TMPDIR="$LIVE9_TMPDIR" _live_refresh
 assert "LIVE9: refresh exits 0" test "$RC" -eq 0
-assert "LIVE9: the stage's summary temp file is removed after a successful prune" \
+assert "LIVE9: the stage's temp work dir is removed after a successful prune" \
     test -z "$(ls -A "$LIVE9_TMPDIR")"
 assert "LIVE9: stderr reports the prune with files=2" \
     _stderr_matches 'prune deps=.*files=2( |$)'
 assert "LIVE9: stderr's victim_bytes is the summed apparent size of exactly the two dead files" \
     _stderr_matches "files=2 victim_bytes=${LIVE9_BYTES}( |\$)"
+assert "LIVE9: stderr counts both dead units' fingerprint records (records=2) and no shards (dwo=0)" \
+    _stderr_matches 'files=2 victim_bytes=[0-9]+ records=2 dwo=0( |$)'
 assert "LIVE9: stdout stays empty" test -z "$OUT"
 
 # LIVE10 — skip paths: with no deps dir, or no .fingerprint to read liveness

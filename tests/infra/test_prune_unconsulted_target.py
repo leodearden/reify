@@ -810,8 +810,9 @@ exec {real_cp} "${{args[@]}}"
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.record.read_text().splitlines()
         self.assertEqual(len(calls), 1, calls)
-        profile_arg = calls[0].rstrip("\t").split("\t")[-1]
-        self.assertRegex(profile_arg, rf"^{re.escape(str(self.base))}\.gen\.\d+\.partial/debug$")
+        argv = calls[0].rstrip("\t").split("\t")
+        self.assertIn("--prune-dead-unit-records", argv)
+        self.assertRegex(argv[-1], rf"^{re.escape(str(self.base))}\.gen\.\d+\.partial/debug$")
         gen = Path(os.readlink(self.base))
         self.assertPresent([gen / "debug" / "deps" / p.name for p in self.dead])
 
