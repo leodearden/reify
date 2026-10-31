@@ -511,18 +511,11 @@ fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_p
 /// log grid scale with λ and the objective ordering is λ²-invariant, but a regression in
 /// the bracketing or the warm start could break it with nothing else noticing.
 ///
-/// The homogeneity is not EXACT, which is why the relative tolerance is looser than the
-/// anchored case's 1e-12: the search's two stopping rules (`OBJ_TOL = 1e-20` and the
-/// stall guard's `1e-18·max(before, 1)`) are ABSOLUTE thresholds on an objective that
-/// scales as λ², so the two runs stop at slightly different depths and the recovered
-/// ratios differ in the last digits. Both still land far below the nullity classifier's
-/// threshold, so this is the same solution — search noise, not gauge dependence.
-///
-/// TOLERANCES ARE MEASURED, not guessed (λ = 7, this fixture): node residual 1.8e-12 m,
-/// q and N relative residuals both 1.1e-10 — so 1e-9 m and 1e-8 leave ~2.5 and ~2 orders
-/// of margin. A failure at these numbers is a real homogeneity regression; do not slacken
-/// them without re-measuring, and do not tighten them to the anchored path's 1e-12, which
-/// this path cannot meet by construction.
+/// The search runs in units of the reference group's seed magnitude (task #9272), so a
+/// whole-gauge seed rescale is a change of unit: its objective, stopping rules, grid and
+/// floors are dimensionless, and both runs take the same search path. What is left at
+/// λ = 7 is rounding in the λ-scaled assembly, so the tolerances are the anchored line-only
+/// path's (1e-9 m, 1e-12 relative), sized on f64 round-off rather than on search noise.
 #[test]
 fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
     let base = solve_free_at(&TRIPLEX_SEEDS);
@@ -550,11 +543,11 @@ fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
              a derived density to zero (task #6095)"
         );
         assert!(
-            (sq - expected).abs() <= 1e-8 * expected.abs(),
+            (sq - expected).abs() <= 1e-12 * expected.abs(),
             "free-standing: force_densities[{i}] must scale by {GAUGE_LAMBDA} under a \
              whole-gauge seed rescale: {bq} · {GAUGE_LAMBDA} = {expected}, got {sq}"
         );
     }
 
-    assert_gauge_covariance(&base, &scaled, 1e-9, 1e-8, "free-standing");
+    assert_gauge_covariance(&base, &scaled, 1e-9, 1e-12, "free-standing");
 }

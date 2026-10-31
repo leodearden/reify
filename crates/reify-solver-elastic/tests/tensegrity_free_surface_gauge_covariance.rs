@@ -1,6 +1,6 @@
-//! Integration golden for Tensegrity free-standing combined-surfaces GAUGE
-//! covariance (task 6413) — the free-standing twin of task 6119's anchored-path
-//! gauge lock.
+//! Integration golden for Tensegrity free-standing GAUGE covariance under both
+//! force-density specs, `Explicit` (task 6413) and `GroupRatios` (task 9272) —
+//! the free-standing twin of task 6119's anchored-path gauge lock.
 //!
 //! PRD reference: `docs/prds/v0_6/tensegrity-structures.md` Tier-1 leaf T1b /
 //! `docs/prds/v0_6/tensegrity-membrane.md` §4 M1b / D3 (δ).
@@ -12,11 +12,19 @@
 //! `σ → λ·σ` at fixed geometry scales `D_combined` by `λ` entrywise and
 //! therefore does not change the physical equilibrium — [`form_find_free_surfaces`]
 //! must converge to the SAME geometry (and report the SAME nullity) regardless
-//! of `λ`. Before task 6413's fix, the absolute equilibrium-residual stop test
-//! made convergence gauge-DEPENDENT: a large `λ` scaled the raw residual past
-//! the absolute tolerance, so the fixed point exhausted its iteration budget
-//! and returned `Err(SearchDidNotConverge)` for a structure that is physically
-//! identical to one that converges fine at `λ = 1`.
+//! of `λ`, under either spec:
+//!
+//! - [`ForceDensitySpec::Explicit`] takes the `λ`-scaled `q` as given. Before
+//!   task 6413's fix, the absolute equilibrium-residual stop test made its
+//!   convergence gauge-DEPENDENT: a large `λ` scaled the raw residual past the
+//!   absolute tolerance, so the fixed point exhausted its iteration budget and
+//!   returned `Err(SearchDidNotConverge)` for a structure that is physically
+//!   identical to one that converges fine at `λ = 1`.
+//! - [`ForceDensitySpec::GroupRatios`] SEARCHES `q`, so its whole gauge is the
+//!   seed ratios and σ scaled together. Before task 9272's fix, the search
+//!   judged its objective, grid and magnitude floors on absolute thresholds:
+//!   a small `λ` failed to converge at all, and a large one drifted the
+//!   recovered geometry.
 //!
 //! This test drives [`form_find_free_surfaces`] through its **public
 //! crate-root surface** only — it never reaches into the private per-node
@@ -25,15 +33,17 @@
 //! covariance that has no converging e2e altitude — see that module's tests
 //! for why).
 //!
-//! # Fixture — SELF-DERIVING, no magic constants
+//! # Fixtures
 //!
-//! `λ = 1` and `λ = 2^20` are re-solved from a common baseline `(x*, q*)`
-//! obtained by first running the existing δ `GroupRatios` golden (the same
-//! fixture as `tensegrity_delta_combined_form_find.rs`) to convergence. `λ` is
-//! a power of two so the gauge change is exact in IEEE-754 (an exponent-field
-//! shift, no mantissa rounding). The fixed-point-start golden below checks
-//! this bit-exactly (`assert_eq!`); the perturbed-guess grid relaxes to a
-//! tight relative bound instead — see that test's own doc for why.
+//! The fixed-point-start golden re-solves `λ = 1` and `λ = 2^20` from a common
+//! baseline `(x*, q*)` obtained by first running the existing δ `GroupRatios`
+//! golden (the same fixture as `tensegrity_delta_combined_form_find.rs`) to
+//! convergence. The perturbed-guess grid solves every cell of both specs from
+//! the shared closed-form fixtures in `common`. `λ` is always a power of two so
+//! the gauge change is exact in IEEE-754 (an exponent-field shift, no mantissa
+//! rounding). The fixed-point-start golden checks this bit-exactly
+//! (`assert_eq!`); the perturbed-guess grid relaxes to a tight relative bound
+//! instead — see that test's own doc for why.
 
 use reify_solver_elastic::{
     ForceDensitySpec, FreeFormResult, MemberKind, form_find_free_surfaces,
@@ -86,13 +96,13 @@ fn solve_at_gauge(
 /// exactly `λ`-scaled member forces — never a different iteration outcome.
 ///
 /// Self-deriving: `(x*, q*)` is the δ `GroupRatios` golden's own converged
-/// output. `GroupRatios` pins its own gauge via `reference_group` and is
-/// deliberately NOT itself asserted gauge-covariant here (see the design
-/// decision in this task's plan for why — scaling σ alone against a
-/// gauge-fixed reference group is a physically different, and here
-/// infeasible, problem). The two λ re-solves both go through
-/// [`ForceDensitySpec::Explicit`], which has no internal gauge fix, so it is
-/// the mode this task's lock applies to.
+/// output. The two λ re-solves both go through [`ForceDensitySpec::Explicit`],
+/// so this golden probes the stop test alone. `GroupRatios` IS asserted
+/// gauge-covariant, by
+/// [`free_standing_convergence_from_perturbed_guess_is_gauge_independent_for_both_specs`],
+/// under the whole-gauge rescale of its seed ratios and σ together. Scaling σ
+/// alone against the reference group is a physically different problem, not a
+/// gauge change.
 ///
 /// MEASURED RED on pristine (task 6413 premise verification): λ=1 converges;
 /// λ=2^20 returns `Err(SearchDidNotConverge)` — the absolute equilibrium-residual
@@ -157,72 +167,185 @@ fn free_surfaces_explicit_convergence_is_gauge_independent() {
     }
 }
 
-/// TASK 6413 (defect D3) — the (2b) null-space trial-move gate and the (3)
-/// eigenvalue-gap descent step must ALSO be gauge-independent. Unlike
-/// [`free_surfaces_explicit_convergence_is_gauge_independent`] above — which
-/// starts AT the bootstrap fixed point, so the outer loop breaks out at
-/// iteration 0 and never executes (2b) or the descent step — this test drives
-/// [`form_find_free_surfaces`] on the `Explicit` path from PERTURBED guesses,
-/// so both (2b) and (3) actually run under a gauge change.
+/// TASK 6413 (defect D3) / TASK 9272 — free-standing convergence from a
+/// PERTURBED guess must be gauge-independent under BOTH force-density specs.
+/// Unlike [`free_surfaces_explicit_convergence_is_gauge_independent`] above —
+/// which starts AT the bootstrap fixed point, so the outer loop breaks out at
+/// iteration 0 and never executes the (2b) null-space trial-move gate or the
+/// (3) eigenvalue-gap descent step — every cell here starts off-equilibrium,
+/// so both run under a gauge change, and under `GroupRatios` so does the
+/// adaptive search that derives `q`.
 ///
-/// Grid: σ ∈ {0.05, 0.2, 1.0} × guess-perturbation scale `k` ∈ {1, 10, 50}
-/// (the same grid `tensegrity_delta_combined_form_find.rs`'s
-/// `combined_explicit_analytic_q_converges_across_sigma_and_perturbation`
-/// regression uses, minus the redundant `canonical`/`x50`-adjacent cells),
-/// with `q = analytic_combined_q(σ)` and σ itself both scaled by
-/// `λ ∈ {2^20, 2^-20}` against the `λ = 1` solve from the SAME guess. Per
-/// cell: `solve_at_gauge` already asserts `converged` and `nullity == 4`;
-/// this test additionally asserts each scaled-λ solve agrees with the λ=1
-/// solve to within a tight relative bound (`max|Δx| <= 1e-12·max|x|`).
+/// Grid: spec ∈ {`Explicit`, `GroupRatios`} × membrane ∈ {line-only, caps at
+/// σ ∈ {0.05, 0.2, 1.0}} × guess-perturbation scale `k` ∈ {1, 10, 50}, each
+/// re-solved at `λ ∈ {2^20, 2^-20}` against the `λ = 1` solve from the SAME
+/// guess. The whole gauge is rescaled together: `Explicit`'s `q` (the closed
+/// form [`analytic_combined_q`], σ = 0 on the line-only row), `GroupRatios`'
+/// seed ratios, and the caps' σ. Per cell, both solves must converge with
+/// nullity 4, and the λ solve must reproduce the `λ = 1` geometry to
+/// `max|Δx| <= 1e-12·max|x|` with every force density and member force
+/// `λ`-scaled to the same relative bound.
+///
 /// Deliberately a bound rather than `assert_eq!`: λ a power of two makes the
 /// arithmetic bit-reproducible in principle (see `form_find_free.rs`'s unit
 /// tests for that bit-exact contract, and the fixed-point-start golden
-/// above), but pinning 18 bit-exact equalities through many third-party
-/// dense eigendecompositions here would make this e2e golden fragile to an
-/// unrelated faer change rather than a real gauge regression.
-///
-/// MEASURED RED (task 6413 premise verification): with the pre-existing raw
-/// residual at the (2b) call site, `Err(SearchDidNotConverge)` at λ=2^20 in
-/// every one of the 9 cells — orders of magnitude away from the bound above,
-/// so no discriminating power is lost by relaxing it. MEASURED GREEN with
-/// the one-line (2b) fix: all 9 cells × the 2 non-unity λ converge with
-/// nullity 4 and max|Δx| exactly 0.0.
+/// above), but pinning every cell bit-exactly through many third-party dense
+/// eigendecompositions would make this golden fragile to an unrelated faer
+/// change rather than a real gauge regression. The bound loses no
+/// discriminating power: both defects it locks — task 6413's absolute stop
+/// test (`Explicit`) and task 9272's absolute search thresholds
+/// (`GroupRatios`) — fail with `Err(SearchDidNotConverge)` or drift orders of
+/// magnitude past it.
 #[test]
-fn free_surfaces_explicit_convergence_from_perturbed_guess_is_gauge_independent() {
-    let (members, kinds) = triplex_topology();
-    let surfaces = prism_surfaces();
+fn free_standing_convergence_from_perturbed_guess_is_gauge_independent_for_both_specs() {
     const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
     const LAMBDA_DOWN: f64 = 1.0 / 1_048_576.0; // 2^-20
 
-    for &sigma in &[0.05_f64, 0.2, 1.0] {
-        let q_star = analytic_combined_q(sigma);
+    for spec in [SpecArm::Explicit, SpecArm::GroupRatios] {
+        for membrane in [
+            Membrane::LineOnly,
+            Membrane::Caps(0.05),
+            Membrane::Caps(0.2),
+            Membrane::Caps(1.0),
+        ] {
+            for k in [1.0_f64, 10.0, 50.0] {
+                let cell = GaugeCell { spec, membrane, k };
+                let r1 = cell.solve(1.0);
 
-        for &k in &[1.0_f64, 10.0, 50.0] {
-            let guess = perturbed_prism_guess_scaled(k);
-            let cell = format!("sigma={sigma}, k={k}");
+                for lambda in [LAMBDA_UP, LAMBDA_DOWN] {
+                    let label = cell.label(lambda);
+                    let r = cell.solve(lambda);
 
-            let r1 = solve_at_gauge(&members, &kinds, &surfaces, &guess, &q_star, sigma, 1.0);
-
-            for (label, lambda) in [("λ=2^20", LAMBDA_UP), ("λ=2^-20", LAMBDA_DOWN)] {
-                let r =
-                    solve_at_gauge(&members, &kinds, &surfaces, &guess, &q_star, sigma, lambda);
-
-                let mut max_dx = 0.0_f64;
-                let mut max_x = 0.0_f64;
-                for (a, b) in r1.nodes.iter().zip(r.nodes.iter()) {
-                    for axis in 0..3 {
-                        max_dx = max_dx.max((a[axis] - b[axis]).abs());
-                        max_x = max_x.max(a[axis].abs());
+                    let mut max_dx = 0.0_f64;
+                    let mut max_x = 0.0_f64;
+                    for (a, b) in r1.nodes.iter().zip(r.nodes.iter()) {
+                        for axis in 0..3 {
+                            max_dx = max_dx.max((a[axis] - b[axis]).abs());
+                            max_x = max_x.max(a[axis].abs());
+                        }
                     }
+                    assert!(
+                        max_dx <= REL_BOUND * max_x,
+                        "{label} recovered geometry must be gauge-invariant to within a \
+                         tight relative bound: max|Δx| = {max_dx:e}, max|x| = {max_x:e}",
+                    );
+
+                    assert_scaled_by_lambda(
+                        &r1.force_densities,
+                        &r.force_densities,
+                        lambda,
+                        "force_densities",
+                        &label,
+                    );
+                    assert_scaled_by_lambda(
+                        &r1.member_forces,
+                        &r.member_forces,
+                        lambda,
+                        "member_forces",
+                        &label,
+                    );
                 }
-                const REL_BOUND: f64 = 1e-12;
-                assert!(
-                    max_dx <= REL_BOUND * max_x,
-                    "[{cell}] {label} recovered geometry must be gauge-invariant \
-                     to within a tight relative bound: max|Δx| = {max_dx:e}, \
-                     max|x| = {max_x:e}",
-                );
             }
         }
+    }
+}
+
+/// The relative bound every perturbed-guess gauge cell is held to.
+const REL_BOUND: f64 = 1e-12;
+
+/// The force-density spec a [`GaugeCell`] is solved under.
+#[derive(Clone, Copy, Debug)]
+enum SpecArm {
+    /// `q = analytic_combined_q(σ)·λ`, echoed back unchanged.
+    Explicit,
+    /// The δ golden's triplex groups, reference group 1, every seed ratio `λ`-scaled.
+    GroupRatios,
+}
+
+/// The membrane a [`GaugeCell`] carries.
+#[derive(Clone, Copy, Debug)]
+enum Membrane {
+    /// No surfaces: [`form_find_free_surfaces`] delegates to the line-only path.
+    LineOnly,
+    /// Both prism caps at isotropic surface stress σ (before the gauge `λ`).
+    Caps(f64),
+}
+
+/// One cell of the perturbed-guess gauge grid, solvable at any gauge `λ`.
+struct GaugeCell {
+    spec: SpecArm,
+    membrane: Membrane,
+    k: f64,
+}
+
+impl GaugeCell {
+    fn label(&self, lambda: f64) -> String {
+        let Self { spec, membrane, k } = self;
+        format!("[{spec:?}, {membrane:?}, k={k}, λ={lambda:e}]")
+    }
+
+    /// Solve the cell at gauge `λ`, asserting the gauge-free verdict
+    /// (`Ok`, converged, nullity 4) and the input echoes: σ always, and
+    /// `q` itself under `Explicit`.
+    fn solve(&self, lambda: f64) -> FreeFormResult {
+        let label = self.label(lambda);
+        let (members, kinds) = triplex_topology();
+        let guess = perturbed_prism_guess_scaled(self.k);
+        let (surfaces, stresses, sigma) = match self.membrane {
+            Membrane::LineOnly => (Vec::new(), Vec::new(), 0.0),
+            Membrane::Caps(sigma) => (prism_surfaces(), vec![sigma * lambda; 2], sigma),
+        };
+        let spec = match self.spec {
+            SpecArm::Explicit => ForceDensitySpec::Explicit(
+                analytic_combined_q(sigma)
+                    .iter()
+                    .map(|q| q * lambda)
+                    .collect(),
+            ),
+            SpecArm::GroupRatios => ForceDensitySpec::GroupRatios {
+                group_ids: triplex_group_ids(),
+                seed_ratios: vec![-lambda, lambda, lambda],
+                reference_group: 1,
+            },
+        };
+
+        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &stresses, &spec)
+            .unwrap_or_else(|e| panic!("{label} must form-find, got {e:?}"));
+
+        assert!(result.converged, "{label} must converge");
+        assert_eq!(result.nullity, 4, "{label} must recover a nullity-4 form");
+        assert_eq!(
+            result.surface_stresses, stresses,
+            "{label} surface_stresses must echo the λ-scaled σ exactly",
+        );
+        if let ForceDensitySpec::Explicit(q) = &spec {
+            assert_eq!(
+                &result.force_densities, q,
+                "{label} force_densities must echo the λ-scaled input exactly",
+            );
+        }
+
+        result
+    }
+}
+
+/// Assert `scaled[i]` is `λ·base[i]` to [`REL_BOUND`] for every `i`, on a
+/// nonzero `base[i]` (at zero the relative check holds for any λ).
+fn assert_scaled_by_lambda(base: &[f64], scaled: &[f64], lambda: f64, field: &str, label: &str) {
+    assert_eq!(
+        base.len(),
+        scaled.len(),
+        "{label} {field}: same length at both gauges"
+    );
+    for (i, (&b, &s)) in base.iter().zip(scaled.iter()).enumerate() {
+        assert!(
+            b != 0.0,
+            "{label} {field}[{i}] = 0 at λ = 1 makes the ×λ check vacuous"
+        );
+        let expected = b * lambda;
+        assert!(
+            (s - expected).abs() <= REL_BOUND * expected.abs(),
+            "{label} {field}[{i}] must scale by λ: λ·{b:e} = {expected:e}, got {s:e}",
+        );
     }
 }
