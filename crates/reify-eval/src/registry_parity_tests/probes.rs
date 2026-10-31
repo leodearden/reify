@@ -6,15 +6,25 @@
 //! nothing from its parent, so the edge is strictly parent → child.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use reify_builtins::EvalBuiltinId;
 use reify_core::{DimensionVector, Type, ValueCellId};
-use reify_ir::{CompiledExpr, FieldSourceKind, Value, ValueMap};
+use reify_ir::{
+    CompiledExpr, FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value,
+    ValueMap,
+};
 
 /// The uniaxial stress magnitude every analysis probe is built from, in SI
 /// pascals. The value is irrelevant to a KIND comparison; only the shape and
 /// the dimension are load-bearing.
 const SIGMA_PA: f64 = 100e6;
+
+/// The uniaxial [`SIGMA_PA`] stress window, row-major — the one statement of
+/// it, from which both the concrete tensor ([`uniaxial_stress`]) and every
+/// node of the Grid field ([`grid_stress_field`]) are built.
+const UNIAXIAL_STRESS_WINDOW: [[f64; 3]; 3] =
+    [[SIGMA_PA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
 
 /// A yield strength for `safety_factor`'s second argument, chosen non-zero so
 /// the ratio is finite and `sanitize_value` does not intervene.
@@ -151,8 +161,10 @@ fn stress_field_type() -> Type {
     }
 }
 
-/// The point every Field probe's result is sampled at. The Callable probe's
-/// field is constant, so any point of its domain serves.
+/// The point every Field probe's result is sampled at: inside the Grid probe's
+/// `[0, 1]³` bounds, so the grid interpolates rather than reporting an
+/// out-of-bounds query. The Callable probe's field is constant, so for it any
+/// point of the domain would serve.
 fn field_sample_point() -> Value {
     let half_metre = Value::Scalar {
         si_value: 0.5,
@@ -186,6 +198,45 @@ fn callable_stress_field() -> (Value, Type) {
             codomain_type: pressure_tensor_type(),
             source: FieldSourceKind::Analytical,
             lambda: Arc::new(lambda),
+        },
+        stress_field_type(),
+    )
+}
+
+/// A Grid-backed stress field: `Sampled`, a Regular3D 2×2×2 grid over the
+/// unit cube holding the same uniaxial window at every node — the backing
+/// `solve_elastic_static(..).stress` produces, so the production shape.
+///
+/// Unlike the Callable backing, which samples through the pointwise builtin,
+/// this one is sampled by projecting node windows and wrapping the
+/// interpolated values PER THE WRAPPER'S `codomain_type`, so only this probe's
+/// Sample leg joins the codomain label reify-expr writes against the registry.
+///
+/// Shape mirrors
+/// `sampled_backed_von_mises_wrapper_samples_a_regular3d_grid_at_point3_length_coordinates`
+/// in `crates/reify-expr/tests/field_analysis_tests.rs`.
+fn grid_stress_field() -> (Value, Type) {
+    const NODES: usize = 8;
+    let unit_axis = vec![0.0, 1.0];
+    let grid = SampledField {
+        name: "uniaxial_stress_grid".to_string(),
+        kind: SampledGridKind::Regular3D,
+        bounds_min: vec![0.0; 3],
+        bounds_max: vec![1.0; 3],
+        spacing: vec![1.0; 3],
+        axis_grids: vec![unit_axis.clone(), unit_axis.clone(), unit_axis],
+        interpolation: InterpolationKind::Linear,
+        data: (0..NODES)
+            .flat_map(|_| UNIAXIAL_STRESS_WINDOW.into_iter().flatten())
+            .collect(),
+        oob_emitted: AtomicBool::new(false),
+    };
+    (
+        Value::Field {
+            domain_type: field_domain_type(),
+            codomain_type: pressure_tensor_type(),
+            source: FieldSourceKind::Sampled,
+            lambda: Arc::new(Value::SampledField(grid)),
         },
         stress_field_type(),
     )
@@ -263,6 +314,7 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
             vec![
                 concrete_tensor_probe(),
                 Probe::field(vec![callable_stress_field()], field_sample_point()),
+                Probe::field(vec![grid_stress_field()], field_sample_point()),
             ]
         }
 
@@ -273,6 +325,7 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
             vec![
                 concrete_tensor_probe(),
                 Probe::field(vec![callable_stress_field()], field_sample_point()),
+                Probe::field(vec![grid_stress_field()], field_sample_point()),
             ]
         }
 
@@ -290,6 +343,10 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
                 vec![callable_stress_field(), yield_strength()],
                 field_sample_point(),
             ),
+            Probe::field(
+                vec![grid_stress_field(), yield_strength()],
+                field_sample_point(),
+            ),
         ],
 
         // `analysis::stress_invariants` returns `Value::Undef` for ANYTHING
@@ -302,8 +359,5 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
 
 /// The uniaxial 100 MPa stress tensor every analysis probe is fed.
 fn uniaxial_stress() -> Value {
-    dimensioned_matrix_3x3(
-        &[[SIGMA_PA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-        DimensionVector::PRESSURE,
-    )
+    dimensioned_matrix_3x3(&UNIAXIAL_STRESS_WINDOW, DimensionVector::PRESSURE)
 }
