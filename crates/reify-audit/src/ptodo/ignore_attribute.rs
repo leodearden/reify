@@ -14,7 +14,8 @@ pub(super) enum IgnoreForm {
 }
 
 /// `///` (outer) or `//!` (inner) doc-comment line, after leading whitespace.
-/// Prose there that mentions the attribute is not an attribute.
+/// Prose there that mentions the attribute is not an attribute. Twin of
+/// `reify_test_support::ignore_hygiene::is_doc_comment_line`; change both together.
 fn is_doc_comment_line(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with("///") || t.starts_with("//!")
