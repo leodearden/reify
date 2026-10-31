@@ -2244,6 +2244,10 @@ mod tests {
         assert_eq!(topology_selector_result_type("is_watertight"), None);
         assert_eq!(topology_selector_result_type("interferes"), None);
         assert_eq!(topology_selector_result_type(""), None);
+    }
+
+    #[test]
+    fn topology_selector_result_type_returns_none_for_list_helper_names() {
         for &name in crate::list_helpers::LIST_HELPER_NAMES {
             assert_eq!(
                 topology_selector_result_type(name),
