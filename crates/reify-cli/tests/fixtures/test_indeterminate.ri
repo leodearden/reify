@@ -1,8 +1,9 @@
-// CLI test fixture: one @test structure with an auto param making the constraint indeterminate.
-// x = auto means the solver has not resolved x yet, so the constraint is indeterminate.
-// Used by test_command_on_indeterminate_file_exits_success.
+// CLI test fixture: one @test structure, Indeterminate via a run-dependent Undef.
+// Used by test_command_on_indeterminate_file_exits_success and
+// test_command_prints_the_reason_behind_an_indeterminate.
 
-@test structure TestAuto {
-    param x: Length = auto
-    constraint x > 0 && x < 10mm
+@test structure TestUndefTolerance {
+    param divisor: Int = 0
+    let tolerance = 1mm / divisor
+    constraint tolerance > 0.1mm && tolerance < 1mm
 }
