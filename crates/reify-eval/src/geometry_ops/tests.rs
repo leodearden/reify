@@ -6516,6 +6516,25 @@
         }
     }
 
+    /// Build the axis-VALUE form of `circular_pattern` around a caller-supplied
+    /// `Value`. `count` and `angle` are held fixed so each test varies exactly
+    /// the axis it hands in — the value-form sibling of
+    /// [`circular_pattern_with_origin`].
+    fn circular_pattern_with_axis_value(axis: reify_ir::Value) -> CompiledGeometryOp {
+        CompiledGeometryOp::Pattern {
+            kind: PatternKind::Circular,
+            target: GeomRef::Step(0),
+            args: vec![
+                (
+                    "axis".into(),
+                    reify_ir::CompiledExpr::literal(axis, reify_core::Type::dimensionless_scalar()),
+                ),
+                ("count".into(), literal_f64(4.0)),
+                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
+            ],
+        }
+    }
+
     /// A BARE (dimensionless) circular-pattern axis-origin component must be
     /// REJECTED — an axis ORIGIN is length-semantic (a point in space), so a
     /// bare `12` would be silently read as 12 SI **metres** rather than 12 mm,
@@ -6782,21 +6801,7 @@
                 reify_ir::Value::Real(1.0),
             ])),
         };
-        let op = CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        axis,
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        };
+        let op = circular_pattern_with_axis_value(axis);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
@@ -6808,12 +6813,13 @@
             &HashMap::new(),
             &mut diagnostics,
         );
-        assert!(
-            result.is_err(),
+        let err = result.expect_err(
             "a bare-origin axis VALUE must be REJECTED and no CircularPattern op \
-             produced — never silently built with a metre-scale axis origin; \
-             got {:?}",
-            result
+             produced — never silently built with a metre-scale axis origin",
+        );
+        assert_eq!(
+            err, "missing or non-Length argument 'ox' for circular_pattern",
+            "the Err names the builtin exactly once, with no prefix in front of it"
         );
 
         let rejections: Vec<_> = diagnostics
@@ -6832,14 +6838,12 @@
         for (d, name) in rejections.iter().zip(["ox", "oy", "oz"]) {
             assert_eq!(
                 d.message,
-                // "circular", not "circular_pattern": the kind label is
-                // `PatternKind`'s own `Display`, and `pattern_circular` hands
-                // `decode_axis` the very same `kind` it hands
-                // `required_length_origin3` in the scalar branch. Threading the
-                // `kind` rather than a hand-written string is what makes the two
-                // forms byte-identical instead of merely similar.
-                expected_length_rejection("circular", name, "Real"),
-                "the value form now mints the SAME wording as its scalar sibling"
+                // The value form names the builtin the author typed, which is
+                // what the compile layer reports for the same mistake in the
+                // scalar form.
+                expected_length_rejection("circular_pattern", name, "Real"),
+                "the value form's rejection must name `circular_pattern`, the \
+                 builtin the author typed"
             );
         }
     }
@@ -6857,21 +6861,7 @@
             origin: Box::new(length_point3(0.01, 0.02, 0.03)),
             direction: Box::new(bare_real_vector3(0.0, 0.0, 1.0)),
         };
-        let op = CompiledGeometryOp::Pattern {
-            kind: PatternKind::Circular,
-            target: GeomRef::Step(0),
-            args: vec![
-                (
-                    "axis".into(),
-                    reify_ir::CompiledExpr::literal(
-                        axis,
-                        reify_core::Type::dimensionless_scalar(),
-                    ),
-                ),
-                ("count".into(), literal_f64(4.0)),
-                ("angle".into(), literal_angle(std::f64::consts::FRAC_PI_2)),
-            ],
-        };
+        let op = circular_pattern_with_axis_value(axis);
 
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         let result = compile_geometry_op(
@@ -6906,6 +6896,107 @@
                 .any(|d| d.severity == reify_core::Severity::Error),
             "got: {:?}",
             diagnostics
+        );
+    }
+
+    /// A non-Axis value in the axis slot is not a units failure, so the decoder
+    /// speaks for itself — and the builtin it names must be the one the author
+    /// typed (`circular_pattern`), not `PatternKind`'s own `Display`
+    /// (`circular`), which names nothing that exists.
+    #[test]
+    fn compile_geometry_op_circular_pattern_axis_value_form_wrong_variant_names_the_surface_builtin()
+     {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let plane = plane_of(
+            length_point3(0.0, 0.0, 0.0),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        let op = circular_pattern_with_axis_value(plane.clone());
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let err = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        )
+        .expect_err("a Plane in the axis slot must drop the op");
+
+        assert_eq!(
+            err,
+            format!("circular_pattern: expected an Axis value, got {plane}")
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a wrong variant is the decoder's own Err, not a units rejection, so \
+             nothing is pushed; got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// The two forms of `circular_pattern` label the SAME bare-origin mistake
+    /// differently, and this is the one place that difference is held in view.
+    ///
+    /// The value form names the builtin the author typed: `pattern_circular`
+    /// hands `decode_axis` its `surface_name`. The scalar form's
+    /// `required_length_origin3` still renders `PatternKind::Circular`'s own
+    /// `Display`, "circular", which names nothing the author wrote. The
+    /// rejection text is one template in both; only the label differs.
+    ///
+    /// The scalar half goes red the day that `Display` reads `circular_pattern`.
+    /// That is the cue to replace the two expectations with one parity
+    /// assertion and to collapse `surface_name` back to `kind`.
+    #[test]
+    fn compile_geometry_op_circular_pattern_origin_rejection_label_differs_by_form() {
+        let origin_rejections = |op: CompiledGeometryOp| -> Vec<String> {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            compile_geometry_op(
+                &op,
+                &ValueMap::new(),
+                &[GeometryHandleId(42)],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            )
+            .expect_err("a bare origin must drop the op in both forms");
+            diagnostics
+                .into_iter()
+                .filter(|d| d.code == Some(reify_core::DiagnosticCode::DimensionedArgRejected))
+                .map(|d| d.message)
+                .collect()
+        };
+        let rejections_under = |label: &str| -> Vec<String> {
+            ["ox", "oy", "oz"]
+                .into_iter()
+                .map(|name| expected_length_rejection(label, name, "Real"))
+                .collect()
+        };
+
+        let scalar =
+            circular_pattern_with_origin(literal_f64(0.01), literal_f64(0.02), literal_f64(0.03));
+        let value = circular_pattern_with_axis_value(axis_of(
+            bare_real_vector3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        ));
+
+        assert_eq!(
+            origin_rejections(scalar),
+            rejections_under("circular"),
+            "the scalar form still renders `PatternKind::Circular`'s own label, \
+             so this is where the two forms differ. If this now fails because \
+             that label reads `circular_pattern`, the forms agree: assert one \
+             parity and collapse `pattern_circular`'s `surface_name` back to `kind`"
+        );
+        assert_eq!(
+            origin_rejections(value),
+            rejections_under("circular_pattern"),
+            "the value form names the builtin the author typed"
         );
     }
 
@@ -7070,6 +7161,56 @@
             "Length origin + dimensionless normal must not produce an Error \
              diagnostic; got: {:?}",
             diagnostics
+        );
+    }
+
+    /// The plane-VALUE form of `mirror` must surface its decoder's `Err`
+    /// unwrapped: the decoder already names `mirror` itself, so a caller that
+    /// prefixed it again would print the builtin twice.
+    #[test]
+    fn compile_geometry_op_mirror_plane_value_form_errors_carry_one_prefix() {
+        let mirror_err_for_plane_arg = |plane: reify_ir::Value| -> String {
+            let op = CompiledGeometryOp::Pattern {
+                kind: PatternKind::Mirror,
+                target: GeomRef::Step(0),
+                args: vec![(
+                    "plane".into(),
+                    reify_ir::CompiledExpr::literal(
+                        plane,
+                        reify_core::Type::dimensionless_scalar(),
+                    ),
+                )],
+            };
+            compile_geometry_op(
+                &op,
+                &ValueMap::new(),
+                &[GeometryHandleId(42)],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut Vec::new(),
+            )
+            .expect_err("a malformed plane VALUE must drop the op")
+        };
+
+        let axis = axis_of(
+            length_point3(0.0, 0.0, 0.0),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            mirror_err_for_plane_arg(axis.clone()),
+            format!("mirror: expected a Plane value, got {axis}"),
+            "a wrong-variant Err carries `mirror:` once"
+        );
+
+        let bare_origin_plane = plane_of(
+            bare_real_vector3(0.01, 0.02, 0.03),
+            bare_real_vector3(0.0, 0.0, 1.0),
+        );
+        assert_eq!(
+            mirror_err_for_plane_arg(bare_origin_plane),
+            "missing or non-Length argument 'ox' for mirror",
+            "a units Err is the scalar form's exact Err, with no `mirror: ` in front"
         );
     }
 
@@ -25638,17 +25779,16 @@
 
     // ── δ: `decode_plane` gates its ORIGIN, not its NORMAL (task 5745) ────────
 
-    /// The pre-δ wrong-SHAPE message for a plane ORIGIN, which δ must keep
-    /// byte-identical: `accept_length_point3` receives it as `shape_err` and
+    /// The wrong-SHAPE message for a plane ORIGIN (pre-δ wording plus the
+    /// builtin label): `accept_length_point3` receives it as `shape_err` and
     /// returns it verbatim, because a wrong shape is not a units rejection.
     const PLANE_ORIGIN_SHAPE_ERR: &str =
-        "Plane origin is not a valid 3-component numeric Point/Vector";
+        "mirror: Plane origin is not a valid 3-component numeric Point/Vector";
 
-    /// The pre-δ wrong-SHAPE message for a plane NORMAL. Unchanged for a
-    /// different reason: the normal is not gated at all, so it still reads
-    /// through bare `point3_components`.
+    /// The wrong-SHAPE message for a plane NORMAL. The normal is not gated, so
+    /// it still reads through bare `point3_components`.
     const PLANE_NORMAL_SHAPE_ERR: &str =
-        "Plane normal is not a valid 3-component numeric Point/Vector";
+        "mirror: Plane normal is not a valid 3-component numeric Point/Vector";
 
     /// Build a `Value::Plane` from an origin and a normal `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY normal shape — which
@@ -25766,11 +25906,14 @@
             // Wrong VARIANT — the message embeds the value's own `Display`.
             (
                 axis.clone(),
-                format!("expected a Plane value, got {}", axis),
+                format!("mirror: expected a Plane value, got {}", axis),
             ),
             (
                 reify_ir::Value::Undef,
-                format!("expected a Plane value, got {}", reify_ir::Value::Undef),
+                format!(
+                    "mirror: expected a Plane value, got {}",
+                    reify_ir::Value::Undef
+                ),
             ),
             // Wrong SHAPE, origin side: a 2-component origin is not a units
             // failure, so it keeps the caller's pre-δ message and emits nothing.
@@ -25803,7 +25946,7 @@
                     length_point3(0.0, 0.0, 0.0),
                     bare_real_vector3(0.0, 0.0, 0.0),
                 ),
-                "Plane has a degenerate normal: zero-magnitude vector \
+                "mirror: Plane has a degenerate normal: zero-magnitude vector \
                  [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
                  unit direction"
                     .to_string(),
@@ -25894,16 +26037,15 @@
 
     // ── δ: `decode_axis` gates its ORIGIN, not its DIRECTION (task 5745) ──────
 
-    /// The pre-δ wrong-SHAPE message for an axis ORIGIN, kept byte-identical by
-    /// being handed to `accept_length_point3` as `shape_err`.
+    /// The wrong-SHAPE message for an axis ORIGIN (pre-δ wording plus the
+    /// builtin label), supplied to `accept_length_point3` as `shape_err`.
     const AXIS_ORIGIN_SHAPE_ERR: &str =
-        "Axis origin is not a valid 3-component numeric Point/Vector";
+        "circular_pattern: Axis origin is not a valid 3-component numeric Point/Vector";
 
-    /// The pre-δ wrong-SHAPE message for an axis DIRECTION — unchanged because
-    /// the direction is not gated at all and still reads through bare
-    /// `point3_components`.
+    /// The wrong-SHAPE message for an axis DIRECTION. The direction is not
+    /// gated, so it still reads through bare `point3_components`.
     const AXIS_DIRECTION_SHAPE_ERR: &str =
-        "Axis direction is not a valid 3-component numeric Point/Vector";
+        "circular_pattern: Axis direction is not a valid 3-component numeric Point/Vector";
 
     /// Build a `Value::Axis` from an origin and a direction `Value`, both handed
     /// in whole so a row can pair ANY origin shape with ANY direction shape.
@@ -25924,7 +26066,7 @@
             length_point3(0.01, 0.02, 0.03),
             bare_real_vector3(0.0, 0.0, 1.0),
         );
-        let (origin, dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (origin, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("a LENGTH origin beside a bare unit direction is the clean path");
         assert_eq!(
             origin,
@@ -25950,13 +26092,13 @@
             bare_real_vector3(0.01, 0.02, 0.03),
             bare_real_vector3(0.0, 0.0, 1.0),
         );
-        let got = decode_axis(&axis, "circular", &mut diagnostics);
+        let got = decode_axis(&axis, "circular_pattern", &mut diagnostics);
         assert_eq!(
             got,
-            Err("missing or non-Length argument 'ox' for circular".to_string()),
-            "the caller-facing `Err` is byte-identical to the SCALAR form's — \
-             same `ox`/`oy`/`oz` names since task 5350, and the same kind label, \
-             because both branches thread the very same `&PatternKind`"
+            Err("missing or non-Length argument 'ox' for circular_pattern".to_string()),
+            "the caller-facing `Err` is the SCALAR form's — same `ox`/`oy`/`oz` \
+             names since task 5350 — under the label the caller threads in: the \
+             builtin the author typed"
         );
         assert_eq!(
             diagnostics.len(),
@@ -25973,7 +26115,7 @@
             );
             assert_eq!(
                 d.message,
-                expected_length_rejection("circular", name, "Real")
+                expected_length_rejection("circular_pattern", name, "Real")
             );
         }
     }
@@ -25999,7 +26141,7 @@
             },
         );
         assert_eq!(
-            decode_axis(&axis, "circular", &mut diagnostics),
+            decode_axis(&axis, "circular_pattern", &mut diagnostics),
             Err(AXIS_DIRECTION_SHAPE_ERR.to_string()),
             "unchanged by δ — a `Value::Direction` is a SHAPE mismatch for the \
              bare direction read, not a units rejection"
@@ -26019,7 +26161,7 @@
             length_point3(0.0, 0.0, 0.0),
             bare_real_vector3(2.0, 0.0, 0.0),
         );
-        let (_, dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (_, dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("a non-unit direction [2,0,0] normalises without error");
         assert_eq!(dir, [1.0, 0.0, 0.0]);
         assert!(
@@ -26040,11 +26182,14 @@
         let cases: Vec<(reify_ir::Value, String)> = vec![
             (
                 plane.clone(),
-                format!("expected an Axis value, got {}", plane),
+                format!("circular_pattern: expected an Axis value, got {}", plane),
             ),
             (
                 reify_ir::Value::Undef,
-                format!("expected an Axis value, got {}", reify_ir::Value::Undef),
+                format!(
+                    "circular_pattern: expected an Axis value, got {}",
+                    reify_ir::Value::Undef
+                ),
             ),
             (
                 axis_of(
@@ -26061,7 +26206,7 @@
                     length_point3(0.0, 0.0, 0.0),
                     bare_real_vector3(0.0, 0.0, 0.0),
                 ),
-                "Axis has a degenerate direction: zero-magnitude vector \
+                "circular_pattern: Axis has a degenerate direction: zero-magnitude vector \
                  [0.000000e0, 0.000000e0, 0.000000e0] cannot be normalized to a \
                  unit direction"
                     .to_string(),
@@ -26071,7 +26216,7 @@
         for (value, expected) in cases {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             assert_eq!(
-                decode_axis(&value, "circular", &mut diagnostics),
+                decode_axis(&value, "circular_pattern", &mut diagnostics),
                 Err(expected.clone()),
                 "pre-δ wording must survive byte-identical for {:?}",
                 value
@@ -26102,8 +26247,8 @@
             bare_real_vector3(0.0, 0.0, 1.0),
         );
         assert_eq!(
-            decode_axis(&axis, "circular", &mut diagnostics),
-            Err("missing or non-Length argument 'oy' for circular".to_string()),
+            decode_axis(&axis, "circular_pattern", &mut diagnostics),
+            Err("missing or non-Length argument 'oy' for circular_pattern".to_string()),
             "a non-finite LENGTH takes the units `Err`, NOT the pre-δ shape \
              message; `oy` because the FIRST error wins and only `oy` failed"
         );
@@ -26124,7 +26269,7 @@
         );
         assert_eq!(
             diagnostics[0].message,
-            "argument 'oy' for circular evaluated to a non-finite Length"
+            "argument 'oy' for circular_pattern evaluated to a non-finite Length"
         );
     }
 
@@ -26622,7 +26767,7 @@
             origin: Box::new(length_point3(0.0, 0.02, 0.0)),
             direction: Box::new(bare_real_vector3(1.0, 0.0, 0.0)),
         };
-        let (axis_origin, axis_dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (axis_origin, axis_dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("a bare DIRECTION over a LENGTH origin must decode clean");
         assert_eq!(axis_origin, [0.0, 0.02, 0.0]);
         assert_eq!(axis_dir, [1.0, 0.0, 0.0]);
@@ -26906,7 +27051,7 @@
         let origin = make_point3_length_val(0.0, 0.0, 0.0);
         let val = reify_stdlib::eval_builtin("axis_z", std::slice::from_ref(&origin));
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (got_origin, got_dir) = decode_axis(&val, "circular", &mut diagnostics)
+        let (got_origin, got_dir) = decode_axis(&val, "circular_pattern", &mut diagnostics)
             .expect("axis_z should decode cleanly");
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
@@ -26948,7 +27093,7 @@
         let origin = make_point3_length_val(0.001, 0.002, 0.003);
         let val = reify_stdlib::eval_builtin("axis_x", std::slice::from_ref(&origin));
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (got_origin, got_dir) = decode_axis(&val, "circular", &mut diagnostics)
+        let (got_origin, got_dir) = decode_axis(&val, "circular_pattern", &mut diagnostics)
             .expect("axis_x with offset origin should decode");
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
@@ -26989,7 +27134,7 @@
         let origin = make_point3_length_val(0.0, 0.0, 0.0);
         let val = reify_stdlib::eval_builtin("axis_y", std::slice::from_ref(&origin));
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (got_origin, got_dir) = decode_axis(&val, "circular", &mut diagnostics)
+        let (got_origin, got_dir) = decode_axis(&val, "circular_pattern", &mut diagnostics)
             .expect("axis_y should decode cleanly");
         assert!(diagnostics.is_empty(), "got: {:?}", diagnostics);
         assert!(
@@ -27031,7 +27176,7 @@
             direction: Box::new(non_unit_dir),
         };
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let (_, got_dir) = decode_axis(&axis, "circular", &mut diagnostics)
+        let (_, got_dir) = decode_axis(&axis, "circular_pattern", &mut diagnostics)
             .expect("non-unit direction [2,0,0] should normalize without error");
         assert!(
             (got_dir[0] - 1.0).abs() < 1e-12,
@@ -27060,7 +27205,7 @@
             normal: Box::new(normal),
         };
         assert!(
-            decode_axis(&plane, "circular", &mut Vec::new()).is_err(),
+            decode_axis(&plane, "circular_pattern", &mut Vec::new()).is_err(),
             "Value::Plane must be rejected by decode_axis (wrong variant)"
         );
     }
@@ -27069,7 +27214,7 @@
     #[test]
     fn decode_axis_rejects_undef() {
         assert!(
-            decode_axis(&reify_ir::Value::Undef, "circular", &mut Vec::new()).is_err(),
+            decode_axis(&reify_ir::Value::Undef, "circular_pattern", &mut Vec::new()).is_err(),
             "Value::Undef must be rejected by decode_axis"
         );
     }
@@ -27092,7 +27237,7 @@
             direction: Box::new(zero_dir),
         };
         assert!(
-            decode_axis(&axis, "circular", &mut Vec::new()).is_err(),
+            decode_axis(&axis, "circular_pattern", &mut Vec::new()).is_err(),
             "zero-magnitude direction must be rejected by decode_axis"
         );
     }
