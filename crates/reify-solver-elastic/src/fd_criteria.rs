@@ -1,3 +1,107 @@
+//! The scale-free equilibrium criterion both force-density kernels judge a
+//! geometry by: each judged row's net force `|(D·x)_i|` against that row's own
+//! stiffness `Σ_j |D_ij|`.
+//!
+//! One factor of `D` above and below makes the criterion exactly invariant
+//! under a uniform `(q, σ) → λ(q, σ)` rescale (task 6119), and judging each row
+//! against its own stiffness keeps a stiff region from loosening a soft row's
+//! test by the stiffness contrast (task 7046).
+
+use faer::Mat;
+
+/// The rows of `D` a [`StiffnessScale`] judges.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RowSet<'a> {
+    /// The free nodes' rows: an anchor's row is not judged.
+    Free(&'a [usize]),
+    /// Every row, as on a free-standing problem.
+    All,
+}
+
+/// The per-row stiffness of one assembled `D` over a [`RowSet`], computed once
+/// and shared by every residual judged against that `D`.
+pub(crate) struct StiffnessScale<'d> {
+    d: &'d Mat<f64>,
+    rows: JudgedRows,
+}
+
+/// What [`StiffnessScale::of`] found on the rows it judges.
+enum JudgedRows {
+    /// Each judged row's index and its `Σ_j |D_ij|`, positive and not NaN.
+    Stiff(Vec<(usize, f64)>),
+    /// No row to judge, or a judged row that is identically zero (a node
+    /// touched by neither a member nor a triangle, whose net force is vacuously
+    /// 0) or carries a NaN. No geometry is at equilibrium under such a `D`.
+    Degenerate,
+}
+
+impl<'d> StiffnessScale<'d> {
+    /// The stiffness of `d`'s `rows`. Each row is checked on its own: a
+    /// healthy row cannot mask a degenerate one.
+    pub(crate) fn of(d: &'d Mat<f64>, rows: RowSet<'_>) -> Self {
+        let indices: Vec<usize> = match rows {
+            RowSet::Free(free) => free.to_vec(),
+            RowSet::All => (0..d.nrows()).collect(),
+        };
+        let mut stiff = Vec::with_capacity(indices.len());
+        for i in indices {
+            let norm = (0..d.ncols()).fold(0.0_f64, |sum, j| sum + d[(i, j)].abs());
+            if norm.is_nan() || norm <= 0.0 {
+                return Self {
+                    d,
+                    rows: JudgedRows::Degenerate,
+                };
+            }
+            stiff.push((i, norm));
+        }
+        let rows = if stiff.is_empty() {
+            JudgedRows::Degenerate
+        } else {
+            JudgedRows::Stiff(stiff)
+        };
+        Self { d, rows }
+    }
+
+    /// The stop criterion: [`StiffnessScale::relative_residual_against`] at
+    /// the geometry's own coordinate scale, ~0 at a fixed point.
+    pub(crate) fn relative_residual(&self, nodes: &[[f64; 3]]) -> f64 {
+        self.relative_residual_against(nodes, max_abs_coordinate(nodes))
+    }
+
+    /// The largest `|(D·x)_i| / Σ_j |D_ij|` over the judged rows `i` and the
+    /// three axes, over `1 + length_scale`. `f64::INFINITY` ("not at
+    /// equilibrium") when the rows are degenerate or any judged row's net force
+    /// is NaN (e.g. a NaN coordinate), tested before that row enters the
+    /// NaN-transparent max.
+    pub(crate) fn relative_residual_against(&self, nodes: &[[f64; 3]], length_scale: f64) -> f64 {
+        let JudgedRows::Stiff(stiff) = &self.rows else {
+            return f64::INFINITY;
+        };
+        let mut worst = 0.0_f64;
+        for &(i, norm) in stiff {
+            for axis in 0..3 {
+                let net = nodes
+                    .iter()
+                    .enumerate()
+                    .fold(0.0_f64, |net, (j, x)| net + self.d[(i, j)] * x[axis]);
+                if net.is_nan() {
+                    return f64::INFINITY;
+                }
+                worst = worst.max(net.abs() / norm);
+            }
+        }
+        worst / (1.0 + length_scale)
+    }
+}
+
+/// Largest `|c|` over all coordinates of `points` (0 if none; NaN-transparent).
+pub(crate) fn max_abs_coordinate<'a>(points: impl IntoIterator<Item = &'a [f64; 3]>) -> f64 {
+    points
+        .into_iter()
+        .flatten()
+        .fold(0.0_f64, |scale, c| scale.max(c.abs()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

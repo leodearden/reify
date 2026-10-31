@@ -40,11 +40,11 @@
 //! `form_find` signature, or the reify-eval trampoline (those remain anchored-T1a
 //! wired). See `plan.json` design_decisions for the scoping rationale.
 
+use crate::fd_criteria::{RowSet, StiffnessScale};
 use crate::fd_matrix::{NULLITY_REL_TOL, SpectrumError, SymmetricSpectrum, assemble_d};
 use crate::form_find::{
     ForceDensityInputError, ForceDensityProblem, FreeSpec, IsotropicStencil, MemberKind,
-    ZeroAreaTriangle, free_equilibrium_residual_relative, member_axial_forces,
-    scatter_surface_stencils,
+    ZeroAreaTriangle, member_axial_forces, scatter_surface_stencils,
 };
 use crate::group_spec::{GroupSpec, MIN_UNIT_MAGNITUDE};
 use faer::Mat;
@@ -477,12 +477,11 @@ fn combined_force_density_matrix(
 }
 
 /// ALL-node equilibrium residual — the free-standing fixed point's stop test:
-/// the anchored kernel's per-row criterion with every row free, since every
-/// node is free here. One definition carries the per-row normalisation (exactly
+/// the [`StiffnessScale`] criterion over [`RowSet::All`], since every node is
+/// free here. That one definition carries the per-row normalisation (exactly
 /// gauge-invariant) and the zero/NaN-row rejection.
 fn all_node_equilibrium_residual_relative(d: &Mat<f64>, nodes: &[[f64; 3]]) -> f64 {
-    let every_row: Vec<usize> = (0..nodes.len()).collect();
-    free_equilibrium_residual_relative(d, nodes, &every_row)
+    StiffnessScale::of(d, RowSet::All).relative_residual(nodes)
 }
 
 /// One outer iterate of the combined fixed point: densities `q` at geometry

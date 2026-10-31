@@ -419,7 +419,7 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 /// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on the homogeneity of
 /// the GroupRatios SEARCH. Here the geometry comes from a cotangent fixed point, so
 /// covariance is a property of its STOPPING RULE: `form_find.rs` judges
-/// `free_equilibrium_residual_relative` — each free row's `|(D·x)_i|` divided by that
+/// `StiffnessScale::relative_residual` — each free row's `|(D·x)_i|` divided by that
 /// row's own `Σ_j |D_ij|` — against `SURFACE_EQUILIBRIUM_REL_TOL`.
 /// Numerator and denominator each pick up exactly one factor of λ, so the ratio is
 /// gauge-free and both gauges stop at the same iterate. Until task **#6119** that stop

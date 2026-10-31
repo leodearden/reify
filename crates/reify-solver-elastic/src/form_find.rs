@@ -37,6 +37,7 @@
 //! auto-scaling, the free-standing (unanchored) eigenvalue case, external loads,
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
+use crate::fd_criteria::{RowSet, StiffnessScale, max_abs_coordinate};
 use crate::fd_matrix::assemble_d;
 use crate::group_spec::{GroupSpec, GroupSpecDefect};
 use faer::Mat;
@@ -537,7 +538,7 @@ pub fn form_find_anchored(
 // identical rank-1 edge pattern the line solve uses for the member q.
 
 /// Equilibrium-residual convergence tolerance for the cotangent fixed point,
-/// applied to [`free_equilibrium_residual_relative`]: every free row's net
+/// applied to [`StiffnessScale::relative_residual`]: every free row's net
 /// force `|(D·x)_i|`, divided by that row's own `Σ_j |D_ij|` and by the
 /// coordinate scale `(1+scale)`, must drop below this.
 ///
@@ -679,18 +680,18 @@ where
         // current geometry under the freshly-assembled `D` — the honest physical
         // signal (prestress-only equilibrium), additionally normalised by `D`'s
         // own magnitude so the stop condition is gauge-free (task 6119; see
-        // SURFACE_EQUILIBRIUM_REL_TOL's doc). It reuses the assembly we already
-        // need for the solve, so it adds no extra matrix build. At a
+        // SURFACE_EQUILIBRIUM_REL_TOL's doc). One stiffness scale per assembled
+        // `D` serves both this stop test and the solve's singular guard. At a
         // force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
+        let stiffness = StiffnessScale::of(&d, RowSet::Free(&free_indices));
         if !surfaces.is_empty()
-            && free_equilibrium_residual_relative(&d, &current, &free_indices)
-                <= SURFACE_EQUILIBRIUM_REL_TOL
+            && stiffness.relative_residual(&current) <= SURFACE_EQUILIBRIUM_REL_TOL
         {
             converged = true;
             break;
         }
 
-        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)?;
+        let solved = solve_reduced(&d, &stiffness, &current, &free_indices, &anchor_indices)?;
         current = solved;
 
         // Line-only path: `D` is geometry-independent, so the single solve above
@@ -765,14 +766,16 @@ pub(crate) fn member_axial_forces(
 }
 
 /// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
-/// (already-assembled) `D` and geometry, scattering the solved free rows back
-/// into a full node vector. The partition → faer partial-pivot LU → non-finite +
-/// scaled-residual guard ([`is_singular_reduced_solve`]) is the landed
-/// line-solve core, called once per iteration by [`anchored_fixed_point`]. Returns
+/// (already-assembled) `D`, its free rows' `stiffness`, and geometry, scattering
+/// the solved free rows back into a full node vector. The partition → faer
+/// partial-pivot LU → non-finite + scaled-residual guard
+/// ([`is_singular_reduced_solve`]) is the landed line-solve core, called once per
+/// iteration by [`anchored_fixed_point`]. Returns
 /// [`ReducedSolveFailure::SingularReducedStiffness`] when the reduced system is
 /// rank-deficient.
 fn solve_reduced(
     d: &Mat<f64>,
+    stiffness: &StiffnessScale<'_>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
     anchor_indices: &[usize],
@@ -805,7 +808,7 @@ fn solve_reduced(
         out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
     }
 
-    if is_singular_reduced_solve(d, &out_nodes, free_indices, anchor_indices) {
+    if is_singular_reduced_solve(stiffness, &out_nodes, anchor_indices) {
         return Err(ReducedSolveFailure::SingularReducedStiffness);
     }
 
@@ -828,85 +831,18 @@ const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
 /// disconnected `D_ff` makes the LU solve produce a non-finite or
 /// non-equilibrium result, which must surface as a diagnostic rather than NaNs
 /// or a silently wrong geometry. At the solved geometry the free rows of `D·x`
-/// are exactly the reduced residual `D_ff·x_f − b`, so the guard shares the
-/// stop criterion's per-row normaliser but judges it against the input
-/// (anchor) scale. Non-finite coordinates are tested first: that max is
-/// NaN-transparent.
+/// are exactly the reduced residual `D_ff·x_f − b`, so the guard judges the stop
+/// criterion's [`StiffnessScale`] against the input (anchor) scale
+/// ([`StiffnessScale::relative_residual_against`]). Non-finite coordinates are
+/// tested first: that max is NaN-transparent.
 fn is_singular_reduced_solve(
-    d: &Mat<f64>,
+    stiffness: &StiffnessScale<'_>,
     solved: &[[f64; 3]],
-    free_indices: &[usize],
     anchor_indices: &[usize],
 ) -> bool {
     let input_scale = max_abs_coordinate(anchor_indices.iter().map(|&a| &solved[a]));
     solved.iter().any(|p| p.iter().any(|c| !c.is_finite()))
-        || free_equilibrium_residual_relative_to(d, solved, free_indices, input_scale)
-            > REDUCED_SOLVE_RESIDUAL_REL_TOL
-}
-
-/// The stop criterion's measure ([`SURFACE_EQUILIBRIUM_REL_TOL`]): the per-row
-/// residual at the geometry's own coordinate scale, ~0 at a fixed point.
-pub(crate) fn free_equilibrium_residual_relative(
-    d: &Mat<f64>,
-    nodes: &[[f64; 3]],
-    free_indices: &[usize],
-) -> f64 {
-    free_equilibrium_residual_relative_to(d, nodes, free_indices, max_abs_coordinate(nodes))
-}
-
-/// Free-node equilibrium residual, normalised PER ROW: the largest
-/// `|(D·x)_i| / Σ_j |D_ij|` over free rows `i` and axes, over `1 + length_scale`.
-/// One factor of `D` above and below makes it exactly invariant under a
-/// uniform `(q, σ) → λ(q, σ)` rescale.
-///
-/// Returns `f64::INFINITY` ("not at equilibrium") when there is no free row,
-/// when any free row is identically zero or carries a NaN, or when any free
-/// row's net force is NaN (e.g. a NaN coordinate). A zero row is a node touched
-/// by neither a member nor a triangle: its net force is vacuously 0, which must
-/// not read as converged and echo the caller's unsolved initial guess back;
-/// `solve_reduced` then reports `SingularReducedStiffness`. Each check runs per
-/// row, before the row enters the NaN-transparent max, so a healthy row cannot
-/// mask a degenerate one.
-#[allow(clippy::needless_range_loop)]
-fn free_equilibrium_residual_relative_to(
-    d: &Mat<f64>,
-    nodes: &[[f64; 3]],
-    free_indices: &[usize],
-    length_scale: f64,
-) -> f64 {
-    if free_indices.is_empty() {
-        return f64::INFINITY;
-    }
-    let n = nodes.len();
-    let mut worst = 0.0_f64;
-    for &i in free_indices {
-        let mut row = 0.0_f64;
-        for j in 0..n {
-            row += d[(i, j)].abs();
-        }
-        if row.is_nan() || row <= 0.0 {
-            return f64::INFINITY;
-        }
-        for axis in 0..3 {
-            let mut net = 0.0;
-            for j in 0..n {
-                net += d[(i, j)] * nodes[j][axis];
-            }
-            if net.is_nan() {
-                return f64::INFINITY;
-            }
-            worst = worst.max(net.abs() / row);
-        }
-    }
-    worst / (1.0 + length_scale)
-}
-
-/// Largest `|c|` over all coordinates of `points` (0 if none; NaN-transparent).
-fn max_abs_coordinate<'a>(points: impl IntoIterator<Item = &'a [f64; 3]>) -> f64 {
-    points
-        .into_iter()
-        .flatten()
-        .fold(0.0_f64, |scale, c| scale.max(c.abs()))
+        || stiffness.relative_residual_against(solved, input_scale) > REDUCED_SOLVE_RESIDUAL_REL_TOL
 }
 
 /// Relative threshold below which a triangle is judged degenerate: when
@@ -2145,8 +2081,9 @@ mod tests {
         );
     }
 
-    // (e2) TASK 6119 REVIEW — the degenerate-row guard exercised by (e)/(g)
-    // must fire PER ROW: an aggregate guard on the MAX over free rows fires
+    // (e2) TASK 6119 REVIEW — the degenerate-row guard exercised by (e) and
+    // `fd_criteria`'s unit tests must fire PER ROW: an aggregate guard on the
+    // MAX over free rows fires
     // only when EVERY free row of D is zero, so a free node that IS
     // connected, coexisting with an UNRELATED isolated free node, would hide
     // the isolated one — which must still be rejected. Fixture: a
@@ -2196,9 +2133,9 @@ mod tests {
     // named) divided only by `(1 + coord_scale)`, which does not depend on
     // D's magnitude at all, so the λ-scaled residual came out ~λ× the base
     // residual instead of equal (MEASURED RED: base=1.2243416093590493e0,
-    // λ-scaled=1.2838152273752745e6 — exactly base × 2^20). The rename to
-    // `free_equilibrium_residual_relative` and its division by `D`'s own
-    // magnitude (per row since task 7046) are what make this GREEN.
+    // λ-scaled=1.2838152273752745e6 — exactly base × 2^20). Its division by
+    // `D`'s own magnitude (per row since task 7046, in [`StiffnessScale`] since
+    // task 9272) is what makes this GREEN.
     #[test]
     fn free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling() {
         const LAMBDA: f64 = 1_048_576.0; // 2^20
@@ -2220,93 +2157,20 @@ mod tests {
 
         let d_base = assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
             .expect("non-degenerate fixture");
-        let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
+        let resid_base =
+            StiffnessScale::of(&d_base, RowSet::Free(&free_indices)).relative_residual(&nodes);
 
         let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
         let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
         let d_scaled =
             assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
                 .expect("non-degenerate fixture");
-        let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
+        let resid_scaled =
+            StiffnessScale::of(&d_scaled, RowSet::Free(&free_indices)).relative_residual(&nodes);
 
         assert_eq!(
             resid_base, resid_scaled,
             "criterion must be exactly gauge-invariant: base={resid_base:e} λ-scaled={resid_scaled:e}",
-        );
-    }
-
-    // (g) TASK 6119 — pin BOTH degenerate branches of the per-row guard,
-    // spelled `row.is_nan() || row <= 0.0`. The NaN half is the load-bearing
-    // one: the "obvious" simplification `if row <= 0.0` silently drops NaN
-    // rejection, since every comparison against NaN (including `<=`) is
-    // false — the NaN row's ratio would then vanish into the NaN-transparent
-    // max and could read as converged. Calls the private function directly
-    // with hand-built `Mat<f64>` inputs (no `assemble_combined_d` involved), so both
-    // branches are exercised in isolation.
-    #[test]
-    fn free_equilibrium_residual_relative_returns_infinity_on_zero_or_nan_free_row() {
-        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]];
-        let free_indices = [1usize];
-
-        // (a) all-zero free-row block: node 1's row of D is identically zero
-        // (the isolated-free-node shape from test (e), at the criterion
-        // level rather than through the full surfaces solve).
-        let d_zero = Mat::<f64>::zeros(2, 2);
-        let r_zero = free_equilibrium_residual_relative(&d_zero, &nodes, &free_indices);
-        assert_eq!(r_zero, f64::INFINITY, "all-zero free row must reject, got {r_zero}");
-
-        // (b) a free row carrying NaN: node 1's row has a NaN entry.
-        let mut d_nan = Mat::<f64>::zeros(2, 2);
-        d_nan[(1, 0)] = f64::NAN;
-        let r_nan = free_equilibrium_residual_relative(&d_nan, &nodes, &free_indices);
-        assert_eq!(r_nan, f64::INFINITY, "NaN-carrying free row must reject, got {r_nan}");
-
-        // (c) TASK 6119 REVIEW — MIXED case: two free rows, one healthy
-        // (row-sum > 0), one NaN-carrying. An AGGREGATE guard on `max(rows)`
-        // never fires here: `f64::max` is NaN-transparent (it returns the
-        // non-NaN operand when the other is NaN), so the max lands on the
-        // healthy row's 8.5. This is NOT redundant with case (b) above: it is
-        // what forces the guard to be per-row. Node 0's
-        // coordinates are deliberately non-zero (unlike cases (a)/(b)'s
-        // origin stub) so the healthy row's net force is a clean non-zero
-        // finite number rather than a coincidental 0 — the pre-fix failure is
-        // "got some finite value" (any value), not "got exactly 0".
-        let nodes_mixed = vec![[1.0, 1.0, 1.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let free_mixed = [1usize, 2usize];
-        let mut d_mixed = Mat::<f64>::zeros(3, 3);
-        d_mixed[(1, 0)] = 8.5; // healthy free row: row-sum = 8.5 > 0
-        d_mixed[(2, 0)] = f64::NAN; // NaN-carrying free row
-        let r_mixed = free_equilibrium_residual_relative(&d_mixed, &nodes_mixed, &free_mixed);
-        assert_eq!(
-            r_mixed,
-            f64::INFINITY,
-            "a NaN-carrying free row must reject even when another free row is healthy, got {r_mixed}",
-        );
-
-        // (d) EMPTY free set: with no free row there is no equilibrium to
-        // judge, so it must reject rather than report a vacuous residual.
-        let mut d_healthy = Mat::<f64>::zeros(2, 2);
-        d_healthy[(1, 0)] = 8.5;
-        let r_empty = free_equilibrium_residual_relative(&d_healthy, &nodes, &[]);
-        assert_eq!(
-            r_empty,
-            f64::INFINITY,
-            "an empty free set must reject, got {r_empty}"
-        );
-
-        // (e) #7800 — a healthy, finite row (|row| = 17) whose NET FORCE is NaN
-        // because the free node itself sits at a NaN coordinate. `f64::max` is
-        // NaN-transparent, so folding that net force into the worst-row max
-        // would drop it and leave the other axes' finite ratio standing.
-        let nodes_nan = vec![[1.0, 1.0, 1.0], [f64::NAN, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let mut d_finite = Mat::<f64>::zeros(3, 3);
-        d_finite[(1, 0)] = 8.5;
-        d_finite[(1, 1)] = -8.5;
-        let r_nan_net = free_equilibrium_residual_relative(&d_finite, &nodes_nan, &[1]);
-        assert_eq!(
-            r_nan_net,
-            f64::INFINITY,
-            "a NaN net force on a free row must reject, got {r_nan_net}"
         );
     }
 
@@ -2338,12 +2202,13 @@ mod tests {
         for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
             let q = [BASE_Q * lambda; 3];
             let d = assemble_combined_d::<IsotropicStencil>(4, &members, &q, &[], &[], &exact).expect("line-only D");
+            let stiffness = StiffnessScale::of(&d, RowSet::Free(&free_indices));
             assert!(
-                !is_singular_reduced_solve(&d, &exact, &free_indices, &anchor_indices),
+                !is_singular_reduced_solve(&stiffness, &exact, &anchor_indices),
                 "λ={lambda:e}: the exact chain solution must be accepted",
             );
             assert!(
-                is_singular_reduced_solve(&d, &off_equilibrium, &free_indices, &anchor_indices),
+                is_singular_reduced_solve(&stiffness, &off_equilibrium, &anchor_indices),
                 "λ={lambda:e}: the off-equilibrium chain (x0 = 1 + 2^-10) must be rejected",
             );
         }
