@@ -9,13 +9,14 @@ runs this partition together with the other test_prd_decompose_verify*.py files.
 import functools
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _pdv_test_support import PDV_MJS
+from _pdv_test_support import PDV_MJS, PDV_PY, load_pcc, load_pdv
 
 
 # ---------------------------------------------------------------------------
@@ -1051,6 +1052,7 @@ _MJS_RESULT_MARK = "SCENARIO_RESULT:"
 _MJS_PHASES_MARK = "SCENARIO_PHASES:"
 _MJS_LOGS_MARK = "SCENARIO_LOGS:"
 _MJS_PIPELINE_ERRORS_MARK = "SCENARIO_PIPELINE_ERRORS:"
+_MJS_AGENT_CALLS_MARK = "SCENARIO_AGENT_CALLS:"
 
 
 def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
@@ -1075,13 +1077,16 @@ const RESULT_MARK = "{_MJS_RESULT_MARK}";
 const PHASES_MARK = "{_MJS_PHASES_MARK}";
 const LOGS_MARK = "{_MJS_LOGS_MARK}";
 const PIPELINE_ERRORS_MARK = "{_MJS_PIPELINE_ERRORS_MARK}";
+const AGENT_CALLS_MARK = "{_MJS_AGENT_CALLS_MARK}";
 
 // ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
 globalThis.__PHASES = [];
+globalThis.__AGENT_CALLS = [];
 const RESPONSES = {responses_js};
 globalThis.agent = async (prompt, opts = {{}}) => {{
     const phase = (opts.phase || "").toLowerCase();
     globalThis.__PHASES.push(phase);
+    globalThis.__AGENT_CALLS.push({{ phase, prompt, schema: opts.schema ?? null }});
     const r = RESPONSES[phase];
     if (typeof r === "function") return r(prompt, opts);
     if (r !== undefined) return r;
@@ -1141,6 +1146,7 @@ console.log(RESULT_MARK + JSON.stringify(result));
 console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
 console.log(LOGS_MARK + JSON.stringify(globalThis.__LOG_LINES));
 console.log(PIPELINE_ERRORS_MARK + JSON.stringify(globalThis.__PIPELINE_ERRORS));
+console.log(AGENT_CALLS_MARK + JSON.stringify(globalThis.__AGENT_CALLS));
 """
 
 
@@ -1235,6 +1241,19 @@ class _MjsScenarioMixin:
                        if ln.startswith(_MJS_PIPELINE_ERRORS_MARK)]
         self.assertTrue(error_lines, f"no pipeline-errors marker; stdout: {out!r}")
         return json.loads(error_lines[-1][len(_MJS_PIPELINE_ERRORS_MARK):])
+
+    def _run_scenario_agent_calls(self, leaves_js: str, responses_js: str):
+        """Return every agent() call as {phase, prompt, schema}, in call order.
+
+        Cached the same way as _run_scenario_logs (see its docstring).
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 0, f"node exited {rc}; stderr: {err!r}; stdout: {out!r}")
+        call_lines = [ln for ln in out.splitlines()
+                      if ln.startswith(_MJS_AGENT_CALLS_MARK)]
+        self.assertTrue(call_lines, f"no agent-calls marker; stdout: {out!r}")
+        return json.loads(call_lines[-1][len(_MJS_AGENT_CALLS_MARK):])
 
 
 # ---------------------------------------------------------------------------
@@ -1697,12 +1716,12 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
 # ---------------------------------------------------------------------------
 
 class TestMjsResultRecordCarriesFixturePresence(unittest.TestCase, _MjsScenarioMixin):
-    """The record schema each role agent() actually receives relays α's fields.
+    """The Prover's no-process fallback is the one record that may carry
+    fixture_present null.  The schemas the roles receive are TestMjsSchemaParity's.
 
-    Captured through the whole-script scenario harness: the Prover and Adversary
-    mocks stash the opts.schema (and the Prover prompt) they were handed, and the
-    Synthesize mock reports them back as its `report`.  The Prover's no-process
-    fallback is the one record that may carry fixture_present null.
+    Captured through the whole-script scenario harness: the Prover mock stashes
+    the prompt it was handed, and the Synthesize mock reports it back as its
+    `report`.
     """
 
     _LEAF_JS = '[{ signal: "fixture presence leaf" }]'
@@ -1736,41 +1755,78 @@ class TestMjsResultRecordCarriesFixturePresence(unittest.TestCase, _MjsScenarioM
         verdict, _ = self._run_scenario(self._LEAF_JS, self._RESPONSES)
         return json.loads(verdict["leaf_verdicts"][0]["report"])
 
-    def _record_items(self):
-        captured = self._captured()
-        for role in ("proveSchema", "adversarySchema"):
-            for array in ("prover", "adversary"):
-                yield f"{role}.{array}", captured[role]["properties"][array]["items"]
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
-    def test_record_requires_fixture_present_alongside_the_evidence_keys(self):
-        for label, item in self._record_items():
-            with self.subTest(schema=label):
-                for key in ("capability", "verdict", "command", "exit_code",
-                            "fixture_present"):
-                    self.assertIn(key, item["required"])
-                self.assertEqual(
-                    item["properties"]["fixture_present"]["type"], ["boolean", "null"]
-                )
-
-    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
-    def test_record_admits_fixture_and_a_typed_harness_failure(self):
-        for label, item in self._record_items():
-            with self.subTest(schema=label):
-                props = item["properties"]
-                self.assertEqual(props["fixture"], {"type": "string"})
-                failure = props["harness_failure"]
-                self.assertEqual(failure["type"], ["object", "null"])
-                self.assertEqual(
-                    failure["properties"]["kind"]["enum"],
-                    ["launch", "setup", "timeout", "grammar_load"],
-                )
-                self.assertEqual(failure["properties"]["detail"]["type"], "string")
-                self.assertEqual(failure["properties"]["cache_denied"]["type"], "boolean")
-
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_prover_fallback_record_carries_fixture_present_null(self):
         self.assertIn("fixture_present: null", self._captured()["provePrompt"])
+
+
+# ---------------------------------------------------------------------------
+# B9: the .mjs schemas and prompt vocabulary are pdv's published members
+# ---------------------------------------------------------------------------
+
+@functools.cache
+def _pdv_print_schema():
+    proc = subprocess.run(
+        [sys.executable, PDV_PY, "print-schema"], capture_output=True, text=True, timeout=60
+    )
+    if proc.returncode != 0:
+        raise AssertionError(f"pdv print-schema exited {proc.returncode}: {proc.stderr}")
+    return proc.stdout
+
+
+def _occurs_as_token(word, text):
+    return re.search(rf"(?<![A-Za-z_]){re.escape(word)}(?![A-Za-z_])", text) is not None
+
+
+class TestMjsSchemaParity(unittest.TestCase, _MjsScenarioMixin):
+    """B9 (PRD D5 as amended by R14 M4): the schema each agent() call actually
+    receives is the matching `pdv print-schema` member, and each role's prompt
+    names its whole vocabulary.  The .mjs keeps literals because a Workflow
+    script cannot read files; this holds them equal to Python."""
+
+    _LEAF_JS = '[{ signal: "parity leaf" }]'
+
+    _MEMBER_BY_PHASE = {
+        "enumerate": "premises",
+        "prove": "results",
+        "adversary": "results",
+        "synthesize": "verdict",
+    }
+
+    def _calls(self):
+        return self._run_scenario_agent_calls(self._LEAF_JS, self.VERIFIED_RESPONSES)
+
+    def _prompts(self, phase):
+        return [call["prompt"] for call in self._calls() if call["phase"] == phase]
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_every_agent_schema_is_its_pdv_member(self):
+        members = json.loads(_pdv_print_schema())
+        for call in self._calls():
+            with self.subTest(phase=call["phase"]):
+                self.assertIn(call["phase"], self._MEMBER_BY_PHASE,
+                              "a new role must be mapped to a pdv print-schema member")
+                self.assertEqual(call["schema"], members[self._MEMBER_BY_PHASE[call["phase"]]])
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_every_mapped_role_was_called(self):
+        called = {call["phase"] for call in self._calls()}
+        self.assertEqual(called, set(self._MEMBER_BY_PHASE))
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_the_enumerator_prompt_names_every_assertion_kind(self):
+        [prompt] = self._prompts("enumerate")
+        for kind in load_pdv().AssertionKind:
+            with self.subTest(assertion_kind=kind.value):
+                self.assertTrue(_occurs_as_token(kind.value, prompt))
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_the_prover_and_adversary_prompts_name_every_verdict(self):
+        for phase in ("prove", "adversary"):
+            [prompt] = self._prompts(phase)
+            for verdict in load_pcc().Verdict:
+                with self.subTest(phase=phase, verdict=verdict.value):
+                    self.assertTrue(_occurs_as_token(verdict.value, prompt))
 
 
 if __name__ == "__main__":
