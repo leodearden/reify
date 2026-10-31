@@ -1418,7 +1418,12 @@ git:
   # phantom that lazy lowest-numbered-first acquire never demands. Fail-open,
   # idempotent, consulted once at startup.
   warm_lane_prewarm: true
-  # Defer fresh lane allocations under 500 GiB free (also covers the hard floor while warm_lane_disk_guard stays off); not hot-reloadable, live at next restart. NOT warm_lane_pool.soft_free_gib.
+  # Soft-floor throttle (DF GitOps._warm_lane_soft_pressure_defer): defer FRESH lane
+  # allocations while free space or free inodes are under the soft floors
+  # (GitConfig.warm_lane_soft_free_gib / warm_lane_soft_free_inodes). NOT the top-level
+  # warm_lane_pool.soft_free_gib above: a different key, which this throttle never reads.
+  # warm_lane_disk_guard stays off, so the same check also defers below the HARD floor.
+  # Restart-tier: none of the soft-floor keys is in DF RELOADABLE_FIELDS.
   warm_lane_soft_floor: true
 
 # Unknown-config-key census allowlist (dark-factory task 2989, filed as reify
