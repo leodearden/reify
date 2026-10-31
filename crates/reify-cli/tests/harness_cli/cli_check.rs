@@ -1,36 +1,57 @@
 use crate::common;
 
-/// Assert that `stderr` carries a `Parse error: <line>:<col>: <message>` report whose line is
-/// where `bracket_parse_error.ri`'s `@@@` fault sits.
+/// Assert that every `Parse error: ` line on `stderr` reads `<line>:<col>: <message>`, and
+/// that one of them lands on the line of the `@@@` fault in `fixture`, the fixture the caller
+/// ran.
 ///
-/// The fault line is derived from the fixture rather than hard-coded, so the check tracks the
-/// fixture if its layout changes. A bare `stderr.contains("Parse error")` passes identically
-/// whether the position is present or absent, which is what this helper exists to rule out.
-pub(crate) fn assert_parse_error_reports_fault_position(stderr: &str) {
-    let source = std::fs::read_to_string(common::fixture_path("bracket_parse_error.ri"))
-        .expect("fixture must be readable");
-    let fault_offset = source
-        .find("@@@")
-        .expect("fixture precondition: bracket_parse_error.ri must contain the `@@@` fault");
+/// `report_parse_errors` in src/main.rs owns this format. Its unit test applies the same
+/// per-line rule to the rendered output; this checks the same rule end to end through the
+/// binary. The fault line comes from the fixture rather than being hard-coded, so the check
+/// follows the fixture if its layout changes.
+pub(crate) fn assert_parse_error_reports_fault_position(fixture: &str, stderr: &str) {
+    let source = std::fs::read_to_string(common::fixture_path(fixture))
+        .unwrap_or_else(|e| panic!("fixture {fixture} must be readable: {e}"));
+    let fault_offset = source.find("@@@").unwrap_or_else(|| {
+        panic!("fixture precondition: {fixture} must mark its parse fault with `@@@`")
+    });
     let fault_line = source[..fault_offset].matches('\n').count() + 1;
 
-    let positioned = stderr
+    let reported_lines: Vec<usize> = stderr
         .lines()
-        .filter_map(|line| line.strip_prefix("Parse error: "))
-        .any(|located| {
-            let mut fields = located.splitn(3, ':');
-            let line = fields.next().and_then(|f| f.parse::<usize>().ok());
-            let col = fields.next().and_then(|f| f.parse::<usize>().ok());
-            let message = fields.next();
-            line == Some(fault_line)
-                && col.is_some_and(|c| c >= 1)
-                && message.is_some_and(|m| m.starts_with(' ') && !m.trim().is_empty())
-        });
+        .filter_map(reported_parse_error_line)
+        .collect();
     assert!(
-        positioned,
-        "stderr should contain `Parse error: {fault_line}:<col>: <message>` for the fixture's \
-         `@@@` fault on line {fault_line}, got: {stderr}"
+        reported_lines.contains(&fault_line),
+        "stderr should contain `Parse error: {fault_line}:<col>: <message>` for {fixture}'s \
+         `@@@` fault on line {fault_line}; reported lines {reported_lines:?}, got: {stderr}"
     );
+}
+
+/// The 1-based line of a `Parse error: <line>:<col>: <message>` stderr line, `None` for a
+/// stderr line that is not a parse-error report, and a panic for one that breaks the format.
+fn reported_parse_error_line(reported: &str) -> Option<usize> {
+    let located = reported.strip_prefix("Parse error: ")?;
+    let (line, rest) = located
+        .split_once(':')
+        .unwrap_or_else(|| panic!("expected `line:col: message`; got {reported:?}"));
+    let (col, message) = rest
+        .split_once(':')
+        .unwrap_or_else(|| panic!("expected a column after the line; got {reported:?}"));
+    let line: usize = line
+        .parse()
+        .unwrap_or_else(|_| panic!("the first field must be a line number; got {reported:?}"));
+    let col: usize = col
+        .parse()
+        .unwrap_or_else(|_| panic!("the second field must be a column number; got {reported:?}"));
+    assert!(
+        line >= 1 && col >= 1,
+        "line and column are 1-based; got {reported:?}"
+    );
+    assert!(
+        !message.trim().is_empty(),
+        "the position must be added to the parser's message, not replace it; got {reported:?}"
+    );
+    Some(line)
 }
 
 #[test]
@@ -73,18 +94,14 @@ fn check_violating_bracket_exits_failure() {
 
 #[test]
 fn check_parse_error_exits_failure() {
-    let (status, _stdout, stderr) =
-        common::run_subcommand("check", &common::fixture_path("bracket_parse_error.ri"));
+    let fixture = "bracket_parse_error.ri";
+    let (status, _stdout, stderr) = common::run_subcommand("check", &common::fixture_path(fixture));
 
     assert!(
         !status.success(),
         "reify check should exit non-zero for file with parse errors.\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains("Parse error"),
-        "stderr should contain 'Parse error', got: {stderr}"
-    );
-    assert_parse_error_reports_fault_position(&stderr);
+    assert_parse_error_reports_fault_position(fixture, &stderr);
 }
 
 #[test]

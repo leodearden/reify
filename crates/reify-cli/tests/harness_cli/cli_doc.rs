@@ -161,7 +161,8 @@ fn doc_parse_error_exits_one_with_stderr() {
     // `error: ...` (severity tag); parse errors print `Parse error: ...`.
     // Without this test, the parse-error branch of cmd_doc's pipeline is
     // exercised only transitively by other crates.
-    let path = common::fixture_path("bracket_parse_error.ri");
+    let fixture = "bracket_parse_error.ri";
+    let path = common::fixture_path(fixture);
     let (status, stdout, stderr) = run_doc(&[&path]);
 
     assert_eq!(
@@ -169,11 +170,7 @@ fn doc_parse_error_exits_one_with_stderr() {
         Some(1),
         "parse errors must exit 1.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains("Parse error:"),
-        "stderr should contain 'Parse error:' for a parse failure, got: {stderr}"
-    );
-    crate::cli_check::assert_parse_error_reports_fault_position(&stderr);
+    crate::cli_check::assert_parse_error_reports_fault_position(fixture, &stderr);
     assert_not_usage_error(&stderr);
     // No doc body should reach stdout when parsing fails.
     assert!(

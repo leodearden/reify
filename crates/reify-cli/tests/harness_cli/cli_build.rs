@@ -2,19 +2,15 @@ use crate::common;
 
 #[test]
 fn build_parse_error_exits_failure() {
-    let result = common::run_build("bracket_parse_error.ri");
+    let fixture = "bracket_parse_error.ri";
+    let result = common::run_build(fixture);
 
     assert!(
         !result.status.success(),
         "reify build should exit non-zero for file with parse errors.\nstderr: {}",
         result.stderr
     );
-    assert!(
-        result.stderr.contains("Parse error"),
-        "stderr should contain 'Parse error', got: {}",
-        result.stderr
-    );
-    crate::cli_check::assert_parse_error_reports_fault_position(&result.stderr);
+    crate::cli_check::assert_parse_error_reports_fault_position(fixture, &result.stderr);
     assert!(
         !result.output_path.exists(),
         "no output file should be written on parse error"
