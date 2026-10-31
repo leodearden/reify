@@ -29,16 +29,10 @@
 //! auto-type-param ambiguity Error, which leaves `TypeParam("T")` unresolved and makes
 //! `Engine::build` panic at `crates/reify-eval/src/engine_eval.rs:210`.
 //!
-//! A BUILD PANIC IS THE SECOND SKIP CAUSE, and it is a pre-existing defect this gate
-//! surfaced rather than one it introduced: `./target/debug/reify build
-//! examples/integration_corner_cases.ri` panics identically at
-//! `crates/reify-eval/src/engine_build.rs:716` (`expected scoped override cell
-//! ValueCellId { entity: "RecTree.child", member: "depth" } in values map`), so the
-//! production CLI reaches it too in any build with debug assertions on. That assertion is
-//! a `debug_assert!` whose release fallback is documented as benign, which is why it has
-//! gone unnoticed. Catching it keeps one latent engine bug from blocking a units gate
-//! that has nothing to do with it; the skip is REPORTED, and pinned by name and cause in
-//! [`KNOWN_SKIPS`], so it can never grow into a silent hole.
+//! A BUILD PANIC IS THE SECOND SKIP CAUSE: a panicking `Engine::build` is caught and
+//! reported as [`SkipCause::BuildPanic`], so one engine defect cannot block a units gate
+//! that has nothing to do with it. Such a skip is REPORTED, and must be pinned by name
+//! and cause in [`KNOWN_SKIPS`], so it can never grow into a silent hole.
 
 use reify_core::{DiagnosticCode, Severity};
 use reify_eval::Engine;
@@ -90,89 +84,48 @@ struct KnownSkip {
     cause: SkipCause,
     /// One line on what is actually wrong, for the reader who hits this entry.
     why: &'static str,
-    when: SkipsWhen,
-}
-
-/// Which builds the skip is expected in. A skip caused by a `debug_assert!` does not
-/// happen in a release build (the gate runs both), so pinning it for every build makes the
-/// release pass red it as a dead entry.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum SkipsWhen {
-    Always,
-    DebugAssertionsOn,
-}
-
-impl KnownSkip {
-    fn expected_in_this_build(&self) -> bool {
-        match self.when {
-            SkipsWhen::Always => true,
-            SkipsWhen::DebugAssertionsOn => cfg!(debug_assertions),
-        }
-    }
-}
-
-/// The subset of [`KNOWN_SKIPS`] this build is expected to observe.
-fn known_skips_in_this_build() -> Vec<&'static KnownSkip> {
-    KNOWN_SKIPS
-        .iter()
-        .filter(|k| k.expected_in_this_build())
-        .collect()
 }
 
 /// Every member this sweep is known not to build. Measured on this tree, not predicted.
 ///
-/// Seven of 264 with debug assertions on, six in a release build. Every one is a pre-existing condition of the example itself — four are
-/// negative fixtures that are SUPPOSED to fail to compile — and not one is a units
-/// rejection, which is what makes tolerating them compatible with row 20's claim.
+/// Six of 264, in every build. Every one is a pre-existing condition of the example
+/// itself — four are negative fixtures that are SUPPOSED to fail to compile — and not
+/// one is a units rejection, which is what makes tolerating them compatible with row
+/// 20's claim.
 const KNOWN_SKIPS: &[KnownSkip] = &[
     KnownSkip {
         rel: "examples/auto/bearing_computed_default_unevaluated.ri",
         cause: SkipCause::UnrelatedCompileError,
         why: "auto type parameter has two feasible candidates for bound 'Seal', so \
               `TypeParam` stays unresolved",
-        when: SkipsWhen::Always,
     },
     KnownSkip {
         rel: "examples/auto/bearing_constraint_select.ri",
         cause: SkipCause::UnrelatedCompileError,
         why: "same auto-type-parameter ambiguity on bound 'Seal'",
-
-        when: SkipsWhen::Always,
     },
     KnownSkip {
         rel: "examples/auto/bearing_unsat.ri",
         cause: SkipCause::UnrelatedCompileError,
         why: "same auto-type-parameter ambiguity on bound 'Seal'",
-
-        when: SkipsWhen::Always,
     },
     KnownSkip {
         rel: "examples/conditional_compilation/main.ri",
         cause: SkipCause::UnrelatedCompileError,
         why: "type `Platform` is supplied by the conditional-compilation selection this \
               single-module compile does not perform",
-        when: SkipsWhen::Always,
     },
     KnownSkip {
         rel: "examples/module_visibility/consumer.ri",
         cause: SkipCause::UnrelatedCompileError,
         why: "sub-component references structure `Motor` from a sibling module that a \
               single-module compile does not load",
-        when: SkipsWhen::Always,
     },
     KnownSkip {
         rel: "examples/multi_aspect_objective_mixed.ri",
         cause: SkipCause::UnrelatedCompileError,
         why: "a NEGATIVE fixture: its objective deliberately mixes Money with Mass \
               (E_OBJECTIVE_MIXED_DIMENSION)",
-        when: SkipsWhen::Always,
-    },
-    KnownSkip {
-        rel: "examples/integration_corner_cases.ri",
-        cause: SkipCause::BuildPanic,
-        why: "the pre-existing `RecTree.child`/`depth` scoped-override debug_assert named \
-              in this module's header; `reify build` panics on it too",
-        when: SkipsWhen::DebugAssertionsOn,
     },
 ];
 
@@ -434,7 +387,7 @@ fn assert_skip_set_is_the_pinned_one(skipped: &[(String, Skip)]) {
         .map(|(rel, skip)| (rel.as_str(), skip.cause))
         .collect();
 
-    let expected = known_skips_in_this_build();
+    let expected = KNOWN_SKIPS;
 
     let unexpected: Vec<&String> = skipped
         .iter()
@@ -457,7 +410,7 @@ fn assert_skip_set_is_the_pinned_one(skipped: &[(String, Skip)]) {
 
     assert!(
         unexpected.is_empty() && stale.is_empty(),
-        "the sweep's skip set must be exactly the {} KNOWN_SKIPS expected in this build.\n\
+        "the sweep's skip set must be exactly the {} KNOWN_SKIPS.\n\
          NEW skip(s) — each shrinks what row 20 covers, so fix the cause or pin it with \
          a reason: {unexpected:?}\n\
          PINNED but now building — delete the dead entry, or the next real regression \

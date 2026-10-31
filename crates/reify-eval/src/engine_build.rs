@@ -32,6 +32,7 @@ use crate::primitive_attribute_seed::{
     seed_primitive_attributes_for_handle,
 };
 use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
+use crate::sub_instance_scope::{direct_sub_instances, instance_value_overlay};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
 };
@@ -698,8 +699,9 @@ struct CellHydrationInputs<'a> {
 ///   regression test.
 ///
 /// No entries are produced for collection subs (compile-side blocks those),
-/// or for subs whose child template isn't yet in `module_named_steps`
-/// (forward-declared / recursive; fall through to the runtime error path).
+/// for subs whose child template isn't yet in `module_named_steps`
+/// (forward-declared / recursive; fall through to the runtime error path),
+/// or for a guarded sub whose guard eval declined.
 ///
 /// On the override path, kernel errors / compile errors for a realization's
 /// ops append a `Diagnostic::error` to `diagnostics` (mirroring
@@ -744,8 +746,6 @@ fn seed_cross_sub_named_steps(
     diagnostics: &mut Vec<Diagnostic>,
     templates: &[reify_compiler::TopologyTemplate],
 ) {
-    use reify_core::identity::ValueCellId;
-
     // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
     // Two subs of the same child with identical override declarations share one
     // kernel-op sequence per invocation of this helper.  Uses Debug format of
@@ -782,7 +782,17 @@ fn seed_cross_sub_named_steps(
                 None => continue,
             };
 
-            // 2. Obtain the default kernel.  The entry-point guards in
+            // 2. Build the per-instance overlay: `values` with each arg's
+            //    `"<parent>.<sub>"` scoped cell moved onto the child template's
+            //    own param cell.  A guard-declined sub has no instance, so
+            //    nothing to re-realize.
+            let Some(values_override) =
+                instance_value_overlay(&template.name, sub, child_template, values)
+            else {
+                continue;
+            };
+
+            // 3. Obtain the default kernel.  The entry-point guards in
             //    `build` / `build_snapshot` / `tessellate_from_values` all
             //    verify `kernels.contains_key(default_kernel_name)` before
             //    entering the template loop, so this is unreachable when the
@@ -792,46 +802,7 @@ fn seed_cross_sub_named_steps(
                 None => continue,
             };
 
-            // 3. Build per-instance overlay: clone the global `values` map
-            //    and overwrite `ValueCellId(child_template.name, param_name)`
-            //    with the scoped override value already computed by
-            //    `unfold.rs::elaborate_child_instance` and stored at
-            //    `ValueCellId("<parent>.<sub_name>", param_name)`.
-            //
-            //    Invariant: for every `(param_name, _)` in `sub.args`, a
-            //    scoped cell `ValueCellId("<parent>.<sub>", param_name)` MUST
-            //    exist in `values` — `elaborate_child_params_only` in
-            //    `crates/reify-eval/src/unfold.rs:292-358` populates it
-            //    unconditionally (override present → override value; absent →
-            //    default value from child template).  A missing key means the
-            //    eval phase failed to populate that cell before `build` was
-            //    called, which would be a bug in the eval pipeline.
-            let mut values_override = values.clone();
             let args_fingerprint = format!("{:?}", sub.args);
-            for (param_name, _) in &sub.args {
-                let scoped_key = ValueCellId::new(
-                    format!("{}.{}", template.name, sub.name),
-                    param_name.as_str(),
-                );
-                // `elaborate_child_params_only` guarantees this key exists.
-                // The debug_assert catches regressions in test builds; in
-                // release the silent fallback keeps child-template defaults.
-                debug_assert!(
-                    values.contains(&scoped_key),
-                    "expected scoped override cell {:?} in values map (populated by \
-                     unfold.rs::elaborate_child_params_only for sub {}.{} param {}); \
-                     missing cell means eval phase failed to seed this param before build",
-                    scoped_key,
-                    template.name,
-                    sub.name,
-                    param_name,
-                );
-                if let Some(val) = values.get(&scoped_key) {
-                    let child_key =
-                        ValueCellId::new(child_template.name.as_str(), param_name.as_str());
-                    values_override.insert(child_key, val.clone());
-                }
-            }
 
             // 4. Re-execute each named realization against the override values.
             //    Delegates to `realize_overridden_instance_into` — the shared
@@ -1143,7 +1114,8 @@ fn seed_cross_let_named_steps(
 /// When `sub b = Bar(len: 600mm)` is surfaced via the containment walk, the
 /// child's default Phase-A handles (built against `len = 200mm`) give the wrong
 /// geometry.  This helper re-executes every realization in `child_template`
-/// against a per-instance value overlay (same override-scope construction as
+/// against the per-instance value overlay
+/// (`sub_instance_scope::instance_value_overlay`, shared with
 /// `seed_cross_sub_named_steps`) and returns one `Option<KernelHandle>` per
 /// realization index, aligned with `terminal_handles[child_idx]`.
 ///
@@ -1153,8 +1125,14 @@ fn seed_cross_let_named_steps(
 /// is deferred.
 ///
 /// Returns `None` for realizations that fail (compile or kernel error) or
-/// produce no geometry.  On success, the terminal `KernelHandle` is tagged
+/// produce no geometry, and for every realization of a guarded sub whose
+/// guard eval declined.  On success, the terminal `KernelHandle` is tagged
 /// with the default kernel's `KernelId` via `kernel_id_for_registry_name`.
+///
+/// The row alone does not tell a declined instance from one with no
+/// geometry, so the walk still recurses into a declined sub's subtree.
+/// Returning the verdict, so the walk can skip that subtree, is owned by
+/// #9547.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn realize_sub_override_handles(
     parent_name: &str,
@@ -1167,8 +1145,6 @@ pub(crate) fn realize_sub_override_handles(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Option<KernelHandle>> {
-    use reify_core::identity::ValueCellId;
-
     debug_assert!(
         !sub.args.is_empty(),
         "realize_sub_override_handles called for arg-free sub {}.{}; \
@@ -1179,24 +1155,15 @@ pub(crate) fn realize_sub_override_handles(
 
     let n = child_template.realizations.len();
 
+    let Some(values_override) = instance_value_overlay(parent_name, sub, child_template, values)
+    else {
+        return vec![None; n];
+    };
+
     let kernel = match geometry_kernels.get_mut(default_kernel_name) {
         Some(k) => k.as_mut(),
         None => return vec![None; n],
     };
-
-    // Build per-instance value overlay: clone the global map and overlay
-    // `ValueCellId(parent.sub, param)` → `ValueCellId(child, param)` for
-    // each constructor arg.  `elaborate_child_instance` guarantees the
-    // scoped cells exist; a missing key keeps the child's existing default.
-    let mut values_override = values.clone();
-    for (param_name, _) in &sub.args {
-        let scoped_key =
-            ValueCellId::new(format!("{}.{}", parent_name, sub.name), param_name.as_str());
-        if let Some(val) = values.get(&scoped_key) {
-            let child_key = ValueCellId::new(child_template.name.as_str(), param_name.as_str());
-            values_override.insert(child_key, val.clone());
-        }
-    }
 
     // v0.1 boundary: empty child named-steps (no nested sub-of-sub propagation).
     let child_named_steps: HashMap<String, KernelHandle> = HashMap::new();
@@ -11710,7 +11677,7 @@ impl Engine {
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+        for instance in direct_sub_instances(template, templates, values) {
             for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
@@ -11770,7 +11737,7 @@ impl Engine {
             (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
             reify_ir::GeometryHandleId,
         > = HashMap::new();
-        for instance in crate::sub_instance_scope::direct_sub_instances(template, templates) {
+        for instance in direct_sub_instances(template, templates, values) {
             let steps = instance.named_steps_view(named_steps);
             let mut instance_diagnostics = Vec::new();
             for cell in &instance.child_template().value_cells {

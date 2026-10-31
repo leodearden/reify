@@ -51,6 +51,8 @@ mod geometry_let_value_cell_gamma;
 mod geometry_query_kernel_dispatch;
 #[path = "harness_geometry/geometry_sub_ref_e2e.rs"]
 mod geometry_sub_ref_e2e;
+#[path = "harness_geometry/guarded_sub_override_build_e2e.rs"]
+mod guarded_sub_override_build_e2e;
 #[path = "harness_geometry/modify_sweep_length_units_e2e.rs"]
 mod modify_sweep_length_units_e2e;
 #[path = "harness_geometry/nested_selector_ctor_eval.rs"]
