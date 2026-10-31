@@ -7,9 +7,8 @@
 //! construction-gap closure) coexist and evaluate correctly in ONE runnable
 //! artifact through the full parse→compile→eval→ComputeNode pipeline.
 //!
-//! RED: fails to COMPILE until step-2 creates
-//!   `examples/differential_field_ops.ri`  (include_str! compile error).
-//! GREEN: after step-2 the test binary compiles and all assertions pass.
+//! Each contract is its own test over one memoized evaluation of the example
+//! ([`gate_run`]), so one regression cannot mask the others.
 
 use std::sync::OnceLock;
 
@@ -160,35 +159,13 @@ fn max_abs(xs: &[f64]) -> f64 {
     xs.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
-// ── integration gate ──────────────────────────────────────────────────────────
+// ── example-level contracts ───────────────────────────────────────────────────
 
-/// Full end-to-end integration gate for the differential-field-ops batch.
-///
-/// Asserts (in order):
-///   (a) No Error-severity diagnostics — parse + compile + eval are clean.
-///   (b) A ComputeNode with `target == "solver::elastic_static"` exists in the
-///       snapshot graph (Phase-1 FEA path lowered via `@optimized`).
-///   (c) All `.ri` `constraint` statements evaluate to `Satisfaction::Satisfied`
-///       via `engine.check`.
-///   (d) PHASE 1 — `result.divergence` is a `Value::Field{source:Sampled}`
-///       with `codomain_type == Type::dimensionless_scalar()` and all-finite
-///       data; the exact cross-field trace identity
-///         div[k] = (1−2ν)/E · tr(σ)[k]
-///       holds to rel-tol 1e-6 (proven-GREEN on the same cantilever fixture in
-///       α/solve_elastic_static_e2e.rs:814-875; reused verbatim here).
-///       Also asserts `DifferentialFieldOps.g_mag` is finite and > 0 (γ
-///       magnitude signal, non-trivial under load) and < 1 (small-strain bound).
-///   (e) PHASE 2 — `DifferentialFieldOps.lap_max` ≈ 2.0 within 1e-9
-///       (max of laplacian(f) where f(x)=x²; exact on quadratics).
-///       `DifferentialFieldOps.grad_max` ≈ 3.0 within 1e-9
-///       (max of gradient(g) where g(x)=3x+2; exact on linears).
-///       Proven by δ's laplacian_1d_quadratic_exact (1e-12 on 5-node grid).
+/// Parse, compile, eval and constraint checking of the example emit no
+/// Error-severity diagnostic.
 #[test]
-fn differential_field_ops_integration_gate() {
-    let run = gate_run();
-
-    // ── (a) No Error-severity diagnostics ────────────────────────────────────
-    let errors: Vec<_> = run
+fn example_evaluates_without_error_diagnostics() {
+    let errors: Vec<_> = gate_run()
         .check
         .diagnostics
         .iter()
@@ -199,78 +176,67 @@ fn differential_field_ops_integration_gate() {
         "expected no Error diagnostics, got: {:?}",
         errors
     );
+}
 
-    // ── (a2) Compile-time type pins: dmax and g_mag must type as Real ────────
-    //
-    // After W1 (max(field)→codomain scalar, task #4629), `max(result.divergence)`
-    // types as Real (divergence codomain is dimensionless Scalar → scalar_or_real →
-    // Real) and `max(result.gradient)` types as Real (Tensor{Real} codomain →
-    // element quantity Real).  These pins confirm the W1 typing is correct BEFORE
-    // W3 (step-6) removes the Field/StructureRef comparison guard deferral, so the
-    // constraints `dmax < 1.0`, `g_mag > 0.0`, `g_mag < 1.0` compare Real scalars
-    // (not Fields) and remain compile-clean after the deferral is lifted.
-    let diff_tmpl = run
+/// `max` over a field reduces to its codomain's scalar (task #4629), so `dmax`
+/// and `g_mag` type as Real and the example's `dmax < 1.0`, `g_mag > 0.0` and
+/// `g_mag < 1.0` constraints compare scalars, not Fields. `shear_probe`, the
+/// magnitude of a sampled Vector3<Angle>, types as Angle (task #6183).
+#[test]
+fn field_reductions_and_probes_type_as_declared() {
+    let template = gate_run()
         .compiled
         .templates
         .iter()
         .find(|t| t.name == "DifferentialFieldOps")
         .expect("DifferentialFieldOps template must compile");
-
-    let dmax_type = diff_tmpl
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "dmax")
-        .expect("cell 'dmax' must exist in DifferentialFieldOps")
-        .cell_type
-        .clone();
+    let cell_type = |member: &str| {
+        template
+            .value_cells
+            .iter()
+            .find(|c| c.id.member == member)
+            .unwrap_or_else(|| panic!("cell '{member}' must exist in DifferentialFieldOps"))
+            .cell_type
+            .clone()
+    };
     assert_eq!(
-        dmax_type,
+        cell_type("dmax"),
         Type::dimensionless_scalar(),
-        "dmax = max(result.divergence) must type as Real after W1 field-reduction typing \
-         (task #4629); got {:?}",
-        dmax_type
+        "dmax = max(result.divergence) must type as Real (dimensionless scalar \
+         codomain, task #4629)"
     );
-
-    let g_mag_type = diff_tmpl
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "g_mag")
-        .expect("cell 'g_mag' must exist in DifferentialFieldOps")
-        .cell_type
-        .clone();
     assert_eq!(
-        g_mag_type,
+        cell_type("g_mag"),
         Type::dimensionless_scalar(),
-        "g_mag = max(result.gradient) must type as Real after W1 field-reduction typing \
-         (Tensor{{Real}} codomain → element quantity → Real, task #4629); got {:?}",
-        g_mag_type
+        "g_mag = max(result.gradient) must type as Real (Tensor{{Real}} codomain \
+         → element quantity, task #4629)"
     );
-
-    let shear_probe_type = diff_tmpl
-        .value_cells
-        .iter()
-        .find(|c| c.id.member == "shear_probe")
-        .expect("cell 'shear_probe' must exist in DifferentialFieldOps")
-        .cell_type
-        .clone();
     assert_eq!(
-        shear_probe_type,
+        cell_type("shear_probe"),
         Type::angle(),
         "shear_probe = magnitude of a sampled Vector3<Angle> must type as Angle (task #6183)"
     );
+}
 
-    // ── (b) ComputeNode with target == "solver::elastic_static" ──────────────
+/// The example's `@optimized` FEA call lowers to a `solver::elastic_static`
+/// ComputeNode in the snapshot graph: the Phase-1 path.
+#[test]
+fn fea_lowers_to_elastic_static_compute_node() {
+    let compute_targets = &gate_run().compute_targets;
     assert!(
-        run.compute_targets
+        compute_targets
             .iter()
             .any(|target| target == "solver::elastic_static"),
         "expected a ComputeNode with target==\"solver::elastic_static\" in the graph; \
          found targets: {:?}",
-        run.compute_targets
+        compute_targets
     );
+}
 
-    // ── (c) All constraint_results == Satisfied ───────────────────────────────
-    let constraint_results = &run.check.constraint_results;
+/// Every `constraint` statement in the example evaluates to Satisfied.
+#[test]
+fn all_eleven_constraints_are_satisfied() {
+    let constraint_results = &gate_run().check.constraint_results;
     assert_eq!(
         constraint_results.len(),
         11,
@@ -288,47 +254,29 @@ fn differential_field_ops_integration_gate() {
             entry.satisfaction
         );
     }
+}
 
-    // ── (d) Phase 1 — divergence field contract + trace identity ─────────────
+// ── Phase 1: FEA derivative channels ──────────────────────────────────────────
 
-    let result_val = result_value();
-
-    // Divergence must be Value::Field{source:Sampled, codomain:Real}
-    let div_val = extract_field(result_val, "divergence")
-        .unwrap_or_else(|| panic!("field 'divergence' not found in DifferentialFieldOps.result"));
-
-    let (div_domain, div_codomain) = match &div_val {
-        Value::Field {
-            domain_type,
-            codomain_type,
-            source,
-            ..
-        } => {
-            assert!(
-                matches!(source, FieldSourceKind::Sampled),
-                "divergence source must be Sampled, got: {:?}",
-                source
-            );
-            (domain_type.clone(), codomain_type.clone())
-        }
-        other => panic!(
-            "DifferentialFieldOps.result.divergence must be Value::Field, got: {:?}",
-            other
-        ),
-    };
+/// `result.divergence` is a Sampled `Point3<Length> → Real` field with one
+/// finite value per grid node, and it satisfies the cross-field trace identity
+/// div[k] = (1−2ν)/E · tr(σ)[k] against `result.stress`, as
+/// `crates/reify-eval-fea-tests/tests/solve_elastic_static_e2e.rs::e2e_cantilever_divergence_field_contract`
+/// also pins on the same cantilever fixture.
+#[test]
+fn divergence_is_dimensionless_and_matches_stress_trace() {
+    let divergence = extract_sampled_channel(result_value(), "divergence");
     assert_eq!(
-        div_domain,
+        divergence.domain,
         Type::point3(Type::length()),
         "divergence domain must be Point3<Length>"
     );
     assert_eq!(
-        div_codomain,
+        divergence.codomain,
         Type::dimensionless_scalar(),
         "divergence codomain must be Real (dimensionless_scalar)"
     );
-
-    // All data finite
-    let div_data = extract_sampled_field_data(result_val, "divergence");
+    let div_data = &divergence.sf.data;
     for (k, &d) in div_data.iter().enumerate() {
         assert!(
             d.is_finite(),
@@ -337,7 +285,6 @@ fn differential_field_ops_integration_gate() {
             d
         );
     }
-
     let n_grid_nodes = n_grid_nodes();
     assert_eq!(
         div_data.len(),
@@ -347,26 +294,19 @@ fn differential_field_ops_integration_gate() {
         n_grid_nodes
     );
 
-    // ── Exact cross-field trace identity: div[k] = (1−2ν)/E · tr(σ)[k] ──────
-    //
-    // Steel_AISI_1045: E = 205e9 Pa, ν = 0.29.
-    // Both fields recovered and resampled with the same linear weights →
-    // identity holds to floating-point accumulation (rel-tol 1e-6 generous).
-    // Proven GREEN on the same cantilever fixture in solve_elastic_static_e2e.rs:814-875.
-    // Reused verbatim here as the Phase-1 engineering-quantity signal (PRD §θ).
+    // Steel_AISI_1045: E = 205e9 Pa, ν = 0.29. Both fields are recovered and
+    // resampled with the same linear weights, so the identity holds to
+    // floating-point accumulation.
     let e_pa = 205e9_f64;
     let nu = 0.29_f64;
     let factor = (1.0 - 2.0 * nu) / e_pa;
 
-    let stress_data = extract_sampled_field_data(result_val, "stress");
+    let stress_data = extract_sampled_field_data(result_value(), "stress");
     assert_eq!(
         stress_data.len(),
         n_grid_nodes * 9,
         "stress data must have 9 components per grid node"
     );
-
-    let mut max_div = 0.0_f64;
-    let mut max_tr_sigma = 0.0_f64;
     for k in 0..n_grid_nodes {
         let tr_sigma = stress_data[9 * k] + stress_data[9 * k + 4] + stress_data[9 * k + 8];
         let expected_div = factor * tr_sigma;
@@ -376,8 +316,7 @@ fn differential_field_ops_integration_gate() {
         // absolute floor at neutral-axis nodes where expected_div≈0, but
         // got_div (recovered via a different path — divergence of displacement,
         // not from stress) can carry ~1e-15..1e-18 of independent FP noise,
-        // which would fail that 1e-24 check.  Proven GREEN today; the floor
-        // makes it robust to future mesh/grid changes.
+        // which would fail that 1e-24 check.
         assert!(
             (got_div - expected_div).abs() < 1e-6 * expected_div.abs() + 1e-12,
             "trace identity violated at k={}: div={:e}, (1-2ν)/E·tr(σ)={:e}, abs-err={:e}",
@@ -386,20 +325,19 @@ fn differential_field_ops_integration_gate() {
             expected_div,
             (got_div - expected_div).abs(),
         );
-        if got_div.abs() > max_div {
-            max_div = got_div.abs();
-        }
-        if tr_sigma.abs() > max_tr_sigma {
-            max_tr_sigma = tr_sigma.abs();
-        }
     }
+    let max_div = max_abs(div_data);
     assert!(
         max_div > 1e-12,
         "max|div| = {:e} is effectively zero — no divergence signal",
         max_div
     );
+}
 
-    // ── g_mag = max(result.gradient): finite, >0 under load, <1 small-strain ─
+/// `g_mag = max(result.gradient)` is finite, positive under load, and below the
+/// small-strain bound of 1 that the rotation and shear degree bounds rest on.
+#[test]
+fn gradient_magnitude_is_positive_and_small_strain() {
     let g_mag = cell_f64("g_mag");
     assert!(
         g_mag.is_finite() && g_mag > 0.0,
@@ -411,14 +349,16 @@ fn differential_field_ops_integration_gate() {
         "g_mag = {} must be < 1.0 (small-strain engineering bound)",
         g_mag
     );
+}
 
-    // ── (e) Phase 2 — exact polynomial fixture assertions ────────────────────
-    //
-    // laplacian_1d_quadratic_exact (sampled_fd.rs) proves max(laplacian(x²)) = 2.0
-    // to 1e-12 on a 5-node Regular1D grid with spacing 1.0; tolerance here is 1e-9.
-    // gradient_1d_affine_exact proves the first-difference is exact on linears;
-    // max(gradient(3x+2)) = 3.0 to 1e-12; tolerance here is 1e-9.
+// ── Phase 2: generic FD operators ─────────────────────────────────────────────
 
+/// The generic FD operators are exact on polynomials: `lap_max` is
+/// max(laplacian(x²)) = 2 and `grad_max` is max(gradient(3x+2)) = 3. Unit tests
+/// `laplacian_1d_quadratic_exact` and `gradient_1d_affine_exact` in reify-expr's
+/// `sampled_fd.rs` prove both to 1e-12, so 1e-9 here is slack, not a guess.
+#[test]
+fn phase2_fd_operators_are_exact_on_polynomials() {
     let lap_max = cell_f64("lap_max");
     assert!(
         (lap_max - 2.0).abs() < 1e-9,
