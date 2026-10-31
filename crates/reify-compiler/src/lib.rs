@@ -67,6 +67,7 @@ pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
+mod type_acceptance;
 mod type_compat;
 mod type_resolution;
 mod types;

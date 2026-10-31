@@ -1276,8 +1276,8 @@ pub(crate) fn check_builtin_arg_types(
                 // `type_compat::is_mul_div_gradualism_skip` (type_compat.rs,
                 // cited from expr.rs:2037) already lists `ScalarParam`
                 // alongside `TypeParam` as a DEFER kind; and
-                // `conformance::scalar_param_arg_defers_at_scalar_slot`
-                // (conformance/mod.rs, task 5627 γ D4-5 / PRD invariant I5)
+                // `type_acceptance::scalar_param_arg_defers_at_scalar_slot`
+                // (task 5627 γ D4-5 / PRD invariant I5)
                 // makes the identical call at the struct-ctor layer.
                 //
                 // MEASURED symptom this closes: before task 6862,
@@ -1374,7 +1374,7 @@ pub(crate) fn check_builtin_arg_types(
                 // instantiating, so rejecting is correct and loses nothing.
                 //
                 // The precedent is narrow in exactly the same way:
-                // `conformance::scalar_param_arg_defers_at_scalar_slot` gates
+                // `type_acceptance::scalar_param_arg_defers_at_scalar_slot` gates
                 // on `matches!(param_type, Type::Scalar { .. })`, so it too
                 // defers only at a scalar slot and nowhere else.
                 //

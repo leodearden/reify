@@ -1443,7 +1443,7 @@ fn migrated_hydro_conformer_port_body_stays_clean() {
 // rule at the ctor seam, not a carve-out from it.
 //
 // This is NOT the placeholder tolerance. That still exists
-// (`is_numeric_placeholder_leaf`, in `conformance/mod.rs`) and covers `Int`, ANY
+// (`is_numeric_placeholder_leaf`, in `type_acceptance.rs`) and covers `Int`, ANY
 // `Type::Scalar { .. }` (dimension-blind) and `Type::ScalarParam(_)` — see
 // `bare_numeric_literal_at_point_param_stays_clean` and
 // `dimensioned_scalar_at_point_param_stays_clean` further down this file.
@@ -1484,7 +1484,7 @@ fn point_param_given_matching_dimensioned_point3_call_stays_clean() {
     // this fixture no longer claims "nothing is compared", it claims "the
     // quantity rule IS consulted and agrees". Were `point3` or `Point3<Length>`
     // to stop resolving, the arg would degrade to `Type::Error` / no quantity
-    // slot, `emit_if_quantity_conflict` would return silently, and the fixture
+    // slot, `quantity_verdict` would return Accept, and the fixture
     // would stay GREEN while the rule it now holds had ceased to fire. The
     // cross-dimension fixture over this same `Anchor` declaration
     // (`point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`)
@@ -1565,7 +1565,7 @@ structure def Root {
 /// `is_numeric_placeholder_leaf`'s `Point` branch, and until now pinned by
 /// nothing at all.
 ///
-/// `conformance/mod.rs` calls this cell "THE BOUNDED, DELIBERATE COST", and
+/// Spec §4.9 lists this cell as Known limitation #8121, and
 /// `crates/reify-core/src/ty.rs` files it under the same bounded-cost class as
 /// the `Vector` arm's dimensionless-direction tolerance — but both said it in
 /// prose only. This fixture makes it a measured, held fact.
@@ -1584,8 +1584,8 @@ structure def Root {
 /// `scalar_returning_call_at_point_param_stays_clean` pin the rest.
 ///
 /// That "every other test stays green" is MEASURED, not assumed. Killing the
-/// `other => is_numeric_placeholder_leaf(other)` branch of the `Type::Point` arm
-/// in `conformance/mod.rs` (replacing it with `false`) fails exactly this
+/// `is_numeric_placeholder_leaf(arg)` branch of `point_verdict` in
+/// `type_acceptance.rs` (replacing its `Accept` with `Reject`) fails exactly this
 /// fixture and the two siblings named above —
 /// `dimensioned_scalar_at_point_param_stays_clean` and
 /// `scalar_returning_call_at_point_param_stays_clean`, one per surviving leg —
@@ -1657,7 +1657,7 @@ structure def Root {
 /// That asymmetry is the actual bounded cost, and it is strictly larger than a
 /// bare literal.
 ///
-/// Pinned so the membership claim in `conformance/mod.rs`'s arm comment cannot
+/// Pinned so the membership claim in `is_numeric_placeholder_leaf`'s doc cannot
 /// drift back to "a bare numeric literal and `ScalarParam` only": narrowing the
 /// shared predicate to `Int | ScalarParam` to make that claim true would fail
 /// THIS test — and would also break the `Matrix`/`Tensor` arm's rank-0 scalar
@@ -1791,8 +1791,8 @@ structure def Root {
 /// and it compiles to `List<List<Real>>`. `List<List<Real>>` carries no element
 /// counts in its type, so the declared m/n arity is structurally unverifiable at
 /// this leaf; the dedicated `Matrix`/`Tensor` arm therefore accepts `Type::List`
-/// and deliberately applies NO arity check (see the arm comment for the
-/// asymmetry with the `Point`/`Vector` arms).
+/// and deliberately applies NO arity check (spec §4.9 Matrix/Tensor row:
+/// "element counts are not checked").
 #[test]
 fn matrix_param_given_nested_list_literal_stays_clean() {
     let module = compile_source_with_stdlib(SRC_FAMILY_MATRIX);
@@ -1928,8 +1928,8 @@ fn tensor_param_given_vector_stays_clean() {
 //
 // One stays-clean fixture per leg below, so deleting or narrowing any leg fails a
 // test by name instead of passing unnoticed. A failure names its leg in the
-// label; the legs share ONE predicate, so re-read the arm's comment in
-// `conformance/mod.rs` and spec §4.9 and check the others in the same pass.
+// label; the legs share ONE predicate, so re-read `matrix_tensor_verdict` in
+// `type_acceptance.rs` and spec §4.9 and check the others in the same pass.
 
 const SRC_BARE_NUMERIC_AT_MATRIX_PARAM: &str = r#"module test.bare_numeric_at_matrix
 structure def Body { param inertia : Matrix<3, 3, MomentOfInertia> }
@@ -2011,7 +2011,7 @@ fn fwd<Q: Dimension>(x: Scalar<Q>) -> W { W(m: x) }
 ///
 /// The arg is a scalar whose DIMENSION is unresolved and decided at
 /// instantiation; `scalar_param_arg_defers_at_scalar_slot` in
-/// `conformance/mod.rs` carries the concept.
+/// `type_acceptance.rs` carries the concept.
 #[test]
 fn scalar_param_at_matrix_param_stays_clean() {
     assert_well_formed_and_no_ctor_conformance_diags(
@@ -2673,8 +2673,8 @@ structure def Root { let a = W(p: no_such_symbol_anywhere) }
 /// I6 — anti-cascade: an arg whose `result_type` is `Type::Error` emits NO
 /// ctor-conformance diagnostic at a dimensioned slot, so the promotion cannot
 /// pile a spurious dimension complaint on top of an already-reported
-/// root cause. Delivered for free by `reject_if_incompatible`'s
-/// `arg_type_is_unverifiable` guard; pinned here so a later refactor cannot
+/// root cause. Delivered for free by `conformance_accepts`'s anti-cascade
+/// arm; pinned here so a later refactor cannot
 /// route around it.
 ///
 /// The fixture DOES emit an unresolved-name Error; that is the root cause and
@@ -3749,9 +3749,8 @@ structure def Root {
 /// the fixture directly above, but reached through a `let` binding rather than a
 /// direct call at the arg position.
 ///
-/// This is the route the `Type::Point` arm's comment in `conformance/mod.rs`
-/// names as the reason its tolerance lives INSIDE the arm rather than as an
-/// arg-side `CompiledExpr` skip: an arg-side skip sees a `FunctionCall`, so it
+/// This route is the reason the `Point` tolerance lives INSIDE `point_verdict`
+/// (`type_acceptance.rs`) rather than as an arg-side `CompiledExpr` skip: an arg-side skip sees a `FunctionCall`, so it
 /// would MISS the resulting `ValueRef`, and only the type-level walker reaches
 /// it. That is a behavioural claim about a second entry point, and this fixture
 /// is what holds it — neither the direct-call fixture above nor the hand-built
