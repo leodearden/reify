@@ -1692,5 +1692,86 @@ class TestMjsBatchDisposition(unittest.TestCase, _MjsScenarioMixin):
         )
 
 
+# ---------------------------------------------------------------------------
+# S22 γ: the relay schema carries α's typed probe outcome (PRD §5.1)
+# ---------------------------------------------------------------------------
+
+class TestMjsResultRecordCarriesFixturePresence(unittest.TestCase, _MjsScenarioMixin):
+    """The record schema each role agent() actually receives relays α's fields.
+
+    Captured through the whole-script scenario harness: the Prover and Adversary
+    mocks stash the opts.schema (and the Prover prompt) they were handed, and the
+    Synthesize mock reports them back as its `report`.  The Prover's no-process
+    fallback is the one record that may carry fixture_present null.
+    """
+
+    _LEAF_JS = '[{ signal: "fixture presence leaf" }]'
+    _RESPONSES = """{
+    enumerate: { premises: [{
+        text: "a rejection fires", assertion_kind: "rejection",
+        fixture: "tests/prd-gate/fixtures/revolute_silent_accept.ri",
+        match: { exit_code: 1 }, capability: "rejection fires",
+    }] },
+    prove: (prompt, opts) => {
+        globalThis.__proveSchema = opts.schema;
+        globalThis.__provePrompt = prompt;
+        return { prover: [], adversary: [] };
+    },
+    adversary: (prompt, opts) => {
+        globalThis.__adversarySchema = opts.schema;
+        return { prover: [], adversary: [] };
+    },
+    synthesize: () => ({
+        blocks: false, blocking: [], malformed: [], fixture_absent: [],
+        executed: 0, total: 0,
+        report: JSON.stringify({
+            proveSchema: globalThis.__proveSchema,
+            adversarySchema: globalThis.__adversarySchema,
+            provePrompt: globalThis.__provePrompt,
+        }),
+    }),
+}"""
+
+    def _captured(self):
+        verdict, _ = self._run_scenario(self._LEAF_JS, self._RESPONSES)
+        return json.loads(verdict["leaf_verdicts"][0]["report"])
+
+    def _record_items(self):
+        captured = self._captured()
+        for role in ("proveSchema", "adversarySchema"):
+            for array in ("prover", "adversary"):
+                yield f"{role}.{array}", captured[role]["properties"][array]["items"]
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_record_requires_fixture_present_alongside_the_evidence_keys(self):
+        for label, item in self._record_items():
+            with self.subTest(schema=label):
+                for key in ("capability", "verdict", "command", "exit_code",
+                            "fixture_present"):
+                    self.assertIn(key, item["required"])
+                self.assertEqual(
+                    item["properties"]["fixture_present"]["type"], ["boolean", "null"]
+                )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_record_admits_fixture_and_a_typed_harness_failure(self):
+        for label, item in self._record_items():
+            with self.subTest(schema=label):
+                props = item["properties"]
+                self.assertEqual(props["fixture"], {"type": "string"})
+                failure = props["harness_failure"]
+                self.assertEqual(failure["type"], ["object", "null"])
+                self.assertEqual(
+                    failure["properties"]["kind"]["enum"],
+                    ["launch", "setup", "timeout", "grammar_load"],
+                )
+                self.assertEqual(failure["properties"]["detail"]["type"], "string")
+                self.assertEqual(failure["properties"]["cache_denied"]["type"], "boolean")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_prover_fallback_record_carries_fixture_present_null(self):
+        self.assertIn("fixture_present: null", self._captured()["provePrompt"])
+
+
 if __name__ == "__main__":
     unittest.main()

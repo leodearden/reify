@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 test_pcc_grammar_substrate.py — the grammar substrate in
-scripts/prd-capability-check.py: the e2e skip-guard's pins,
-grammar_cache_denied() and the behavioural grammar_substrate_usable() probe.
+scripts/prd-capability-check.py: the e2e skip-guard's pins, the
+grammar_load_failure() boundary parser and the behavioural
+grammar_substrate_usable() probe.
 Shared loader and helpers: scripts/_pcc_test_support.py; runner:
 tests/infra/test_prd_capability_check.sh.
 """
@@ -182,13 +183,8 @@ def _wait_until(predicate, timeout_s: float) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# 5894 step-1 (RED): grammar_cache_denied() — narrow cache-denial predicate
+# grammar_load_failure() — the one boundary parser of tree-sitter's stderr
 # ---------------------------------------------------------------------------
-
-def _probe_run(exit_code, stderr, stdout=""):
-    """A hermetic ProbeRun for the grammar_cache_denied() tests."""
-    return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
-
 
 def _load_failure_stderr(tail):
     """tree-sitter 0.26.8's load-failure layout with `tail` as the root cause."""
@@ -201,134 +197,169 @@ def _load_failure_stderr(tail):
     )
 
 
-class TestGrammarCacheDenied(unittest.TestCase):
-    """Pins pcc.grammar_cache_denied(run) -> bool.  Hermetic: no subprocess.
+# A load failure whose cause carries no permission indicator: a missing or
+# corrupt grammar, which must stay loud.
+_NO_LANGUAGE_STDERR = (
+    "Error: Failed to load language for path \"x.ri\"\n"
+    "Caused by: No language found for path\n"
+)
 
-    Shared rationale for every case below.  The predicate is deliberately NARROW,
-    requiring a grammar *load* failure AND a permission denial simultaneously.
-    The negatives are the load-bearing half: they prove it can absorb neither a
-    genuine grammar regression (a *parse* error, exit 1 with no load failure) nor
-    a non-permission load failure.  Both must keep reaching _HARNESS_ERROR/exit
-    70 — the skip this predicate authorizes happens in the CALLERS, never in the
-    probe verdict.
+# An EACCES on some unrelated file that PRECEDES a non-permission load failure.
+_DENIAL_BEFORE_LOAD_FAILURE_STDERR = (
+    "warning: could not write /home/u/.config/tree-sitter/config.json: "
+    "Permission denied (os error 13)\n"
+    'Error: Failed to load language for path "x.ri"\n'
+    "\n"
+    "Caused by:\n"
+    "    No language found\n"
+)
+
+_HOSTILE_ERRNOS = (
+    ("EOWNERDEAD", "Owner died (os error 130)"),
+    ("ENOTRECOVERABLE", "State not recoverable (os error 131)"),
+    ("ERFKILL", "Operation not possible due to RF-kill (os error 132)"),
+    ("EHWPOISON", "Memory page has hardware error (os error 133)"),
+)
+
+
+class TestGrammarCacheDenied(unittest.TestCase):
+    """Pins pcc.grammar_load_failure(stderr) -> HarnessFailure | None.  Hermetic.
+
+    Shared rationale for every case below.  A cache denial is deliberately
+    NARROW: it needs a grammar *load* failure AND a permission denial.  The
+    negatives are the load-bearing half: a genuine grammar regression is a
+    *parse* error (no load failure at all, so None), and a load failure with no
+    permission indicator is a missing or corrupt grammar (GRAMMAR_LOAD with
+    cache_denied False).  Both keep reaching _HARNESS_ERROR / exit 70; the skip
+    a denial authorizes happens in the CALLERS, never in the probe verdict.
     """
+
+    def assertCacheDenied(self, stderr):
+        failure = pcc.grammar_load_failure(stderr)
+        self.assertIsNotNone(failure, "a load failure must be recognised")
+        self.assertEqual(failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertTrue(failure.cache_denied, "the denial must be recognised")
+        return failure
+
+    def assertLoudLoadFailure(self, stderr):
+        failure = pcc.grammar_load_failure(stderr)
+        self.assertIsNotNone(failure, "a load failure must be recognised")
+        self.assertEqual(failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertFalse(
+            failure.cache_denied,
+            "a load failure with no denial at or after its marker is a missing "
+            "or corrupt grammar, which must not authorize a skip",
+        )
 
     # ── positives ─────────────────────────────────────────────────────────────
 
     def test_measured_sandbox_signature_is_denied(self):
-        """(a) The verbatim measured sandbox stderr → True."""
-        self.assertTrue(
-            pcc.grammar_cache_denied(_probe_run(1, _CACHE_DENIED_STDERR)),
-            "the measured sandbox cache-denial signature must be recognised",
+        """(a) The verbatim measured sandbox stderr → a cache denial."""
+        self.assertCacheDenied(_CACHE_DENIED_STDERR)
+
+    def test_measured_signature_detail_names_the_denied_lock(self):
+        """The detail is data an operator can act on: it names the lock path."""
+        failure = self.assertCacheDenied(_CACHE_DENIED_STDERR)
+        self.assertIn(
+            "/home/leo/.cache/tree-sitter/lock/reify-69604127a681544d.lock",
+            failure.detail,
         )
 
     def test_os_error_13_spelling_alone_is_denied(self):
-        """(b) A denial spelled only 'os error 13' (no 'Permission denied') → True.
+        """(b) A denial spelled only 'os error 13' (no 'Permission denied').
 
         tree-sitter surfaces the errno either way depending on which layer
         reports it; keying on only one spelling would make the guard flaky.
         """
-        stderr = (
+        self.assertCacheDenied(
             "Error: Failed to load language for path \"x.ri\"\n"
             "Caused by: os error 13\n"
         )
-        self.assertTrue(pcc.grammar_cache_denied(_probe_run(1, stderr)))
 
     # ── negatives (the narrowness guards) ─────────────────────────────────────
 
-    def test_plain_parse_failure_is_not_denied(self):
-        """(c) A real grammar rejection (exit 1, no load failure) → False.
+    def test_plain_parse_failure_is_no_harness_failure(self):
+        """(c) A real grammar rejection (no load failure) → None.
 
         The ABSENT path.  Swallowing it would silently green a probe that
-        legitimately FAILs — the risk this predicate is narrowed against.
+        legitimately FAILs — the risk this parser is narrowed against.
         """
-        stderr = "x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])\n"
-        self.assertFalse(pcc.grammar_cache_denied(_probe_run(1, stderr)))
+        self.assertIsNone(
+            pcc.grammar_load_failure("x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])\n")
+        )
 
-    def test_successful_run_is_not_denied(self):
-        """(d) exit 0 with empty stderr → False."""
-        self.assertFalse(pcc.grammar_cache_denied(_probe_run(0, "")))
+    def test_empty_stderr_is_no_harness_failure(self):
+        """(d) Nothing printed → None."""
+        self.assertIsNone(pcc.grammar_load_failure(""))
 
-    def test_load_failure_without_permission_indicator_is_not_denied(self):
-        """(e) A load failure with NO permission indicator → False.
+    def test_load_failure_without_permission_indicator_stays_loud(self):
+        """(e) A load failure with NO permission indicator → not a denial.
 
         A broken or absent grammar must still reach HARNESS_ERROR (70).  Fails
-        first if the predicate is widened to 'any load failure'.
+        first if the denial half is widened to 'any load failure'.
         """
-        stderr = (
-            "Error: Failed to load language for path \"x.ri\"\n"
-            "Caused by: No language found for path\n"
+        self.assertLoudLoadFailure(_NO_LANGUAGE_STDERR)
+
+    def test_permission_denial_without_load_failure_is_no_harness_failure(self):
+        """A permission error unrelated to grammar loading → None.
+
+        Both halves are required.  An EACCES reading the *fixture* is the tool's
+        own report about its input, not a grammar-substrate failure.
+        """
+        self.assertIsNone(
+            pcc.grammar_load_failure("Error: Permission denied (os error 13) (x.ri)\n")
         )
-        self.assertFalse(pcc.grammar_cache_denied(_probe_run(1, stderr)))
 
-    def test_permission_denial_without_load_failure_is_not_denied(self):
-        """A permission error unrelated to grammar loading → False.
+    # ── the boundary's answer is what observe() acts on ───────────────────────
 
-        Both halves are required.  An EACCES reading the *fixture* is a real
-        harness error the operator needs to see, not a grammar-substrate skip.
-        """
-        stderr = "Error: Permission denied (os error 13) (x.ri)\n"
-        self.assertFalse(pcc.grammar_cache_denied(_probe_run(1, stderr)))
+    def test_every_load_failure_observes_as_a_harness_error(self):
+        """A run carrying the parser's GRAMMAR_LOAD answer is HARNESS_ERROR.
 
-    # ── the two classifiers must agree about a load failure ───────────────────
-
-    def test_denied_run_is_also_a_harness_error_to_observe(self):
-        """Anything this predicate calls a denial must also be HARNESS_ERROR.
-
-        Stated over behaviour rather than over which constant a branch reads.
-        Were the two classifiers to disagree, a harness error would be promoted
-        into a real PASS/FAIL verdict — the mis-attribution this task removes.
+        Denied or not: a grammar that could not be loaded produced no
+        observation, so it must never be promoted into a PRESENT/ABSENT one.
         """
         for stderr in (
             _CACHE_DENIED_STDERR,
             "Error: Failed to load language in current directory:\n"
             "Permission denied (os error 13) (~/.cache/tree-sitter/lock/x.lock)\n",
+            _NO_LANGUAGE_STDERR,
+            _DENIAL_BEFORE_LOAD_FAILURE_STDERR,
+            *(_load_failure_stderr(tail) for _, tail in _HOSTILE_ERRNOS),
         ):
             with self.subTest(stderr=stderr[:40]):
-                run = _probe_run(1, stderr)
-                self.assertTrue(
-                    pcc.grammar_cache_denied(run),
-                    "precondition: this is a recognised cache denial",
-                )
-                self.assertEqual(
-                    pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
-                    "a run classified as a cache denial must never reach a "
-                    "PRESENT/ABSENT observation",
-                )
+                failure = pcc.grammar_load_failure(stderr)
+                self.assertIsNotNone(failure, "precondition: a load failure")
+                run = pcc.ProbeRun(1, "", stderr, harness_failure=failure)
+                self.assertEqual(pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR)
 
 
 class TestGrammarCacheDenialAnchoring(unittest.TestCase):
     """The denial is matched whole, and only at or after the load-failure marker.
 
-    The errno half is the #7257 numeric-prefix defect in α's sibling predicate;
+    The errno half is the #7257 numeric-prefix defect in a sibling predicate;
     the position half keeps a missing grammar loud when an unrelated EACCES
     happens to precede its load failure.
     """
 
-    HOSTILE_ERRNOS = (
-        ("EOWNERDEAD", "Owner died (os error 130)"),
-        ("ENOTRECOVERABLE", "State not recoverable (os error 131)"),
-        ("ERFKILL", "Operation not possible due to RF-kill (os error 132)"),
-        ("EHWPOISON", "Memory page has hardware error (os error 133)"),
-    )
-
     def test_thirteen_x_errnos_are_not_denials(self):
-        for label, tail in self.HOSTILE_ERRNOS:
+        for label, tail in _HOSTILE_ERRNOS:
             with self.subTest(errno=label):
-                run = _probe_run(1, _load_failure_stderr(tail))
-                self.assertFalse(pcc.grammar_cache_denied(run))
-                self.assertEqual(
-                    pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR
-                )
+                failure = pcc.grammar_load_failure(_load_failure_stderr(tail))
+                self.assertEqual(failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+                self.assertFalse(failure.cache_denied)
 
     def test_measured_tail_is_denied(self):
         tail = "Permission denied (os error 13) (/tmp/cache/tree-sitter/lib)"
-        run = _probe_run(1, _load_failure_stderr(tail))
-        self.assertTrue(pcc.grammar_cache_denied(run))
+        failure = pcc.grammar_load_failure(_load_failure_stderr(tail))
+        self.assertEqual(failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertTrue(failure.cache_denied)
 
     def test_bare_end_of_string_errno_is_denied(self):
-        run = _probe_run(1, _load_failure_stderr("os error 13").rstrip("\n"))
-        self.assertTrue(pcc.grammar_cache_denied(run))
+        failure = pcc.grammar_load_failure(
+            _load_failure_stderr("os error 13").rstrip("\n")
+        )
+        self.assertEqual(failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertTrue(failure.cache_denied)
 
     def test_denial_reported_before_an_unrelated_load_failure_is_not_denied(self):
         """The load failure is a missing grammar, which must stay loud.
@@ -336,17 +367,9 @@ class TestGrammarCacheDenialAnchoring(unittest.TestCase):
         Compare test (e) in TestGrammarCacheDenied: an EACCES on some other
         file that merely precedes it must not authorize a skip.
         """
-        stderr = (
-            "warning: could not write /home/u/.config/tree-sitter/config.json: "
-            "Permission denied (os error 13)\n"
-            'Error: Failed to load language for path "x.ri"\n'
-            "\n"
-            "Caused by:\n"
-            "    No language found\n"
-        )
-        run = _probe_run(1, stderr)
-        self.assertFalse(pcc.grammar_cache_denied(run))
-        self.assertEqual(pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR)
+        failure = pcc.grammar_load_failure(_DENIAL_BEFORE_LOAD_FAILURE_STDERR)
+        self.assertEqual(failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertFalse(failure.cache_denied)
 
 
 # ---------------------------------------------------------------------------
@@ -449,8 +472,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_missing_cli_is_unusable_with_reason(self):
         """TREE_SITTER_BIN pointing at nothing → (False, reason) naming the CLI.
 
-        run_probe() turns the FileNotFoundError into _BINARY_NOT_FOUND_SENTINEL,
-        so this arrives through the same channel as the denial and must be
+        run_probe() types the FileNotFoundError as a LAUNCH harness failure, so
+        this arrives as the same (False, reason) as the denial and must be
         distinguished by the reason text, not by the boolean.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here")
@@ -463,9 +486,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_launch_failure_reason_carries_the_offending_path(self):
         """The launch-failure reason must name WHAT could not be launched.
 
-        One sentinel covers every launch OSError, so a missing grammar cwd raises
-        the same FileNotFoundError as a missing CLI.  Only the errno detail
-        distinguishes them, and it must survive into the SKIP line.
+        A missing grammar cwd raises the same FileNotFoundError as a missing CLI,
+        so both are LAUNCH failures.  Only the errno detail distinguishes them,
+        and it must survive into the SKIP line.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here")
         _, cli_reason = self._call(missing)
@@ -474,8 +497,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             "the errno detail naming the missing CLI must reach the reason",
         )
 
-        # Same sentinel, different subsystem: an absent grammar directory.  The
-        # CLI here is a perfectly good stub, so only the cwd can fail.
+        # Same failure kind, different subsystem: an absent grammar directory.
+        # The CLI here is a perfectly good stub, so only the cwd can fail.
         bad_root = os.path.join(self._tmpdir, "no-repo")
         with unittest.mock.patch.object(
             pcc, "_find_repo_root", return_value=bad_root
@@ -496,10 +519,10 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     def test_cache_setup_failure_reason_names_cache(self):
         """A cache-setup failure must be attributable from the reason text.
 
-        run_probe() represents an uncreatable private cache dir through the SAME
-        _BINARY_NOT_FOUND_SENTINEL as a missing CLI and a missing grammar dir, so
-        the reason's static sentence — which today enumerates only that pair —
-        would confidently print the wrong subsystem for this third cause.
+        run_probe() types an uncreatable private cache dir as a SETUP failure,
+        distinct from the LAUNCH failure of a missing CLI or grammar dir, so the
+        reason must name the cache rather than print the launch sentence for
+        this third cause.
 
         Asserted on the reason with the offending path REDACTED, because that
         path is literally named `reify-ts-cache-<key>`: a bare "cache" substring
@@ -591,9 +614,9 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         """A timed-out probe must never read as a real observation.
 
         subprocess.TimeoutExpired derives from SubprocessError, not OSError, so
-        run_probe()'s launch-failure catch cannot cover it; if the sentinel it
-        substitutes were not classified, an exit 124 would fall through
-        observe()'s grammar branch as an ordinary non-zero exit.
+        run_probe()'s launch-failure catch cannot cover it; if the TIMEOUT it
+        records were not classified, an exit 124 would fall through observe()'s
+        grammar branch as an ordinary non-zero exit.
         """
         with unittest.mock.patch.dict(
             os.environ, {"TREE_SITTER_BIN": _ts_stub_hangs(self._tmpdir)}
@@ -607,7 +630,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
                 ),
                 timeout=0.4,
             )
-        self.assertIn(pcc._PROBE_TIMEOUT_SENTINEL, run.stderr)
+        self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT)
         self.assertEqual(
             pcc.observe("grammar", run, {}), pcc._HARNESS_ERROR,
             "a probe that never finished cannot be trusted as PRESENT/ABSENT",
@@ -633,8 +656,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         )
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
             run = pcc.run_probe(probe, timeout=0.6)
-        self.assertIn(
-            pcc._PROBE_TIMEOUT_SENTINEL, run.stderr,
+        self.assertEqual(
+            run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
             "precondition: the stub must have outlasted the bound",
         )
         self.assertTrue(

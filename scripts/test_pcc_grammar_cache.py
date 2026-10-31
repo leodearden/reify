@@ -281,13 +281,13 @@ class TestGrammarCacheIsolation(unittest.TestCase):
 
     # ── (d) env plumbing must not swallow or reshape a launch failure ─────────
 
-    def test_grammar_probe_launch_failure_still_sentinel(self):
-        """A missing tree-sitter still reaches observe() as exit 127 + sentinel.
+    def test_grammar_probe_launch_failure_is_typed_on_both_arms(self):
+        """A missing tree-sitter still reaches observe() as exit 127 + LAUNCH.
 
         Building the isolated environment happens BEFORE the launch, so a bug
         there (an exception, or an env dict that makes Popen fail differently)
-        could plausibly reshape or swallow the OSError representation the
-        harness-error path depends on.  Asserted on BOTH arms.
+        could plausibly reshape or swallow the launch failure the harness-error
+        path depends on.  Asserted on BOTH arms.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here-xyz")
         self.assertFalse(os.path.exists(missing), "precondition: path must not exist")
@@ -296,17 +296,17 @@ class TestGrammarCacheIsolation(unittest.TestCase):
             with self.subTest(arm=label):
                 with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": missing}):
                     run = pcc.run_probe(probe, **kwargs)
-                self.assertEqual(run.exit_code, 127, f"{label}: {run.stderr!r}")
-                self.assertIn(
-                    pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr,
-                    f"{label} arm must still represent a launch failure via the "
-                    "sentinel channel observe() classifies as HARNESS_ERROR",
+                self.assertEqual(run.exit_code, 127, f"{label}: {run!r}")
+                self.assertEqual(
+                    run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH,
+                    f"{label} arm must represent a launch failure as LAUNCH",
                 )
+                self.assertNotIn("[HARNESS ERROR", run.stderr)
 
-    # ── (e) nor the bounded kill/drain + timeout sentinel contract ────────────
+    # ── (e) nor the bounded kill/drain + timeout contract ─────────────────────
 
-    def test_bounded_grammar_probe_timeout_sentinel_intact(self):
-        """_run_bounded's kill/drain and timeout sentinel survive the env= param.
+    def test_bounded_grammar_probe_timeout_is_typed(self):
+        """_run_bounded's kill/drain and the TIMEOUT failure survive the env= param.
 
         Reuses the existing _ts_stub_hangs factory rather than writing a new hang
         stub: it already models a tree-sitter wedged on its grammar lock, which
@@ -317,10 +317,11 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
             run = pcc.run_probe(probe, timeout=0.3)
         self.assertEqual(run.exit_code, 124, f"expected timeout exit; got {run!r}")
-        self.assertIn(
-            pcc._PROBE_TIMEOUT_SENTINEL, run.stderr,
+        self.assertEqual(
+            run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
             "a wedged probe must still be distinguishable from a missing one",
         )
+        self.assertNotIn("[HARNESS ERROR", run.stderr)
 
 
 
@@ -841,8 +842,8 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
     pinned here so a later change cannot quietly swap them:
       * a bad OVERRIDE degrades to the derived per-lane dir — isolation is
         preserved, only the operator's custom-dir intent is lost;
-      * an uncreatable DERIVED dir is represented as a launch failure (exit 127 +
-        _BINARY_NOT_FOUND_SENTINEL) — fail-closed and loud.
+      * an uncreatable DERIVED dir is represented as a SETUP harness failure
+        (exit 127) — fail-closed and loud.
     Neither may fall back to the ambient shared cache; see (c).
     """
 
@@ -937,36 +938,32 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
             "an unusable cache override must be represented, not propagated",
         )
 
-    # ── (b) an uncreatable DERIVED dir is represented as a launch failure ─────
+    # ── (b) an uncreatable DERIVED dir is represented as a SETUP failure ──────
 
-    def test_uncreatable_derived_dir_represented_unbounded(self):
-        """A wedged derived cache path → exit 127 + the launch-failure sentinel.
+    def test_uncreatable_derived_dir_is_a_setup_failure_on_both_arms(self):
+        """A wedged derived cache path → exit 127 + SETUP naming the wedged path.
 
         Deliberately NOT a silent ambient fallback: observe() classifies the
-        sentinel as _HARNESS_ERROR, which is the loud, attributable outcome.
-        Measured at HEAD: raises FileExistsError [Errno 17] instead.
+        failure as _HARNESS_ERROR, which is the loud, attributable outcome.
+        SETUP rather than LAUNCH because no process was ever started: the
+        environment it needed could not be built.
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
-        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                self._wedge_derived_dir()
-                run = pcc.run_probe(probe)
-        self.assertEqual(run.exit_code, 127, f"got {run!r}")
-        self.assertIn(pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr)
-
-    def test_uncreatable_derived_dir_represented_bounded(self):
-        """Same, through the bounded arm."""
-        stub = _ts_stub_echo_cache(self._tmpdir)
-        probe = self._make_probe()
-        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                self._wedge_derived_dir()
-                run = pcc.run_probe(probe, timeout=10.0)
-        self.assertEqual(run.exit_code, 127, f"got {run!r}")
-        self.assertIn(pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir), \
+             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+            wedged = self._wedge_derived_dir()
+            runs = {
+                "unbounded": pcc.run_probe(probe),
+                "bounded": pcc.run_probe(probe, timeout=10.0),
+            }
+        for label, run in runs.items():
+            with self.subTest(arm=label):
+                self.assertEqual(run.exit_code, 127, f"got {run!r}")
+                self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.SETUP)
+                self.assertIn(wedged, run.harness_failure.detail)
+                self.assertNotIn("[HARNESS ERROR", run.stderr)
 
     # ── (c) and it must never degrade onto the AMBIENT shared cache ───────────
 

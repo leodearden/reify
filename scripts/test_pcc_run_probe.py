@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 test_pcc_run_probe.py — running one probe in scripts/prd-capability-check.py:
-run_probe(), build_command()'s argv and binary location, and fixture_argument().
+run_probe(), build_command()'s argv and binary location, and the fixture
+presence run_probe() measures before launch.
 Shared loader and helpers: scripts/_pcc_test_support.py; runner:
 tests/infra/test_prd_capability_check.sh.
 """
@@ -189,6 +190,28 @@ class TestRunProbe(unittest.TestCase):
 
     # ── harness-error cases: missing binary, grammar load failure ─────────────
 
+    def test_missing_reify_binary_is_a_typed_launch_failure(self):
+        """The errno detail is data on the run; stderr carries only tool output."""
+        missing = os.path.join(self._tmpdir, "nonexistent-reify-xyz")
+        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": missing}):
+            run = pcc.run_probe(self._make_probe("check"))
+        self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH)
+        self.assertIn(missing, run.harness_failure.detail)
+        self.assertEqual(run.exit_code, 127)
+        self.assertEqual(run.stderr, "", "no tool ran, so nothing was printed")
+
+    def test_grammar_run_that_loaded_has_no_harness_failure(self):
+        """A parse error and a clean parse are observations, not machinery failures."""
+        for label, stub in (
+            ("parse error", self._make_stub(
+                stderr_text="x.ri\t0 ms\t(ERROR [0, 0] - [3, 0])", exit_code=1)),
+            ("clean", self._make_stub(exit_code=0)),
+        ):
+            with self.subTest(run=label):
+                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                    run = pcc.run_probe(self._make_probe("grammar"))
+                self.assertIsNone(run.harness_failure)
+
     def test_missing_reify_binary_produces_harness_error(self):
         """REIFY_BIN=/nonexistent → evaluate() verdict is not PASS/FAIL/UNPROVABLE."""
         probe = pcc.Probe(
@@ -206,7 +229,7 @@ class TestRunProbe(unittest.TestCase):
         )
 
     def test_non_executable_tree_sitter_binary_produces_harness_error(self):
-        """A tree-sitter CLI that EXISTS but cannot be LAUNCHED → sentinel, not a raise.
+        """A tree-sitter CLI that EXISTS but cannot be LAUNCHED → LAUNCH, not a raise.
 
         EACCES raises PermissionError, which `except FileNotFoundError` did not
         catch; run_probe() must represent it as "could not be launched" like
@@ -227,15 +250,14 @@ class TestRunProbe(unittest.TestCase):
         probe = self._make_probe("grammar", "tests/prd-gate/fixtures/arrow_type.ri")
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
             run = pcc.run_probe(probe)
-        self.assertIn(
-            pcc._BINARY_NOT_FOUND_SENTINEL, run.stderr,
-            "an unlaunchable binary must reach observe() through the same "
-            "sentinel channel as a missing one",
+        self.assertEqual(
+            run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH,
+            "an unlaunchable binary is the same launch failure as a missing one",
         )
         self.assertEqual(run.exit_code, 127)
 
     def test_grammar_load_failure_produces_harness_error(self):
-        """Grammar 'Failed to load language' → harness-error verdict from evaluate()."""
+        """Grammar 'Failed to load language' → GRAMMAR_LOAD, and HARNESS_ERROR."""
         stub = self._make_stub(
             stderr_text="Failed to load language: reify",
             exit_code=1,
@@ -247,12 +269,35 @@ class TestRunProbe(unittest.TestCase):
             expected={"observation": "absent", "match": {}},
         )
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(probe)
             result = pcc.evaluate(probe)  # uses the real run_probe default
+        self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
+        self.assertFalse(run.harness_failure.cache_denied)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
         self.assertNotIn(
             result.verdict,
             (pcc.PASS, pcc.FAIL, pcc.UNPROVABLE),
             "grammar load failure must produce harness-error verdict",
         )
+
+
+def _write_file_exists_stub(tmpdir, name):
+    """Write a stub binary that exits 0 iff any argv entry is an existing file."""
+    path = os.path.join(tmpdir, name)
+    script = textwrap.dedent("""\
+        #!/bin/sh
+        # Exit 0 if any argument names an existing regular file; else exit 1.
+        for arg in "$@"; do
+            if [ -f "$arg" ]; then
+                exit 0
+            fi
+        done
+        exit 1
+    """)
+    with open(path, "w") as f:
+        f.write(script)
+    os.chmod(path, 0o755)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -355,21 +400,7 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
     def _make_file_exists_stub(self):
         """Create a stub TREE_SITTER_BIN that exits 0 iff any argv entry is an existing file."""
         self._stub_idx += 1
-        path = os.path.join(self._tmpdir, f"ts_stub{self._stub_idx}")
-        script = textwrap.dedent("""\
-            #!/bin/sh
-            # Exit 0 if any argument names an existing regular file; else exit 1.
-            for arg in "$@"; do
-                if [ -f "$arg" ]; then
-                    exit 0
-                fi
-            done
-            exit 1
-        """)
-        with open(path, "w") as f:
-            f.write(script)
-        os.chmod(path, 0o755)
-        return path
+        return _write_file_exists_stub(self._tmpdir, f"ts_stub{self._stub_idx}")
 
     def test_grammar_run_probe_locates_fixture(self):
         """Grammar run_probe() passes an absolute fixture path so the stub locates it.
@@ -404,6 +435,81 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
             "(exit 0 = file found; exit 1 = file not found, i.e. build_command returned "
             "a relative path that does not resolve under CWD=tree-sitter-reify/)",
         )
+
+
+# ---------------------------------------------------------------------------
+# run_probe() measures whether the fixture exists when the probe launches
+# ---------------------------------------------------------------------------
+
+class TestRunProbeFixturePresence(unittest.TestCase):
+    """fixture_present is measured on the very path the launched argv carries.
+
+    The probe still launches when the fixture is absent, so the record keeps
+    its executed evidence; what the absence means is observe()'s business.
+    """
+
+    _PRESENT = "tests/prd-gate/fixtures/arrow_type.ri"
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_presence_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    @staticmethod
+    def _probe(kind, fixture):
+        return pcc.Probe(
+            capability="presence",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    def _never_written_fixtures(self):
+        absolute = os.path.join(self._tmpdir, "never_written.ri")
+        relative = os.path.join(
+            "tests", "prd-gate", "fixtures",
+            f"s22_never_written_{os.path.basename(self._tmpdir)}.ri",
+        )
+        for fixture in (absolute, relative):
+            self.assertFalse(
+                os.path.exists(os.path.join(_REPO_ROOT, fixture)),
+                f"precondition: {fixture} must not exist",
+            )
+        return {"absolute": absolute, "repo-relative": relative}
+
+    def test_committed_fixture_is_present_and_the_tool_agrees(self):
+        stub = _write_file_exists_stub(self._tmpdir, "ts_file_exists")
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            run = pcc.run_probe(self._probe("grammar", self._PRESENT))
+        self.assertIs(run.fixture_present, True)
+        self.assertEqual(
+            run.exit_code, 0,
+            "the stub found the fixture on the argv path, so the measured path "
+            "and the launched path agree",
+        )
+
+    def test_never_written_fixture_is_absent_and_the_tool_agrees(self):
+        stub = _write_file_exists_stub(self._tmpdir, "ts_file_exists")
+        for label, fixture in self._never_written_fixtures().items():
+            with self.subTest(fixture=label):
+                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+                    run = pcc.run_probe(self._probe("grammar", fixture))
+                self.assertIs(run.fixture_present, False)
+                self.assertEqual(run.exit_code, 1, "the stub found no file either")
+
+    def test_absent_fixture_still_launches_the_probe(self):
+        stub = os.path.join(self._tmpdir, "reify_says_ran")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\necho ran\nexit 3\n")
+        os.chmod(stub, 0o755)
+        for label, fixture in self._never_written_fixtures().items():
+            with self.subTest(fixture=label):
+                with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
+                    run = pcc.run_probe(self._probe("check", fixture))
+                self.assertIs(run.fixture_present, False)
+                self.assertIn("ran", run.stdout, "the probe must still have run")
+                self.assertEqual(run.exit_code, 3, "its own exit code is captured")
 
 
 # ---------------------------------------------------------------------------
@@ -498,52 +604,6 @@ class TestBuildCommandValueKind(unittest.TestCase):
                 run = pcc.run_probe(probe)
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         self.assertEqual(run.stdout.strip(), f"XDG_CACHE_HOME={sentinel}")
-
-
-class TestFixtureArgument(unittest.TestCase):
-    """fixture_argument() reads back the fixture build_command() put in argv."""
-
-    _FIXTURE = "tests/prd-gate/fixtures/leaf.ri"
-
-    def setUp(self):
-        self._root = tempfile.mkdtemp(prefix="prd_gate_fixture_arg_")
-
-    def tearDown(self):
-        shutil.rmtree(self._root, ignore_errors=True)
-
-    @staticmethod
-    def _probe(kind, fixture):
-        return pcc.Probe(
-            capability="c",
-            probe_kind=kind,
-            fixture=fixture,
-            expected={"observation": "present", "match": {}},
-        )
-
-    def test_fixture_argument_reads_back_every_kinds_fixture(self):
-        for kind in sorted(pcc._VALID_PROBE_KINDS):
-            with self.subTest(kind=kind):
-                cmd = pcc.build_command(
-                    self._probe(kind, self._FIXTURE), repo_root=self._root
-                )
-                self.assertEqual(
-                    pcc.fixture_argument(cmd),
-                    os.path.join(self._root, self._FIXTURE),
-                )
-
-    def test_absolute_fixture_is_read_back_verbatim(self):
-        cmd = pcc.build_command(self._probe("check", "/abs/x.ri"), repo_root=self._root)
-        self.assertEqual(pcc.fixture_argument(cmd), "/abs/x.ri")
-
-    def test_argv_with_no_argument_has_no_fixture(self):
-        """argv[0] is the program, never a probe target."""
-        self.assertIsNone(pcc.fixture_argument([]))
-        self.assertIsNone(pcc.fixture_argument(["reify"]))
-
-    def test_recorded_relative_argv_is_read_back(self):
-        """A relayed record may carry a repo-relative path; reify echoes it verbatim."""
-        cmd = ["target/release/reify", "eval", "tests/prd-gate/fixtures/x.ri"]
-        self.assertEqual(pcc.fixture_argument(cmd), "tests/prd-gate/fixtures/x.ri")
 
 
 if __name__ == "__main__":

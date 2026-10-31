@@ -6,10 +6,12 @@ harness_exit_code(), driven by synthetic ProbeRuns.  Shared loader and helpers:
 scripts/_pcc_test_support.py; runner: tests/infra/test_prd_capability_check.sh.
 """
 
+import dataclasses
 import unittest
 from typing import Any
 
 from _pcc_test_support import (
+    _CACHE_DENIED_STDERR,
     pcc,
 )
 
@@ -92,6 +94,45 @@ class TestVerdictTruthTable(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# The typed probe outcome: HarnessFailureKind, HarnessFailure, ProbeRun
+# ---------------------------------------------------------------------------
+
+class TestTypedProbeOutcome(unittest.TestCase):
+    """How the machinery failed is a typed value, enforced where it is built."""
+
+    def test_harness_failure_kinds_are_exactly_the_four_json_values(self):
+        values = {kind.value for kind in pcc.HarnessFailureKind}
+        self.assertEqual(values, {"launch", "setup", "timeout", "grammar_load"})
+        for kind in pcc.HarnessFailureKind:
+            with self.subTest(kind=kind):
+                self.assertIsInstance(kind, str)
+
+    def test_cache_denied_is_refused_on_any_kind_but_grammar_load(self):
+        with self.assertRaises(ValueError) as ctx:
+            pcc.HarnessFailure(pcc.HarnessFailureKind.LAUNCH, "x", cache_denied=True)
+        message = str(ctx.exception)
+        self.assertIn("launch", message)
+        self.assertIn("cache_denied", message)
+
+    def test_a_plain_string_kind_is_refused(self):
+        with self.assertRaises(TypeError):
+            pcc.HarnessFailure("launch", "x")
+
+    def test_harness_failure_and_probe_run_are_frozen(self):
+        failure = pcc.HarnessFailure(pcc.HarnessFailureKind.TIMEOUT, "slow")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            failure.detail = "changed"
+        run = pcc.ProbeRun(0, "", "")
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            run.exit_code = 1
+
+    def test_probe_run_defaults_to_no_failure_and_a_present_fixture(self):
+        run = pcc.ProbeRun(0, "", "")
+        self.assertIsNone(run.harness_failure)
+        self.assertIs(run.fixture_present, True)
+
+
+# ---------------------------------------------------------------------------
 # step-05 (RED): observation determination per probe kind
 # ---------------------------------------------------------------------------
 
@@ -168,8 +209,9 @@ class TestObservation(unittest.TestCase):
         self.assertEqual(obs, pcc.ABSENT)
 
     def test_grammar_exit1_with_failed_to_load_language_is_harness_error(self):
-        """grammar: 'Failed to load language' in stderr → harness-error sentinel."""
-        run = self._run(1, stderr="Failed to load language: reify")
+        """grammar: the boundary's GRAMMAR_LOAD failure → harness-error observation."""
+        stderr = "Failed to load language: reify"
+        run = pcc.ProbeRun(1, "", stderr, harness_failure=pcc.grammar_load_failure(stderr))
         obs = pcc.observe("grammar", run, {})
         # Must not be PRESENT or ABSENT — it must be a harness-error signal
         self.assertNotEqual(obs, pcc.PRESENT)
@@ -330,17 +372,22 @@ class TestValueObservation(unittest.TestCase):
             pcc.INDETERMINATE,
         )
 
-    # ── the universal sentinels still beat the kind dispatch ──────────────────
+    # ── a harness failure still beats the kind dispatch ───────────────────────
 
-    def test_binary_not_found_is_harness_error_not_indeterminate(self):
-        run = self._run(127, stderr=pcc._BINARY_NOT_FOUND_SENTINEL)
+    def _failed(self, exit_code, kind, detail):
+        return pcc.ProbeRun(
+            exit_code, "", "", harness_failure=pcc.HarnessFailure(kind, detail)
+        )
+
+    def test_launch_failure_is_harness_error_not_indeterminate(self):
+        run = self._failed(127, pcc.HarnessFailureKind.LAUNCH, "[Errno 2] reify")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
             pcc._HARNESS_ERROR,
         )
 
     def test_timeout_is_harness_error_not_indeterminate(self):
-        run = self._run(124, stderr=pcc._PROBE_TIMEOUT_SENTINEL)
+        run = self._failed(124, pcc.HarnessFailureKind.TIMEOUT, "timed out after 30s")
         self.assertEqual(
             pcc.observe("value", run, self._value(self._DAMPING)),
             pcc._HARNESS_ERROR,
@@ -417,12 +464,87 @@ class TestValueObservation(unittest.TestCase):
 
         self.assertEqual(pcc.observe("grammar", self._run(0), {}), pcc.PRESENT)
         self.assertEqual(pcc.observe("grammar", self._run(1), {}), pcc.ABSENT)
-        load_failure = self._run(
-            1, stderr=f"{pcc._GRAMMAR_LOAD_FAILURE_MARKER}: reify\n"
+        load_failure = pcc.ProbeRun(
+            1, "", "", harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.GRAMMAR_LOAD, "Failed to load language: reify"
+            ),
         )
         self.assertEqual(
             pcc.observe("grammar", load_failure, {}), pcc._HARNESS_ERROR
         )
+
+    def test_grammar_arm_reads_the_field_not_the_text(self):
+        """The load-failure TEXT alone is ABSENT: stderr is parsed at the boundary.
+
+        run_probe() and evaluate() turn tree-sitter's signature into
+        harness_failure; observe() reads only that field, never stderr.
+        """
+        run = self._run(1, stderr="Error: Failed to load language for path \"x.ri\"\n")
+        self.assertEqual(pcc.observe("grammar", run, {}), pcc.ABSENT)
+
+
+class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
+    """A probe with no target cannot prove anything (PRD D3).
+
+    Each case is a run that WOULD have been PRESENT or ABSENT had its fixture
+    existed, so nothing but fixture_present can be deciding the answer.
+    """
+
+    _DAMPING = {"pattern": r"damping_ratio = ([-+0-9.eE]+)", "min": 0.01, "max": 0.03}
+
+    # (kind, run fields, match): each an otherwise-decisive observation.
+    _DECISIVE_RUNS = (
+        ("grammar", (0, "", ""), {}),
+        ("check", (1, "", "Error reading x.ri"), {"exit_code": 1}),
+        ("ir", (0, "a = 0.01 m", ""), {"stderr_contains": "EvalError"}),
+        ("value", (0, "damping_ratio = 0.018\n", ""), {"stdout_value": _DAMPING}),
+    )
+
+    def test_absent_fixture_is_indeterminate_for_every_kind(self):
+        for kind, (exit_code, stdout, stderr), match in self._DECISIVE_RUNS:
+            with self.subTest(kind=kind):
+                present = pcc.ProbeRun(exit_code, stdout, stderr)
+                self.assertIn(
+                    pcc.observe(kind, present, match), (pcc.PRESENT, pcc.ABSENT),
+                    "precondition: with its fixture present the run is decisive",
+                )
+                absent = pcc.ProbeRun(exit_code, stdout, stderr, fixture_present=False)
+                self.assertEqual(
+                    pcc.observe_with_evidence(kind, absent, match),
+                    (pcc.INDETERMINATE, None),
+                    "no value reading is taken from a run with no target",
+                )
+
+    def test_absent_fixture_evaluates_unprovable_and_exits_2(self):
+        for kind, (exit_code, stdout, stderr), match in self._DECISIVE_RUNS:
+            with self.subTest(kind=kind):
+                probe = pcc.Probe(
+                    capability=f"{kind} on a missing fixture",
+                    probe_kind=kind,
+                    fixture="tests/prd-gate/fixtures/never_written.ri",
+                    expected={"observation": "present", "match": match},
+                )
+                result = pcc.evaluate(
+                    probe,
+                    runner=lambda _p: pcc.ProbeRun(
+                        exit_code, stdout, stderr, fixture_present=False
+                    ),
+                )
+                self.assertEqual(result.verdict, pcc.UNPROVABLE)
+                self.assertEqual(pcc.harness_exit_code([result]), 2)
+
+    def test_a_harness_failure_outranks_an_absent_fixture(self):
+        """The machinery failing is the louder fact."""
+        run = pcc.ProbeRun(
+            127, "", "",
+            harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file or directory"
+            ),
+            fixture_present=False,
+        )
+        for kind, _, match in self._DECISIVE_RUNS:
+            with self.subTest(kind=kind):
+                self.assertEqual(pcc.observe(kind, run, match), pcc._HARNESS_ERROR)
 
 
 class TestEvaluate(unittest.TestCase):
@@ -507,7 +629,7 @@ class TestEvaluate(unittest.TestCase):
         """Result must carry the exit_code from the captured run."""
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
-        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.run.exit_code, 0)
 
     def test_result_has_stdout(self):
         """Result must carry the stdout from the captured run."""
@@ -516,7 +638,7 @@ class TestEvaluate(unittest.TestCase):
             probe,
             runner=self._stub_runner(0, stdout="All constraints satisfied."),
         )
-        self.assertEqual(result.stdout, "All constraints satisfied.")
+        self.assertEqual(result.run.stdout, "All constraints satisfied.")
 
     def test_result_has_stderr(self):
         """Result must carry the stderr from the captured run."""
@@ -525,7 +647,7 @@ class TestEvaluate(unittest.TestCase):
             probe,
             runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
         )
-        self.assertIn("unresolved type", result.stderr)
+        self.assertIn("unresolved type", result.run.stderr)
 
     def test_result_carries_probe(self):
         """Result must carry the original Probe object."""
@@ -538,6 +660,78 @@ class TestEvaluate(unittest.TestCase):
         probe = self._make_grammar_probe("present")
         result = pcc.evaluate(probe, runner=self._stub_runner(0))
         self.assertEqual(result.observation, pcc.PRESENT)
+
+
+class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
+    """evaluate() types a load failure whatever runner produced the run.
+
+    A runner that hands back a bare ProbeRun of tree-sitter's output, with no
+    harness_failure, must not turn a grammar that never loaded into ABSENT: for
+    a rejection probe (expected absent) that is a false PASS.
+    """
+
+    _LOAD_FAILURE = 'Error: Failed to load language for path "x.ri"\n'
+
+    def _evaluate_grammar(self, expected_obs, exit_code, stderr):
+        probe = pcc.Probe(
+            capability="a grammar rejection",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": expected_obs, "match": {}},
+        )
+        return pcc.evaluate(
+            probe, runner=lambda _p: pcc.ProbeRun(exit_code, "", stderr)
+        )
+
+    def test_a_bare_load_failure_is_a_harness_error_not_a_pass(self):
+        result = self._evaluate_grammar("absent", 1, self._LOAD_FAILURE)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertEqual(pcc.harness_exit_code([result]), 70)
+        self.assertEqual(
+            result.run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD,
+            "the record names the failure, so it is not an un-attributable row",
+        )
+        self.assertFalse(result.run.harness_failure.cache_denied)
+
+    def test_a_bare_cache_denial_is_typed_as_one(self):
+        result = self._evaluate_grammar("present", 1, _CACHE_DENIED_STDERR)
+        self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
+        self.assertTrue(result.run.harness_failure.cache_denied)
+
+    def test_a_parse_error_still_answers_absent(self):
+        """Narrowness: exit 1 with no load-failure signature is the grammar's answer."""
+        result = self._evaluate_grammar("absent", 1, "")
+        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertIsNone(result.run.harness_failure)
+
+    def test_a_runners_own_failure_is_kept(self):
+        launch = pcc.HarnessFailure(pcc.HarnessFailureKind.LAUNCH, "[Errno 2] x")
+        probe = pcc.Probe(
+            capability="a grammar rejection",
+            probe_kind="grammar",
+            fixture="tests/prd-gate/fixtures/arrow_type.ri",
+            expected={"observation": "absent", "match": {}},
+        )
+        result = pcc.evaluate(
+            probe,
+            runner=lambda _p: pcc.ProbeRun(
+                127, "", self._LOAD_FAILURE, harness_failure=launch
+            ),
+        )
+        self.assertIs(result.run.harness_failure, launch)
+
+    def test_only_a_grammar_run_can_be_a_load_failure(self):
+        probe = pcc.Probe(
+            capability="a check whose own stderr quotes tree-sitter",
+            probe_kind="check",
+            fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
+            expected={"observation": "present", "match": {"exit_code": 1}},
+        )
+        result = pcc.evaluate(
+            probe, runner=lambda _p: pcc.ProbeRun(1, "", self._LOAD_FAILURE)
+        )
+        self.assertEqual(result.verdict, pcc.PASS)
+        self.assertIsNone(result.run.harness_failure)
 
 
 # ---------------------------------------------------------------------------
@@ -561,9 +755,7 @@ class TestHarnessExitCode(unittest.TestCase):
         return pcc.Result(
             probe=probe,
             command=["reify", "check", "some/fixture.ri"],
-            exit_code=0,
-            stdout="",
-            stderr="",
+            run=pcc.ProbeRun(0, "", ""),
             observation=pcc.PRESENT,
             verdict=verdict,
         )
@@ -691,23 +883,26 @@ class TestHarnessExitCode(unittest.TestCase):
         ]
         self.assertEqual(pcc.harness_exit_code(results), 70)
 
-    def test_binary_not_found_sentinel_flows_to_exit_70(self):
-        """_BINARY_NOT_FOUND_SENTINEL in stderr → observe → HARNESS_ERROR verdict → exit 70."""
+    def test_launch_failure_flows_to_exit_70(self):
+        """harness_failure LAUNCH → observe → HARNESS_ERROR verdict → exit 70."""
         probe = pcc.Probe(
-            capability="sentinel-flow-test",
+            capability="launch-failure-flow-test",
             probe_kind="check",
             fixture="some/fixture.ri",
             expected={"observation": "present", "match": {}},
         )
 
-        def sentinel_runner(p):
+        def launch_failure_runner(p):
             return pcc.ProbeRun(
                 exit_code=127,
                 stdout="",
-                stderr=pcc._BINARY_NOT_FOUND_SENTINEL + ": [Errno 2] No such file or directory",
+                stderr="",
+                harness_failure=pcc.HarnessFailure(
+                    pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file or directory"
+                ),
             )
 
-        result = pcc.evaluate(probe, runner=sentinel_runner)
+        result = pcc.evaluate(probe, runner=launch_failure_runner)
         self.assertEqual(result.verdict, pcc._HARNESS_ERROR)
         self.assertEqual(pcc.harness_exit_code([result]), 70)
 

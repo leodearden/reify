@@ -10,11 +10,13 @@ import glob
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 import unittest.mock
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _pdv_test_support import REPO_ROOT, load_pcc, load_pdv, reify_missing_fixture_stderr
@@ -32,6 +34,75 @@ _REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
 
 _LEAF_FALSE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-false-premise.json")
 _LEAF_TRUE = os.path.join(REPO_ROOT, "tests", "prd-gate", "leaf-true-premise.json")
+
+
+# ---------------------------------------------------------------------------
+# The α ↔ pdv boundary, driven through both CLIs over temp files
+# ---------------------------------------------------------------------------
+# These are the bytes the D3 Prover relays, so a test of the boundary reads α's
+# real --json record rather than a hand-built projection of it.
+
+_PDV_SCRIPT = os.path.join(REPO_ROOT, "scripts", "prd-decompose-verify.py")
+_ALPHA_SCRIPT = os.path.join(REPO_ROOT, "scripts", "prd-capability-check.py")
+
+# α's exit codes for a probe set it evaluated (64 is a usage error: no records).
+_ALPHA_EVALUATED_RCS = (0, 1, 2, 70)
+
+
+def _run_script(script, *argv, env=None):
+    return subprocess.run(
+        [sys.executable, script, *argv], capture_output=True, text=True, env=env
+    )
+
+
+def _write_json(dirpath, name, obj):
+    path = os.path.join(dirpath, name)
+    with open(path, "w") as fh:
+        json.dump(obj, fh)
+    return path
+
+
+def _alpha_json(probe_set, tmpdir, env=None):
+    """Run α --json over `probe_set`; return (rc, records)."""
+    proc = _run_script(
+        _ALPHA_SCRIPT, "--json", _write_json(tmpdir, "probes.json", probe_set), env=env
+    )
+    if proc.returncode not in _ALPHA_EVALUATED_RCS:
+        raise AssertionError(
+            f"α --json exited {proc.returncode}, evaluating nothing: {proc.stderr}"
+        )
+    return proc.returncode, json.loads(proc.stdout)["results"]
+
+
+@dataclass(frozen=True)
+class _ChainRun:
+    """What pdv bind → α --json → pdv synthesize produced."""
+    alpha_rc: int
+    records: list
+    synthesize_rc: int
+    verdict: dict
+
+
+def _bind_probe_synthesize(premises, tmpdir, env=None):
+    """Chain the three CLIs over `premises`, every hop through a temp file."""
+    bind = _run_script(
+        _PDV_SCRIPT, "bind", _write_json(tmpdir, "premises.json", {"premises": premises}),
+        env=env,
+    )
+    if bind.returncode != 0:
+        raise AssertionError(f"pdv bind exited {bind.returncode}: {bind.stderr}")
+    alpha_rc, records = _alpha_json(json.loads(bind.stdout), tmpdir, env=env)
+    synthesize = _run_script(
+        _PDV_SCRIPT, "synthesize",
+        _write_json(tmpdir, "results.json", {"prover": records, "adversary": []}),
+        env=env,
+    )
+    if synthesize.returncode not in (0, 1):
+        raise AssertionError(
+            f"pdv synthesize exited {synthesize.returncode}: {synthesize.stderr}"
+        )
+    return _ChainRun(alpha_rc, records, synthesize.returncode,
+                     json.loads(synthesize.stdout))
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +303,11 @@ class TestMainCLI(unittest.TestCase):
         }
 
     def _fixture_absent_record(self, capability: str) -> dict:
-        """An executed FAIL whose probe could not find its target file."""
-        return self._result_record(
+        """An executed FAIL whose probe α measured as having no target file."""
+        return dict(self._result_record(
             capability, "FAIL", exit_code=1,
             stderr=reify_missing_fixture_stderr("/fixture.ri"),
-        )
+        ), fixture_present=False)
 
     def test_synthesize_only_evidence_free_fails_exits_0(self):
         """A file of nothing but unexecuted promises does not block the batch."""
@@ -306,6 +377,21 @@ class TestMainCLI(unittest.TestCase):
         self.assertFalse(obj["blocks"])
         self.assertEqual(obj["fixture_absent"], ["fixture-absent cap"])
 
+    def test_synthesize_blocks_an_enoent_fail_that_lacks_the_field(self):
+        """B5: a relayed record without fixture_present is fail-closed (PRD D3)."""
+        tmp = self._make_results_file(prover=[self._result_record(
+            "relayed cap", "FAIL", exit_code=1,
+            stderr=reify_missing_fixture_stderr("/fixture.ri"),
+        )])
+        try:
+            rc, out, _ = self._run_main(["synthesize", tmp])
+        finally:
+            os.unlink(tmp)
+        self.assertEqual(rc, 1, out)
+        obj = json.loads(out)
+        self.assertEqual(obj["blocking"], ["relayed cap"])
+        self.assertEqual(obj["fixture_absent"], [])
+
     def test_synthesize_all_pass_reports_a_clean_basis(self):
         """Happy-path regression guard: executed == total, nothing set aside."""
         tmp = self._make_results_file(
@@ -353,22 +439,10 @@ class TestBoundaryE2e(unittest.TestCase):
         return premises
 
     def _run_probes_with_alpha(self, probe_set_dict: dict) -> list:
-        """Evaluate all probes in probe_set_dict using α's evaluate(), return result dicts."""
-        probe_set_json = json.dumps(probe_set_dict)
-        probes = pcc.load_probe_set(probe_set_json)
-        result_dicts = []
-        for probe in probes:
-            r = pcc.evaluate(probe)
-            result_dicts.append({
-                "capability": r.probe.capability,
-                "probe_kind": r.probe.probe_kind,
-                "verdict": r.verdict,
-                "command": r.command,
-                "exit_code": r.exit_code,
-                "stdout": r.stdout,
-                "stderr": r.stderr,
-            })
-        return result_dicts
+        """α's own --json records for probe_set_dict, through its CLI."""
+        with tempfile.TemporaryDirectory(prefix="pdv_e2e_alpha_") as tmpdir:
+            _, records = _alpha_json(probe_set_dict, tmpdir)
+        return records
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
     def test_false_premise_leaf_blocks(self):
@@ -440,6 +514,91 @@ class TestBoundaryE2e(unittest.TestCase):
         self.assertFalse(bv.blocks, bv.report)
 
 
+class TestFixtureAbsentBoundary(unittest.TestCase):
+    """α measures fixture presence and pdv sets the absence aside (PRD §6 B1, §3 M1).
+
+    Driven through the three CLIs, so pdv reads exactly the record α emits.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="pdv_fixture_absent_")
+        self.addCleanup(shutil.rmtree, self._tmpdir, ignore_errors=True)
+        self._fixture = os.path.join(self._tmpdir, "s22_does_not_exist.ri")
+        self.assertFalse(os.path.exists(self._fixture), "precondition: never written")
+
+    def _rejection(self, capability):
+        return {"text": capability, "capability": capability,
+                "assertion_kind": "rejection", "fixture": self._fixture,
+                "match": {"exit_code": 1}}
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
+    def test_b1_rejection_on_a_missing_fixture_is_fixture_absent(self):
+        run = _bind_probe_synthesize([self._rejection("B1 rejection")], self._tmpdir)
+        [record] = run.records
+        self.assertEqual(record["verdict"], pcc.UNPROVABLE, record)
+        self.assertIs(record["fixture_present"], False)
+        self.assertEqual(record["fixture"], self._fixture)
+        self.assertEqual(run.alpha_rc, 2)
+        self.assertEqual(run.verdict["fixture_absent"], ["B1 rejection"])
+        self.assertIs(run.verdict["blocks"], False)
+        self.assertEqual(run.verdict["executed"], 1)
+
+    def test_b2_parses_premise_on_a_missing_fixture_is_fixture_absent(self):
+        """#8122: tree-sitter's missing-file report names no path, the field does."""
+        status = _run_script(_ALPHA_SCRIPT, "--grammar-substrate-status")
+        if status.returncode == 75:
+            self.skipTest(f"grammar substrate unavailable: {status.stdout.strip()}")
+        self.assertEqual(status.returncode, 0,
+                         f"--grammar-substrate-status: {status.stdout}{status.stderr}")
+        run = _bind_probe_synthesize([
+            {"text": "B2 parses", "capability": "B2 parses",
+             "assertion_kind": "parses", "fixture": self._fixture, "match": {}},
+        ], self._tmpdir)
+        [record] = run.records
+        self.assertIs(record["fixture_present"], False)
+        self.assertEqual(run.verdict["fixture_absent"], ["B2 parses"])
+        self.assertIs(run.verdict["blocks"], False)
+
+    def test_b3_present_fixture_quoting_enoent_still_blocks(self):
+        """A genuine FAIL whose diagnostic quotes ENOENT on the fixture's own line."""
+        fixture = os.path.join(self._tmpdir, "present.ri")
+        with open(fixture, "w") as fh:
+            fh.write("// present\n")
+        stub = os.path.join(self._tmpdir, "reify_quotes_enoent")
+        with open(stub, "w") as fh:
+            fh.write('#!/bin/sh\n'
+                     'printf \'%s:3: expected "No such file or directory '
+                     '(os error 2)"\\n\' "$2" >&2\n'
+                     'exit 0\n')
+        os.chmod(stub, 0o755)
+        premise = dict(self._rejection("B3 rejection"), fixture=fixture)
+        run = _bind_probe_synthesize([premise], self._tmpdir,
+                                     env=dict(os.environ, REIFY_BIN=stub))
+        [record] = run.records
+        self.assertIn(f"{fixture}:3:", record["stderr"], "precondition: the stub ran")
+        self.assertEqual(run.alpha_rc, 1)
+        self.assertIs(record["fixture_present"], True)
+        self.assertEqual(run.synthesize_rc, 1)
+        self.assertEqual(run.verdict["blocking"], ["B3 rejection"])
+        self.assertEqual(run.verdict["fixture_absent"], [])
+
+    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip boundary e2e")
+    def test_m1_reproduction_is_fixture_absent_not_verified(self):
+        """The two-premise set that read VERIFIED at PRD §3 M1."""
+        premises = [
+            self._rejection("M1 rejection"),
+            {"text": "M1 resolves", "capability": "M1 resolves",
+             "assertion_kind": "resolves", "fixture": self._fixture, "match": {}},
+        ]
+        run = _bind_probe_synthesize(premises, self._tmpdir)
+        self.assertEqual(
+            sorted(run.verdict["fixture_absent"]), ["M1 rejection", "M1 resolves"],
+            run.verdict["report"],
+        )
+        self.assertIs(run.verdict["blocks"], False)
+        self.assertEqual(run.verdict["executed"], 2)
+
+
 # ---------------------------------------------------------------------------
 # task #7257 step-15 (RED): the user-observable signal, end to end
 # ---------------------------------------------------------------------------
@@ -480,7 +639,8 @@ class TestUserObservableSignal(unittest.TestCase):
                  "command": ["reify", "eval", "tests/prd-gate/fixtures/not-yet.ri"],
                  "exit_code": 1, "stdout": "",
                  "stderr": reify_missing_fixture_stderr(
-                     "tests/prd-gate/fixtures/not-yet.ri")},
+                     "tests/prd-gate/fixtures/not-yet.ri"),
+                 "fixture_present": False},
             ],
             "adversary": [
                 # (4) an evidence-backed falsification whose command is a STRING

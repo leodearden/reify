@@ -106,7 +106,7 @@ counterpart of rule 3.
 
 | `probe_kind` | Command | Observation model |
 |---|---|---|
-| `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; "Failed to load language" in stderr → **HARNESS ERROR** |
+| `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; a grammar load failure → **HARNESS ERROR** — α parses tree-sitter's load-failure signature once, at its runner boundary, into `harness_failure` (kind `grammar_load`) |
 | `check` | `reify check <fixture>` | `match` predicate satisfied → **PRESENT**; predicate not satisfied → **ABSENT** |
 | `ir` | `reify eval <fixture>` (eval-error proxy) | exit 0 → **ABSENT** (sound by determinism); exit ≠ 0 with asserted `stderr_contains` signature → **PRESENT**; exit ≠ 0 without signature → **INDETERMINATE** → UNPROVABLE |
 | `value` | `reify eval <fixture>` (same argv as `ir` — the kind names the observation model, not the command) | exit 0 and the `stdout_value` capture satisfies the constraint → **PRESENT**; exit 0 and a capture was read but failed the constraint → **ABSENT**; exit 0 but the `pattern` located nothing → **INDETERMINATE** → UNPROVABLE; exit ≠ 0 → **INDETERMINATE** → UNPROVABLE |
@@ -143,6 +143,11 @@ PRESENT, ABSENT and ABSENT respectively.
 | ABSENT | present | **FAIL** |
 | INDETERMINATE | (any) | **UNPROVABLE** |
 
+A fixture that does not exist when the probe launches makes the observation
+INDETERMINATE → **UNPROVABLE** for every kind (exit 2), unless a `harness_failure`
+is set, which is **HARNESS_ERROR** instead. The probe still runs, so its evidence
+is still recorded.
+
 ## Harness exit codes
 
 | Code | Meaning |
@@ -151,7 +156,7 @@ PRESENT, ABSENT and ABSENT respectively.
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
 | 64 | Usage / argument error (`EX_USAGE`) |
-| 70 | Tool / runtime error (`EX_SOFTWARE`) — missing binary, grammar load failure |
+| 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set
 
@@ -159,6 +164,10 @@ PRESENT, ABSENT and ABSENT respectively.
 python3 scripts/prd-capability-check.py tests/prd-gate/example-probe-set.json
 python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
 ```
+
+Each `--json` record also carries the typed probe outcome: `fixture` (as written
+in the probe set), `fixture_present` and `harness_failure`. The record contract is
+`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.1.
 
 ## Fixtures
 
