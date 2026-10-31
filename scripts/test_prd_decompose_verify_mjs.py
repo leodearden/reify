@@ -1774,8 +1774,11 @@ def _pdv_print_schema():
     return proc.stdout
 
 
-def _occurs_as_token(word, text):
-    return re.search(rf"(?<![A-Za-z_]){re.escape(word)}(?![A-Za-z_])", text) is not None
+def _states_as_one_list(words, text):
+    """True when `text` lists `words` in order, separated by punctuation or
+    space alone: the closed list itself, not the words scattered through prose."""
+    listed = r"\W+".join(re.escape(word) for word in words)
+    return re.search(rf"(?<![A-Za-z_]){listed}(?![A-Za-z_])", text) is not None
 
 
 class TestMjsSchemaParity(unittest.TestCase, _MjsScenarioMixin):
@@ -1814,19 +1817,18 @@ class TestMjsSchemaParity(unittest.TestCase, _MjsScenarioMixin):
         self.assertEqual(called, set(self._MEMBER_BY_PHASE))
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
-    def test_the_enumerator_prompt_names_every_assertion_kind(self):
+    def test_the_enumerator_prompt_lists_every_assertion_kind(self):
         [prompt] = self._prompts("enumerate")
-        for kind in load_pdv().AssertionKind:
-            with self.subTest(assertion_kind=kind.value):
-                self.assertTrue(_occurs_as_token(kind.value, prompt))
+        kinds = [kind.value for kind in load_pdv().AssertionKind]
+        self.assertTrue(_states_as_one_list(kinds, prompt), kinds)
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
-    def test_the_prover_and_adversary_prompts_name_every_verdict(self):
+    def test_the_prover_and_adversary_prompts_list_every_verdict(self):
+        verdicts = [verdict.value for verdict in load_pcc().Verdict]
         for phase in ("prove", "adversary"):
             [prompt] = self._prompts(phase)
-            for verdict in load_pcc().Verdict:
-                with self.subTest(phase=phase, verdict=verdict.value):
-                    self.assertTrue(_occurs_as_token(verdict.value, prompt))
+            with self.subTest(phase=phase):
+                self.assertTrue(_states_as_one_list(verdicts, prompt), verdicts)
 
 
 if __name__ == "__main__":
