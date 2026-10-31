@@ -441,24 +441,37 @@ class TestEvidenceGate(unittest.TestCase):
         self.assertTrue(bv.blocks)
         self.assertIn("harness-error cap", bv.blocking)
 
-    # ── (7) a PREMISE-shaped record is neither blocking nor malformed ────────
+    # ── (7) a PREMISE-shaped record is malformed, and still not blocking ────
 
-    def test_premise_shaped_record_is_neither_blocking_nor_malformed(self):
-        """RESULTS_SCHEMA is loose enough today that a premise validates as a result.
-
-        Such a record has no `verdict` key at all.  It is not a falsification
-        and it is not an evidence-free BLOCKING verdict either — the evidence
-        gate must not manufacture a malformed entry out of it.
-        """
+    def test_premise_shaped_record_is_malformed_not_blocking(self):
+        """A premise relayed as a result has no verdict, so it adjudicates
+        nothing: it is set aside as MALFORMED, never read as a pass."""
         premise_shaped = {
             "capability": "a revolute joint rejects a non-axis argument",
             "assertion_kind": "rejection",
             "fixture": "tests/prd-gate/fixtures/revolute-non-axis.ri",
         }
+        self.assertEqual(pdv.classify_record(premise_shaped), pdv.RecordCategory.MALFORMED)
         bv = pdv.synthesize_batch({"prover": [premise_shaped], "adversary": []})
         self.assertFalse(bv.blocks)
         self.assertEqual(bv.blocking, [])
-        self.assertEqual(bv.malformed, [])
+        self.assertEqual(bv.malformed, [premise_shaped["capability"]])
+
+    def test_a_verdict_outside_alphas_vocabulary_is_malformed(self):
+        """Fail-closed corner §5.2 does not state (esc-8651-1): evidence and a
+        present fixture do not make an unknown verdict a pass."""
+        for label, verdict in (("MAYBE", "MAYBE"), ("a list", ["PASS"]), ("missing", None)):
+            with self.subTest(verdict=label):
+                rec = self._result("odd-verdict cap", "PASS", exit_code=0)
+                rec["fixture_present"] = True
+                if verdict is None:
+                    del rec["verdict"]
+                else:
+                    rec["verdict"] = verdict
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.MALFORMED)
+                bv = pdv.synthesize_batch({"prover": [rec], "adversary": []})
+                self.assertEqual(bv.malformed, ["odd-verdict cap"])
+                self.assertEqual(bv.executed, 0)
 
     def test_pass_record_is_not_malformed_even_without_evidence(self):
         """The gate applies to BLOCKING verdicts only; a PASS is not re-litigated."""
@@ -555,6 +568,24 @@ class TestFixtureAbsent(unittest.TestCase):
 
     def test_classification_follows_the_prd_precedence(self):
         cases = (
+            ("rule 1: PASS on a fixture α saw",
+             self._record(verdict="PASS", fixture_present=True),
+             pdv.RecordCategory.NON_BLOCKING),
+            ("rule 2: HARNESS_ERROR with fixture_present null",
+             self._record(verdict="HARNESS_ERROR", evidence=False, fixture_present=None),
+             pdv.RecordCategory.BLOCKING),
+            ("rule 3: FAIL with fixture_present null",
+             self._record(fixture_present=None),
+             pdv.RecordCategory.MALFORMED),
+            ("rule 4: FAIL on a present fixture without evidence",
+             self._record(evidence=False, fixture_present=True),
+             pdv.RecordCategory.MALFORMED),
+            ("rule 5: FAIL on an absent fixture with evidence",
+             self._record(fixture_present=False),
+             pdv.RecordCategory.FIXTURE_ABSENT),
+            ("rule 6: FAIL on a present fixture with evidence",
+             self._record(fixture_present=True),
+             pdv.RecordCategory.BLOCKING),
             ("a relayed PASS on a missing fixture (M1)",
              self._record(verdict="PASS", fixture_present=False),
              pdv.RecordCategory.FIXTURE_ABSENT),
@@ -596,10 +627,10 @@ class TestFixtureAbsent(unittest.TestCase):
         self.assertEqual(bv.blocking, ["launch cap"])
         self.assertEqual(bv.fixture_absent, [])
 
-    # ── (3) B5: only α's boolean false routes; the stderr text never does ────
+    # ── (3) B5: only α's booleans route; the stderr text never does ──────────
 
-    def test_enoent_stderr_without_a_boolean_false_blocks(self):
-        """Fail-closed (D3): missing, null and every non-bool falsy value block."""
+    def test_enoent_stderr_without_a_boolean_fixture_present_is_malformed(self):
+        """PRD §5.2 rule 3 (R14 M3): missing, null and every non-bool value."""
         variants = {
             "field missing": {},
             "field null": {"fixture_present": None},
@@ -608,23 +639,50 @@ class TestFixtureAbsent(unittest.TestCase):
         }
         for label, fields in variants.items():
             with self.subTest(variant=label):
-                rec = self._record(f"{label} cap", stderr=self._ENOENT, **fields)
-                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.BLOCKING)
+                cap = f"{label} cap"
+                rec = self._record(cap, stderr=self._ENOENT, **fields)
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.MALFORMED)
                 bv = self._synthesize(rec)
-                self.assertTrue(bv.blocks)
+                self.assertFalse(bv.blocks)
+                self.assertEqual(bv.malformed, [cap])
                 self.assertEqual(bv.fixture_absent, [])
 
-    # ── (4) a pass on a present fixture is untouched ─────────────────────────
+    # ── (4) only α's true makes a pass count ─────────────────────────────────
 
-    def test_pass_on_a_present_fixture_is_non_blocking(self):
-        for label, fields in {
-            "field true": {"fixture_present": True},
-            "field missing": {},
-            "field null": {"fixture_present": None},
-        }.items():
+    def test_pass_counts_only_on_a_fixture_alpha_saw(self):
+        for label, fields, category in (
+            ("field true", {"fixture_present": True}, pdv.RecordCategory.NON_BLOCKING),
+            ("field missing", {}, pdv.RecordCategory.MALFORMED),
+            ("field null", {"fixture_present": None}, pdv.RecordCategory.MALFORMED),
+        ):
             with self.subTest(variant=label):
                 rec = self._record(verdict="PASS", stderr=self._ENOENT, **fields)
-                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.NON_BLOCKING)
+                self.assertEqual(pdv.classify_record(rec), category)
+
+    # ── (5) B5′: a relayed PASS without α's true is never verified ──────────
+
+    def test_a_pass_without_a_boolean_fixture_present_is_never_verified(self):
+        """Its evidence is not counted, so the leaf rule (`executed === 0` →
+        NOT_VERIFIED) cannot read VERIFIED off it."""
+        without_field = self._record("missing cap", "PASS")
+        null_field = self._record("null cap", "PASS", fixture_present=None)
+        for rec in (without_field, null_field):
+            with self.subTest(capability=rec["capability"]):
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.MALFORMED)
+                bv = self._synthesize(rec)
+                self.assertEqual(bv.malformed, [rec["capability"]])
+                self.assertEqual(bv.blocking, [])
+                self.assertFalse(bv.blocks)
+                self.assertEqual(bv.executed, 0)
+
+    # ── (6) HARNESS_ERROR blocks whatever its fixture_present says ───────────
+
+    def test_harness_error_without_a_boolean_fixture_present_blocks(self):
+        for label, fields in (("field null", {"fixture_present": None}), ("field missing", {})):
+            with self.subTest(variant=label):
+                rec = self._record("harness cap", "HARNESS_ERROR", evidence=False, **fields)
+                self.assertEqual(pdv.classify_record(rec), pdv.RecordCategory.BLOCKING)
+                self.assertTrue(self._synthesize(rec).blocks)
 
 
 # ---------------------------------------------------------------------------

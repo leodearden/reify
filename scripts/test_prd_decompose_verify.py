@@ -377,20 +377,35 @@ class TestMainCLI(unittest.TestCase):
         self.assertFalse(obj["blocks"])
         self.assertEqual(obj["fixture_absent"], ["fixture-absent cap"])
 
-    def test_synthesize_blocks_an_enoent_fail_that_lacks_the_field(self):
-        """B5: a relayed record without fixture_present is fail-closed (PRD D3)."""
-        tmp = self._make_results_file(prover=[self._result_record(
-            "relayed cap", "FAIL", exit_code=1,
-            stderr=reify_missing_fixture_stderr("/fixture.ri"),
-        )])
+    def _synthesize_one(self, record):
+        tmp = self._make_results_file(prover=[record])
         try:
             rc, out, _ = self._run_main(["synthesize", tmp])
         finally:
             os.unlink(tmp)
-        self.assertEqual(rc, 1, out)
-        obj = json.loads(out)
-        self.assertEqual(obj["blocking"], ["relayed cap"])
+        return rc, json.loads(out)
+
+    def test_synthesize_sets_aside_an_enoent_fail_that_lacks_the_field(self):
+        """B5 (PRD §5.2 as amended by R14): a relayed record without
+        fixture_present is MALFORMED — never a falsification, never verified."""
+        record = self._result_record(
+            "relayed cap", "FAIL", exit_code=1,
+            stderr=reify_missing_fixture_stderr("/fixture.ri"),
+        )
+        record.pop("fixture_present", None)
+        rc, obj = self._synthesize_one(record)
+        self.assertEqual(rc, 0, obj)
+        self.assertEqual(obj["malformed"], ["relayed cap"])
+        self.assertEqual(obj["blocking"], [])
         self.assertEqual(obj["fixture_absent"], [])
+
+    def test_synthesize_sets_aside_a_pass_with_null_fixture_present(self):
+        """B5′: a relayed PASS whose fixture_present is null is not evidence."""
+        record = dict(self._result_record("relayed pass", "PASS"), fixture_present=None)
+        rc, obj = self._synthesize_one(record)
+        self.assertEqual(rc, 0, obj)
+        self.assertEqual(obj["malformed"], ["relayed pass"])
+        self.assertEqual(obj["executed"], 0)
 
     def test_synthesize_all_pass_reports_a_clean_basis(self):
         """Happy-path regression guard: executed == total, nothing set aside."""
