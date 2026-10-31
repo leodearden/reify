@@ -708,12 +708,11 @@ fn comparison_residual(
     let (Some(l), Some(r)) = (lv.as_f64(), rv.as_f64()) else {
         return RowResidual::rejected(1.0);
     };
+    if let Some(holds) = order_holds(op, l, r) {
+        return RowResidual::inequality(if holds { 0.0 } else { (l - r).abs() });
+    }
 
     match op {
-        BinOp::Gt => RowResidual::inequality(if l > r { 0.0 } else { r - l }),
-        BinOp::Ge => RowResidual::inequality(if l >= r { 0.0 } else { r - l }),
-        BinOp::Lt => RowResidual::inequality(if l < r { 0.0 } else { l - r }),
-        BinOp::Le => RowResidual::inequality(if l <= r { 0.0 } else { l - r }),
         BinOp::Eq => RowResidual::judged(
             (l - r).abs(),
             reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
@@ -722,6 +721,20 @@ fn comparison_residual(
             RowResidual::accepted(0.0)
         }
         _ => RowResidual::rejected(1.0),
+    }
+}
+
+/// `l OP r` as f64 compares it, for an order comparison (`>`, `>=`, `<`,
+/// `<=`); `None` for any other op. The one verdict that both a residual row
+/// ([`comparison_residual`]) and a derived bound's check ([`LeafProbe`])
+/// apply, before any acceptance threshold. A NaN operand never holds.
+fn order_holds(op: BinOp, l: f64, r: f64) -> Option<bool> {
+    match op {
+        BinOp::Gt => Some(l > r),
+        BinOp::Ge => Some(l >= r),
+        BinOp::Lt => Some(l < r),
+        BinOp::Le => Some(l <= r),
+        _ => None,
     }
 }
 
@@ -1608,8 +1621,8 @@ enum StrictBound {
     /// That guarantee is exact for the DIRECT shape only. A rearranged shape
     /// (`p − k OP c`, `2·p OP c`, …) is directed-rounded by HC4, so an exact
     /// rearrangement stays exact; an inexact one is settled onto the leaf's own
-    /// non-strict verdict ([`DerivationCtx::settle_onto_leaf`]), but one step
-    /// inside it is not guaranteed to satisfy the STRICT leaf (task #7959).
+    /// non-strict verdict ([`LeafProbe::edge`]), but one step inside it is not
+    /// guaranteed to satisfy the STRICT leaf (task #7959).
     SteppedInside,
 }
 
@@ -1633,14 +1646,15 @@ impl StrictBound {
 /// [`hc4::OperandClassifier`]. A lookup the whole family needs is a new MEMBER
 /// here rather than a parameter on every signature.
 ///
-/// Built once per derivation walk by the two entry points; every inner member
-/// takes `&DerivationCtx`.
+/// Built once per walk by the derivation's two entry points and by
+/// [`refuted_before_solve`]; every inner member takes `&DerivationCtx`.
 ///
 /// COST: `auto_reads` is a pure function of `(dependent_cells, auto_params)`,
 /// neither of which changes across a resolution — yet it is rebuilt at every
-/// entry-point call, which over one resolution is `extract_initial_point` +
-/// [`derived_seed_box`] + one per `solve_core_with_sd_tolerance` across the
-/// multistart points + two in `verify_uniqueness`. A model with NO dependent
+/// entry-point call, which over one resolution is [`refuted_before_solve`] +
+/// `extract_initial_point` + [`derived_seed_box`] + one per
+/// `solve_core_with_sd_tolerance` across the multistart points + two in
+/// `verify_uniqueness`. A model with NO dependent
 /// cells pays nothing (`dependent_cell_auto_reads` early-returns an empty
 /// map), and otherwise the reachability DFS is dwarfed by the Nelder-Mead fold
 /// it precedes — so this is priced, not overlooked. Hoisting it to once per
@@ -1862,7 +1876,7 @@ fn derive_param_intervals(
 /// Per-leaf worker for [`derive_param_intervals`] and
 /// [`collect_underivable_in_leaf`]: HC4-revise ONE leaf conjunct alone, every
 /// auto starting at the whole real line, and record each finite side it
-/// narrows with the leaf's own strictness.
+/// narrows.
 ///
 /// Reads ORDER relations only (`Ge`/`Gt`/`Le`/`Lt`). An `Eq` pin contracts to
 /// a point, and a point box makes [`compose_interval`] discard the sibling
@@ -1870,9 +1884,13 @@ fn derive_param_intervals(
 /// alone. A leaf that is empty on its own records nothing; the refutation
 /// reports it.
 ///
-/// Per leaf, not to a cross-constraint fixpoint, so a side's `strict` flag is
-/// exactly its source leaf's comparison — the property [`StrictBound`]'s clamp
-/// policies rely on.
+/// Per leaf, not to a cross-constraint fixpoint, so each side has ONE source
+/// leaf and is strict only if that leaf is. A side the leaf's operator DOMAIN
+/// sets rather than its comparison (`sqrt(q) < 3` ⇒ `q >= 0`) is no strict
+/// bound, so where a [`LeafProbe`] can check the leaf, a side is strict only
+/// if the model's evaluator rejects the strict leaf there. Any other leaf keeps
+/// its strictness on every side: at worst one ulp lost, the safe direction for
+/// every [`StrictBound`] policy.
 ///
 /// Must read a SUPERSET of the `collect_slack_terms` / `collect_floor_terms`
 /// op rules: every `l − r >= m` slack form `synthesise_floor_constraints`
@@ -1888,18 +1906,19 @@ fn derive_from_leaf(leaf: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [Der
     if relation.revise(&mut bx, hc4::Slack::Exact) == hc4::Revision::Empty {
         return;
     }
-    let strict = relation.is_strict();
-    let settles = ctx.single_auto_leaf(leaf, &relation);
+    let mut probe = LeafProbe::of(leaf, &relation, ctx);
     for (auto, (side, derived)) in bx.iter().zip(out.iter_mut()).enumerate() {
-        let settle = |value: f64, inward: fn(f64) -> f64| match settles {
-            Some(only) if only == auto => ctx.settle_onto_leaf(leaf, auto, value, inward),
-            _ => value,
+        let mut edge = |value: f64, inward: fn(f64) -> f64| match probe.as_mut() {
+            Some(probe) if probe.auto == auto => probe.edge(value, inward),
+            _ => (value, relation.is_strict()),
         };
         if side.lo().is_finite() {
-            derived.push_lo(settle(side.lo(), f64::next_up), strict);
+            let (lo, strict) = edge(side.lo(), f64::next_up);
+            derived.push_lo(lo, strict);
         }
         if side.hi().is_finite() {
-            derived.push_hi(settle(side.hi(), f64::next_down), strict);
+            let (hi, strict) = edge(side.hi(), f64::next_down);
+            derived.push_hi(hi, strict);
         }
     }
 }
@@ -1952,20 +1971,58 @@ fn refuted_before_solve(
     })
 }
 
-/// How many ulps [`DerivationCtx::settle_onto_leaf`] may move a derived side.
+/// How many ulps [`LeafProbe::edge`] may move a derived side.
 const SETTLE_MAX_STEPS: usize = 4;
 
-impl DerivationCtx<'_> {
-    /// The one auto a fully compiled `leaf` mentions, when it mentions exactly
-    /// one and no moving quantity — the leaves whose derived side can be
-    /// checked against the model's own evaluator.
-    fn single_auto_leaf(&self, leaf: &CompiledExpr, relation: &hc4::Relation) -> Option<usize> {
+/// A fully compiled order leaf over ONE Scalar auto and no other moving
+/// quantity, evaluated by the model's own evaluator with that auto set to a
+/// trial value: what a derived side of the auto is settled onto and judged
+/// strict against. Owns one copy of the value map, in which each probe
+/// overwrites only the auto's slot.
+struct LeafProbe<'p> {
+    ctx: &'p DerivationCtx<'p>,
+    op: BinOp,
+    left: &'p CompiledExpr,
+    right: &'p CompiledExpr,
+    auto: usize,
+    dimension: DimensionVector,
+    values: ValueMap,
+}
+
+impl<'p> LeafProbe<'p> {
+    /// The probe for `leaf`, when the leaf has the shape a probe needs.
+    fn of(
+        leaf: &'p CompiledExpr,
+        relation: &hc4::Relation,
+        ctx: &'p DerivationCtx<'p>,
+    ) -> Option<Self> {
+        let CompiledExprKind::BinOp { op, left, right } = &leaf.kind else {
+            return None;
+        };
         if !relation.is_fully_representable() {
             return None;
         }
+        let auto = Self::single_auto(leaf, ctx)?;
+        let Type::Scalar { dimension } = &ctx.autos[auto].param_type else {
+            return None;
+        };
+        Some(Self {
+            ctx,
+            op: *op,
+            left,
+            right,
+            auto,
+            dimension: *dimension,
+            values: ctx.values.clone(),
+        })
+    }
+
+    /// The one auto `leaf` mentions, when it mentions exactly one and no other
+    /// moving quantity.
+    fn single_auto(leaf: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<usize> {
         let mut only = None;
         for id in leaf.collect_value_refs() {
-            match hc4::OperandClassifier::classify(self, &id) {
+            match hc4::OperandClassifier::classify(ctx, &id) {
                 hc4::RefClass::Fixed => {}
                 hc4::RefClass::Varying => return None,
                 hc4::RefClass::Variable(i) if only.is_none_or(|o| o == i) => only = Some(i),
@@ -1975,54 +2032,47 @@ impl DerivationCtx<'_> {
         only
     }
 
-    /// Settle an HC4-derived side of `auto` onto the leaf's own f64 verdict.
+    /// An HC4-derived side of the auto, as `(value, strict)`.
     ///
     /// HC4 rounds outward, so an inexact rearrangement (`p − k >= m` ⇒
     /// `p >= m + k`) can sit one ulp outside the bound the model's evaluator
     /// accepts — a real-number bound, but a clamp target the floor's own
-    /// comparison rejects. Step `inward` one ulp at a time, at most
+    /// comparison rejects. The side steps `inward` one ulp at a time, at most
     /// [`SETTLE_MAX_STEPS`], until the leaf's NON-STRICT closure holds there;
-    /// a side that never settles is returned unchanged. Strictness itself
-    /// stays [`StrictBound`]'s concern.
-    fn settle_onto_leaf(
-        &self,
-        leaf: &CompiledExpr,
-        auto: usize,
-        derived: f64,
-        inward: fn(f64) -> f64,
-    ) -> f64 {
-        let mut candidate = derived;
+    /// one that never settles is kept as derived. It is strict when the leaf is
+    /// and the strict leaf does not hold at the settled value.
+    fn edge(&mut self, derived: f64, inward: fn(f64) -> f64) -> (f64, bool) {
+        let closure = match self.op {
+            BinOp::Gt => BinOp::Ge,
+            BinOp::Lt => BinOp::Le,
+            op => op,
+        };
+        let mut settled = derived;
         for _ in 0..=SETTLE_MAX_STEPS {
-            if self.closure_holds_at(leaf, auto, candidate) {
-                return candidate;
+            if self.holds_at(closure, settled) {
+                let strict = closure != self.op && !self.holds_at(self.op, settled);
+                return (settled, strict);
             }
-            candidate = inward(candidate);
+            settled = inward(settled);
         }
-        derived
+        (derived, closure != self.op)
     }
 
-    /// Whether `leaf`'s non-strict closure holds, in the model's evaluator,
-    /// with `auto` set to `value`. `false` for anything that does not evaluate.
-    fn closure_holds_at(&self, leaf: &CompiledExpr, auto: usize, value: f64) -> bool {
-        let CompiledExprKind::BinOp { op, left, right } = &leaf.kind else {
-            return false;
-        };
-        let Some(Type::Scalar { dimension }) = self.autos.get(auto).map(|p| &p.param_type) else {
-            return false;
-        };
-        let mut values = self.values.clone();
-        values.insert(
-            self.autos[auto].id.clone(),
+    /// Whether `left OP right` holds, by [`order_holds`], in the model's
+    /// evaluator with the auto at `value`; `false` for anything that does not
+    /// evaluate to two numbers.
+    fn holds_at(&mut self, op: BinOp, value: f64) -> bool {
+        self.values.insert(
+            self.ctx.autos[self.auto].id.clone(),
             Value::Scalar {
                 si_value: value,
-                dimension: *dimension,
+                dimension: self.dimension,
             },
         );
-        let ctx = ctx_with(&values, self.functions, self.dispatch);
-        let side = |e: &CompiledExpr| reify_expr::eval_expr(e, &ctx).as_f64();
-        match (side(left), side(right), op) {
-            (Some(l), Some(r), BinOp::Ge | BinOp::Gt) => l >= r,
-            (Some(l), Some(r), BinOp::Le | BinOp::Lt) => l <= r,
+        let eval = ctx_with(&self.values, self.ctx.functions, self.ctx.dispatch);
+        let side = |expr: &CompiledExpr| reify_expr::eval_expr(expr, &eval).as_f64();
+        match (side(self.left), side(self.right)) {
+            (Some(l), Some(r)) => order_holds(op, l, r) == Some(true),
             _ => false,
         }
     }
@@ -10881,6 +10931,56 @@ mod tests {
             )],
         );
         assert_eq!(halved.lo, Some((2.0, false)), "`q / 2 >= 1` ⇒ q >= 2");
+    }
+
+    /// A side an operator's DOMAIN sets, not the comparison, is strict only
+    /// where the strict leaf really fails. `sqrt(q) < 3` holds at q = 0, so a
+    /// strict low side would make `StrictBound::SteppedInside` drop that valid
+    /// point; `sqrt(q) > 0` fails there, so its low side stays strict. A leaf
+    /// over two autos cannot be evaluated at one auto's endpoint, so its sides
+    /// keep the leaf's strictness: the safe direction for every
+    /// `StrictBound` consumer.
+    #[test]
+    fn derive_intervals_marks_a_side_strict_only_where_the_strict_leaf_fails() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let p = reify_core::ValueCellId::new("Derive", "p");
+        let real = Type::dimensionless_scalar;
+        let root = || reify_test_support::std_call("sqrt", vec![real_ref(&q)], real());
+        let cmp =
+            |op, near: CompiledExpr, v| CompiledExpr::binop(op, near, real_lit(v), Type::Bool);
+
+        let below = derive_one(&q, vec![cmp(BinOp::Lt, root(), 3.0)]);
+        assert_eq!(
+            (below.lo, below.hi),
+            (Some((0.0, false)), Some((9.0, true))),
+            "`sqrt(q) < 3` ⇒ 0 <= q < 9: sqrt(0) < 3 holds, sqrt(9) < 3 does not"
+        );
+
+        let above = derive_one(&q, vec![cmp(BinOp::Gt, root(), 0.0)]);
+        assert_eq!(
+            above.lo,
+            Some((0.0, true)),
+            "`sqrt(q) > 0` ⇒ q > 0: sqrt(0) > 0 fails, so the domain edge stays strict"
+        );
+
+        let coupled = cmp(
+            BinOp::Lt,
+            CompiledExpr::binop(
+                BinOp::Add,
+                root(),
+                CompiledExpr::binop(BinOp::Mul, real_ref(&p), real_ref(&p), real()),
+                real(),
+            ),
+            3.0,
+        );
+        let ivs = derive_with_dependent_cells(&[], &[(&q, 1.0), (&p, 1.0)], &[], vec![coupled]);
+        assert_eq!(
+            ivs[0].lo,
+            Some((0.0, true)),
+            "`sqrt(q) + p*p < 3` over two autos keeps the leaf's strictness"
+        );
     }
 
     /// (f) `And` recursion collects from both branches, exactly like
