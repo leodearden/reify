@@ -11,6 +11,9 @@ It handles:
     (blocking on FAIL / UNPROVABLE / HARNESS_ERROR)
 
 CLI subcommands:
+    print-schema                  — emit the JSON schemas pdv publishes:
+                                    {premises, results, verdict,
+                                     aggregate_input, aggregate} (exit 0)
     bind      <premises.json>     — emit probe-set JSON to stdout (exit 0)
     synthesize <results.json>     — emit BatchVerdict JSON
                                     {blocks, blocking, report, malformed,
@@ -24,7 +27,8 @@ CLI subcommands:
                                     `total` before trusting it.
 
 Reuses α (`prd-capability-check.py`) in-process via importlib — the same loader
-pattern used by `_pcc_test_support.py`.  α's file is NOT edited.
+pattern used by `_pcc_test_support.py` — and imports α's vocabulary through that
+handle (pcc.Verdict, pcc.ProbeKind, pcc.Observation) rather than re-spelling it.
 
 Design decisions:
   D1: negative-assertion mandate — a `rejection` premise binds probe_kind="check"
@@ -48,19 +52,22 @@ Design decisions:
 from __future__ import annotations
 
 import argparse
+import copy
+import dataclasses
 import importlib.util
 import json
 import os
 import sys
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Load α (prd-capability-check.py) via importlib
 # ---------------------------------------------------------------------------
-# Mirror the loader pattern in _pcc_test_support.py so α is reused
-# in-process without editing the locked/merged file.
+# Mirror the loader pattern in _pcc_test_support.py so α, and the vocabulary it
+# publishes, is reused in-process.
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ALPHA_PATH = os.path.join(_SCRIPTS_DIR, "prd-capability-check.py")
@@ -77,13 +84,23 @@ _alpha_spec.loader.exec_module(pcc)
 # Premise — input record from the Enumerator / leaf fixture
 # ---------------------------------------------------------------------------
 
+class AssertionKind(StrEnum):
+    """What a premise asserts; each kind is one row of _ASSERTION_KIND_MAP."""
+    REJECTION = "rejection"
+    PARSES = "parses"
+    RESOLVES = "resolves"
+    PRODUCES = "produces"
+    IR = "ir"
+    VALUE = "value"
+
+
 @dataclass
 class Premise:
     """A single premise asserted by a decompose-leaf signal.
 
     Fields:
         text            — human-readable assertion statement
-        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir" | "value"
+        assertion_kind  — an AssertionKind value
         fixture         — repo-relative path to the .ri fixture file
         match           — the premise's own match keys for α's probe (stderr_contains, …);
                           premise_to_probe adds the ones its assertion kind requires
@@ -109,8 +126,8 @@ class AssertionBinding:
     own statement of what makes it non-vacuous.  It is read-only, so no probe
     handed to a caller can rewrite the row.
     """
-    probe_kind: str
-    observation: str
+    probe_kind: pcc.ProbeKind
+    observation: pcc.Observation
     required_match: Mapping[str, Any]
 
 
@@ -118,32 +135,39 @@ _NO_REQUIRED_MATCH: Mapping[str, Any] = MappingProxyType({})
 
 # Deterministic binding table (PRD D1 / D4).  α's load_probe_set holds the rest
 # of each probe's non-vacuity, by the rules tests/prd-gate/README.md states.
-_ASSERTION_KIND_MAP: Mapping[str, AssertionBinding] = MappingProxyType({
+_PRESENT = pcc.Observation.PRESENT
+_ABSENT = pcc.Observation.ABSENT
+
+_ASSERTION_KIND_MAP: Mapping[AssertionKind, AssertionBinding] = MappingProxyType({
     # The rejection FIRES → exit 1 → match satisfied → PRESENT → PASS; reify
     # accepting silently (exit 0) misses it → ABSENT → expected present → FAIL.
     # Negative-assertion mandate: "present", NOT "absent" (see premise_to_probe).
-    "rejection": AssertionBinding(
-        "check", "present", MappingProxyType({"exit_code": 1})
+    AssertionKind.REJECTION: AssertionBinding(
+        pcc.ProbeKind.CHECK, _PRESENT, MappingProxyType({"exit_code": 1})
     ),
     # reify check exits 0 → match satisfied → PRESENT.
-    "resolves": AssertionBinding(
-        "check", "present", MappingProxyType({"exit_code": 0})
+    AssertionKind.RESOLVES: AssertionBinding(
+        pcc.ProbeKind.CHECK, _PRESENT, MappingProxyType({"exit_code": 0})
     ),
     # tree-sitter exits 0 (no parse errors) → PRESENT → PASS.
-    "parses": AssertionBinding("grammar", "present", _NO_REQUIRED_MATCH),
+    AssertionKind.PARSES: AssertionBinding(pcc.ProbeKind.GRAMMAR, _PRESENT, _NO_REQUIRED_MATCH),
     # reify eval exits ≠ 0 with the premise's stderr signature → PRESENT → PASS.
     # No fixed key: the signature is the premise's own, and α refuses its lack.
-    "produces": AssertionBinding("ir", "present", _NO_REQUIRED_MATCH),
+    AssertionKind.PRODUCES: AssertionBinding(pcc.ProbeKind.IR, _PRESENT, _NO_REQUIRED_MATCH),
     # reify eval exits 0 (clean) → ABSENT → expected absent → PASS.
-    "ir": AssertionBinding("ir", "absent", _NO_REQUIRED_MATCH),
+    AssertionKind.IR: AssertionBinding(pcc.ProbeKind.IR, _ABSENT, _NO_REQUIRED_MATCH),
     # reify eval exits 0 AND the stdout capture satisfies the numeric
     # constraint → PRESENT → PASS; exits 0 and a capture was read but is wrong
     # or undef → ABSENT → FAIL; exits ≠ 0, or the pattern located nothing →
     # INDETERMINATE → UNPROVABLE (ABSENT is reserved for a value actually read:
     # a mis-aimed pattern is a broken probe, not a negative finding).  α's value
     # predicate rules are what make this row non-vacuous.
-    "value": AssertionBinding("value", "present", _NO_REQUIRED_MATCH),
+    AssertionKind.VALUE: AssertionBinding(pcc.ProbeKind.VALUE, _PRESENT, _NO_REQUIRED_MATCH),
 })
+
+_KINDS_WITHOUT_BINDING = sorted(set(AssertionKind) - set(_ASSERTION_KIND_MAP))
+if _KINDS_WITHOUT_BINDING:
+    raise RuntimeError(f"_ASSERTION_KIND_MAP has no row for {_KINDS_WITHOUT_BINDING}")
 
 
 def premise_to_probe(premise: Premise) -> Dict[str, Any]:
@@ -181,10 +205,10 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
                     an object, or it contradicts the row's required_match.
     """
     kind = premise.assertion_kind
-    if kind not in _ASSERTION_KIND_MAP:
+    if not isinstance(kind, str) or kind not in _ASSERTION_KIND_MAP:
         raise ValueError(
             f"unknown assertion_kind {kind!r}; "
-            f"must be one of {sorted(_ASSERTION_KIND_MAP)}"
+            f"must be one of {[k.value for k in AssertionKind]}"
         )
     binding = _ASSERTION_KIND_MAP[kind]
 
@@ -300,18 +324,21 @@ def normalize_command(value: Any) -> List[str]:
 # BatchVerdict — output of synthesize_batch
 # ---------------------------------------------------------------------------
 
-# Verdict constants reused from α (imported via pcc above)
-_BLOCKING_VERDICTS = frozenset({"FAIL", "UNPROVABLE", "HARNESS_ERROR"})
+_BLOCKING_VERDICTS = frozenset(
+    {pcc.Verdict.FAIL, pcc.Verdict.UNPROVABLE, pcc.Verdict.HARNESS_ERROR}
+)
 
 
-# Record classification (task #7257 ARM 1).  These are RECORD categories, NOT
-# new verdicts — PRD §6 decision 3 fixes the verdict vocabulary at
-# PASS / FAIL / UNPROVABLE (+ HARNESS_ERROR) and this harness does not extend it.
-CAT_NON_BLOCKING = "NON_BLOCKING"   # verdict outside _BLOCKING_VERDICTS (incl. PASS
-                                    # and premise-shaped records with no verdict key)
-CAT_MALFORMED = "MALFORMED"         # blocking verdict with no executed-probe evidence
-CAT_FIXTURE_ABSENT = "FIXTURE_ABSENT"   # probe ran but its fixture does not exist
-CAT_BLOCKING = "BLOCKING"           # a real, evidence-backed falsification
+class RecordCategory(StrEnum):
+    """How synthesize_batch treats one result record (task #7257 ARM 1).
+
+    RECORD categories, not verdicts: α's Verdict is the verdict vocabulary and
+    this harness does not extend it.
+    """
+    NON_BLOCKING = "NON_BLOCKING"      # counts toward a clean leaf
+    MALFORMED = "MALFORMED"            # cannot be adjudicated: set aside, reported
+    FIXTURE_ABSENT = "FIXTURE_ABSENT"  # the probe ran but its fixture did not exist
+    BLOCKING = "BLOCKING"              # an evidence-backed falsification, or HARNESS_ERROR
 
 
 def has_probe_evidence(rec: Dict[str, Any]) -> bool:
@@ -339,8 +366,8 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
     return rec.get("exit_code") is not None
 
 
-def classify_record(rec: Dict[str, Any]) -> str:
-    """Classify a result record into one of the CAT_* categories.
+def classify_record(rec: Dict[str, Any]) -> RecordCategory:
+    """Classify a result record into its RecordCategory.
 
     PRD docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.2, first match wins:
 
@@ -366,20 +393,19 @@ def classify_record(rec: Dict[str, Any]) -> str:
         rec: An α --json result record.
 
     Returns:
-        One of CAT_NON_BLOCKING / CAT_MALFORMED / CAT_FIXTURE_ABSENT /
-        CAT_BLOCKING.
+        The record's RecordCategory.
     """
     verdict = rec.get("verdict", "")
     fixture_absent = rec.get("fixture_present") is False
     if verdict not in _BLOCKING_VERDICTS and not fixture_absent:
-        return CAT_NON_BLOCKING
-    if verdict == "HARNESS_ERROR":
-        return CAT_BLOCKING
+        return RecordCategory.NON_BLOCKING
+    if verdict == pcc.Verdict.HARNESS_ERROR:
+        return RecordCategory.BLOCKING
     if not has_probe_evidence(rec):
-        return CAT_MALFORMED
+        return RecordCategory.MALFORMED
     if fixture_absent:
-        return CAT_FIXTURE_ABSENT
-    return CAT_BLOCKING
+        return RecordCategory.FIXTURE_ABSENT
+    return RecordCategory.BLOCKING
 
 
 @dataclass
@@ -421,6 +447,61 @@ class BatchVerdict:
     fixture_absent: List[str] = field(default_factory=list)
     executed: int = 0
     total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Workflow verdict — the per-leaf and batch dispositions (PRD §5.4)
+# ---------------------------------------------------------------------------
+
+class LeafDisposition(StrEnum):
+    BLOCKS = "BLOCKS"              # an evidence-backed falsification
+    NOT_VERIFIED = "NOT_VERIFIED"  # nothing blocked, and no probe executed
+    VERIFIED = "VERIFIED"          # a probe executed and nothing blocked
+    UNENUMERATED = "UNENUMERATED"  # the Enumerator produced no premises
+
+
+class BatchDisposition(StrEnum):
+    BLOCKS = "BLOCKS"              # some leaf blocks, or a leaf was dropped
+    INCOMPLETE = "INCOMPLETE"      # nothing blocks, but something went unverified
+    PASS = "PASS"                  # every leaf verified
+
+
+class LeafResultStatus(StrEnum):
+    """What the workflow's stage 3 returns for one leaf (PRD D6)."""
+    SYNTHESIZED = "synthesized"
+    UNENUMERATED = "unenumerated"
+    SYNTHESIZE_FAILED = "synthesize_failed"
+
+
+@dataclass(frozen=True)
+class LeafDispositionRow:
+    """One leaf's disposition and counters; never its report (PRD D7)."""
+    label: str
+    disposition: LeafDisposition
+    blocks: bool
+    blocking: Tuple[str, ...]
+    executed: int
+    total: int
+    malformed: Tuple[str, ...]
+    fixture_absent: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkflowVerdict:
+    """The workflow's batch verdict: PRD §5.4's aggregate stdout."""
+    disposition: BatchDisposition
+    blocks: bool
+    blocking: Tuple[str, ...]
+    summary: str
+    leaf_dispositions: Tuple[LeafDispositionRow, ...]
+    leaves_total: int
+    leaves_probed: int
+    leaves_unenumerated: int
+    leaves_not_verified: int
+    unenumerated_leaves: Tuple[str, ...]
+    not_verified_leaves: Tuple[str, ...]
+    malformed_records: int
+    fixture_absent_records: int
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +618,7 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
             executed += 1
 
         category = classify_record(rec)
-        if category == CAT_NON_BLOCKING:
+        if category == RecordCategory.NON_BLOCKING:
             continue
 
         # Captured evidence, normalized for rendering only — never rewritten.
@@ -550,12 +631,12 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         block = _evidence_block(verdict, capability, role, cmd_str,
                                 exit_code, stdout, stderr)
 
-        if category == CAT_MALFORMED:
+        if category == RecordCategory.MALFORMED:
             malformed.append(capability)
             malformed_parts.append(block)
             continue
 
-        if category == CAT_FIXTURE_ABSENT:
+        if category == RecordCategory.FIXTURE_ABSENT:
             fixture_absent.append(capability)
             fixture_absent_parts.append(block)
             continue
@@ -602,6 +683,191 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
 
 
 # ---------------------------------------------------------------------------
+# published_schemas() — the JSON schemas `print-schema` emits
+# ---------------------------------------------------------------------------
+
+_RELAY_REQUIRED = ["capability", "verdict", "command", "exit_code", "fixture_present"]
+_VERDICT_REQUIRED = ["blocks", "blocking", "report", "executed", "total"]
+
+
+def _enum_schema(vocabulary) -> Dict[str, Any]:
+    return {"type": "string", "enum": [member.value for member in vocabulary]}
+
+
+def _string_list() -> Dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}}
+
+
+def _premises_schema() -> Dict[str, Any]:
+    premise = {
+        "type": "object",
+        "required": ["text", "assertion_kind", "fixture", "match"],
+        "properties": {
+            "text": {"type": "string"},
+            "assertion_kind": _enum_schema(AssertionKind),
+            "fixture": {"type": "string"},
+            "match": {"type": "object"},
+            "capability": {"type": "string"},
+        },
+    }
+    return {
+        "type": "object",
+        "required": ["premises"],
+        "properties": {"premises": {"type": "array", "items": premise}},
+    }
+
+
+def _relay_record_schema() -> Dict[str, Any]:
+    """α's result_record as an agent relays it.
+
+    The property shapes are α's.  pdv authors the widening: fixture_present may
+    be null, but only beside HARNESS_ERROR — the Prover's own record of a run no
+    α process produced.  exit_code −1 for that record is already an integer.
+    """
+    properties = copy.deepcopy(pcc.published_schemas()["result_record"]["properties"])
+    properties["fixture_present"] = {"type": ["boolean", "null"]}
+    return {
+        "type": "object",
+        "required": list(_RELAY_REQUIRED),
+        "properties": properties,
+        "if": {"properties": {"verdict": {"not": {"const": pcc.Verdict.HARNESS_ERROR.value}}}},
+        "then": {"properties": {"fixture_present": {"type": "boolean"}}},
+    }
+
+
+def _results_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["prover"],
+        "properties": {
+            "prover": {"type": "array", "items": _relay_record_schema()},
+            "adversary": {"type": "array", "items": _relay_record_schema()},
+        },
+    }
+
+
+def _batch_verdict_properties() -> Dict[str, Any]:
+    return {
+        "blocks": {"type": "boolean"},
+        "blocking": _string_list(),
+        "report": {"type": "string"},
+        "malformed": _string_list(),
+        "fixture_absent": _string_list(),
+        "executed": {"type": "integer"},
+        "total": {"type": "integer"},
+    }
+
+
+def _verdict_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": list(_VERDICT_REQUIRED),
+        "properties": _batch_verdict_properties(),
+    }
+
+
+def _leaf_result_schema(status: LeafResultStatus, **properties: Any) -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["label", "status", *properties],
+        "properties": {
+            "label": {"type": "string"},
+            "status": {"const": status.value},
+            **properties,
+        },
+    }
+
+
+def _aggregate_input_schema() -> Dict[str, Any]:
+    """PRD §5.4's aggregate input.  A synthesized leaf carries no report (D7)."""
+    leaf_verdict = {
+        "type": "object",
+        "required": [key for key in _VERDICT_REQUIRED if key != "report"],
+        "properties": {
+            key: schema for key, schema in _batch_verdict_properties().items()
+            if key != "report"
+        },
+    }
+    leaf_result = {"oneOf": [
+        {"type": "null"},
+        _leaf_result_schema(LeafResultStatus.SYNTHESIZED, verdict=leaf_verdict),
+        _leaf_result_schema(LeafResultStatus.UNENUMERATED),
+        _leaf_result_schema(LeafResultStatus.SYNTHESIZE_FAILED, reason={"type": "string"}),
+    ]}
+    leaf = {"type": "object", "required": ["label"], "properties": {"label": {"type": "string"}}}
+    return {
+        "type": "object",
+        "required": ["leaves", "leaf_results"],
+        "properties": {
+            "leaves": {"type": "array", "items": leaf},
+            "leaf_results": {"type": "array", "items": leaf_result},
+        },
+    }
+
+
+def _aggregate_schema() -> Dict[str, Any]:
+    """PRD §5.4's aggregate stdout: a serialised WorkflowVerdict."""
+    row = {
+        "type": "object",
+        "required": [
+            "label", "disposition", "blocks", "blocking", "executed", "total",
+            "malformed", "fixture_absent",
+        ],
+        "properties": {
+            "label": {"type": "string"},
+            "disposition": _enum_schema(LeafDisposition),
+            "blocks": {"type": "boolean"},
+            "blocking": _string_list(),
+            "executed": {"type": "integer"},
+            "total": {"type": "integer"},
+            "malformed": _string_list(),
+            "fixture_absent": _string_list(),
+        },
+    }
+    return {
+        "type": "object",
+        "required": [
+            "disposition", "blocks", "blocking", "summary", "leaf_dispositions",
+            "leaves_total", "leaves_probed", "leaves_unenumerated",
+            "leaves_not_verified", "unenumerated_leaves", "not_verified_leaves",
+            "malformed_records", "fixture_absent_records",
+        ],
+        "properties": {
+            "disposition": _enum_schema(BatchDisposition),
+            "blocks": {"type": "boolean"},
+            "blocking": _string_list(),
+            "summary": {"type": "string"},
+            "leaf_dispositions": {"type": "array", "items": row},
+            "leaves_total": {"type": "integer"},
+            "leaves_probed": {"type": "integer"},
+            "leaves_unenumerated": {"type": "integer"},
+            "leaves_not_verified": {"type": "integer"},
+            "unenumerated_leaves": _string_list(),
+            "not_verified_leaves": _string_list(),
+            "malformed_records": {"type": "integer"},
+            "fixture_absent_records": {"type": "integer"},
+        },
+    }
+
+
+def published_schemas() -> Dict[str, Dict[str, Any]]:
+    """The JSON schemas of what pdv reads and emits, built fresh per call.
+
+    premises is the Enumerator's output and `bind`'s input; results is what the
+    Prover and Adversary relay and `synthesize` reads; verdict is `synthesize`'s
+    output; aggregate_input / aggregate are PRD §5.4's.  Every enum is read off
+    a vocabulary — pdv's own, or α's through pcc — never re-spelt.
+    """
+    return {
+        "premises": _premises_schema(),
+        "results": _results_schema(),
+        "verdict": _verdict_schema(),
+        "aggregate_input": _aggregate_input_schema(),
+        "aggregate": _aggregate_schema(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # _parse_premises_file() — read premises JSON and return list of Premise
 # ---------------------------------------------------------------------------
 
@@ -613,7 +879,7 @@ def _parse_premises_file(path: str) -> List[Premise]:
             "premises": [
                 {
                     "text": "...",
-                    "assertion_kind": "rejection|parses|resolves|produces|ir|value",
+                    "assertion_kind": "<an AssertionKind value>",
                     "fixture": "...",
                     "match": {...},            // optional; see premise_to_probe
                     "capability": "..."   // optional
@@ -695,10 +961,13 @@ def main(argv: List[str]) -> int:
     """CLI entry-point.  Returns an exit code (0/1/64).
 
     Usage:
+        prd-decompose-verify.py print-schema
         prd-decompose-verify.py bind      <premises.json>
         prd-decompose-verify.py synthesize <results.json>
 
     Subcommands:
+        print-schema  Emit published_schemas() as JSON to stdout.  Exit 0.
+
         bind        Read {"premises":[...]} from premises.json, emit α probe-set
                     JSON to stdout.  Exit 0 on success, 64 on usage/IO/parse error.
 
@@ -733,6 +1002,8 @@ def main(argv: List[str]) -> int:
     )
     sub = parser.add_subparsers(dest="subcmd")
 
+    sub.add_parser("print-schema", help="Print the JSON schemas pdv publishes.")
+
     # bind subcommand
     bind_p = sub.add_parser("bind", help="Bind premises to an α probe-set JSON.")
     bind_p.add_argument("premises", metavar="PREMISES_JSON",
@@ -751,9 +1022,14 @@ def main(argv: List[str]) -> int:
         return 0 if code == 0 else 64
 
     if args.subcmd is None:
-        sys.stderr.write("error: a subcommand is required: bind | synthesize\n")
+        sys.stderr.write(f"error: a subcommand is required: {' | '.join(sub.choices)}\n")
         parser.print_help(sys.stderr)
         return 64
+
+    if args.subcmd == "print-schema":
+        sys.stdout.write(json.dumps(published_schemas(), indent=4))
+        sys.stdout.write("\n")
+        return 0
 
     # ── bind ──────────────────────────────────────────────────────────────────
     if args.subcmd == "bind":
@@ -788,17 +1064,7 @@ def main(argv: List[str]) -> int:
             return 64
 
         bv = synthesize_batch(role_results)
-
-        output = {
-            "blocks": bv.blocks,
-            "blocking": bv.blocking,
-            "report": bv.report,
-            "malformed": bv.malformed,
-            "fixture_absent": bv.fixture_absent,
-            "executed": bv.executed,
-            "total": bv.total,
-        }
-        sys.stdout.write(json.dumps(output, indent=4))
+        sys.stdout.write(json.dumps(dataclasses.asdict(bv), indent=4))
         sys.stdout.write("\n")
         return 1 if bv.blocks else 0
 
