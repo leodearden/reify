@@ -48,9 +48,10 @@
 //!
 //! - **No prose is pinned.** Nothing here matches a sentence, a heading, or an
 //!   ordering. The only structural pins are the byte-exact fence info strings
-//!   (```` ```reify ```` / ```` ```reify-rejected ````) and the one-cite-per-line
-//!   format, all of which are house convention precisely so the surrounding
-//!   wording stays free to change.
+//!   (```` ```reify ```` / ```` ```reify-rejected ````), the one-cite-per-line
+//!   format, and the inert `<!-- LENGTH-ARGS-XREF -->` marker with the backticked
+//!   topic its region must name, all of which are house convention precisely so
+//!   the surrounding wording stays free to change.
 //! - **Compile-acceptance is a parse/shape/slot result, not a full signature
 //!   check.** A `structure def` body types an unresolved call from its FIRST
 //!   argument's `result_type`, so an unknown call NAME is not itself an error —
@@ -62,16 +63,17 @@
 //!   that reason, and `cited_test_paths_in_the_units_chunk_resolve` only checks
 //!   that the eval-side cites it DOES make resolve to real tests.
 
+use std::path::Path;
+
 use reify_core::units::LENGTH_MIGRATION_HINT;
 use reify_test_support::{LENGTH_SLOT_DIAGNOSTIC_MARKER, named_length_argument};
 
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
-use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH, UNITS_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::{section_body, tagged_fence_bodies};
 use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
-use crate::oracle_xref_smoke::DESTINATION_TOPIC;
 
 /// Info string of the fences that MUST compile clean.
 const REIFY_TAG: &str = "reify";
@@ -589,23 +591,23 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
     );
 }
 
-/// Marker that OPENS the region holding units.md's pointer to the per-position
-/// catalogue in `geometry.md`. Matched byte-exactly on the trimmed line; an inert
-/// HTML comment so neither this chunk's wording nor `geometry.md`'s heading is
-/// pinned (the heading is free to be retitled).
+/// Line that opens units.md's pointer to the per-position length-argument catalogue.
 const LENGTH_ARGS_XREF_MARKER: &str = "<!-- LENGTH-ARGS-XREF -->";
 
-/// Panic text only; nothing matches on it.
+/// What [`LENGTH_ARGS_XREF_MARKER`]'s region is called in a failure message.
 const LENGTH_ARGS_XREF_TITLE: &str = "length-argument catalogue cross-reference";
 
-/// units.md must keep routing a reader to the `geometry` chunk's catalogue of
-/// which argument of which constructor is length-semantic.
-///
-/// The pointer names the retrieval TOPIC, not `geometry.md`'s heading wording, so
-/// retitling that heading cannot strand it; what CAN strand it is losing the
-/// pointer or renaming the topic. `section_body` panics on an absent marker, so
-/// deleting the pointer is RED rather than vacuously green. Scope: this file's
-/// canonical scope statement — no prose is pinned beyond the backticked topic.
+/// The topic that retrieves the chunk holding the length-argument catalogue:
+/// [`GEOMETRY_CHUNK_PATH`]'s filename stem, which `fence_gate`'s check 4 holds
+/// equal to the topic serving that file.
+fn length_args_catalogue_topic() -> &'static str {
+    Path::new(GEOMETRY_CHUNK_PATH)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{GEOMETRY_CHUNK_PATH} must have a UTF-8 filename stem"))
+}
+
+/// units.md routes a reader to the length-argument catalogue's topic (scope: module header).
 #[test]
 fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
     let region = section_body(
@@ -615,12 +617,12 @@ fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
         LENGTH_ARGS_XREF_TITLE,
     );
 
-    let topic_key = format!("`{DESTINATION_TOPIC}`");
+    let topic_key = format!("`{}`", length_args_catalogue_topic());
     assert!(
         region.contains(&topic_key),
-        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names the destination \
-         topic {topic_key} — a pointer that names no destination points nowhere. FIX: route \
-         the reader to the {topic_key} chunk, topic {topic_key} of `reify_language_reference`."
+        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names topic {topic_key}, \
+         which retrieves {GEOMETRY_CHUNK_PATH} — a pointer that names no destination points \
+         nowhere. FIX: route the reader to topic {topic_key} of `reify_language_reference`."
     );
 }
 
