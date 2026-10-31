@@ -5,9 +5,11 @@
 //! row with", and nothing about how a call is executed or judged. It imports
 //! nothing from its parent, so the edge is strictly parent → child.
 
+use std::sync::Arc;
+
 use reify_builtins::EvalBuiltinId;
-use reify_core::{DimensionVector, Type};
-use reify_ir::Value;
+use reify_core::{DimensionVector, Type, ValueCellId};
+use reify_ir::{CompiledExpr, FieldSourceKind, Value, ValueMap};
 
 /// The uniaxial stress magnitude every analysis probe is built from, in SI
 /// pascals. The value is irrelevant to a KIND comparison; only the shape and
@@ -88,6 +90,65 @@ fn concrete_tensor_probe() -> Probe {
     vec![(uniaxial_stress(), pressure_tensor_type())]
 }
 
+/// `safety_factor`'s second argument: a PRESSURE yield strength, the same for
+/// its concrete and its Field probe.
+fn yield_strength() -> (Value, Type) {
+    (
+        Value::Scalar {
+            si_value: YIELD_PA,
+            dimension: DimensionVector::PRESSURE,
+        },
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE,
+        },
+    )
+}
+
+/// The domain every Field probe is defined over: points in 3-D space.
+fn field_domain_type() -> Type {
+    Type::point3(Type::length())
+}
+
+/// The static type of every Field probe: a PRESSURE stress-tensor field over
+/// [`field_domain_type`] — the `Type::Field` shape `reduce_tensor_arg`'s Field
+/// branch answers for.
+fn stress_field_type() -> Type {
+    Type::Field {
+        domain: Box::new(field_domain_type()),
+        codomain: Box::new(pressure_tensor_type()),
+    }
+}
+
+/// A Callable-backed stress field: `Analytical`, with a lambda that ignores its
+/// coordinates and returns [`uniaxial_stress`] everywhere.
+///
+/// Shape mirrors `make_constant_stress_field` in
+/// `crates/reify-expr/tests/field_analysis_tests.rs`, a separate integration
+/// test target that cannot be imported from here.
+fn callable_stress_field() -> (Value, Type) {
+    let params = ["x", "y", "z"]
+        .into_iter()
+        .map(|axis| (axis.to_string(), ValueCellId::new("$lambda0.S", axis)))
+        .collect();
+    let lambda = Value::Lambda {
+        params,
+        body: Box::new(CompiledExpr::literal(
+            uniaxial_stress(),
+            pressure_tensor_type(),
+        )),
+        captures: ValueMap::new(),
+    };
+    (
+        Value::Field {
+            domain_type: field_domain_type(),
+            codomain_type: pressure_tensor_type(),
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(lambda),
+        },
+        stress_field_type(),
+    )
+}
+
 /// Every probe one row is swept at.
 ///
 /// # Why a LIST of probes, not one
@@ -96,12 +157,9 @@ fn concrete_tensor_probe() -> Probe {
 /// answers differently, and one probe per row can only ever check one of them.
 /// Four of α's seven rows are `ResultSpec::ArgAware` over `reduce_tensor_arg`
 /// (`crates/reify-builtins/src/resolvers.rs`), which has two branches — a
-/// `Type::Field` arm added by #6577 and the concrete fall-through — and only
-/// the concrete branch is probed here. Returning a list means a τ row registers
-/// its Field shape ALONGSIDE its concrete one rather than replacing it, instead
-/// of the one-shape-per-row ceiling being frozen in by the signature. See the
-/// harness module header's "What this harness cannot see" for why that Field
-/// probe cannot be written today.
+/// `Type::Field` arm added by #6577 and the concrete fall-through — so each of
+/// those rows registers its Field shape ALONGSIDE its concrete one rather than
+/// replacing it.
 ///
 /// # Why an exhaustive `match` with no `_` arm
 ///
@@ -154,29 +212,31 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
 
         // `analysis::{von_mises, max_shear}` read a 3×3 window through
         // `matrix_components_f64` and reduce it to a scalar carrying the
-        // element dimension.
-        EvalBuiltinId::VonMises | EvalBuiltinId::MaxShear => vec![concrete_tensor_probe()],
+        // element dimension. Over a tensor FIELD, reify-expr wraps the field
+        // lazily instead of reducing it, which is the resolver's Field branch.
+        EvalBuiltinId::VonMises | EvalBuiltinId::MaxShear => {
+            vec![concrete_tensor_probe(), vec![callable_stress_field()]]
+        }
 
         // `analysis::principal_stresses` needs the same 3×3 window; it returns
-        // the three eigenvalues as a `Value::List`.
-        EvalBuiltinId::PrincipalStresses => vec![concrete_tensor_probe()],
+        // the three eigenvalues as a `Value::List`, and over a field a field
+        // whose samples are that list.
+        EvalBuiltinId::PrincipalStresses => {
+            vec![concrete_tensor_probe(), vec![callable_stress_field()]]
+        }
 
         // `analysis::safety_factor` is `binary(tensor, yield)`: arg0 is the
         // same 3×3 window, arg1 must answer `as_f64` or the kernel returns
         // `Value::Undef`. The ratio cancels, so the result is a bare
-        // `Value::Real` whatever dimension arg1 carries.
-        EvalBuiltinId::SafetyFactor => vec![vec![
-            (uniaxial_stress(), pressure_tensor_type()),
-            (
-                Value::Scalar {
-                    si_value: YIELD_PA,
-                    dimension: DimensionVector::PRESSURE,
-                },
-                Type::Scalar {
-                    dimension: DimensionVector::PRESSURE,
-                },
-            ),
-        ]],
+        // `Value::Real` whatever dimension arg1 carries. Its Field branch is
+        // gated on exactly two arguments, so the Field probe keeps the yield.
+        EvalBuiltinId::SafetyFactor => vec![
+            vec![
+                (uniaxial_stress(), pressure_tensor_type()),
+                yield_strength(),
+            ],
+            vec![callable_stress_field(), yield_strength()],
+        ],
 
         // `analysis::stress_invariants` returns `Value::Undef` for ANYTHING
         // but a 3×3 tensor (`crates/reify-stdlib/src/analysis.rs`) — the
