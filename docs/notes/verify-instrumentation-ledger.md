@@ -298,6 +298,11 @@ anything in it.
 - **`units_written: 0`** means the first observed cargo wrote no fingerprint.
   Read `fingerprint.units_written_since_seed` and `last_write_at` for the
   lane-wide picture.
+- **`fingerprint.units_total` steps down** at the first base generation
+  refreshed with `--prune-dead-unit-records` (introduced by #9614): dead
+  compile units' `.fingerprint` records are no longer copied into seeds. They
+  were about half the base's entries at gen.602 (2026-10-30). Compare
+  `units_total` across that boundary as a step, not a trend.
 - **For D6:** the ledger records wall seconds, not CPU. The study's
   core-equivalent multiplies by the build's job count (`-j 8`), which is an
   upper bound.

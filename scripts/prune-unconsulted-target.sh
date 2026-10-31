@@ -8,14 +8,17 @@
 #   scripts/prune-unconsulted-target.sh --window-days N [--atime-probe PATH]
 #                                       [--lock FILE]...
 #                                       [--free-floor-gib G --min-window-days M]
+#                                       [--prune-dead-unit-records]
 #                                       PROFILE_DIR...
 #
 # Callers:
-#   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy.
+#   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy,
+#     with --prune-dead-unit-records.
 #   - deploy/systemd/reify-merge-verify-trim.service: leo-laptop's persistent
-#     _merge-verify target. dark_factory's install_laptop_merge_verify_trim.sh
-#     installs THIS FILE ALONE into ~/.local/lib/reify-verify-host/, so it must
-#     never source a sibling.
+#     _merge-verify target, without --prune-dead-unit-records.
+#     dark_factory's install_laptop_merge_verify_trim.sh installs THIS FILE
+#     ALONE into ~/.local/lib/reify-verify-host/, so it must never source a
+#     sibling.
 #
 # The rule, applied to each PROFILE_DIR (e.g. target/debug) on its own:
 #   A depth-1 file of <profile>/deps whose name, final dot-suffix stripped, ends
@@ -31,7 +34,21 @@
 #                ages nothing; anchoring per profile keeps a rarely built
 #                profile from being wiped whenever another one is busy.
 #   Never deleted: a hashed file with no fingerprint dir, a name outside the
-#   grammar, anything below deps/ depth 1, and .fingerprint itself.
+#   grammar, anything below deps/ depth 1, build/, and (unless
+#   --prune-dead-unit-records) .fingerprint itself.
+#
+# Record victims, under --prune-dead-unit-records only: for each hash that had
+# a deps file deleted in THIS pass and has no <profile>/build/<pkg>-<hash> dir,
+# also delete .fingerprint/<pkg>-<hash>/ and each depth-1 deps/*.dwo whose
+# name, cut at its FIRST dot, ends in that -<hash> (the later 16-hex cgu token
+# is not a unit hash). Order: deps files, then shards, then records, each stage
+# only after the previous one succeeded, so a failed unlink leaves the record.
+#   Safe: a unit whose deps are gone is rebuilt whether or not its record
+#   survives. Build-script units own no deps files, so they keep their records
+#   and build/ outputs, which a later build can still reuse as Fresh.
+#   Opt-in: only a staging copy re-imports the records on every refresh. On a
+#   persistent target the deletion is permanent and erases the evidence the
+#   next run reads.
 #
 # Skips — a line containing "skip", nothing deleted in that profile, the other
 # profiles still pruned:
@@ -66,15 +83,19 @@
 #                       one by up to 24h, and M must clear that lag plus one
 #                       build. A df failure stops the tightening, so a failed
 #                       measurement never deletes more.
+#   --prune-dead-unit-records
+#                       Also delete record victims (above).
 #   -h, --help          Print usage and exit 0.
 #
 # Output: nothing on stdout. stderr, per pruned profile:
-#   prune deps=<deps dir> files=N victim_bytes=N window_days=N
-# victim_bytes is the victims' summed apparent size.
+#   prune deps=<deps dir> files=N victim_bytes=N records=N dwo=N window_days=N
+# files and victim_bytes (summed apparent size) count the deps/ victims only;
+# records and dwo count the deleted fingerprint dirs and shards, and are 0
+# without --prune-dead-unit-records.
 #
 # Exit: 0 pruned, skipped, or a --lock held elsewhere; 1 failure (a --lock
-# that cannot be taken, or the unlink pipeline failed); 2 usage error, before
-# anything is read or deleted.
+# that cannot be taken, victim selection failed, or a deps, shard or record
+# removal stage failed); 2 usage error, before anything is read or deleted.
 #
 # Executable spec: tests/infra/test_prune_unconsulted_target.py, and through
 # refresh-warm-base.sh, tests/infra/test_refresh_warm_base.sh Block LIVE.
@@ -349,7 +370,8 @@ _prune_profile() {
 }
 
 # _prune_pass <window_days>: one prune of every profile at that window. Each
-# pass re-reads the .fingerprint trees, which no pass ever edits.
+# pass re-reads the .fingerprint trees. The records a pass deletes were all
+# below its cutoff, so never the anchor: a later pass's anchor is unchanged.
 _prune_pass() {
     local profile
     for profile in "${PROFILE_DIRS[@]}"; do
