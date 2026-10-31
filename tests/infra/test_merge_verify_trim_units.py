@@ -207,6 +207,19 @@ class ExecStartRuns(unittest.TestCase):
         self.assertEqual([str(p) for p in self.superseded if p.exists()], [])
         self.assertEqual([str(p) for p in self.kept if not p.is_file()], [])
 
+    def test_the_laptop_trim_never_removes_a_fingerprint_record(self):
+        """On this persistent target a removed record is gone for good, and
+        with it the liveness evidence the next trim reads."""
+        records = sorted(self.worktrees.glob("_merge-verify/target/*/.fingerprint/*/*"))
+        self.assertEqual(len(records), 6)
+
+        result = self.run_unit()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([str(p) for p in self.superseded if p.exists()], [],
+                         "the trim did not run, so the records' survival proves nothing")
+        self.assertEqual([str(p) for p in records if not p.is_file()], [])
+
 
 if __name__ == "__main__":
     unittest.main()
