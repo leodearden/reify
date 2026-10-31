@@ -46,7 +46,7 @@ use crate::form_find::{
     ZeroAreaTriangle, free_equilibrium_residual_relative, member_axial_forces,
     scatter_surface_stencils,
 };
-use crate::group_spec::GroupSpec;
+use crate::group_spec::{GroupSpec, MIN_UNIT_MAGNITUDE};
 use faer::Mat;
 use faer::mat::MatRef;
 
@@ -554,7 +554,8 @@ enum QSource<'p> {
     /// The explicit `q`, the same at every iterate.
     FixedQ(&'p [f64]),
     /// A group search on the combined `D` at each iterate, warm-started from
-    /// the magnitudes the previous search found.
+    /// the magnitudes the previous search found. `warm_group_mag` is in units
+    /// of the reference group's seed magnitude.
     SearchedQ {
         groups: &'p GroupSpec,
         warm_group_mag: Vec<f64>,
@@ -573,9 +574,9 @@ impl<'p> QSource<'p> {
         match problem.spec() {
             FreeSpec::Explicit(q) => QSource::FixedQ(q),
             FreeSpec::GroupRatios(groups) => {
-                let mut warm_group_mag = groups.seed_magnitudes().to_vec();
+                let mut warm_group_mag = groups.unit_seed_magnitudes();
                 if let Some(boot) = boot {
-                    refresh_group_magnitudes(&mut warm_group_mag, groups, &boot.force_densities);
+                    groups.refresh_unit_magnitudes(&mut warm_group_mag, &boot.force_densities);
                 }
                 QSource::SearchedQ {
                     groups,
@@ -606,7 +607,7 @@ impl<'p> QSource<'p> {
                     warm_group_mag,
                     surface_mat,
                 )?;
-                refresh_group_magnitudes(warm_group_mag, groups, &q);
+                groups.refresh_unit_magnitudes(warm_group_mag, &q);
                 Ok(q)
             }
         }
@@ -618,14 +619,6 @@ impl<'p> QSource<'p> {
     /// that search projected.
     fn admits_projection_trial(&self) -> bool {
         matches!(self, QSource::FixedQ(_))
-    }
-}
-
-/// Sets each group's magnitude in `group_mag` to `|qᵢ|` (floored at `1e-10`)
-/// of its members `i`, in member order.
-fn refresh_group_magnitudes(group_mag: &mut [f64], groups: &GroupSpec, q: &[f64]) {
-    for (&group, qi) in groups.group_ids().iter().zip(q) {
-        group_mag[group] = qi.abs().max(1e-10);
     }
 }
 
@@ -741,8 +734,8 @@ fn form_find_explicit_combined_relaxed(
 /// nothing: the outer loop's residual is the stop test, and certifying its final
 /// iterate is the validity gate.
 ///
-/// `initial_group_mag` are warm-start magnitudes (e.g. from a line-only bootstrap)
-/// that replace the group spec's seed magnitudes as the starting point AND as the
+/// `initial_group_mag` are warm-start magnitudes in reference units (e.g. from a
+/// line-only bootstrap) that replace the group spec's seed magnitudes as the starting point AND as the
 /// centre of the search bracket. Starting near the correct combined q avoids the
 /// stall-guard pitfall where coordinate descent at the wrong starting point can
 /// reach a fixed point before the objective hits the nullity-4 minimum.
@@ -764,18 +757,25 @@ fn form_find_group_ratios_combined(
     // at the original seeds that causes the stall guard to fire prematurely.
     let mut group_mag: Vec<f64> = initial_group_mag.to_vec();
     let free_groups = groups.free_groups();
+    let unit = groups.reference_magnitude();
+    let unit_surface = Mat::<f64>::from_fn(surface_mat.nrows(), surface_mat.ncols(), |i, j| {
+        surface_mat[(i, j)] / unit
+    });
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest eigenvalues of the
     // COMBINED D = line_D(q) + surface_mat. surface_mat is a fixed additive term.
-    // Deliberately UN-normalised, unlike combined_eig_gap_objective's
-    // normalised_eig_gap: `reference_group` already gauge-fixes this search, so
-    // there is no gauge factor to cancel, and normalising would perturb the
-    // OBJ_TOL / coordinate-descent stop thresholds below for no benefit this
-    // path needs (task 6413 design decision). A `D` with no spectrum scores +∞,
-    // rejecting the trial.
+    // Un-normalised, unlike combined_eig_gap_objective's normalised_eig_gap:
+    // the search runs in units of the reference group's seed magnitude (both
+    // terms of D divided by it), so its objective, OBJ_TOL, stall guard, log
+    // grid and floors are dimensionless, and its verdict does not depend on the
+    // overall (seed, σ) scale. A `D` with no spectrum scores +∞, rejecting the
+    // trial.
     let objective = |group_mag: &[f64]| -> f64 {
-        let q = groups.densities(group_mag);
-        let d = combined_force_density_matrix(members, &q, surface_mat);
+        let d = combined_force_density_matrix(
+            members,
+            &groups.unit_densities(group_mag),
+            &unit_surface,
+        );
         SymmetricSpectrum::of(&d).map_or(f64::INFINITY, |spectrum| {
             spectrum
                 .eigenvalues()
@@ -805,7 +805,7 @@ fn form_find_group_ratios_combined(
             |s| {
                 let mut trial = baseline.clone();
                 for &g in &free_groups {
-                    trial[g] = (baseline[g] * s).max(1e-10);
+                    trial[g] = (baseline[g] * s).max(MIN_UNIT_MAGNITUDE);
                 }
                 objective(&trial)
             },
@@ -813,7 +813,7 @@ fn form_find_group_ratios_combined(
             SEARCH_BRACKET_FACTOR,
         );
         for &g in &free_groups {
-            group_mag[g] = (group_mag[g] * best_s).max(1e-10);
+            group_mag[g] = (group_mag[g] * best_s).max(MIN_UNIT_MAGNITUDE);
         }
     }
 
@@ -908,8 +908,8 @@ fn combined_eig_gap_objective(
 /// convergence.
 ///
 /// NOT used by `form_find_group_ratios_combined`'s own eigenvalue-gap
-/// search, which deliberately keeps the un-normalised `Σλ²` form — see the
-/// comment on its `objective` closure for why.
+/// search, which keeps the un-normalised `Σλ²` form: it runs in units of the
+/// reference group's seed magnitude, so that form is already gauge-free.
 fn normalised_eig_gap(spectrum: &SymmetricSpectrum) -> f64 {
     let max_mag = spectrum.max_mag();
     if max_mag <= 0.0 {
@@ -1022,7 +1022,9 @@ const SEARCH_BRACKET_FACTOR: f64 = 20.0;
 /// Each group's *sign* is fixed by its seed sign; the search varies only the
 /// *magnitude* of the non-reference groups within a bounded bracket. The
 /// reference group is held at its seed value as the scale gauge (overall scaling
-/// of `q` is nullity-invariant, so only relative ratios matter).
+/// of `q` is nullity-invariant, so only relative ratios matter), and the whole
+/// search runs in units of that seed magnitude, so a whole-gauge rescale of the
+/// seeds leaves its path unchanged.
 ///
 /// The objective is the sum of squares of the `FREE_FORM_NULLITY` smallest
 /// eigenvalues of `D` (a smooth surrogate for "nullity ≥ 4"); since `λ_(1) = 0`
@@ -1056,10 +1058,11 @@ fn form_find_group_ratios(
     let members = problem.members();
     let n = problem.nodes().len();
 
-    // Current per-group magnitude (each group's sign is fixed by its seed). The
-    // reference group's magnitude stays at its seed; free groups start there
-    // and are refined by the search.
-    let mut group_mag = groups.seed_magnitudes().to_vec();
+    // Current per-group magnitude in reference units (each group's sign is
+    // fixed by its seed). The reference group's magnitude stays at its seed;
+    // free groups start there and are refined by the search.
+    let unit_seed = groups.unit_seed_magnitudes();
+    let mut group_mag = unit_seed.clone();
     let free_groups = groups.free_groups();
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest-|λ| eigenvalues of
@@ -1069,8 +1072,7 @@ fn form_find_group_ratios(
     // from stalling at the tolerance crossing. A `D` with no spectrum scores
     // +∞, rejecting the trial.
     let objective = |group_mag: &[f64]| -> f64 {
-        let q = groups.densities(group_mag);
-        let d = assemble_d(n, members, &q);
+        let d = assemble_d(n, members, &groups.unit_densities(group_mag));
         SymmetricSpectrum::of(&d).map_or(f64::INFINITY, |spectrum| {
             spectrum
                 .eigenvalues()
@@ -1102,8 +1104,8 @@ fn form_find_group_ratios(
         }
         let before = obj;
         for &g in &free_groups {
-            let lo = groups.seed_magnitudes()[g] / SEARCH_BRACKET_FACTOR;
-            let hi = groups.seed_magnitudes()[g] * SEARCH_BRACKET_FACTOR;
+            let lo = unit_seed[g] / SEARCH_BRACKET_FACTOR;
+            let hi = unit_seed[g] * SEARCH_BRACKET_FACTOR;
             let best = minimize_on_coordinate(
                 |m| {
                     let mut trial = group_mag.clone();
