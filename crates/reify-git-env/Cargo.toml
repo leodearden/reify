@@ -7,5 +7,10 @@ description = "The workspace's single constructor and sanitizer for git invocati
 
 [dependencies]
 
+[features]
+# Exposes `removed_vars`, a test-side reader, to dependents' tests. Enable it
+# from a [dev-dependencies] entry only.
+test-utils = []
+
 [dev-dependencies]
 tempfile.workspace = true

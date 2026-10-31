@@ -35,7 +35,7 @@ reify-ast.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
-reify-git-env.workspace = true
+reify-git-env = { workspace = true, features = ["test-utils"] }
 reify-eval.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true

@@ -36,6 +36,9 @@ path = "src/bin/reify-audit.rs"
 [dev-dependencies]
 tempfile.workspace = true
 reify-test-support.workspace = true
+# Same crate as the [dependencies] entry, plus `test-utils` for the tests'
+# `removed_vars` reads; the production build stays without it.
+reify-git-env = { workspace = true, features = ["test-utils"] }
 # ureq: integration tests under tests/ link only the `reify_audit` lib and
 # cannot reach its private [dependencies], so the live session test
 # (tests/jcodemunch_session_live.rs) needs its own entry to drive raw HTTP for

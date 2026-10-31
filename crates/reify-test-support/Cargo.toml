@@ -45,6 +45,9 @@ tempfile.workspace = true
 [dev-dependencies]
 reify-core.workspace = true
 reify-ir.workspace = true
+# `test-utils` for orphan_audit's in-lib tests (`removed_vars`); the library
+# body uses the [dependencies] entry's featureless surface only.
+reify-git-env = { workspace = true, features = ["test-utils"] }
 
 [features]
 eval-helpers = ["dep:reify-eval", "dep:reify-constraints", "containment-doubles"]

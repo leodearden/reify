@@ -153,9 +153,11 @@ pub fn sanitize(cmd: &mut Command) -> &mut Command {
 ///
 /// The workspace's single reader of that encoding: every test asserting that a
 /// command was sanitized reads through here, so there is one place to fix if
-/// the encoding ever changes. `pub` rather than `#[cfg(test)]` for exactly that
-/// reason — a `cfg(test)` item is invisible to dependent crates, which would
-/// force a hand-copied twin in each of them.
+/// the encoding ever changes. Behind the `test-utils` feature rather than
+/// `#[cfg(test)]`, because a `cfg(test)` item is invisible to dependent crates
+/// and would force a hand-copied twin in each of them. Dependents enable the
+/// feature from their `[dev-dependencies]`, so no production build compiles it.
+#[cfg(any(test, feature = "test-utils"))]
 // G-allow: the single test-side reader of std's `env_remove` encoding; every caller is test code
 pub fn removed_vars(cmd: &Command) -> Vec<String> {
     cmd.get_envs()
