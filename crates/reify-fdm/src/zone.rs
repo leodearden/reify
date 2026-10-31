@@ -48,6 +48,19 @@ pub struct ZoneProcessParams {
     pub build_direction: [f64; 3],
 }
 
+impl ZoneProcessParams {
+    /// True iff `layer_height`, `line_width` and every `build_direction`
+    /// component are finite. [`classify_zone`]'s band comparisons and the
+    /// top/bottom normal test mean something only when this holds, so
+    /// [`classify_zone`] debug-asserts it. A caller decoding params from
+    /// untrusted data must check it first and refuse rather than classify.
+    pub fn is_finite(&self) -> bool {
+        self.layer_height.is_finite()
+            && self.line_width.is_finite()
+            && self.build_direction.iter().all(|c| c.is_finite())
+    }
+}
+
 /// Precomputed distance probes for a single query point.
 ///
 /// The two distances probe *different* face populations:
@@ -222,7 +235,15 @@ impl AxisAlignedBox {
 /// §C4: Wall first, then Skin, else Infill. The ordering matters at
 /// corners where both bands overlap — perimeter shells dominate, which
 /// matches conventional slicer behaviour.
+///
+/// `params` must satisfy [`ZoneProcessParams::is_finite`] (debug-asserted):
+/// a NaN band never fires and an infinite one always does, so non-finite
+/// params yield an arbitrary zone.
 pub fn classify_zone(probe: &ZoneProbe, params: &ZoneProcessParams) -> Zone {
+    debug_assert!(
+        params.is_finite(),
+        "classify_zone requires finite zone params, got {params:?}"
+    );
     let wall_thickness = params.walls as f64 * params.line_width;
     if let Some(d) = probe.min_side_distance
         && d <= wall_thickness
@@ -253,6 +274,45 @@ mod tests {
             line_width: 0.0004,
             build_direction: [0.0, 0.0, 1.0],
         }
+    }
+
+    #[test]
+    fn zone_process_params_is_finite_iff_every_float_field_is_finite() {
+        assert!(fdm_default_params().is_finite());
+        let with = |edit: fn(&mut ZoneProcessParams)| {
+            let mut params = fdm_default_params();
+            edit(&mut params);
+            params
+        };
+        for (label, params) in [
+            ("NaN layer_height", with(|p| p.layer_height = f64::NAN)),
+            ("+inf line_width", with(|p| p.line_width = f64::INFINITY)),
+            (
+                "-inf layer_height",
+                with(|p| p.layer_height = f64::NEG_INFINITY),
+            ),
+            (
+                "NaN build_direction[1]",
+                with(|p| p.build_direction = [0.0, f64::NAN, 1.0]),
+            ),
+        ] {
+            assert!(!params.is_finite(), "{label} must not be finite");
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "classify_zone requires finite zone params")]
+    fn classify_zone_debug_asserts_finite_params() {
+        let params = ZoneProcessParams {
+            line_width: f64::NAN,
+            ..fdm_default_params()
+        };
+        let probe = ZoneProbe {
+            min_side_distance: Some(0.0001),
+            min_top_bottom_distance: None,
+        };
+        classify_zone(&probe, &params);
     }
 
     #[test]

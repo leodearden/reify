@@ -43,14 +43,14 @@
 //! θ's.
 
 use reify_fdm::{
-    DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, R0Options, R0Region, Toolpath, parse_prusaslicer_gcode,
-    r0_region_materials,
+    DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, R0Options, R0Region, Toolpath, ZoneProcessParams,
+    parse_prusaslicer_gcode, r0_region_materials,
 };
 use reify_ir::{OpaqueState, Value};
 
 use super::as_printed_material::{
     AS_PRINTED_MATERIAL, as_printed_field_value, field_int, field_vec3, orthotropic_material,
-    read_base_elastic,
+    read_base_elastic, zone_params_value,
 };
 use super::{MM_TO_M, rejected_input_outcome, struct_data, structure};
 use crate::arg_acceptance::{FieldRejection, dimensionless_spec, length_spec, read_field};
@@ -62,8 +62,9 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// AsPrintedZones }`. Malformed G-code or a missing / malformed FDMProcess
 /// degrades honestly to a `Value::Undef`-lambda field (every sample returns
 /// `Undef`) rather than panicking — mirroring the R-fast `degraded_field`; a
-/// mistyped `walls`, `top_bottom_layers` or `build_direction` degrades the
-/// same way. A present numeric FDMProcess field the reader refuses — a number
+/// mistyped `walls`, `top_bottom_layers` or `build_direction`, or a
+/// non-finite `layer_height`, bead-derived `line_width` or `build_direction`
+/// component, degrades the same way. A present numeric FDMProcess field the reader refuses — a number
 /// of the wrong dimension or a value that is not a number at all — is
 /// [`ComputeOutcome::Failed`] with that field's `DimensionedArgRejected` Error,
 /// exactly as on the R-fast rung.
@@ -87,9 +88,9 @@ pub fn as_printed_material_r0_trampoline(
 }
 
 /// Build the R0 `AsPrintedZones` material field: `Ok(None)` if any required
-/// input is missing / malformed (caller degrades to [`degraded_field`]), `Err`
-/// if a present numeric FDMProcess field is refused — a number of the wrong
-/// dimension or a value that is not a number at all.
+/// input is missing / malformed / non-finite (caller degrades to
+/// [`degraded_field`]), `Err` if a present numeric FDMProcess field is refused
+/// — a number of the wrong dimension or a value that is not a number at all.
 fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejection> {
     // value_inputs = [gcode String, FDMProcess, AsPrintedOptions].
     let Some(process) = value_inputs.get(1).and_then(struct_data) else {
@@ -129,7 +130,8 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
         return Ok(None);
     };
 
-    // The build axis is the frame z-axis / weakest axis; degenerate → +Z.
+    // The build axis is the frame z-axis / weakest axis; finite but
+    // zero-length → +Z.
     let build_unit = unit3(build_direction).unwrap_or([0.0, 0.0, 1.0]);
 
     let opts = R0Options {
@@ -155,16 +157,15 @@ fn build_r0_field(value_inputs: &[Value]) -> Result<Option<Value>, FieldRejectio
     let mat_infill = r0_zone_material(&regions.infill, build_unit);
 
     // ── Pack the AsPrintedZones lambda (same 7-element contract as R-fast) ───────
-    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz].
-    let params_list = Value::List(vec![
-        Value::Real(walls as f64),
-        Value::Real(top_bottom_layers as f64),
-        Value::Real(layer_height),
-        Value::Real(line_width),
-        Value::Real(build_unit[0]),
-        Value::Real(build_unit[1]),
-        Value::Real(build_unit[2]),
-    ]);
+    let Some(params_list) = zone_params_value(&ZoneProcessParams {
+        walls,
+        top_bottom_layers,
+        layer_height,
+        line_width,
+        build_direction: build_unit,
+    }) else {
+        return Ok(None);
+    };
     let lambda = Value::List(vec![
         super::point3_length(aabb_min),
         super::point3_length(aabb_max),

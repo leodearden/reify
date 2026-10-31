@@ -50,16 +50,23 @@ fn sample_call(field: Value, field_type: Type, at: Value) -> CompiledExpr {
 /// The AsPrintedZones lambda-slot payload for a 40×40×10 mm box, Z build axis,
 /// stdlib FDMProcess defaults + 0.4 mm line width.
 fn as_printed_field() -> (Value, Type) {
-    // params: [walls, top_bottom_layers, layer_height, line_width, bx, by, bz]
-    let params = Value::List(vec![
-        Value::Real(3.0),    // walls
-        Value::Real(4.0),    // top_bottom_layers
-        Value::Real(0.0002), // layer_height (m)
-        Value::Real(0.0004), // line_width (m)
-        Value::Real(0.0),    // build_direction x
-        Value::Real(0.0),    // build_direction y
-        Value::Real(1.0),    // build_direction z
-    ]);
+    as_printed_field_with(|_| {})
+}
+
+/// [`as_printed_field`] with `edit` applied to its 7-element params list
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`.
+fn as_printed_field_with(edit: impl FnOnce(&mut Vec<Value>)) -> (Value, Type) {
+    let mut params = vec![
+        Value::Real(3.0), // walls
+        Value::Real(4.0), // top_bottom_layers
+        length(0.0002),   // layer_height
+        length(0.0004),   // line_width
+        Value::Real(0.0), // build_direction x
+        Value::Real(0.0), // build_direction y
+        Value::Real(1.0), // build_direction z
+    ];
+    edit(&mut params);
+    let params = Value::List(params);
     let lambda = Value::List(vec![
         point3([0.0, 0.0, 0.0]),         // aabb_min
         point3([0.040, 0.040, 0.010]),   // aabb_max
@@ -113,5 +120,72 @@ fn sample_as_printed_selects_wall_at_side_and_infill_in_interior() {
         Value::String("INFILL".to_string()),
         "deep-interior point must sample the infill material, got {:?}",
         infill
+    );
+}
+
+/// task 6940: a non-finite band width makes the zone classification
+/// meaningless — a NaN wall band never fires and an infinite skin band always
+/// does — so the sample is `Undef`, like a non-finite AABB corner.
+#[test]
+fn sample_as_printed_is_undef_for_a_non_finite_band_width() {
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    // NaN line_width at the wall point (otherwise a NaN wall band reads INFILL).
+    let (field, field_type) = as_printed_field_with(|p| p[3] = length(f64::NAN));
+    let wall_point = eval_expr(
+        &sample_call(field, field_type, point3([0.0003, 0.020, 0.005])),
+        &ctx,
+    );
+    assert_eq!(
+        wall_point,
+        Value::Undef,
+        "NaN line_width, got {wall_point:?}"
+    );
+
+    // +inf layer_height at the box centre (otherwise an infinite skin band reads SKIN).
+    let (field, field_type) = as_printed_field_with(|p| p[2] = length(f64::INFINITY));
+    let centre = eval_expr(
+        &sample_call(field, field_type, point3([0.020, 0.020, 0.005])),
+        &ctx,
+    );
+    assert_eq!(centre, Value::Undef, "+inf layer_height, got {centre:?}");
+}
+
+/// task 6940: the params slot is read under the same element typing as
+/// `solve_elastic_static`'s reader — the two band widths `Length`, every other
+/// element a `Value::Real` — so a payload FEA refuses never classifies
+/// silently when sampled. Each edit below would otherwise read WALL here.
+#[test]
+fn sample_as_printed_is_undef_for_a_mistyped_params_element() {
+    let values = ValueMap::new();
+    let ctx = EvalContext::simple(&values);
+
+    let sample_wall_point = |edit: fn(&mut Vec<Value>)| {
+        let (field, field_type) = as_printed_field_with(edit);
+        eval_expr(
+            &sample_call(field, field_type, point3([0.0003, 0.020, 0.005])),
+            &ctx,
+        )
+    };
+    assert_eq!(
+        sample_wall_point(|p| p[3] = Value::Real(0.0004)),
+        Value::Undef,
+        "bare Real line_width"
+    );
+    assert_eq!(
+        sample_wall_point(|p| {
+            p[2] = Value::Scalar {
+                si_value: 0.0002,
+                dimension: DimensionVector::MASS,
+            }
+        }),
+        Value::Undef,
+        "MASS layer_height"
+    );
+    assert_eq!(
+        sample_wall_point(|p| p[0] = length(3.0)),
+        Value::Undef,
+        "Length-typed walls count"
     );
 }
