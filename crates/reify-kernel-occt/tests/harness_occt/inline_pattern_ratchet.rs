@@ -9,9 +9,10 @@
 //! are a behavioural property, guarded by `op_args_entry_point_parity.rs`, not
 //! a row here. γ2's rows (iv)–(vi) share one homed-uses mechanism: named
 //! identifiers used only inside their home fns, every home seen using one.
-//! Row (vii) bans a `map_err(|_| …)` that discards an error to mint a
-//! `QueryError`, `ExportError` or `TessError` `InvalidHandle`, erasing the
-//! cause the store lookup reported.
+//! Row (vii) bans a `map_err` whose closure discards its argument (`|_|`,
+//! `|_e|`) to mint a `QueryError`, `ExportError` or `TessError`
+//! `InvalidHandle`, erasing the cause the store lookup reported. A discard
+//! written without a closure, such as `.or(Err(..))`, is a blind spot.
 //!
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
@@ -1189,7 +1190,7 @@ const ROW_VII_ERRORS: &[&str] = &["QueryError", "ExportError", "TessError"];
 #[derive(Debug, Default)]
 struct RowVii {
     live: Vec<Finding>,
-    /// `map_err(|_|` heads examined, whatever their body.
+    /// Discarding `map_err` heads examined, whatever their body.
     heads: usize,
 }
 
@@ -1200,8 +1201,10 @@ fn skip_ws(bytes: &[u8], mut at: usize) -> usize {
     at
 }
 
-/// One past the `|_|` of a `map_err(|_|` head, `move` optional, whose `map_err`
-/// token starts at `at`; `None` when the closure binds its argument.
+/// One past the parameter list of a `map_err(` head, whose `map_err` token
+/// starts at `at`, when its closure (`move` optional) discards its argument:
+/// the parameter is `_` or a `_`-led name such as `_e`, typed or not. `None`
+/// when the closure binds its argument.
 fn discarding_closure_body(bytes: &[u8], at: usize) -> Option<usize> {
     let mut i = skip_ws(bytes, at + "map_err".len());
     if bytes.get(i) != Some(&b'(') {
@@ -1211,7 +1214,24 @@ fn discarding_closure_body(bytes: &[u8], at: usize) -> Option<usize> {
     if bytes[i..].starts_with(b"move") && !bytes.get(i + 4).is_some_and(|&b| is_ident_byte(b)) {
         i = skip_ws(bytes, i + 4);
     }
-    bytes[i..].starts_with(b"|_|").then_some(i + 3)
+    if bytes.get(i) != Some(&b'|') {
+        return None;
+    }
+    i = skip_ws(bytes, i + 1);
+    if bytes.get(i) != Some(&b'_') {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(|&b| is_ident_byte(b)) {
+        i += 1;
+    }
+    i = skip_ws(bytes, i);
+    if bytes.get(i) == Some(&b':') {
+        while bytes.get(i).is_some_and(|&b| b != b'|') {
+            i += 1;
+        }
+    }
+    (bytes.get(i) == Some(&b'|')).then_some(i + 1)
 }
 
 /// The segments of the `::`-separated path starting at `at`.
@@ -1283,12 +1303,12 @@ fn row_vii_no_discarding_map_err_mints_invalid_handle() {
     }
     assert!(
         scan.heads > 0,
-        "row (vii): no `map_err(|_|` head found in production code, so the matcher may be \
-         reading nothing"
+        "row (vii): no discarding `map_err` head found in production code, so the matcher \
+         may be reading nothing"
     );
     assert!(
         within_baseline(scan.live.len(), ROW_VII_BASELINE),
-        "row (vii): {} `map_err(|_| …Error::InvalidHandle…)` mapping(s) > baseline \
+        "row (vii): {} discarding `map_err(|_…| …Error::InvalidHandle…)` mapping(s) > baseline \
          {ROW_VII_BASELINE}. Instead, propagate ShapeStore::get's error with `?` (reify-ir's \
          From<GeometryError> impls keep the cause); a new instance needs a visible baseline \
          edit:\n{}",
@@ -2244,6 +2264,24 @@ fn t(&self, h: GeometryHandleId) -> Result<Mesh, reify_ir::TessError> {
 }
 
 #[test]
+fn row_vii_flags_a_discard_under_an_underscore_name_or_a_type() {
+    let src = snippet(
+        r#"
+fn q(&self, id: GeometryHandleId) -> Result<f64, QueryError> {
+    let shape = self.store.get(id).map_err(|_e| QueryError::InvalidHandle(id))?;
+}
+fn e(&self, id: GeometryHandleId) -> Result<(), ExportError> {
+    let shape = self.store.get(id).map_err(move | _err | ExportError::InvalidHandle(id))?;
+}
+fn t(&self, id: GeometryHandleId) -> Result<Mesh, TessError> {
+    let shape = self.store.get(id).map_err(|_: GeometryError| TessError::InvalidHandle(id))?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![2, 5, 8]);
+}
+
+#[test]
 fn row_vii_clears_once_rewritten_to_the_question_mark() {
     let src = snippet(
         r#"
@@ -2261,6 +2299,7 @@ fn row_vii_does_not_flag_a_kept_cause_another_variant_or_an_overflow_mapping() {
         r#"
 fn q(&self, shape: &OcctShape, face_index: &i64) -> Result<f64, QueryError> {
     let a = ffi::query_volume(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+    let c = ffi::query_length(shape).map_err(|e_| QueryError::InvalidHandle(e_.handle()))?;
     let b = ffi::query_area(shape).map_err(|_| QueryError::QueryFailed(area()))?;
     let idx: u32 = (*face_index).try_into().map_err(|_| {
         GeometryError::OperationFailed(format!("face index {face_index} overflows u32"))
