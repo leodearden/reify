@@ -950,6 +950,29 @@ _wallclock_uncovered_test_roots() {
     done
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _wallclock_candidate_test_roots
+#
+# Reads tracked .rs paths on STDIN, one per line, and prints (stdout) the
+# candidate test roots they imply -- each directory named `tests`, `benches` or
+# `examples` that holds one -- once each, sorted under LC_ALL=C. Returns 0 with
+# or without candidates, because the LIST is the result (same contract as
+# _wallclock_uncovered_test_roots); an rc >= 2 from the pipeline propagates.
+# WHY those three names: the header's SCOPE IS CARGO'S TARGET MODEL paragraph.
+#
+# Both halves match a WHOLE path component, and the `(^|` arm is what lets a
+# TOP-LEVEL directory through: its path has no leading `/` (fixtures 4f-6, 4f-8).
+# ---------------------------------------------------------------------------
+_wallclock_candidate_test_roots() {
+    local _roots _rc=0
+    _roots="$(sed -E 's#(^|.*/)(tests|benches|examples)/.*#\1\2#' \
+        | grep -E '(^|/)(tests|benches|examples)$')" || _rc=$?
+    # grep's rc 1 is "no candidate": an answer, not a failure.
+    [ "$_rc" -le 1 ] || return "$_rc"
+    _emit_record_stream "$_roots" | LC_ALL=C sort -u
+}
+
 # ===========================================================================
 # Section 1: Hermetic positive-detection -- the detector must flag a planted
 #             hand-rolled real-clock deadline (Rule A).
@@ -1623,10 +1646,7 @@ done
 # Coverage is by PREFIX, not equality: the roots scan recursively, so a nested
 # `a/tests/b/tests` is genuinely reached from `a/tests`. See Section 4f.
 _s3_gt_rc=0
-_s3_gt="$(git ls-files '*.rs' \
-    | sed -E 's#(^|.*/)tests/.*#\1tests#' \
-    | LC_ALL=C sort -u \
-    | grep -E '(^|/)tests$')" || _s3_gt_rc=$?
+_s3_gt="$(git ls-files '*.rs' | _wallclock_candidate_test_roots)" || _s3_gt_rc=$?
 assert "live scan: the ground-truth test-root derivation succeeds" \
     test "$_s3_gt_rc" -eq 0
 
