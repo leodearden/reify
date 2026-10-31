@@ -25,6 +25,13 @@ class Scope(Enum):
     BRANCH = "branch"
 
 
+class PlanFormat(Enum):
+    """The plan projection a run prints instead of executing; its value is the flag."""
+
+    TEXT = "--print-plan"
+    JSON = "--print-plan=json"
+
+
 class Query(Enum):
     """A report printed instead of running an action; its value is the flag."""
 
@@ -40,7 +47,7 @@ class Invocation:
     scope: Scope
     narrow: bool
     include_infra: bool
-    print_plan: bool
+    plan_format: PlanFormat | None
     confirm_failed: bool
     test_threads: int | None
     role: Role

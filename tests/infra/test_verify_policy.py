@@ -298,6 +298,7 @@ class TestUsage(unittest.TestCase):
         "--narrow",
         "--include-infra",
         "--print-plan",
+        "--print-plan=json",
         "--test-threads",
         "--confirm-failed",
         "-h|--help",

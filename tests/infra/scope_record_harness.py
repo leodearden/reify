@@ -3,6 +3,10 @@ scope_record_harness.py — the shared clone and the side-by-side runner the
 --print-scope members drive (S18 β, task 9097; PRD
 docs/prds/v0_6/verify-structured-plan-and-role-table.md D13).
 
+Its second consumer is the plan-parity harness, tests/infra/plan_parity_harness.py
+(S18 γ1, task 9098), which builds B1 on this module's Clone, base_env and
+run_command rather than keeping a clone of its own.
+
 Not a test module itself (no `test_` prefix): run_all.sh never discovers it,
 and the members import it via the sys.path idiom. It imports nothing from them.
 
@@ -61,7 +65,7 @@ class Outcome:
     stderr: str
 
 
-def _run(cmd, env, cwd):
+def run_command(cmd, env, cwd):
     proc = subprocess.run(
         cmd,
         cwd=cwd,
@@ -76,7 +80,7 @@ def _run(cmd, env, cwd):
 def run_py(argv, env, tree=REPO_ROOT, cwd=None):
     """`verify.py` of `tree`, run from `cwd` (default: the tree's root)."""
     verify_py = Path(tree) / "scripts" / "verify.py"
-    return _run(
+    return run_command(
         [sys.executable, "-I", "-B", str(verify_py), *argv],
         env,
         tree if cwd is None else cwd,
@@ -84,7 +88,7 @@ def run_py(argv, env, tree=REPO_ROOT, cwd=None):
 
 
 def run_bash(argv, env, tree=REPO_ROOT):
-    return _run(
+    return run_command(
         ["bash", "scripts/verify.sh", *argv],
         {**env, "REIFY_NEXTEST_PROBE_RETRY_SLEEP": "0"},
         tree,
