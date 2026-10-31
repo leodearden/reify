@@ -17,21 +17,25 @@ pub(crate) type ArmMemberMap = (String, BTreeMap<String, Type>);
 pub(crate) type SubClusterEntry = (GuardedDeclGroup, Vec<ArmMemberMap>);
 
 /// One `obj.(Trait::fn)(…)` dispatch candidate: a trait instance assoc fn's signature
-/// plus the type-param names its types were resolved against (fn-level ∪ trait-level).
+/// plus whether it is generic.
 #[derive(Debug, Clone)]
 pub(crate) struct AssocFnDispatchCandidate {
     sig: CompiledAssocFnSig,
-    type_params: HashSet<String>,
+    /// The sig was resolved against a non-empty type-param scope (fn-level ∪
+    /// trait-level), even if the sig itself mentions none of those params.
+    is_generic: bool,
 }
 
 impl AssocFnDispatchCandidate {
-    pub(crate) fn new(sig: CompiledAssocFnSig, type_params: HashSet<String>) -> Self {
+    /// `resolution_type_params` is the type-param scope `sig`'s types were resolved against.
+    pub(crate) fn new(sig: CompiledAssocFnSig, resolution_type_params: &HashSet<String>) -> Self {
+        let is_generic = !resolution_type_params.is_empty();
         let carries_param = |t: &Type| {
             reify_core::overload::type_carries_type_param(t)
                 || reify_core::overload::type_carries_dim_param(t)
         };
         debug_assert!(
-            !type_params.is_empty()
+            is_generic
                 || !sig
                     .params
                     .iter()
@@ -40,7 +44,7 @@ impl AssocFnDispatchCandidate {
             "AssocFnDispatchCandidate invariant: a sig resolved with no type params in scope \
              carries no type/dim-param leaf; got {sig:?}"
         );
-        Self { sig, type_params }
+        Self { sig, is_generic }
     }
 
     pub(crate) fn sig(&self) -> &CompiledAssocFnSig {
@@ -48,7 +52,7 @@ impl AssocFnDispatchCandidate {
     }
 
     pub(crate) fn is_generic(&self) -> bool {
-        !self.type_params.is_empty()
+        self.is_generic
     }
 }
 
@@ -217,7 +221,7 @@ pub(crate) struct CompilationScope<'u> {
     /// an un-resolved TypeParam).
     pub(crate) trait_member_types: HashMap<String, HashMap<String, Type>>,
     /// Trait → instance-assoc-fn name → its overloads' dispatch candidates
-    /// (sig + type-param scope).
+    /// (sig + genericity).
     ///
     /// Populated in `compile_entity` from the `trait_registry`, alongside
     /// `trait_members`. Carries only **instance** associated functions (those

@@ -6407,8 +6407,8 @@ fn compile_expr_guarded_with_expected_inner(
             //         (`reify_core::overload::slot_matches_wildcard_tier`) plus the
             //         exact-match tie-break; no head tier, NO Int→Real. (ε #3943)
             //
-            //         `is_generic` is the candidate's own (its fn ∪ trait type-param
-            //         scope, `AssocFnDispatchCandidate`). Pinned by
+            //         `is_generic` is the candidate's own (a non-empty fn ∪ trait
+            //         type-param scope, `AssocFnDispatchCandidate`). Pinned by
             //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` and
             //         `dispatch_concrete_param_slot_rejects_mismatched_arg` in
             //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.

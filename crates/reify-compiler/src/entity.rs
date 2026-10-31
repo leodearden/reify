@@ -1520,7 +1520,8 @@ pub(crate) fn compile_entity(
         // Default-providing fns carry a raw `FnDef` whose params and return type
         // are re-resolved here against a throwaway diagnostics sink (the trait fn
         // was already compiled in `phase_traits`; re-reporting errors would
-        // double-diagnose); their candidate records that resolution's scope.
+        // double-diagnose); their candidate is generic iff that resolution's
+        // type-param scope is non-empty.
         //
         // Accumulates ALL overloads into per-method Vecs (replaces the old
         // name-keyed `assoc_fn_returns: HashMap<String, Type>` which was
@@ -1534,7 +1535,7 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(sig.name.clone())
                     .or_default()
-                    .push(AssocFnDispatchCandidate::new(sig.clone(), HashSet::new()));
+                    .push(AssocFnDispatchCandidate::new(sig.clone(), &HashSet::new()));
             }
         }
         for default in &compiled_trait.defaults {
@@ -1553,13 +1554,13 @@ pub(crate) fn compile_entity(
                 // above; the default branch is the only one that re-resolves from
                 // the raw FnDef, so the trait params must be re-supplied here
                 // (reviewer amendment, correctness).
-                let fn_type_params: HashSet<String> = fn_def
+                let sig_type_params: HashSet<String> = fn_def
                     .type_params
                     .iter()
                     .map(|tp| tp.name.clone())
                     .chain(compiled_trait.type_params.iter().map(|tp| tp.name.clone()))
                     .collect();
-                let fn_dim_params: HashSet<String> = fn_def
+                let sig_dim_params: HashSet<String> = fn_def
                     .type_params
                     .iter()
                     .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
@@ -1575,8 +1576,8 @@ pub(crate) fn compile_entity(
                 let return_type = match &fn_def.return_type {
                     Some(te) => resolve_type_expr_with_aliases_kinded(
                         te,
-                        &fn_type_params,
-                        &fn_dim_params,
+                        &sig_type_params,
+                        &sig_dim_params,
                         alias_registry,
                         &mut Vec::new(),
                         structure_names,
@@ -1593,8 +1594,8 @@ pub(crate) fn compile_entity(
                     .map(|p| {
                         resolve_type_expr_with_aliases_kinded(
                             &p.type_expr,
-                            &fn_type_params,
-                            &fn_dim_params,
+                            &sig_type_params,
+                            &sig_dim_params,
                             alias_registry,
                             &mut Vec::new(),
                             structure_names,
@@ -1613,7 +1614,7 @@ pub(crate) fn compile_entity(
                             params,
                             return_type,
                         },
-                        fn_type_params,
+                        &sig_type_params,
                     ));
             }
         }
