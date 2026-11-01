@@ -23,6 +23,7 @@
 //! `member_force_deltas : List<Force>`, `slack : List<Bool>`, and
 //! `converged : Bool`.
 
+use crate::common::failed_diagnostics::joined_failure_messages;
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, Value};
@@ -236,35 +237,26 @@ fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
 ///
 /// Every needle is checked against ONE flattened diagnostic set, so a caller
 /// invokes the trampoline once and the assertions provably describe the same
-/// message rather than several independently-produced ones. It is also the
-/// single site where a `Failed` outcome's diagnostics are flattened; the
-/// single-needle form above delegates here rather than re-spelling that.
+/// message rather than several independently-produced ones. The diagnostic
+/// flattening lives in `common::failed_diagnostics`; the
+/// single-needle form above delegates here.
 fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
-    match outcome {
-        ComputeOutcome::Failed { diagnostics, .. } => {
-            let joined = diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            assert!(
-                joined.contains("E_TensegrityLoadInfeasible"),
-                "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
-            );
-            for &needle in must {
-                assert!(
-                    joined.contains(needle),
-                    "expected the diagnostic to mention {needle:?}, got: {joined}"
-                );
-            }
-            for &needle in must_not {
-                assert!(
-                    !joined.contains(needle),
-                    "expected the diagnostic NOT to mention {needle:?}, got: {joined}"
-                );
-            }
-        }
-        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
+    let joined = joined_failure_messages(outcome);
+    assert!(
+        joined.contains("E_TensegrityLoadInfeasible"),
+        "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
+    );
+    for &needle in must {
+        assert!(
+            joined.contains(needle),
+            "expected the diagnostic to mention {needle:?}, got: {joined}"
+        );
+    }
+    for &needle in must_not {
+        assert!(
+            !joined.contains(needle),
+            "expected the diagnostic NOT to mention {needle:?}, got: {joined}"
+        );
     }
 }
 

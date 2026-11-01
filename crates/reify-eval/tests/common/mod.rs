@@ -7,3 +7,4 @@
 //! helpers it never calls.
 
 pub mod as_printed;
+pub mod failed_diagnostics;
