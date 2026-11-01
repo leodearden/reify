@@ -162,6 +162,7 @@ use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
+    stale_realizations,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -592,13 +593,11 @@ fn assert_realization_ids_unchanged<'a>(
 /// re-dispatch it forces projects through the store and gets the stale content
 /// back.
 ///
-/// Both halves of the moved set are evicted. The seeds themselves are absent
-/// from the returned cone by construction (`compute_dirty_cone_with_realizations`
-/// keeps them out of `dirty`), so they are evicted directly from
-/// `changed_realizations`; the downstream `GeomRef::Sub` consumers the walk
-/// reaches DO arrive as `NodeId::Realization` entries in the cone, and are
-/// evicted there. Neither half needs a new derivation — the precise set is the
-/// one this function is already handed.
+/// The evicted set is [`stale_realizations`]`(seeds, cone)`, the same set whose
+/// entities both callers hand to `RealizationCache::evict_family`, so the two
+/// caches drop the same realizations by construction. It includes the
+/// `GeomRef::Sub` consumers [`realization_cone_seeds`] adds, whose
+/// `content_hash` and `input_cone_hash` both stay put on a value edit.
 ///
 /// # Which reverse index is used
 ///
@@ -662,12 +661,6 @@ fn invalidate_realization_dirty_cone(
     if seeds.is_empty() {
         return HashSet::new();
     }
-    // The seeds' own memoized projections — see "The memoized projection store
-    // is evicted too" above. Done before the walk because the seeds are the one
-    // part of the moved set the cone deliberately does not carry.
-    for rid in changed_realizations {
-        projection_store.evict(rid);
-    }
     let rebuilt;
     let index = match prebuilt_index {
         Some(idx) => idx,
@@ -696,12 +689,9 @@ fn invalidate_realization_dirty_cone(
             warm_pool.donate_with_cost(node.clone(), state, cost);
         }
         cache.invalidate(node);
-        // A downstream `GeomRef::Sub` consumer of a moved realization: its own
-        // geometry moved with its operand, so its memo is stale for the same
-        // reason the seeds' is.
-        if let NodeId::Realization(rid) = node {
-            projection_store.evict(rid);
-        }
+    }
+    for rid in stale_realizations(seeds, &dirty) {
+        projection_store.evict(rid);
     }
     dirty
 }

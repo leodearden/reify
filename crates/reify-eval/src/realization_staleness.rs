@@ -139,7 +139,7 @@ pub(crate) fn stale_realization_entities<'a>(
     realization_cone: &HashSet<NodeId>,
 ) -> HashSet<String> {
     let entity = |rid: &RealizationNodeId| rid.entity.clone();
-    realizations_in(seeds, realization_cone)
+    stale_realizations(seeds, realization_cone)
         .map(entity)
         .chain(removed.into_iter().map(entity))
         .collect()
@@ -174,7 +174,7 @@ pub(crate) fn hash_gate_verdict(
     let seeds = realization_cone_seeds(moved, false, graph);
     let cone =
         crate::dirty::compute_dirty_cone_with_realizations(&HashSet::new(), &seeds, index, graph);
-    let stale: HashSet<RealizationNodeId> = realizations_in(&seeds, &cone).cloned().collect();
+    let stale: HashSet<RealizationNodeId> = stale_realizations(&seeds, &cone).cloned().collect();
     let reruns: HashSet<RealizationNodeId> = stale.intersection(demanded).cloned().collect();
     let must_run = with_sub_producers(&reruns, graph);
     HashGateVerdict {
@@ -211,9 +211,9 @@ fn with_sub_producers(
     visited
 }
 
-/// The seeds of a realization dirty cone followed by the cone's own
-/// realization members (the walk never puts its seeds in its result).
-fn realizations_in<'a>(
+/// The realizations an edit made stale, per id: the cone's seeds, then its
+/// realization members, since the walk never puts its seeds in its result.
+pub(crate) fn stale_realizations<'a>(
     seeds: &'a HashSet<RealizationNodeId>,
     cone: &'a HashSet<NodeId>,
 ) -> impl Iterator<Item = &'a RealizationNodeId> {

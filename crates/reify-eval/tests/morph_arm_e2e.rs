@@ -273,8 +273,8 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     // regression is in the morph or quality-gate logic, not in mesh determinism.
     // Either way, do NOT widen that `snap.morphed == 1` assertion to accept the
     // remesh fallback (the exact regression tasks 6635/6637 fixed), and do NOT
-    // delete it. (The separate `fires_across_tick == 0` assertion further down
-    // carries its own do-not-widen instruction, for the unrelated #7332 latch.)
+    // delete it. (The separate `fires_across_tick == 1` count pin further down
+    // guards the unrelated #7332 redispatch gate.)
     engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
     assert!(
         engine.ensure_gmsh_kernel(),

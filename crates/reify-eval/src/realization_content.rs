@@ -76,7 +76,9 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 /// realization within one engine lifetime.  #7332 removed that accident, so the
 /// invariant is now upheld where it belongs, in the caller:
 /// `engine_edit::invalidate_realization_dirty_cone` [`evict`](Self::evict)s
-/// every realization whose EVALUATED input cone moved — keyed on
+/// the edit's stale set, `realization_staleness::stale_realizations`: every
+/// realization whose EVALUATED input cone moved, plus the `GeomRef::Sub`
+/// consumers downstream of them.  "Moved" is keyed on
 /// `RealizationNodeData::input_cone_hash` precisely because `content_hash`
 /// cannot see a value-driven change.
 #[allow(dead_code)] // consumed by project_realization_read_handle / step-4
