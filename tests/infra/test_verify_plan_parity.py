@@ -39,6 +39,7 @@ sys.path.insert(0, str(INFRA_DIR))
 from plan_parity_harness import (  # noqa: E402
     CHANGED_PATH_FIXTURES,
     EXPECTED_DIVERGENCES,
+    NEXTEST_ABSENT_PROBE,
     PORT_WINDOW_RULE,
     Clone,
     InParityClone,
@@ -555,9 +556,7 @@ class TestPlanParityStartup(InParityClone):
         ))
 
     def test_nextest_probe(self):
-        absent = self.nextest_env(
-            "absent", "    echo 'error: no such command: `nextest`' >&2\n    exit 101\n"
-        )
+        absent = self.nextest_env("absent", NEXTEST_ABSENT_PROBE)
         failing = self.nextest_env(
             "failing", f"    printf '%s\\n' {shlex.join(STUB_PROBE_LINES)} '' >&2\n    exit 101\n",
             cargo_nextest=True,

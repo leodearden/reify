@@ -25,8 +25,10 @@ GridParity runs one action's full grid (PRD D13: role × profile × scope, with
 --include-infra) in two clone states; each grid shard member subclasses it.
 
 The scenario fixtures the members share live here too: the PATH farms and
-stub cargos for the nextest and priority cases (path_farm, nextest_env), and
-the changed paths S22 B14 plans one at a time (CHANGED_PATH_FIXTURES).
+stub cargos for the nextest and priority cases (path_farm, nextest_env), the
+changed paths S22 B14 plans one at a time (CHANGED_PATH_FIXTURES), and
+PremisedParity, which checks each Case's bash-side premise (it reaches the
+shape it is named for) before its parity, so a case cannot pass vacuously.
 """
 
 import dataclasses
@@ -35,6 +37,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -60,11 +63,14 @@ __all__ = (
     "PORT_WINDOW_RULE",
     "Scenario",
     "Pair",
+    "Case",
     "Divergence",
     "ExpectedDivergence",
     "GridParity",
     "InParityClone",
+    "PremisedParity",
     "CHANGED_PATH_FIXTURES",
+    "NEXTEST_ABSENT_PROBE",
     "SYSTEM_BIN_DIRS",
     "base_env",
     "check_divergence",
@@ -73,6 +79,7 @@ __all__ = (
     "grid_scenarios",
     "nextest_env",
     "path_farm",
+    "plan",
     "plan_sections",
     "run_both",
     "run_many",
@@ -118,6 +125,8 @@ COMMAND_HINTS = (
     ),
 )
 SYSTEM_BIN_DIRS = (Path("/usr/bin"), Path("/bin"))
+# nextest_env's probe body for a cargo with no nextest subcommand.
+NEXTEST_ABSENT_PROBE = "    echo 'error: no such command: `nextest`' >&2\n    exit 101\n"
 # The changed paths tests/infra/test_verify_scope.sh plans one at a time with
 # `plan_for staged` (S22 B14); stage_written writes each as plan_for does.
 CHANGED_PATH_FIXTURES = (
@@ -412,6 +421,66 @@ class InParityClone(InClone):
             pair.bash.returncode, 0,
             f"premise: bash plans [{scenario.label}]\n{pair.bash.stderr}",
         )
+
+
+@dataclass(frozen=True)
+class Case:
+    """A scenario and its bash-side premise.
+
+    The premise is bash's exit code, the start of its first stdout line, texts
+    its stdout holds and lacks, and texts its stderr holds (in this order) and
+    lacks.
+    """
+
+    scenario: Scenario
+    stdout: tuple[str, ...] = ()
+    absent: tuple[str, ...] = ()
+    stderr: tuple[str, ...] = ()
+    stderr_absent: tuple[str, ...] = ()
+    first_line: str | None = None
+    exit_code: int = 0
+
+
+def plan(label: str, *argv: str, env: Mapping[str, str | None] | None = None) -> Scenario:
+    """`<argv> --print-plan` under the env overrides."""
+    return Scenario(label, (*argv, "--print-plan"), dict(env or {}))
+
+
+class PremisedParity(InParityClone):
+    """Cases checked premise first, then for full parity; each test has a scratch directory."""
+
+    def setUp(self):
+        super().setUp()
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.scratch = Path(scratch.name)
+
+    def check(self, *cases: Case):
+        """Every case in the clone's current state, concurrently."""
+        pairs = run_many(self.clone, (case.scenario for case in cases))
+        for case, (_, pair) in zip(cases, pairs):
+            self.check_pair(case, pair)
+
+    def check_pair(self, case: Case, pair: Pair):
+        label = case.scenario.label
+        with self.subTest(label):
+            bash = pair.bash
+            self.assertEqual(bash.returncode, case.exit_code, f"premise: bash's exit code [{label}]\n{bash.stderr}")
+            if case.first_line is not None:
+                first = next(iter(bash.stdout.splitlines()), "")
+                self.assertEqual(first[: len(case.first_line)], case.first_line, f"premise: bash's first stdout line [{label}]")
+            for text in case.stdout:
+                self.assertIn(text, bash.stdout, f"premise [{label}]")
+            for text in case.absent:
+                self.assertNotIn(text, bash.stdout, f"premise [{label}]")
+            position = 0
+            for text in case.stderr:
+                found = bash.stderr.find(text, position)
+                self.assertNotEqual(found, -1, f"premise: bash's stderr holds {text!r}, in order [{label}]")
+                position = found + len(text)
+            for text in case.stderr_absent:
+                self.assertNotIn(text, bash.stderr, f"premise: bash's stderr [{label}]")
+            self.assert_parity(case.scenario, pair)
 
 
 def _without_line(text: str, line: str) -> str:

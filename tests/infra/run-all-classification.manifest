@@ -278,6 +278,7 @@ test_verify_plan_parity.sh pool
 test_verify_plan_parity_all.sh pool
 test_verify_plan_parity_lint.sh pool
 test_verify_plan_parity_region.sh pool
+test_verify_plan_parity_retry.sh pool
 test_verify_plan_parity_test.sh pool
 test_verify_plan_parity_typecheck.sh pool
 test_verify_policy.sh pool

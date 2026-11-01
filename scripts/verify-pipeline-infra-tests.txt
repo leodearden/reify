@@ -901,6 +901,7 @@ tests/infra/test_verify_plan_parity_typecheck.py    tests/infra/test_verify_plan
 tests/infra/test_verify_plan_parity_test.py    tests/infra/test_verify_plan_parity_test.sh
 tests/infra/test_verify_plan_parity_all.py    tests/infra/test_verify_plan_parity_all.sh
 tests/infra/test_verify_plan_parity_region.py    tests/infra/test_verify_plan_parity_region.sh
+tests/infra/test_verify_plan_parity_retry.py    tests/infra/test_verify_plan_parity_retry.sh
 tests/infra/plan_parity_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity*.sh

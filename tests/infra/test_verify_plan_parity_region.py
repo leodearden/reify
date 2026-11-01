@@ -19,22 +19,22 @@ thin wrapper tests/infra/test_verify_plan_parity_region.sh.
 
 import itertools
 import sys
-import tempfile
 import unittest
-from dataclasses import dataclass
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(INFRA_DIR))
 from plan_parity_harness import (  # noqa: E402
     CHANGED_PATH_FIXTURES,
-    InParityClone,
+    NEXTEST_ABSENT_PROBE,
+    Case,
+    PremisedParity,
     Scenario,
     discard_clone,
     nextest_env,
     path_farm,
+    plan,
     run_both,
-    run_many,
     stage_written,
 )
 
@@ -47,7 +47,6 @@ HEAVY_HEADER = "# heavy partition — HEAVY="
 # heavy_partition's answer under REIFY_GATE_EXCLUDE_HEAVY=1, per role.
 HEAVY_EXCLUDED_BY_ROLE = {None: "excluded", "merge": "excluded", "offline": "only", "background": "included"}
 NEXTEST_ABSENT = " nextest=0 "
-ABSENT_PROBE = "    echo 'error: no such command: `nextest`' >&2\n    exit 101\n"
 FAILING_PROBE = "    echo 'error: the B1 stub nextest probe failed' >&2\n    exit 101\n"
 CONFIRM_OVERRIDES = {
     "REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG": "target/b1/manifest-debug.txt",
@@ -81,58 +80,11 @@ def tearDownModule():
     discard_clone()
 
 
-@dataclass(frozen=True)
-class Case:
-    """A scenario and its bash-side premise: exit code, texts bash's stdout holds and lacks, texts its stderr holds in order."""
-
-    scenario: Scenario
-    stdout: tuple[str, ...] = ()
-    absent: tuple[str, ...] = ()
-    stderr: tuple[str, ...] = ()
-    exit_code: int = 0
-
-
-def plan(label, *argv, env=None) -> Scenario:
-    return Scenario(label, (*argv, "--print-plan"), dict(env or {}))
-
-
 def role_label(role) -> str:
     return role or "task"
 
 
-class RegionParity(InParityClone):
-    def setUp(self):
-        super().setUp()
-        scratch = tempfile.TemporaryDirectory()
-        self.addCleanup(scratch.cleanup)
-        self.scratch = Path(scratch.name)
-
-    def check(self, *cases: Case):
-        """Every case in the clone's current state, concurrently."""
-        pairs = run_many(self.clone, (case.scenario for case in cases))
-        for case, (scenario, pair) in zip(cases, pairs):
-            self.check_pair(case, pair)
-
-    def check_pair(self, case: Case, pair):
-        scenario = case.scenario
-        with self.subTest(scenario.label):
-            self.assertEqual(
-                pair.bash.returncode, case.exit_code,
-                f"premise: bash's exit code [{scenario.label}]\n{pair.bash.stderr}",
-            )
-            for text in case.stdout:
-                self.assertIn(text, pair.bash.stdout, f"premise [{scenario.label}]")
-            for text in case.absent:
-                self.assertNotIn(text, pair.bash.stdout, f"premise [{scenario.label}]")
-            position = 0
-            for text in case.stderr:
-                found = pair.bash.stderr.find(text, position)
-                self.assertNotEqual(found, -1, f"premise: bash's stderr holds {text!r}, in order [{scenario.label}]")
-                position = found + len(text)
-            self.assert_parity(scenario, pair)
-
-
-class TestRegionKnobs(RegionParity):
+class TestRegionKnobs(PremisedParity):
     """The knobs the region reads, each reaching the plan it changes."""
 
     def test_heavy_partition_under_each_role(self):
@@ -217,7 +169,7 @@ class TestRegionKnobs(RegionParity):
         ))
 
 
-class TestRegionNarrowing(RegionParity):
+class TestRegionNarrowing(PremisedParity):
     """The debug pass's selector and the gui-feature pass's gate follow the narrowing."""
 
     def test_narrowed_staged_and_branch_scopes(self):
@@ -262,11 +214,11 @@ class TestRegionNarrowing(RegionParity):
             self.check_pair(Case(scenario), run_both(self.clone, scenario))
 
 
-class TestRegionToolchain(RegionParity):
+class TestRegionToolchain(PremisedParity):
     """Without nextest the passes fall back to cargo test; a failing probe refuses the plan."""
 
     def test_nextest_absent_under_each_role(self):
-        env = nextest_env(self.scratch, "absent", ABSENT_PROBE)
+        env = nextest_env(self.scratch, "absent", NEXTEST_ABSENT_PROBE)
         cases = [
             Case(
                 plan(f"{action} nextest absent role={role_label(role)}", action, "--scope", "all",
@@ -290,7 +242,7 @@ def merge_all(label, action="test", env=None) -> Scenario:
     return plan(label, action, "--scope", "all", env={**DELTA_SKIP_MERGE, **(env or {})})
 
 
-class TestReleaseDeltaParity(RegionParity):
+class TestReleaseDeltaParity(PremisedParity):
     """The merge role's release-delta skip, decided at load for every action, and the declared release set.
 
     Each clone state is set up, then planned, one at a time.
