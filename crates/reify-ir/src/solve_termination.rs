@@ -52,9 +52,9 @@ impl fmt::Display for SolveFailureCause {
 pub struct InfeasibilityCertificate {
     /// `‖J̃ᵀr̃‖` at the stopping point.
     pub gradient_norm: f64,
-    /// `‖J̃ᵀr̃‖ / (‖J̃‖_F·‖r̃‖)` — the cosine between `r̃` and the range of `J̃`;
-    /// near zero only at a genuine stationary point.
-    pub relative_gradient: f64,
+    /// `‖P r̃‖ / ‖r̃‖`, the cosine between `r̃` and the range of `J̃` (`P` the
+    /// orthogonal projector onto it); zero iff the gradient `J̃ᵀr̃` vanishes.
+    pub range_cosine: f64,
     /// `max|r̃ᵢ|` at the stopping point (`> 1`).
     pub max_scaled_residual: f64,
     /// The rows still above their tolerance, largest `|r̃ᵢ|` first.
@@ -66,10 +66,10 @@ impl fmt::Display for InfeasibilityCertificate {
         write!(
             f,
             "the solve reached a least-squares minimum that is not a root: \
-             ‖J̃ᵀr̃‖ = {:.3e} (relative gradient {:.2e}), largest scaled residual \
+             ‖J̃ᵀr̃‖ = {:.3e} (range cosine {:.2e}), largest scaled residual \
              {:.3e} over {} violated row(s)",
             self.gradient_norm,
-            self.relative_gradient,
+            self.range_cosine,
             self.max_scaled_residual,
             self.blame.len()
         )
@@ -138,9 +138,10 @@ pub struct SolveStall {
     pub iterations: u32,
     /// The scaled norm of the last trial step.
     pub step_norm: f64,
-    /// The relative gradient at the stopping point (above the certificate's
-    /// tolerance).
-    pub relative_gradient: f64,
+    /// `‖P r̃‖ / ‖r̃‖`, the cosine between `r̃` and the range of `J̃` (`P` the
+    /// orthogonal projector onto it), at the stopping point — above the
+    /// certificate's tolerance.
+    pub range_cosine: f64,
     /// `max|r̃ᵢ|` at the stopping point.
     pub max_scaled_residual: f64,
 }
@@ -150,9 +151,9 @@ impl fmt::Display for SolveStall {
         write!(
             f,
             "the solve stalled after {} iterations: step norm {:.3e} at a point \
-             that is not stationary (relative gradient {:.2e}); largest scaled \
+             that is not stationary (range cosine {:.2e}); largest scaled \
              residual {:.3e}",
-            self.iterations, self.step_norm, self.relative_gradient, self.max_scaled_residual
+            self.iterations, self.step_norm, self.range_cosine, self.max_scaled_residual
         )
     }
 }

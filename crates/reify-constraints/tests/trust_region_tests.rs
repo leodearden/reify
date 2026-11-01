@@ -281,5 +281,8 @@ impl LeastSquaresProblem for CoupledStiffRows {
 fn a_coupled_stiff_row_does_not_hide_a_violated_soft_row() {
     let run = run(&CoupledStiffRows, &[0.0, 0.0]);
     assert!(run.outcome.is_ok(), "{run:?}");
-    assert!(max_abs(&CoupledStiffRows.residual(&run.x)) <= 1.0, "{run:?}");
+    assert!(
+        max_abs(&CoupledStiffRows.residual(&run.x)) <= 1.0,
+        "{run:?}"
+    );
 }

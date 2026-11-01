@@ -333,8 +333,9 @@ pub enum DiagnosticCode {
     /// site.
     ///
     /// The continuous solve stopped at a stationary point of `‖r̃‖²` that is not a
-    /// root: the relative gradient `‖J̃ᵀr̃‖ / (‖J̃‖_F·‖r̃‖)` is within the solver's
-    /// gradient tolerance while some scaled row still exceeds its bar. The message
+    /// root: the range cosine `‖P r̃‖ / ‖r̃‖` (`P` the orthogonal projector onto the
+    /// range of `J̃`) is within the solver's tolerance while some scaled row still
+    /// exceeds its bar. The message
     /// carries that certificate and blames the rows (and the relations they came
     /// from) that remain violated.
     ///

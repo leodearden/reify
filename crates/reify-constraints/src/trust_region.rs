@@ -13,8 +13,9 @@
 //! freedom) never moves. The run ends on one of three tests:
 //!
 //! 1. `max|r̃ᵢ| ≤ 1` — converged;
-//! 2. `‖J̃ᵀr̃‖ ≤ GRADIENT_TOLERANCE·‖J̃‖_F·‖r̃‖` — a stationary point that is not a
-//!    root: certified [`Infeasible`](SolveFailureCause::Infeasible);
+//! 2. `‖P r̃‖ ≤ RANGE_COSINE_TOLERANCE·‖r̃‖`, where `P` projects onto the range of
+//!    `J̃` — a stationary point that is not a root: certified
+//!    [`Infeasible`](SolveFailureCause::Infeasible);
 //! 3. the scaled step (or the radius) collapses below
 //!    `STEP_TOLERANCE·(‖x̃‖ + STEP_TOLERANCE)` — classified by 1 and 2, else
 //!    [`Stalled`](SolveFailureCause::Stalled);
@@ -26,7 +27,7 @@ use reify_ir::{
     SolveStall,
 };
 
-use crate::linalg::{RankTolerance, RowSpaceQr, dot, frobenius_norm, mat_t_vec, mat_vec, norm};
+use crate::linalg::{RankTolerance, RowSpaceQr, dot, mat_t_vec, mat_vec, norm};
 
 /// The initial trust radius: one nominal scale.
 pub const INITIAL_RADIUS: f64 = 1.0;
@@ -44,9 +45,11 @@ pub const CONTRACT_FACTOR: f64 = 0.25;
 pub const EXPAND_ABOVE: f64 = 0.75;
 /// The radius expansion factor.
 pub const EXPAND_FACTOR: f64 = 2.0;
-/// The relative-gradient bar of the infeasibility certificate: `r̃` is within
-/// this cosine of orthogonal to the range of `J̃`.
-pub const GRADIENT_TOLERANCE: f64 = 1e-8;
+/// The bar of the infeasibility certificate: the cosine between `r̃` and the
+/// range of `J̃` (`‖P r̃‖ / ‖r̃‖`, `P` the orthogonal projector onto that range)
+/// is at most this. The cosine is zero iff the gradient `J̃ᵀr̃` vanishes, and is
+/// blind to column scaling and to how stiff the satisfied rows are.
+pub const RANGE_COSINE_TOLERANCE: f64 = 1e-8;
 /// The relative scaled-step bar of the stall test (`√ε`).
 pub const STEP_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 
@@ -220,11 +223,11 @@ impl Iterate {
                 null_space: self.qr.null_space(),
             }));
         }
-        let relative_gradient = self.relative_gradient();
-        (relative_gradient <= GRADIENT_TOLERANCE).then(|| {
+        let range_cosine = self.range_cosine();
+        (range_cosine <= RANGE_COSINE_TOLERANCE).then(|| {
             Err(SolveFailureCause::Infeasible(InfeasibilityCertificate {
                 gradient_norm: norm(&self.gradient),
-                relative_gradient,
+                range_cosine,
                 max_scaled_residual: max_abs(&self.r),
                 blame: self.blame(problem),
             }))
@@ -242,7 +245,7 @@ impl Iterate {
             Err(SolveFailureCause::Stalled(SolveStall {
                 iterations,
                 step_norm,
-                relative_gradient: self.relative_gradient(),
+                range_cosine: self.range_cosine(),
                 max_scaled_residual: max_abs(&self.r),
             }))
         })
@@ -262,11 +265,13 @@ impl Iterate {
         }
     }
 
-    /// `‖J̃ᵀr̃‖ / (‖J̃‖_F·‖r̃‖)`; `0` when either norm vanishes (nothing to move).
-    fn relative_gradient(&self) -> f64 {
-        let scale = frobenius_norm(&self.jacobian) * norm(&self.r);
-        if scale > 0.0 {
-            norm(&self.gradient) / scale
+    /// `‖J̃·δ_gn‖ / ‖r̃‖`; `0` when `r̃ = 0`. The minimum-norm Gauss–Newton step
+    /// solves `J̃δ ≈ r̃` in the least-squares sense, so `J̃·δ_gn` is `r̃` projected
+    /// onto the range of `J̃`, and this is the cosine between the two.
+    fn range_cosine(&self) -> f64 {
+        let residual_norm = norm(&self.r);
+        if residual_norm > 0.0 {
+            norm(&mat_vec(&self.jacobian, &self.gauss_newton)) / residual_norm
         } else {
             0.0
         }

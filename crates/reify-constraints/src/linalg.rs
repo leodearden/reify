@@ -195,14 +195,6 @@ pub fn mat_t_vec<R: AsRef<[f64]>>(rows: &[R], w: &[f64], dim: usize) -> Vec<f64>
     out
 }
 
-/// The Frobenius norm of `A`, given by its rows.
-pub fn frobenius_norm<R: AsRef<[f64]>>(rows: &[R]) -> f64 {
-    rows.iter()
-        .map(|row| dot(row.as_ref(), row.as_ref()))
-        .sum::<f64>()
-        .sqrt()
-}
-
 /// A Householder reflector `H = I − β·v·vᵀ` acting on coordinates `offset..`.
 #[derive(Debug, Clone)]
 struct Reflector {
