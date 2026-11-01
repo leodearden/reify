@@ -4327,10 +4327,11 @@
 
     /// The `kind_label` interpolated into a pattern's eval-layer diagnostics
     /// must be the builtin name the `.ri` author actually TYPED
-    /// (`linear_pattern` / `linear_pattern_2d`), not `PatternKind`'s internal
-    /// variant nickname (`linear` / `linear_2d`). A diagnostic naming a symbol
-    /// that appears nowhere in the source is unactionable: the reader cannot
-    /// grep for it (PRD decision D7).
+    /// (`linear_pattern` / `linear_pattern_2d` / `circular_pattern` /
+    /// `arbitrary_pattern`), not `PatternKind`'s internal variant nickname
+    /// (`linear` / `linear_2d` / `circular` / `arbitrary`). A diagnostic naming
+    /// a symbol that appears nowhere in the source is unactionable: the reader
+    /// cannot grep for it (PRD decision D7).
     ///
     /// WHY THE UNDEF ROUTE, not a bare `spacing`: the bare-spacing route is
     /// SHADOWED. `linear_pattern` has a compile-layer LENGTH slot
@@ -4419,6 +4420,60 @@
         assert!(
             diagnostics.is_empty(),
             "an Undef spacing1 stays QUIET at the value layer (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+
+        // (c) `circular_pattern`, scalar form: an Undef origin component.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &circular_pattern_with_origin(
+                literal_undef(),
+                literal_length(0.0),
+                literal_length(0.0),
+            ),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef ox must drop the op");
+        assert_eq!(
+            err, "argument 'ox' for circular_pattern is unresolved (Undef)",
+            "the label must be the DSL builtin name `circular_pattern`, not the \
+             `PatternKind::Circular` variant nickname `circular`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef ox stays QUIET at the value layer (D10 / INV-SF-1); \
+             got: {diagnostics:?}"
+        );
+
+        // (d) `arbitrary_pattern`, scalar-triple form: an Undef offset component.
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &gamma_arbitrary_pattern(vec![
+                ("t0_dx", literal_undef()),
+                ("t0_dy", literal_length(0.0)),
+                ("t0_dz", literal_length(0.0)),
+            ]),
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        let err = result.expect_err("an Undef t0_dx must drop the op");
+        assert_eq!(
+            err, "argument 't0_dx' for arbitrary_pattern is unresolved (Undef)",
+            "the label must be the DSL builtin name `arbitrary_pattern`, not the \
+             `PatternKind::Arbitrary` variant nickname `arbitrary`"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "an Undef t0_dx stays QUIET at the value layer (D10 / INV-SF-1); \
              got: {diagnostics:?}"
         );
     }
@@ -6939,20 +6994,13 @@
         );
     }
 
-    /// The two forms of `circular_pattern` label the SAME bare-origin mistake
-    /// differently, and this is the one place that difference is held in view.
-    ///
-    /// The value form names the builtin the author typed: `pattern_circular`
-    /// hands `decode_axis` its `surface_name`. The scalar form's
-    /// `required_length_origin3` still renders `PatternKind::Circular`'s own
-    /// `Display`, "circular", which names nothing the author wrote. The
-    /// rejection text is one template in both; only the label differs.
-    ///
-    /// The scalar half goes red the day that `Display` reads `circular_pattern`.
-    /// That is the cue to replace the two expectations with one parity
-    /// assertion and to collapse `surface_name` back to `kind`.
+    /// Both forms of `circular_pattern` label the SAME bare-origin mistake with
+    /// the builtin the author typed (D7): the scalar form's
+    /// `required_length_origin3` and the value form's `decode_axis` render one
+    /// rejection template under one label, so neither form can drift from the
+    /// other.
     #[test]
-    fn compile_geometry_op_circular_pattern_origin_rejection_label_differs_by_form() {
+    fn compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms() {
         let origin_rejections = |op: CompiledGeometryOp| -> Vec<String> {
             let mut diagnostics: Vec<Diagnostic> = Vec::new();
             compile_geometry_op(
@@ -6987,11 +7035,8 @@
 
         assert_eq!(
             origin_rejections(scalar),
-            rejections_under("circular"),
-            "the scalar form still renders `PatternKind::Circular`'s own label, \
-             so this is where the two forms differ. If this now fails because \
-             that label reads `circular_pattern`, the forms agree: assert one \
-             parity and collapse `pattern_circular`'s `surface_name` back to `kind`"
+            rejections_under("circular_pattern"),
+            "the scalar form names the builtin the author typed"
         );
         assert_eq!(
             origin_rejections(value),

@@ -2100,10 +2100,10 @@ mod kind_display_tests {
     fn pattern_kind_display() {
         check(&[
             (PatternKind::Linear, "linear_pattern"),
-            (PatternKind::Circular, "circular"),
+            (PatternKind::Circular, "circular_pattern"),
             (PatternKind::Mirror, "mirror"),
             (PatternKind::Linear2D, "linear_pattern_2d"),
-            (PatternKind::Arbitrary, "arbitrary"),
+            (PatternKind::Arbitrary, "arbitrary_pattern"),
         ]);
     }
 

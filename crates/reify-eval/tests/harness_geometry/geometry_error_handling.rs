@@ -2366,8 +2366,8 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
 // ---------------------------------------------------------------------------
 
 /// Circular pattern dispatch rejects a missing `count` argument at compile
-/// time. The Warning message identifies both the arg name and the kind name
-/// (lowercase `circular` via the Display impl).
+/// time. The Warning message identifies both the arg name and the
+/// `circular_pattern` builtin the author typed.
 #[test]
 fn build_circular_pattern_missing_count_no_kernel_error() {
     use reify_compiler::PatternKind;
@@ -2419,7 +2419,11 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "count", "circular"],
+        &[
+            "missing required geometry argument",
+            "count",
+            "circular_pattern",
+        ],
     );
 }
 
@@ -2476,7 +2480,11 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "ax", "circular"],
+        &[
+            "missing required geometry argument",
+            "ax",
+            "circular_pattern",
+        ],
     );
 }
 
