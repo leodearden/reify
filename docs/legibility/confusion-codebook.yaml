@@ -4140,6 +4140,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The bounded-wait watcher timeout (exit 124) recurs; the digest shows the CEILING outcome repeating across the re-arm attempts.
+  - date: '2026-10-31'
+    project: reify
+    session: 673c929f-e0f4-43ac-bc41-e30d02e20c2f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The bounded-wait watcher reached its exit-124 ceiling, which the digest records as a designed outcome. The digest's tool_error is a separate get_pending_escalations timeout, so this match is partial.
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4652,6 +4658,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'The identical watcher-rearm.sh --level 1 --timeout 3600 command was issued 4 times. The first returned exit 124 with WATCHER_REARM_OUTCOME: CEILING, and a later call ended in exit 144. No change of approach is visible between calls. The evidence does not show whether the repeats were an intended re-arm loop or a blind retry.'
+  - date: '2026-10-31'
+    project: reify
+    session: 673c929f-e0f4-43ac-bc41-e30d02e20c2f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Bash watcher-rearm command with --timeout 3600 was re-issued three times with identical arguments after the bounded wait hit its own ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING).'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -6527,6 +6539,12 @@ entries:
     origin_phase: unknown
     manifested_phase: merge
     note: Autonomous orchestrated-task session repeatedly called Bash and mcp__escalation__merge_status / get_task_escalation_history assuming tool access; the session runs in don't-ask mode and each call was denied (turns 38, 50, 51), leaving merge-status inspection blocked. Matches the 'assumes unrestricted default toolset' confusion.
+  - date: '2026-10-31'
+    project: reify
+    session: 9a527879-cc46-41d7-a7d0-c60821d001e6
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Agent repeatedly issued Bash calls (turns 39 and 48) after the harness denied Bash in don''t-ask mode, which fits an assumption of an unrestricted default toolset. Weak match: the digest does not show why the agent expected Bash to be available, and the origin phase is not evidenced.'
 - id: entry-cand-20260727-5
   title: Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work
   severity: medium
@@ -8733,6 +8751,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Turn 56 probes .task-meta/_lane-3/iterations.jsonl with wc and gets 'No such file or directory'. The directory listing shows the lane's task-meta without that file, matching the missing per-lane iterations.jsonl at the expected path. The digest does not show the phase.
+  - date: '2026-10-31'
+    project: reify
+    session: 073e07d4-88bf-420f-b4da-eb859aa96d86
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Agent ran ls and wc -l on .task-meta/_lane-23/iterations.jsonl, which does not exist (turn 43: ''No such file or directory''). This matches the per-lane task-meta iterations.jsonl missing at its expected path. Phase is not supported by the digest.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260727-8
