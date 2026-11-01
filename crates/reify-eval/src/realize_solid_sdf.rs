@@ -861,4 +861,384 @@ mod tests {
             "an over-budget resolution must degrade to None, not panic"
         );
     }
+
+    // ── task 7502: the BRep→Mesh chord tolerance follows the voxel grid ──────
+    //
+    // The fakes below make the tessellation that REACHED the voxelizer
+    // observable, not just the tolerances asked for: a recipe that tessellated
+    // finely and then voxelized the coarse mesh would pass a tolerance-only
+    // check.
+
+    type ToleranceLog = std::sync::Arc<std::sync::Mutex<Vec<f64>>>;
+
+    type IngestLog =
+        std::sync::Arc<std::sync::Mutex<Vec<(reify_ir::VoxelResolution, reify_ir::Mesh)>>>;
+
+    /// Half-extent (SI metres) of the 2 mm cube most of these tests tessellate.
+    const HALF_EXTENT_OF_2MM_CUBE: f32 = 1e-3;
+
+    /// Half-extent of a 2 m cube, whose honest-floor voxel is far coarser than
+    /// the fixed chord.
+    const HALF_EXTENT_OF_2M_CUBE: f32 = 1.0;
+
+    /// The chord a mesh was tessellated at, as `ChordRecordingCubeKernel` leaves
+    /// it in the mesh's `normals`. OpenVdbKernel's ingest reads only `vertices`
+    /// and `indices`, so the stamp reaches the voxelizer without changing the
+    /// grid it builds.
+    fn chord_stamp(chord: f64) -> Option<Vec<f32>> {
+        Some(vec![chord as f32])
+    }
+
+    /// Source-slot kernel whose `tessellate` records the tolerance it is asked
+    /// for and returns a closed cube stamped with it ([`chord_stamp`]). With
+    /// `fail_below = Some(floor)` it refuses every tolerance under `floor`.
+    struct ChordRecordingCubeKernel {
+        half_extent: f32,
+        tolerances: ToleranceLog,
+        fail_below: Option<f64>,
+    }
+
+    impl reify_ir::GeometryKernel for ChordRecordingCubeKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            self.tolerances.lock().unwrap().push(tolerance);
+            if self.fail_below.is_some_and(|floor| tolerance < floor) {
+                return Err(reify_ir::TessError::TessellationFailed(format!(
+                    "synthetic refusal: tolerance {tolerance} is below the kernel's floor"
+                )));
+            }
+            let mut cube = reify_kernel_openvdb::test_fixtures::box_mesh(
+                self.half_extent,
+                self.half_extent,
+                self.half_extent,
+            );
+            cube.normals = chord_stamp(tolerance);
+            Ok(cube)
+        }
+    }
+
+    /// OpenVDB-slot kernel that records every `(resolution, mesh)` it is asked
+    /// to ingest. Like [`RecordingVoxelizerKernel`], it fails the
+    /// resolution-less `ingest_mesh`, and its `densify_grid_to_sampled` is the
+    /// inherited `Err`, so the recipe ends in `None` AFTER the recording.
+    struct MeshRecordingVoxelizerKernel {
+        ingested: IngestLog,
+    }
+
+    impl reify_ir::GeometryKernel for MeshRecordingVoxelizerKernel {
+        fn execute(
+            &mut self,
+            _op: &reify_ir::GeometryOp,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn query(
+            &self,
+            _q: &reify_ir::GeometryQuery,
+        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn export(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _format: reify_ir::ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), reify_ir::ExportError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn tessellate(
+            &self,
+            _handle: reify_ir::GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+        }
+        fn ingest_mesh(
+            &mut self,
+            _mesh: &reify_ir::Mesh,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            Err(reify_ir::GeometryError::OperationFailed(
+                "realize_solid_sdf must route through ingest_mesh_at_resolution".into(),
+            ))
+        }
+        fn ingest_mesh_at_resolution(
+            &mut self,
+            mesh: &reify_ir::Mesh,
+            resolution: reify_ir::VoxelResolution,
+        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+            self.ingested
+                .lock()
+                .unwrap()
+                .push((resolution, mesh.clone()));
+            Ok(reify_ir::GeometryHandle {
+                id: reify_ir::GeometryHandleId(42),
+                repr: None,
+            })
+        }
+    }
+
+    /// `==` on requests, with NaN payloads compared by bit pattern so that a
+    /// NaN request can be followed through the recipe.
+    fn same_request(a: reify_ir::VoxelResolution, b: reify_ir::VoxelResolution) -> bool {
+        use reify_ir::VoxelResolution::{HonestFloor, MinFeature, TargetVoxelSize};
+        match (a, b) {
+            (HonestFloor, HonestFloor) => true,
+            (TargetVoxelSize(x), TargetVoxelSize(y)) | (MinFeature(x), MinFeature(y)) => {
+                x.to_bits() == y.to_bits()
+            }
+            _ => false,
+        }
+    }
+
+    /// The kernel's own answer for `request` on a cube of `half_extent`: the
+    /// oracle for the voxel size the grid will be built at.
+    fn kernel_policy(
+        half_extent: f32,
+        request: reify_ir::VoxelResolution,
+    ) -> Result<reify_kernel_openvdb::MeshToVoxelOptions, reify_kernel_openvdb::VoxelResolutionError>
+    {
+        let cube =
+            reify_kernel_openvdb::test_fixtures::box_mesh(half_extent, half_extent, half_extent);
+        reify_kernel_openvdb::MeshToVoxelOptions::for_resolution(&cube, request)
+    }
+
+    /// Everything the two fakes saw during one `realize_solid_sdf_at` call.
+    struct ChordRun {
+        result: Option<reify_ir::SampledField>,
+        tolerances: Vec<f64>,
+        ingested: Vec<(reify_ir::VoxelResolution, reify_ir::Mesh)>,
+    }
+
+    impl ChordRun {
+        /// The one mesh the voxelizer was handed, after checking that it was
+        /// handed exactly one, with `request` intact.
+        fn sole_ingested_mesh(&self, request: reify_ir::VoxelResolution) -> &reify_ir::Mesh {
+            let [(ingested_request, mesh)] = self.ingested.as_slice() else {
+                panic!(
+                    "{request:?}: expected exactly one ingest, got {}",
+                    self.ingested.len()
+                );
+            };
+            assert!(
+                same_request(*ingested_request, request),
+                "{request:?}: the voxelizer must receive the request verbatim, got {ingested_request:?}"
+            );
+            mesh
+        }
+    }
+
+    /// Run `realize_solid_sdf_at` on a fresh engine over a cube of
+    /// `half_extent`, with the voxelizer a recording fake.
+    fn run_chord_recipe(
+        half_extent: f32,
+        fail_below: Option<f64>,
+        request: reify_ir::VoxelResolution,
+    ) -> ChordRun {
+        let tolerances = ToleranceLog::default();
+        let ingested = IngestLog::default();
+        let (mut engine, subject) = engine_with(
+            Box::new(ChordRecordingCubeKernel {
+                half_extent,
+                tolerances: tolerances.clone(),
+                fail_below,
+            }),
+            Box::new(MeshRecordingVoxelizerKernel {
+                ingested: ingested.clone(),
+            }),
+            "gamma-chord-recipe",
+        );
+
+        let result = engine.realize_solid_sdf_at(subject, request);
+
+        let tolerances = tolerances.lock().unwrap().clone();
+        let ingested = ingested.lock().unwrap().clone();
+        ChordRun {
+            result,
+            tolerances,
+            ingested,
+        }
+    }
+
+    /// **The derivation.** Whichever way a request names its grid, the mesh the
+    /// voxelizer receives was tessellated at half the voxel size the kernel's
+    /// policy resolves that request to.
+    #[test]
+    fn realize_solid_sdf_at_tessellates_at_half_the_voxel_size_for_every_arm() {
+        use reify_ir::VoxelResolution::{HonestFloor, MinFeature, TargetVoxelSize};
+
+        // First principles for the oracle itself: an explicit voxel size is
+        // used verbatim, so the half-step chord for 1e-4 is 5e-5.
+        let explicit = kernel_policy(HALF_EXTENT_OF_2MM_CUBE, TargetVoxelSize(1e-4))
+            .expect("1e-4 is servable on a 2 mm cube");
+        assert_eq!(explicit.voxel_size / 2.0, 1e-4 / 2.0);
+
+        for request in [TargetVoxelSize(1e-4), MinFeature(4e-4), HonestFloor] {
+            let voxel_size = kernel_policy(HALF_EXTENT_OF_2MM_CUBE, request)
+                .unwrap_or_else(|e| panic!("{request:?} must be servable on a 2 mm cube: {e}"))
+                .voxel_size;
+            let expected = voxel_size / 2.0;
+
+            let run = run_chord_recipe(HALF_EXTENT_OF_2MM_CUBE, None, request);
+
+            assert_eq!(
+                run.tolerances.last(),
+                Some(&expected),
+                "{request:?}: the last tessellation must be at half the voxel size {voxel_size}"
+            );
+            assert_eq!(
+                run.sole_ingested_mesh(request).normals,
+                chord_stamp(expected),
+                "{request:?}: the voxelized mesh must be the one tessellated at {expected}"
+            );
+        }
+    }
+
+    /// **The ceiling.** The fixed chord is a maximum: a grid too coarse to need
+    /// a finer mesh gets exactly the one tessellation it always got, including
+    /// at the boundary where half the voxel size equals the ceiling.
+    #[test]
+    fn realize_solid_sdf_at_never_tessellates_coarser_than_the_fixed_chord() {
+        use reify_ir::VoxelResolution::{HonestFloor, TargetVoxelSize};
+
+        let ceiling = super::TESSELLATION_CHORD_TOLERANCE;
+        let cases = [
+            // Honest-floor voxel 2/64 m: half of it is far above the ceiling.
+            (HALF_EXTENT_OF_2M_CUBE, HonestFloor),
+            // Half of the 2e-4 voxel is exactly the ceiling.
+            (HALF_EXTENT_OF_2MM_CUBE, TargetVoxelSize(2e-4)),
+        ];
+
+        for (half_extent, request) in cases {
+            let run = run_chord_recipe(half_extent, None, request);
+
+            assert_eq!(
+                run.tolerances,
+                [ceiling],
+                "{request:?} on a cube of half-extent {half_extent}: one tessellation, at the ceiling"
+            );
+            assert_eq!(
+                run.sole_ingested_mesh(request).normals,
+                chord_stamp(ceiling),
+                "{request:?} on a cube of half-extent {half_extent}: the ceiling mesh is the one voxelized"
+            );
+        }
+    }
+
+    /// **Unservable requests are not refined.** When the kernel's policy
+    /// rejects a request there is no voxel size to derive a chord from, so the
+    /// recipe hands the unrefined mesh to the voxelizer, which stays the one
+    /// place that rejects it.
+    #[test]
+    fn realize_solid_sdf_at_unservable_request_is_voxelized_unrefined() {
+        use reify_ir::VoxelResolution::{MinFeature, TargetVoxelSize};
+
+        let ceiling = super::TESSELLATION_CHORD_TOLERANCE;
+        // Too coarse (four 1e-3 voxels do not fit the 2 mm extent), and malformed.
+        for request in [TargetVoxelSize(1e-3), MinFeature(f64::NAN)] {
+            assert!(
+                kernel_policy(HALF_EXTENT_OF_2MM_CUBE, request).is_err(),
+                "{request:?} must be unservable on a 2 mm cube for this test to mean anything"
+            );
+
+            let run = run_chord_recipe(HALF_EXTENT_OF_2MM_CUBE, None, request);
+
+            assert_eq!(
+                run.tolerances,
+                [ceiling],
+                "{request:?}: an unservable request must not be refined"
+            );
+            assert_eq!(
+                run.sole_ingested_mesh(request).normals,
+                chord_stamp(ceiling),
+                "{request:?}: the unrefined mesh must still reach the voxelizer"
+            );
+        }
+    }
+
+    /// **A failed refinement degrades to `None`.** The coarse mesh is exactly
+    /// the facet-resolving input the derivation exists to avoid, so it must
+    /// never be voxelized as a fallback.
+    #[test]
+    fn realize_solid_sdf_at_refined_tessellation_failure_returns_none() {
+        let ceiling = super::TESSELLATION_CHORD_TOLERANCE;
+        let request = reify_ir::VoxelResolution::TargetVoxelSize(1e-4);
+
+        let run = run_chord_recipe(HALF_EXTENT_OF_2MM_CUBE, Some(ceiling), request);
+
+        assert_eq!(
+            run.tolerances.last(),
+            Some(&(1e-4 / 2.0)),
+            "the refinement must have been attempted, or the None below proves nothing"
+        );
+        assert!(
+            run.result.is_none(),
+            "a refused refinement must degrade to None"
+        );
+        assert!(
+            run.ingested.is_empty(),
+            "the coarse mesh must not be voxelized as a fallback; ingested {} mesh(es)",
+            run.ingested.len()
+        );
+    }
+
+    /// **End to end.** With the real OpenVDB kernel the chord must track the
+    /// grid that kernel actually builds, not merely the grid the policy
+    /// predicts: half the densified field's voxel spacing.
+    #[cfg(has_openvdb)]
+    #[test]
+    fn realize_solid_sdf_at_chord_tracks_the_grid_the_kernel_builds() {
+        use reify_kernel_openvdb::kernel_real::OpenVdbKernel;
+
+        let tolerances = ToleranceLog::default();
+        let (mut engine, subject) = engine_with(
+            Box::new(ChordRecordingCubeKernel {
+                half_extent: HALF_EXTENT_OF_2MM_CUBE,
+                tolerances: tolerances.clone(),
+                fail_below: None,
+            }),
+            Box::new(OpenVdbKernel::new()),
+            "gamma-chord-tracks-grid",
+        );
+
+        let field = engine
+            .realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(4e-4))
+            .expect("a servable request on a closed cube must densify to a field");
+
+        let voxel_size = field.spacing.iter().copied().fold(f64::INFINITY, f64::min);
+        let chord = *tolerances
+            .lock()
+            .unwrap()
+            .last()
+            .expect("the recipe must tessellate");
+        let expected = voxel_size / 2.0;
+        // The densified spacing is the grid transform's voxel size, so the two
+        // agree to rounding: compare within 4 ulps, not a tuned bound.
+        assert!(
+            (chord - expected).abs() <= 4.0 * f64::EPSILON * expected,
+            "the chord {chord} must be half the densified voxel size {voxel_size}"
+        );
+    }
 }
