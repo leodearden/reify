@@ -11,13 +11,51 @@
 // subject is already realized; γ runs the same recipe β's executor runs
 // (`execute_realization_ops` Voxelize stage) directly.
 
-/// Chordal tolerance handed to the source kernel's `tessellate` for the
-/// BRep→Mesh stage of the recipe, in the model's own units (SI metres).
+/// The coarsest chordal tolerance the BRep→Mesh stage of the recipe uses, in
+/// the model's own units (SI metres): the fixed value the stage used before
+/// its chord followed the voxel grid (task 7502). It stays a ceiling so that a
+/// coarse grid never makes any caller's tessellation coarser than it was.
+const MAX_TESSELLATION_CHORD_TOLERANCE: f64 = 0.0001;
+
+/// The chord tolerance the BRep→Mesh stage may spend per unit of voxel size.
 ///
-/// A fixed value, independent of the caller's [`reify_ir::VoxelResolution`] —
-/// see the "Known limitation" section on [`crate::Engine::realize_solid_sdf_at`]
-/// for why it cannot be derived here and what closing that needs.
-const TESSELLATION_CHORD_TOLERANCE: f64 = 0.0001;
+/// The SDF samples are exact distances to the mesh facets, and distance is
+/// 1-Lipschitz in the Hausdorff distance between surfaces, so a chord
+/// deviation ε moves the zero level set by at most ε. A lattice of step h
+/// locates a surface to within h/2, so ε ≤ h/2 keeps the tessellation error at
+/// or below the grid's own quantisation error.
+const CHORD_TOLERANCE_PER_VOXEL: f64 = 0.5;
+
+/// Tessellate `brep` finely enough for the voxel grid `resolution` asks for.
+///
+/// The first tessellation is at [`MAX_TESSELLATION_CHORD_TOLERANCE`]. The voxel
+/// size the kernel will build is then read off that mesh (the honest-floor size
+/// is derived from it), and the BRep is tessellated again at that size times
+/// [`CHORD_TOLERANCE_PER_VOXEL`] when this is finer than the ceiling.
+///
+/// A request the kernel cannot serve has no voxel size to derive a chord from,
+/// so its mesh stays unrefined and the voxelizer remains the one place that
+/// rejects it. A refinement that fails yields `None`, never the coarse mesh:
+/// that mesh is the facet-resolving input this function exists to avoid.
+fn tessellate_for_voxel_grid(
+    tessellator: &dyn reify_ir::GeometryKernel,
+    brep: reify_ir::GeometryHandleId,
+    resolution: reify_ir::VoxelResolution,
+) -> Option<reify_ir::Mesh> {
+    let coarse = tessellator
+        .tessellate(brep, MAX_TESSELLATION_CHORD_TOLERANCE)
+        .ok()?;
+    let Ok(grid) = reify_kernel_openvdb::MeshToVoxelOptions::for_resolution(&coarse, resolution)
+    else {
+        return Some(coarse);
+    };
+    let chord = grid.voxel_size * CHORD_TOLERANCE_PER_VOXEL;
+    if chord < MAX_TESSELLATION_CHORD_TOLERANCE {
+        tessellator.tessellate(brep, chord).ok()
+    } else {
+        Some(coarse)
+    }
+}
 
 impl crate::Engine {
     /// Turn an already-realized BRep solid into a CPU-resident queryable SDF.
@@ -75,8 +113,9 @@ impl crate::Engine {
     ///  3. No kernel registered under `openvdb_kernel_name()` — absent in stub
     ///     builds where the `cfg(any(has_openvdb, feature="stub_register"))` gate
     ///     on `inventory::submit!` is not satisfied.  This is the D5 mechanism.
-    ///  4. `tessellate`, `ingest_mesh_at_resolution`, or
-    ///     `densify_grid_to_sampled` returns `Err` (chain failure).
+    ///  4. Either tessellation (the fixed-chord pass or the refinement),
+    ///     `ingest_mesh_at_resolution`, or `densify_grid_to_sampled` returns
+    ///     `Err` (chain failure).
     ///  5. `resolution` is invalid (non-finite / non-positive), coarser than the
     ///     body's thinnest bounding-box extent, or implies a grid beyond the
     ///     kernel's dense-grid budget — the kernel rejects it and the `Err`
@@ -93,24 +132,13 @@ impl crate::Engine {
     /// request-driven ingest logs the error it actually got without presuming
     /// which of the two it was.
     ///
-    /// # Known limitation — the tessellation tolerance is not derived from `resolution`
+    /// # Chord tolerance
     ///
-    /// The BRep→Mesh stage uses a fixed [`TESSELLATION_CHORD_TOLERANCE`],
-    /// independent of `resolution`, and the voxel grid can only resolve detail
-    /// the mesh already carries. At the shells working point in real model
-    /// space (a 0.1 m part, `MinFeature(0.001)` ⇒ h = 2.5e-4 m) that tolerance
-    /// is already ≈ 40 % of a voxel, and a finer request resolves tessellation
-    /// FACETS rather than geometry — silently, since nothing errors.
-    ///
-    /// Deriving it here is not possible as the crates are layered: it needs the
-    /// voxel size the request resolves to, and that mapping is KERNEL policy
-    /// (`MeshToVoxelOptions::for_resolution`). `reify-eval` cannot name
-    /// `reify-kernel-openvdb` — the adapter → eval dependency direction is
-    /// deliberately inverted (see that crate's `Cargo.toml` dev-dep rationale)
-    /// — so duplicating the policy here would be a SPOT violation across a
-    /// crate boundary. Closing it needs a kernel-side seam reporting that voxel
-    /// size; filed as a follow-up of task 6560, "Derive the BRep→Mesh chord
-    /// tolerance from the VoxelResolution request".
+    /// The BRep→Mesh chord follows the voxel size that
+    /// [`reify_kernel_openvdb::MeshToVoxelOptions::for_resolution`] resolves
+    /// `resolution` to, the policy the voxelizer itself applies, so a fine request
+    /// samples geometry rather than tessellation facets. Basis and cap:
+    /// [`CHORD_TOLERANCE_PER_VOXEL`], [`MAX_TESSELLATION_CHORD_TOLERANCE`].
     // The resolution-carrying entry point is reached today only through
     // `realize_solid_sdf`'s `HonestFloor` delegation; reify-shell-extract T1
     // (structural-analysis-shells.md, "Decomposition plan" → the
@@ -160,13 +188,12 @@ impl crate::Engine {
             "realize_solid_sdf_at: demanding Voxel realization of subject solid"
         );
 
-        // Tessellate BRep→Mesh. The tolerance does not track `resolution` — see
-        // this method's "Known limitation".
-        let mesh = self
-            .geometry_kernels
-            .get(&source)?
-            .tessellate(brep_id, TESSELLATION_CHORD_TOLERANCE)
-            .ok()?;
+        // Tessellate BRep→Mesh at a chord that follows the requested grid.
+        let mesh = tessellate_for_voxel_grid(
+            self.geometry_kernels.get(&source)?.as_ref(),
+            brep_id,
+            resolution,
+        )?;
 
         // Ingest Mesh→Voxel at the requested resolution.
         //
@@ -1123,7 +1150,7 @@ mod tests {
     fn realize_solid_sdf_at_never_tessellates_coarser_than_the_fixed_chord() {
         use reify_ir::VoxelResolution::{HonestFloor, TargetVoxelSize};
 
-        let ceiling = super::TESSELLATION_CHORD_TOLERANCE;
+        let ceiling = super::MAX_TESSELLATION_CHORD_TOLERANCE;
         let cases = [
             // Honest-floor voxel 2/64 m: half of it is far above the ceiling.
             (HALF_EXTENT_OF_2M_CUBE, HonestFloor),
@@ -1155,7 +1182,7 @@ mod tests {
     fn realize_solid_sdf_at_unservable_request_is_voxelized_unrefined() {
         use reify_ir::VoxelResolution::{MinFeature, TargetVoxelSize};
 
-        let ceiling = super::TESSELLATION_CHORD_TOLERANCE;
+        let ceiling = super::MAX_TESSELLATION_CHORD_TOLERANCE;
         // Too coarse (four 1e-3 voxels do not fit the 2 mm extent), and malformed.
         for request in [TargetVoxelSize(1e-3), MinFeature(f64::NAN)] {
             assert!(
@@ -1183,7 +1210,7 @@ mod tests {
     /// never be voxelized as a fallback.
     #[test]
     fn realize_solid_sdf_at_refined_tessellation_failure_returns_none() {
-        let ceiling = super::TESSELLATION_CHORD_TOLERANCE;
+        let ceiling = super::MAX_TESSELLATION_CHORD_TOLERANCE;
         let request = reify_ir::VoxelResolution::TargetVoxelSize(1e-4);
 
         let run = run_chord_recipe(HALF_EXTENT_OF_2MM_CUBE, Some(ceiling), request);
