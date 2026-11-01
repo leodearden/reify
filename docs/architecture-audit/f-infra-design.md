@@ -43,11 +43,11 @@ Pre-done is the only state-blocking trigger. The other two are advisory and prod
 
 F-infra ships as **two artifacts**:
 
-1. **`reify-audit` library** (Rust crate at `crates/reify-audit/`) — the detector core. Three modules: `p1_producer_orphan`, `p2_consumer_stub`, `p5_phantom_done`. Each exposes `fn check(ctx: AuditContext) -> Vec<Finding>`. `AuditContext` carries: project root, target task id (Option), time window, jcodemunch client handle, fused-memory client handle, runs.db path. The crate is pure logic; no scheduler, no MCP server.
+1. **`reify-audit` library** (Rust crate at `crates/reify-audit/`) — the detector core. Three modules: `p1_producer_orphan`, `p2_consumer_stub`, `p5_phantom_done`. Each exposes `fn check(ctx: AuditContext) -> Vec<Finding>`. `AuditContext` carries: project root, target task id (Option), jcodemunch client handle, fused-memory client handle, runs.db path. The crate is pure logic; no scheduler, no MCP server.
 2. **`/audit` skill** (`.claude/skills/audit/`) — the human entry point + glue. Invokes the library, formats findings, files follow-ups via fused-memory, escalates via `mcp__escalation__*`, writes time-series JSON. Modes:
-   - `/audit` (no args) — full sweep over default window.
+   - `/audit` (no args) — full sweep over the whole task corpus.
    - `/audit --task <id>` — single-task spot-check (matches pre-done-hook semantics; debugging aid).
-   - `/audit --since <date>` — bounded sweep.
+   - (2026-11-01) `/audit --since <date>` was deleted by #8807: whole-corpus sweeps are the contract.
    - `/audit --pattern P1|P2|P5` — restrict patterns.
 
 The pre-done hook (D-1) calls `reify-audit::check_pre_done(task_id)` directly — no skill invocation. The skill exists for human-driven sweeps and `/review` composition.
