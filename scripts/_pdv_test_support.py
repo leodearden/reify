@@ -9,6 +9,7 @@ invocation form resolves it: `python3 scripts/<partition>.py`,
 import functools
 import importlib.util
 import os
+import shutil
 import sys
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +33,22 @@ def load_pcc():
     """Return the prd-capability-check.py instance pdv registered in sys.modules."""
     load_pdv()
     return sys.modules["prd_capability_check"]
+
+
+def require_reify_binary(test):
+    """skipTest unless α would run a reify binary here; return α's ProbeContext.
+
+    The boundary e2e runs α as a subprocess that inherits os.environ, so the
+    in-process ProbeContext.from_environment() answer is the one it reaches: with
+    two unvouched profile binaries α refuses (exit 64), and the skip carries that
+    refusal rather than probing whichever binary is stale.
+    """
+    ctx = load_pcc().ProbeContext.from_environment()
+    if ctx.reify_bin is None:
+        test.skipTest(f"no trusted reify binary: {ctx.reify_bin_refusal}")
+    if shutil.which(ctx.reify_bin) is None:
+        test.skipTest("reify binary not built")
+    return ctx
 
 
 def reify_missing_fixture_stderr(fixture: str) -> str:

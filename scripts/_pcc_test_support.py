@@ -3,7 +3,8 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the ProbeContext builders, the grammar-e2e skip-guard (with the un-memoized status it wraps),
+constants, the ProbeContext builders, the grammar-e2e and reify-e2e skip-guards (with the
+un-memoized grammar status it wraps),
 the measured cache-denial signature and the shared TREE_SITTER_BIN stub
 factories.  A fixture only one partition uses lives in that partition.  It
 imports no test file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
@@ -14,6 +15,7 @@ import functools
 import importlib.util
 import os
 import shlex
+import shutil
 import sys
 import textwrap
 
@@ -145,6 +147,21 @@ def _require_grammar_substrate(test) -> None:
     available, reason = _grammar_e2e_status()
     if not available:
         test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
+
+
+def _require_reify_binary(test):
+    """skipTest unless α would run a reify binary here; return the ctx it would use.
+
+    Asks α's own seam, so the skip and the CLI cannot disagree: with two
+    unvouched profile binaries α refuses (exit 64), and the skip carries that
+    refusal as its reason rather than probing whichever binary is stale.
+    """
+    ctx = pcc.ProbeContext.from_environment()
+    if ctx.reify_bin is None:
+        test.skipTest(f"no trusted reify binary: {ctx.reify_bin_refusal}")
+    if shutil.which(ctx.reify_bin) is None:
+        test.skipTest("reify binary not built")
+    return ctx
 
 
 # ---------------------------------------------------------------------------

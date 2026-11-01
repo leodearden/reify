@@ -69,6 +69,14 @@ Verdicts:
                     {0, 1}.  Emitted verbatim in both text and --json output;
                     always triggers exit 70.
 
+Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise one
+executable target/release/reify or target/debug/reify is used; with both built,
+target/release/reify is used only when target/.reify-bin-sha (written after a
+release build) names the checkout's HEAD, and otherwise every probe set needing
+reify is refused with exit 64 until REIFY_BIN picks one — an mtime never does.
+TREE_SITTER_BIN, when set, is the tree-sitter CLI; otherwise "tree-sitter" on
+PATH.  ProbeContext.from_environment() is the one place all of this is read.
+
 Schemas: --print-schema prints published_schemas() — the JSON schemas of the
 probe-set file above and of one --json result record — and exits 0.
 
@@ -88,6 +96,7 @@ Harness exit codes:
 from __future__ import annotations
 
 import argparse
+import datetime
 import errno
 import hashlib
 import json
@@ -229,25 +238,94 @@ def _find_repo_root() -> str:
     return candidate  # best-effort fallback
 
 
-def _resolve_reify_bin(repo_root: str, environ: Mapping[str, str]) -> str:
-    """Resolve the reify binary path.
+_RELEASE_REIFY = os.path.join("target", "release", "reify")
+_DEBUG_REIFY = os.path.join("target", "debug", "reify")
+# Written by the verify pipeline after `cargo build --release -p reify-cli`, so
+# it vouches for the RELEASE binary, and only while it names HEAD.  Same reading
+# as scripts/reify-bin-freshness.sh: stripped, compared with HEAD.
+_REIFY_BIN_SIDECAR = os.path.join("target", ".reify-bin-sha")
 
-    Resolution order:
-        1. REIFY_BIN in `environ` (if set and non-empty)
-        2. <repo_root>/target/release/reify   (pre-built release)
-        3. <repo_root>/target/debug/reify     (debug build)
-        4. "reify"                             (from PATH)
+
+def _resolve_reify_bin(
+    repo_root: str, environ: Mapping[str, str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (reify binary, None), or (None, refusal) when no binary can be trusted.
+
+    REIFY_BIN (non-empty) is taken verbatim.  Otherwise the executable profile
+    binaries under repo_root decide: none → "reify" on PATH; one → it; both →
+    target/release/reify only when the sidecar names HEAD, else a refusal.  An
+    mtime is never the tie-break: it says nothing about which build matches this
+    checkout (#5133, R14 M6).
     """
     env_bin = environ.get("REIFY_BIN")
     if env_bin:
-        return env_bin
+        return env_bin, None
 
-    for rel in ("target/release/reify", "target/debug/reify"):
-        candidate = os.path.join(repo_root, rel)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+    release = os.path.join(repo_root, _RELEASE_REIFY)
+    debug = os.path.join(repo_root, _DEBUG_REIFY)
+    present = [p for p in (release, debug) if os.path.isfile(p) and os.access(p, os.X_OK)]
+    if not present:
+        return "reify", None  # expect it on PATH
+    if len(present) == 1:
+        return present[0], None
 
-    return "reify"  # fallback: expect it on PATH
+    why_unvouched = _why_sidecar_does_not_vouch(repo_root, environ)
+    if why_unvouched is None:
+        return release, None
+    return None, _two_binaries_refusal(release, debug, why_unvouched)
+
+
+def _why_sidecar_does_not_vouch(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
+    """None when the sidecar names repo_root's HEAD; otherwise why it does not."""
+    sidecar = os.path.join(repo_root, _REIFY_BIN_SIDECAR)
+    try:
+        with open(sidecar) as fh:
+            recorded = fh.read().strip()
+    except OSError:
+        return f"{sidecar} is absent"
+    head = _git_head_sha(repo_root, environ)
+    if head is None:
+        return f"{sidecar} records {recorded!r} but the HEAD of {repo_root} is unknown"
+    if recorded != head:
+        return f"{sidecar} records {recorded!r} but HEAD is {head!r}"
+    return None
+
+
+def _git_head_sha(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
+    """repo_root's HEAD commit, or None when git cannot say.
+
+    Every GIT_* variable is dropped so `-C repo_root` alone decides the
+    repository: under a hook GIT_DIR is exported and would answer for another.
+    """
+    env = {k: v for k, v in environ.items() if not k.startswith("GIT_")}
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "--verify", "HEAD"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+    except OSError:
+        return None
+    head = proc.stdout.strip()
+    return head if proc.returncode == 0 and head else None
+
+
+def _mtime_utc(path: str) -> str:
+    stamp = datetime.datetime.fromtimestamp(os.stat(path).st_mtime, tz=datetime.timezone.utc)
+    return stamp.isoformat(timespec="seconds")
+
+
+def _two_binaries_refusal(release: str, debug: str, why_unvouched: str) -> str:
+    return (
+        f"two reify binaries are built and neither is vouched for: {release} "
+        f"(mtime {_mtime_utc(release)}) and {debug} (mtime {_mtime_utc(debug)}); "
+        f"{why_unvouched}.  Release-first precedence would have chosen {release} "
+        f"and skipped {debug}, but neither an mtime nor the profile says which "
+        "build matches this checkout.  Set REIFY_BIN to the binary to probe with "
+        "(scripts/reify-bin-freshness.sh holds the SHA-identity rule)."
+    )
 
 
 def _resolve_tree_sitter_bin(environ: Mapping[str, str]) -> str:
@@ -268,6 +346,10 @@ _CACHE_HOME_OVERRIDE_ENV = "REIFY_TS_CACHE_HOME"
 _SUBSTRATE_PROBE_TIMEOUT_S = 30.0
 
 
+class ReifyBinaryRefused(ValueError):
+    """No reify binary could be trusted; the message says why and what to set."""
+
+
 @dataclass(frozen=True)
 class ProbeContext:
     """Everything a probe run reads from outside the probe, resolved once.
@@ -276,14 +358,18 @@ class ProbeContext:
     grammar cache key; reify_bin and tree_sitter_bin are the binaries the argv
     names; cache_home_override is the operator's REIFY_TS_CACHE_HOME, or None;
     substrate_timeout_s bounds grammar_substrate_usable()'s one probe.
+    Exactly one of reify_bin and reify_bin_refusal is set: a refusal is data,
+    so a mode that never runs reify still works, and require_reify_bin() is
+    where it is enforced.
     main() builds one per invocation with from_environment(); a test builds
     one directly, so no probe-running function reads a setting from os.environ.
     """
     repo_root: str
-    reify_bin: str
+    reify_bin: Optional[str]
     tree_sitter_bin: str
     cache_home_override: Optional[str] = None
     substrate_timeout_s: float = _SUBSTRATE_PROBE_TIMEOUT_S
+    reify_bin_refusal: Optional[str] = None
 
     def __post_init__(self) -> None:
         def refuse(field_name: str, value: Any, requirement: str) -> None:
@@ -293,9 +379,15 @@ class ProbeContext:
 
         if not isinstance(self.repo_root, str) or not os.path.isabs(self.repo_root):
             refuse("repo_root", self.repo_root, "an absolute path")
-        for field_name in ("reify_bin", "tree_sitter_bin"):
+        if (self.reify_bin is None) == (self.reify_bin_refusal is None):
+            raise ValueError(
+                "ProbeContext needs exactly one of reify_bin and reify_bin_refusal, "
+                f"got reify_bin={self.reify_bin!r}, "
+                f"reify_bin_refusal={self.reify_bin_refusal!r}"
+            )
+        for field_name in ("reify_bin", "reify_bin_refusal", "tree_sitter_bin"):
             value = getattr(self, field_name)
-            if not isinstance(value, str) or not value:
+            if value is not None and (not isinstance(value, str) or not value):
                 refuse(field_name, value, "a non-empty str")
         override = self.cache_home_override
         if override is not None and (not isinstance(override, str) or not override):
@@ -315,16 +407,25 @@ class ProbeContext:
 
         The only reader of REIFY_BIN, TREE_SITTER_BIN and REIFY_TS_CACHE_HOME;
         an empty value counts as unset for all three.  repo_root defaults to
-        _find_repo_root().
+        _find_repo_root().  Prints nothing: an untrusted reify binary is
+        recorded as reify_bin_refusal (see _resolve_reify_bin).
         """
         env = os.environ if environ is None else environ
         root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())
+        reify_bin, reify_bin_refusal = _resolve_reify_bin(root, env)
         return cls(
             repo_root=root,
-            reify_bin=_resolve_reify_bin(root, env),
+            reify_bin=reify_bin,
+            reify_bin_refusal=reify_bin_refusal,
             tree_sitter_bin=_resolve_tree_sitter_bin(env),
             cache_home_override=env.get(_CACHE_HOME_OVERRIDE_ENV) or None,
         )
+
+    def require_reify_bin(self) -> str:
+        """The reify binary, or ReifyBinaryRefused carrying why none was picked."""
+        if self.reify_bin is None:
+            raise ReifyBinaryRefused(self.reify_bin_refusal)
+        return self.reify_bin
 
 
 def grammar_fingerprint(ctx: ProbeContext) -> str:
@@ -1270,10 +1371,13 @@ def _absolute_fixture(probe: Probe, repo_root: str) -> str:
 
 
 def _probe_binary(probe_kind: ProbeKind, ctx: ProbeContext) -> str:
-    """The binary a probe of `probe_kind` runs: the one kind→binary dispatch."""
+    """The binary a probe of `probe_kind` runs: the one kind→binary dispatch.
+
+    Raises ReifyBinaryRefused for a reify kind when ctx refused every binary.
+    """
     if probe_kind == ProbeKind.GRAMMAR:
         return ctx.tree_sitter_bin
-    return ctx.reify_bin
+    return ctx.require_reify_bin()
 
 
 def build_command(probe: Probe, ctx: ProbeContext) -> List[str]:
@@ -1927,7 +2031,8 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
         0   all PASS  (or: grammar substrate usable)
         1   ≥1 FAIL
         2   ≥1 UNPROVABLE, 0 FAIL
-        64  usage / argument / IO error (EX_USAGE)
+        64  usage / argument / IO error, or no trusted reify binary for a probe
+            set that needs one (EX_USAGE)
         70  tool / runtime error — missing binary, grammar load failure (EX_SOFTWARE)
         75  grammar substrate unavailable — SKIP, do not FAIL (EX_TEMPFAIL)
     """
@@ -2037,6 +2142,14 @@ def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeCo
             "an empty probe set is likely a misconfiguration.\n"
         )
         return 64  # EX_USAGE — vacuous all-pass masks broken CI gates
+
+    # Refused before any probe runs, so no verdict comes from an untrusted reify.
+    try:
+        for kind in sorted({probe.probe_kind for probe in probes}):
+            _probe_binary(kind, ctx)
+    except ReifyBinaryRefused as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 64  # EX_USAGE — REIFY_BIN must pick the binary
 
     # --- Evaluate each probe through the runner seam ---
     results = [evaluate(probe, ctx, runner) for probe in probes]

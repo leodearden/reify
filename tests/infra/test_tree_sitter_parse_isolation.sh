@@ -226,7 +226,10 @@ assert "the XDG_CACHE_HOME filter suppresses the guarded line and only that one"
 # through _run_bounded()'s Popen, so the FIRST real `tree-sitter parse` any gate
 # runs takes the arm a naive fix would miss. Both are asserted here so a later
 # refactor that drops env= from one, or adds a third launch site, reds at the
-# merge gate rather than as a silent false PASS.
+# merge gate rather than as a silent false PASS. The subprocess.run check covers
+# a second, non-probe site too — ProbeContext.from_environment()'s HEAD lookup
+# (_git_head_sha), which passes env= so a hook's GIT_* cannot redirect it — and
+# holds every real site to the same rule.
 # ==============================================================================
 echo ""
 echo "--- Block D: both launch sites in $PCC pass env= ---"
@@ -294,7 +297,7 @@ _popen_arm_passes_env() {
              return 1; }
 }
 
-assert "the UNBOUNDED launch (subprocess.run in run_probe) passes env=" \
+assert "every subprocess.run site (run_probe's unbounded launch, from_environment's HEAD lookup) passes env=" \
     _run_arm_passes_env
 
 assert "the BOUNDED launch (subprocess.Popen in _run_bounded) passes env=" \

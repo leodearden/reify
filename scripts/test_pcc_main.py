@@ -29,6 +29,7 @@ from _pcc_test_support import (
     _VALUE_CELLS_STDOUT,
     _argv_echo_stub,
     _require_grammar_substrate,
+    _require_reify_binary,
     _ts_stub_cache_denied,
     _ts_stub_clean,
     _ts_stub_hangs,
@@ -42,11 +43,6 @@ from _schema_test_support import schema_errors
 # ---------------------------------------------------------------------------
 # step-13 (RED): main(argv) integration + skip-guarded real e2e
 # ---------------------------------------------------------------------------
-
-_REIFY_RELEASE = os.path.join(_REPO_ROOT, "target", "release", "reify")
-_REIFY_DEBUG = os.path.join(_REPO_ROOT, "target", "debug", "reify")
-_REIFY_BUILT = os.path.isfile(_REIFY_RELEASE) or os.path.isfile(_REIFY_DEBUG)
-
 
 class _MainHarness:
     """Shared plumbing for driving main() hermetically: capture, and stub runs.
@@ -763,9 +759,9 @@ class TestMain(_MainHarness, unittest.TestCase):
 
     # ── skip-guarded real e2e (reify binary) ──────────────────────────────────
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built; skip real check e2e")
     def test_e2e_revolute_silent_accept_is_fail(self):
         """Real reify check: silent-accept (§3 4575) probe → FAIL (reify exits 0, stable)."""
+        ctx = _require_reify_binary(self)
         probe_json = json.dumps({"probes": [{
             "capability": "arg-vs-param rejection (4575 — should FAIL)",
             "probe_kind": "check",
@@ -776,7 +772,7 @@ class TestMain(_MainHarness, unittest.TestCase):
             f.write(probe_json)
             tmp = f.name
         try:
-            rc, out, _ = self._run_main_capturing([tmp])
+            rc, out, _ = self._run_main_capturing([tmp], ctx=ctx)
         finally:
             os.unlink(tmp)
         self.assertEqual(rc, 1, "revolute silent-accept → FAIL (exit 1)")
@@ -1212,6 +1208,8 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
     # ── real-binary e2e over the committed fixture ────────────────────────────
 
     def _e2e(self, probe_kind, expected_observation, match):
+        """Run one real probe over the committed fixture; skips without a trusted reify."""
+        ctx = _require_reify_binary(self)
         probe_json = json.dumps({"probes": [{
             "capability": f"#6876 e2e ({probe_kind})",
             "probe_kind": probe_kind,
@@ -1222,11 +1220,10 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             fh.write(probe_json)
             tmp = fh.name
         try:
-            return self._run_main_capturing([tmp])
+            return self._run_main_capturing([tmp], ctx=ctx)
         finally:
             os.unlink(tmp)
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_damping_ratio_in_range_is_pass(self):
         rc, out, _ = self._e2e("value", "present", {
             "stdout_value": dict(_DAMPING_SPEC)
@@ -1234,7 +1231,6 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn(f"[{pcc.Verdict.PASS}]", out)
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_degenerate_ratio_is_fail(self):
         """The motivating defect: a clean eval that printed 0."""
         rc, out, _ = self._e2e("value", "present", {
@@ -1246,7 +1242,6 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn(f"[{pcc.Verdict.FAIL}]", out)
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_undef_ratio_is_fail(self):
         """Prints garbage, still exits 0."""
         rc, out, _ = self._e2e("value", "present", {
@@ -1258,7 +1253,6 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn(f"[{pcc.Verdict.FAIL}]", out)
 
-    @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_same_fixture_still_passes_an_ir_probe_vacuously(self):
         """The vacuous pass still holds — the new kind adds signal, it does not
         change `ir`."""
