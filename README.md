@@ -76,18 +76,24 @@ For more, see [`docs/getting-started.md`](docs/getting-started.md).
 ## CLI commands
 
 ```
-reify check  <file>                      Parse, type-check, solve constraints
+reify check  <file>                      Resolve `auto` parameters and check every constraint
+reify check  --strict <file>             ...and also fail on any INDETERMINATE constraint
 reify build  <file> -o <output>          Build geometry and export (.step / .stl)
 reify test   <file>                      Run @test-annotated structures
 reify eval   <file>                      Evaluate and print every top-level value cell
+reify run    <file>                      Alias for eval
+reify report --bom <file>                Roll up a BOM / cost / waste / provenance report
+reify explain <file>                     Print per-cell objective provenance: which objective chose each `auto` value
 reify gui    [--debug] <file>            Open file in GUI
 reify gui-debug <file>                   Alias for `gui --debug`
 reify lsp                                Start language server (stdin/stdout)
 reify doc    <file> [-o <path>]          Generate documentation
 reify cache  <subcmd>                    stats / clear / gc / export / import (FEA cache)
 reify --version                          Print version
-reify --help                             Show this list
+reify --help                             Show this list; `reify <command> --help` shows one command's flags
 ```
+
+**Which commands let the solver choose `auto` values.** `check` (including `--strict`), `test`, `build`, `eval` / `run`, `report` and `explain` resolve every `auto` before they report, and so does the GUI viewport. Not yet: the editor (language-server diagnostics and hover) and the GUI's definition-preview pane, which show such a value as `undef` and a constraint over it as INDETERMINATE. How to write an `auto` and bound it so it resolves: the `solving` language-reference chunk, [`crates/reify-mcp/src/tools/chunks/solving.md`](crates/reify-mcp/src/tools/chunks/solving.md).
 
 See [`docs/fea-cache.md`](docs/fea-cache.md) for the FEA cache surface (directory, env vars, distribution recipes).
 
