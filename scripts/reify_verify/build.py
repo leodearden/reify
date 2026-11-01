@@ -55,6 +55,7 @@ from reify_verify.plan import (
     Phase,
     Plan,
     PlanHeader,
+    Refused,
     RetryMarker,
     Script,
     Selector,
@@ -102,12 +103,6 @@ EMPTY_HEAVY_FILTER = (
 class Planned:
     plan: Plan
     diagnostics: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class Refused:
-    lines: tuple[str, ...]
-    exit_code: int
 
 
 def plan_invocation(

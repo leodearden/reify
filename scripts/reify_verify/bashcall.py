@@ -2,10 +2,11 @@
 
 Each seam is a typed record: a BashCall for a library function, a BashExport
 for a variable a library exports, a DataFile for a data file, a SourcedFile
-for a shell file sourced for what it exports. Each module declares the
-constants it uses, so a later --print-gates (PRD D15) can collect them from
-the modules. run, read_export and source_delta each fork ONE `bash -c` per
-call. Paths, the function name and its arguments travel as argv
+for a shell file sourced for what it exports, a ScriptCall for a repo script
+run as a program. Each module declares the constants it uses, so a later
+--print-gates (PRD D15) can collect them from the modules. run, read_export
+and source_delta each fork ONE `bash -c` per call; run_script forks the
+script itself. Paths, the function name and its arguments travel as argv
 and are never interpolated into the script text.
 
 A data file that cannot be read raises DataFileUnreadable whatever the cause.
@@ -70,6 +71,16 @@ class DataFile:
 
 
 @dataclass(frozen=True)
+class ScriptCall:
+    """A repo script run as a program, the path relative to the repo root."""
+
+    path: str
+
+    def __str__(self) -> str:
+        return self.path
+
+
+@dataclass(frozen=True)
 class SourcedFile:
     """A shell file sourced for the environment it exports, relative to $HOME.
 
@@ -127,11 +138,19 @@ def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, 
     result = childproc.run(
         ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
         repo_root,
-        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+        _seam_env(env),
     )
     if result.returncode != 0:
         raise BashCallError(call, result)
     return result
+
+
+def run_script(call: ScriptCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
+    """The script's result, whatever its status: what a non-zero status means is the caller's.
+
+    cwd is repo_root and stderr is captured, as for run.
+    """
+    return childproc.run([str(repo_root / call.path), *args], repo_root, _seam_env(env))
 
 
 def read_export(export: BashExport, repo_root: Path, env: Mapping[str, str]) -> str:
@@ -143,7 +162,7 @@ def read_export(export: BashExport, repo_root: Path, env: Mapping[str, str]) -> 
     result = childproc.run(
         ["bash", "-c", _SOURCE_AND_PRINT, "bashcall", str(repo_root / export.lib), export.name],
         repo_root,
-        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+        _seam_env(env),
     )
     if result.returncode != 0:
         raise BashCallError(export, result)
@@ -164,7 +183,7 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
     result = childproc.run(
         ["bash", "-c", _ENV_AROUND_SOURCE, "bashcall", file.path(env)],
         repo_root,
-        {name: value for name, value in env.items() if name not in _DROPPED_ENV},
+        _seam_env(env),
     )
     if result.returncode != 0:
         raise BashCallError(file, result)
@@ -183,3 +202,8 @@ def source_delta(file: SourcedFile, repo_root: Path, env: Mapping[str, str]) -> 
 
 def _environ(records: list[str]) -> dict[str, str]:
     return {name: value for name, _, value in (record.partition("=") for record in records if record)}
+
+
+def _seam_env(env: Mapping[str, str]) -> dict[str, str]:
+    """`env` without the names that make a non-interactive bash source a file first."""
+    return {name: value for name, value in env.items() if name not in _DROPPED_ENV}

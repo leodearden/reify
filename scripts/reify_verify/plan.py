@@ -1,4 +1,4 @@
-"""plan — the typed verify plan: its steps, their kinds and phases, and its header (PRD D2).
+"""plan — the typed verify plan, or the refusal to plan: its steps, their kinds and phases, and its header (PRD D2).
 
 Records only. build composes a Plan, and render is the one producer of its
 text and JSON projections. A step's kind decides how the executor runs it
@@ -332,3 +332,11 @@ class Plan:
     heavy_partition: HeavyPartition | None
     environment: tuple[EnvLine, ...] = ()
     steps: tuple[Step, ...] = ()
+
+
+@dataclass(frozen=True)
+class Refused:
+    """The refusal to plan: the lines bash would print instead of a plan, and its exit code."""
+
+    lines: tuple[str, ...]
+    exit_code: int
