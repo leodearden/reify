@@ -22,7 +22,7 @@ pub fn compute_goto_definition(source: &str, uri: &Url, position: Position) -> O
     compute_goto_definition_with_parsed(&parsed, source, uri, position)
 }
 
-/// Compute go-to-definition using a pre-built [`ParsedModule`].
+/// Compute go-to-definition using a pre-built [`reify_ast::ParsedModule`].
 ///
 /// This is the injectable core shared by the per-request wrapper
 /// [`compute_goto_definition`] (which parses internally) and the server's
@@ -244,7 +244,7 @@ pub fn compute_goto_definition_cross_file(
     compute_goto_definition_cross_file_with_parsed(&parsed, source, uri, position, resolve_import)
 }
 
-/// Compute cross-file go-to-definition using a pre-built [`ParsedModule`].
+/// Compute cross-file go-to-definition using a pre-built [`reify_ast::ParsedModule`].
 ///
 /// Like [`compute_goto_definition_cross_file`] but takes the primary
 /// document's parse instead of parsing internally — the server supplies the
