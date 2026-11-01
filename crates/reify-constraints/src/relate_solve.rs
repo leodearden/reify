@@ -33,25 +33,25 @@
 //!
 //! ## Driving-set solve (step-10)
 //!
-//! [`solve_frame`] takes the partition's **driving set** over realized datum
-//! [`Value`]s + the 6-DOF Frame unknown + a seed [`Pose`] and drives the Frame to
-//! satisfy every driving relation, returning through the existing
-//! [`SolveResult`](reify_ir::SolveResult) contract (`Solved { values, unique }` /
-//! `Infeasible`). It reuses this module's residual + Jacobian model (the same one
-//! the partition measures): a damped Gauss–Newton (Levenberg–Marquardt) iteration
-//! over the 6-DOF pose, with `λI` damping so a residual gauge freedom (e.g. spin
-//! about the shank axis under concentric+flush) is handled gracefully rather than
-//! tripping a singular normal-equations solve. The 6 solved scalars are assembled
-//! into a [`Value::Frame`]; `unique` reflects whether the Jacobian at the solution
-//! pins all 6 DOF. Both the solve and the partition run in the scaled coordinates
-//! of one [`SolveScaling`] (PRD §7.3).
+//! [`solve_frame_outcome`] takes the partition's **driving set** over realized
+//! datum [`Value`]s + the 6-DOF Frame unknown + a seed [`Pose`] and drives the
+//! Frame to satisfy every driving relation. The Frame is a
+//! [`LeastSquaresProblem`] over this module's residual + Jacobian model (the same
+//! one the partition measures), solved by [`trust_region::solve`]; a residual
+//! gauge freedom (e.g. spin about the shank axis under concentric+flush) stays at
+//! its seed. A solved Frame comes with its rank and null space ([`Twist`]s); a
+//! failed one with its typed [`SolveFailureCause`]. [`solve_frame`] is the same
+//! solve through the existing [`SolveResult`](reify_ir::SolveResult) contract.
+//! Both the solve and the partition run in the scaled coordinates of one
+//! [`SolveScaling`] (PRD §7.3).
 //!
 //! **Backend note (see esc-4386-38).** The plan named a libslvs-backed solve
 //! (extending `solvespace.rs`'s `SystemBuilder`). The bound `Slvs_*` C API models
 //! INDEPENDENT point/line coordinates with no rigid-group primitive, so a single
 //! 6-DOF Frame carrying several rigidly-coupled datums cannot be expressed cleanly
-//! there; the self-contained Gauss–Newton over the already-tested residual model
-//! satisfies the same `SolveResult` contract without a second slvs integration.
+//! there; the self-contained trust-region solve over the already-tested residual
+//! model satisfies the same `SolveResult` contract without a second slvs
+//! integration.
 //!
 //! The tolerance hierarchy `kernel_local ≤ solver_convergence ≤ assertion/dedup`
 //! (PRD §7.1 coherence law) and the row dimensions it is applied by live in
@@ -60,10 +60,11 @@
 use std::collections::HashMap;
 
 use reify_core::{Diagnostic, DimensionVector, ValueCellId};
-use reify_ir::{SolveResult, Value};
+use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
 
 use crate::linalg::{RankTolerance, RowSpaceQr};
 use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
+use crate::trust_region::{self, LeastSquaresProblem, SolveBudget};
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
 /// sub. Carries the sub's instance name so the partition can tell which relation
@@ -309,68 +310,129 @@ fn bbox_diagonal(points: &[[f64; 3]]) -> f64 {
 const POSE_MEMBER: &str = "pose";
 
 /// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is
-/// satisfied, starting from `seed` (ζ step-10).
+/// satisfied, starting from `seed` (ζ step-10), within the default
+/// [`SolveBudget`].
 ///
-/// Returns through the existing [`SolveResult`] contract:
+/// Returns through the existing [`SolveResult`] contract
+/// ([`FrameSolveOutcome::into_solve_result`]):
 /// - [`SolveResult::Solved`] — every residual row converged within its own nominal
 ///   tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method guarantee).
 ///   `values` maps `ValueCellId::new(unknown.sub, "pose")` to a [`Value::Frame`]
 ///   assembled from the 6 solved scalars; `unique` is `true` iff the Jacobian at
 ///   the solution pins all 6 Frame DOF (no residual gauge freedom).
-/// - [`SolveResult::Infeasible`] — the driving relations are mutually inconsistent
-///   (no pose drives every row within its tolerance). Step-16 refines the geometric
-///   minimal-conflict diagnostic; ζ step-10 maps non-convergence to a build-failing
-///   `Infeasible` so the contract is honoured.
+/// - [`SolveResult::Infeasible`] — the driving relations are certified mutually
+///   inconsistent; one diagnostic coded [`SolveFailureCause::code`].
+/// - [`SolveResult::NoProgress`] — the budget ran out or the step stalled; the
+///   reason renders the cause.
 pub fn solve_frame(
     driving: &[RelationInstance],
     unknown: &FrameUnknown,
     seed: &Pose,
     scaling: &SolveScaling,
 ) -> SolveResult {
-    solve_frame_traced(driving, unknown, seed, scaling).0
+    solve_frame_outcome(driving, unknown, seed, scaling, SolveBudget::default())
+        .into_solve_result(unknown)
 }
 
-/// What a [`solve_frame_traced`] run did on its way to its result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameSolveTrace {
+/// How a Frame solve ended: the solution, or the typed reason it failed.
+#[derive(Debug, Clone)]
+pub struct FrameSolveOutcome {
     /// Trial steps taken, accepted or rejected (`0` when the seed already
     /// converged).
     pub iterations: u32,
+    /// The solved Frame, or why there is none.
+    pub result: Result<FrameSolution, SolveFailureCause>,
 }
 
-/// [`solve_frame`], also reporting the run's [`FrameSolveTrace`].
-pub fn solve_frame_traced(
+/// A converged Frame solve.
+#[derive(Debug, Clone)]
+pub struct FrameSolution {
+    /// The solved pose.
+    pub pose: Pose,
+    /// How many of the 6 Frame DOF the relations pin at the solution.
+    pub rank: usize,
+    /// The `6 − rank` directions the relations leave free at the solution,
+    /// orthonormal in the solve's SCALED metric (translation over `L`).
+    pub null_space: Vec<Twist>,
+}
+
+/// An infinitesimal rigid motion of a Frame: per unit of motion, `translation`
+/// metres of the frame origin and `rotation` radians (exponential-map vector).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Twist {
+    /// Metres per unit.
+    pub translation: [f64; 3],
+    /// Radians per unit.
+    pub rotation: [f64; 3],
+}
+
+impl FrameSolveOutcome {
+    /// This outcome through the [`SolveResult`] contract of [`solve_frame`].
+    pub fn into_solve_result(self, unknown: &FrameUnknown) -> SolveResult {
+        match self.result {
+            Ok(solution) => {
+                // `auto(free)` waives the uniqueness check (PRD §7.1 step 3).
+                // Strict `auto` reports `unique:true` only when every Frame DOF is
+                // pinned; a residual surfaces as `unique:false`, the
+                // under-determined signal. Either way the gauge DOF stays at its
+                // concrete seed, never a free variable.
+                let unique = solution.rank == FRAME_DOF && !unknown.free;
+                let mut values = HashMap::new();
+                values.insert(
+                    ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),
+                    frame_value(&solution.pose),
+                );
+                SolveResult::Solved { values, unique }
+            }
+            Err(cause @ SolveFailureCause::Infeasible(_)) => SolveResult::Infeasible {
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "the relations on `{}` cannot be satisfied simultaneously — {cause}",
+                        unknown.sub
+                    ))
+                    .with_code(cause.code()),
+                ],
+            },
+            Err(cause) => SolveResult::NoProgress {
+                reason: format!(
+                    "the relations on `{}` were not solved — {cause}",
+                    unknown.sub
+                ),
+            },
+        }
+    }
+}
+
+/// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is
+/// satisfied, starting from `seed`, by [`trust_region::solve`] in the scaled
+/// coordinates of `scaling`, within `budget`.
+pub fn solve_frame_outcome(
     driving: &[RelationInstance],
     unknown: &FrameUnknown,
     seed: &Pose,
     scaling: &SolveScaling,
-) -> (SolveResult, FrameSolveTrace) {
-    let (outcome, iterations) = gauss_newton_solve(driving, unknown, seed, scaling);
-    let result = match outcome {
-        Some((pose, fully_pinned)) => {
-            // `auto(free)` waives the uniqueness check (PRD §7.1 step 3): report
-            // `unique:false` even when all 6 DOF are pinned. Strict `auto` reports
-            // `unique:true` only when the Jacobian pins every Frame DOF — a residual
-            // surfaces as `unique:false`, the under-determined signal. Either way the
-            // solved Frame is fully numeric (the gauge DOF stays at its concrete seed),
-            // never a free variable.
-            let unique = fully_pinned && !unknown.free;
-            let mut values = HashMap::new();
-            values.insert(
-                ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),
-                frame_value(&pose),
-            );
-            SolveResult::Solved { values, unique }
-        }
-        None => SolveResult::Infeasible {
-            diagnostics: vec![Diagnostic::error(format!(
-                "the relations on `{}` cannot be satisfied simultaneously — \
-                 the driving set is geometrically inconsistent",
-                unknown.sub
-            ))],
-        },
-    };
-    (result, FrameSolveTrace { iterations })
+    budget: SolveBudget,
+) -> FrameSolveOutcome {
+    let problem = FrameProblem::new(driving, unknown, scaling);
+    let run = trust_region::solve(
+        &problem,
+        &problem.scaled(seed),
+        budget,
+        rank_tolerance(scaling),
+    );
+    let result = run.outcome.map(|converged| FrameSolution {
+        pose: problem.pose(&run.x),
+        rank: converged.rank,
+        null_space: converged
+            .null_space
+            .iter()
+            .map(|z| problem.twist(z))
+            .collect(),
+    });
+    FrameSolveOutcome {
+        iterations: run.iterations,
+        result,
+    }
 }
 
 /// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
@@ -1335,250 +1397,102 @@ fn rank_tolerance(scaling: &SolveScaling) -> RankTolerance {
     }
 }
 
-/// The rank of a Jacobian block (number of linearly-independent rows).
-fn jacobian_rank(jac: &[[f64; FRAME_DOF]], tolerance: RankTolerance) -> usize {
-    let mut qr = RowSpaceQr::new(FRAME_DOF, tolerance);
-    qr.push_rows(jac);
-    qr.rank()
+// ── The Frame solve as a least-squares problem ───────────────────────────────
+
+/// A relate-scope Frame solve in the scaled unknowns `x̃ = [t / L, θ]` and the
+/// scaled residual rows of every driving relation, stacked in relation order.
+struct FrameProblem<'a> {
+    relations: &'a [RelationInstance],
+    unknown: &'a FrameUnknown,
+    scaling: &'a SolveScaling,
+    /// The relation (index into `relations`) each residual row comes from.
+    row_relation: Vec<usize>,
 }
 
-// ── Damped Gauss–Newton (Levenberg–Marquardt) over the 6-DOF pose ────────────
-
-/// Maximum LM iterations before declaring non-convergence. The Frame residuals are
-/// near-linear in the pose for the canonical mate set, so feasible systems converge
-/// in a handful of iterations; the cap only bounds genuinely-inconsistent inputs.
-const MAX_SOLVE_ITERS: usize = 200;
-
-/// Drive `unknown`'s pose from `seed` to satisfy `relations` by damped Gauss–Newton
-/// in the scaled coordinates of `scaling`, returning the outcome and the number of
-/// trial steps taken.
-///
-/// The outcome is `Some((pose, unique))` once every scaled row is within one
-/// nominal tolerance, `max|r̃| ≤ 1` (`unique` = "all 6 DOF pinned at the
-/// solution"), or `None` when no pose gets there within [`MAX_SOLVE_ITERS`].
-/// Damping keeps the normal-equations solve well-posed even when the Jacobian is
-/// rank-deficient (a residual gauge freedom), so the gauge DOF simply stays near
-/// its seed rather than blowing up.
-fn gauss_newton_solve(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    scaling: &SolveScaling,
-) -> (Option<(Pose, bool)>, u32) {
-    let tolerance = rank_tolerance(scaling);
-    let scales: [f64; FRAME_DOF] = std::array::from_fn(|dof| scaling.unknown_scale(dof_kind(dof)));
-    // `λ` is stated relative to the scaled normal matrix's nominal curvature
-    // `ε_rel⁻²`, so the schedule below keeps its unscaled meaning. That is the
-    // curvature of angular rows at every `L` and of metre rows above the 1 mm
-    // crossover. Below it a metre row's is `(L / floor)²`, so the solve starts
-    // over-damped there and spends a few more steps relaxing `λ`.
-    let relative = scaling.relative_convergence();
-    let nominal_curvature = 1.0 / (relative * relative);
-
-    let mut x = pose_to_vec6(seed);
-    let (mut r, mut jac) =
-        combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x), scaling);
-
-    // No residual rows at all (empty/row-free driving set) ⇒ nothing to pin; the
-    // seed trivially "satisfies" the (empty) set and leaves all 6 DOF free.
-    if r.is_empty() {
-        return (Some((vec6_to_pose(&x), false)), 0);
-    }
-
-    let mut cost = sum_sq(&r);
-    let mut lambda = 1e-3_f64;
-    let mut iterations = 0;
-
-    for _ in 0..MAX_SOLVE_ITERS {
-        if max_abs(&r) <= 1.0 {
-            let unique = jacobian_rank(&jac, tolerance) >= FRAME_DOF;
-            return (Some((vec6_to_pose(&x), unique)), iterations);
-        }
-        iterations += 1;
-
-        // Normal equations: (J̃ᵀJ̃ + λ·ε_rel⁻²·I) δ̃ = J̃ᵀr̃, step is x ← x − δ̃·s.
-        let (mut a, g) = normal_equations(&jac, &r);
-        for (i, row) in a.iter_mut().enumerate() {
-            row[i] += lambda * nominal_curvature;
-        }
-        let delta = match solve6(&a, &g) {
-            Some(d) => d,
-            None => {
-                // Singular even under damping — stiffen and retry.
-                lambda *= 10.0;
-                if lambda > 1e12 {
-                    break;
-                }
-                continue;
-            }
-        };
-
-        let mut x_new = x;
-        for ((xi, di), si) in x_new.iter_mut().zip(delta.iter()).zip(scales.iter()) {
-            *xi -= *di * *si;
-        }
-        let (r_new, jac_new) =
-            combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x_new), scaling);
-        let cost_new = sum_sq(&r_new);
-
-        if cost_new < cost {
-            // Accept the step; relax damping toward pure Gauss–Newton.
-            x = x_new;
-            r = r_new;
-            jac = jac_new;
-            cost = cost_new;
-            lambda = (lambda * 0.5).max(1e-12);
-        } else {
-            // Reject; stiffen toward gradient descent and retry from the same x.
-            lambda *= 4.0;
-            if lambda > 1e12 {
-                break;
-            }
+impl<'a> FrameProblem<'a> {
+    fn new(
+        relations: &'a [RelationInstance],
+        unknown: &'a FrameUnknown,
+        scaling: &'a SolveScaling,
+    ) -> Self {
+        let row_relation = relations
+            .iter()
+            .enumerate()
+            .flat_map(|(i, rel)| {
+                let rows = relation_residual_rows(rel, unknown, &Pose::identity()).len();
+                std::iter::repeat_n(i, rows)
+            })
+            .collect();
+        Self {
+            relations,
+            unknown,
+            scaling,
+            row_relation,
         }
     }
 
-    // Converged on the final iterate?
-    let outcome = if max_abs(&r) <= 1.0 {
-        Some((vec6_to_pose(&x), jacobian_rank(&jac, tolerance) >= FRAME_DOF))
-    } else {
-        None
-    };
-    (outcome, iterations)
+    fn length(&self) -> f64 {
+        self.scaling.characteristic_length()
+    }
+
+    fn scaled(&self, pose: &Pose) -> Vec<f64> {
+        let l = self.length();
+        pose.translation
+            .iter()
+            .map(|t| t / l)
+            .chain(pose.rotation)
+            .collect()
+    }
+
+    fn pose(&self, x: &[f64]) -> Pose {
+        let l = self.length();
+        Pose {
+            translation: [x[0] * l, x[1] * l, x[2] * l],
+            rotation: [x[3], x[4], x[5]],
+        }
+    }
+
+    fn twist(&self, z: &[f64]) -> Twist {
+        let l = self.length();
+        Twist {
+            translation: [z[0] * l, z[1] * l, z[2] * l],
+            rotation: [z[3], z[4], z[5]],
+        }
+    }
 }
 
-/// Concatenate every relation's scaled residual + matching Jacobian rows at `pose`
-/// into one `(residual, jacobian)` pair (rows aligned 1:1). Built together so the
-/// residual vector and Jacobian block can never drift in length.
-fn combined_residual_jacobian(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    pose: &Pose,
-    scaling: &SolveScaling,
-) -> (Vec<f64>, Vec<[f64; FRAME_DOF]>) {
-    let mut res = Vec::new();
-    let mut jac = Vec::new();
-    for rel in relations {
-        let (rr, rows) = scaled_residual_jacobian(rel, unknown, pose, scaling);
-        // `scaled_residual_jacobian` sizes the Jacobian from the residual at the same
-        // pose, so the lengths match. Make the invariant LOUD in debug builds so a future
-        // residual/Jacobian length divergence surfaces in tests rather than silently
-        // dropping a constraint (which could spuriously report `Solved`/under-determined);
-        // the `if` keeps release builds defensively guarded.
+impl LeastSquaresProblem for FrameProblem<'_> {
+    fn dim(&self) -> usize {
+        FRAME_DOF
+    }
+
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        let pose = self.pose(x);
+        let residual: Vec<f64> = self
+            .relations
+            .iter()
+            .flat_map(|rel| scaled_residual(rel, self.unknown, &pose, self.scaling))
+            .collect();
         debug_assert_eq!(
-            rows.len(),
-            rr.len(),
-            "relation `{}` residual ({}) and Jacobian ({}) row counts diverged",
-            rel.name,
-            rr.len(),
-            rows.len()
+            residual.len(),
+            self.row_relation.len(),
+            "a relation's residual row count changed with the pose"
         );
-        if rows.len() == rr.len() {
-            res.extend(rr);
-            jac.extend(rows);
-        }
-    }
-    (res, jac)
-}
-
-/// Form the 6×6 normal matrix `A = JᵀJ` and gradient `g = Jᵀr`.
-fn normal_equations(
-    jac: &[[f64; FRAME_DOF]],
-    r: &[f64],
-) -> ([[f64; FRAME_DOF]; FRAME_DOF], [f64; FRAME_DOF]) {
-    let mut a = [[0.0; FRAME_DOF]; FRAME_DOF];
-    let mut g = [0.0; FRAME_DOF];
-    for (row, &ri) in jac.iter().zip(r.iter()) {
-        for i in 0..FRAME_DOF {
-            g[i] += row[i] * ri;
-            for j in 0..FRAME_DOF {
-                a[i][j] += row[i] * row[j];
-            }
-        }
-    }
-    (a, g)
-}
-
-/// Solve the 6×6 linear system `A x = b` by Gaussian elimination with partial
-/// pivoting. Returns `None` if `A` is numerically singular (a pivot below `1e-18`);
-/// callers stiffen the LM damping and retry. Hand-rolled — no nalgebra (design §4).
-//
-// Index-based by nature: the elimination step writes `m[row]` while reading
-// `m[col]` (col < row), an aliasing that iterator form cannot express without
-// `split_at_mut` gymnastics that would only obscure a textbook algorithm.
-#[allow(clippy::needless_range_loop)]
-fn solve6(
-    a: &[[f64; FRAME_DOF]; FRAME_DOF],
-    b: &[f64; FRAME_DOF],
-) -> Option<[f64; FRAME_DOF]> {
-    let mut m = *a;
-    let mut y = *b;
-
-    for col in 0..FRAME_DOF {
-        // Partial pivot: largest-magnitude entry in this column at/below the diagonal.
-        let mut piv = col;
-        let mut best = m[col][col].abs();
-        for row in (col + 1)..FRAME_DOF {
-            let v = m[row][col].abs();
-            if v > best {
-                best = v;
-                piv = row;
-            }
-        }
-        if best < 1e-18 {
-            return None; // singular
-        }
-        if piv != col {
-            m.swap(col, piv);
-            y.swap(col, piv);
-        }
-        let diag = m[col][col];
-        for row in (col + 1)..FRAME_DOF {
-            let f = m[row][col] / diag;
-            if f != 0.0 {
-                for k in col..FRAME_DOF {
-                    m[row][k] -= f * m[col][k];
-                }
-                y[row] -= f * y[col];
-            }
-        }
+        residual
     }
 
-    // Back-substitution.
-    let mut x = [0.0; FRAME_DOF];
-    for col in (0..FRAME_DOF).rev() {
-        let mut s = y[col];
-        for k in (col + 1)..FRAME_DOF {
-            s -= m[col][k] * x[k];
-        }
-        x[col] = s / m[col][col];
+    fn jacobian(&self, x: &[f64]) -> Vec<Vec<f64>> {
+        let pose = self.pose(x);
+        self.relations
+            .iter()
+            .flat_map(|rel| scaled_residual_jacobian(rel, self.unknown, &pose, self.scaling).1)
+            .map(|row| row.to_vec())
+            .collect()
     }
-    Some(x)
-}
 
-fn pose_to_vec6(p: &Pose) -> [f64; FRAME_DOF] {
-    [
-        p.translation[0],
-        p.translation[1],
-        p.translation[2],
-        p.rotation[0],
-        p.rotation[1],
-        p.rotation[2],
-    ]
-}
-
-fn vec6_to_pose(v: &[f64; FRAME_DOF]) -> Pose {
-    Pose {
-        translation: [v[0], v[1], v[2]],
-        rotation: [v[3], v[4], v[5]],
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(self.row_relation[row])
     }
-}
-
-fn sum_sq(r: &[f64]) -> f64 {
-    r.iter().map(|x| x * x).sum()
-}
-
-fn max_abs(r: &[f64]) -> f64 {
-    r.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 // ── Frame ⇄ Pose assembly ────────────────────────────────────────────────────
