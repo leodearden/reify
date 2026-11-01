@@ -1131,6 +1131,50 @@ mod cli {
         );
     }
 
+    /// A default sweep — no `--pattern`, `--task` or `--since` — over more than
+    /// fifty tasks runs to completion. The whole corpus is the sweep contract
+    /// (PRD D6), so no corpus size is refused: there is no panic in a debug
+    /// build and no "unbounded backlog" breadcrumb in either profile.
+    #[test]
+    fn default_sweep_over_more_than_fifty_tasks_does_not_panic() {
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let dir = tmp.path();
+        let tasks: Vec<serde_json::Value> = (0..51)
+            .map(|i| task_fixture_with_files(&format!("3000{i:02}"), "pending", None, None, &[]))
+            .collect();
+        let tasks_file = write_tasks_json(dir, &tasks);
+        let runs_db = write_empty_runs_db(dir);
+
+        let bin = env!("CARGO_BIN_EXE_reify-audit");
+        let out = Command::new(bin)
+            .args([
+                "--no-jcodemunch",
+                "--tasks-file",
+                tasks_file.to_str().unwrap(),
+                "--runs-db",
+                runs_db.to_str().unwrap(),
+                "--project-root",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("invoke reify-audit default sweep over 51 tasks");
+
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a default sweep over 51 pending tasks must exit 0; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr_has_parseable_findings_array(&stderr),
+            "a completed sweep emits its findings array; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("panicked at") && !stderr.contains("unbounded backlog"),
+            "no corpus size is refused; stderr:\n{stderr}"
+        );
+    }
+
     /// `--pre-done --pattern P1` must error with exit 125 (infrastructure error),
     /// not silently run P5 or P1.
     #[test]
