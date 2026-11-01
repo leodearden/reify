@@ -48,9 +48,10 @@
 //!
 //! - **No prose is pinned.** Nothing here matches a sentence, a heading, or an
 //!   ordering. The only structural pins are the byte-exact fence info strings
-//!   (```` ```reify ```` / ```` ```reify-rejected ````) and the one-cite-per-line
-//!   format, all of which are house convention precisely so the surrounding
-//!   wording stays free to change.
+//!   (```` ```reify ```` / ```` ```reify-rejected ````), the one-cite-per-line
+//!   format, and the inert `<!-- LENGTH-ARGS-XREF -->` marker with the backticked
+//!   topic its region must name, all of which are house convention precisely so
+//!   the surrounding wording stays free to change.
 //! - **Compile-acceptance is a parse/shape/slot result, not a full signature
 //!   check.** A `structure def` body types an unresolved call from its FIRST
 //!   argument's `result_type`, so an unknown call NAME is not itself an error —
@@ -62,13 +63,15 @@
 //!   that reason, and `cited_test_paths_in_the_units_chunk_resolve` only checks
 //!   that the eval-side cites it DOES make resolve to real tests.
 
+use std::path::Path;
+
 use reify_core::units::LENGTH_MIGRATION_HINT;
 use reify_test_support::{LENGTH_SLOT_DIAGNOSTIC_MARKER, named_length_argument};
 
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
-use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
-use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH, UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::{section_body, tagged_fence_bodies};
 use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
 
@@ -585,6 +588,41 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
         MINIMUM_FN_CITES,
         MINIMUM_RS_FILES,
         MINIMUM_RI_FILES,
+    );
+}
+
+/// Line that opens units.md's pointer to the per-position length-argument catalogue.
+const LENGTH_ARGS_XREF_MARKER: &str = "<!-- LENGTH-ARGS-XREF -->";
+
+/// What [`LENGTH_ARGS_XREF_MARKER`]'s region is called in a failure message.
+const LENGTH_ARGS_XREF_TITLE: &str = "length-argument catalogue cross-reference";
+
+/// The topic that retrieves the chunk holding the length-argument catalogue:
+/// [`GEOMETRY_CHUNK_PATH`]'s filename stem, which `fence_gate`'s check 4 holds
+/// equal to the topic serving that file.
+fn length_args_catalogue_topic() -> &'static str {
+    Path::new(GEOMETRY_CHUNK_PATH)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{GEOMETRY_CHUNK_PATH} must have a UTF-8 filename stem"))
+}
+
+/// units.md routes a reader to the length-argument catalogue's topic (scope: module header).
+#[test]
+fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
+    let region = section_body(
+        &read_chunk(UNITS_CHUNK_PATH),
+        LENGTH_ARGS_XREF_MARKER,
+        UNITS_CHUNK_PATH,
+        LENGTH_ARGS_XREF_TITLE,
+    );
+
+    let topic_key = format!("`{}`", length_args_catalogue_topic());
+    assert!(
+        region.contains(&topic_key),
+        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names topic {topic_key}, \
+         which retrieves {GEOMETRY_CHUNK_PATH} — a pointer that names no destination points \
+         nowhere. FIX: route the reader to topic {topic_key} of `reify_language_reference`."
     );
 }
 

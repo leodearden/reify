@@ -204,10 +204,11 @@ direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimens
 in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
 bare because it is what you mean, not because you will be told.
 
+<!-- LENGTH-ARGS-XREF -->
 **Which argument of which constructor is length-semantic** is catalogued per position in the
-`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor,
-under "Dimensioned arguments". This section states the rule and the idiom; that one enumerates the
-positions — read it before dimensioning an unfamiliar signature.
+`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor.
+This section states the rule and the idiom; that one enumerates the positions — read it before
+dimensioning an unfamiliar signature.
 
 Worked, compile-gated exemplar: `examples/best_practices/dimensioned_arguments.ri`.
 
