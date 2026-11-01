@@ -70,16 +70,14 @@ const PRESETS: [Preset; 4] = [
     },
 ];
 
-fn structure_cell<'a>(values: &'a ValueMap, member: &str) -> &'a Value {
+fn structure_cell<'a>(values: &'a ValueMap, structure: &str, member: &str) -> &'a Value {
     values
-        .get(&ValueCellId::new(PRESET_DENSITIES_STRUCTURE, member))
-        .unwrap_or_else(|| {
-            panic!("{PRESET_DENSITIES_STRUCTURE}.{member} cell missing from eval result")
-        })
+        .get(&ValueCellId::new(structure, member))
+        .unwrap_or_else(|| panic!("{structure}.{member} cell missing from eval result"))
 }
 
 fn preset_instance<'a>(values: &'a ValueMap, preset: &Preset) -> &'a StructureInstanceData {
-    let cell = structure_cell(values, preset.cell);
+    let cell = structure_cell(values, PRESET_DENSITIES_STRUCTURE, preset.cell);
     let Value::StructureInstance(instance) = cell else {
         panic!(
             "{PRESET_DENSITIES_STRUCTURE}.{} must be a {} StructureInstance; got {cell:?}",
@@ -125,7 +123,7 @@ fn defaulted_stdlib_fea_presets_expose_density_as_dimensioned_scalar() {
 
         let member_access = format!("{}_rho", preset.cell);
         assert_dimensioned(
-            structure_cell(&result.values, &member_access),
+            structure_cell(&result.values, PRESET_DENSITIES_STRUCTURE, &member_access),
             preset.density_si,
             DimensionVector::MASS_DENSITY,
             &format!(
@@ -149,6 +147,14 @@ const DENSITY_OBJECTIVE_SRC: &str = r#"structure PresetDensityObjective {
     constraint thickness > 3mm
     minimize mass
 }"#;
+
+/// [`DENSITY_OBJECTIVE_SRC`]'s `constraint thickness > 3mm`, in SI metres.
+const THICKNESS_LOWER_BOUND_SI: f64 = 3e-3;
+
+/// A loose ceiling on the resolved thickness, which only `minimize mass` brings
+/// down toward [`THICKNESS_LOWER_BOUND_SI`]. Where the solver lands within that
+/// range is tolerance-dependent and deliberately not pinned.
+const THICKNESS_UPPER_BOUND_SI: f64 = 1e-2;
 
 const MASS_COHERENCE_REL_TOL: f64 = 1e-9;
 
@@ -187,26 +193,21 @@ fn minimize_objective_reading_defaulted_preset_density_resolves_auto_thickness()
 }
 
 fn assert_auto_thickness_resolved_through_preset_density(arm: &str, result: &EvalResult) {
-    let cell = |member: &str| -> Value {
-        result
-            .values
-            .get(&ValueCellId::new(DENSITY_OBJECTIVE_STRUCTURE, member))
-            .cloned()
-            .unwrap_or_else(|| {
-                panic!(
-                    "[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.{member} cell missing from eval result"
-                )
-            })
+    let diagnostics = format!("{:#?}", result.diagnostics);
+    let cell = |member: &str| structure_cell(&result.values, DENSITY_OBJECTIVE_STRUCTURE, member);
+    let describe = |member: &str, hint: &str| {
+        format!(
+            "[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.{member} ({hint}; eval diagnostics: \
+             {diagnostics})"
+        )
     };
     let resolved_si = |member: &str, dimension: DimensionVector| -> f64 {
         let value = cell(member);
         let si = scalar_si(
-            &value,
-            &format!(
-                "[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.{member} is not a resolved Scalar (an \
-                 Undef objective, which leaves `thickness` unresolved, is the #9572 signature); \
-                 eval diagnostics: {:#?}",
-                result.diagnostics
+            value,
+            &describe(
+                member,
+                "an Undef objective, which leaves `thickness` unresolved, is the #9572 signature",
             ),
         );
         assert_eq!(
@@ -218,16 +219,27 @@ fn assert_auto_thickness_resolved_through_preset_density(arm: &str, result: &Eva
     };
 
     assert_dimensioned(
-        &cell("rho"),
+        cell("rho"),
         STEEL_DENSITY_SI,
         DimensionVector::MASS_DENSITY,
-        &format!("[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.rho (`material.density` member access)"),
+        &describe("rho", "`material.density` member access"),
     );
 
     let thickness_si = resolved_si("thickness", DimensionVector::LENGTH);
     assert!(
         thickness_si.is_finite(),
         "[{arm}] resolved thickness must be finite, got {thickness_si:?}"
+    );
+    assert!(
+        thickness_si > THICKNESS_LOWER_BOUND_SI,
+        "[{arm}] resolved thickness {thickness_si:e} m violates the fixture's \
+         `constraint thickness > 3mm` ({THICKNESS_LOWER_BOUND_SI:e} m)"
+    );
+    assert!(
+        thickness_si < THICKNESS_UPPER_BOUND_SI,
+        "[{arm}] resolved thickness {thickness_si:e} m is not below \
+         {THICKNESS_UPPER_BOUND_SI:e} m: `minimize mass` should drive it toward the \
+         {THICKNESS_LOWER_BOUND_SI:e} m lower bound"
     );
 
     let mass_si = resolved_si("mass", DimensionVector::MASS);
