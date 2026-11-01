@@ -9,9 +9,9 @@
 //!
 //! `reify eval` should report:
 //!   Demo.bore  = 0.005 m   (= 5mm, from the `Ok { value: 5mm }` default)
-//!   Demo.r     = Result::Ok
+//!   Demo.r     = Result::Ok { value: 0.005 m }
 //!   Demo.total = 0.003 m   (= 1mm + 2mm, the two Tree<Length> leaves)
-//!   Demo.tree  = Tree::Node
+//!   Demo.tree  = Tree::Node { left: Tree::Leaf { value: 0.001 m }, right: Tree::Leaf { value: 0.002 m } }
 
 module m6_generic_enum
 

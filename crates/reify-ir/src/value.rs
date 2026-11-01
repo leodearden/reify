@@ -1501,6 +1501,20 @@ fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &
     })
 }
 
+/// ` { name: value, … }` for an enum payload in stored order, or "" for a unit variant.
+/// Stored order is the variant's declaration order, kept on purpose: structure
+/// instances display their fields sorted by name instead.
+fn enum_payload_suffix(payload: &[(String, Value)], render: impl Fn(&Value) -> String) -> String {
+    if payload.is_empty() {
+        return String::new();
+    }
+    let fields: Vec<String> = payload
+        .iter()
+        .map(|(name, value)| format!("{name}: {}", render(value)))
+        .collect();
+    format!(" {{ {} }}", fields.join(", "))
+}
+
 /// Normalize range inclusivity flags: force `inclusive=false` when the
 /// corresponding bound is `None` (unbounded endpoint cannot be inclusive).
 fn normalize_range_flags<T>(
@@ -2426,7 +2440,14 @@ impl Value {
                     format!("{si_value} {unit}")
                 }
             }
-            Value::Enum { type_name, variant, .. } => format!("{type_name}::{variant}"),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => format!(
+                "{type_name}::{variant}{}",
+                enum_payload_suffix(payload, Value::format_hover)
+            ),
             Value::List(items) => {
                 let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
                 format!("[{}]", inner.join(", "))
@@ -2604,7 +2625,12 @@ impl Value {
             Value::Real(r) => format_display_number(*r),
             Value::Bool(b) => b.to_string(),
             Value::String(s) => s.clone(),
-            Value::Enum { variant, .. } => variant.clone(),
+            Value::Enum {
+                variant, payload, ..
+            } => format!(
+                "{variant}{}",
+                enum_payload_suffix(payload, Value::format_display)
+            ),
             Value::List(items) => {
                 let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
                 format!("[{}]", strs.join(", "))
@@ -4030,7 +4056,15 @@ impl std::fmt::Display for Value {
                     write!(f, "{} {}", si_value, unit)
                 }
             }
-            Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => write!(
+                f,
+                "{type_name}::{variant}{}",
+                enum_payload_suffix(payload, |v| v.to_string())
+            ),
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -14374,3 +14408,6 @@ mod feature {
         }
     }
 }
+
+#[cfg(test)]
+mod enum_display_tests;
