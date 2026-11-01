@@ -45,6 +45,7 @@ from reify_verify import (  # noqa: E402
     cli,
     environment,
     narrowing,
+    nextest,
     policy,
     render,
     scope,
@@ -57,6 +58,7 @@ from reify_verify.plan import (  # noqa: E402
     HeadStamp,
     NodeProject,
     Phase,
+    Refused,
     Script,
     Step,
     StepKind,
@@ -272,6 +274,100 @@ class TestSourceDelta(unittest.TestCase):
     def test_a_failing_file_is_an_error(self):
         with self.assertRaises(BashCallError):
             self.delta_of("return 3\n")
+
+
+class TestNextestConfigPath(unittest.TestCase):
+    """nextest.nextest_config_path's three arms.
+
+    No --print-plan reaches the generate arm (it is the executor's, from ε),
+    so this class drives the function itself, in the repo checkout.
+    """
+
+    PLACEHOLDER_NAME = "reify-nextest-occt.<print-plan-placeholder>"
+    DIE_LINE = (
+        "verify.sh: ERROR — gen-nextest-config.sh refused to generate the nextest "
+        "config (exit 64); its diagnostic is immediately above"
+    )
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.tmpdir = Path(scratch.name)
+
+    def config_files(self) -> set[Path]:
+        return set(self.tmpdir.glob("reify-nextest-occt.*"))
+
+    def config_path(self, executing, raw_env, planning_env=None, test_threads=None):
+        return nextest.nextest_config_path(
+            executing,
+            raw_env,
+            raw_env if planning_env is None else planning_env,
+            test_threads,
+            REPO_ROOT,
+        )
+
+    def test_an_override_is_the_callers_file_in_both_modes(self):
+        env = base_env(REIFY_VERIFY_NEXTEST_CONFIG="/some/caller.toml", TMPDIR=str(self.tmpdir))
+        for executing in (False, True):
+            with self.subTest(executing=executing):
+                config = self.config_path(executing, env)
+                self.assertEqual(
+                    config, nextest.NextestConfig("/some/caller.toml", nextest.ConfigOrigin.OVERRIDE)
+                )
+        self.assertEqual(self.config_files(), set())
+
+    def test_the_override_is_read_from_the_raw_env(self):
+        raw = base_env(TMPDIR=str(self.tmpdir))
+        planning = dict(raw, REIFY_VERIFY_NEXTEST_CONFIG="/planning/only.toml")
+        config = self.config_path(False, raw, planning)
+        self.assertEqual(config.origin, nextest.ConfigOrigin.PLACEHOLDER)
+
+    def test_print_mode_names_the_placeholder_under_the_planning_tmpdir(self):
+        raw = base_env(TMPDIR="/raw/tmp")
+        planning = dict(raw, TMPDIR=str(self.tmpdir))
+        config = self.config_path(False, raw, planning)
+        self.assertEqual(
+            config,
+            nextest.NextestConfig(
+                f"{self.tmpdir}/{self.PLACEHOLDER_NAME}", nextest.ConfigOrigin.PLACEHOLDER
+            ),
+        )
+        self.assertEqual(self.config_files(), set())
+
+    def test_an_unset_or_empty_tmpdir_falls_back_to_tmp(self):
+        unset = {k: v for k, v in base_env().items() if k != "TMPDIR"}
+        for label, env in (("unset", unset), ("empty", dict(unset, TMPDIR=""))):
+            with self.subTest(tmpdir=label):
+                config = self.config_path(False, env)
+                self.assertEqual(config.path, f"/tmp/{self.PLACEHOLDER_NAME}")
+                self.assertEqual(config.origin, nextest.ConfigOrigin.PLACEHOLDER)
+
+    def test_execute_mode_generates_one_file_the_executor_owns(self):
+        env = base_env(TMPDIR=str(self.tmpdir), REIFY_NEXTEST_TEST_THREADS="2")
+        config = self.config_path(True, env)
+        self.assertIsInstance(config, nextest.NextestConfig)
+        self.addCleanup(Path(config.path).unlink, missing_ok=True)
+        self.assertEqual(config.origin, nextest.ConfigOrigin.GENERATED)
+        self.assertFalse(config.path.endswith("\n"), config.path)
+        self.assertEqual(self.config_files(), {Path(config.path)})
+        self.assertTrue(Path(config.path).is_file())
+
+    def test_a_cli_thread_count_above_the_pool_is_the_generators_refusal(self):
+        env = base_env(TMPDIR=str(self.tmpdir), REIFY_NEXTEST_TEST_THREADS="2")
+        before = dict(env)
+        refused = self.config_path(True, env, test_threads=8)
+        self.assertIsInstance(refused, Refused)
+        self.assertEqual(refused.exit_code, 64)
+        self.assertEqual(refused.lines[-1], self.DIE_LINE)
+        self.assertGreater(len(refused.lines), 1, refused.lines)
+        self.assertTrue(
+            all(line.startswith("gen-nextest-config.sh:") for line in refused.lines[:-1]),
+            refused.lines,
+        )
+        self.assertIn("--test-threads=8", refused.lines[0])
+        self.assertEqual(env, before)
+        self.assertNotIn("REIFY_NEXTEST_CLI_TEST_THREADS", env)
+        self.assertEqual(self.config_files(), set())
 
 
 class TestPlanInputsScrubPrefix(unittest.TestCase):
