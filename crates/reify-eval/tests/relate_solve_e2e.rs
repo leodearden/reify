@@ -36,12 +36,13 @@ use reify_constraints::relate_solve::{
     pose_from_frame, solve_scaling,
 };
 use reify_constraints::scaling::RelateTolerance;
+use reify_constraints::trust_region::SolveBudget;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
-    realize_operand_datums, solve_relate_scope, trace_to_ground,
+    realize_operand_datums, solve_relate_scope, solve_relate_scope_within, trace_to_ground,
 };
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, Value};
+use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveFailureCause, Value};
 use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
 
 /// Read the committed §1 worked example so the kernel-free unit slice and the
@@ -299,6 +300,19 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
 /// from the SAME self-contained primitives as
 /// `examples/geometric_relations/bolt_plate.ri`.
 fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
+    bolt_scope_source(SECTION_1_PLATE, extra_fn, members)
+}
+
+/// The §1 `Plate` structure's body.
+const SECTION_1_PLATE: &str = "    let body = box(40mm, 40mm, 5mm)
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane";
+
+/// [`bolt_plate_scope_source`] with `plate_body` as the `Plate` structure's body —
+/// the §1 `Bolt` and `BoltPlate` scope around a different anchor.
+fn bolt_scope_source(plate_body: &str, extra_fn: Option<&str>, members: &[&str]) -> String {
     let extra_fn = match extra_fn {
         Some(f) => format!("{f}\n\n"),
         None => String::new(),
@@ -315,11 +329,7 @@ fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
 }}
 
 structure Plate {{
-    let body = box(40mm, 40mm, 5mm)
-    let hole = cylinder(3.2mm, 5mm)
-    let hole_axis : Axis = hole.axis
-    let top = rectangle(40mm, 40mm)
-    let top_plane : Plane = top.plane
+{plate_body}
 }}
 
 structure BoltPlate {{
@@ -378,12 +388,20 @@ fn identity_bolt_seeds() -> HashMap<String, Value> {
 /// Compile `source`, collect the `BoltPlate` scope, realize its operand datums
 /// against a real OCCT kernel, and run the full per-scope relate-solve.
 fn solve_bolt_plate(source: &str) -> RelateSolution {
+    let (scope, realized) = realize_bolt_plate(source);
+    solve_relate_scope(&scope, &realized)
+}
+
+/// Compile `source`, collect the `BoltPlate` scope and realize its operand datums
+/// against a real OCCT kernel — everything [`solve_bolt_plate`] does short of the
+/// solve.
+fn realize_bolt_plate(source: &str) -> (RelateScope, RealizedDatums) {
     let module = compile_source_with_stdlib(source);
     let bp = template(&module, "BoltPlate");
     let scope: RelateScope = collect_relate_scope(bp);
     let mut engine = occt_engine();
     let realized = realize_operand_datums(&scope, &module, &mut engine, &identity_bolt_seeds());
-    solve_relate_scope(&scope, &realized)
+    (scope, realized)
 }
 
 /// step-13 — a redundant-remainder relation CONSISTENT with the driven placement
@@ -1933,4 +1951,202 @@ fn occt_required_when_ci_profile_expects_it() {
         "occt_required_when_ci_profile_expects_it: REIFY_REQUIRE_OCCT={require} OCCT_AVAILABLE={}",
         reify_kernel_occt::OCCT_AVAILABLE
     );
+}
+
+// ─── η #6675 (OCCT-gated) — B9: infeasible and out-of-budget are told apart ────
+//
+// A failed relate-solve reports WHY, as a typed `SolveFailureCause` on the
+// `RelateSolution` and a distinct diagnostic code: a driving set that no placement
+// can satisfy is certified `SolverInfeasible` (the solve reached a least-squares
+// minimum that is not a root, with the gradient certificate and the blamed
+// relations), while a feasible set that ran out of iterations is
+// `SolverBudgetExhausted` (counts and step-norm trend). Before η both read as the
+// same uncoded "cannot be satisfied simultaneously" sentence.
+
+/// A `Plate` whose top plane faces `+z` and whose wall plane, rotated 90° about
+/// `y`, faces `x` — no seat plane can be flush with both.
+const PERPENDICULAR_WALLS_PLATE: &str = "    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+    let wall = rotate(rectangle(40mm, 5mm), 0.0, 1.0, 0.0, 90deg)
+    let wall_plane : Plane = wall.plane";
+
+fn perpendicular_walls_source() -> String {
+    bolt_scope_source(
+        PERPENDICULAR_WALLS_PLATE,
+        None,
+        &[
+            "flush(bolt.seat_plane, plate.top_plane)",
+            "flush(bolt.seat_plane, plate.wall_plane)",
+        ],
+    )
+}
+
+/// A `Plate` whose hole axis is tilted 20° about `x` and offset in-plane, so
+/// seating the shank in it is nonlinear in rotation and takes several steps.
+const TILTED_HOLE_PLATE: &str =
+    "    let hole = translate(rotate(cylinder(3.2mm, 5mm), 1.0, 0.0, 0.0, 20deg), 4mm, 3mm, 0mm)
+    let hole_axis : Axis = hole.axis";
+
+fn tilted_hole_source() -> String {
+    bolt_scope_source(
+        TILTED_HOLE_PLATE,
+        None,
+        &["concentric(bolt.shank_axis, plate.hole_axis)"],
+    )
+}
+
+fn errors(solution: &RelateSolution) -> Vec<&Diagnostic> {
+    solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+/// B9 (a): two DRIVING `flush` relations whose normals cannot both hold are a
+/// certified infeasibility.
+#[test]
+fn inconsistent_driving_relations_are_certified_solver_infeasible() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping inconsistent_driving_relations_are_certified_solver_infeasible: OCCT not available"
+        );
+        return;
+    }
+    let solution = solve_bolt_plate(&perpendicular_walls_source());
+
+    assert_eq!(
+        (solution.driving, solution.redundant),
+        (2, 0),
+        "both relations must drive, so the verdict is the solver's, not the remainder's"
+    );
+    let errors = errors(&solution);
+    assert_eq!(errors.len(), 1, "{:?}", solution.diagnostics);
+    let error = errors[0];
+    assert_eq!(
+        error.code,
+        Some(DiagnosticCode::SolverInfeasible),
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("flush") && error.message.contains("bolt"),
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("relative gradient"),
+        "the diagnostic carries the gradient certificate: {error:?}"
+    );
+    assert!(
+        error.message.contains("plate.wall_plane") && error.message.contains("plate.top_plane"),
+        "the blamed relations are named by their operands: {error:?}"
+    );
+    assert!(
+        matches!(solution.failure, Some(SolveFailureCause::Infeasible(_))),
+        "{:?}",
+        solution.failure
+    );
+    assert!(
+        solution.poses.is_empty(),
+        "no placement for an infeasible scope"
+    );
+    assert!(
+        diags_with_code(&solution.diagnostics, DiagnosticCode::SolverBudgetExhausted).is_empty()
+    );
+}
+
+/// B9 (b): a feasible scope given one iteration exhausts its budget — and the same
+/// scope under the default budget solves, so the budget, not the geometry, failed.
+#[test]
+fn a_feasible_scope_out_of_budget_is_solver_budget_exhausted() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping a_feasible_scope_out_of_budget_is_solver_budget_exhausted: OCCT not available"
+        );
+        return;
+    }
+    let (scope, realized) = realize_bolt_plate(&tilted_hole_source());
+
+    let starved = solve_relate_scope_within(&scope, &realized, SolveBudget { max_iterations: 1 });
+    let starved_errors = errors(&starved);
+    assert_eq!(starved_errors.len(), 1, "{:?}", starved.diagnostics);
+    let error = starved_errors[0];
+    assert_eq!(
+        error.code,
+        Some(DiagnosticCode::SolverBudgetExhausted),
+        "{error:?}"
+    );
+    assert!(error.message.contains("bolt"), "{error:?}");
+    assert!(
+        error.message.contains("1 of 1"),
+        "the counts are stated: {error:?}"
+    );
+    assert!(
+        error.message.contains("step norm"),
+        "the step-norm trend is stated: {error:?}"
+    );
+    assert!(
+        matches!(starved.failure, Some(SolveFailureCause::BudgetExhausted(_))),
+        "{:?}",
+        starved.failure
+    );
+    assert!(starved.poses.is_empty());
+    assert!(diags_with_code(&starved.diagnostics, DiagnosticCode::SolverInfeasible).is_empty());
+    assert!(!error.message.contains("conflicting"), "{error:?}");
+
+    let control = solve_relate_scope(&scope, &realized);
+    assert!(errors(&control).is_empty(), "{:?}", control.diagnostics);
+    assert!(control.poses.contains_key("bolt"), "{control:?}");
+    assert!(control.failure.is_none());
+}
+
+/// B9 (c): the two failures carry different codes.
+#[test]
+fn infeasible_and_out_of_budget_carry_different_codes() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping infeasible_and_out_of_budget_carry_different_codes: OCCT not available"
+        );
+        return;
+    }
+    let infeasible = solve_bolt_plate(&perpendicular_walls_source());
+    let (scope, realized) = realize_bolt_plate(&tilted_hole_source());
+    let starved = solve_relate_scope_within(&scope, &realized, SolveBudget { max_iterations: 1 });
+    let code = |s: &RelateSolution| errors(s).first().and_then(|d| d.code);
+    assert!(code(&infeasible).is_some() && code(&starved).is_some());
+    assert_ne!(code(&infeasible), code(&starved));
+}
+
+/// The #4388 seam: the §1 bolt (concentric + flush) leaves one free DOF, published
+/// as one twist — a pure rotation about the shank axis, which passes through the
+/// bolt frame's origin.
+#[test]
+fn bolt_plate_publishes_the_spin_about_the_shank_as_its_free_twist() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping bolt_plate_publishes_the_spin_about_the_shank_as_its_free_twist: OCCT not available"
+        );
+        return;
+    }
+    let solution = solve_bolt_plate(&bolt_plate_scope_source(
+        None,
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+        ],
+    ));
+    assert_eq!(solution.free, 1);
+    assert_eq!(
+        solution.free_twists.len(),
+        solution.free as usize,
+        "{solution:?}"
+    );
+    let twist = solution.free_twists[0];
+    let [rx, ry, rz] = twist.rotation;
+    assert!(
+        rz.abs() > 0.5,
+        "the twist rotates about the shank (z): {twist:?}"
+    );
+    assert!(rx.hypot(ry) <= 1e-9, "{twist:?}");
+    let translation = twist.translation.iter().map(|t| t * t).sum::<f64>().sqrt();
+    assert!(translation <= 1e-9, "a pure rotation: {twist:?}");
 }
