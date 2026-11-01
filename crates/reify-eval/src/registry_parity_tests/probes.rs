@@ -43,7 +43,8 @@ const YIELD_PA: f64 = 250e6;
 /// dev-dependency of BOTH reify-eval and reify-stdlib — so sharing it would
 /// cost no production dependency edge. That crate is outside this task's lock
 /// set; filed as follow-up work together with the harness's row filter
-/// (`eval_builtin_rows`).
+/// (`eval_builtin_rows`) and this module's two stress-field fixtures
+/// ([`callable_stress_field`], [`grid_stress_field`]).
 fn dimensioned_matrix_3x3(rows_f64: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
     Value::Tensor(
         rows_f64
@@ -178,7 +179,10 @@ fn field_sample_point() -> Value {
 ///
 /// Shape mirrors `make_constant_stress_field` in
 /// `crates/reify-expr/tests/field_analysis_tests.rs`, a separate integration
-/// test target that cannot be imported from here.
+/// test target that cannot be imported from here. **A copy, deferred like
+/// [`dimensioned_matrix_3x3`]**: the shared home is `reify_test_support`,
+/// already a dev-dependency of both reify-eval and reify-expr, and outside this
+/// task's lock set.
 fn callable_stress_field() -> (Value, Type) {
     let params = ["x", "y", "z"]
         .into_iter()
@@ -214,7 +218,8 @@ fn callable_stress_field() -> (Value, Type) {
 ///
 /// Shape mirrors
 /// `sampled_backed_von_mises_wrapper_samples_a_regular3d_grid_at_point3_length_coordinates`
-/// in `crates/reify-expr/tests/field_analysis_tests.rs`.
+/// in `crates/reify-expr/tests/field_analysis_tests.rs` — a copy, deferred to
+/// `reify_test_support` with [`callable_stress_field`].
 fn grid_stress_field() -> (Value, Type) {
     const NODES: usize = 8;
     let unit_axis = vec![0.0, 1.0];

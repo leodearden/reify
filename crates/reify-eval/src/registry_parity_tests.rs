@@ -134,6 +134,17 @@
 //!   label reify-expr writes on the wrapper, while the Grid backing wraps its
 //!   interpolated values per that label — so only the Grid probe joins the
 //!   label against the registry (mutation Leg 5 below).
+//! - **The call is stamped with the type it is judged against.**
+//!   [`evaluate_call`] gives the call the row's DECLARED type as its
+//!   `result_type` (and the Sample call the declared codomain), as the compiler
+//!   stamps the resolver's answer in production. No reify-expr arm today's rows
+//!   reach reads it — the analysis intercepts and `sample` ignore it — but the
+//!   `fn_field`, `from_samples` and `restrict` intercepts take their domain and
+//!   codomain from it (`crates/reify-expr/src/lib.rs`). A row registered for
+//!   such an arm gets its static claim echoed into its runtime value, so its
+//!   Field codomain claim matches here by construction — the Grid backing
+//!   wraps its samples per that echoed label. Compare such a row against an
+//!   independently stamped type, or ledger it.
 //! - **The residue is closed only for rows whose probes exist.** PRD §3
 //!   decision 12's residue is closed for the `Type::Field` branch of
 //!   `reduce_tensor_arg` (`von_mises`, `max_shear`, `principal_stresses`,
@@ -193,9 +204,10 @@
 //! **Leg 3 — the vacuity arm is live, and the probe guard is its second
 //! signal.** In the child module `registry_parity_tests/probes.rs`, split
 //! [`representative_probes`]' shared `ParseLength | ParseLengthR` arm and give
-//! `ParseLength` an argument-less probe (`vec![vec![]]`). The kernel's arity
-//! guard yields `Value::Undef` and TWO tests go RED: the sweep reports
-//! `ParseLength` UNLEDGERED at verdict `Vacuous`, and
+//! `ParseLength` an argument-less probe (`vec![Probe::concrete(vec![])]`;
+//! `Probe::concrete` is private to that module, where the edit is made). The
+//! kernel's arity guard yields `Value::Undef` and TWO tests go RED: the sweep
+//! reports `ParseLength` UNLEDGERED at verdict `Vacuous`, and
 //! `representative_probes_are_well_formed_for_every_row` fails its check (a).
 //! That pair is the intended double signal — the second says the fault is in
 //! the harness's probe data rather than in the row, which is exactly the
@@ -266,9 +278,9 @@ impl ParityVerdict {
     ///
     /// A row swept at several probes is only as certified as its WEAKEST probe
     /// — one shape that matches says nothing about a shape that was never
-    /// really compared — so [`worst_probe`] reports a row's most severe probe,
-    /// and a row with one `Vacuous` shape needs a ledger entry even when its
-    /// other shapes match.
+    /// really compared — so [`worst_outcome`] reports a row's most severe
+    /// probe leg, and a row with one `Vacuous` shape needs a ledger entry even
+    /// when its other shapes match.
     ///
     /// Spelled as an explicit rank rather than a derived `Ord`, which would
     /// silently rebind this ordering to the variants' declaration order.
@@ -636,62 +648,77 @@ fn representative_probes_are_well_formed_for_every_row() {
     }
 }
 
-/// A row's reported probe is its MOST SEVERE one, ties broken to the first.
+/// A row is reported at the MOST SEVERE leg of any of its probes, located at
+/// that probe, ties broken to the first.
 ///
-/// Driven over synthetic [`ProbeOutcome`]s rather than real rows, in the same
+/// Driven over synthetic [`LegOutcome`]s rather than real rows, in the same
 /// dialect as the synthetic-table adjudication tests below and for the same
 /// reason: every real row matches on every probe and leg, so the aggregation
 /// rule would otherwise be unobservable — a rule that silently reported the
-/// row's BEST outcome would pass the whole suite today and hollow the harness
-/// out the moment one shape of a multi-probe row stopped matching.
+/// row's BEST outcome, or kept only each probe's Call leg, would pass the whole
+/// suite today and hollow the harness out the moment one shape, or one
+/// codomain, stopped matching.
 #[test]
-fn worst_probe_reports_the_most_severe_and_breaks_ties_to_the_first() {
-    let outcome = |index, verdict| ProbeOutcome {
-        index,
-        leg: Leg::Call,
+fn worst_outcome_reports_the_most_severe_leg_of_any_probe_and_breaks_ties_to_the_first() {
+    let leg = |leg: Leg, verdict: ParityVerdict| LegOutcome {
+        leg,
         observed: Value::Undef,
         declared: Type::String,
         verdict,
     };
+    let call = |verdict| leg(Leg::Call, verdict);
+    let sample = |verdict| leg(Leg::Sample, verdict);
+    let reported = |legs_per_probe| {
+        let ProbeOutcome { index, outcome } = worst_outcome(legs_per_probe).expect("non-empty");
+        (index, outcome.leg, outcome.verdict)
+    };
 
     // A shape that matches does NOT cover a shape that was never really
-    // compared — this is the whole reason the rule is "worst", not "any".
-    let worst = worst_probe(vec![
-        outcome(1, ParityVerdict::Matches),
-        outcome(2, ParityVerdict::Vacuous),
-    ])
-    .expect("non-empty");
-    assert_eq!(worst.verdict, ParityVerdict::Vacuous);
+    // compared — this is the whole reason the rule is "worst", not "any". The
+    // index lets the failure line point at the probe that actually failed.
     assert_eq!(
-        worst.index, 2,
-        "the failure line must point at the probe that actually failed"
+        reported(vec![
+            vec![call(ParityVerdict::Matches)],
+            vec![call(ParityVerdict::Vacuous)],
+        ]),
+        (2, Leg::Call, ParityVerdict::Vacuous)
+    );
+
+    // A Field probe whose Call leg matches is still reported at a Sample leg
+    // that diverges: the matching Call leg is Field-vs-Field and says nothing
+    // about the codomain, which only the Sample leg executes.
+    assert_eq!(
+        reported(vec![
+            vec![call(ParityVerdict::Matches)],
+            vec![
+                call(ParityVerdict::Matches),
+                sample(ParityVerdict::Diverges)
+            ],
+        ]),
+        (2, Leg::Sample, ParityVerdict::Diverges)
     );
 
     // Diverges outranks Vacuous.
     assert_eq!(
-        worst_probe(vec![
-            outcome(1, ParityVerdict::Vacuous),
-            outcome(2, ParityVerdict::Diverges),
-        ])
-        .expect("non-empty")
-        .verdict,
-        ParityVerdict::Diverges
+        reported(vec![
+            vec![call(ParityVerdict::Vacuous)],
+            vec![call(ParityVerdict::Diverges)],
+        ]),
+        (2, Leg::Call, ParityVerdict::Diverges)
     );
 
     // Ties report the first, so the reported line is stable across runs.
     assert_eq!(
-        worst_probe(vec![
-            outcome(1, ParityVerdict::Diverges),
-            outcome(2, ParityVerdict::Diverges),
-        ])
-        .expect("non-empty")
-        .index,
-        1
+        reported(vec![
+            vec![call(ParityVerdict::Diverges)],
+            vec![call(ParityVerdict::Diverges)],
+        ]),
+        (1, Leg::Call, ParityVerdict::Diverges)
     );
 
     // No probe at all is not a pass. `observe_row` panics on this rather than
     // manufacturing a verdict for a row it never executed.
-    assert!(worst_probe(vec![]).is_none());
+    assert!(worst_outcome(vec![]).is_none());
 }
 
 // ── a Field probe is compared twice: at its call and at a sample ───────────
@@ -942,8 +969,10 @@ fn adjudicate(
 ///
 /// `name` is always a VARIABLE taken from the row table, never a literal (see
 /// the sweep's "I-REG-1 is satisfied twice over"). `result_type` is the type
-/// the call is compiled at; only the few reify-expr arms that read the call's
-/// own type consult it. No value cells are bound: every argument is a literal.
+/// the call is compiled at — the declared type, as the compiler would stamp it.
+/// Only a few reify-expr arms read it, and for a row reaching one of them the
+/// comparison is tautological (see the module header's "What this harness
+/// cannot see"). No value cells are bound: every argument is a literal.
 fn evaluate_call(name: &str, args: Vec<(Value, Type)>, result_type: Type) -> Value {
     let call = CompiledExpr {
         kind: CompiledExprKind::FunctionCall {
@@ -1033,52 +1062,60 @@ fn probe_legs(name: &str, probe: Probe, declared: Type) -> Vec<LegOutcome> {
     std::iter::once(call).chain(sample).collect()
 }
 
-/// What the sweep observed at ONE leg of one probe of one row.
+/// A [`LegOutcome`], located at the probe it came from.
 struct ProbeOutcome {
     /// 1-based position in the row's probe list, so a failure line points at
     /// the shape that actually failed.
     index: usize,
-    /// Which comparison of that probe this is.
-    leg: Leg,
-    observed: Value,
-    declared: Type,
-    verdict: ParityVerdict,
+    outcome: LegOutcome,
 }
 
-/// The probe a row is reported at: its most severe, ties broken to the first.
+/// The outcome a row is reported at: the most severe leg of any of its probes,
+/// ties broken to the first. `legs_per_probe` holds one list per probe, in
+/// probe order, each that probe's legs in leg order.
 ///
 /// A row is only as certified as its WEAKEST probe (see
-/// [`ParityVerdict::severity`]), so a row with one `Vacuous` shape is reported
-/// `Vacuous` and needs a ledger entry even when its other shapes match. The
-/// outcomes are every LEG of every probe, so a Field probe is likewise only as
-/// certified as its weaker leg. Ties resolve to the first so the reported line
-/// is stable across runs.
+/// [`ParityVerdict::severity`]), and a probe only as certified as its weaker
+/// leg — so a row with one `Vacuous` shape, or one Field probe whose Sample leg
+/// diverges, is reported at that outcome even when everything else matches.
+/// Ties resolve to the first so the reported line is stable across runs.
 ///
-/// `None` only for an empty probe list, which [`observe_row`] rejects outright:
-/// a row swept at no shape has not been checked, and must not read as a pass.
-fn worst_probe(outcomes: Vec<ProbeOutcome>) -> Option<ProbeOutcome> {
-    outcomes.into_iter().reduce(|worst, next| {
-        if next.verdict.severity() > worst.verdict.severity() {
-            next
-        } else {
-            worst
-        }
-    })
+/// The legs arrive grouped per probe rather than pre-flattened so that the fold
+/// locating each leg at its probe belongs to this one pure, unit-tested rule,
+/// not to [`observe_row`]'s execution code, where dropping a leg would go
+/// unseen by every test while the real sweep is all-`Matches`.
+///
+/// `None` only when no probe produced a leg, which [`observe_row`] rejects
+/// outright: a row swept at no shape has not been checked, and must not read as
+/// a pass.
+fn worst_outcome(legs_per_probe: Vec<Vec<LegOutcome>>) -> Option<ProbeOutcome> {
+    legs_per_probe
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, legs)| {
+            legs.into_iter().map(move |outcome| ProbeOutcome {
+                index: i + 1,
+                outcome,
+            })
+        })
+        .reduce(|worst, next| {
+            if next.outcome.verdict.severity() > worst.outcome.verdict.severity() {
+                next
+            } else {
+                worst
+            }
+        })
 }
 
 /// What the sweep observed for one row — the evidence a [`Failure`] is rendered
-/// against, taken from the row's [`worst_probe`].
+/// against.
 struct RowObservation {
     id: EvalBuiltinId,
     name: &'static str,
-    /// 1-based index of the reported probe, and how many the row was swept at.
-    probe_index: usize,
+    /// How many probes the row was swept at.
     probe_count: usize,
-    /// The reported probe's leg.
-    leg: Leg,
-    observed: Value,
-    declared: Type,
-    verdict: ParityVerdict,
+    /// The outcome the row is reported at: its [`worst_outcome`].
+    reported: ProbeOutcome,
 }
 
 /// Sweep one row at every leg of every probe it registers, and report its most
@@ -1087,10 +1124,9 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
     let probes = representative_probes(id);
     let probe_count = probes.len();
 
-    let outcomes: Vec<ProbeOutcome> = probes
+    let legs_per_probe: Vec<Vec<LegOutcome>> = probes
         .into_iter()
-        .enumerate()
-        .flat_map(|(i, probe)| {
+        .map(|probe| {
             let declared = row
                 .result
                 .resolve(&probe.arg_types())
@@ -1098,18 +1134,10 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
 
             // `row.name` is a VARIABLE — see the sweep's doc.
             probe_legs(row.name, probe, declared)
-                .into_iter()
-                .map(move |outcome| ProbeOutcome {
-                    index: i + 1,
-                    leg: outcome.leg,
-                    observed: outcome.observed,
-                    declared: outcome.declared,
-                    verdict: outcome.verdict,
-                })
         })
         .collect();
 
-    let worst = worst_probe(outcomes).unwrap_or_else(|| {
+    let reported = worst_outcome(legs_per_probe).unwrap_or_else(|| {
         panic!(
             "{id:?}: no representative probe, so this row would be swept at no \
              argument shape at all — see \
@@ -1121,12 +1149,8 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
     RowObservation {
         id,
         name: row.name,
-        probe_index: worst.index,
         probe_count,
-        leg: worst.leg,
-        observed: worst.observed,
-        declared: worst.declared,
-        verdict: worst.verdict,
+        reported,
     }
 }
 
@@ -1166,16 +1190,13 @@ fn describe_failure(
 ) -> String {
     let id = failure.id();
     let name = observation.name;
+    let ProbeOutcome { index, outcome } = &observation.reported;
 
     match failure {
         Failure::Unledgered { observed, .. } => format!(
             "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?} at probe \
-             {} of {}, {:?} leg; observed {:?}, declared {:?}",
-            observation.probe_index,
-            observation.probe_count,
-            observation.leg,
-            observation.observed,
-            observation.declared
+             {index} of {}, {:?} leg; observed {:?}, declared {:?}",
+            observation.probe_count, outcome.leg, outcome.observed, outcome.declared
         ),
         Failure::Stale { ledgered, .. } => format!(
             "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now \
@@ -1254,7 +1275,7 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
     // ONE adjudication rule, shared with the synthetic-table tests below.
     let verdicts: Vec<(EvalBuiltinId, ParityVerdict)> = observations
         .iter()
-        .map(|obs| (obs.id, obs.verdict))
+        .map(|obs| (obs.id, obs.reported.outcome.verdict))
         .collect();
     let failures = adjudicate(&verdicts, PARITY_EXEMPTION_LEDGER);
 
