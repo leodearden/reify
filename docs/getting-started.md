@@ -82,9 +82,11 @@ Write `param radius : Length = auto` to let the solver pick `radius` from the co
 error: strict auto parameter resolution is not uniquely determined: no constraint bounds `Flange.radius` above. Only the constraints declared in `Flange` take part in its solve, and they bound it only below, so a solve could only return the edge of the solver's internal default domain — add the missing bound in `Flange`, give `Flange` an objective, or declare it `auto(free)`
 ```
 
-Add an upper bound, `constraint radius < 80mm`, and it resolves. `reify check` prints three `OK` lines and `All constraints satisfied.`, and `reify eval` prints `Flange.radius = 0.0575 m`. With no objective, the solver picks the centre of the (35mm, 80mm) bracket; a `minimize` or `maximize` objective picks a different point.
+Of its remedies, add the missing bound: an objective does not stand in for it today (`minimize radius` still fails, and `maximize radius` returns `Flange.radius = 10 m`, the edge of that default domain).
 
-`check` (including `--strict`), `test`, `build`, `eval` / `run`, `report`, `explain` and the GUI viewport all resolve `auto`. The editor (language-server diagnostics and hover) and the GUI's definition-preview pane do not yet. Every place `auto` may appear, and what to do when it does not resolve: the `solving` chunk of the language reference ([`crates/reify-mcp/src/tools/chunks/solving.md`](../crates/reify-mcp/src/tools/chunks/solving.md)) and [spec §9.3](reify-language-spec.md#93-auto-resolution).
+Add an upper bound, `constraint radius < 80mm`, and it resolves. `reify check` prints three `OK` lines and `All constraints satisfied.`, and `reify eval` prints `Flange.radius = 0.0575 m`. With no objective, the solver picks the centre of the (35mm, 80mm) bracket. An objective whose optimum lies inside the bracket picks that optimum: add `minimize (radius - 40mm) * (radius - 40mm)` and `reify eval` prints `Flange.radius = 0.04000000000000084 m`. A plain `minimize radius` or `maximize radius` does not move the value to a bound today: `minimize radius` still gives the centre, and `maximize radius` makes `reify check` exit 1 with `error: strict auto parameter resolution is not uniquely determined`.
+
+`check` (including `--strict`), `test`, `build`, `eval` / `run`, `report`, `explain` and the GUI viewport all resolve `auto`. The editor (language-server diagnostics and hover) and the GUI's definition-preview pane do not yet. Every place `auto` may appear, what objectives do today, and what to do when it does not resolve: the `solving` chunk of the language reference ([`crates/reify-mcp/src/tools/chunks/solving.md`](../crates/reify-mcp/src/tools/chunks/solving.md)) and [spec §9.3](reify-language-spec.md#93-auto-resolution).
 
 ## 4. Open the GUI
 
