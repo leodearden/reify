@@ -431,14 +431,14 @@ fi
 # ── helper: name matches a glob pattern ───────────────────────────────────────
 # _matches_glob <name> <comma-separated-globs>
 _matches_glob() {
-    local name="$1"
-    local globs="$2"
-    local g
-    # Split comma-separated globs
-    local IFS=","
-    for g in $globs; do
+    local value="$1" g
+    local -a globs=()
+    # Split with read: an unquoted $globs would also pathname-expand each glob
+    # against the caller's CWD (tests/infra/test_warm_lane_gc.sh Block U).
+    IFS=, read -r -a globs <<< "$2"
+    for g in "${globs[@]+"${globs[@]}"}"; do
         # shellcheck disable=SC2254
-        case "$name" in
+        case "$value" in
             $g) return 0 ;;
         esac
     done
