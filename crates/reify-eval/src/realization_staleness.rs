@@ -296,7 +296,7 @@ mod tests {
     };
     use reify_ir::{CompiledExpr, PersistentMap, Value, ValueMap};
 
-    use super::{realization_cone_seeds, stale_realization_entities};
+    use super::{realization_cone_seeds, stale_realization_entities, stale_realizations};
     use crate::cache::NodeId;
     use crate::graph::EvaluationGraph;
 
@@ -687,6 +687,25 @@ mod tests {
         let stale = stale_realization_entities(&seeds, [], &cone);
 
         assert_eq!(stale, entities(&["PartA", "Asm"]));
+    }
+
+    /// The realization projection store is keyed per `RealizationNodeId`, so
+    /// the stale set must keep two realizations of ONE entity apart, which no
+    /// entity-name assertion can see.
+    #[test]
+    fn stale_realizations_are_the_seeds_and_the_cones_realization_members_by_id() {
+        let seeds = HashSet::from([RealizationNodeId::new("E", 0)]);
+        let cone = HashSet::from([
+            NodeId::Realization(RealizationNodeId::new("E", 1)),
+            NodeId::Value(ValueCellId::new("E", "w")),
+            NodeId::Compute(ComputeNodeId::new("Fea", 0)),
+            NodeId::Constraint(ConstraintNodeId::new("E", 0)),
+        ]);
+
+        let stale: HashSet<RealizationNodeId> =
+            stale_realizations(&seeds, &cone).cloned().collect();
+
+        assert_eq!(stale, rids(&[("E", 0), ("E", 1)]));
     }
 
     /// A removed realization (collection shrink, recompile removal) leaves
