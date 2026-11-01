@@ -185,9 +185,10 @@ pub enum StringPart {
 /// Produced by `lower_unit_expr` in `reify-syntax` from the `unit_expr` CST
 /// (grammar task α; PRD `docs/prds/unit-expressions.md` §4.1). Parens carry no
 /// semantic content — they only steer parse precedence — so they are unwrapped
-/// during lowering and there is no `Paren` variant. The signed exponent is an
-/// `i32` (PRD §11.3): no realistic SI/derived unit needs a magnitude beyond
-/// ~±10, and it matches `f64::powi` natively for the resolver.
+/// during lowering and there is no `Paren` variant. The exponent is a
+/// [`reify_core::Rational`] (task #9236), so FractureToughness's `m^-1/2` is
+/// writable; the range a unit expression may carry is
+/// `reify_core::unit_exponent_in_range`, enforced at resolve.
 ///
 /// Registry-fold semantics (resolving a `UnitExpr` to an SI factor + dimension
 /// vector) are owned by task γ (3803); at this parsed-AST layer the type is
@@ -200,8 +201,10 @@ pub enum UnitExpr {
     Mul(Box<UnitExpr>, Box<UnitExpr>),
     /// Division: `kg/m` (left-associative).
     Div(Box<UnitExpr>, Box<UnitExpr>),
-    /// Exponentiation by a signed integer: `m^3`, `s^-2`.
-    Pow(Box<UnitExpr>, i32),
+    /// Exponentiation by a rational exponent: `m^3`, `s^-2`, `m^1/2`; a
+    /// non-integer exponent is always in lowest terms with denominator ≥ 2
+    /// (enforced at lowering).
+    Pow(Box<UnitExpr>, reify_core::Rational),
 }
 
 /// A single alternative in a match pattern.

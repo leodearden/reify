@@ -4356,6 +4356,9 @@ impl<'a> Lowering<'a> {
         let left = self.lower_expr(left_node)?;
         let right = self.lower_expr(right_node)?;
         let op = self.node_text(op_node).to_string();
+        if op == "/" {
+            self.refuse_slash_touching_unit_exponent(left_node, op_node);
+        }
 
         Some(Expr {
             kind: ExprKind::BinOp {
@@ -4365,6 +4368,36 @@ impl<'a> Lowering<'a> {
             },
             span: self.span(node),
         })
+    }
+
+    /// A value-level `/` whose operator byte touches the end of a unit exponent
+    /// (`1m^1/ 2`, `1m^1/-2`, `1m^1/2/3`) is a located error at the `/` (task
+    /// #9236). The `unit_exponent` token absorbs a contiguous `^p/q`, so these
+    /// are the spellings it cannot absorb; read as a division they would be a
+    /// silent wrong value. The BinOp is still lowered so the member survives.
+    fn refuse_slash_touching_unit_exponent(
+        &self,
+        left_node: tree_sitter::Node,
+        op_node: tree_sitter::Node,
+    ) {
+        let at = op_node.start_byte();
+        if at == 0 || left_node.end_byte() != at {
+            return;
+        }
+        let Some(last) = left_node.descendant_for_byte_range(at - 1, at) else {
+            return;
+        };
+        if last.kind() == "unit_exponent" && last.end_byte() == at {
+            self.push_error(
+                format!(
+                    "`/` directly after the unit exponent `^{}` is ambiguous: put a space \
+                     before `/` to divide (`1m^2 / 2`), or write a rational exponent with \
+                     no spaces (`^1/2`)",
+                    self.node_text(last)
+                ),
+                self.span(op_node),
+            );
+        }
     }
 
     fn lower_unary_expr(&self, node: tree_sitter::Node) -> Option<Expr> {
@@ -4960,6 +4993,47 @@ impl<'a> Lowering<'a> {
         })
     }
 
+    /// Lower a `unit_exponent` token (`2`, `-1`, `1/2`, `-1/2`) to a
+    /// [`reify_core::Rational`] (task #9236).
+    ///
+    /// A rational exponent must be canonical: lowest terms, denominator ≥ 2.
+    /// The legacy reading of `1m^2/2` was 0.5 m², so silently rereading it as
+    /// `m^1` would be a wrong value. Any refusal pushes ONE located error on the
+    /// token and returns `None`. Only what `Rational`'s i16 cannot hold is
+    /// refused for range here; the unit-exponent range policy is
+    /// `reify_core::unit_exponent_in_range`, enforced at resolve.
+    fn lower_unit_exponent(&self, node: tree_sitter::Node) -> Option<reify_core::Rational> {
+        let text = self.node_text(node);
+        let refuse = |why: String| {
+            self.push_error(format!("unit exponent `{text}` {why}"), self.span(node));
+            None
+        };
+        let (num_text, den_text) = match text.split_once('/') {
+            Some((num, den)) => (num, Some(den)),
+            None => (text, None),
+        };
+        let (Ok(num), Ok(den)) = (
+            num_text.parse::<i16>(),
+            den_text.map_or(Ok(1), str::parse::<i16>),
+        ) else {
+            return refuse("is out of range".to_string());
+        };
+        if den_text.is_none() {
+            return Some(reify_core::Rational::new(num, 1));
+        }
+        if den == 0 {
+            return refuse("has a zero denominator".to_string());
+        }
+        let exponent = reify_core::Rational::new(num, den);
+        if den == 1 || (exponent.num(), exponent.den()) != (num, den) {
+            return refuse(format!(
+                "is not written canonically: write `^{exponent}`, or put a space before \
+                 `/` to divide"
+            ));
+        }
+        Some(exponent)
+    }
+
     /// Lower a `unit_expr` CST node into a structured [`UnitExpr`] tree.
     ///
     /// Probe order mirrors the grammar's precedence (PRD
@@ -4987,9 +5061,13 @@ impl<'a> Lowering<'a> {
             node.child_by_field_name("exponent"),
         ) {
             let base = self.lower_unit_expr(base_node)?;
-            // grammar's `signed_integer` is `-?\d+`, so this parse is total in practice.
-            let exponent: i32 = self.node_text(exp_node).parse().ok()?;
-            return Some(UnitExpr::Pow(Box::new(base), exponent));
+            // A refused exponent is already a located error. Recover the binding
+            // on its base unit so the member survives carrying that error: a
+            // dropped member is the INV-SF-7 silent-drop shape.
+            return Some(match self.lower_unit_exponent(exp_node) {
+                Some(exponent) => UnitExpr::Pow(Box::new(base), exponent),
+                None => base,
+            });
         }
 
         // 2. Mul/Div: `left op right`; the operator is the `op` node's kind.

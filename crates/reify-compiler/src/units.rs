@@ -1814,11 +1814,13 @@ pub enum UnitResolveError {
     /// affine literals (e.g. `20degC`) through the existing
     /// `lookup_unit_in_registry` / `unit_to_scalar` standalone path.
     AffineUnitInCompound { name: String, span: SourceSpan },
-    /// The exponent in a `Pow` node is outside the `i8` range accepted by
-    /// [`DimensionVector::pow`].  Realistic unit exponents are ≤ ±10; values
-    /// beyond `i8::MIN..=i8::MAX` (±127) are rejected rather than silently
-    /// wrapping or panicking.
-    ExponentOutOfRange { exponent: i32, span: SourceSpan },
+    /// The exponent in a `Pow` node fails [`reify_core::unit_exponent_in_range`]
+    /// (numerator and denominator each within `i8`), the one bound a unit
+    /// expression's exponent may carry, shared with the `.ri` emitter.
+    ExponentOutOfRange {
+        exponent: reify_core::Rational,
+        span: SourceSpan,
+    },
 }
 
 /// Convert a [`UnitResolveError`] into a user-facing [`Diagnostic`].
@@ -1865,7 +1867,8 @@ pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagno
 /// # Errors
 /// - [`UnitResolveError::UnknownUnit`]          — atom name not in registry
 /// - [`UnitResolveError::AffineUnitInCompound`] — affine unit in compound context
-/// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside `i8` range
+/// - [`UnitResolveError::ExponentOutOfRange`]   — `Pow` exponent outside
+///   [`reify_core::unit_exponent_in_range`]
 ///
 /// # Standalone affine path
 /// Bare affine literals like `20degC` must be routed through
@@ -1902,16 +1905,22 @@ pub fn resolve_unit_expr(
             let (fb, db) = resolve_unit_expr(b, registry, span)?;
             Ok((fa / fb, da.div(&db)))
         }
-        reify_ast::UnitExpr::Pow(a, n) => {
+        reify_ast::UnitExpr::Pow(a, exponent) => {
             let (fa, da) = resolve_unit_expr(a, registry, span)?;
-            // `f64::powi` takes i32 natively — no narrowing needed for the factor.
-            // `DimensionVector::pow` takes i8, so the exponent must be narrowed.
-            // Guard the conversion so an out-of-range exponent surfaces as a
-            // resolve error rather than a panic or silent wrap.  Realistic unit
-            // exponents are ≤ ±10 (per the UnitExpr::Pow doc-comment).
-            let n_i8 = i8::try_from(*n)
-                .map_err(|_| UnitResolveError::ExponentOutOfRange { exponent: *n, span })?;
-            Ok((fa.powi(*n), da.pow(n_i8)))
+            if !reify_core::unit_exponent_in_range(*exponent) {
+                return Err(UnitResolveError::ExponentOutOfRange {
+                    exponent: *exponent,
+                    span,
+                });
+            }
+            // `powi` keeps the integer path bit-identical to before #9236; a
+            // factor-1.0 atom folds to exactly 1.0 either way (`1.0.powf(y)`).
+            let factor = if exponent.den() == 1 {
+                fa.powi(i32::from(exponent.num()))
+            } else {
+                fa.powf(f64::from(exponent.num()) / f64::from(exponent.den()))
+            };
+            Ok((factor, da.pow_rational(*exponent)))
         }
     }
 }
