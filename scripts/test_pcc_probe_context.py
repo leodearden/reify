@@ -13,6 +13,7 @@ tests/infra/test_prd_capability_check.sh.
 
 import dataclasses
 import os
+import subprocess
 import tempfile
 import unittest
 
@@ -119,6 +120,140 @@ class TestProbeContextInvariants(unittest.TestCase):
         ctx = probe_context()
         with self.assertRaises(dataclasses.FrozenInstanceError):
             ctx.reify_bin = "/elsewhere/reify"
+
+
+
+def _without_git_vars(environ):
+    """`environ` minus every GIT_* key.
+
+    Under a hook (pre-commit / pre-merge-commit) GIT_DIR is exported and would
+    aim a test's `git init` / `git commit` at the real repository.
+    """
+    return {k: v for k, v in environ.items() if not k.startswith("GIT_")}
+
+
+def _git(root, *args):
+    """Run git in `root` with no GIT_* variable and no config write; return stdout."""
+    return subprocess.run(
+        ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
+         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
+        env=_without_git_vars(os.environ), capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+
+class TestReifyBinaryTrust(unittest.TestCase):
+    """R14 M6: with both profiles built, only a SHA identity picks one; mtime never does.
+
+    target/.reify-bin-sha is written after `cargo build --release -p reify-cli`,
+    so it vouches for target/release/reify alone, and only while it names HEAD.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_trust_")
+        self.root = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _environ(self, **extra):
+        environ = _without_git_vars(os.environ)
+        environ.pop("REIFY_BIN", None)
+        return dict(environ, **extra)
+
+    def _ctx(self, **extra):
+        return pcc.ProbeContext.from_environment(environ=self._environ(**extra),
+                                                 repo_root=self.root)
+
+    def _both_binaries(self, newer):
+        release = _write_binary(self.root, "target/release/reify")
+        debug = _write_binary(self.root, "target/debug/reify")
+        old, new = 1_600_000_000, 1_700_000_000
+        os.utime(release, (new, new) if newer == "release" else (old, old))
+        os.utime(debug, (new, new) if newer == "debug" else (old, old))
+        return release, debug
+
+    def _sidecar(self, text):
+        with open(os.path.join(self.root, "target", ".reify-bin-sha"), "w") as fh:
+            fh.write(text)
+
+    def _head(self):
+        _git(self.root, "init", "-q")
+        _git(self.root, "commit", "-q", "--allow-empty", "-m", "x")
+        return _git(self.root, "rev-parse", "HEAD")
+
+    def test_two_unvouched_binaries_are_refused_whichever_is_newer(self):
+        for newer in ("debug", "release"):
+            with self.subTest(newer=newer):
+                release, debug = self._both_binaries(newer)
+                ctx = self._ctx()
+                self.assertIsNone(ctx.reify_bin)
+                self.assertIn(release, ctx.reify_bin_refusal)
+                self.assertIn(debug, ctx.reify_bin_refusal)
+                self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_sidecar_naming_head_vouches_for_the_release_binary(self):
+        release, _ = self._both_binaries(newer="debug")
+        self._sidecar(self._head() + "\n")
+        ctx = self._ctx()
+        self.assertEqual(ctx.reify_bin, release)
+        self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_stale_sidecar_is_refused_naming_both_shas(self):
+        self._both_binaries(newer="release")
+        head = self._head()
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        ctx = self._ctx()
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(stale, ctx.reify_bin_refusal)
+        self.assertIn(head, ctx.reify_bin_refusal)
+
+    def test_a_sidecar_outside_a_git_repo_vouches_for_nothing(self):
+        self._both_binaries(newer="release")
+        self._sidecar("0" * 40 + "\n")
+        ctx = self._ctx()
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_reify_bin_wins_over_two_unvouched_binaries(self):
+        self._both_binaries(newer="debug")
+        ctx = self._ctx(REIFY_BIN="/x/reify")
+        self.assertEqual(ctx.reify_bin, "/x/reify")
+        self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_lone_binary_is_used_whatever_the_sidecar_says(self):
+        for relpath in ("target/release/reify", "target/debug/reify"):
+            for sidecar in (None, "0" * 40):
+                with self.subTest(binary=relpath, sidecar=sidecar), \
+                     tempfile.TemporaryDirectory() as root:
+                    path = _write_binary(root, relpath)
+                    if sidecar is not None:
+                        with open(os.path.join(root, "target", ".reify-bin-sha"), "w") as fh:
+                            fh.write(sidecar)
+                    ctx = pcc.ProbeContext.from_environment(environ=self._environ(),
+                                                            repo_root=root)
+                    self.assertEqual(ctx.reify_bin, path)
+                    self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_no_binary_falls_back_to_path(self):
+        self.assertEqual(self._ctx().reify_bin, "reify")
+
+    def test_require_reify_bin_returns_the_path_or_raises_the_refusal(self):
+        self.assertEqual(probe_context(reify_bin="/x/reify").require_reify_bin(), "/x/reify")
+        refusing = probe_context(reify_bin=None, reify_bin_refusal="two binaries, no REIFY_BIN")
+        self.assertTrue(issubclass(pcc.ReifyBinaryRefused, ValueError))
+        with self.assertRaises(pcc.ReifyBinaryRefused) as cm:
+            refusing.require_reify_bin()
+        self.assertIn("two binaries, no REIFY_BIN", str(cm.exception))
+
+    def test_exactly_one_of_binary_and_refusal_is_set(self):
+        for fields in ({"reify_bin": "/x/reify", "reify_bin_refusal": "no"},
+                       {"reify_bin": None, "reify_bin_refusal": None}):
+            with self.subTest(**fields):
+                with self.assertRaises(ValueError) as cm:
+                    probe_context(**fields)
+                self.assertIn("reify_bin", str(cm.exception))
+                self.assertIn("reify_bin_refusal", str(cm.exception))
 
 
 if __name__ == "__main__":

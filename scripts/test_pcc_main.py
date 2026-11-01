@@ -1450,5 +1450,65 @@ class TestSubstrateModeSeam(_MainHarness, unittest.TestCase):
         self.assertIn("0.4s", out, "the reason is the bound elapsing, not a missing grammar")
 
 
+class TestReifyBinaryRefusal(_MainHarness, unittest.TestCase):
+    """A ctx that refused to pick a reify binary stops only the probes that need one."""
+
+    _REFUSAL = "two reify binaries and no sidecar vouching for either; set REIFY_BIN"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_refusal_")
+        self.tmp = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _refusing_ctx(self, **fields):
+        return probe_context(reify_bin=None, reify_bin_refusal=self._REFUSAL, **fields)
+
+    @staticmethod
+    def _recording_runner():
+        calls = []
+
+        def runner(probe, ctx, timeout=None):
+            calls.append(probe)
+            return pcc.ProbeRun(0, "", "", command=("fake", probe.fixture))
+        return runner, calls
+
+    def test_a_probe_set_needing_reify_is_refused_before_any_probe_runs(self):
+        runner, calls = self._recording_runner()
+        rc, _, err = self._run_main_capturing(
+            [_EXAMPLE_PROBE_SET], runner=runner, ctx=self._refusing_ctx()
+        )
+        self.assertEqual(rc, 64)
+        self.assertIn(self._REFUSAL, err)
+        self.assertEqual(calls, [])
+
+    def test_a_grammar_only_probe_set_is_still_evaluated(self):
+        path = os.path.join(self.tmp, "grammar-only.json")
+        with open(path, "w") as fh:
+            json.dump({"probes": [{
+                "capability": "grammar only",
+                "probe_kind": "grammar",
+                "fixture": "tests/prd-gate/fixtures/arrow_type.ri",
+                "expected": {"observation": "present", "match": {}},
+            }]}, fh)
+        runner, calls = self._recording_runner()
+        rc, out, err = self._run_main_capturing([path], runner=runner, ctx=self._refusing_ctx())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(rc, 0, out + err)
+
+    def test_substrate_status_never_needs_reify(self):
+        ctx = self._refusing_ctx(
+            repo_root=make_fixture_repo(self.tmp, parser_c=True),
+            cache_home_override=os.path.join(self.tmp, "cache"),
+        )
+        runner, calls = self._recording_runner()
+        rc, out, err = self._run_main_capturing(
+            ["--grammar-substrate-status"], runner=runner, ctx=ctx
+        )
+        self.assertEqual(rc, 0, out + err)
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
