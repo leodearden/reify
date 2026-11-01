@@ -4,8 +4,9 @@
 //!
 //! Every ```` ```reify ```` example it serves must resolve: on an engine that solves the
 //! way `reify check` does, each fence compiles, every `auto` is touched by a constraint,
-//! and every constraint is Satisfied. The chunk's one documented "not yet" — the
-//! sub-instance caveat — is pinned so the chunk is corrected the day it stops holding.
+//! and every constraint is Satisfied. Each "not yet" the chunk documents — the
+//! sub-instance caveat and the bound-seeking-objective caveats — is pinned, so the chunk
+//! is corrected the day it stops holding.
 //!
 //! The chunk is read through `reify_mcp::tools::language_chunks::get_chunk`, the seam the
 //! `reify_language_reference` tool serves from, so an unregistered chunk fails here too.
@@ -131,5 +132,95 @@ fn the_sub_instance_caveat_the_solving_chunk_documents_still_holds() {
          caveat no longer holds. Delete the caveat paragraph from {} and this pin \
          (docs/prds/v0_6/solver-driver-parity.md §5 B2).",
         chunk_label(TOPIC)
+    );
+}
+
+/// What a solving engine does with a strict `auto` under a bound-seeking objective.
+#[derive(Debug, Clone, Copy)]
+enum ObjectiveOutcome {
+    Resolves { metres: f64 },
+    FailsNonUnique,
+}
+
+const OBJECTIVE_STRUCTURE: &str = "Shim";
+const TWO_SIDED_BOUNDS: &str = "thickness >= 2mm && thickness <= 6mm";
+const ONE_SIDED_BOUND: &str = "thickness >= 2mm";
+
+fn shim_source(bounds: &str, objective: &str) -> String {
+    format!(
+        "structure def {OBJECTIVE_STRUCTURE} {{\n    param thickness : Length = auto\n    \
+         constraint {bounds}\n    {objective}\n}}\n"
+    )
+}
+
+/// Why `source` does not show `expected` on a solving engine, or `None` if it does.
+fn objective_outcome_mismatch(source: &str, expected: ObjectiveOutcome) -> Option<String> {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let result = solving_engine().eval(&compiled);
+    let thickness = cell_value(&result, OBJECTIVE_STRUCTURE, "thickness");
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let holds = match expected {
+        ObjectiveOutcome::Resolves { metres } => {
+            errors.is_empty()
+                && thickness
+                    .as_f64()
+                    .is_some_and(|value| (value - metres).abs() < 1e-9)
+        }
+        ObjectiveOutcome::FailsNonUnique => {
+            thickness.is_undef()
+                && errors
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique))
+        }
+    };
+    (!holds).then(|| format!("thickness = {thickness:?}, error diagnostics = {errors:?}"))
+}
+
+/// Characterization pin for the chunk's objective caveats: a `minimize` or `maximize`
+/// that pushes a strict `auto` toward a bound neither reaches that bound nor stands in
+/// for a missing one. What happens splits on the direction of the push.
+#[test]
+fn the_objective_caveats_the_solving_chunk_documents_still_hold() {
+    let cases = [
+        (
+            "two-sided [2mm, 6mm], minimize thickness",
+            shim_source(TWO_SIDED_BOUNDS, "minimize thickness"),
+            ObjectiveOutcome::Resolves { metres: 0.004 },
+        ),
+        (
+            "two-sided [2mm, 6mm], maximize thickness",
+            shim_source(TWO_SIDED_BOUNDS, "maximize thickness"),
+            ObjectiveOutcome::FailsNonUnique,
+        ),
+        (
+            "one-sided >= 2mm, minimize thickness",
+            shim_source(ONE_SIDED_BOUND, "minimize thickness"),
+            ObjectiveOutcome::FailsNonUnique,
+        ),
+        (
+            "one-sided >= 2mm, maximize thickness",
+            shim_source(ONE_SIDED_BOUND, "maximize thickness"),
+            ObjectiveOutcome::Resolves { metres: 10.0 },
+        ),
+    ];
+    let failures: Vec<String> = cases
+        .iter()
+        .filter_map(|(label, source, expected)| {
+            objective_outcome_mismatch(source, *expected)
+                .map(|observed| format!("{label}: expected {expected:?}, observed {observed}"))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "the objective behaviour the `solving` chunk and docs/getting-started.md §3 \
+         ('Let the solver choose a value') describe has changed. Re-measure, update the \
+         bound-seeking-objective paragraph of {} and that getting-started sentence, then \
+         update this pin:\n{}",
+        chunk_label(TOPIC),
+        failures.join("\n")
     );
 }
