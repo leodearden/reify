@@ -524,7 +524,6 @@ mod tests {
         use crate::git_ops::MockGitOps;
         use crate::jcodemunch_ops::MockJCodemunchOps;
         use rusqlite::Connection;
-        use std::collections::HashMap;
 
         let root = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(root.path().join("crates/x/src")).expect("mkdir src");
@@ -534,17 +533,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         let git = MockGitOps::new();
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.path().to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.path().to_path_buf(), &conn, &git, &jc);
 
         assert_eq!(
             ctx.read_relative("crates/x/src/a.rs").as_deref(),
@@ -569,5 +558,72 @@ mod tests {
             None,
             "a non-UTF-8 file is skipped fail-safe, not a panic",
         );
+    }
+
+    fn epoch_seconds_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after the epoch")
+            .as_secs() as i64
+    }
+
+    #[test]
+    fn new_starts_with_no_tasks_no_target_and_the_construction_time_clock() {
+        use super::AuditContext;
+        use crate::git_ops::MockGitOps;
+        use crate::jcodemunch_ops::MockJCodemunchOps;
+        use rusqlite::Connection;
+        use std::path::Path;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+
+        let before = epoch_seconds_now();
+        let ctx = AuditContext::new("/tmp/fake-project", &conn, &git, &jc);
+        let after = epoch_seconds_now();
+
+        assert_eq!(ctx.project_root(), Path::new("/tmp/fake-project"));
+        assert!(ctx.task_metadata().is_empty(), "a new context holds no tasks");
+        assert_eq!(ctx.target_task_id(), None, "a new context targets no task");
+        assert!(
+            before <= ctx.now() && ctx.now() <= after,
+            "the clock is read at construction: {before} <= {} <= {after}",
+            ctx.now(),
+        );
+    }
+
+    #[test]
+    fn builders_set_the_corpus_the_target_and_the_clock() {
+        use super::{AuditContext, TaskMetadata};
+        use crate::git_ops::MockGitOps;
+        use crate::jcodemunch_ops::MockJCodemunchOps;
+        use rusqlite::Connection;
+        use std::collections::HashMap;
+
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        let git = MockGitOps::new();
+        let jc = MockJCodemunchOps::new();
+        let task = TaskMetadata {
+            task_id: "7".to_string(),
+            status: "done".to_string(),
+            files: vec![],
+            done_provenance: None,
+            title: "a task".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        };
+
+        let ctx = AuditContext::new("/tmp/fake-project", &conn, &git, &jc)
+            .with_tasks(HashMap::from([("7".to_string(), task)]))
+            .targeting("7")
+            .at_time(1_700_000_000);
+
+        let keys: Vec<&str> = ctx.task_metadata().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["7"], "with_tasks installs exactly the given corpus");
+        assert_eq!(ctx.target_task_id(), Some("7"));
+        assert_eq!(ctx.now(), 1_700_000_000);
     }
 }
