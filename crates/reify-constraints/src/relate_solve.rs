@@ -132,6 +132,23 @@ impl Pose {
         Self::default()
     }
 
+    /// The same placement with its rotation magnitude at most π: a rotation of
+    /// `θ` about `â` is the rotation of `θ − 2π·round(θ/2π)` about `â`. Keeps
+    /// the exponential map away from its singularity at `|θ| = 2π`, and makes
+    /// the Frame quaternion's `w = cos(θ/2) ≥ 0`.
+    pub fn with_wrapped_rotation(&self) -> Self {
+        let angle = norm3(self.rotation);
+        if angle <= std::f64::consts::PI {
+            return self.clone();
+        }
+        let turns = (angle / std::f64::consts::TAU).round();
+        let wrapped = angle - std::f64::consts::TAU * turns;
+        Self {
+            translation: self.translation,
+            rotation: scale3(self.rotation, wrapped / angle),
+        }
+    }
+
     /// A copy with the `dof`-th Frame DOF nudged by `h` (DOF 0..3 = translation
     /// x/y/z; 3..6 = rotation x/y/z).
     fn perturbed(&self, dof: usize, h: f64) -> Self {
@@ -1488,6 +1505,11 @@ impl LeastSquaresProblem for FrameProblem<'_> {
             .flat_map(|rel| scaled_residual_jacobian(rel, self.unknown, &pose, self.scaling).1)
             .map(|row| row.to_vec())
             .collect()
+    }
+
+    fn normalize(&self, x: &mut [f64]) {
+        let wrapped = self.pose(x).with_wrapped_rotation();
+        x[3..].copy_from_slice(&wrapped.rotation);
     }
 
     fn row_source(&self, row: usize) -> ResidualSource {
