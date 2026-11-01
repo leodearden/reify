@@ -660,19 +660,18 @@ impl FileOutcome {
     }
 }
 
-/// Both of [`FileOutcome::findings`]'s no-findings answers, so the distinction
-/// it draws cannot be softened back into a `_ => None`.
+/// An invariant missing from a [`FileOutcome`] panics when read, rather than
+/// reading as a clean, empty finding list.
 #[test]
 #[should_panic(expected = "was not evaluated for")]
-fn a_vanished_invariant_is_loud_rather_than_an_out_of_scope_skip() {
+fn a_vanished_invariant_is_loud() {
     let outcome = FileOutcome {
         rel: "crates/reify-eval/tests/fixtures/synthetic.ri".to_string(),
-        per_invariant: vec![(InvariantId::StaleUndef, InvariantOutcome::OutOfScope)],
+        per_invariant: vec![(InvariantId::StaleUndef, vec![])],
     };
-    assert_eq!(
-        outcome.findings(InvariantId::StaleUndef),
-        None,
-        "a file outside an invariant's scope is a quiet None — the benign case"
+    assert!(
+        outcome.findings(InvariantId::StaleUndef).is_empty(),
+        "a present invariant with no findings is a clean read"
     );
     outcome.findings(InvariantId::SnapshotCacheDivergence);
 }
@@ -983,12 +982,7 @@ fn one_corpus_evaluation_feeds_both_invariant_checkers() {
         .collect();
 
     let cells = |id: InvariantId| -> Vec<reify_core::ValueCellId> {
-        outcome
-            .findings(id)
-            .expect("both invariants present per (a)")
-            .iter()
-            .map(|f| f.cell.clone())
-            .collect()
+        outcome.findings(id).iter().map(|f| f.cell.clone()).collect()
     };
     assert_eq!(cells(InvariantId::StaleUndef), direct_stale);
     assert_eq!(cells(InvariantId::SnapshotCacheDivergence), direct_divergence);
@@ -1023,75 +1017,48 @@ fn one_corpus_evaluation_feeds_both_invariant_checkers() {
     );
 }
 
-/// What makes this restructuring ZERO-LOSS rather than a coverage change: the
-/// two old sweeps did NOT cover the same corpus, and unification must not
-/// quietly widen either one.
+/// Every invariant checks the whole corpus, so INV-EVAL-4 also checks the
+/// reify-eval fixtures, not just `examples/`.
 ///
-/// INV-EVAL-5 swept the 299-file UNION (reify-eval's `tests/fixtures/` +
-/// `examples/` + the prd-gate leaf). INV-EVAL-4 swept `examples/` ONLY. Sharing
-/// the evaluation is free; sharing the SCOPE would not be — widening INV-EVAL-4
-/// to the 34 fixture files is a coverage CHANGE that could surface fresh
-/// residuals, which is outside a zero-loss restructuring. It is deliberately NOT
-/// done here and is named as a follow-up instead, so a future reader cannot
-/// mistake the narrower scope for an oversight.
+/// Non-vacuous: `fea_body_cantilever.ri` really diverges, so INV-EVAL-4 must
+/// REPORT it here, and the same single evaluation is also checked, clean, for
+/// INV-EVAL-5.
 #[test]
-fn each_invariant_keeps_its_own_pre_unification_corpus_scope() {
-    let scope = |id: InvariantId| {
-        GATES
-            .iter()
-            .find(|g| g.id == id)
-            .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
-            .scope
-    };
-    let stale = scope(InvariantId::StaleUndef);
-    let divergence = scope(InvariantId::SnapshotCacheDivergence);
-
-    // (a) A reify-eval fixture: INV-EVAL-5 only.
-    let fixture = "crates/reify-eval/tests/fixtures/undef_trace.ri";
-    assert!(stale.covers(fixture), "{fixture} was in the INV-EVAL-5 corpus");
-    assert!(
-        !divergence.covers(fixture),
-        "{fixture} was NOT in the INV-EVAL-4 corpus (examples/ only) — covering it \
-         now would be a coverage change, not a restructuring"
-    );
-
-    // (b) The explicit #4946 prd-gate leaf: likewise INV-EVAL-5 only.
-    let leaf = SELECTOR_CONSUMER_REL;
-    assert!(stale.covers(leaf), "{leaf} was in the INV-EVAL-5 corpus");
-    assert!(!divergence.covers(leaf), "{leaf} was NOT in the INV-EVAL-4 corpus");
-
-    // (c) An examples/ member: BOTH, including a nested one.
-    for example in ["examples/fdm_bracket.ri", "examples/auto/bearing_constraint_select.ri"] {
-        assert!(stale.covers(example), "{example} was in the INV-EVAL-5 corpus");
-        assert!(divergence.covers(example), "{example} was in the INV-EVAL-4 corpus");
-    }
-
-    // (d) Counted over the LIVE corpus, so neither invariant can silently gain or
-    //     lose files as the corpus grows.
+fn snapshot_cache_divergence_checks_the_reify_eval_fixtures() {
+    let rel = "crates/reify-eval/tests/fixtures/fea_body_cantilever.ri";
     let corpus = corpus_files();
-    let examples: Vec<&CorpusFile> = corpus
+    let file = corpus
         .iter()
-        .filter(|f| f.rel.starts_with(EXAMPLES_ROOT))
+        .find(|f| f.rel == rel)
+        .unwrap_or_else(|| panic!("{rel} must be a corpus member"));
+
+    let FileSweep::Evaluated(outcome) = sweep_file(file) else {
+        panic!("{rel} must be EVALUATED, not skipped for a compile error");
+    };
+
+    let divergent: Vec<reify_core::ValueCellId> = outcome
+        .findings(InvariantId::SnapshotCacheDivergence)
+        .iter()
+        .map(|f| f.cell.clone())
         .collect();
-    assert!(
-        !examples.is_empty() && examples.len() < corpus.len(),
-        "non-vacuity: the corpus must hold both examples/ and non-examples/ members \
-         ({} of {}), or (d) cannot distinguish the two scopes",
-        examples.len(),
-        corpus.len()
+    assert_eq!(
+        divergent,
+        vec![reify_core::ValueCellId::new("FeaBodyCantilever", "result")],
+        "INV-EVAL-4 must check {rel} and report its divergent cell"
     );
 
-    let covered = |s: CorpusScope| corpus.iter().filter(|f| s.covers(&f.rel)).count();
-    assert_eq!(
-        covered(stale),
-        corpus.len(),
-        "INV-EVAL-5 swept the whole union before unification and must still do so"
+    let divergence = GATES
+        .iter()
+        .find(|g| g.id == InvariantId::SnapshotCacheDivergence)
+        .expect("INV-EVAL-4 gate declared");
+    assert!(
+        divergence.residual_reason(rel).is_some(),
+        "{rel}'s divergence must be a declared INV-EVAL-4 residual, or its shard reds"
     );
-    assert_eq!(
-        covered(divergence),
-        examples.len(),
-        "INV-EVAL-4 swept exactly the examples/ subset before unification and must \
-         still do so — no wider, no narrower"
+
+    assert!(
+        outcome.findings(InvariantId::StaleUndef).is_empty(),
+        "{rel} must also be checked, clean, for INV-EVAL-5"
     );
 }
 
@@ -1122,7 +1089,7 @@ fn residual_lists_and_bypass_keys_stay_per_invariant() {
         "{fdm} is a declared INV-EVAL-4 residual"
     );
     assert!(
-        stale.residual_reason(fdm).is_none() && stale.scope.covers(fdm),
+        stale.residual_reason(fdm).is_none(),
         "{fdm} is NOT exempt from INV-EVAL-5 and must still be checked for it"
     );
 
@@ -1132,7 +1099,7 @@ fn residual_lists_and_bypass_keys_stay_per_invariant() {
         "{multi_load} is a declared INV-EVAL-5 residual"
     );
     assert!(
-        divergence.residual_reason(multi_load).is_none() && divergence.scope.covers(multi_load),
+        divergence.residual_reason(multi_load).is_none(),
         "{multi_load} is NOT exempt from INV-EVAL-4 and must still be checked for it"
     );
 
@@ -1143,7 +1110,7 @@ fn residual_lists_and_bypass_keys_stay_per_invariant() {
     //     matching several would exempt files nobody root-caused.
     let corpus = corpus_files();
     assert_eq!(stale.residuals.len(), 4, "INV-EVAL-5 declared 4 residuals");
-    assert_eq!(divergence.residuals.len(), 2, "INV-EVAL-4 declared 2 residuals");
+    assert_eq!(divergence.residuals.len(), 5, "INV-EVAL-4 declared 5 residuals");
     for g in GATES {
         for (suffix, reason) in g.residuals {
             let matched: Vec<&str> = corpus
@@ -1163,13 +1130,6 @@ fn residual_lists_and_bypass_keys_stay_per_invariant() {
                 !reason.trim().is_empty(),
                 "{}: residual {suffix:?} must carry its root-cause reason",
                 g.label
-            );
-            assert!(
-                g.scope.covers(matched[0]),
-                "{}: residual {suffix:?} exempts {} from an invariant that does not \
-                 even cover it — dead weight",
-                g.label,
-                matched[0]
             );
         }
     }
@@ -1534,7 +1494,6 @@ fn report_routing_honours_each_gates_own_policy() {
     let gate = |id, label, bypass_env| InvariantGate {
         id,
         label,
-        scope: CorpusScope::Union,
         residuals: RESIDUAL,
         bypass_env,
     };
@@ -1826,10 +1785,6 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
         .find(|g| g.id == InvariantId::StaleUndef)
         .expect("INV-EVAL-5 gate declared");
     assert!(
-        stale.scope.covers(rel),
-        "{rel} must be in INV-EVAL-5's scope, or the premise is unasserted"
-    );
-    assert!(
         stale.residual_reason(rel).is_none(),
         "{rel} must NOT be residual-exempt — the premise is that it is genuinely clean"
     );
@@ -1840,9 +1795,8 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
              make the #4946 premise silently vacuous"
         );
     };
-    assert_eq!(
-        outcome.findings(InvariantId::StaleUndef),
-        Some(&[][..]),
+    assert!(
+        outcome.findings(InvariantId::StaleUndef).is_empty(),
         "{rel} must report zero stale-Undef violations — the #4946 R3f-bridge premise"
     );
 }
