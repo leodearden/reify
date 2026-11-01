@@ -3271,20 +3271,31 @@ fn resolve_instance_color(
 /// COST OF THAT SCOPE, stated as plainly as `failed_pretessellations`' cost is
 /// above. Build-scoping makes the redispatch UNCONDITIONAL PER BUILD: every
 /// compute node with a kernel-backed geometry arg is re-dispatched once on
-/// every `build_snapshot`, whether or not anything upstream moved. There is no
-/// in-memory result cache under it — `run_compute_dispatch` goes straight to
-/// the trampoline unless a `persistent_cache_dir` is configured, and nothing
-/// outside tests configures one — so an idle warm rebuild re-runs every
-/// geometry-consuming `@optimized` trampoline (an FEA solve, a mesh morph)
-/// from scratch, O(such nodes) per tick.
+/// every `build_snapshot`, whether or not anything upstream moved.
+/// `run_compute_dispatch` has no in-memory result cache: its only
+/// short-circuit is the persistent lookup (`persistent_lookup`), and that is
+/// live in production, because reify-cli's `configured_eval_engine` attaches a
+/// persistent cache by default. The cost therefore has two shapes:
 ///
-/// That is not a live regression: `build_snapshot` has no non-test callers
-/// today, and the alternative — re-latching across builds — is exactly the
-/// defect this scope exists to fix. It DOES have to be paid down before
-/// `build_snapshot` acquires a production caller, and the direction is a
-/// FRESHNESS gate (skip when the output cell's cache freshness is `Final` and
-/// no realization in the node's `realization_inputs` moved on this tick), NOT
-/// a re-widening of this flag's lifetime.
+///   * No cache attached: an idle warm rebuild re-runs every
+///     geometry-consuming `@optimized` trampoline (an FEA solve, a mesh morph)
+///     from scratch, O(such nodes) per tick.
+///   * Cache attached: this pass dispatches every node under ONE shared
+///     persistent key (the `ContentHash(0)` at its `run_compute_dispatch`
+///     call). For a target in `PERSISTABLE_TARGETS` such as
+///     `solver::elastic_static`, the warm redispatch would hit the entry the
+///     cold build persisted and silently return the pre-tick result. This is
+///     reasoned from the code path, not measured.
+///
+/// Neither shape is a live regression: `build_snapshot` has no non-test
+/// callers today, and the shared key's cold-path hazard predates this scope.
+/// Before `build_snapshot` acquires a production caller, two things must
+/// happen, in order. First, the shared key is fixed, owned by #7052. Second,
+/// the per-build cost is paid down by a FRESHNESS gate (skip when the output
+/// cell's cache freshness is `Final` and no realization in the node's
+/// `realization_inputs` moved on this tick), NOT by re-widening this flag's
+/// lifetime — re-latching across builds is exactly the defect this scope
+/// exists to fix.
 ///
 /// COVERAGE, stated honestly. `failed_pretessellations` and
 /// `contentless_skips` are each pinned by a counterfactual test in
@@ -10423,8 +10434,10 @@ impl Engine {
             }
             // `state` mut-borrow dropped.
 
-            // Re-dispatch.  Use ContentHash(0) for the persistent-cache key:
-            // the cache dir is None in all current tests so the key is inert.
+            // Re-dispatch under this pass's shared `ContentHash(0)` persistent
+            // key. That key is NOT inert: reify-cli attaches a persistent cache
+            // by default. The fix is owned by #7052; see `RedispatchPassState`'s
+            // cost note.
             let cancel = crate::graph::CancellationHandle::new();
             match self.run_compute_dispatch(
                 &cand.c_id,
