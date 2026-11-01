@@ -10,13 +10,17 @@ release_declared and decide_release_delta run at bash's load position for
 every action, since bash computes the release-sensitive crate list and decides
 the merge's release-delta skip before it knows the plan holds a release pass.
 A skipped release pass is the RELEASE_SKIP_MARKER line in its place.
+
+On a failed_only retry the region also decides, through retry, whether each
+nextest profile pass narrows to its subset, and collects the lines each
+refusal prints.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from reify_verify import bashcall, gitcall, knobs, scope
+from reify_verify import bashcall, gitcall, knobs, retry, scope
 from reify_verify.bashcall import BashCall
 from reify_verify.narrowing import GUI_CRATE
 from reify_verify.nextest import (
@@ -44,6 +48,7 @@ from reify_verify.plan import (
     Workspace,
 )
 from reify_verify.policy import HeavyPartition, Profile, ReleaseSelector, RolePolicy, heavy_partition
+from reify_verify.retry import NO_NEXTEST_SUBSETS, NextestSubsetsApplied
 
 RELEASE_DECLARED_SET = BashCall("scripts/release-scope-lib.sh", "release_declared_set")
 RELEASE_DELTA_REQUIRES_PASS = BashCall("scripts/release-scope-lib.sh", "release_delta_requires_pass")
@@ -55,7 +60,6 @@ GUI_SIDECAR_PLACEHOLDER = "scripts/ensure-gui-sidecar-placeholder.sh"
 GUI_CRATE_MANIFEST = "gui/src-tauri/Cargo.toml"
 GUI_FEATURES = ("gui",)
 ATTEMPT_STAMP_DIR = "target"
-RETRY_SCOPE_NARROWED = "failed_only"
 GATE_PATHS = (VERIFY_SH, CONFIRM_RECORDER, GUI_SIDECAR_PLACEHOLDER)
 
 PSI_GATE_ANNOTATION = (
@@ -139,6 +143,8 @@ class TestRegion:
     """The region's passes and how they run; heavy_header is what the plan header reports.
 
     A profile whose pass the release-delta decision skips holds its Marker.
+    retry_applied is what the retry marker reports; diagnostics are the lines
+    resolving the region prints.
     """
 
     attempt_stamp: AttemptStamp | None
@@ -146,6 +152,8 @@ class TestRegion:
     gui_feature: PassSpec | None
     runner: TestRunner
     heavy_header: HeavyPartition
+    retry_applied: NextestSubsetsApplied
+    diagnostics: tuple[str, ...]
 
 
 def resolve(
@@ -168,7 +176,9 @@ def resolve(
 ) -> TestRegion | Refused:
     """The region; a refusal when execute mode cannot generate the nextest config.
 
-    The config is resolved once, and only when a nextest pass will name it.
+    The config is resolved once, and only when a nextest pass will name it. A
+    retry decides its eligibility first, so the tree-drift line precedes every
+    other line the region prints.
     """
     heavy = heavy_partition(role_policy, raw_env)
     passes = tuple(
@@ -177,11 +187,19 @@ def resolve(
         for profile in profiles
     )
     gui_feature = _gui_feature_pass(walls) if role_policy.gui_feature_test_pass and reaches_gui else None
+    eligible, diagnostics = False, ()
+    if retry.is_retry(planning_env):
+        sidecar = repo_root / str(knobs.resolve(knobs.ATTEMPT_SIDECAR, raw_env).value)
+        eligible, diagnostics = retry.eligibility(sidecar, planning_env)
     config = None
     if nextest and (any(isinstance(spec, PassSpec) for spec in passes) or gui_feature):
         config = nextest_config_path(executing, raw_env, planning_env, test_threads, repo_root)
         if isinstance(config, Refused):
-            return config
+            return Refused((*diagnostics, *config.lines), config.exit_code)
+    applied = NO_NEXTEST_SUBSETS
+    if eligible:
+        passes, applied, refusals = _narrow(passes, nextest, raw_env, planning_env, repo_root)
+        diagnostics = (*diagnostics, *refusals)
     runner = TestRunner(
         prio=prio,
         test_threads=test_threads,
@@ -196,7 +214,38 @@ def resolve(
         gui_feature=gui_feature,
         runner=runner,
         heavy_header=heavy if nextest else HeavyPartition.INCLUDED,
+        retry_applied=applied,
+        diagnostics=diagnostics,
     )
+
+
+def _narrow(
+    passes: tuple[PassSpec | Marker, ...],
+    nextest: bool,
+    raw_env: Mapping[str, str],
+    planning_env: Mapping[str, str],
+    repo_root: Path,
+) -> tuple[tuple[PassSpec | Marker, ...], NextestSubsetsApplied, tuple[str, ...]]:
+    """An eligible retry's profile passes, each narrowed to its subset where it can be.
+
+    Returns the passes, the subset sizes applied and the refusals, in pass
+    order. The cargo-test fallback cannot filter, so each of its passes
+    refuses; a skipped pass resolves nothing.
+    """
+    max_subset = str(knobs.resolve(knobs.RETRY_MAX_SUBSET, raw_env).value)
+    narrowed, applied, refusals = [], {}, []
+    for spec in passes:
+        if isinstance(spec, PassSpec) and not nextest:
+            refusals.append(retry.NO_NEXTEST_REFUSAL)
+        elif isinstance(spec, PassSpec):
+            ids, refused = retry.subset(spec.profile, planning_env, max_subset, repo_root)
+            refusals.extend(refused)
+            if ids:
+                spec = replace(spec, retry_ids=ids)
+                applied[spec.profile] = len(ids)
+        narrowed.append(spec)
+    sizes = NextestSubsetsApplied(applied.get(Profile.DEBUG, 0), applied.get(Profile.RELEASE, 0))
+    return tuple(narrowed), sizes, tuple(refusals)
 
 
 def _profile_pass(
@@ -236,8 +285,7 @@ def _attempt_stamp(
     planning_env: Mapping[str, str],
 ) -> AttemptStamp | None:
     """The attempt sidecar a recording role writes, except on the failed_only retry that reads it."""
-    retrying = knobs.resolve(knobs.RETRY_SCOPE, planning_env).value == RETRY_SCOPE_NARROWED
-    if not role_policy.attempt_sidecar or retrying:
+    if not role_policy.attempt_sidecar or retry.is_retry(planning_env):
         return None
     return AttemptStamp(str(knobs.resolve(knobs.ATTEMPT_SIDECAR, raw_env).value), profiles)
 

@@ -42,6 +42,7 @@ from reify_verify import (  # noqa: E402
     nextest,
     policy,
     render,
+    retry,
     scope,
     selection,
     testregion,
@@ -329,7 +330,7 @@ class TestPlanInputsTestRegion(unittest.TestCase):
         )
         return testregion.TestRegion(
             attempt_stamp=None, passes=(), gui_feature=None, runner=runner,
-            heavy_header=HeavyPartition.INCLUDED,
+            heavy_header=HeavyPartition.INCLUDED, retry_applied=retry.NO_NEXTEST_SUBSETS, diagnostics=(),
         )
 
     def test_a_region_on_a_plan_without_one_is_refused(self):

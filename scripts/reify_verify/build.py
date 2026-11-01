@@ -31,10 +31,10 @@ from pathlib import Path
 
 from reify_verify import (
     bashcall,
-    childproc,
     environment,
     knobs,
     narrowing,
+    retry,
     scope,
     selection,
     testregion,
@@ -63,7 +63,6 @@ from reify_verify.plan import (
     Plan,
     PlanHeader,
     Refused,
-    RetryMarker,
     Script,
     Selector,
     Step,
@@ -79,13 +78,13 @@ from reify_verify.policy import (
     resolve_prio,
     test_wall,
 )
+from reify_verify.retry import NO_NEXTEST_SUBSETS
 from reify_verify.scope import ScopeDecision
 from reify_verify.selection import Selection
 from reify_verify.testregion import (
     COMPILE_GATE,
     GUI_CRATE_MANIFEST,
     GUI_SIDECAR_PLACEHOLDER,
-    RETRY_SCOPE_NARROWED,
     PassWalls,
     TestRegion,
 )
@@ -282,7 +281,12 @@ def _compose(
         test_region=region,
     )
     plan = Plan(
-        retry_marker=_retry_marker(node_lane, NO_NEXTEST_SUBSETS, planning, repo_root),
+        retry_marker=retry.marker(
+            region.retry_applied if region else NO_NEXTEST_SUBSETS,
+            node_lane.gui_specs_applied if node_lane else 0,
+            planning,
+            repo_root,
+        ),
         header=header,
         selective_infra_note=invocation.include_infra
         and role_policy.infra_tier is InfraTier.SELECTIVE,
@@ -292,7 +296,7 @@ def _compose(
         environment=decided.step_env.lines,
         steps=build_steps(inputs),
     )
-    return Planned(plan, vitest_warnings)
+    return Planned(plan, (*vitest_warnings, *(region.diagnostics if region else ())))
 
 
 def _has_test_region(families: "Families", decision: ScopeDecision) -> bool:
@@ -331,60 +335,6 @@ def _resolve_region(
         planning_env=decided.step_env.planning,
         repo_root=repo_root,
     )
-
-
-@dataclass(frozen=True)
-class NextestSubsetsApplied:
-    """The within-ceiling nextest subset sizes the test region applied, per profile."""
-
-    debug: int
-    release: int
-
-
-NO_NEXTEST_SUBSETS = NextestSubsetsApplied(debug=0, release=0)
-RUN_ALL_SUBSET_MATCHED = re.compile(r"@@REIFY_RUN_ALL_SUBSET_MATCHED=([0-9]+)@@")
-IFS_WORDS = re.compile(r"[^ \t\n]+")
-
-
-def _retry_marker(
-    node_lane: "NodeLane | None",
-    nextest: NextestSubsetsApplied,
-    env: Mapping[str, str],
-    repo_root: Path,
-) -> RetryMarker | None:
-    """The failed_only retry's applied subset sizes; None unless at least one suite really narrowed."""
-    if knobs.resolve(knobs.RETRY_SCOPE, env).value != RETRY_SCOPE_NARROWED:
-        return None
-    marker = RetryMarker(
-        nextest_debug=nextest.debug,
-        nextest_release=nextest.release,
-        run_all=_run_all_subset_size(env, repo_root),
-        gui=node_lane.gui_specs_applied if node_lane else 0,
-    )
-    narrowed = (marker.nextest_debug, marker.nextest_release, marker.run_all, marker.gui)
-    return marker if any(narrowed) else None
-
-
-def _run_all_subset_size(env: Mapping[str, str], repo_root: Path) -> int:
-    """How many REIFY_RUN_ALL_MEMBER_SUBSET members run_all.sh's count-only probe matches.
-
-    run_all.sh owns the member-skip predicate, so its count is the truth. Its
-    stderr is dropped. Without the script, or without the count in its
-    stdout, the subset's word count stands in; the words are never globbed.
-    """
-    subset = knobs.resolve(knobs.RUN_ALL_MEMBER_SUBSET, env).value
-    if not subset:
-        return 0
-    if RUN_ALL.is_file(repo_root):
-        probe = childproc.run(
-            ["bash", RUN_ALL.path],
-            repo_root,
-            {**env, "REIFY_RUN_ALL_SUBSET_COUNT_ONLY": "1", knobs.RUN_ALL_MEMBER_SUBSET.name: subset},
-        )
-        matched = RUN_ALL_SUBSET_MATCHED.search(probe.stdout)
-        if matched:
-            return int(matched.group(1))
-    return len(IFS_WORDS.findall(subset))
 
 
 def _git_env_scrub_prefix(repo_root: Path, env: Mapping[str, str]) -> str:

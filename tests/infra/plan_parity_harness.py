@@ -101,12 +101,13 @@ SECTIONS = ("exit code", "header", "environment", "commands", "stderr")
 JOBSERVER_FIFO_KNOBS = ("REIFY_JOBSERVER_TASK_FIFO", "REIFY_JOBSERVER_MERGE_FIFO")
 
 HEADER_HINTS = (
-    ("@@REIFY_RETRY_SCOPE=", "build.py (the retry marker's counts) / render.py (its text)"),
+    ("@@REIFY_RETRY_SCOPE=", "retry.py (the retry marker's counts) / render.py (its text)"),
     ("# scope decision — ", "scope.py"),
     ("# narrowing — ", "narrowing.py"),
     ("# heavy partition — ", "testregion.py"),
 )
 STDERR_HINTS = (
+    (re.compile(r"retry refused"), "retry.py"),
     (re.compile(r"gen-nextest-config"), "nextest.py"),
     (re.compile(r"release-sensitive"), "testregion.py"),
     (re.compile(r"stale jobserver FIFO"), "environment.py"),
