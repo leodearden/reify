@@ -80,16 +80,9 @@ crates/reify-compiler/src/conformance/checker.rs :: expr.rs:388
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:3
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:66
 crates/reify-compiler/src/conformance/checker.rs :: type_compat.rs:81
-crates/reify-compiler/src/conformance/mod.rs :: crates/reify-core/src/ty.rs:120
-crates/reify-compiler/src/conformance/mod.rs :: examples/dynamics/pendulum_idyn.ri:24
 crates/reify-compiler/src/conformance/mod.rs :: examples/m6_result_recovery.ri:30
 crates/reify-compiler/src/conformance/mod.rs :: expr.rs:782
 crates/reify-compiler/src/conformance/mod.rs :: stdlib/trajectory.ri:103
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:163
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:232
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:334
-crates/reify-compiler/src/conformance/mod.rs :: type_compat.rs:83
-crates/reify-compiler/src/conformance/mod.rs :: type_resolution.rs:3134
 crates/reify-compiler/src/conformance/sub_component_validation.rs :: crates/reify-eval/src/engine_eval.rs:55
 crates/reify-compiler/src/conformance/sub_component_validation.rs :: engine_eval.rs:2283
 crates/reify-compiler/src/connect.rs :: entity.rs (~2145
@@ -322,7 +315,6 @@ crates/reify-eval/src/engine_admin.rs :: cache.rs:597
 crates/reify-eval/src/engine_admin.rs :: cache.rs:961
 crates/reify-eval/src/engine_admin.rs :: lib.rs:50
 crates/reify-eval/src/engine_build.rs :: crates/reify-compiler/src/types.rs:848
-crates/reify-eval/src/engine_build.rs :: crates/reify-eval/src/unfold.rs:292
 crates/reify-eval/src/engine_build.rs :: deps.rs:149
 crates/reify-eval/src/engine_build.rs :: deps.rs:2795
 crates/reify-eval/src/engine_build.rs :: engine_build.rs ~6693
@@ -523,7 +515,6 @@ crates/reify-expr/src/lib.rs :: units.rs:680
 crates/reify-expr/src/lib.rs :: value.rs:885
 crates/reify-expr/src/sampled_fd.rs :: medial.rs:991
 crates/reify-ir/src/arg_acceptance.rs :: crates/reify-compiler/stdlib/materials_fea.ri:132
-crates/reify-ir/src/arg_acceptance.rs :: crates/reify-stdlib/src/flexures/common.rs:109
 crates/reify-ir/src/arg_acceptance.rs :: dimension.rs:283
 crates/reify-ir/src/arg_acceptance.rs :: dimension.rs:302
 crates/reify-ir/src/arg_acceptance.rs :: materials_fea.ri:179
@@ -692,7 +683,6 @@ crates/reify-stdlib/src/fea.rs :: fea_multi_case.ri:143
 crates/reify-stdlib/src/fea.rs :: field_reductions.rs:96
 crates/reify-stdlib/src/fea.rs :: multi_case.rs:214
 crates/reify-stdlib/src/fea.rs :: solver_elastic.ri:282
-crates/reify-stdlib/src/flexures/common.rs :: reify-eval/src/modal_ops.rs:839
 crates/reify-stdlib/src/geometry.rs :: geometry.rs:279
 crates/reify-stdlib/src/helpers.rs :: fea/loads.rs:161
 crates/reify-stdlib/src/helpers.rs :: stackup.rs:32
@@ -709,7 +699,6 @@ crates/reify-stdlib/src/loop_closure.rs :: joints.rs:239
 crates/reify-stdlib/src/loop_closure.rs :: joints.rs:336
 crates/reify-stdlib/src/loop_closure.rs :: joints.rs:785
 crates/reify-stdlib/src/loop_closure.rs :: joints.rs:800
-crates/reify-stdlib/src/loop_closure.rs :: loop_closure.rs:399
 crates/reify-stdlib/src/loop_closure.rs :: loop_closure.rs:87
 crates/reify-stdlib/src/loop_closure_solver.rs :: mechanism.rs:1547
 crates/reify-stdlib/src/mechanism.rs :: mechanism.rs:435

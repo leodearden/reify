@@ -790,8 +790,8 @@ pub enum FieldAcceptance {
 ///    rejection;
 /// 2. `Value::Option` is unwrapped — `Option(None)` →
 ///    [`FieldAcceptance::Absent`], `Option(Some(inner))` → recurse. The
-///    recursion goes all the way down, for behavioural parity with
-///    `reify-stdlib/src/flexures/common.rs`'s `scalar_si`.
+///    recursion unwraps every nesting level, so `Option(Some(Option(Some(x))))`
+///    reads as `x`.
 ///
 /// **Option unwrapping lives here and ONLY here.** [`accept_arg`] stays frozen
 /// (amendment A1), and every Option shape amendment A2 cites is a struct
@@ -1637,8 +1637,7 @@ mod tests {
             "a LENGTH inside Option(Some(..)) at a PRESSURE field must be Rejected"
         );
 
-        // (6) Nested Option, for behavioural parity with the recursion in
-        //     crates/reify-stdlib/src/flexures/common.rs:109 `scalar_si`.
+        // (6) Nested Option: the recursion unwraps every nesting level.
         let nested = steel_instance(&[(
             "yield_stress",
             Value::Option(Some(Box::new(Value::Option(Some(Box::new(pressure(
@@ -1648,7 +1647,7 @@ mod tests {
         assert_eq!(
             accept_field(&nested, "yield_stress", &pressure_spec()),
             FieldAcceptance::Accepted(310_000_000.0),
-            "nested Option must unwrap all the way down (parity with scalar_si)"
+            "Option(Some(Option(Some(x)))) must read as x"
         );
 
         // (7) The poisson_ratio shape: a bare Real lands at a dimensionless
