@@ -308,6 +308,19 @@ pub enum DiagnosticCode {
     /// *multiple* valid solutions exist (the system is underdetermined), not zero. A
     /// strictly-auto parameter requires a unique solution.
     ConstraintNonUnique,
+    /// Origin: `crates/reify-constraints/src/solver.rs::DimensionalSolver`, the
+    /// pre-solve interval refutation (task #6655), Severity::Error at the
+    /// construction site.
+    ///
+    /// A PROOF that no point satisfies the constraints within the solver's own
+    /// acceptance (`FEASIBILITY_THRESHOLD` for order rows, the
+    /// [`crate::scalar_tolerance`] policy for `==`), found by HC4 contraction
+    /// before any solver iteration. The message renders
+    /// `reify_ir::Completeness::Refuted`, naming the narrowing constraint.
+    ///
+    /// Distinct from [`Self::ConstraintUnsatisfiable`], which reports a SEARCH
+    /// failure rather than a proof (solution-set-completeness C3).
+    ConstraintRefuted,
     /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
     ///          (param-level argument type check, task 4546).
     ///
