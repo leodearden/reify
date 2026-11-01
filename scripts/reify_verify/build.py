@@ -10,8 +10,8 @@ plan_invocation joins the diagnostics in stage order:
   divergence): the libs verify.sh sources must exist and the heavy filterset
   must be non-empty; then each timeout knob and the priority, with warnings;
 - decide: the scope and the step environment, then the selection, the
-  narrowing and the release-sensitive crate list, which bash reads at load
-  for every action;
+  narrowing, the release-sensitive crate list and the release-delta skip,
+  which bash reads and decides at load for every action;
 - probe: nextest availability, under the planning env, as bash's probe runs;
 - compose: the plan's inputs (the test region among them, when the plan runs
   the test family over the Rust crates), header and steps.
@@ -162,6 +162,7 @@ class Decided:
     selection: Selection
     narrowing: Narrowing
     release_declared: tuple[str, ...]
+    release_delta_skips: bool
     diagnostics: tuple[str, ...]
 
 
@@ -213,8 +214,10 @@ def _decide(
     declared = testregion.release_declared(repo_root, planning)
     if isinstance(declared, Refused):
         return Refused((*diagnostics, *declared.lines), declared.exit_code)
+    skips, delta_diagnostics = testregion.decide_release_delta(role_policy, planning, repo_root)
     return Decided(
-        Families.of(action), decision, step_env, selected, narrowed, declared, diagnostics
+        Families.of(action), decision, step_env, selected, narrowed, declared, skips,
+        (*diagnostics, *delta_diagnostics),
     )
 
 
@@ -316,6 +319,7 @@ def _resolve_region(
         profiles=header.profiles,
         debug_selector=_selector(narrowed),
         release_declared=decided.release_declared,
+        release_delta_skips=decided.release_delta_skips,
         reaches_gui=narrowing.closure_reaches_reify_gui(decided.decision.mode, narrowed.closure),
         walls=PassWalls(walls.test, walls.test_release, walls.gui_feature_test),
         prio=started.prio.prefix,

@@ -4,9 +4,9 @@ Each seam is a typed record: a BashCall for a library function, a BashExport
 for a variable a library exports, a DataFile for a data file, a SourcedFile
 for a shell file sourced for what it exports, a ScriptCall for a repo script
 run as a program. Each module declares the constants it uses, so a later
---print-gates (PRD D15) can collect them from the modules. run, read_export
-and source_delta each fork ONE `bash -c` per call; run_script forks the
-script itself. Paths, the function name and its arguments travel as argv
+--print-gates (PRD D15) can collect them from the modules. run, ask,
+read_export and source_delta each fork ONE `bash -c` per call; run_script
+forks the script itself. Paths, the function name and its arguments travel as argv
 and are never interpolated into the script text.
 
 A data file that cannot be read raises DataFileUnreadable whatever the cause.
@@ -135,14 +135,22 @@ def run(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, 
     cwd is repo_root, as under verify.sh's `cd "$REPO_ROOT"`, and stderr is
     captured so the caller returns it in bash's stderr order.
     """
-    result = childproc.run(
+    result = ask(call, args, repo_root, env)
+    if result.returncode != 0:
+        raise BashCallError(call, result)
+    return result
+
+
+def ask(call: BashCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
+    """The call's result, whatever its status: for a function whose exit status is its answer.
+
+    It forks as run does; bash failing to start is returned with the shell's status.
+    """
+    return childproc.run(
         ["bash", "-c", _SOURCE_AND_CALL, "bashcall", str(repo_root / call.lib), call.function, *args],
         repo_root,
         _seam_env(env),
     )
-    if result.returncode != 0:
-        raise BashCallError(call, result)
-    return result
 
 
 def run_script(call: ScriptCall, args: Sequence[str], repo_root: Path, env: Mapping[str, str]) -> CallResult:
