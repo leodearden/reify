@@ -67,7 +67,7 @@
 //! `builtin_slot_and_ctor_conformance_length_hints_are_deliberately_different`
 //! in `reify-compiler/tests/builtin_arg_signature_tests.rs`.
 
-use crate::DimensionVector;
+use crate::{DimensionVector, Rational};
 
 /// The migration hint appended to a rejection at a LENGTH argument slot.
 ///
@@ -313,6 +313,17 @@ pub const RI_NAMED_DERIVED_SYMBOLS: &[(&str, DimensionVector)] = &[
     ("J", DimensionVector::ENERGY),
     ("W", DimensionVector::POWER),
 ];
+
+/// THE definition of which exponents a unit expression may carry: numerator and
+/// denominator each fit `i8`.
+///
+/// Both reify-compiler's `resolve_unit_expr` (the use site) and
+/// [`ri_compound_unit_expr`] (the emitter's acceptance set) call this one
+/// predicate, so the emitter can never write an exponent the compiler answers
+/// with `ExponentOutOfRange`.
+pub fn unit_exponent_in_range(exponent: Rational) -> bool {
+    i8::try_from(exponent.num()).is_ok() && i8::try_from(exponent.den()).is_ok()
+}
 
 /// Render one factor of a compound unit expression, omitting `^1`.
 fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
@@ -1048,7 +1059,6 @@ mod tests {
     /// exponent extends it to the denominator.
     #[test]
     fn unit_exponent_in_range_accepts_exactly_i8_numerators_and_denominators() {
-        use crate::Rational;
         let accepted = [
             Rational::new(2, 1),
             Rational::new(-2, 1),

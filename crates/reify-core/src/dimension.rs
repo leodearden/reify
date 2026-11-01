@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::fmt;
-use std::ops::{Add, Neg, Sub};
+use std::ops::{Add, Mul, Neg, Sub};
 
 use crate::ContentHash;
 
@@ -78,6 +78,13 @@ impl Neg for Rational {
     type Output = Rational;
     fn neg(self) -> Rational {
         Rational::new(-self.num(), self.den())
+    }
+}
+
+impl Mul for Rational {
+    type Output = Rational;
+    fn mul(self, rhs: Rational) -> Rational {
+        Rational::new(self.num() * rhs.num(), self.den() * rhs.den())
     }
 }
 
@@ -490,11 +497,15 @@ impl DimensionVector {
 
     /// Raise to an integer power (multiply all exponents).
     pub fn pow(&self, n: i8) -> DimensionVector {
+        self.pow_rational(Rational::new(n as i16, 1))
+    }
+
+    /// Raise to a rational power (multiply all exponents): `LENGTH` to the
+    /// `1/2` is `LENGTH.root(2)`.
+    pub fn pow_rational(&self, exponent: Rational) -> DimensionVector {
         let mut result = [Rational::ZERO; 10];
-        let n = n as i16;
-        let nr = Rational::new(n, 1);
         for (i, slot) in result.iter_mut().enumerate() {
-            *slot = Rational::new(self.0[i].num() * nr.num(), self.0[i].den() * nr.den());
+            *slot = self.0[i] * exponent;
         }
         DimensionVector(result)
     }
