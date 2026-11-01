@@ -536,8 +536,8 @@ class TestAbsentFixtureIsIndeterminate(unittest.TestCase):
                     expected={"observation": "present", "match": match},
                 )
                 result = pcc.evaluate(
-                    probe,
-                    runner=lambda _p: pcc.ProbeRun(
+                    probe, probe_context(),
+                    runner=lambda _p, _ctx, timeout=None: pcc.ProbeRun(
                         exit_code, stdout, stderr, fixture_present=False
                     ),
                 )
@@ -589,10 +589,12 @@ class TestEvaluate(unittest.TestCase):
             expected={"observation": expected_obs, "match": {"stderr_contains": "CrossSubGeometryRef"}},
         )
 
-    def _stub_runner(self, exit_code: int, stdout: str = "", stderr: str = "") -> Any:
+    def _stub_runner(self, exit_code: int, stdout: str = "", stderr: str = "",
+                     command: tuple = ()) -> Any:
         """Return a runner function that returns a fixed ProbeRun."""
-        def runner(probe):  # noqa: ANN202
-            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+        def runner(probe, ctx, timeout=None):  # noqa: ANN202
+            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr,
+                                command=command)
         return runner
 
     # ── (a) grammar probe, exit 0, expected present → PASS ───────────────────
@@ -600,7 +602,7 @@ class TestEvaluate(unittest.TestCase):
     def test_grammar_pass(self):
         """grammar probe, run exit 0, expected present → PASS."""
         probe = self._make_grammar_probe("present")
-        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        result = pcc.evaluate(probe, probe_context(), runner=self._stub_runner(0))
         self.assertEqual(result.verdict, pcc.Verdict.PASS)
 
     # ── (b) check probe = §3 4575 → FAIL ─────────────────────────────────────
@@ -610,7 +612,7 @@ class TestEvaluate(unittest.TestCase):
         probe = self._make_check_probe("present")
         # Reify exits 0 with 'All constraints satisfied.', no rejection diag
         result = pcc.evaluate(
-            probe,
+            probe, probe_context(),
             runner=self._stub_runner(0, stdout="All constraints satisfied.", stderr=""),
         )
         self.assertEqual(result.verdict, pcc.Verdict.FAIL)
@@ -621,7 +623,7 @@ class TestEvaluate(unittest.TestCase):
         """ir probe, exit ≠ 0 with unrelated error, no asserted signature → UNPROVABLE."""
         probe = self._make_ir_probe("absent")
         result = pcc.evaluate(
-            probe,
+            probe, probe_context(),
             runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
         )
         self.assertEqual(result.verdict, pcc.Verdict.UNPROVABLE)
@@ -629,24 +631,25 @@ class TestEvaluate(unittest.TestCase):
     # ── mandatory evidence: command, exit_code, stdout, stderr ───────────────
 
     def test_result_has_command(self):
-        """Result must carry the exact command argv."""
+        """Result must carry, on its run, the exact argv its runner ran."""
         probe = self._make_grammar_probe("present")
-        result = pcc.evaluate(probe, runner=self._stub_runner(0))
-        self.assertIsNotNone(result.command, "result.command must not be None")
-        self.assertIsInstance(result.command, list, "result.command must be a list")
-        self.assertGreater(len(result.command), 0, "result.command must be non-empty")
+        argv = ("tree-sitter", "parse", "--quiet", "/abs/arrow_type.ri")
+        result = pcc.evaluate(
+            probe, probe_context(), runner=self._stub_runner(0, command=argv)
+        )
+        self.assertEqual(result.run.command, argv)
 
     def test_result_has_exit_code(self):
         """Result must carry the exit_code from the captured run."""
         probe = self._make_grammar_probe("present")
-        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        result = pcc.evaluate(probe, probe_context(), runner=self._stub_runner(0))
         self.assertEqual(result.run.exit_code, 0)
 
     def test_result_has_stdout(self):
         """Result must carry the stdout from the captured run."""
         probe = self._make_check_probe("present")
         result = pcc.evaluate(
-            probe,
+            probe, probe_context(),
             runner=self._stub_runner(0, stdout="All constraints satisfied."),
         )
         self.assertEqual(result.run.stdout, "All constraints satisfied.")
@@ -655,7 +658,7 @@ class TestEvaluate(unittest.TestCase):
         """Result must carry the stderr from the captured run."""
         probe = self._make_ir_probe("absent")
         result = pcc.evaluate(
-            probe,
+            probe, probe_context(),
             runner=self._stub_runner(1, stderr="error: unresolved type: Transform3"),
         )
         self.assertIn("unresolved type", result.run.stderr)
@@ -663,13 +666,13 @@ class TestEvaluate(unittest.TestCase):
     def test_result_carries_probe(self):
         """Result must carry the original Probe object."""
         probe = self._make_grammar_probe("present")
-        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        result = pcc.evaluate(probe, probe_context(), runner=self._stub_runner(0))
         self.assertIs(result.probe, probe)
 
     def test_result_carries_observation(self):
         """Result must carry the observation value."""
         probe = self._make_grammar_probe("present")
-        result = pcc.evaluate(probe, runner=self._stub_runner(0))
+        result = pcc.evaluate(probe, probe_context(), runner=self._stub_runner(0))
         self.assertEqual(result.observation, pcc.Observation.PRESENT)
 
 
@@ -691,7 +694,7 @@ class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
             expected={"observation": expected_obs, "match": {}},
         )
         return pcc.evaluate(
-            probe, runner=lambda _p: pcc.ProbeRun(exit_code, "", stderr)
+            probe, probe_context(), runner=lambda _p, _ctx, timeout=None: pcc.ProbeRun(exit_code, "", stderr)
         )
 
     def test_a_bare_load_failure_is_a_harness_error_not_a_pass(self):
@@ -724,8 +727,8 @@ class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
             expected={"observation": "absent", "match": {}},
         )
         result = pcc.evaluate(
-            probe,
-            runner=lambda _p: pcc.ProbeRun(
+            probe, probe_context(),
+            runner=lambda _p, _ctx, timeout=None: pcc.ProbeRun(
                 127, "", self._LOAD_FAILURE, harness_failure=launch
             ),
         )
@@ -739,7 +742,7 @@ class TestEvaluateTypesAGrammarLoadFailure(unittest.TestCase):
             expected={"observation": "present", "match": {"exit_code": 1}},
         )
         result = pcc.evaluate(
-            probe, runner=lambda _p: pcc.ProbeRun(1, "", self._LOAD_FAILURE)
+            probe, probe_context(), runner=lambda _p, _ctx, timeout=None: pcc.ProbeRun(1, "", self._LOAD_FAILURE)
         )
         self.assertEqual(result.verdict, pcc.Verdict.PASS)
         self.assertIsNone(result.run.harness_failure)
@@ -765,8 +768,7 @@ class TestHarnessExitCode(unittest.TestCase):
         )
         return pcc.Result(
             probe=probe,
-            command=["reify", "check", "some/fixture.ri"],
-            run=pcc.ProbeRun(0, "", ""),
+            run=pcc.ProbeRun(0, "", "", command=("reify", "check", "some/fixture.ri")),
             observation=pcc.Observation.PRESENT,
             verdict=verdict,
         )
@@ -858,11 +860,11 @@ class TestHarnessExitCode(unittest.TestCase):
             expected={"observation": "present", "match": {}},
         )
 
-        def fixed_runner(p: Any) -> Any:
+        def fixed_runner(p: Any, ctx: Any, timeout: Any = None) -> Any:
             return pcc.ProbeRun(exit_code=0, stdout="", stderr="")
 
-        r1 = pcc.evaluate(probe, runner=fixed_runner)
-        r2 = pcc.evaluate(probe, runner=fixed_runner)
+        r1 = pcc.evaluate(probe, probe_context(), runner=fixed_runner)
+        r2 = pcc.evaluate(probe, probe_context(), runner=fixed_runner)
         self.assertEqual(r1.verdict, r2.verdict)
 
     def test_determinism_same_exit_code(self):
@@ -874,11 +876,11 @@ class TestHarnessExitCode(unittest.TestCase):
             expected={"observation": "present", "match": {"exit_code": 1}},
         )
 
-        def fixed_runner(p: Any) -> Any:
+        def fixed_runner(p: Any, ctx: Any, timeout: Any = None) -> Any:
             return pcc.ProbeRun(exit_code=0, stdout="All constraints satisfied.", stderr="")
 
-        results1 = [pcc.evaluate(probe, runner=fixed_runner)]
-        results2 = [pcc.evaluate(probe, runner=fixed_runner)]
+        results1 = [pcc.evaluate(probe, probe_context(), runner=fixed_runner)]
+        results2 = [pcc.evaluate(probe, probe_context(), runner=fixed_runner)]
         self.assertEqual(
             pcc.harness_exit_code(results1),
             pcc.harness_exit_code(results2),
@@ -903,7 +905,7 @@ class TestHarnessExitCode(unittest.TestCase):
             expected={"observation": "present", "match": {}},
         )
 
-        def launch_failure_runner(p):
+        def launch_failure_runner(p, ctx, timeout=None):
             return pcc.ProbeRun(
                 exit_code=127,
                 stdout="",
@@ -913,7 +915,7 @@ class TestHarnessExitCode(unittest.TestCase):
                 ),
             )
 
-        result = pcc.evaluate(probe, runner=launch_failure_runner)
+        result = pcc.evaluate(probe, probe_context(), runner=launch_failure_runner)
         self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
         self.assertEqual(pcc.harness_exit_code([result]), 70)
 

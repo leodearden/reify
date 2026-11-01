@@ -101,7 +101,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Protocol, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -888,13 +888,16 @@ class ProbeRun:
     stdout/stderr carry only what the tool printed.  harness_failure is set
     when the machinery failed; fixture_present records whether the probe's
     fixture existed when it was launched.  Both default to the fail-closed
-    reading: no failure, and a fixture that was there.
+    reading: no failure, and a fixture that was there.  command is the argv
+    this run launched, or attempted to launch when the launch itself failed —
+    the one home of the evidence command; () only for a run no runner built.
     """
     exit_code: int
     stdout: str
     stderr: str
     harness_failure: Optional[HarnessFailure] = None
     fixture_present: bool = True
+    command: Tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -1236,10 +1239,10 @@ class Result:
 
     Fields:
         probe       — the original Probe object
-        command     — exact command argv that was run (list of strings)
         run         — the captured ProbeRun itself, held whole rather than
-                      copied field by field, so whatever a run records reaches
-                      the --json record and the text renderer
+                      copied field by field, so whatever a run records — the
+                      argv it ran included — reaches the --json record and the
+                      text renderer
         observation — the Observation
         verdict     — the Verdict (HARNESS_ERROR → exit 70)
         value_observation — value probes only: which token was captured and which
@@ -1248,7 +1251,6 @@ class Result:
                     the existing kinds' record shape is unchanged.
     """
     probe: Probe
-    command: List[str]
     run: ProbeRun
     observation: Observation
     verdict: Verdict
@@ -1266,72 +1268,76 @@ def _absolute_fixture(probe: Probe, repo_root: str) -> str:
     return os.path.join(repo_root, probe.fixture)
 
 
-def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
+def _probe_binary(probe_kind: ProbeKind, ctx: ProbeContext) -> str:
+    """The binary a probe of `probe_kind` runs: the one kind→binary dispatch."""
+    if probe_kind == ProbeKind.GRAMMAR:
+        return ctx.tree_sitter_bin
+    return ctx.reify_bin
+
+
+def build_command(probe: Probe, ctx: ProbeContext) -> List[str]:
     """Construct the exact command argv for a probe.
 
-    Binary resolution (used by run_probe; also injectable via env overrides):
-        grammar          → TREE_SITTER_BIN (default "tree-sitter")
-        check/ir/value   → REIFY_BIN (default "reify")
+    The binary comes from ctx (_probe_binary): tree_sitter_bin for grammar,
+    reify_bin for check/ir/value.
 
     Command shapes:
         grammar    → [tree-sitter, parse, --quiet, <abs-fixture>]
         check      → [reify, check, <abs-fixture>]
         ir, value  → [reify, eval, <abs-fixture>]  (_EVAL_PROBE_KINDS)
 
-    Fixture-path resolution: build_command() resolves probe.fixture to an
-    absolute path via _absolute_fixture() so that the path
-    survives any CWD change — in particular, grammar probes run with
-    CWD=<repo_root>/tree-sitter-reify/ and a relative fixture would resolve
-    incorrectly under that directory.  If probe.fixture is already absolute it
-    is used verbatim.  repo_root defaults to _find_repo_root() when None.
-
-    The same repo_root is passed to _resolve_reify_bin() so the binary and the
-    fixture are resolved consistently.  run_probe() calls build_command() with
-    the same repo_root it uses for CWD, so the recorded evidence command and
-    the executed argv are identical.
-
-    Args:
-        probe:     The probe to build a command for.
-        repo_root: Repo root directory for resolving relative fixture paths and
-                   locating the reify binary.  Defaults to _find_repo_root().
+    Fixture-path resolution: probe.fixture is resolved against ctx.repo_root by
+    _absolute_fixture() so that the path survives any CWD change — in
+    particular, grammar probes run with CWD=<repo_root>/tree-sitter-reify/ and
+    a relative fixture would resolve incorrectly under that directory.  If
+    probe.fixture is already absolute it is used verbatim.
 
     Returns:
         A list of strings — the exact argv to be passed to subprocess.run().
     """
-    root = repo_root if repo_root is not None else _find_repo_root()
-
-    # Resolve fixture to absolute path so it survives CWD changes.
-    fixture = _absolute_fixture(probe, root)
+    fixture = _absolute_fixture(probe, ctx.repo_root)
+    binary = _probe_binary(probe.probe_kind, ctx)
 
     if probe.probe_kind == ProbeKind.GRAMMAR:
-        ts_bin = _resolve_tree_sitter_bin(os.environ)
-        return [ts_bin, "parse", "--quiet", fixture]
-
-    reify_bin = _resolve_reify_bin(root, os.environ)
+        return [binary, "parse", "--quiet", fixture]
 
     if probe.probe_kind == ProbeKind.CHECK:
-        return [reify_bin, "check", fixture]
+        return [binary, "check", fixture]
 
     if probe.probe_kind in _EVAL_PROBE_KINDS:
-        return [reify_bin, "eval", fixture]
+        return [binary, "eval", fixture]
 
     # Should not reach here after load_probe_set validation, but be defensive.
     raise ValueError(f"unknown probe_kind: {probe.probe_kind!r}")
+
+
+class ProbeRunner(Protocol):
+    """The runner contract: run one probe under ctx, never raising.
+
+    run_probe() is the real one.  timeout is None for a probe-set run, which
+    stays unbounded, and a bound in seconds only for the substrate probe.  The
+    returned ProbeRun carries the argv it launched in `command`.
+    """
+
+    def __call__(
+        self, probe: Probe, ctx: ProbeContext, timeout: Optional[float] = None
+    ) -> ProbeRun: ...
 
 
 # ---------------------------------------------------------------------------
 # run_probe() — the real subprocess runner
 # ---------------------------------------------------------------------------
 
-def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
+def run_probe(
+    probe: Probe, ctx: ProbeContext, timeout: Optional[float] = None
+) -> ProbeRun:
     """Run a probe command in a subprocess and return captured output.
 
-    Delegates command construction to build_command(), which resolves
-    probe.fixture to an absolute path so it survives the CWD change.
-    Grammar probes run with CWD = <repo_root>/tree-sitter-reify/ so that
-    the tree-sitter parser can locate its grammar (src/parser.c must be
-    generated first).  build_command() uses the same repo_root so the
-    recorded fixture path and the executed path are identical.
+    The ProbeRunner contract's real implementation.  The argv is built once,
+    by build_command(probe, ctx), and is both what runs and what the returned
+    ProbeRun records as `command` on every return path.  Grammar probes run
+    with CWD = <ctx.repo_root>/tree-sitter-reify/ so that the tree-sitter
+    parser can locate its grammar (src/parser.c must be generated first).
 
     Grammar probes ALSO run under a private XDG_CACHE_HOME (see
     _grammar_cache_home).  `tree-sitter parse` compiles the grammar to
@@ -1373,15 +1379,17 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
 
     Args:
         probe:   The Probe to run.
+        ctx:     The repo root and binaries to run it with.
         timeout: Seconds to wait before killing the probe, or None for no bound.
 
     Returns:
         A ProbeRun with exit_code, stdout, and stderr from the subprocess, its
-        harness_failure (or None), and fixture_present measured on the argv's
-        fixture just before launch.
+        harness_failure (or None), fixture_present measured on the argv's
+        fixture just before launch, and the argv as `command`.
     """
-    repo_root = _find_repo_root()
-    cmd = build_command(probe, repo_root=repo_root)
+    repo_root = ctx.repo_root
+    cmd = build_command(probe, ctx)
+    command = tuple(cmd)
 
     # Measured on the very path the argv carries, immediately before launch.
     # The probe launches regardless, so its evidence is recorded either way.
@@ -1393,6 +1401,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
             exit_code, "", "",
             harness_failure=HarnessFailure(kind, str(exc)),
             fixture_present=fixture_present,
+            command=command,
         )
 
     # Grammar probes must run with CWD inside tree-sitter-reify/ so that
@@ -1430,6 +1439,7 @@ def run_probe(probe: Probe, timeout: Optional[float] = None) -> ProbeRun:
         stdout=proc.stdout,
         stderr=proc.stderr,
         fixture_present=fixture_present,
+        command=command,
     ))
 
 
@@ -1603,7 +1613,8 @@ def grammar_substrate_usable() -> tuple:
         expected={"observation": Observation.PRESENT, "match": {}},
     )
 
-    failure = run_probe(probe, timeout=_SUBSTRATE_PROBE_TIMEOUT_S).harness_failure
+    ctx = ProbeContext.from_environment()
+    failure = run_probe(probe, ctx, timeout=_SUBSTRATE_PROBE_TIMEOUT_S).harness_failure
     if failure is None:
         return (True, "")
 
@@ -1624,7 +1635,7 @@ def grammar_substrate_usable() -> tuple:
             False,
             f"the tree-sitter grammar probe could not be launched "
             f"({failure.detail}); either the tree-sitter CLI "
-            f"({_resolve_tree_sitter_bin(os.environ)!r}) is missing or not executable, or "
+            f"({ctx.tree_sitter_bin!r}) is missing or not executable, or "
             "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
         )
 
@@ -1648,30 +1659,24 @@ def grammar_substrate_usable() -> tuple:
 # evaluate() — wire run → observe → verdict → Result
 # ---------------------------------------------------------------------------
 
-def evaluate(probe: Probe, runner: Any = None) -> Result:
+def evaluate(
+    probe: Probe, ctx: ProbeContext, runner: ProbeRunner = run_probe
+) -> Result:
     """Evaluate a single probe and return a Result with mandatory evidence.
 
     Args:
         probe:  The probe to evaluate.
-        runner: A callable (probe) -> ProbeRun.  Defaults to the real
-                subprocess runner (run_probe), which is injected in step-10.
-                Tests pass synthetic runners for hermeticity.
+        ctx:    Handed to the runner unchanged.
+        runner: A ProbeRunner, called once with no timeout; run_probe by
+                default.  Tests pass synthetic runners for hermeticity.
 
     Returns:
-        A Result carrying the exact command, the captured run, the
-        observation, and the verdict.
+        A Result carrying the captured run (the argv it ran included), the
+        observation, and the verdict.  No second argv is built here.
     """
-    if runner is None:
-        runner = run_probe
-
-    # Build the command with the same repo_root that run_probe() uses, so the
-    # recorded evidence command matches the actually-executed command exactly.
-    repo_root = _find_repo_root()
-    cmd = build_command(probe, repo_root=repo_root)
-
-    # Run the probe and capture output.  Re-typed here because a runner need not
-    # be run_probe(): a bare ProbeRun of a load failure must still not observe.
-    run = _with_grammar_load_failure(probe.probe_kind, runner(probe))
+    # Re-typed here because a runner need not be run_probe(): a bare ProbeRun of
+    # a load failure must still not observe.
+    run = _with_grammar_load_failure(probe.probe_kind, runner(probe, ctx))
 
     # Determine observation, and — for a value probe that produced output — the
     # reading of stdout behind it.  One call, so the verdict and the evidence
@@ -1683,7 +1688,6 @@ def evaluate(probe: Probe, runner: Any = None) -> Result:
 
     return Result(
         probe=probe,
-        command=cmd,
         run=run,
         observation=obs,
         verdict=verdict(obs, probe.expected["observation"]),
@@ -1777,7 +1781,7 @@ def _json_record(r: Result) -> Dict[str, Any]:
         "capability": r.probe.capability,
         "probe_kind": r.probe.probe_kind,
         "verdict": r.verdict,
-        "command": r.command,
+        "command": list(run.command),
         "exit_code": run.exit_code,
         "stdout": run.stdout,
         "stderr": run.stderr,
@@ -1889,7 +1893,7 @@ def published_schemas() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def main(argv: List[str]) -> int:
+def main(argv: List[str], runner: ProbeRunner = run_probe, ctx: Optional[ProbeContext] = None) -> int:
     """CLI entry-point.  Returns an exit code (0/1/2/64/70/75).
 
     Usage:
@@ -1898,8 +1902,10 @@ def main(argv: List[str]) -> int:
         prd-capability-check.py --print-schema
 
     Reads the committed probe-set JSON from PROBE_SET_JSON, evaluates every
-    probe with the real runner, prints per-probe evidence (or --json), and
-    returns harness_exit_code(results).
+    probe through `runner` (a ProbeRunner; run_probe by default), prints
+    per-probe evidence (or --json), and returns harness_exit_code(results).
+    `ctx` defaults to ProbeContext.from_environment(), built once per
+    invocation; a test passes its own runner and ctx.
 
     --grammar-substrate-status is a separate mode: it reports whether a grammar
     probe could run here at all, so a shell caller can print a clean SKIP
@@ -1974,6 +1980,9 @@ def main(argv: List[str]) -> int:
         sys.stdout.write("\n")
         return 0
 
+    if ctx is None:
+        ctx = ProbeContext.from_environment()
+
     # --- Substrate status mode: report and return, without running probes ---
     if args.grammar_substrate_status:
         # Ordered, not merged: an ungenerated grammar is a precondition failure
@@ -2027,8 +2036,8 @@ def main(argv: List[str]) -> int:
         )
         return 64  # EX_USAGE — vacuous all-pass masks broken CI gates
 
-    # --- Evaluate each probe with the real runner ---
-    results = [evaluate(probe) for probe in probes]
+    # --- Evaluate each probe through the runner seam ---
+    results = [evaluate(probe, ctx, runner) for probe in probes]
 
     # --- Emit output ---
     if args.emit_json:
@@ -2039,7 +2048,7 @@ def main(argv: List[str]) -> int:
         for r in results:
             run = r.run
             failure = run.harness_failure
-            cmd_str = " ".join(r.command)
+            cmd_str = " ".join(run.command)
             stdout_preview = run.stdout[:200] if run.stdout else "(empty)"
             # A HARNESS_ERROR means the probe could not run, so the tool's own
             # message is the operator's only lead — and the 200-char preview cuts

@@ -80,8 +80,7 @@ class TestRunProbe(unittest.TestCase):
         """check → [reify, check, <abs-fixture>]; fixture is resolved to absolute path."""
         fixture_rel = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
         probe = self._make_probe("check", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe)
+        cmd = pcc.build_command(probe, probe_context())
         # Binary + subcommand are unchanged.
         self.assertEqual(cmd[:2], ["reify", "check"])
         # Fixture is resolved to an absolute path.
@@ -94,8 +93,7 @@ class TestRunProbe(unittest.TestCase):
         """ir → [reify, eval, <abs-fixture>]; fixture is resolved to absolute path."""
         fixture_rel = "tests/prd-gate/fixtures/ir_clean_eval.ri"
         probe = self._make_probe("ir", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe)
+        cmd = pcc.build_command(probe, probe_context())
         # Binary + subcommand are unchanged.
         self.assertEqual(cmd[:2], ["reify", "eval"])
         # Fixture is resolved to an absolute path.
@@ -108,8 +106,7 @@ class TestRunProbe(unittest.TestCase):
         """grammar → [tree-sitter, parse, --quiet, <abs-fixture>]; fixture is absolute."""
         fixture_rel = "tests/prd-gate/fixtures/arrow_type.ri"
         probe = self._make_probe("grammar", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "tree-sitter"}):
-            cmd = pcc.build_command(probe)
+        cmd = pcc.build_command(probe, probe_context())
         # Binary + flags are unchanged.
         self.assertEqual(cmd[:3], ["tree-sitter", "parse", "--quiet"])
         # Fixture is resolved to an absolute path.
@@ -118,19 +115,6 @@ class TestRunProbe(unittest.TestCase):
         self.assertTrue(cmd[-1].endswith(fixture_rel),
                         f"absolute fixture must end with repo-relative path; got {cmd[-1]!r}")
 
-    def test_build_command_reify_bin_override(self):
-        """REIFY_BIN env var overrides the reify binary in the command."""
-        probe = self._make_probe("check", "x.ri")
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "/custom/reify"}):
-            cmd = pcc.build_command(probe)
-        self.assertEqual(cmd[0], "/custom/reify")
-
-    def test_build_command_tree_sitter_bin_override(self):
-        """TREE_SITTER_BIN env var overrides the tree-sitter binary in the command."""
-        probe = self._make_probe("grammar", "x.ri")
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "/custom/ts"}):
-            cmd = pcc.build_command(probe)
-        self.assertEqual(cmd[0], "/custom/ts")
 
     # ── run_probe existence and basic capture ─────────────────────────────────
 
@@ -140,43 +124,38 @@ class TestRunProbe(unittest.TestCase):
         self.assertTrue(callable(pcc.run_probe))
 
     def test_run_probe_returns_proberun(self):
-        """run_probe(probe) returns a ProbeRun instance."""
+        """run_probe(probe, ctx) returns a ProbeRun instance."""
         stub = self._make_stub(exit_code=0)
         probe = self._make_probe("check")
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(reify_bin=stub))
         self.assertIsInstance(run, pcc.ProbeRun)
 
     def test_run_probe_captures_exit_code(self):
         """run_probe captures the subprocess exit code."""
         stub = self._make_stub(exit_code=42)
         probe = self._make_probe("ir")
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(reify_bin=stub))
         self.assertEqual(run.exit_code, 42)
 
     def test_run_probe_captures_stdout(self):
         """run_probe captures stdout from the subprocess."""
         stub = self._make_stub(stdout_text="hello stdout", exit_code=0)
         probe = self._make_probe("check")
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(reify_bin=stub))
         self.assertIn("hello stdout", run.stdout)
 
     def test_run_probe_captures_stderr(self):
         """run_probe captures stderr from the subprocess."""
         stub = self._make_stub(stderr_text="hello stderr", exit_code=1)
         probe = self._make_probe("check")
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(reify_bin=stub))
         self.assertIn("hello stderr", run.stderr)
 
     def test_grammar_run_probe_uses_tree_sitter_stub(self):
-        """Grammar probe runs via TREE_SITTER_BIN stub."""
+        """Grammar probe runs via the ctx.tree_sitter_bin stub."""
         stub = self._make_stub(stdout_text="ts-ran", exit_code=0)
         probe = self._make_probe("grammar")
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub))
         self.assertEqual(run.exit_code, 0)
         self.assertIn("ts-ran", run.stdout)
 
@@ -184,8 +163,7 @@ class TestRunProbe(unittest.TestCase):
         """Grammar probe subprocess CWD must be the tree-sitter-reify directory."""
         stub = self._make_stub(print_cwd=True, exit_code=0)
         probe = self._make_probe("grammar")
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub))
         # Stub echoes CWD=$PWD; CWD must reference the tree-sitter-reify dir
         self.assertIn(
             "tree-sitter-reify", run.stdout,
@@ -197,8 +175,9 @@ class TestRunProbe(unittest.TestCase):
     def test_missing_reify_binary_is_a_typed_launch_failure(self):
         """The errno detail is data on the run; stderr carries only tool output."""
         missing = os.path.join(self._tmpdir, "nonexistent-reify-xyz")
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": missing}):
-            run = pcc.run_probe(self._make_probe("check"))
+        run = pcc.run_probe(
+            self._make_probe("check"), probe_context(reify_bin=missing)
+        )
         self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH)
         self.assertIn(missing, run.harness_failure.detail)
         self.assertEqual(run.exit_code, 127)
@@ -212,20 +191,21 @@ class TestRunProbe(unittest.TestCase):
             ("clean", self._make_stub(exit_code=0)),
         ):
             with self.subTest(run=label):
-                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                    run = pcc.run_probe(self._make_probe("grammar"))
+                run = pcc.run_probe(
+                    self._make_probe("grammar"), probe_context(tree_sitter_bin=stub)
+                )
                 self.assertIsNone(run.harness_failure)
 
     def test_missing_reify_binary_produces_harness_error(self):
-        """REIFY_BIN=/nonexistent → evaluate() verdict is not PASS/FAIL/UNPROVABLE."""
+        """reify_bin=/nonexistent → evaluate() verdict is not PASS/FAIL/UNPROVABLE."""
         probe = pcc.Probe(
             capability="test",
             probe_kind="check",
             fixture="tests/prd-gate/fixtures/revolute_silent_accept.ri",
             expected={"observation": "present", "match": {"exit_code": 1}},
         )
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "/nonexistent-reify-xyz"}):
-            result = pcc.evaluate(probe)  # uses the real run_probe default
+        ctx = probe_context(reify_bin="/nonexistent-reify-xyz")
+        result = pcc.evaluate(probe, ctx)  # uses the real run_probe default
         self.assertNotIn(
             result.verdict,
             (pcc.Verdict.PASS, pcc.Verdict.FAIL, pcc.Verdict.UNPROVABLE),
@@ -252,8 +232,7 @@ class TestRunProbe(unittest.TestCase):
             "precondition: the stub must not be executable",
         )
         probe = self._make_probe("grammar", "tests/prd-gate/fixtures/arrow_type.ri")
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub))
         self.assertEqual(
             run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH,
             "an unlaunchable binary is the same launch failure as a missing one",
@@ -272,9 +251,9 @@ class TestRunProbe(unittest.TestCase):
             fixture="tests/prd-gate/fixtures/arrow_type.ri",
             expected={"observation": "absent", "match": {}},
         )
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe)
-            result = pcc.evaluate(probe)  # uses the real run_probe default
+        ctx = probe_context(tree_sitter_bin=stub)
+        run = pcc.run_probe(probe, ctx)
+        result = pcc.evaluate(probe, ctx)  # uses the real run_probe default
         self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.GRAMMAR_LOAD)
         self.assertFalse(run.harness_failure.cache_denied)
         self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
@@ -340,11 +319,10 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
     # ── (a) build_command must return absolute fixture paths for all kinds ─────
 
     def test_grammar_fixture_is_absolute(self):
-        """grammar: build_command(probe, repo_root=_REPO_ROOT) last arg is absolute path."""
+        """grammar: build_command(probe, ctx) last arg is absolute path."""
         fixture_rel = "tests/prd-gate/fixtures/arrow_type.ri"
         probe = self._make_probe("grammar", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "tree-sitter"}):
-            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        cmd = pcc.build_command(probe, probe_context(repo_root=_REPO_ROOT))
         abs_fixture = cmd[-1]
         self.assertTrue(
             os.path.isabs(abs_fixture),
@@ -360,11 +338,10 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
         )
 
     def test_check_fixture_is_absolute(self):
-        """check: build_command(probe, repo_root=_REPO_ROOT) last arg is absolute path."""
+        """check: build_command(probe, ctx) last arg is absolute path."""
         fixture_rel = "tests/prd-gate/fixtures/revolute_silent_accept.ri"
         probe = self._make_probe("check", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        cmd = pcc.build_command(probe, probe_context(repo_root=_REPO_ROOT))
         abs_fixture = cmd[-1]
         self.assertTrue(
             os.path.isabs(abs_fixture),
@@ -380,11 +357,10 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
         )
 
     def test_ir_fixture_is_absolute(self):
-        """ir: build_command(probe, repo_root=_REPO_ROOT) last arg is absolute path."""
+        """ir: build_command(probe, ctx) last arg is absolute path."""
         fixture_rel = "tests/prd-gate/fixtures/ir_clean_eval.ri"
         probe = self._make_probe("ir", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        cmd = pcc.build_command(probe, probe_context(repo_root=_REPO_ROOT))
         abs_fixture = cmd[-1]
         self.assertTrue(
             os.path.isabs(abs_fixture),
@@ -430,8 +406,7 @@ class TestBuildCommandAbsoluteFixture(unittest.TestCase):
 
         stub = self._make_file_exists_stub()
         probe = self._make_probe("grammar", fixture_rel)
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe)
+        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub))
 
         self.assertEqual(
             run.exit_code, 0,
@@ -484,8 +459,9 @@ class TestRunProbeFixturePresence(unittest.TestCase):
 
     def test_committed_fixture_is_present_and_the_tool_agrees(self):
         stub = _write_file_exists_stub(self._tmpdir, "ts_file_exists")
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(self._probe("grammar", self._PRESENT))
+        run = pcc.run_probe(
+            self._probe("grammar", self._PRESENT), probe_context(tree_sitter_bin=stub)
+        )
         self.assertIs(run.fixture_present, True)
         self.assertEqual(
             run.exit_code, 0,
@@ -497,8 +473,9 @@ class TestRunProbeFixturePresence(unittest.TestCase):
         stub = _write_file_exists_stub(self._tmpdir, "ts_file_exists")
         for label, fixture in self._never_written_fixtures().items():
             with self.subTest(fixture=label):
-                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                    run = pcc.run_probe(self._probe("grammar", fixture))
+                run = pcc.run_probe(
+                    self._probe("grammar", fixture), probe_context(tree_sitter_bin=stub)
+                )
                 self.assertIs(run.fixture_present, False)
                 self.assertEqual(run.exit_code, 1, "the stub found no file either")
 
@@ -509,8 +486,9 @@ class TestRunProbeFixturePresence(unittest.TestCase):
         os.chmod(stub, 0o755)
         for label, fixture in self._never_written_fixtures().items():
             with self.subTest(fixture=label):
-                with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": stub}):
-                    run = pcc.run_probe(self._probe("check", fixture))
+                run = pcc.run_probe(
+                    self._probe("check", fixture), probe_context(reify_bin=stub)
+                )
                 self.assertIs(run.fixture_present, False)
                 self.assertIn("ran", run.stdout, "the probe must still have run")
                 self.assertEqual(run.exit_code, 3, "its own exit code is captured")
@@ -551,8 +529,7 @@ class TestBuildCommandValueKind(unittest.TestCase):
     def test_value_argv_shape(self):
         """value → [reify, eval, <abs-fixture>]."""
         probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        cmd = pcc.build_command(probe, probe_context(repo_root=_REPO_ROOT))
         self.assertEqual(
             cmd, ["reify", "eval", os.path.join(_REPO_ROOT, _VALUE_CELLS_FIXTURE)]
         )
@@ -561,21 +538,19 @@ class TestBuildCommandValueKind(unittest.TestCase):
         """SPOT: the two kinds differ in observation model, never in argv."""
         value_probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
         ir_probe = self._make_probe("ir", match={"stderr_contains": "EvalError"})
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            value_cmd = pcc.build_command(value_probe, repo_root=_REPO_ROOT)
-            ir_cmd = pcc.build_command(ir_probe, repo_root=_REPO_ROOT)
+        value_cmd = pcc.build_command(value_probe, probe_context(repo_root=_REPO_ROOT))
+        ir_cmd = pcc.build_command(ir_probe, probe_context(repo_root=_REPO_ROOT))
         self.assertEqual(value_cmd, ir_cmd)
 
     def test_value_honours_reify_bin_override(self):
         probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "/custom/reify"}):
-            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        ctx = probe_context(repo_root=_REPO_ROOT, reify_bin="/custom/reify")
+        cmd = pcc.build_command(probe, ctx)
         self.assertEqual(cmd[0], "/custom/reify")
 
     def test_value_resolves_relative_fixture(self):
         probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe, repo_root=_REPO_ROOT)
+        cmd = pcc.build_command(probe, probe_context(repo_root=_REPO_ROOT))
         self.assertTrue(os.path.isabs(cmd[-1]), f"got {cmd[-1]!r}")
         self.assertTrue(cmd[-1].endswith(_VALUE_CELLS_FIXTURE), f"got {cmd[-1]!r}")
 
@@ -584,8 +559,7 @@ class TestBuildCommandValueKind(unittest.TestCase):
         probe = self._make_probe(
             "value", fixture=absolute, match=dict(self._VALUE_MATCH)
         )
-        with unittest.mock.patch.dict(os.environ, {"REIFY_BIN": "reify"}):
-            cmd = pcc.build_command(probe, repo_root="/some/other/root")
+        cmd = pcc.build_command(probe, probe_context(repo_root="/some/other/root"))
         self.assertEqual(cmd[-1], absolute)
 
     def test_value_probe_inherits_ambient_env(self):
@@ -602,10 +576,8 @@ class TestBuildCommandValueKind(unittest.TestCase):
             sentinel = os.path.join(tmpdir, "ambient_cache_value")
             os.makedirs(sentinel, exist_ok=True)
             probe = self._make_probe("value", match=dict(self._VALUE_MATCH))
-            with unittest.mock.patch.dict(
-                os.environ, {"REIFY_BIN": stub, "XDG_CACHE_HOME": sentinel}
-            ):
-                run = pcc.run_probe(probe)
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": sentinel}):
+                run = pcc.run_probe(probe, probe_context(reify_bin=stub))
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         self.assertEqual(run.stdout.strip(), f"XDG_CACHE_HOME={sentinel}")
 

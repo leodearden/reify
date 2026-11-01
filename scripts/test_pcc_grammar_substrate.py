@@ -32,6 +32,7 @@ from _pcc_test_support import (
     _ts_stub_hangs,
     _ts_stub_not_executable,
     _write_ts_stub,
+    probe_context,
 )
 
 
@@ -618,18 +619,16 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         records were not classified, an exit 124 would fall through observe()'s
         grammar branch as an ordinary non-zero exit.
         """
-        with unittest.mock.patch.dict(
-            os.environ, {"TREE_SITTER_BIN": _ts_stub_hangs(self._tmpdir)}
-        ):
-            run = pcc.run_probe(
-                pcc.Probe(
-                    capability="wedged",
-                    probe_kind="grammar",
-                    fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
-                    expected={"observation": "present", "match": {}},
-                ),
-                timeout=0.4,
-            )
+        run = pcc.run_probe(
+            pcc.Probe(
+                capability="wedged",
+                probe_kind="grammar",
+                fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+                expected={"observation": "present", "match": {}},
+            ),
+            probe_context(tree_sitter_bin=_ts_stub_hangs(self._tmpdir)),
+            timeout=0.4,
+        )
         self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT)
         self.assertEqual(
             pcc.observe("grammar", run, {}), pcc.Observation.HARNESS_ERROR,
@@ -654,8 +653,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
             expected={"observation": "present", "match": {}},
         )
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe, timeout=0.6)
+        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub), timeout=0.6)
         self.assertEqual(
             run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
             "precondition: the stub must have outlasted the bound",
@@ -693,7 +691,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             expected={"observation": "present", "match": {}},
         )
         with unittest.mock.patch.object(subprocess, "run", side_effect=fake_run):
-            pcc.run_probe(probe)
+            pcc.run_probe(probe, probe_context())
         # Assert the launch HAPPENED before asserting what it was passed: read
         # through .get() with a None default, this passes vacuously if
         # subprocess.run is never reached at all (build_command raising, or a

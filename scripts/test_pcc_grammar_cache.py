@@ -20,6 +20,7 @@ from _pcc_test_support import (
     _ts_stub_echo_cache,
     _ts_stub_hangs,
     _write_ts_stub,
+    probe_context,
 )
 
 
@@ -44,8 +45,8 @@ class TestGrammarCacheIsolation(unittest.TestCase):
     that the child's cache is neither the ambient one nor ``~/.cache``.
 
     setUp clears REIFY_TS_CACHE_HOME for the WHOLE class, which is load-bearing
-    rather than tidiness.  Every case here sets only TREE_SITTER_BIN /
-    XDG_CACHE_HOME, so an ambient override — which
+    rather than tidiness.  Every case here hands its stub in on ctx and sets
+    only XDG_CACHE_HOME, so an ambient override — which
     .claude/skills/prd/references/grammar-gate.md actively encourages an operator
     to export — would silently divert every case onto the OVERRIDE branch instead
     of the derived one, and they would all still pass: exactly the vacuous green
@@ -123,9 +124,10 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+        ctx = probe_context(tree_sitter_bin=stub)
+        with unittest.mock.patch.dict(os.environ):
             os.environ.pop("XDG_CACHE_HOME", None)
-            run = pcc.run_probe(probe)
+            run = pcc.run_probe(probe, ctx)
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         value = self._reported_cache(run)
         self.assertNotEqual(
@@ -148,17 +150,16 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         os.makedirs(sentinel, exist_ok=True)
 
         with self.subTest(ambient="set"):
-            with unittest.mock.patch.dict(
-                os.environ,
-                {"TREE_SITTER_BIN": stub, "XDG_CACHE_HOME": sentinel},
-            ):
-                run = pcc.run_probe(probe)
+            ctx = probe_context(tree_sitter_bin=stub)
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": sentinel}):
+                run = pcc.run_probe(probe, ctx)
             self._assert_isolated(self._reported_cache(run), sentinel)
 
         with self.subTest(ambient="unset"):
-            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+            ctx = probe_context(tree_sitter_bin=stub)
+            with unittest.mock.patch.dict(os.environ):
                 os.environ.pop("XDG_CACHE_HOME", None)
-                run = pcc.run_probe(probe)
+                run = pcc.run_probe(probe, ctx)
             self._assert_isolated(self._reported_cache(run), None)
 
     # ── (c) the dir the child was pointed at is real and writable ─────────────
@@ -174,9 +175,10 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         probe = self._make_probe()
         # Ambient popped for the same reason as (a): otherwise an inherited
         # XDG_CACHE_HOME that already exists satisfies this vacuously.
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+        ctx = probe_context(tree_sitter_bin=stub)
+        with unittest.mock.patch.dict(os.environ):
             os.environ.pop("XDG_CACHE_HOME", None)
-            run = pcc.run_probe(probe)
+            run = pcc.run_probe(probe, ctx)
         value = self._reported_cache(run)
         self.assertNotEqual(value, _UNSET_CACHE_MARKER)
         self.assertTrue(
@@ -201,8 +203,8 @@ class TestGrammarCacheIsolation(unittest.TestCase):
             self._tmpdir, "ts_stub_cwd", 'echo "CWD=$PWD"\nexit 0\n'
         )
         probe = self._make_probe()
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe)
+        ctx = probe_context(tree_sitter_bin=stub)
+        run = pcc.run_probe(probe, ctx)
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         cwd_lines = [ln for ln in run.stdout.splitlines() if ln.startswith("CWD=")]
         self.assertEqual(len(cwd_lines), 1, f"expected one CWD line; got {run.stdout!r}")
@@ -228,10 +230,9 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         probe = self._make_probe()
         sentinel = os.path.join(self._tmpdir, "ambient_cache")
         os.makedirs(sentinel, exist_ok=True)
-        with unittest.mock.patch.dict(
-            os.environ, {"TREE_SITTER_BIN": stub, "XDG_CACHE_HOME": sentinel},
-        ):
-            run = pcc.run_probe(probe, timeout=10.0)
+        ctx = probe_context(tree_sitter_bin=stub)
+        with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": sentinel}):
+            run = pcc.run_probe(probe, ctx, timeout=10.0)
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         self._assert_isolated(self._reported_cache(run), sentinel)
 
@@ -246,9 +247,9 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            unbounded = self._reported_cache(pcc.run_probe(probe))
-            bounded = self._reported_cache(pcc.run_probe(probe, timeout=10.0))
+        ctx = probe_context(tree_sitter_bin=stub)
+        unbounded = self._reported_cache(pcc.run_probe(probe, ctx))
+        bounded = self._reported_cache(pcc.run_probe(probe, ctx, timeout=10.0))
         self.assertEqual(
             bounded, unbounded,
             "the bounded and unbounded launch arms must share one cache dir",
@@ -269,10 +270,9 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         probe = self._make_probe(kind="check")
         sentinel = os.path.join(self._tmpdir, "ambient_cache_check")
         os.makedirs(sentinel, exist_ok=True)
-        with unittest.mock.patch.dict(
-            os.environ, {"REIFY_BIN": stub, "XDG_CACHE_HOME": sentinel},
-        ):
-            run = pcc.run_probe(probe)
+        ctx = probe_context(reify_bin=stub)
+        with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": sentinel}):
+            run = pcc.run_probe(probe, ctx)
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         self.assertEqual(
             self._reported_cache(run), sentinel,
@@ -294,8 +294,8 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         probe = self._make_probe()
         for label, kwargs in (("unbounded", {}), ("bounded", {"timeout": 10.0})):
             with self.subTest(arm=label):
-                with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": missing}):
-                    run = pcc.run_probe(probe, **kwargs)
+                ctx = probe_context(tree_sitter_bin=missing)
+                run = pcc.run_probe(probe, ctx, **kwargs)
                 self.assertEqual(run.exit_code, 127, f"{label}: {run!r}")
                 self.assertEqual(
                     run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH,
@@ -314,8 +314,8 @@ class TestGrammarCacheIsolation(unittest.TestCase):
         """
         stub = _ts_stub_hangs(self._tmpdir, seconds=30)
         probe = self._make_probe()
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe, timeout=0.3)
+        ctx = probe_context(tree_sitter_bin=stub)
+        run = pcc.run_probe(probe, ctx, timeout=0.3)
         self.assertEqual(run.exit_code, 124, f"expected timeout exit; got {run!r}")
         self.assertEqual(
             run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
@@ -907,12 +907,11 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
+        ctx = probe_context(tree_sitter_bin=stub)
         with unittest.mock.patch.dict(
-            os.environ,
-            {"TREE_SITTER_BIN": stub,
-             pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()},
+            os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()}
         ):
-            run = pcc.run_probe(probe)
+            run = pcc.run_probe(probe, ctx)
         self.assertIsInstance(
             run, pcc.ProbeRun,
             "an unusable cache override must be represented, not propagated",
@@ -927,12 +926,11 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
+        ctx = probe_context(tree_sitter_bin=stub)
         with unittest.mock.patch.dict(
-            os.environ,
-            {"TREE_SITTER_BIN": stub,
-             pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()},
+            os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()}
         ):
-            run = pcc.run_probe(probe, timeout=10.0)
+            run = pcc.run_probe(probe, ctx, timeout=10.0)
         self.assertIsInstance(
             run, pcc.ProbeRun,
             "an unusable cache override must be represented, not propagated",
@@ -950,13 +948,14 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
+        ctx = probe_context(tree_sitter_bin=stub)
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir), \
-             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
+             unittest.mock.patch.dict(os.environ):
             os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
             wedged = self._wedge_derived_dir()
             runs = {
-                "unbounded": pcc.run_probe(probe),
-                "bounded": pcc.run_probe(probe, timeout=10.0),
+                "unbounded": pcc.run_probe(probe, ctx),
+                "bounded": pcc.run_probe(probe, ctx, timeout=10.0),
             }
         for label, run in runs.items():
             with self.subTest(arm=label):
@@ -983,13 +982,11 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         sentinel = os.path.join(self._tmpdir, "ambient_cache")
         os.makedirs(sentinel, exist_ok=True)
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(
-                os.environ,
-                {"TREE_SITTER_BIN": stub, "XDG_CACHE_HOME": sentinel},
-            ):
+            ctx = probe_context(tree_sitter_bin=stub)
+            with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": sentinel}):
                 os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
                 self._wedge_derived_dir()
-                run = pcc.run_probe(probe)
+                run = pcc.run_probe(probe, ctx)
         self.assertNotIn(
             sentinel, run.stdout,
             "a cache-setup failure must NOT be degraded into a run against the "

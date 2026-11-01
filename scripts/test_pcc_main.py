@@ -6,6 +6,7 @@ skip-guarded real e2e.  Shared loader and helpers: scripts/_pcc_test_support.py;
 runner: tests/infra/test_prd_capability_check.sh.
 """
 
+import dataclasses
 import io
 import json
 import os
@@ -56,21 +57,23 @@ class _MainHarness:
     construction Python only tolerates by accident.
     """
 
-    def _run_main_capturing(self, argv, runner=None):
+    def _run_main_capturing(self, argv, runner=None, ctx=None):
         """Run main() with stdout/stderr captured.
 
-        Returns (exit_code, stdout_text, stderr_text).
-        If runner is not None, patches pcc.run_probe with it.
+        Returns (exit_code, stdout_text, stderr_text).  A given runner is handed
+        to main() with ctx, or with a hermetic probe_context() when ctx is None;
+        with neither, main() takes its real runner and builds its own context.
         """
+        seams = {}
+        if runner is not None:
+            seams = {"runner": runner, "ctx": ctx if ctx is not None else probe_context()}
+        elif ctx is not None:
+            seams = {"ctx": ctx}
         buf_out = io.StringIO()
         buf_err = io.StringIO()
         with unittest.mock.patch("sys.stdout", buf_out), \
              unittest.mock.patch("sys.stderr", buf_err):
-            if runner is not None:
-                with unittest.mock.patch.object(pcc, "run_probe", side_effect=runner):
-                    rc = pcc.main(argv)
-            else:
-                rc = pcc.main(argv)
+            rc = pcc.main(argv, **seams)
         return rc, buf_out.getvalue(), buf_err.getvalue()
 
     # stdout the value probe in example-probe-set.json expects to read.
@@ -102,7 +105,8 @@ class _MainHarness:
         an all-PASSing run while believing it had forced a failure.
 
         A value is either an (exit_code, stdout, stderr) triple or a ready
-        ProbeRun, returned verbatim, for a test that steers its typed fields.
+        ProbeRun, for a test that steers its typed fields.  A run without a
+        command gets build_command(probe, ctx), as the real runner would record.
         """
         unknown = sorted(set(by_kind) - set(self._PASSING_RUNS))
         if unknown:
@@ -112,12 +116,14 @@ class _MainHarness:
             )
         runs = dict(self._PASSING_RUNS, **by_kind)
 
-        def runner(probe: Any) -> Any:
+        def runner(probe: Any, ctx: Any, timeout: Any = None) -> Any:
             run = runs[probe.probe_kind]
-            if isinstance(run, pcc.ProbeRun):
-                return run
-            exit_code, stdout, stderr = run
-            return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+            if not isinstance(run, pcc.ProbeRun):
+                exit_code, stdout, stderr = run
+                run = pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
+            if not run.command:
+                run = dataclasses.replace(run, command=tuple(pcc.build_command(probe, ctx)))
+            return run
         return runner
 
     @staticmethod
@@ -812,8 +818,10 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
             }]}, fh)
         return path
 
-    def _assert_typed_failure(self, kind, fixture, expected_kind):
-        rc, out, err = self._run_main_capturing(["--json", self._probe_set(kind, fixture)])
+    def _assert_typed_failure(self, kind, fixture, expected_kind, ctx):
+        rc, out, err = self._run_main_capturing(
+            ["--json", self._probe_set(kind, fixture)], ctx=ctx
+        )
         self.assertEqual(rc, 70, out + err)
         [record] = json.loads(out)["results"]
         self.assertEqual(record["verdict"], pcc.Verdict.HARNESS_ERROR)
@@ -825,27 +833,27 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
         return record
 
     def test_missing_reify_binary_is_launch(self):
-        os.environ["REIFY_BIN"] = os.path.join(self._tmpdir, "nonexistent-reify")
+        ctx = probe_context(reify_bin=os.path.join(self._tmpdir, "nonexistent-reify"))
         self._assert_typed_failure(
-            "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri", "launch"
+            "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri", "launch", ctx
         )
 
     def test_wedged_grammar_cache_is_setup(self):
-        os.environ["TREE_SITTER_BIN"] = _ts_stub_clean(self._tmpdir)
+        ctx = probe_context(tree_sitter_bin=_ts_stub_clean(self._tmpdir))
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
             wedged = pcc._grammar_cache_home(pcc._find_repo_root())
             shutil.rmtree(wedged, ignore_errors=True)
             with open(wedged, "w") as fh:
                 fh.write("x")
             record = self._assert_typed_failure(
-                "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "setup"
+                "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "setup", ctx
             )
         self.assertIn(wedged, record["harness_failure"]["detail"])
 
     def test_cache_denied_tree_sitter_is_grammar_load(self):
-        os.environ["TREE_SITTER_BIN"] = _ts_stub_cache_denied(self._tmpdir)
+        ctx = probe_context(tree_sitter_bin=_ts_stub_cache_denied(self._tmpdir))
         record = self._assert_typed_failure(
-            "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "grammar_load"
+            "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "grammar_load", ctx
         )
         self.assertIs(record["harness_failure"]["cache_denied"], True)
 
@@ -990,11 +998,12 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
     # ── the evidence is computed once, with the verdict ───────────────────────
 
     def test_evaluate_populates_value_observation_only_for_value_kind(self):
-        def runner(probe):
+        def runner(probe, ctx, timeout=None):
             return pcc.ProbeRun(exit_code=0, stdout=_VALUE_CELLS_STDOUT, stderr="")
 
         probes = pcc.load_probe_set(self._probe_set_text())
-        by_kind = {p.probe_kind: pcc.evaluate(p, runner=runner) for p in probes}
+        by_kind = {p.probe_kind: pcc.evaluate(p, probe_context(), runner=runner)
+                   for p in probes}
         for kind in ("grammar", "check", "ir"):
             with self.subTest(kind=kind):
                 self.assertIsNone(by_kind[kind].value_observation)
@@ -1015,7 +1024,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
                     p for p in pcc.load_probe_set(self._probe_set_text())
                     if p.probe_kind == "value"
                 ][0]
-                result = pcc.evaluate(probe, runner=lambda _p: run)
+                result = pcc.evaluate(probe, probe_context(), runner=lambda _p, _ctx, timeout=None: run)
                 obs, reading = pcc.observe_with_evidence(
                     "value", run, {"stdout_value": _DAMPING_SPEC}
                 )
@@ -1039,7 +1048,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         for stdout, satisfied, captured, failed in cases:
             with self.subTest(stdout=stdout):
                 run = pcc.ProbeRun(exit_code=0, stdout=stdout, stderr="")
-                obs = pcc.evaluate(probe, runner=lambda _p: run).value_observation
+                obs = pcc.evaluate(probe, probe_context(), runner=lambda _p, _ctx, timeout=None: run).value_observation
                 self.assertEqual(obs.satisfied, satisfied)
                 self.assertEqual(obs.captured, captured)
                 self.assertEqual(obs.failed_constraint, failed)
@@ -1049,7 +1058,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         probes = pcc.load_probe_set(self._probe_set_text(value_spec=spec))
         probe = [p for p in probes if p.probe_kind == "value"][0]
         run = pcc.ProbeRun(exit_code=0, stdout=_VALUE_CELLS_STDOUT, stderr="")
-        obs = pcc.evaluate(probe, runner=lambda _p: run).value_observation
+        obs = pcc.evaluate(probe, probe_context(), runner=lambda _p, _ctx, timeout=None: run).value_observation
         self.assertFalse(obs.satisfied)
         self.assertEqual(obs.captured, "undef")
         self.assertEqual(obs.failed_constraint, "finite")

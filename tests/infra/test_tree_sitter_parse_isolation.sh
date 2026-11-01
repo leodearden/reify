@@ -48,7 +48,7 @@
 # argv built programmatically — and the ONE real caller in this repo is exactly
 # that second shape: scripts/prd-capability-check.py's build_command() emits
 # [ts_bin, "parse", "--quiet", fixture] with ts_bin from
-# _resolve_tree_sitter_bin(), so the literal string never appears anywhere.
+# ProbeContext.tree_sitter_bin, so the literal string never appears anywhere.
 # Text alone would therefore be false confidence about the very caller this task
 # exists to fix. Block D is the structural half that covers it, paired with the
 # behavioural half in scripts/test_pcc_grammar_cache.py
