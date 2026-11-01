@@ -356,13 +356,14 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
 /// **Past the guard, the registry always answers.**
 ///
 /// For every name `registry_owns` claims, `registry_result_type` is `Some` at
-/// every argument shape. `expr.rs`'s registry-arm comment relies on this: its
-/// `let Some(t)` failing is unreachable today. This is the converse half that
+/// every argument sequence (argc 0..=3) over the alphabet below. `expr.rs`'s
+/// registry-arm comment relies on this: its `let Some(t)` failing is
+/// unreachable today. This is the converse half that
 /// `registry_owns_is_exactly_registry_result_type_s_precondition` leaves out.
 ///
-/// Row-derived over `reify_builtins::rows()`, and probed with an alphabet that
-/// reaches every branch of `resolvers.rs`'s `tensor_quantity`,
-/// `field_tensor_arg` and `reduce_tensor_arg`, at every argc from 0 to 3.
+/// Names are row-derived over `reify_builtins::rows()`, so a new row is swept
+/// automatically. The alphabet is not: it must grow when a resolver reads an
+/// argument type outside it.
 #[test]
 fn registry_result_type_is_total_over_every_name_registry_owns() {
     use reify_compiler::__registry_owns_for_test as registry_owns;
@@ -397,6 +398,9 @@ fn registry_result_type_is_total_over_every_name_registry_owns() {
     let alphabet = [
         Type::String,
         Type::Plane,
+        Type::Int,
+        Type::dimensionless_scalar(),
+        Type::List(Box::new(pressure_tensor())),
         scalar_pressure(),
         pressure_tensor(),
         Type::Matrix {
@@ -416,9 +420,9 @@ fn registry_result_type_is_total_over_every_name_registry_owns() {
     ];
 
     let mut calls: Vec<Vec<Type>> = vec![Vec::new()];
-    let mut shorter: Vec<Vec<Type>> = vec![Vec::new()];
+    let mut frontier: Vec<Vec<Type>> = vec![Vec::new()];
     for _ in 0..3 {
-        shorter = shorter
+        frontier = frontier
             .iter()
             .flat_map(|prefix| {
                 alphabet.iter().map(move |t| {
@@ -428,7 +432,7 @@ fn registry_result_type_is_total_over_every_name_registry_owns() {
                 })
             })
             .collect();
-        calls.extend(shorter.iter().cloned());
+        calls.extend(frontier.iter().cloned());
     }
 
     let declined: Vec<String> = owned
