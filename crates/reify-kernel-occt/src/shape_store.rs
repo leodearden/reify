@@ -341,6 +341,7 @@ impl ShapeStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::ffi::FfiShapeKind;
 
     #[test]
     fn get_reports_a_null_pointer_as_an_error_not_a_panic() {
@@ -405,37 +406,89 @@ mod tests {
         }
     }
 
+    /// Every `TopAbs_ShapeEnum` value, through the one C++ switch and the
+    /// `TryFrom` decode: each concrete type names its kind, and the abstract
+    /// `TopAbs_SHAPE` is refused as a contract violation, never a kind.
     #[test]
-    fn brep_kind_decoder_rejects_an_unrecognised_shape_type_name() {
-        let known = [
-            ("Solid", BRepKind::Solid),
-            ("CompSolid", BRepKind::Compound),
-            ("Compound", BRepKind::Compound),
-            ("Shell", BRepKind::Shell),
-            ("Wire", BRepKind::Wire),
-            ("Face", BRepKind::Face),
-            ("Edge", BRepKind::Edge),
-            ("Vertex", BRepKind::Vertex),
+    fn every_topabs_value_decodes_to_its_brep_kind_and_the_abstract_one_is_refused() {
+        // OCCT 7.8 TopAbs_ShapeEnum.hxx order.
+        let concrete = [
+            (0, "TopAbs_COMPOUND", BRepKind::Compound),
+            (1, "TopAbs_COMPSOLID", BRepKind::Compound),
+            (2, "TopAbs_SOLID", BRepKind::Solid),
+            (3, "TopAbs_SHELL", BRepKind::Shell),
+            (4, "TopAbs_FACE", BRepKind::Face),
+            (5, "TopAbs_WIRE", BRepKind::Wire),
+            (6, "TopAbs_EDGE", BRepKind::Edge),
+            (7, "TopAbs_VERTEX", BRepKind::Vertex),
         ];
-        for (name, kind) in known {
-            assert_eq!(
-                brep_kind_of_type_name(name).ok(),
-                Some(kind),
-                "known TopAbs name {name:?}"
-            );
-        }
-
-        for unknown in ["Shape", "Bogus"] {
-            match brep_kind_of_type_name(unknown) {
-                Err(GeometryError::OperationFailed(msg)) => assert!(
-                    msg.contains(unknown),
-                    "error for {unknown:?} must name it, got: {msg}"
-                ),
-                other => panic!(
-                    "unrecognised TopAbs name {unknown:?} must be an \
-                     OperationFailed error, not silently classified: {other:?}"
-                ),
+        let mut mismatches = Vec::new();
+        for (ordinal, name, expected) in concrete {
+            let decoded = ffi::ffi::shape_kind_of_topabs_for_test(ordinal)
+                .map_err(|e| e.to_string())
+                .and_then(|kind| BRepKind::try_from(kind).map_err(|e| format!("{e:?}")));
+            if decoded.as_ref() != Ok(&expected) {
+                mismatches.push(format!("{name} ({ordinal}): expected {expected:?}, got {decoded:?}"));
             }
         }
+
+        match ffi::ffi::shape_kind_of_topabs_for_test(8) {
+            Err(e) => {
+                let msg = e.to_string();
+                if !(msg.starts_with("shape_kind_of_topabs_for_test: ") && msg.contains("TopAbs_SHAPE")) {
+                    mismatches.push(format!(
+                        "TopAbs_SHAPE (8): expected a ContractViolation naming TopAbs_SHAPE, got: {msg}"
+                    ));
+                }
+            }
+            Ok(kind) => mismatches.push(format!("TopAbs_SHAPE (8): expected an error, got kind {kind:?}")),
+        }
+
+        if let Ok(kind) = ffi::ffi::shape_kind_of_topabs_for_test(9) {
+            mismatches.push(format!("ordinal 9 is no TopAbs value: expected an error, got kind {kind:?}"));
+        }
+
+        assert!(mismatches.is_empty(), "TopAbs decode mismatches:\n{}", mismatches.join("\n"));
+    }
+
+    #[test]
+    fn an_undeclared_ffi_shape_kind_is_an_error_naming_its_repr() {
+        match BRepKind::try_from(FfiShapeKind { repr: u8::MAX }) {
+            Err(GeometryError::OperationFailed(msg)) => assert!(
+                msg.contains("255"),
+                "the error must name the raw repr 255, got: {msg}"
+            ),
+            other => panic!("an undeclared FfiShapeKind must be OperationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn brep_kind_of_shape_classifies_the_unwrapped_body() {
+        let compound_of = |shapes: &[&ffi::ffi::OcctShape]| {
+            let mut vec = ffi::ffi::new_shape_vec();
+            for shape in shapes {
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            ffi::ffi::make_compound(&vec).expect("make_compound")
+        };
+        let first = ffi::ffi::make_box(0.01, 0.01, 0.01).expect("make_box");
+        let second = ffi::ffi::translate_shape(&first, 0.1, 0.0, 0.0).expect("translate_shape");
+
+        let one_box = compound_of(&[&first]);
+        let two_boxes = compound_of(&[&first, &second]);
+        let cases: [(&str, &ffi::ffi::OcctShape, BRepKind); 3] = [
+            ("a bare box", &first, BRepKind::Solid),
+            ("a compound of one box", &one_box, BRepKind::Solid),
+            ("a compound of two disjoint boxes", &two_boxes, BRepKind::Compound),
+        ];
+        let mismatches: Vec<String> = cases
+            .into_iter()
+            .filter_map(|(case, shape, expected)| {
+                let got = brep_kind_of_shape(shape);
+                (got.as_ref().ok() != Some(&expected))
+                    .then(|| format!("{case}: expected Ok({expected:?}), got {got:?}"))
+            })
+            .collect();
+        assert!(mismatches.is_empty(), "body classification mismatches:\n{}", mismatches.join("\n"));
     }
 }
