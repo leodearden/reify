@@ -1687,20 +1687,16 @@ impl PatternKind {
 /// nickname instead (`linear` for `linear_pattern`) names a symbol that appears
 /// nowhere in their source.
 ///
-/// Non-compliant today, and user-reachable on this same surface: `Circular`,
-/// `Arbitrary` — see #6874, which owns the flip, its call-site migration, and
-/// deleting this sentence.
-///
 /// Pinned by `pattern_kind_display` below — change a label there and here
 /// together, and migrate the call sites the change newly rejects (C6).
 impl std::fmt::Display for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PatternKind::Linear => f.write_str("linear_pattern"),
-            PatternKind::Circular => f.write_str("circular"),
+            PatternKind::Circular => f.write_str("circular_pattern"),
             PatternKind::Mirror => f.write_str("mirror"),
             PatternKind::Linear2D => f.write_str("linear_pattern_2d"),
-            PatternKind::Arbitrary => f.write_str("arbitrary"),
+            PatternKind::Arbitrary => f.write_str("arbitrary_pattern"),
         }
     }
 }
