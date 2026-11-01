@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_core::dimension::{DimensionVector, FORCE};
-use reify_ir::{DeterminacyState, Value};
+use reify_ir::{CompiledExpr, DeterminacyState, Value};
 
 // --- Range value constructors ---
 
@@ -59,6 +59,26 @@ pub fn mm(v: f64) -> Value {
         si_value: v * 0.001,
         dimension: DimensionVector::LENGTH,
     }
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in millimetres.
+pub fn mm_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(mm(v), Type::length())
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in SI metres.
+pub fn length_literal(meters: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::length(meters), Type::length())
+}
+
+/// `CompiledExpr` literal of an ANGLE-dimensioned scalar given in SI radians.
+pub fn angle_literal(radians: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::angle(radians), Type::angle())
+}
+
+/// `CompiledExpr` literal of a dimensionless real scalar.
+pub fn real_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
 }
 
 /// Create a Scalar with ANGLE dimension from degrees.
