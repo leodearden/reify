@@ -2290,3 +2290,147 @@ fn fully_determined_set_has_rank_six_and_no_null_space() {
         }
     }
 }
+
+// ── η #6675: the rotation-magnitude wrap ─────────────────────────────────────
+//
+// The exponential map is singular at |θ| = 2π, and a magnitude past π names the
+// same rotation as its complement. The solve keeps its rotation in (−π, π], so
+// the published Frame is canonical and the rank is never read at the singular
+// radius — observed through the solved Frame and the uniqueness verdict only.
+
+/// The `[w, x, y, z]` quaternion of a solved `Value::Frame`.
+fn frame_quaternion(frame: &Value) -> [f64; 4] {
+    match frame {
+        Value::Frame { basis, .. } => match **basis {
+            Value::Orientation { w, x, y, z } => [w, x, y, z],
+            ref other => panic!("a Frame basis is an Orientation, got {other:?}"),
+        },
+        other => panic!("expected a Frame, got {other:?}"),
+    }
+}
+
+/// `v` rotated by the unit quaternion `q`.
+fn quaternion_rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
+    let [w, x, y, z] = q;
+    let u = [x, y, z];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let t = cross(u, v).map(|c| 2.0 * c);
+    let ut = cross(u, t);
+    [0, 1, 2].map(|i| v[i] + w * t[i] + ut[i])
+}
+
+/// `v` rotated by the exponential-map vector `theta`.
+fn exp_map_rotate(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    let angle = (theta[0] * theta[0] + theta[1] * theta[1] + theta[2] * theta[2]).sqrt();
+    let half = 0.5 * angle;
+    let s = half.sin() / angle;
+    quaternion_rotate([half.cos(), theta[0] * s, theta[1] * s, theta[2] * s], v)
+}
+
+fn solved_frame(result: SolveResult, sub: &str) -> (Value, bool) {
+    match result {
+        SolveResult::Solved { values, unique } => {
+            let frame = values
+                .get(&reify_core::ValueCellId::new(sub, "pose"))
+                .expect("the solved Frame")
+                .clone();
+            (frame, unique)
+        }
+        other => panic!("expected Solved, got {other:?}"),
+    }
+}
+
+/// A gauge spin seeded past π comes back as the same physical rotation with
+/// magnitude ≤ π, and a quaternion with `w ≥ 0`.
+#[test]
+fn a_gauge_rotation_seeded_past_pi_is_published_canonically() {
+    let relations = b5_relations();
+    let unknown = bolt_unknown();
+    let seed = Pose {
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 3.5],
+    };
+    let scaling = scaling_for(&relations, &unknown, &seed);
+    let (frame, _) = solved_frame(solve_frame(&relations, &unknown, &seed, &scaling), "bolt");
+
+    let q = frame_quaternion(&frame);
+    assert!(q[0] >= 0.0, "a canonical quaternion has w ≥ 0: {q:?}");
+    let rotation = pose_from_frame(&frame).expect("a Pose").rotation;
+    let magnitude = rotation.iter().map(|c| c * c).sum::<f64>().sqrt();
+    assert!(
+        magnitude <= std::f64::consts::PI,
+        "|θ| = {magnitude}: {rotation:?}"
+    );
+    assert!(
+        (rotation[2] - (3.5 - 2.0 * std::f64::consts::PI)).abs() <= 1e-9,
+        "{rotation:?}"
+    );
+
+    for probe in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        let solved = quaternion_rotate(q, probe);
+        let seeded = exp_map_rotate(seed.rotation, probe);
+        for i in 0..3 {
+            assert!(
+                (solved[i] - seeded[i]).abs() <= 1e-9,
+                "the physical placement is the seed's: {solved:?} vs {seeded:?}"
+            );
+        }
+    }
+}
+
+/// A fully pinning strict set seeded 0.05 rad short of a full turn is solved
+/// uniquely: the exp-map singularity at |θ| = 2π never reaches the rank verdict.
+#[test]
+fn a_seed_near_a_full_turn_is_not_misreported_as_under_determined() {
+    let relations = vec![
+        relation(
+            "concentric",
+            vec![
+                datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                datum("plate", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            4,
+        ),
+        relation(
+            "flush",
+            vec![
+                datum("bolt", plane((0.0, 0.0, 0.005), (0.0, 0.0, 1.0))),
+                datum("plate", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            3,
+        ),
+        relation(
+            "perpendicular",
+            vec![
+                datum("bolt", dir(1.0, 0.0, 0.0)),
+                datum("plate", dir(0.0, 1.0, 0.0)),
+            ],
+            1,
+        ),
+    ];
+    let unknown = bolt_unknown();
+    let seed = Pose {
+        translation: [0.0, 0.0, 0.0],
+        rotation: [0.0, 0.0, 2.0 * std::f64::consts::PI - 0.05],
+    };
+    let scaling = scaling_for(&relations, &unknown, &seed);
+
+    let (_, unique) = solved_frame(solve_frame(&relations, &unknown, &seed, &scaling), "bolt");
+    assert!(unique, "concentric + flush + perpendicular pins all 6 DOF");
+    let solution = solve_frame_outcome(
+        &relations,
+        &unknown,
+        &seed,
+        &scaling,
+        SolveBudget::default(),
+    )
+    .result
+    .expect("feasible");
+    assert_eq!(solution.rank, 6, "{solution:?}");
+}
