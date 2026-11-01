@@ -9,6 +9,7 @@ use cxx::UniquePtr;
 use reify_ir::{BRepKind, GeometryError, GeometryHandle, GeometryHandleId, QueryError};
 
 use crate::ffi;
+use crate::ffi::ffi::FfiShapeKind;
 
 /// The sub-shape kinds [`ShapeStore::sub_shapes`] enumerates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,33 +56,39 @@ pub(crate) enum ReprPolicy {
 
 /// Classify an `OcctShape` by its BODY type: the top-level TopAbs type after
 /// the single-body unwrap, so a 1-solid COMPOUND wrapper is
-/// [`BRepKind::Solid`]. A type with no [`BRepKind`] is an error, never Solid.
+/// [`BRepKind::Solid`].
 ///
 /// Only the kind is unwrapped, not the stored shape: a fillet, chamfer, draft
 /// or thicken result is still OCCT's COMPOUND wrapper, so C++ code branching
 /// on `ShapeType()` sees COMPOUND where `repr_of` says Solid.
 pub(crate) fn brep_kind_of_shape(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
-    let name = ffi::ffi::body_type_name(shape)
+    let kind = ffi::ffi::body_shape_kind(shape)
         .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
-    brep_kind_of_type_name(&name)
+    BRepKind::try_from(kind)
 }
 
-/// The OCCT TopAbs type name → [`BRepKind`] table behind [`brep_kind_of_shape`].
-fn brep_kind_of_type_name(name: &str) -> Result<BRepKind, GeometryError> {
-    Ok(match name {
-        "Solid" => BRepKind::Solid,
-        "CompSolid" | "Compound" => BRepKind::Compound,
-        "Shell" => BRepKind::Shell,
-        "Wire" => BRepKind::Wire,
-        "Face" => BRepKind::Face,
-        "Edge" => BRepKind::Edge,
-        "Vertex" => BRepKind::Vertex,
-        other => {
-            return Err(GeometryError::OperationFailed(format!(
-                "cannot classify OCCT shape type {other:?} as a BRepKind"
-            )));
-        }
-    })
+impl TryFrom<FfiShapeKind> for BRepKind {
+    type Error = GeometryError;
+
+    /// A CompSolid is a [`BRepKind::Compound`]. A repr outside the declared
+    /// variants is an error, never a default kind: cxx shared enums are open
+    /// `u8` newtypes, so the match cannot be exhaustive without that arm.
+    fn try_from(kind: FfiShapeKind) -> Result<Self, Self::Error> {
+        Ok(match kind {
+            FfiShapeKind::Solid => BRepKind::Solid,
+            FfiShapeKind::CompSolid | FfiShapeKind::Compound => BRepKind::Compound,
+            FfiShapeKind::Shell => BRepKind::Shell,
+            FfiShapeKind::Wire => BRepKind::Wire,
+            FfiShapeKind::Face => BRepKind::Face,
+            FfiShapeKind::Edge => BRepKind::Edge,
+            FfiShapeKind::Vertex => BRepKind::Vertex,
+            FfiShapeKind { repr } => {
+                return Err(GeometryError::OperationFailed(format!(
+                    "FfiShapeKind repr {repr} is not a declared FfiShapeKind variant"
+                )));
+            }
+        })
+    }
 }
 
 pub(crate) struct ShapeStore {
@@ -428,27 +435,39 @@ mod tests {
                 .map_err(|e| e.to_string())
                 .and_then(|kind| BRepKind::try_from(kind).map_err(|e| format!("{e:?}")));
             if decoded.as_ref() != Ok(&expected) {
-                mismatches.push(format!("{name} ({ordinal}): expected {expected:?}, got {decoded:?}"));
+                mismatches.push(format!(
+                    "{name} ({ordinal}): expected {expected:?}, got {decoded:?}"
+                ));
             }
         }
 
         match ffi::ffi::shape_kind_of_topabs_for_test(8) {
             Err(e) => {
                 let msg = e.to_string();
-                if !(msg.starts_with("shape_kind_of_topabs_for_test: ") && msg.contains("TopAbs_SHAPE")) {
+                if !(msg.starts_with("shape_kind_of_topabs_for_test: ")
+                    && msg.contains("TopAbs_SHAPE"))
+                {
                     mismatches.push(format!(
                         "TopAbs_SHAPE (8): expected a ContractViolation naming TopAbs_SHAPE, got: {msg}"
                     ));
                 }
             }
-            Ok(kind) => mismatches.push(format!("TopAbs_SHAPE (8): expected an error, got kind {kind:?}")),
+            Ok(kind) => mismatches.push(format!(
+                "TopAbs_SHAPE (8): expected an error, got kind {kind:?}"
+            )),
         }
 
         if let Ok(kind) = ffi::ffi::shape_kind_of_topabs_for_test(9) {
-            mismatches.push(format!("ordinal 9 is no TopAbs value: expected an error, got kind {kind:?}"));
+            mismatches.push(format!(
+                "ordinal 9 is no TopAbs value: expected an error, got kind {kind:?}"
+            ));
         }
 
-        assert!(mismatches.is_empty(), "TopAbs decode mismatches:\n{}", mismatches.join("\n"));
+        assert!(
+            mismatches.is_empty(),
+            "TopAbs decode mismatches:\n{}",
+            mismatches.join("\n")
+        );
     }
 
     #[test]
@@ -479,7 +498,11 @@ mod tests {
         let cases: [(&str, &ffi::ffi::OcctShape, BRepKind); 3] = [
             ("a bare box", &first, BRepKind::Solid),
             ("a compound of one box", &one_box, BRepKind::Solid),
-            ("a compound of two disjoint boxes", &two_boxes, BRepKind::Compound),
+            (
+                "a compound of two disjoint boxes",
+                &two_boxes,
+                BRepKind::Compound,
+            ),
         ];
         let mismatches: Vec<String> = cases
             .into_iter()
@@ -489,6 +512,10 @@ mod tests {
                     .then(|| format!("{case}: expected Ok({expected:?}), got {got:?}"))
             })
             .collect();
-        assert!(mismatches.is_empty(), "body classification mismatches:\n{}", mismatches.join("\n"));
+        assert!(
+            mismatches.is_empty(),
+            "body classification mismatches:\n{}",
+            mismatches.join("\n")
+        );
     }
 }

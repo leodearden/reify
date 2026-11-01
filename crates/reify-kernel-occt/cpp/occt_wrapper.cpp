@@ -272,8 +272,7 @@ auto wrap_occt_call(const char* name, F&& fn) -> decltype(fn()) {
 }
 
 /// Canonical display name for a `TopAbs_ShapeEnum` ("Solid", "Face", …, or
-/// "Shape" for the abstract fallback). Single source for both the
-/// `body_type_name` FFI entry point and error messages built in this file.
+/// "Shape" for the abstract fallback), for error messages built in this file.
 static const char* topabs_name(TopAbs_ShapeEnum type) {
     switch (type) {
         case TopAbs_COMPOUND:  return "Compound";
@@ -1313,15 +1312,50 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
     });
 }
 
-// The TopAbs name of `shape`'s BODY type: the top-level type after
+// The one TopAbs_ShapeEnum -> FfiShapeKind map. No `default:`, and -Wswitch
+// is an error for this function alone, so a TopAbs value added to OCCT is a
+// compile error here rather than a silently unclassified shape.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wswitch"
+static FfiShapeKind ffi_shape_kind(TopAbs_ShapeEnum type) {
+    switch (type) {
+        case TopAbs_COMPOUND:  return FfiShapeKind::Compound;
+        case TopAbs_COMPSOLID: return FfiShapeKind::CompSolid;
+        case TopAbs_SOLID:     return FfiShapeKind::Solid;
+        case TopAbs_SHELL:     return FfiShapeKind::Shell;
+        case TopAbs_FACE:      return FfiShapeKind::Face;
+        case TopAbs_WIRE:      return FfiShapeKind::Wire;
+        case TopAbs_EDGE:      return FfiShapeKind::Edge;
+        case TopAbs_VERTEX:    return FfiShapeKind::Vertex;
+        case TopAbs_SHAPE:
+            throw ContractViolation(
+                "TopAbs_SHAPE is the abstract shape type and has no concrete FfiShapeKind");
+    }
+    throw ContractViolation(
+        "TopAbs value " + std::to_string(static_cast<int>(type)) +
+        " is not a TopAbs_ShapeEnum value");
+}
+#pragma GCC diagnostic pop
+
+// The kind of `shape`'s BODY: the top-level type after
 // unwrap_boolean_compound's single-body rule, so OCCT's 1-solid COMPOUND
-// wrappers (fillet, chamfer, draft, thicken) name "Solid".
-rust::String body_type_name(const OcctShape& shape) {
-    return wrap_occt_call("body_type_name", [&]() -> rust::String {
+// wrappers (fillet, chamfer, draft, thicken) are Solid.
+FfiShapeKind body_shape_kind(const OcctShape& shape) {
+    return wrap_occt_call("body_shape_kind", [&]() -> FfiShapeKind {
         if (shape.shape.IsNull()) {
-            throw std::runtime_error("cannot name the body type of a null shape");
+            throw ContractViolation("cannot classify a null shape");
         }
-        return rust::String(topabs_name(unwrap_boolean_compound(shape.shape).ShapeType()));
+        return ffi_shape_kind(unwrap_boolean_compound(shape.shape).ShapeType());
+    });
+}
+
+FfiShapeKind shape_kind_of_topabs_for_test(uint8_t topabs) {
+    return wrap_occt_call("shape_kind_of_topabs_for_test", [&]() -> FfiShapeKind {
+        if (topabs > TopAbs_SHAPE) {
+            throw ContractViolation(
+                "ordinal " + std::to_string(topabs) + " is not a TopAbs_ShapeEnum value");
+        }
+        return ffi_shape_kind(static_cast<TopAbs_ShapeEnum>(topabs));
     });
 }
 

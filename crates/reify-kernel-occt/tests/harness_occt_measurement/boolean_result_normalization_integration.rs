@@ -53,15 +53,15 @@
 //!
 //! # Observability note
 //!
-//! `ffi::ffi::body_type_name` is crate-private (`mod ffi;` at lib.rs:46), so an
-//! integration test cannot read the raw `TopAbs` name. The reachable
+//! `ffi::ffi::body_shape_kind` is crate-private (`mod ffi;` at lib.rs:46), so an
+//! integration test cannot read the raw `FfiShapeKind`. The reachable
 //! equivalents, via `OcctKernel::repr_of` and `GeometryQuery::IsWatertight`:
 //!
-//!   * `"Solid"`    ⇔ `BRepKind::Solid` (only `"Solid"` maps to it —
-//!     `brep_kind_of_shape` collapses `"CompSolid"`/`"Compound"`
+//!   * `FfiShapeKind::Solid`    ⇔ `BRepKind::Solid` (only `Solid` maps to it —
+//!     `brep_kind_of_shape` collapses `CompSolid`/`Compound`
 //!     onto `BRepKind::Compound`).
-//!   * `"CompSolid"` ⇔ `BRepKind::Compound` **and** `IsWatertight == true`
-//!     (a bare `"Compound"` fails the `SOLID|COMPSOLID|SHELL` guard, so
+//!   * `FfiShapeKind::CompSolid` ⇔ `BRepKind::Compound` **and** `IsWatertight == true`
+//!     (a bare `Compound` fails the `SOLID|COMPSOLID|SHELL` guard, so
 //!     watertightness is what separates the two).
 //!
 //! Gated on `has_occt` like the 44 sibling OCCT integration modules.
@@ -119,7 +119,7 @@ fn real_query(kernel: &OcctKernel, q: GeometryQuery) -> f64 {
 }
 
 /// Assert that `id` is a genuinely closed single body: `BRepKind::Solid` (which
-/// only a `body_type_name` of `"Solid"` maps to) plus `IsWatertight` and
+/// only a `body_shape_kind` of `FfiShapeKind::Solid` maps to) plus `IsWatertight` and
 /// `IsClosed`, both of which reject a bare COMPOUND at their
 /// `SOLID|COMPSOLID|SHELL` type guard.
 fn assert_watertight_solid(kernel: &OcctKernel, id: GeometryHandleId, what: &str) {
@@ -194,7 +194,7 @@ fn binary_common_of_overlapping_boxes_is_a_watertight_solid() {
 /// preserves the two-body component count AND passes the watertight guard.
 /// This mirrors `fuse_shape_list`'s reviewed multi-solid contract (task 5213).
 ///
-/// `brep_kind_of_shape` collapses `"CompSolid"` and `"Compound"` onto the same
+/// `brep_kind_of_shape` collapses `FfiShapeKind::CompSolid` and `Compound` onto the same
 /// `BRepKind::Compound`, so the repr alone cannot tell them apart —
 /// `IsWatertight` is what separates a COMPSOLID from a bare COMPOUND.
 #[test]

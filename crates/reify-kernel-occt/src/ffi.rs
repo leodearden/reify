@@ -311,6 +311,21 @@ pub mod ffi {
         TransferFailed,
     }
 
+    /// A shape's type, one variant per concrete `TopAbs_ShapeEnum` value. The
+    /// abstract `TopAbs_SHAPE` has none: C++ refuses it as a ContractViolation.
+    #[derive(Debug)]
+    #[repr(u8)]
+    enum FfiShapeKind {
+        Compound,
+        CompSolid,
+        Solid,
+        Shell,
+        Face,
+        Wire,
+        Edge,
+        Vertex,
+    }
+
     /// One product of a read STEP document, in DFS pre-order first-visit order
     /// over the free roots.
     struct StepProductRecord {
@@ -425,7 +440,7 @@ pub mod ffi {
         /// (task 7054).
         ///
         /// Consequence for the Rust side: stamp the stored `BRepKind` via
-        /// `brep_kind_of_shape` (which reads `body_type_name`), never a
+        /// `brep_kind_of_shape` (which reads `body_shape_kind`), never a
         /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
         /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -1430,10 +1445,17 @@ pub mod ffi {
         /// `Build()`).
         fn parallel_bop_build_count() -> u64;
 
-        /// The TopAbs name of `shape`'s body type after the single-body unwrap,
-        /// so OCCT's 1-solid COMPOUND wrappers from fillet, chamfer, draft and
-        /// thicken name "Solid". Backs `brep_kind_of_shape`; errs on a null shape.
-        fn body_type_name(shape: &OcctShape) -> Result<String>;
+        /// The kind of `shape`'s body after `unwrap_boolean_compound`'s
+        /// single-body rule, so OCCT's 1-solid COMPOUND wrappers from fillet,
+        /// chamfer, draft and thicken are `Solid`. Backs `brep_kind_of_shape`;
+        /// errs on a null shape.
+        fn body_shape_kind(shape: &OcctShape) -> Result<FfiShapeKind>;
+
+        /// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum`
+        /// ordinal: the only way to reach its `TopAbs_SHAPE` arm, since no
+        /// shape carries the abstract type (same argument as
+        /// `make_null_shape_for_test`).
+        fn shape_kind_of_topabs_for_test(topabs: u8) -> Result<FfiShapeKind>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
