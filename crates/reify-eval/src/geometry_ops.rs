@@ -1208,11 +1208,9 @@ fn accept_variadic_length_args(
 /// SCOPE OF "byte-identical": it holds for a given label, and the label is the
 /// caller's to choose. The value-form callers pass the decoder `Err` through
 /// unwrapped, and each decoder prefixes only its own non-units messages with the
-/// label it is given. [`pattern_mirror`] passes `kind` ("mirror", identical to
-/// its scalar branch); [`pattern_circular`] passes its `surface_name`
-/// ("circular_pattern"), so its value form names the builtin the author typed,
-/// while the scalar branch's [`required_length_origin3`] still renders
-/// `PatternKind`'s "circular" label.
+/// label it is given. [`pattern_mirror`] and [`pattern_circular`] both pass
+/// `kind`, whose `Display` is the builtin the author typed, so each value form
+/// reads exactly like its scalar branch.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -4159,16 +4157,6 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The SURFACE name the author typed, bound ONCE (SPOT) and used at every
-    // site in this function that must not render `kind`. `PatternKind::Circular`
-    // Displays as "circular", so `kind` in these messages names a builtin that
-    // does not exist; `PatternKind::Linear` was already given its surface name
-    // (task 5755), and doing the same for Circular/Arbitrary is task #6874.
-    // That repair lives in reify-compiler and moves every OTHER diagnostic
-    // rendering this kind too — a migration of its own, not a clause of ε —
-    // which is why it is a follow-up and this is a local binding. When #6874
-    // lands, this binding and its uses collapse back to `kind`.
-    let surface_name = "circular_pattern";
     if args.iter().any(|(n, _)| n == "axis") {
         let axis_val = eval_named_arg(
             "axis",
@@ -4180,7 +4168,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, surface_name, diagnostics)?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -4200,15 +4188,9 @@ fn pattern_circular(
         // per-builtin; the case for settling it across the whole surface
         // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
         // Do not re-derive #1763 from this one call site and restore it.
-        //
-        // `surface_name`, not `kind`: passing `kind` would render "circular:
-        // angle argument expects Angle" at a call the author wrote as
-        // `circular_pattern(...)`. The retired warning hard-coded that name and
-        // the compile layer's slot renders the surface call name too, so `kind`
-        // here would regress the wording AND split it across the two layers.
         let angle = required_angle_value(
             "angle",
-            surface_name,
+            kind,
             args,
             values,
             functions,
@@ -4245,12 +4227,12 @@ fn pattern_circular(
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // The scalar-axis sibling of the value-axis form above: same gate,
-        // same task-#1763 reversal and same `surface_name`, whose rationale is
-        // recorded there in full rather than copied here.
+        // The scalar-axis sibling of the value-axis form above: same gate and
+        // same task-#1763 reversal, whose rationale is recorded there in full
+        // rather than copied here.
         let angle = required_angle_value(
             "angle",
-            surface_name,
+            kind,
             args,
             values,
             functions,

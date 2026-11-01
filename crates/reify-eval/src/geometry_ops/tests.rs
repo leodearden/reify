@@ -6956,8 +6956,7 @@
 
     /// A non-Axis value in the axis slot is not a units failure, so the decoder
     /// speaks for itself — and the builtin it names must be the one the author
-    /// typed (`circular_pattern`), not `PatternKind`'s own `Display`
-    /// (`circular`), which names nothing that exists.
+    /// typed (`circular_pattern`).
     #[test]
     fn compile_geometry_op_circular_pattern_axis_value_form_wrong_variant_names_the_surface_builtin()
      {
@@ -25625,14 +25624,14 @@
         let got = accept_length_point3(
             &value,
             ["ox", "oy", "oz"],
-            "circular",
+            "circular_pattern",
             |_| SHAPE_SENTINEL.to_string(),
             &mut diagnostics,
         );
 
         assert_eq!(
             got,
-            Err("missing or non-Length argument 'oy' for circular".to_string()),
+            Err("missing or non-Length argument 'oy' for circular_pattern".to_string()),
             "the wrong-dimension component is the only failure, so it is the \
              first error"
         );
@@ -25650,7 +25649,7 @@
         );
         assert_eq!(
             diagnostics[0].message,
-            expected_length_rejection("circular", "oy", "Pressure Scalar"),
+            expected_length_rejection("circular_pattern", "oy", "Pressure Scalar"),
             "a PRESSURE Scalar is NOT a Length — strict `DimensionVector` \
              equality, with the dimension named in the message"
         );

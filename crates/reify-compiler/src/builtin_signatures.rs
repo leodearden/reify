@@ -661,20 +661,14 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
         // arity 4.
         //
-        // MEASURED PREFIX DIVERGENCE. This layer is keyed on the CALL, so it
-        // reports the SURFACE name `circular_pattern:`, while the eval layer
-        // renders its `{builtin}` from `PatternKind::Circular`'s `Display` — its
-        // `kind_label` — which is `"circular"` (the `PatternKind::Circular` arm
-        // of its `Display` impl in `types.rs`). That is the same class as the
-        // `box_centered`-vs-`box` divergence already recorded under
-        // `check_builtin_arg_types`' "# Message format", and it holds this way
-        // deliberately: reporting the name the author actually typed beats
-        // reporting a lowering detail they never wrote. `mirror` does NOT
-        // diverge — `PatternKind::Mirror` displays as `"mirror"` (the
-        // `PatternKind::Mirror` arm of the same `Display` impl) — so the two
-        // layers agree byte-for-byte there. Both halves are pinned by
-        // `circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind`
-        // in `tests/builtin_arg_signature_tests.rs`.
+        // PREFIX AGREEMENT. This layer is keyed on the CALL, so it reports the
+        // SURFACE name. The eval layer's `kind_label` (`PatternKind`'s
+        // `Display`) renders that same name, so for `circular_pattern:` and
+        // `mirror:` the two layers agree byte-for-byte.
+        // Only the `_centered` aliases still diverge; see
+        // `check_builtin_arg_types`' "# Message format". Pinned by
+        // `pattern_origin_slots_name_the_surface_builtin` in
+        // `tests/harness_type_checking/builtin_arg_signature_tests.rs`.
         //
         // These two arms make `reify check` a REAL gate for these positions, not
         // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
