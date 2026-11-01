@@ -1959,11 +1959,12 @@ fn occt_required_when_ci_profile_expects_it() {
 //
 // A failed relate-solve reports WHY, as a typed `SolveFailureCause` on the
 // `RelateSolution` and a distinct diagnostic code: a driving set that no placement
-// can satisfy is certified `SolverInfeasible` (the solve reached a least-squares
-// minimum that is not a root, with the gradient certificate and the blamed
-// relations), while a feasible set that ran out of iterations is
-// `SolverBudgetExhausted` (counts and step-norm trend). Before η both read as the
-// same uncoded "cannot be satisfied simultaneously" sentence.
+// can satisfy is certified `SolverInfeasible` (the solve reached a stationary
+// point of ‖r̃‖² that is not a root and that no probed direction lowers, with the
+// gradient certificate and the blamed relations), while a feasible set that ran
+// out of iterations is `SolverBudgetExhausted` (counts and step-norm trend).
+// Before η both read as the same uncoded "cannot be satisfied simultaneously"
+// sentence.
 
 /// A `Plate` whose top plane faces `+z` and whose wall plane, rotated 90° about
 /// `y`, faces `x` — no seat plane can be flush with both.

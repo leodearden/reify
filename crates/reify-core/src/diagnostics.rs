@@ -333,11 +333,11 @@ pub enum DiagnosticCode {
     /// site.
     ///
     /// The continuous solve stopped at a stationary point of `‖r̃‖²` that is not a
-    /// root: the range cosine `‖P r̃‖ / ‖r̃‖` (`P` the orthogonal projector onto the
-    /// range of `J̃`) is within the solver's tolerance while some scaled row still
-    /// exceeds its bar. The message
-    /// carries that certificate and blames the rows (and the relations they came
-    /// from) that remain violated.
+    /// root and that no descent probe around it lowers: the range cosine
+    /// `‖P r̃‖ / ‖r̃‖` (`P` the orthogonal projector onto the range of `J̃`) is
+    /// within the solver's tolerance while some scaled row still exceeds its bar.
+    /// The message carries that certificate and blames the rows (and the
+    /// relations they came from) that remain violated.
     ///
     /// The PRD-prose mnemonic is `E_SOLVER_INFEASIBLE`
     /// (`docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).

@@ -15,8 +15,9 @@ use reify_core::DiagnosticCode;
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum SolveFailureCause {
-    /// Stopped at a stationary point of `‖r̃‖²` that is not a root — proven
-    /// infeasible to first order.
+    /// Stopped at a stationary point of `‖r̃‖²` that is not a root and that no
+    /// descent probe around it can lower — a local least-squares minimum to the
+    /// probe's resolution.
     Infeasible(InfeasibilityCertificate),
     /// Used the whole iteration budget, neither converged nor certified
     /// infeasible.
@@ -65,9 +66,9 @@ impl fmt::Display for InfeasibilityCertificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the solve reached a least-squares minimum that is not a root: \
-             ‖J̃ᵀr̃‖ = {:.3e} (range cosine {:.2e}), largest scaled residual \
-             {:.3e} over {} violated row(s)",
+            "the solve reached a stationary point of ‖r̃‖² that is not a root, \
+             and no probed direction lowers it: ‖J̃ᵀr̃‖ = {:.3e} (range cosine \
+             {:.2e}), largest scaled residual {:.3e} over {} violated row(s)",
             self.gradient_norm,
             self.range_cosine,
             self.max_scaled_residual,

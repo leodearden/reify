@@ -14,13 +14,19 @@
 //!
 //! 1. `max|r̃ᵢ| ≤ 1` — converged;
 //! 2. `‖P r̃‖ ≤ RANGE_COSINE_TOLERANCE·‖r̃‖`, where `P` projects onto the range of
-//!    `J̃` — a stationary point that is not a root: certified
+//!    `J̃` — a stationary non-root that no descent probe can leave: certified
 //!    [`Infeasible`](SolveFailureCause::Infeasible);
 //! 3. the scaled step (or the radius) collapses below
 //!    `STEP_TOLERANCE·(‖x̃‖ + STEP_TOLERANCE)` — classified by 1 and 2, else
 //!    [`Stalled`](SolveFailureCause::Stalled);
 //!
 //! or on the iteration budget ([`BudgetExhausted`](SolveFailureCause::BudgetExhausted)).
+//!
+//! A stationary point is only first-order evidence: the crest of a bounded row
+//! (a sine of a misalignment at its maximum) is stationary too. So before
+//! certifying, the solve probes a fixed distance along every coordinate axis and
+//! every null-space direction; a probe that lowers `‖r̃‖²` becomes the next
+//! iterate (one iteration of the budget) and the search resumes from it.
 
 use reify_ir::{
     BudgetExhaustion, InfeasibilityCertificate, ResidualSource, RowBlame, SolveFailureCause,
@@ -52,6 +58,12 @@ pub const EXPAND_FACTOR: f64 = 2.0;
 pub const RANGE_COSINE_TOLERANCE: f64 = 1e-8;
 /// The relative scaled-step bar of the stall test (`√ε`).
 pub const STEP_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
+/// How far, in nominal scales, a descent probe moves from a stationary point.
+const PROBE_LENGTH: f64 = 0.1;
+/// A probe escapes a stationary point iff it lowers `‖r̃‖²` by more than this
+/// fraction: orders above the rounding of `‖r̃‖²` (~1e-15 relative), orders below
+/// the ~`PROBE_LENGTH²/2` relative drop at the crest of a bounded row.
+const PROBE_DECREASE: f64 = 1e-6;
 
 /// How many trial steps a solve may take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,17 +136,28 @@ pub fn solve(
     let mut step_norms = Vec::new();
 
     loop {
-        if let Some(outcome) = iterate.verdict(problem) {
-            return iterate.finish(iterations, step_norms, outcome);
+        match iterate.verdict(problem) {
+            Verdict::Converged(converged) => {
+                return iterate.finish(iterations, step_norms, Ok(converged));
+            }
+            Verdict::Stationary(certificate) => {
+                let Some((probe_x, probe_r)) = iterate.descent_probe(problem) else {
+                    let cause = SolveFailureCause::Infeasible(certificate);
+                    return iterate.finish(iterations, step_norms, Err(cause));
+                };
+                if iterations >= budget.max_iterations {
+                    return iterate.exhausted(iterations, budget, step_norms);
+                }
+                iterations += 1;
+                step_norms.push(PROBE_LENGTH);
+                iterate = Iterate::at(problem, probe_x, probe_r, rank_tolerance);
+                radius = INITIAL_RADIUS;
+                continue;
+            }
+            Verdict::Open => {}
         }
         if iterations >= budget.max_iterations {
-            let cause = SolveFailureCause::BudgetExhausted(BudgetExhaustion {
-                iterations,
-                budget: budget.max_iterations,
-                step_norms: step_norms.clone(),
-                max_scaled_residual: max_abs(&iterate.r),
-            });
-            return iterate.finish(iterations, step_norms, Err(cause));
+            return iterate.exhausted(iterations, budget, step_norms);
         }
 
         let step = iterate.dogleg(radius);
@@ -162,15 +185,33 @@ pub fn solve(
                 problem.residual(&accepted)
             };
             iterate = Iterate::at(problem, accepted, r_accepted, rank_tolerance);
-            if step_norm <= collapse {
-                let outcome = iterate.stopped(problem, iterations, step_norm);
-                return iterate.finish(iterations, step_norms, outcome);
+            if step_norm > collapse {
+                continue;
             }
-        } else if radius <= collapse {
-            let outcome = iterate.stopped(problem, iterations, step_norm);
-            return iterate.finish(iterations, step_norms, outcome);
+        } else if radius > collapse {
+            continue;
+        }
+        // Test 3 fired. A converged or stationary iterate is resolved at the top.
+        if let Verdict::Open = iterate.verdict(problem) {
+            let cause = SolveFailureCause::Stalled(SolveStall {
+                iterations,
+                step_norm,
+                range_cosine: iterate.range_cosine(),
+                max_scaled_residual: max_abs(&iterate.r),
+            });
+            return iterate.finish(iterations, step_norms, Err(cause));
         }
     }
+}
+
+/// What tests 1 and 2 make of one iterate.
+enum Verdict {
+    /// Every row is within its bar.
+    Converged(Converged),
+    /// A stationary non-root, pending the descent probe.
+    Stationary(InfeasibilityCertificate),
+    /// Neither: the search goes on.
+    Open,
 }
 
 /// One accepted point with its factorization.
@@ -212,43 +253,65 @@ impl Iterate {
         }
     }
 
-    /// Tests 1 and 2: converged, certified infeasible, or neither.
-    fn verdict(
-        &self,
-        problem: &impl LeastSquaresProblem,
-    ) -> Option<Result<Converged, SolveFailureCause>> {
+    /// Tests 1 and 2: converged, stationary, or neither.
+    fn verdict(&self, problem: &impl LeastSquaresProblem) -> Verdict {
         if max_abs(&self.r) <= 1.0 {
-            return Some(Ok(Converged {
+            return Verdict::Converged(Converged {
                 rank: self.qr.rank(),
                 null_space: self.qr.null_space(),
-            }));
+            });
         }
         let range_cosine = self.range_cosine();
-        (range_cosine <= RANGE_COSINE_TOLERANCE).then(|| {
-            Err(SolveFailureCause::Infeasible(InfeasibilityCertificate {
-                gradient_norm: norm(&self.gradient),
-                range_cosine,
-                max_scaled_residual: max_abs(&self.r),
-                blame: self.blame(problem),
-            }))
+        if range_cosine > RANGE_COSINE_TOLERANCE {
+            return Verdict::Open;
+        }
+        Verdict::Stationary(InfeasibilityCertificate {
+            gradient_norm: norm(&self.gradient),
+            range_cosine,
+            max_scaled_residual: max_abs(&self.r),
+            blame: self.blame(problem),
         })
     }
 
-    /// The verdict after test 3 stopped the run.
-    fn stopped(
-        &self,
-        problem: &impl LeastSquaresProblem,
+    /// The lowest-cost point [`PROBE_LENGTH`] away along a coordinate axis or a
+    /// null-space direction, with its residual — iff it lowers `‖r̃‖²` by more
+    /// than [`PROBE_DECREASE`] of itself.
+    fn descent_probe(&self, problem: &impl LeastSquaresProblem) -> Option<(Vec<f64>, Vec<f64>)> {
+        let dim = problem.dim();
+        let axes = (0..dim).map(|j| {
+            let mut e = vec![0.0; dim];
+            e[j] = 1.0;
+            e
+        });
+        let cost = dot(&self.r, &self.r);
+        axes.chain(self.qr.null_space())
+            .flat_map(|d| [scaled(&d, PROBE_LENGTH), scaled(&d, -PROBE_LENGTH)])
+            .filter_map(|offset| {
+                let mut x: Vec<f64> = self.x.iter().zip(&offset).map(|(x, o)| x + o).collect();
+                problem.normalize(&mut x);
+                let r = problem.residual(&x);
+                let usable = r.len() == self.r.len() && r.iter().all(|v| v.is_finite());
+                usable.then(|| (dot(&r, &r), x, r))
+            })
+            .filter(|(probe_cost, _, _)| *probe_cost < cost * (1.0 - PROBE_DECREASE))
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, x, r)| (x, r))
+    }
+
+    /// Stop on the iteration budget at this iterate.
+    fn exhausted(
+        self,
         iterations: u32,
-        step_norm: f64,
-    ) -> Result<Converged, SolveFailureCause> {
-        self.verdict(problem).unwrap_or_else(|| {
-            Err(SolveFailureCause::Stalled(SolveStall {
-                iterations,
-                step_norm,
-                range_cosine: self.range_cosine(),
-                max_scaled_residual: max_abs(&self.r),
-            }))
-        })
+        budget: SolveBudget,
+        step_norms: Vec<f64>,
+    ) -> TrustRegionRun {
+        let cause = SolveFailureCause::BudgetExhausted(BudgetExhaustion {
+            iterations,
+            budget: budget.max_iterations,
+            step_norms: step_norms.clone(),
+            max_scaled_residual: max_abs(&self.r),
+        });
+        self.finish(iterations, step_norms, Err(cause))
     }
 
     fn finish(
