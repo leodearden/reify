@@ -283,16 +283,6 @@ fn title_signals_stub(title: &str) -> bool {
     t.contains("stub") || t.contains("placeholder")
 }
 
-/// Threshold above which `check()` warns about an unbounded backlog
-/// when both `target_task_id` and `window` are unset (sweep mode
-/// without pre-narrowing — see the `# Callers` rustdoc on `check`).
-/// 50 is well above every existing test fixture (max 7 tasks in
-/// `seven_prepd_legacy_tasks_produce_no_false_positives` /
-/// audit_integration.rs) and well below the unbounded-backlog
-/// scenario (hundreds of tasks loaded from fused-memory). The
-/// comparison is strict `>` so a backlog of exactly 50 does not warn.
-const SWEEP_BACKLOG_WARN_THRESHOLD: usize = 50;
-
 /// The ref P2 treats as current code: the reachability gate, the
 /// unreachable-commit scan, the live-branch diff base and the presence check.
 const MAINLINE: &str = "main";
@@ -410,10 +400,9 @@ impl<'g> MainlineLines<'g> {
 /// call time — the orchestrator has not yet flipped it to `"done"` — so P2
 /// omits a `status != "done"` filter (see the `NOTE` comment inside the body).
 ///
-/// **Periodic sweep** (`--mode sweep`): narrow `ctx.task_metadata` to the
-/// closing-window tasks **before** calling this function.  Passing the full
-/// backlog will surface every in-progress `TODO(... pending)` as a finding,
-/// because P2 has no internal status filter to suppress legitimate WIP markers.
+/// **Sweep**: leave `ctx.target_task_id` unset and pass the whole task corpus
+/// (PRD D6). P2 has no status filter, so a non-done task's added
+/// `TODO(... pending)` markers are reported too.
 ///
 /// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 ///
@@ -421,59 +410,6 @@ impl<'g> MainlineLines<'g> {
 type GroupMap = std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>>;
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    // Sweep-mode contract enforcement (esc-3752-365). The # Callers rustdoc
-    // above requires sweep-mode callers to narrow `ctx.task_metadata` to
-    // closing-window tasks before invoking check(). A caller that forgets —
-    // runs --mode sweep with no --task and no --since against the full
-    // fused-memory backlog — would silently surface every in-progress WIP
-    // `TODO(... pending)` as a Medium-severity finding. Make the contract
-    // explicit per project convention "contract in production code is made
-    // explicit rather than relying on test coverage".
-    //
-    // KNOWN LIMITATION (esc-3752-365 review, suggestion 1): The `window.is_none()`
-    // conjunct is intended as a proxy for "no sweep scoping was requested", but
-    // `ctx.window` is NOT consumed by P2 — the AuditContext::window rustdoc says
-    // "None of the slice-1 detector paths consume this yet". The CLI also loads the
-    // full fused-memory backlog regardless of --since (it only builds `window`,
-    // never filters `task_metadata`). Consequently, a --since-scoped sweep
-    // (window=Some but task_metadata still contains the full backlog) BYPASSES this
-    // guard and still surfaces spurious findings. This guard therefore only catches
-    // the zero-scoping-flag case (--mode sweep with neither --task nor --since).
-    // Complete protection requires the CLI or loader to narrow `ctx.task_metadata`
-    // at load time before calling check().
-    //
-    // We use BOTH debug_assert! and eprintln!:
-    //   - debug_assert! panics in dev/test (loud fail-fast; the
-    //     `sweep_mode_unbounded_backlog_panics_in_debug` integration test
-    //     pins this signal via #[should_panic(expected = "unbounded backlog")]).
-    //   - eprintln! emits a `reify-audit:` breadcrumb so production release
-    //     builds (debug_assert compiled out) still surface the warning on
-    //     stderr alongside the spurious findings. Joins the existing breadcrumb
-    //     convention from lib.rs (git check-ignore) and p5_phantom_done.rs
-    //     (runs.db unreadable).
-    if ctx.target_task_id.is_none()
-        && ctx.window.is_none()
-        && ctx.task_metadata.len() > SWEEP_BACKLOG_WARN_THRESHOLD
-    {
-        eprintln!(
-            "reify-audit: p2::check called with unbounded backlog \
-             (target_task_id=None, window=None, {} tasks > threshold {}); \
-             callers MUST pre-narrow ctx.task_metadata to closing-window \
-             tasks per the # Callers rustdoc — else every in-progress WIP \
-             `TODO(... pending)` will surface as a Medium-severity finding",
-            ctx.task_metadata.len(),
-            SWEEP_BACKLOG_WARN_THRESHOLD,
-        );
-        debug_assert!(
-            false,
-            "p2::check called with unbounded backlog \
-             (target_task_id=None, window=None, {} tasks): callers MUST \
-             pre-narrow ctx.task_metadata to closing-window tasks per the \
-             # Callers rustdoc",
-            ctx.task_metadata.len(),
-        );
-    }
-
     // Phase 1 — collect all surviving (path, line_no, content, label) per task.
     //
     // NOTE: unlike `p5_phantom_done::check_task` (which filters `meta.status != "done"`
@@ -483,11 +419,8 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     //   would suppress every finding on the primary call path (`check_pre_done`-style
     //   single-task narrowing via `target_task_id`).
     //
-    //   Constraint on periodic-sweep callers (e.g. T-4 CLI in `--mode sweep`): they
-    //   MUST narrow `ctx.task_metadata` to closing-window tasks themselves before
-    //   calling `check`. Passing the full backlog will surface every in-progress
-    //   task carrying a legitimate WIP `TODO(... pending)` as a finding — the marker
-    //   is what P2 looks for, and there is no further filter inside this function.
+    //   A sweep passes the whole task corpus (PRD D6), so a non-done task's added
+    //   `TODO(... pending)` markers are reported too.
     //
     //   Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 
