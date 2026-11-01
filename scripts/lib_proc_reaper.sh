@@ -185,10 +185,12 @@ _reaper_reap_orphans() {
     fi
     # Split once with read: an unquoted expansion would also pathname-expand
     # the deps globs against the caller's CWD (test_proc_reaper.sh Part 10).
+    # -d '' reads past newlines, so one-entry-per-line lists keep every line;
+    # read then reports EOF, hence || true.
     local -a _deps_globs=() _orphan_ppid_list=() _reaper_comm_list=()
-    IFS=$' \t\n' read -r -a _deps_globs <<< "$_deps_glob"
-    IFS=$' \t\n' read -r -a _orphan_ppid_list <<< "$_orphan_ppids"
-    IFS=$' \t\n' read -r -a _reaper_comm_list <<< "$_reaper_comms"
+    IFS=$' \t\n' read -r -d '' -a _deps_globs <<< "$_deps_glob" || true
+    IFS=$' \t\n' read -r -d '' -a _orphan_ppid_list <<< "$_orphan_ppids" || true
+    IFS=$' \t\n' read -r -d '' -a _reaper_comm_list <<< "$_reaper_comms" || true
     local _pid _ppid _etimes _exe _ppid_comm _glob _matched
     while read -r _pid _ppid _etimes; do
         _pid="${_pid# }"; _pid="${_pid% }"
