@@ -9,8 +9,8 @@ records each kind may hold, checked whenever a Step is built.
 The environment section's lines are records here too (EnvLine); environment
 builds them, so it imports this module, never the other way round.
 
-A record whose text render puts inside single quotes refuses a single quote,
-since the rendered shell line would otherwise break.
+A record whose text render puts inside single (or double) quotes refuses that
+quote, since the rendered shell line would otherwise break.
 """
 
 from dataclasses import dataclass
@@ -59,11 +59,19 @@ class JobserverUnset:
 EnvLine = CargoEnvSourced | CargoEnvMissing | Exported | JobserverUnset
 
 
-def _refuse_single_quote(record: str, field: str, text: str | None) -> None:
-    if text is not None and "'" in text:
+_QUOTE_NAMES = {"'": "single", '"': "double"}
+
+
+def _refuse_quote(record: str, field: str, text: str | None, quote: str) -> None:
+    if text is not None and quote in text:
         raise ValueError(
-            f"{record}: {field} renders inside single quotes, so it cannot hold one ({text!r})"
+            f"{record}: {field} renders inside {_QUOTE_NAMES[quote]} quotes, so it cannot hold one "
+            f"({text!r})"
         )
+
+
+def _refuse_single_quote(record: str, field: str, text: str | None) -> None:
+    _refuse_quote(record, field, text, "'")
 
 
 class Execution(Enum):
@@ -255,6 +263,110 @@ class InfraLeafLoop:
     unset: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class NextestFlags:
+    """A nextest pass's flags: its one filter expression, --no-fail-fast and --test-threads.
+
+    Without retry ids the heavy filter, when the partition applies one, is
+    double-quoted; with them it joins the ids' expression single-quoted, so it
+    refuses both quotes there.
+    """
+
+    heavy: HeavyPartition
+    heavy_filter: str
+    no_fail_fast: bool
+    test_threads: int | None
+    retry_ids: tuple[str, ...]
+
+    def __post_init__(self):
+        _refuse_quote("NextestFlags", "heavy_filter", self.heavy_filter, '"')
+        if self.retry_ids and self.heavy is not HeavyPartition.INCLUDED:
+            _refuse_single_quote("NextestFlags", "heavy_filter", self.heavy_filter)
+        for test_id in self.retry_ids:
+            _refuse_single_quote("NextestFlags", "retry_ids", test_id)
+
+
+@dataclass(frozen=True)
+class NextestRun:
+    """`timeout <wall> <prio>cargo nextest run <selector>[ --release][ --features f]<flags> --config-file <path>`."""
+
+    selector: Selector
+    release: bool
+    features: tuple[str, ...]
+    wall: str
+    prio: str
+    flags: NextestFlags
+    config_file: str
+
+
+@dataclass(frozen=True)
+class CargoTestRun:
+    """Without nextest: `timeout <wall> <prio>cargo test <selector>[ --release][ --features f] -- --test-threads=N`."""
+
+    selector: Selector
+    release: bool
+    features: tuple[str, ...]
+    wall: str
+    prio: str
+    test_threads: int
+
+
+CONFIRM_RECORDER = "scripts/confirm-failed-manifest.sh"
+
+
+@dataclass(frozen=True)
+class ConfirmRecorded:
+    """`( <run>; CONFIRM_RECORDER records the failing ids for --confirm-failed; exit with the run's status )`."""
+
+    run: NextestRun
+    junit: str
+    manifest: str
+    sidecar: str
+    profile: Profile
+
+    def __post_init__(self):
+        for field in ("junit", "manifest", "sidecar"):
+            _refuse_quote("ConfirmRecorded", field, getattr(self, field), '"')
+
+
+@dataclass(frozen=True)
+class SlotFdClosed:
+    """`<body> 9<&-`: the test pass runs without the semaphore slot's descriptor."""
+
+    body: "Command"
+
+
+@dataclass(frozen=True)
+class Marker:
+    """`echo '<text>'`: a line the plan's run prints in a pass's place."""
+
+    text: str
+
+    def __post_init__(self):
+        _refuse_single_quote("Marker", "text", self.text)
+
+
+@dataclass(frozen=True)
+class AttemptStamp:
+    """The attempt sidecar: the tree a run built from, its profiles and the time, written to `path`."""
+
+    path: str
+    profiles: tuple[Profile, ...]
+
+    def __post_init__(self):
+        _refuse_quote("AttemptStamp", "path", self.path, '"')
+
+
+@dataclass(frozen=True)
+class SemaphoreAcquire:
+    """The main shell takes a test-run slot; the test passes run while it holds it."""
+
+
+@dataclass(frozen=True)
+class SemaphoreRelease:
+    """The main shell gives the test-run slot back."""
+
+
 Command = (
     Script
     | Cargo
@@ -266,15 +378,23 @@ Command = (
     | HeadStamp
     | ArtifactAssertion
     | InfraLeafLoop
+    | NextestRun
+    | CargoTestRun
+    | ConfirmRecorded
+    | SlotFdClosed
+    | Marker
+    | AttemptStamp
+    | SemaphoreAcquire
+    | SemaphoreRelease
 )
 
 KIND_COMMANDS = MappingProxyType(
     {
-        StepKind.CARGO: (Cargo, Guarded),
+        StepKind.CARGO: (Cargo, Guarded, SlotFdClosed),
         StepKind.TOOL: (Script, Guarded, NodeProject, InfraLeafLoop),
-        StepKind.BUILTIN: (ArtifactAssertion,),
+        StepKind.BUILTIN: (ArtifactAssertion, Marker),
         StepKind.MAIN_SHELL: (NodeLaneStart, NodeLaneJoin),
-        StepKind.SENTINEL: (),
+        StepKind.SENTINEL: (SemaphoreAcquire, SemaphoreRelease),
     }
 )
 

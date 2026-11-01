@@ -922,3 +922,5 @@ scripts/reify_verify/jsondata.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/jsondata.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/nextest.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/nextest.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/testregion.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/testregion.py    tests/infra/test_verify_policy.sh

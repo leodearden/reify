@@ -21,7 +21,7 @@ import itertools
 import sys
 import tempfile
 import unittest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 INFRA_DIR = Path(__file__).resolve().parent
