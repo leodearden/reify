@@ -27,6 +27,19 @@ describe('renderMarkdown', () => {
       expect(result).toContain('class="language-rust"');
     });
 
+    it.each(['reify-fragment', 'reify-schematic', 'reify-rejected-at-eval'])(
+      'renders fenced code blocks whose language tag contains hyphens (%s)',
+      (tag) => {
+        const input = '```' + tag + '\nlet x = 1;\n```';
+        const result = renderMarkdown(input);
+        expect(result).toContain(`<pre><code class="language-${tag}">`);
+        expect(result).toContain('let x = 1;');
+        // An unconsumed fence does not surface as ``` : the inline-code phase eats
+        // one backtick pair and leaves ``. Assert no backtick at all survives.
+        expect(result).not.toContain('`');
+      },
+    );
+
     it('preserves code block content without inline transforms', () => {
       const input = '```\n**not bold** `not code`\n```';
       const result = renderMarkdown(input);
