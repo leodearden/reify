@@ -9,11 +9,12 @@ use reify_core::Severity;
 use reify_eval::{TestResult, TestStatus};
 
 use crate::constraint_report::report_eval_output;
+use crate::help::TEST_USAGE;
 use crate::parse_and_compile;
 
 pub(crate) fn cmd_test(args: &[String]) -> ExitCode {
     if args.is_empty() {
-        eprintln!("Usage: reify test <file>");
+        eprintln!("{TEST_USAGE}");
         return ExitCode::FAILURE;
     }
 

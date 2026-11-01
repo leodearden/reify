@@ -5,12 +5,13 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
-use crate::args::{CHECK_USAGE, PurposeActivation, build_cfg_set, parse_purpose_flag};
+use crate::args::{PurposeActivation, build_cfg_set, parse_purpose_flag};
 use crate::check_verdict::{
     check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
 };
 use crate::constraint_report::{finish_check, report_achieved_deviations, report_eval_output};
+use crate::help::CHECK_USAGE;
 use crate::module_capabilities::{
     module_has_dfm_rule, module_has_geometric_conforms, module_has_geometry,
     module_has_representation_within, module_has_thickness_dfm_rule,

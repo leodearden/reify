@@ -35,95 +35,25 @@ mod check_verdict;
 mod cmd;
 mod constraint_report;
 mod dev;
+mod help;
 mod module_capabilities;
 mod sigpipe;
 use reify_core::ModulePath;
-
-fn print_usage(out: &mut dyn std::io::Write) {
-    let _ = writeln!(out, "Usage: reify <command> [options]");
-    let _ = writeln!(out, "Commands:");
-    let _ = writeln!(out, "  check <file>              Check constraints");
-    let _ = writeln!(
-        out,
-        "  test <file>               Run @test-annotated structures"
-    );
-    let _ = writeln!(
-        out,
-        "  build <file> -o <output>   Build geometry and export"
-    );
-    let _ = writeln!(
-        out,
-        "  run <file>                Alias for eval (flagship: reify run <shell.ri>)"
-    );
-    let _ = writeln!(
-        out,
-        "  eval <file>               Evaluate and print every top-level value cell"
-    );
-    let _ = writeln!(
-        out,
-        "  report --bom <file>       Roll up a BOM / cost / waste / provenance report"
-    );
-    let _ = writeln!(
-        out,
-        "  lsp                        Start language server (stdin/stdout)"
-    );
-    let _ = writeln!(
-        out,
-        "  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)"
-    );
-    let _ = writeln!(
-        out,
-        "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)"
-    );
-    let _ = writeln!(
-        out,
-        "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation"
-    );
-    let _ = writeln!(
-        out,
-        "  cache export <hash>        Write a single cache entry to stdout as a tarball"
-    );
-    let _ = writeln!(
-        out,
-        "  cache import               Read a cache tarball from stdin into the local cache"
-    );
-    let _ = writeln!(
-        out,
-        "  cache stats                Print cache directory, entry count, total size, and top-N largest entries"
-    );
-    let _ = writeln!(
-        out,
-        "  cache clear [--engine-version <hash>] --yes  Empty the cache (or one engine-version subdir); --yes required"
-    );
-    let _ = writeln!(
-        out,
-        "  cache gc                   Force LRU eviction down to the configured cache cap (live engine version only)"
-    );
-    let _ = writeln!(
-        out,
-        "  explain <file>             Print per-cell objective provenance (B9 triple)"
-    );
-    let _ = writeln!(
-        out,
-        "  dev inspect-node <node-id> Print node kind, traits, priority, policy, and overrides"
-    );
-    let _ = writeln!(out, "  --version                  Print version");
-    let _ = writeln!(out, "  --help                     Show this list");
-}
 
 fn main() -> ExitCode {
     sigpipe::restore_default();
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        print_usage(&mut std::io::stderr());
+        help::write_overview(&mut std::io::stderr());
         return ExitCode::FAILURE;
     }
 
-    // (a) Early-exit arms: --help / --version short-circuit before the sweep.
+    // (a) Early-exit arms: --help / --version and `reify <cmd> --help` short-circuit
+    // before the sweep.
     match args[1].as_str() {
         "--help" | "-h" | "help" => {
-            print_usage(&mut std::io::stdout());
+            help::write_overview(&mut std::io::stdout());
             return ExitCode::SUCCESS;
         }
         "--version" | "-V" => {
@@ -131,6 +61,10 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         _ => {}
+    }
+    if let Some(entry) = help::requested_subcommand_help(&args[1..]) {
+        help::write_subcommand_help(entry, &mut std::io::stdout());
+        return ExitCode::SUCCESS;
     }
 
     // (b) Sweep stale tempfiles and orphan dirs from the persistent cache.
@@ -163,7 +97,7 @@ fn main() -> ExitCode {
         "cache" => cache::cmd_cache(&args[2..]),
         other => {
             eprintln!("Unknown command: {}", other);
-            print_usage(&mut std::io::stderr());
+            help::write_overview(&mut std::io::stderr());
             ExitCode::FAILURE
         }
     }
