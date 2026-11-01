@@ -27,12 +27,14 @@
 //! (an unconstrained DOF) from an O(1) gradient entry.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame, solve_scaling,
-    static_relation_residuals,
+    FrameSolveOutcome, FrameUnknown, Operand, Pose, RelationInstance, Twist,
+    comparable_datum_operands, max_relation_exceedance, partition_driving_set, pose_from_frame,
+    solve_frame, solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
-use reify_ir::{SolveResult, Value};
+use reify_constraints::trust_region::{GRADIENT_TOLERANCE, SolveBudget};
+use reify_core::DiagnosticCode;
+use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
 
 /// The largest `|r_i|` over every row of `relations` at `pose`, blind to each row's
 /// unit. Only for the closed-form residual tests here, which compare against a
@@ -2059,4 +2061,232 @@ fn comparable_datum_operands_is_the_arity_the_residual_guard_applies() {
         "`fasten` over two Frames IS modelled — the empty vector above is an arity \
          verdict, not a missing residual model"
     );
+}
+
+// ── η #6675: typed termination causes and the null-space basis ───────────────
+//
+// `solve_frame_outcome` exposes WHY a Frame solve stopped as a typed
+// `SolveFailureCause`, and a converged solve's rank and null space from the same
+// factorization that produced its last step.
+
+/// Two `concentric` relations from the SAME moving axis to two PARALLEL anchor
+/// axes 0.8 mm apart — no pose satisfies both (relate_scaling_tests.rs's B15
+/// infeasible geometry). The residual is linear in translation, so the solve
+/// reaches the least-squares minimum (the midpoint), where the gradient vanishes.
+fn two_parallel_concentrics() -> (Vec<RelationInstance>, FrameUnknown, Pose) {
+    let moving = axis((0.0, 0.0012, 0.0), (0.0, 0.0, 1.0));
+    let relations = vec![
+        relation(
+            "concentric",
+            vec![
+                datum("bolt", moving.clone()),
+                datum("plate", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            4,
+        ),
+        relation(
+            "concentric",
+            vec![
+                datum("bolt", moving),
+                datum("plate", axis((0.0008, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            4,
+        ),
+    ];
+    let seed = Pose {
+        translation: [0.0002, -0.0004, 0.0],
+        rotation: [0.05, 0.1, -0.03],
+    };
+    (relations, bolt_unknown(), seed)
+}
+
+/// `concentric` + `flush` with the moving datums ~1–1.5 mm off their anchors and a
+/// ~0.2 rad skew seed rotation: feasible, but nonlinear in both translation and
+/// rotation (relate_scaling_tests.rs's B15 fixture at `k = 1`, which needs ≥ 2
+/// trial steps).
+fn skewed_concentric_flush() -> (Vec<RelationInstance>, FrameUnknown, Pose) {
+    let relations = vec![
+        relation(
+            "concentric",
+            vec![
+                datum("bolt", axis((0.0012, -0.0008, 0.0), (0.0, 0.0, 1.0))),
+                datum("plate", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            4,
+        ),
+        relation(
+            "flush",
+            vec![
+                datum("bolt", plane((0.0012, -0.0008, 0.0015), (0.0, 0.0, 1.0))),
+                datum("plate", plane((0.0, 0.0, 0.0005), (0.0, 0.0, 1.0))),
+            ],
+            3,
+        ),
+    ];
+    let seed = Pose {
+        translation: [0.0005, -0.0003, 0.0004],
+        rotation: [0.12, -0.15, 0.08],
+    };
+    (relations, bolt_unknown(), seed)
+}
+
+fn outcome_of(
+    (relations, unknown, seed): &(Vec<RelationInstance>, FrameUnknown, Pose),
+    budget: SolveBudget,
+) -> FrameSolveOutcome {
+    let scaling = scaling_for(relations, unknown, seed);
+    solve_frame_outcome(relations, unknown, seed, &scaling, budget)
+}
+
+fn failure_of(outcome: &FrameSolveOutcome) -> &SolveFailureCause {
+    match &outcome.result {
+        Err(cause) => cause,
+        Ok(solution) => panic!("expected a failed solve, got {solution:?}"),
+    }
+}
+
+/// B9 at the Frame-solve seam: an inconsistent driving set is CERTIFIED
+/// infeasible, and both relations are blamed.
+#[test]
+fn inconsistent_driving_set_is_certified_infeasible() {
+    let outcome = outcome_of(&two_parallel_concentrics(), SolveBudget::default());
+    let SolveFailureCause::Infeasible(cert) = failure_of(&outcome) else {
+        panic!("expected Infeasible, got {outcome:?}");
+    };
+    assert!(
+        cert.relative_gradient <= GRADIENT_TOLERANCE,
+        "the certificate must clear the published gradient tolerance: {cert:?}"
+    );
+    assert!(cert.max_scaled_residual > 1.0, "{cert:?}");
+    for relation in [0, 1] {
+        assert!(
+            cert.blame
+                .iter()
+                .any(|b| b.source == ResidualSource::Relation(relation)),
+            "relation {relation} must be blamed: {cert:?}"
+        );
+    }
+}
+
+/// B9 at the Frame-solve seam: a feasible set that needs more than one step,
+/// given one, exhausts its budget — a different cause, with a different code,
+/// from the infeasibility above.
+#[test]
+fn a_one_step_budget_is_exhausted_not_infeasible() {
+    let fixture = skewed_concentric_flush();
+    let outcome = outcome_of(&fixture, SolveBudget { max_iterations: 1 });
+    let SolveFailureCause::BudgetExhausted(exhaustion) = failure_of(&outcome) else {
+        panic!("expected BudgetExhausted, got {outcome:?}");
+    };
+    assert_eq!(exhaustion.iterations, 1);
+    assert_eq!(exhaustion.budget, 1);
+    assert_eq!(exhaustion.step_norms.len(), 1);
+    assert_eq!(outcome.iterations, 1);
+
+    let unbounded = outcome_of(&fixture, SolveBudget::default());
+    assert!(unbounded.result.is_ok(), "{unbounded:?}");
+
+    let infeasible = outcome_of(&two_parallel_concentrics(), SolveBudget::default());
+    let infeasible = failure_of(&infeasible);
+    assert_ne!(infeasible, failure_of(&outcome));
+    assert_ne!(infeasible.code(), failure_of(&outcome).code());
+}
+
+/// `solve_frame` keeps the `SolveResult` contract: a certified infeasibility is a
+/// CODED `Infeasible`; budget exhaustion is `NoProgress` naming the counts.
+#[test]
+fn solve_result_adapter_codes_infeasible_and_reports_budget_as_no_progress() {
+    let (relations, unknown, seed) = two_parallel_concentrics();
+    let scaling = scaling_for(&relations, &unknown, &seed);
+    match solve_frame(&relations, &unknown, &seed, &scaling) {
+        SolveResult::Infeasible { diagnostics } => {
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+            assert_eq!(diagnostics[0].code, Some(DiagnosticCode::SolverInfeasible));
+        }
+        other => panic!("expected Infeasible, got {other:?}"),
+    }
+
+    let fixture = skewed_concentric_flush();
+    let outcome = outcome_of(&fixture, SolveBudget { max_iterations: 1 });
+    match outcome.into_solve_result(&fixture.1) {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains("1 of 1"),
+                "the reason names the counts: {reason}"
+            )
+        }
+        other => panic!("expected NoProgress, got {other:?}"),
+    }
+}
+
+/// The off-axis size of a 3-vector expected to lie along `+z`.
+fn off_z(v: [f64; 3]) -> f64 {
+    v[0].hypot(v[1])
+}
+
+/// The null-space basis #4388's DOF ledger names: strict `concentric` alone leaves
+/// slide along and spin about the axis, and nothing else.
+#[test]
+fn concentric_alone_publishes_slide_and_spin_as_its_null_space() {
+    let relations = b5_relations();
+    let unknown = bolt_unknown();
+    let seed = Pose::identity();
+    let scaling = scaling_for(&relations, &unknown, &seed);
+    let outcome = solve_frame_outcome(
+        &relations,
+        &unknown,
+        &seed,
+        &scaling,
+        SolveBudget::default(),
+    );
+    let solution = outcome.result.expect("a lone concentric is feasible");
+    assert_eq!(solution.rank, 4);
+    assert_eq!(solution.null_space.len(), 2);
+    let length = scaling.characteristic_length();
+    for Twist {
+        translation,
+        rotation,
+    } in &solution.null_space
+    {
+        assert!(off_z(*translation) <= 1e-9 * length, "{translation:?}");
+        assert!(off_z(*rotation) <= 1e-9, "{rotation:?}");
+    }
+    let slide = solution
+        .null_space
+        .iter()
+        .map(|t| t.translation[2].abs())
+        .fold(0.0, f64::max);
+    let spin = solution
+        .null_space
+        .iter()
+        .map(|t| t.rotation[2].abs())
+        .fold(0.0, f64::max);
+    assert!(
+        slide > 0.1 * length && spin > 0.1,
+        "the twists span slide AND spin: {solution:?}"
+    );
+}
+
+#[test]
+fn fully_determined_set_has_rank_six_and_no_null_space() {
+    let relations = fully_determined_relations();
+    for free in [false, true] {
+        let unknown = unknown("m", free);
+        let seed = Pose::identity();
+        let scaling = scaling_for(&relations, &unknown, &seed);
+        let outcome = solve_frame_outcome(
+            &relations,
+            &unknown,
+            &seed,
+            &scaling,
+            SolveBudget::default(),
+        );
+        let solution = outcome.result.expect("feasible");
+        assert_eq!(solution.rank, 6);
+        assert!(solution.null_space.is_empty());
+        match solve_frame(&relations, &unknown, &seed, &scaling) {
+            SolveResult::Solved { unique, .. } => assert_eq!(unique, !free),
+            other => panic!("expected Solved, got {other:?}"),
+        }
+    }
 }
