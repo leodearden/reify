@@ -803,7 +803,7 @@ struct DetectorRun {
 /// Run one detector. A detector that refuses an empty task corpus is not run
 /// on one: the breadcrumb marks its zero findings as unchecked.
 fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> DetectorRun {
-    if detector.refuses_empty_task_corpus && ctx.task_metadata.is_empty() {
+    if detector.refuses_empty_task_corpus && ctx.task_metadata().is_empty() {
         eprintln!(
             "reify-audit: {} skipped — the task corpus is empty; \
              this is NOT a clean bill of health",
@@ -1067,7 +1067,7 @@ fn main() -> ExitCode {
             let run = run_detector(detector, &ctx);
             // Before any findings array is serialized, like the fast path.
             if tasks_db_requirement_unmet(&args, &run) {
-                let path = ptodo::tasks_db_path(&ctx.project_root);
+                let path = ptodo::tasks_db_path(ctx.project_root());
                 eprintln!(
                     "reify-audit: {}",
                     tasks_db_refusal(&path, "it opened, but the lanes degraded on it")

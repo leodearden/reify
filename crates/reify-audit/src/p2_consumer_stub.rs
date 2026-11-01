@@ -390,17 +390,17 @@ impl<'g> MainlineLines<'g> {
     }
 }
 
-/// Scan all tasks in `ctx.task_metadata` for canonical stub markers in their
+/// Scan all tasks in `ctx.task_metadata()` for canonical stub markers in their
 /// added-line diff and return [`Pattern::P2ConsumerStub`] findings.
 ///
 /// # Callers
 ///
-/// **Pre-done hook** (`check_pre_done`-style): set `ctx.target_task_id` to the
-/// single closing task.  The task's `status` will still be `"in_progress"` at
+/// **Pre-done hook** (`check_pre_done`-style): target the single closing task
+/// ([`AuditContext::targeting`]).  The task's `status` will still be `"in_progress"` at
 /// call time — the orchestrator has not yet flipped it to `"done"` — so P2
 /// omits a `status != "done"` filter (see the `NOTE` comment inside the body).
 ///
-/// **Sweep**: leave `ctx.target_task_id` unset and pass the whole task corpus
+/// **Sweep**: no target; pass the whole task corpus
 /// (PRD D6). P2 has no status filter, so a non-done task's added
 /// `TODO(... pending)` markers are reported too.
 ///
@@ -437,11 +437,11 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     }
 
     let mut raw: Vec<RawEntry> = Vec::new();
-    let mut mainline = MainlineLines::new(ctx.git);
+    let mut mainline = MainlineLines::new(ctx.git());
 
-    for meta in ctx.task_metadata.values() {
+    for meta in ctx.task_metadata().values() {
         // Optional single-task narrowing (mirrors p5_phantom_done::check_with_target).
-        if let Some(target) = ctx.target_task_id.as_deref()
+        if let Some(target) = ctx.target_task_id()
             && meta.task_id != target
         {
             continue;
@@ -451,7 +451,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
             meta.done_at.unwrap_or(i64::MAX),
             meta.task_id.parse::<u64>().unwrap_or(u64::MAX),
         );
-        let source = AddedLineSource::resolve(meta, ctx.git);
+        let source = AddedLineSource::resolve(meta, ctx.git());
 
         // Perf note: coalesce paths per task into a single
         //   `git diff main..task/<id> -- <p1> <p2> ...` invocation.
@@ -463,7 +463,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 
             // A stale match is dropped before the Phase-2 dedup, so it can
             // never win introducer attribution over a live re-introduction.
-            let added = source.added_lines(ctx.git, path);
+            let added = source.added_lines(ctx.git(), path);
             let current = scan_file_added_lines(&added)
                 .into_iter()
                 .filter(|(_, content, _)| {
@@ -504,7 +504,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut groups: GroupMap = std::collections::HashMap::new();
     let unowned = dedup
         .into_values()
-        .filter(|entry| !cites_live_owner(&entry.content, &entry.task_id, &ctx.task_metadata));
+        .filter(|entry| !cites_live_owner(&entry.content, &entry.task_id, ctx.task_metadata()));
     for entry in unowned {
         groups
             .entry((entry.task_id, entry.path))
@@ -525,7 +525,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         // OR (b) every match in the group is a `// fixme` maintenance label
         // (documented permanent maintenance trap, weaker signal than `// stub`
         // or `// placeholder`). Mixed groups (fixme + other families) stay Medium.
-        let severity = ctx.task_metadata
+        let severity = ctx.task_metadata()
             .get(&task_id)
             .map(|m| {
                 if title_signals_stub(&m.title)

@@ -80,17 +80,9 @@ fn p1_findings(tasks: Vec<TaskMetadata>) -> Vec<Finding> {
         }],
     );
     jc.set_find_references(ORPHAN_FILE, ORPHAN_NAME, vec![]);
-    let ctx = AuditContext {
-        project_root: PathBuf::from("/tmp/fake-project"),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: tasks.into_iter().map(|t| (t.task_id.clone(), t)).collect(),
-        target_task_id: None,
-        window: None,
-        now: Some(NOW),
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+        .with_tasks(tasks.into_iter().map(|t| (t.task_id.clone(), t)).collect())
+        .at_time(NOW);
     p1_producer_orphan::check(&ctx)
 }
 

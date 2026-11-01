@@ -420,7 +420,7 @@ pub struct TaskMetadata {
     /// for such tasks. Per `f-infra-design.md` §5 P1 false-positive guards.
     pub audit_foundation: Option<bool>,
     /// Epoch-seconds timestamp of the task's done-flip. P1's grace-window
-    /// math compares `ctx.now - done_at` against the 14-day window. `None`
+    /// math compares `ctx.now() - done_at` against the 14-day window. `None`
     /// for non-`done` tasks (P1 skips them). The T-4 CLI converts the ISO
     /// timestamp once at the boundary. Per `f-infra-design.md` §5 P1.
     pub done_at: Option<i64>,
@@ -436,54 +436,19 @@ pub struct DoneProvenance {
     pub note: Option<String>,
 }
 
-/// Optional time window for narrowing detector scope (e.g. "audit only the
-/// last N hours"). Reserved for the periodic `/audit` sweep; the D-1
-/// pre-done hook path leaves this `None` and lets `target_task_id` do the
-/// scoping. Per `f-infra-design.md` §10.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimeWindow {
-    /// ISO-8601 `since` bound (inclusive). `None` = unbounded.
-    pub since: Option<String>,
-    /// ISO-8601 `until` bound (exclusive). `None` = unbounded.
-    pub until: Option<String>,
-}
-
 /// Read-only execution context threaded into each detector's `check(...)`.
 ///
 /// Borrowed from caller (D-1 hook path or periodic `/audit` sweep) so the
-/// crate never owns a connection or spawns processes itself.
+/// crate never owns a connection or spawns processes itself. Built only
+/// through [`AuditContext::new`] and its builders.
 pub struct AuditContext<'a> {
-    pub project_root: PathBuf,
-    pub conn: &'a rusqlite::Connection,
-    pub git: &'a dyn GitOps,
-    /// Source-introspection seam for P1 (changed-symbol / reference queries).
-    /// Required and object-safe, mirroring [`git`](Self::git): production
-    /// supplies a real jcodemunch-MCP-backed impl; tests use
-    /// [`MockJCodemunchOps`](crate::MockJCodemunchOps). Per `f-infra-design.md` §3 (pure-logic) and §5
-    /// P1 (source-introspection behind a mockable seam).
-    pub jcodemunch: &'a dyn JCodemunchOps,
-    pub task_metadata: HashMap<String, TaskMetadata>,
-    /// When `Some`, the periodic-sweep [`p5_phantom_done::check`](crate::p5_phantom_done::check) entry point
-    /// restricts its work to that single task. Honored by periodic-sweep
-    /// callers; intentionally ignored by [`p5_phantom_done::check_pre_done`](crate::p5_phantom_done::check_pre_done),
-    /// which takes `task_id` as an explicit argument for O(1) HashMap lookup
-    /// on the D-1 hot path (setting both would be confusing and the explicit
-    /// parameter is unambiguous).
-    pub target_task_id: Option<String>,
-    /// Reserved for periodic-sweep scoping. None of the slice-1 detector
-    /// paths consume this yet — see [`TimeWindow`].
-    pub window: Option<TimeWindow>,
-    /// Synthetic clock (epoch-seconds) for P1's grace-window math. `None`
-    /// falls back to `SystemTime::now()`; tests pass `Some(e)` so grace-window
-    /// boundaries are deterministic. Epoch-seconds keeps the crate's dep-set
-    /// minimal (no chrono/time) per `f-infra-design.md` §12.
-    pub now: Option<i64>,
-    /// Reserved for future sweep CLI use (T-4 #3672). P1 no longer reads this
-    /// field — it now resolves symbols via `done_provenance.commit` (commit-range
-    /// `{commit}^1..{commit}`) rather than a branch+timestamp query. Kept pub
-    /// because ~50 construction sites set it to `None`; removing it is outside
-    /// the scope of L-TRAIT and deferred to a later cleanup pass.
-    pub producer_branch: Option<String>,
+    project_root: PathBuf,
+    conn: &'a rusqlite::Connection,
+    git: &'a dyn GitOps,
+    jcodemunch: &'a dyn JCodemunchOps,
+    task_metadata: HashMap<String, TaskMetadata>,
+    target_task_id: Option<String>,
+    now: i64,
 }
 
 impl<'a> AuditContext<'a> {
@@ -502,9 +467,7 @@ impl<'a> AuditContext<'a> {
             jcodemunch,
             task_metadata: HashMap::new(),
             target_task_id: None,
-            window: None,
-            now: Some(system_clock_epoch_seconds()),
-            producer_branch: None,
+            now: system_clock_epoch_seconds(),
         }
     }
 
@@ -522,7 +485,7 @@ impl<'a> AuditContext<'a> {
 
     // G-allow: test-support synthetic clock for deterministic grace-window tests; production uses the clock read at construction
     pub fn at_time(mut self, epoch_seconds: i64) -> Self {
-        self.now = Some(epoch_seconds);
+        self.now = epoch_seconds;
         self
     }
 
@@ -538,6 +501,11 @@ impl<'a> AuditContext<'a> {
         self.git
     }
 
+    /// Source-introspection seam for P1 (changed-symbol / reference queries).
+    /// Required and object-safe, mirroring [`git`](Self::git): production
+    /// supplies a real jcodemunch-MCP-backed impl; tests use
+    /// [`MockJCodemunchOps`](crate::MockJCodemunchOps). Per `f-infra-design.md` §3 (pure-logic) and §5
+    /// P1 (source-introspection behind a mockable seam).
     pub fn jcodemunch(&self) -> &'a dyn JCodemunchOps {
         self.jcodemunch
     }
@@ -546,13 +514,22 @@ impl<'a> AuditContext<'a> {
         &self.task_metadata
     }
 
+    /// When `Some`, the periodic-sweep [`p5_phantom_done::check`](crate::p5_phantom_done::check) entry point
+    /// restricts its work to that single task. Honored by periodic-sweep
+    /// callers; intentionally ignored by [`p5_phantom_done::check_pre_done`](crate::p5_phantom_done::check_pre_done),
+    /// which takes `task_id` as an explicit argument for O(1) HashMap lookup
+    /// on the D-1 hot path (setting both would be confusing and the explicit
+    /// parameter is unambiguous).
     pub fn target_task_id(&self) -> Option<&str> {
         self.target_task_id.as_deref()
     }
 
-    /// The run clock, in epoch seconds.
+    /// The run clock in epoch seconds, for P1's grace-window math: read once
+    /// at construction, or fixed by [`at_time`](Self::at_time) so tests get
+    /// deterministic grace-window boundaries. Epoch-seconds keeps the crate's
+    /// dep-set minimal (no chrono/time) per `f-infra-design.md` §12.
     pub fn now(&self) -> i64 {
-        self.now.unwrap_or_else(system_clock_epoch_seconds)
+        self.now
     }
 
     /// Contents of tracked file `path` (root-relative), or `None` when it

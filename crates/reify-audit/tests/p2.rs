@@ -111,17 +111,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -252,17 +243,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert!(
@@ -318,17 +300,8 @@ mod tests {
         task_metadata.insert(task_id.to_string(), benign_meta(task_id, all_files));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -393,17 +366,8 @@ mod tests {
                 },
             );
             let jc = MockJCodemunchOps::new();
-            let ctx = AuditContext {
-                project_root: PathBuf::from("/tmp/fake-project"),
-                conn: &conn,
-                git: &git,
-                jcodemunch: &jc,
-                task_metadata,
-                target_task_id: None,
-                window: None,
-                now: None,
-                producer_branch: None,
-            };
+            let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+                .with_tasks(task_metadata);
             p2_consumer_stub::check(&ctx)
         };
 
@@ -476,17 +440,8 @@ mod tests {
             .insert("9020".to_string(), benign_meta("9020", vec!["src/foo.rs".to_string()]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         // Before the fix this panics with "byte index 60 is not a char boundary".
         let findings = p2_consumer_stub::check(&ctx);
@@ -576,17 +531,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert!(
@@ -688,17 +634,8 @@ mod tests {
         });
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(findings.len(), 1,
@@ -742,17 +679,8 @@ mod tests {
         task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(findings.len(), 1, "expected exactly 1 finding; got {:?}", findings);
@@ -790,17 +718,8 @@ mod tests {
         ]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(findings.len(), 1,
@@ -842,17 +761,8 @@ mod tests {
         ]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(findings.len(), 1,
@@ -897,17 +807,8 @@ mod tests {
         task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(findings.len(), 1, "expected exactly 1 finding (bundled for expr.rs); got {:?}", findings);
@@ -945,17 +846,8 @@ mod tests {
         task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -1000,17 +892,8 @@ mod tests {
         task_metadata.insert(task_id.to_string(), benign_meta(task_id, vec![path.to_string()]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -1059,17 +942,8 @@ mod tests {
         ]));
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -1134,17 +1008,8 @@ mod tests {
         });
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(findings.len(), 1,
@@ -1219,17 +1084,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -1315,17 +1171,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -1422,17 +1269,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         // The pre-existing stub IS attributed to the unreachable-commit task.
@@ -1531,17 +1369,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         // Expect 3 findings — one per path.
@@ -1609,17 +1438,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         assert_eq!(
@@ -1697,17 +1517,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         // Only path_b should produce a finding.

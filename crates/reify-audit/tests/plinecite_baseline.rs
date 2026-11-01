@@ -12,7 +12,7 @@
 use reify_audit::plinecite_baseline::{BASELINE_PATH, CiteRow, render_baseline};
 use reify_audit::{AuditContext, Finding, MockJCodemunchOps, RealGitOps};
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -66,17 +66,7 @@ fn check_real(root: &Path) -> Vec<Finding> {
     let git = RealGitOps::new(root.to_path_buf());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
     reify_audit::plinecite::check(&ctx)
 }
 

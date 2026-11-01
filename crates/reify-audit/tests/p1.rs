@@ -163,17 +163,8 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         // Default-empty mock → no changed symbols → no findings.
         let findings: Vec<Finding> = p1_producer_orphan::check(&ctx);
@@ -216,17 +207,9 @@ mod tests {
             done_meta("7001", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -300,17 +283,9 @@ mod tests {
             done_meta("7003", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -386,17 +361,9 @@ mod tests {
         let mut task_metadata = HashMap::new();
         task_metadata.insert("6504".to_string(), done_meta("6504", NOW - 30 * DAY, None));
 
-        let ctx = AuditContext {
-            project_root: tmp.path().to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &ops,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(tmp.path().to_path_buf(), &conn, &git, &ops)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
         let findings = p1_producer_orphan::check(&ctx);
         mock.stop();
         findings
@@ -460,17 +427,9 @@ mod tests {
             done_meta("7002", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -529,17 +488,9 @@ mod tests {
                 ..done_meta("8001", done_at, Some("docs/x.md"))
             },
         );
-        let ctx_a = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: tm_foundation,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx_a = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(tm_foundation)
+            .at_time(NOW);
         let findings_a = p1_producer_orphan::check(&ctx_a);
         assert!(
             findings_a.is_empty(),
@@ -567,17 +518,9 @@ mod tests {
                 done_at: None,
             },
         );
-        let ctx_b = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: tm_consumer,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx_b = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(tm_consumer)
+            .at_time(NOW);
         let findings_b = p1_producer_orphan::check(&ctx_b);
         assert!(
             findings_b.is_empty(),
@@ -631,17 +574,9 @@ mod tests {
             done_meta("9001", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -721,17 +656,9 @@ mod tests {
             done_meta("7100", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -788,17 +715,9 @@ mod tests {
             let mut task_metadata = HashMap::new();
             task_metadata.insert(name.to_string(), done_meta(name, done_at, Some("docs/x.md")));
 
-            let ctx = AuditContext {
-                project_root: PathBuf::from("/tmp/fake-project"),
-                conn: &conn,
-                git: &git,
-                jcodemunch: &jc,
-                task_metadata,
-                target_task_id: None,
-                window: None,
-                now: Some(NOW),
-                producer_branch: None,
-            };
+            let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+                .with_tasks(task_metadata)
+                .at_time(NOW);
 
             let findings = p1_producer_orphan::check(&ctx);
             assert_eq!(
@@ -864,17 +783,10 @@ mod tests {
         );
 
         // With target_task_id pointing at task_A, only task_A is scanned.
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: Some("task_A".to_string()),
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .targeting("task_A")
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -918,17 +830,9 @@ mod tests {
         task_metadata.insert("task_A".to_string(), done_meta("task_A", done_at, None));
         task_metadata.insert("task_B".to_string(), done_meta("task_B", done_at, None));
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         let unexamined: Vec<&Finding> = findings
@@ -998,17 +902,9 @@ mod tests {
             done_meta("task_A", NOW - 15 * DAY, None),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         let orphans: Vec<&Finding> = findings
@@ -1102,17 +998,9 @@ mod tests {
             done_meta("task_A", NOW - 15 * DAY, None),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1170,17 +1058,9 @@ mod tests {
             done_meta("task_A", NOW - 15 * DAY, None),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1238,17 +1118,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1306,17 +1178,9 @@ mod tests {
             done_meta("5000", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -1382,7 +1246,7 @@ mod tests {
         );
         // A consumer whose task_id != target_task_id. The producer loop skips
         // it (it is not a candidate producer), but has_pending_consumer must
-        // still discover it via ctx.task_metadata.values().
+        // still discover it via ctx.task_metadata().values().
         task_metadata.insert(
             "cons_1".to_string(),
             TaskMetadata {
@@ -1398,17 +1262,10 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: Some("prod_1".to_string()),
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .targeting("prod_1")
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1633,17 +1490,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1734,17 +1583,9 @@ mod tests {
             done_meta("4150", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -1818,17 +1659,9 @@ mod tests {
             done_meta("7600", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -1902,17 +1735,9 @@ mod tests {
             done_meta("7601", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(

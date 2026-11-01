@@ -298,17 +298,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let p5_findings = p5_phantom_done::check(&ctx);
         let p1_findings = p1_producer_orphan::check(&ctx);
@@ -384,17 +376,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new(); // P2 ignores jcodemunch
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p2_consumer_stub::check(&ctx);
         // P2 aggregates per (task, file): two stub lines on one file → one finding.
@@ -485,17 +468,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -575,17 +550,8 @@ mod tests {
         );
 
         let jc = MockJCodemunchOps::new(); // P5 ignores jcodemunch
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = p5_phantom_done::check(&ctx);
         assert_eq!(
