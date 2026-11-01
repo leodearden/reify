@@ -53,7 +53,7 @@
 # the RESULT.  /proc/<pid>/exe is the kernel's own answer to "what image is this
 # process running", unforgeable from userspace and correct even for a binary that
 # has since been deleted or copied.  Same idiom, same reason, as the orphaned
-# test-binary reaper (scripts/lib_proc_reaper.sh:197-205); keeping one definition
+# test-binary reaper (scripts/lib_proc_reaper.sh::_reaper_reap_orphans); keeping one definition
 # of "is this process a test binary" across the repo is deliberate.
 #
 # ---------------------------------------------------------------------------

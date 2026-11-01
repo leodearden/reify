@@ -17,7 +17,7 @@
 #       ~/.cargo/bin/sccache and rustup's rustc — compile-phase processes, not
 #       test binaries.  The earlier 48-count snapshot is that artefact.  The fix
 #       is to CONFIRM each candidate by readlink /proc/<pid>/exe, the spoof-proof
-#       idiom scripts/lib_proc_reaper.sh:197-205 already uses.  A1 pins it.
+#       idiom scripts/lib_proc_reaper.sh::_reaper_reap_orphans already uses.  A1 pins it.
 #
 #   (b) UNDERSAMPLING.  A 15-minute window returned a maximum of 7 — BELOW the
 #       then-configured 16 — purely because it landed between nextest execution
