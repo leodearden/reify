@@ -32,6 +32,7 @@ from _pcc_test_support import (
     _ts_stub_hangs,
     _ts_stub_not_executable,
     _write_ts_stub,
+    make_fixture_repo,
     probe_context,
 )
 
@@ -717,6 +718,85 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             usable, reason = self._call(stub)
             self.assertIsInstance(usable, bool)
             self.assertIsInstance(reason, str)
+
+
+class TestGrammarSeamsTakeContext(unittest.TestCase):
+    """The grammar layer reads the repo root, the CLI and the bound off ctx.
+
+    grammar_substrate_usable() runs its one probe through the runner it is
+    given, so what it asks for is observed on a fake rather than patched in.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_grammar_seam_")
+        self.tmp = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _recording_runner(run):
+        calls = []
+
+        def runner(probe, ctx, timeout=None):
+            calls.append((probe, ctx, timeout))
+            return run
+        return runner, calls
+
+    @staticmethod
+    def _failed_run(kind, detail):
+        return pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(kind, detail))
+
+    def test_grammar_generated_looks_under_the_ctx_repo_root(self):
+        for generated in (True, False):
+            with self.subTest(parser_c=generated), \
+                 tempfile.TemporaryDirectory(dir=self.tmp) as root:
+                ctx = probe_context(repo_root=make_fixture_repo(root, parser_c=generated))
+                self.assertEqual(
+                    pcc.grammar_generated(ctx),
+                    (generated, os.path.join(root, "tree-sitter-reify", "src", "parser.c")),
+                )
+
+    def test_the_substrate_probe_runs_once_through_the_runner_under_the_ctx_bound(self):
+        ctx = probe_context(substrate_timeout_s=0.4)
+        runner, calls = self._recording_runner(pcc.ProbeRun(0, "", ""))
+        self.assertEqual(pcc.grammar_substrate_usable(ctx, runner=runner), (True, ""))
+        self.assertEqual(len(calls), 1)
+        probe, called_ctx, timeout = calls[0]
+        self.assertEqual(probe.probe_kind, pcc.ProbeKind.GRAMMAR)
+        self.assertIs(called_ctx, ctx)
+        self.assertEqual(timeout, ctx.substrate_timeout_s)
+
+    def test_a_timeout_reason_names_the_ctx_bound(self):
+        ctx = probe_context(substrate_timeout_s=0.4)
+        runner, _ = self._recording_runner(
+            self._failed_run(pcc.HarnessFailureKind.TIMEOUT, "timed out after 0.4 seconds")
+        )
+        usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner)
+        self.assertFalse(usable)
+        self.assertIn("0.4s", reason)
+
+    def test_a_launch_reason_names_the_ctx_binary_not_the_environment(self):
+        ctx = probe_context(tree_sitter_bin="/ctx/ts")
+        runner, _ = self._recording_runner(
+            self._failed_run(pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file")
+        )
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "/env/ts"}):
+            usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner)
+        self.assertFalse(usable)
+        self.assertIn("/ctx/ts", reason)
+        self.assertNotIn("/env/ts", reason)
+
+    def test_an_absent_grammar_dir_under_the_ctx_root_is_named(self):
+        """The real runner, a good CLI and a root with no tree-sitter-reify/."""
+        ctx = probe_context(
+            repo_root=self.tmp,
+            tree_sitter_bin=_ts_stub_clean(self.tmp),
+            cache_home_override=os.path.join(self.tmp, "cache"),
+        )
+        usable, reason = pcc.grammar_substrate_usable(ctx)
+        self.assertFalse(usable, "an absent grammar directory is an unusable substrate")
+        self.assertIn(os.path.join(self.tmp, "tree-sitter-reify"), reason)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from _pcc_test_support import (
     _ts_stub_echo_cache,
     _ts_stub_hangs,
     _write_ts_stub,
+    make_fixture_repo,
     probe_context,
 )
 
@@ -1011,6 +1012,57 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
                 usable, reason = pcc.grammar_substrate_usable()
         self.assertFalse(usable, "a wedged grammar cache is an unusable substrate")
         self.assertTrue(reason, "an unusable substrate must explain itself")
+
+
+class TestCacheSeamsTakeContext(unittest.TestCase):
+    """grammar_cache_home(ctx) and grammar_fingerprint(ctx): the §5.5 cache seams."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_cache_seam_")
+        self.tmp = self._tmp.name
+        self.tempdir = os.path.join(self.tmp, "tmp")
+        os.makedirs(self.tempdir)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _root(self, name):
+        return make_fixture_repo(os.path.join(self.tmp, name))
+
+    def test_the_ctx_override_is_the_cache_home(self):
+        override = os.path.join(self.tmp, "override")
+        before = dict(os.environ)
+        home = pcc.grammar_cache_home(probe_context(cache_home_override=override))
+        self.assertEqual(home, override)
+        self.assertTrue(os.path.isdir(override))
+        self.assertEqual(dict(os.environ), before)
+
+    def test_an_ambient_override_is_not_read_when_ctx_carries_none(self):
+        ambient = os.path.join(self.tmp, "ambient")
+        with unittest.mock.patch.object(tempfile, "tempdir", self.tempdir), \
+             unittest.mock.patch.dict(os.environ, {"REIFY_TS_CACHE_HOME": ambient}):
+            home = pcc.grammar_cache_home(probe_context(repo_root=self._root("a")))
+        self.assertNotEqual(home, ambient)
+        self.assertEqual(os.path.dirname(home), self.tempdir)
+
+    def test_two_roots_get_two_homes_and_one_root_keeps_its_own(self):
+        a, b = self._root("a"), self._root("b")
+        with unittest.mock.patch.object(tempfile, "tempdir", self.tempdir):
+            home_a = pcc.grammar_cache_home(probe_context(repo_root=a))
+            home_b = pcc.grammar_cache_home(probe_context(repo_root=b))
+            again = pcc.grammar_cache_home(probe_context(repo_root=a))
+        self.assertNotEqual(home_a, home_b)
+        self.assertEqual(home_a, again)
+        self.assertEqual(os.path.dirname(home_a), self.tempdir)
+
+    def test_the_fingerprint_hashes_the_ctx_roots_grammar_json(self):
+        root = self._root("r")
+        ctx = probe_context(repo_root=root)
+        self.assertEqual(pcc.grammar_fingerprint(ctx), "")
+        content = b'{"name": "reify", "rules": {}}'
+        with open(os.path.join(root, "tree-sitter-reify", "src", "grammar.json"), "wb") as fh:
+            fh.write(content)
+        self.assertEqual(pcc.grammar_fingerprint(ctx), hashlib.sha256(content).hexdigest())
 
 
 if __name__ == "__main__":

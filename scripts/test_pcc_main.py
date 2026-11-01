@@ -34,6 +34,7 @@ from _pcc_test_support import (
     _ts_stub_clean,
     _ts_stub_hangs,
     _ts_stub_not_executable,
+    make_fixture_repo,
     probe_context,
 )
 from _schema_test_support import schema_errors
@@ -1317,16 +1318,8 @@ class TestLoadRefusalCli(unittest.TestCase):
         )
 
 
-class TestMainRunnerSeam(unittest.TestCase):
+class TestMainRunnerSeam(_MainHarness, unittest.TestCase):
     """main() runs every probe through its runner seam with the one ctx it holds."""
-
-    @staticmethod
-    def _main(argv, **seams):
-        out, err = io.StringIO(), io.StringIO()
-        with unittest.mock.patch("sys.stdout", out), \
-             unittest.mock.patch("sys.stderr", err):
-            rc = pcc.main(argv, **seams)
-        return rc, out.getvalue(), err.getvalue()
 
     def test_each_probe_reaches_the_runner_with_the_given_ctx(self):
         ctx = probe_context()
@@ -1337,7 +1330,9 @@ class TestMainRunnerSeam(unittest.TestCase):
             calls.append((ctx_arg, argv))
             return pcc.ProbeRun(0, "", "", command=argv)
 
-        _, out, err = self._main(["--json", _EXAMPLE_PROBE_SET], runner=fake, ctx=ctx)
+        _, out, err = self._run_main_capturing(
+            ["--json", _EXAMPLE_PROBE_SET], runner=fake, ctx=ctx
+        )
         with open(_EXAMPLE_PROBE_SET) as fh:
             probes = pcc.load_probe_set(fh.read())
         self.assertEqual(len(calls), len(probes), err)
@@ -1365,6 +1360,77 @@ class TestMainRunnerSeam(unittest.TestCase):
         for record in records:
             with self.subTest(capability=record["capability"]):
                 self.assertEqual(record["command"], record["stdout"].splitlines())
+
+
+class TestSubstrateModeSeam(_MainHarness, unittest.TestCase):
+    """--grammar-substrate-status answers for main's ctx, through main's runner.
+
+    Each case runs over a fixture repo root, so whether this lane generated the
+    grammar decides nothing.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_substrate_mode_")
+        self.tmp = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _ctx(self, parser_c, **fields):
+        return probe_context(
+            repo_root=make_fixture_repo(os.path.join(self.tmp, "repo"), parser_c=parser_c),
+            cache_home_override=os.path.join(self.tmp, "cache"),
+            **fields,
+        )
+
+    @staticmethod
+    def _recording_runner(run):
+        calls = []
+
+        def runner(probe, ctx, timeout=None):
+            calls.append((probe, ctx, timeout))
+            return run
+        return runner, calls
+
+    def test_an_ungenerated_grammar_is_75_and_runs_nothing(self):
+        ctx = self._ctx(parser_c=False)
+        runner, calls = self._recording_runner(pcc.ProbeRun(0, "", ""))
+        rc, out, err = self._run_main_capturing(
+            ["--grammar-substrate-status"], runner=runner, ctx=ctx
+        )
+        self.assertEqual(rc, 75, out + err)
+        self.assertIn(os.path.join(ctx.repo_root, "tree-sitter-reify", "src", "parser.c"), out)
+        self.assertEqual(calls, [])
+
+    def test_a_generated_grammar_spends_exactly_the_substrate_probe(self):
+        with open(_EXAMPLE_PROBE_SET) as fh:
+            probe_set_capabilities = {p.capability for p in pcc.load_probe_set(fh.read())}
+        denied = pcc.ProbeRun(
+            1, "", _CACHE_DENIED_STDERR,
+            harness_failure=pcc.grammar_load_failure(_CACHE_DENIED_STDERR),
+        )
+        for label, run, want_rc in (("clean", pcc.ProbeRun(0, "", ""), 0),
+                                    ("cache denied", denied, 75)):
+            with self.subTest(run=label):
+                ctx = self._ctx(parser_c=True)
+                runner, calls = self._recording_runner(run)
+                rc, out, err = self._run_main_capturing(
+                    ["--grammar-substrate-status", _EXAMPLE_PROBE_SET], runner=runner, ctx=ctx
+                )
+                self.assertEqual(rc, want_rc, out + err)
+                self.assertEqual(len(calls), 1)
+                probe, called_ctx, timeout = calls[0]
+                self.assertIs(called_ctx, ctx)
+                self.assertEqual(timeout, ctx.substrate_timeout_s)
+                self.assertNotIn(probe.capability, probe_set_capabilities)
+
+    def test_a_hanging_tree_sitter_is_75_within_the_ctx_bound(self):
+        ctx = self._ctx(
+            parser_c=True, tree_sitter_bin=_ts_stub_hangs(self.tmp), substrate_timeout_s=0.4
+        )
+        rc, out, err = self._run_main_capturing(["--grammar-substrate-status"], ctx=ctx)
+        self.assertEqual(rc, 75, out + err)
+        self.assertIn("0.4s", out, "the reason is the bound elapsing, not a missing grammar")
 
 
 if __name__ == "__main__":
