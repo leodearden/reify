@@ -251,6 +251,16 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
 
 
+def _argv_echo_stub(tmpdir: str, name: str = "argv_echo") -> str:
+    """Stub that prints the argv it was launched with, one element per line, $0 first.
+
+    Stands in for either binary.  What the child prints is the only outside
+    measurement of the command that really ran, so a test can compare it with
+    the command a ProbeRun or a --json record says ran.
+    """
+    return _write_ts_stub(tmpdir, name, """printf '%s\\n' "$0" "$@"\n""")
+
+
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:
     """Stub that EXISTS on disk but carries no execute bit.
 

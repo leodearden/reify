@@ -26,12 +26,14 @@ from _pcc_test_support import (
     _REPO_ROOT,
     _VALUE_CELLS_FIXTURE,
     _VALUE_CELLS_STDOUT,
+    _argv_echo_stub,
     _patch_parser_c,
     _require_grammar_substrate,
     _ts_stub_cache_denied,
     _ts_stub_clean,
     _ts_stub_hangs,
     _ts_stub_not_executable,
+    probe_context,
 )
 from _schema_test_support import schema_errors
 
@@ -1304,6 +1306,56 @@ class TestLoadRefusalCli(unittest.TestCase):
             self._check_probe({"exit_code": 0, "stderr_pattern": "x"}),
             "stderr_pattern",
         )
+
+
+class TestMainRunnerSeam(unittest.TestCase):
+    """main() runs every probe through its runner seam with the one ctx it holds."""
+
+    @staticmethod
+    def _main(argv, **seams):
+        out, err = io.StringIO(), io.StringIO()
+        with unittest.mock.patch("sys.stdout", out), \
+             unittest.mock.patch("sys.stderr", err):
+            rc = pcc.main(argv, **seams)
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_each_probe_reaches_the_runner_with_the_given_ctx(self):
+        ctx = probe_context()
+        calls = []
+
+        def fake(probe, ctx_arg, timeout=None):
+            argv = (f"fake-{probe.probe_kind}", probe.fixture)
+            calls.append((ctx_arg, argv))
+            return pcc.ProbeRun(0, "", "", command=argv)
+
+        _, out, err = self._main(["--json", _EXAMPLE_PROBE_SET], runner=fake, ctx=ctx)
+        with open(_EXAMPLE_PROBE_SET) as fh:
+            probes = pcc.load_probe_set(fh.read())
+        self.assertEqual(len(calls), len(probes), err)
+        for ctx_arg, _ in calls:
+            self.assertIs(ctx_arg, ctx)
+        records = json.loads(out)["results"]
+        self.assertEqual(
+            [record["command"] for record in records],
+            [list(argv) for _, argv in calls],
+        )
+
+    def test_cli_record_command_is_the_argv_the_binary_received(self):
+        """THE PRD SIGNAL (§8 ε): every record's command is what really ran."""
+        with tempfile.TemporaryDirectory(prefix="pcc_argv_echo_") as tmp:
+            echo = _argv_echo_stub(tmp)
+            env = dict(os.environ, REIFY_BIN=echo, TREE_SITTER_BIN=echo)
+            proc = subprocess.run(
+                [sys.executable, _HARNESS_PATH, "--json", _EXAMPLE_PROBE_SET],
+                capture_output=True, text=True, env=env,
+            )
+        # The echo stub satisfies no expectation; only the argv is under test.
+        self.assertIn(proc.returncode, (0, 1, 2), proc.stderr)
+        records = json.loads(proc.stdout)["results"]
+        self.assertTrue(records)
+        for record in records:
+            with self.subTest(capability=record["capability"]):
+                self.assertEqual(record["command"], record["stdout"].splitlines())
 
 
 if __name__ == "__main__":

@@ -19,8 +19,12 @@ from _pcc_test_support import (
     pcc,
     _REPO_ROOT,
     _VALUE_CELLS_FIXTURE,
+    _argv_echo_stub,
     _ts_stub_echo_cache,
     _ts_stub_not_executable,
+    _write_ts_stub,
+    make_fixture_repo,
+    probe_context,
 )
 
 
@@ -604,6 +608,105 @@ class TestBuildCommandValueKind(unittest.TestCase):
                 run = pcc.run_probe(probe)
         self.assertEqual(run.exit_code, 0, f"stub failed: {run.stderr!r}")
         self.assertEqual(run.stdout.strip(), f"XDG_CACHE_HOME={sentinel}")
+
+
+# ---------------------------------------------------------------------------
+# ε: one repo root, one argv — build_command and run_probe read ctx alone
+# ---------------------------------------------------------------------------
+
+class TestRunProbeTakesContext(unittest.TestCase):
+    """build_command() and run_probe() take the binaries and the root from ctx.
+
+    The argv a run records is the argv it launched: an argv-echo stub prints
+    what it really received, and that is compared with run.command and with
+    build_command(probe, ctx).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_ctx_run_")
+        self.tmp = self._tmp.name
+        self.echo = _argv_echo_stub(self.tmp)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _probe(kind, fixture="tests/prd-gate/fixtures/ir_clean_eval.ri"):
+        return pcc.Probe(
+            capability="ctx",
+            probe_kind=kind,
+            fixture=fixture,
+            expected={"observation": "present", "match": {}},
+        )
+
+    def _grammar_ctx(self, tree_sitter_bin):
+        """A fixture repo root with a grammar dir, and a cache override inside tmp."""
+        root = make_fixture_repo(os.path.join(self.tmp, "repo"))
+        return probe_context(
+            repo_root=root,
+            tree_sitter_bin=tree_sitter_bin,
+            cache_home_override=os.path.join(self.tmp, "cache"),
+        )
+
+    def test_build_command_reads_the_binary_and_root_off_ctx_not_the_environment(self):
+        ctx = probe_context(
+            repo_root="/some/root", reify_bin="/ctx/reify", tree_sitter_bin="/ctx/ts"
+        )
+        binary_by_kind = {
+            "check": "/ctx/reify",
+            "ir": "/ctx/reify",
+            "value": "/ctx/reify",
+            "grammar": "/ctx/ts",
+        }
+        env = {"REIFY_BIN": "/env/reify", "TREE_SITTER_BIN": "/env/ts"}
+        with unittest.mock.patch.dict(os.environ, env):
+            for kind, binary in binary_by_kind.items():
+                with self.subTest(kind=kind):
+                    argv = pcc.build_command(self._probe(kind, "fx/a.ri"), ctx)
+                    self.assertEqual(argv[0], binary)
+                    self.assertEqual(argv[-1], "/some/root/fx/a.ri")
+
+    def test_a_reify_run_records_the_argv_it_executed(self):
+        ctx = probe_context(reify_bin=self.echo)
+        probe = self._probe("check")
+        run = pcc.run_probe(probe, ctx)
+        self.assertEqual(run.exit_code, 0, run)
+        self.assertEqual(run.command, tuple(run.stdout.splitlines()))
+        self.assertEqual(run.command, tuple(pcc.build_command(probe, ctx)))
+
+    def test_a_grammar_run_records_the_argv_it_executed(self):
+        ctx = self._grammar_ctx(self.echo)
+        probe = self._probe("grammar", "fx/g.ri")
+        run = pcc.run_probe(probe, ctx)
+        self.assertIsNone(run.harness_failure, run)
+        self.assertEqual(run.command, tuple(run.stdout.splitlines()))
+        self.assertEqual(run.command, tuple(pcc.build_command(probe, ctx)))
+
+    def test_a_grammar_run_launches_in_the_ctx_grammar_dir(self):
+        print_pwd = _write_ts_stub(self.tmp, "print_pwd", """printf '%s\\n' "$PWD"\n""")
+        ctx = self._grammar_ctx(print_pwd)
+        run = pcc.run_probe(self._probe("grammar", "fx/g.ri"), ctx)
+        self.assertEqual(
+            os.path.realpath(run.stdout.strip()),
+            os.path.realpath(os.path.join(ctx.repo_root, "tree-sitter-reify")),
+        )
+
+    def test_fixture_presence_is_measured_under_the_ctx_repo_root(self):
+        ctx = self._grammar_ctx(self.echo)
+        os.makedirs(os.path.join(ctx.repo_root, "fx"))
+        open(os.path.join(ctx.repo_root, "fx", "here.ri"), "w").close()
+        here = pcc.run_probe(self._probe("grammar", "fx/here.ri"), ctx)
+        never = pcc.run_probe(self._probe("grammar", "fx/never.ri"), ctx)
+        self.assertTrue(here.fixture_present)
+        self.assertFalse(never.fixture_present)
+
+    def test_a_launch_failure_still_carries_the_attempted_argv(self):
+        ctx = probe_context(reify_bin=os.path.join(self.tmp, "no-such-reify"))
+        probe = self._probe("check")
+        run = pcc.run_probe(probe, ctx)
+        self.assertIsNotNone(run.harness_failure)
+        self.assertIs(run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH)
+        self.assertEqual(run.command, tuple(pcc.build_command(probe, ctx)))
 
 
 if __name__ == "__main__":

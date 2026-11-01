@@ -13,6 +13,7 @@ from typing import Any
 from _pcc_test_support import (
     _CACHE_DENIED_STDERR,
     pcc,
+    probe_context,
 )
 
 
@@ -915,6 +916,40 @@ class TestHarnessExitCode(unittest.TestCase):
         result = pcc.evaluate(probe, runner=launch_failure_runner)
         self.assertEqual(result.verdict, pcc.Verdict.HARNESS_ERROR)
         self.assertEqual(pcc.harness_exit_code([result]), 70)
+
+
+class TestEvaluateRecordsTheRunnersArgv(unittest.TestCase):
+    """evaluate() records the argv its runner reports and builds none of its own."""
+
+    _RUNNERS_ARGV = ("sentinel-bin", "check", "x.ri")
+
+    def _probe(self):
+        return pcc.Probe(
+            capability="argv has one home",
+            probe_kind="check",
+            fixture="x.ri",
+            expected={"observation": "absent", "match": {"exit_code": 1}},
+        )
+
+    def test_the_runner_gets_the_ctx_and_its_argv_is_the_recorded_one(self):
+        calls = []
+
+        def fake(probe, ctx, timeout=None):
+            calls.append((probe, ctx, timeout))
+            return pcc.ProbeRun(0, "", "", command=self._RUNNERS_ARGV)
+
+        probe, ctx = self._probe(), probe_context()
+        result = pcc.evaluate(probe, ctx, runner=fake)
+        self.assertEqual(len(calls), 1)
+        called_probe, called_ctx, called_timeout = calls[0]
+        self.assertIs(called_probe, probe)
+        self.assertIs(called_ctx, ctx)
+        self.assertIsNone(called_timeout)
+        self.assertEqual(result.run.command, self._RUNNERS_ARGV)
+
+    def test_result_has_no_command_field_of_its_own(self):
+        names = {f.name for f in dataclasses.fields(pcc.Result)}
+        self.assertNotIn("command", names)
 
 
 if __name__ == "__main__":
