@@ -20,6 +20,7 @@ pub mod mesh_fixtures;
 pub mod mocks;
 pub mod orphan_audit;
 pub mod prd_gate_probe_set;
+pub mod prelude;
 pub mod ptodo_cite_marker;
 pub mod rust_fixture_scan;
 pub mod sampled_field_fixtures;
@@ -46,6 +47,7 @@ pub mod workspace_sweep;
 // - `design_files`
 // - `examples_corpus`
 // - `mesh_fixtures`
+// - `prelude`
 // - `rust_fixture_scan`
 // - `stl_bytes`
 // - `workspace_root`

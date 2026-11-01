@@ -264,40 +264,6 @@ fn assert_compiles_clean(src: &str, what: &str) {
     );
 }
 
-/// Read the DECLARED type of `<template>.<member>` straight off the compiled
-/// prelude, so an expectation below is an exact `Type` equality rather than a
-/// guess about how the diagnostic renderer spells a dimension.
-///
-/// This is the direct observation point the binding-shaped assertions above
-/// cannot reach: `TopologyTemplate::value_cells` carries the fully-resolved
-/// `cell_type` for every `param`, including the List element and `Point3`
-/// component types the `ParamDefaultTypeMismatch` check never descends into.
-/// Same shape as `reify-compiler`'s
-/// `harness_langcore/prelude_sub_member_typing_tests.rs::prelude_member_type`
-/// — both `stdlib_loader::load_stdlib` and `find_template` are public API and
-/// `reify-compiler` is a normal dependency of this crate, so no new seam is
-/// opened to get it.
-fn prelude_member_type(template_name: &str, member: &str) -> Type {
-    let prelude = reify_compiler::stdlib_loader::load_stdlib();
-    let tmpl = prelude
-        .iter()
-        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
-        .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
-    tmpl.value_cells
-        .iter()
-        .find(|c| c.id.member == member)
-        .unwrap_or_else(|| {
-            let members: Vec<&str> = tmpl
-                .value_cells
-                .iter()
-                .map(|c| c.id.member.as_str())
-                .collect();
-            panic!("prelude template {template_name} has no member {member}; have: {members:?}")
-        })
-        .cell_type
-        .clone()
-}
-
 /// `Scalar[<dimension>]`, the declared type of a unit-bearing `param`.
 fn scalar_ty(dimension: DimensionVector) -> Type {
     Type::Scalar { dimension }
@@ -354,7 +320,7 @@ fn assert_dimension_mismatch(src: &str, what: &str) {
 /// assertion. (That laxness is recorded below but deliberately not asserted; a
 /// test that reds when the checker gets STRICTER is a reverse ratchet, not
 /// coverage.) It is instead pinned DIRECTLY, by reading the declared cell type
-/// off the compiled prelude via [`prelude_member_type`] and asserting an exact
+/// off the compiled prelude via [`reify_test_support::prelude::member_type`] and asserting an exact
 /// `Type` equality against `List<Point3<Length>>`. That closes the blind spot:
 /// the equality is a property of the DECLARATION, so it is immune both to how
 /// the diagnostic renderer spells a dimension and to how strict the binding
@@ -484,7 +450,7 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
     // an exact `Type` equality against the declared cell type, which a revert to
     // `List<Point3<Real>>` fails outright.
     assert_eq!(
-        prelude_member_type("Bead", "centerline"),
+        reify_test_support::prelude::member_type("Bead", "centerline"),
         Type::List(Box::new(Type::Point {
             n: 3,
             quantity: Box::new(scalar_ty(DimensionVector::LENGTH)),
@@ -506,32 +472,32 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
     // author's code actually sees) and by exact declared type (which cannot be
     // satisfied by an implicit conversion or a laxer checker).
     assert_eq!(
-        prelude_member_type("Bead", "width"),
+        reify_test_support::prelude::member_type("Bead", "width"),
         scalar_ty(DimensionVector::LENGTH),
         "Bead.width must be declared `Length`"
     );
     assert_eq!(
-        prelude_member_type("Bead", "height"),
+        reify_test_support::prelude::member_type("Bead", "height"),
         scalar_ty(DimensionVector::LENGTH),
         "Bead.height must be declared `Length`"
     );
     assert_eq!(
-        prelude_member_type("Bead", "layer_z"),
+        reify_test_support::prelude::member_type("Bead", "layer_z"),
         scalar_ty(DimensionVector::LENGTH),
         "Bead.layer_z must be declared `Length`"
     );
     assert_eq!(
-        prelude_member_type("Bead", "speed"),
+        reify_test_support::prelude::member_type("Bead", "speed"),
         scalar_ty(DimensionVector::VELOCITY),
         "Bead.speed must be declared `Velocity`"
     );
     assert_eq!(
-        prelude_member_type("Bead", "nominal_temp"),
+        reify_test_support::prelude::member_type("Bead", "nominal_temp"),
         scalar_ty(DimensionVector::TEMPERATURE),
         "Bead.nominal_temp must be declared `Temperature` (absolute kelvin)"
     );
     assert_eq!(
-        prelude_member_type("Layer", "z"),
+        reify_test_support::prelude::member_type("Layer", "z"),
         scalar_ty(DimensionVector::LENGTH),
         "Layer.z must be declared `Length`"
     );
@@ -687,7 +653,7 @@ structure def TempSentinelProbe {
 #[test]
 fn stdlib_bead_declares_nominal_temp_observed_as_bool() {
     assert_eq!(
-        prelude_member_type("Bead", "nominal_temp_observed"),
+        reify_test_support::prelude::member_type("Bead", "nominal_temp_observed"),
         Type::Bool,
         "Bead.nominal_temp_observed must be declared `Bool`"
     );
