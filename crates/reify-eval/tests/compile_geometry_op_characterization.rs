@@ -40,8 +40,9 @@
 //!
 //! # Snapshot determinism
 //!
-//! Inputs are synthetic literals built via [`real_literal`]; `CompiledExpr::literal`
-//! attaches no span, so the `{:#?}` Debug of the produced `GeometryOp`/`Err`
+//! Inputs are synthetic literals built via the shared `reify_test_support`
+//! constructors ([`real_literal`], [`length_literal`], [`angle_literal`]) and the
+//! local `lit_raw`/vector helpers; `CompiledExpr::literal` attaches no span, so the `{:#?}` Debug of the produced `GeometryOp`/`Err`
 //! string and the `(severity, message)` diagnostic projection are byte-stable
 //! across runs. Goldens were captured via a RED→GREEN bootstrap (placeholder →
 //! run on current code → paste actual).
@@ -1547,8 +1548,9 @@ fn transform_case(k: TransformKind) -> CompiledGeometryOp {
             ("angle".to_string(), angle_literal(1.0)),
         ],
         TransformKind::Scale => vec![("factor".to_string(), real_literal(2.0))],
-        // Only the PIVOT is LENGTH-semantic (task 5623); ax/ay/az/angle stay
-        // on `real_literal`. Golden unchanged.
+        // Only the PIVOT is LENGTH-semantic (task 5623); the ax/ay/az direction
+        // stays on `real_literal`, and `angle` is ANGLE-dimensioned via
+        // `angle_literal` (angle-units PRD leaf γ). Golden unchanged.
         TransformKind::RotateAround => vec![
             ("px".to_string(), length_literal(0.05)),
             ("py".to_string(), length_literal(0.0)),
@@ -1758,8 +1760,8 @@ fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
             ("d2".to_string(), length_literal(0.006)),
         ],
         ModifyKind::Shell => vec![("thickness".to_string(), length_literal(0.002))],
-        // `Draft`'s `angle` stays BARE: it is an ANGLE position owned by
-        // `docs/prds/v0_6/angle-units-surface-convergence.md`, not by this leaf.
+        // `Draft`'s `angle` is an ANGLE position, dimensioned via `angle_literal`
+        // (`docs/prds/v0_6/angle-units-surface-convergence.md` leaf δ).
         ModifyKind::Draft => vec![("angle".to_string(), angle_literal(0.1))],
         ModifyKind::Thicken => vec![("offset".to_string(), length_literal(0.003))],
         ModifyKind::ZoneSlab => vec![("width".to_string(), length_literal(0.01))],
@@ -2473,7 +2475,8 @@ const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, Pattern
 
 /// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
 /// for Circular/Mirror). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
-/// arm. Circular's bare numeric `angle` exercises the degrees→radians warning.
+/// arm. Circular's `angle` is ANGLE-dimensioned via `angle_literal` (angle-units
+/// PRD leaf ε retired the bare-number degrees→radians path).
 fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Linear => vec![
@@ -2702,8 +2705,10 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
                 ("ay".to_string(), real_literal(0.0)),
                 ("az".to_string(), real_literal(1.0)),
                 ("angle".to_string(), angle_literal(1.0)),
-                // Only the axis ORIGIN is LENGTH-semantic (task 5623);
-                // ax/ay/az/angle stay on `real_literal`. Golden unchanged.
+                // Only the axis ORIGIN is LENGTH-semantic (task 5623); the
+                // ax/ay/az direction stays on `real_literal`, and `angle` is
+                // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ).
+                // Golden unchanged.
                 ("ox".to_string(), length_literal(0.0)),
                 ("oy".to_string(), length_literal(0.0)),
                 ("oz".to_string(), length_literal(0.0)),
@@ -3047,8 +3052,9 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
             ("y2".to_string(), length_literal(0.02)),
             ("z2".to_string(), length_literal(0.03)),
         ],
-        // Centre and radius are LENGTH-gated (task 5623); the two angles and the
-        // ax/ay/az unit vector stay deliberately bare. Golden below unchanged.
+        // Centre and radius are LENGTH-gated (task 5623); the two angles are
+        // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ); the
+        // ax/ay/az unit vector stays deliberately bare. Golden below unchanged.
         CurveKind::Arc => vec![
             ("cx".to_string(), length_literal(0.0)),
             ("cy".to_string(), length_literal(0.0)),
