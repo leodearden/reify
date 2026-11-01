@@ -40,8 +40,9 @@
 //! one the partition measures), solved by [`trust_region::solve`]; a residual
 //! gauge freedom (e.g. spin about the shank axis under concentric+flush) stays at
 //! its seed. A solved Frame comes with its rank and null space ([`Twist`]s); a
-//! failed one with its typed [`SolveFailureCause`]. [`solve_frame`] is the same
-//! solve through the existing [`SolveResult`](reify_ir::SolveResult) contract.
+//! failed one with its typed [`SolveFailureCause`].
+//! [`FrameSolveOutcome::into_solve_result`] reads that outcome through the
+//! existing [`SolveResult`] contract.
 //! Both the solve and the partition run in the scaled coordinates of one
 //! [`SolveScaling`] (PRD §7.3).
 //!
@@ -75,7 +76,8 @@ pub struct FrameUnknown {
     /// The auto sub's instance name (e.g. `"bolt"`).
     pub sub: String,
     /// `auto(free)` — whether this unknown waives the uniqueness check (PRD §7.1
-    /// step 3). When `true`, [`solve_frame`] returns `unique:false` even for a
+    /// step 3). When `true`, [`FrameSolveOutcome::into_solve_result`] returns
+    /// `unique:false` even for a
     /// fully-determined system, and any residual DOF is seeded to a concrete value
     /// (never a free variable) rather than reported as under-determined. When
     /// `false` (strict `auto`), a residual DOF is reported via the `unique:false`
@@ -136,7 +138,7 @@ impl Pose {
     /// `θ` about `â` is the rotation of `θ − 2π·round(θ/2π)` about `â`. Keeps
     /// the exponential map away from its singularity at `|θ| = 2π`, and makes
     /// the Frame quaternion's `w = cos(θ/2) ≥ 0`.
-    pub fn with_wrapped_rotation(&self) -> Self {
+    fn with_wrapped_rotation(&self) -> Self {
         let angle = norm3(self.rotation);
         if angle <= std::f64::consts::PI {
             return self.clone();
@@ -326,31 +328,6 @@ fn bbox_diagonal(points: &[[f64; 3]]) -> f64 {
 /// [`SolveResult::Solved`]'s value map (entity = the sub's instance name).
 const POSE_MEMBER: &str = "pose";
 
-/// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is
-/// satisfied, starting from `seed` (ζ step-10), within the default
-/// [`SolveBudget`].
-///
-/// Returns through the existing [`SolveResult`] contract
-/// ([`FrameSolveOutcome::into_solve_result`]):
-/// - [`SolveResult::Solved`] — every residual row converged within its own nominal
-///   tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method guarantee).
-///   `values` maps `ValueCellId::new(unknown.sub, "pose")` to a [`Value::Frame`]
-///   assembled from the 6 solved scalars; `unique` is `true` iff the Jacobian at
-///   the solution pins all 6 Frame DOF (no residual gauge freedom).
-/// - [`SolveResult::Infeasible`] — the driving relations are certified mutually
-///   inconsistent; one diagnostic coded [`SolveFailureCause::code`].
-/// - [`SolveResult::NoProgress`] — the budget ran out or the step stalled; the
-///   reason renders the cause.
-pub fn solve_frame(
-    driving: &[RelationInstance],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    scaling: &SolveScaling,
-) -> SolveResult {
-    solve_frame_outcome(driving, unknown, seed, scaling, SolveBudget::default())
-        .into_solve_result(unknown)
-}
-
 /// How a Frame solve ended: the solution, or the typed reason it failed.
 #[derive(Debug, Clone)]
 pub struct FrameSolveOutcome {
@@ -385,7 +362,19 @@ pub struct Twist {
 }
 
 impl FrameSolveOutcome {
-    /// This outcome through the [`SolveResult`] contract of [`solve_frame`].
+    /// This outcome for the auto Frame `unknown` through the existing
+    /// [`SolveResult`] contract:
+    /// - [`SolveResult::Solved`] — every residual row converged within its own
+    ///   nominal tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method
+    ///   guarantee). `values` maps `ValueCellId::new(unknown.sub, "pose")` to a
+    ///   [`Value::Frame`] assembled from the 6 solved scalars; `unique` is `true`
+    ///   iff the Jacobian at the solution pins all 6 Frame DOF (no residual gauge
+    ///   freedom) and `unknown` is strict `auto`.
+    /// - [`SolveResult::Infeasible`] — the driving relations are certified
+    ///   mutually inconsistent; one diagnostic coded [`SolveFailureCause::code`].
+    /// - [`SolveResult::NoProgress`] — the budget ran out or the step stalled; the
+    ///   reason renders the cause.
+    // G-allow: SolveResult adapter (strict/auto(free) uniqueness, PRD §7.1 step 3) owned by #6677, whose registry routing of relate-solve consumes it; no production caller until #6677 lands
     pub fn into_solve_result(self, unknown: &FrameUnknown) -> SolveResult {
         match self.result {
             Ok(solution) => {
@@ -454,8 +443,9 @@ pub fn solve_frame_outcome(
 }
 
 /// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
-/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose returned
-/// by [`solve_frame`] as `Solved` meets the bar [`SolveScaling::row_tolerance`];
+/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose
+/// [`solve_frame_outcome`] returns as solved meets the bar
+/// [`SolveScaling::row_tolerance`];
 /// the redundant-remainder re-check applies [`SolveScaling::assertion_rung`].
 pub fn max_relation_exceedance(
     relations: &[RelationInstance],
@@ -470,8 +460,9 @@ pub fn max_relation_exceedance(
 }
 
 /// Convert a solved [`Value::Frame`] (or [`Value::Transform`]) back into a [`Pose`]
-/// (translation + exponential-map rotation), the inverse of the Frame assembly in
-/// [`solve_frame`]. Returns `None` for any other value or a malformed frame.
+/// (translation + exponential-map rotation), the inverse of [`frame_value`].
+/// Returns `None` for any other value or a malformed frame.
+// G-allow: inverse of frame_value; round-trip consumers are the cross-crate tests (reify-constraints relate_solve/relate_scaling tests, reify-eval relate e2e); the production caller was removed when eval switched to FrameSolution.pose (#6675)
 pub fn pose_from_frame(v: &Value) -> Option<Pose> {
     match v {
         Value::Frame { origin, basis } => Some(Pose {

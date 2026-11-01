@@ -29,7 +29,7 @@
 use reify_constraints::relate_solve::{
     FrameSolveOutcome, FrameUnknown, Operand, Pose, RelationInstance, Twist,
     comparable_datum_operands, max_relation_exceedance, partition_driving_set, pose_from_frame,
-    solve_frame, solve_frame_outcome, solve_scaling, static_relation_residuals,
+    solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_constraints::trust_region::{RANGE_COSINE_TOLERANCE, SolveBudget};
@@ -46,6 +46,19 @@ fn max_relation_residual(
     pose: &Pose,
 ) -> f64 {
     max_relation_exceedance(relations, unknown, pose, |_| 1.0)
+}
+
+/// The Frame solve within the default budget, read through the
+/// [`SolveResult`] contract
+/// ([`FrameSolveOutcome::into_solve_result`]).
+fn solve_frame_result(
+    driving: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> SolveResult {
+    solve_frame_outcome(driving, unknown, seed, scaling, SolveBudget::default())
+        .into_solve_result(unknown)
 }
 
 /// The kernel-default scaling a scope partition or solve of `relations` from
@@ -366,9 +379,9 @@ fn partition_per_relation_delta_dof_cross_checks_gamma() {
     }
 }
 
-// ── step-9 RED: solve_frame drives the auto Frame to satisfy the driving set ──
+// ── step-9 RED: the Frame solve drives the auto Frame to satisfy the driving set ──
 //
-// `solve_frame(driving, frame_unknown, seed, scaling)` takes the partition's driving set
+// `solve_frame_result(driving, frame_unknown, seed, scaling)` takes the partition's driving set
 // over realized datums + the 6-DOF Frame unknown + a seed pose, and returns a
 // `SolveResult::Solved { values, unique }` whose solved Frame satisfies every driving
 // relation within the solver convergence tolerance. The synthetic §1 scenario starts
@@ -412,7 +425,7 @@ fn b1_solve_relations() -> Vec<RelationInstance> {
 fn solve_frame_b1_converges_within_solver_tol() {
     let relations = b1_solve_relations();
     let tol = RelateTolerance::kernel_default();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &bolt_unknown(),
         &Pose::identity(),
@@ -449,7 +462,7 @@ fn solve_frame_b1_converges_within_solver_tol() {
 
 // ── step-11 RED: auto(free) + residual seeding + seed bias (B5) ───────────────
 //
-// The `free` flag on the Frame unknown + the seed `Pose` change how `solve_frame`
+// The `free` flag on the Frame unknown + the seed `Pose` change how the Frame solve
 // reports and seeds a residual DOF (PRD §7.1 step 3):
 //   * `auto(free)` waives the uniqueness check — even a fully-determined system
 //     returns `unique:false`; a residual DOF is seeded to a CONCRETE value (the
@@ -517,7 +530,7 @@ fn b5_relations() -> Vec<RelationInstance> {
 #[test]
 fn solve_frame_free_flag_waives_uniqueness() {
     let relations = fully_determined_relations();
-    let strict = solve_frame(
+    let strict = solve_frame_result(
         &relations,
         &unknown("m", false),
         &Pose::identity(),
@@ -530,7 +543,7 @@ fn solve_frame_free_flag_waives_uniqueness() {
         other => panic!("expected Solved, got {other:?}"),
     }
 
-    let free = solve_frame(
+    let free = solve_frame_result(
         &relations,
         &unknown("m", true),
         &Pose::identity(),
@@ -550,7 +563,7 @@ fn solve_frame_free_flag_waives_uniqueness() {
 #[test]
 fn solve_frame_free_residual_is_fully_numeric() {
     let relations = b5_relations();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &Pose::identity(),
@@ -583,7 +596,7 @@ fn solve_frame_free_residual_is_fully_numeric() {
 #[test]
 fn solve_frame_strict_residual_signals_under_determined() {
     let relations = b5_relations();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", false),
         &Pose::identity(),
@@ -617,7 +630,7 @@ fn solve_frame_seed_biases_residual_dof() {
         translation: [0.0, 0.0, 0.05],
         rotation: [0.0, 0.0, 0.3],
     };
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &seed,
@@ -903,7 +916,7 @@ fn fasten_solve_grounds_sub_to_identity() {
         rotation: [0.1, -0.05, 0.2],
     };
 
-    let result = solve_frame(
+    let result = solve_frame_result(
         std::slice::from_ref(&rel),
         &a_unknown(),
         &seed,
@@ -2192,13 +2205,13 @@ fn a_one_step_budget_is_exhausted_not_infeasible() {
     assert_ne!(infeasible.code(), failure_of(&outcome).code());
 }
 
-/// `solve_frame` keeps the `SolveResult` contract: a certified infeasibility is a
+/// The `SolveResult` adapter keeps that contract: a certified infeasibility is a
 /// CODED `Infeasible`; budget exhaustion is `NoProgress` naming the counts.
 #[test]
 fn solve_result_adapter_codes_infeasible_and_reports_budget_as_no_progress() {
     let (relations, unknown, seed) = two_parallel_concentrics();
     let scaling = scaling_for(&relations, &unknown, &seed);
-    match solve_frame(&relations, &unknown, &seed, &scaling) {
+    match solve_frame_result(&relations, &unknown, &seed, &scaling) {
         SolveResult::Infeasible { diagnostics } => {
             assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
             assert_eq!(diagnostics[0].code, Some(DiagnosticCode::SolverInfeasible));
@@ -2284,7 +2297,7 @@ fn fully_determined_set_has_rank_six_and_no_null_space() {
         let solution = outcome.result.expect("feasible");
         assert_eq!(solution.rank, 6);
         assert!(solution.null_space.is_empty());
-        match solve_frame(&relations, &unknown, &seed, &scaling) {
+        match solve_frame_result(&relations, &unknown, &seed, &scaling) {
             SolveResult::Solved { unique, .. } => assert_eq!(unique, !free),
             other => panic!("expected Solved, got {other:?}"),
         }
@@ -2357,7 +2370,10 @@ fn a_gauge_rotation_seeded_past_pi_is_published_canonically() {
         rotation: [0.0, 0.0, 3.5],
     };
     let scaling = scaling_for(&relations, &unknown, &seed);
-    let (frame, _) = solved_frame(solve_frame(&relations, &unknown, &seed, &scaling), "bolt");
+    let (frame, _) = solved_frame(
+        solve_frame_result(&relations, &unknown, &seed, &scaling),
+        "bolt",
+    );
 
     let q = frame_quaternion(&frame);
     assert!(q[0] >= 0.0, "a canonical quaternion has w ≥ 0: {q:?}");
@@ -2421,7 +2437,10 @@ fn a_seed_near_a_full_turn_is_not_misreported_as_under_determined() {
     };
     let scaling = scaling_for(&relations, &unknown, &seed);
 
-    let (_, unique) = solved_frame(solve_frame(&relations, &unknown, &seed, &scaling), "bolt");
+    let (_, unique) = solved_frame(
+        solve_frame_result(&relations, &unknown, &seed, &scaling),
+        "bolt",
+    );
     assert!(unique, "concentric + flush + perpendicular pins all 6 DOF");
     let solution = solve_frame_outcome(
         &relations,

@@ -757,7 +757,7 @@ fn conflicting_relations_fail_with_minimal_geometric_diagnostic() {
 //      1) with 1 residual (spin about the shared axis) — exact integer codimensions
 //      (design "single-knob tolerance": DOF counts are exact, not tuned epsilons).
 //      The coaxial+flush placement holds "within the solver's convergence tolerance"
-//      — the method guarantee of `solve_frame` returning `Solved`, surfaced here as
+//      — the method guarantee of `solve_frame_outcome` converging, surfaced here as
 //      the bolt receiving a concrete `Value::Frame` (never Undef / Infeasible).
 //
 // RED until step-18 (a) adds `auto_pose_cell` to `reify_eval::relate_solve` and

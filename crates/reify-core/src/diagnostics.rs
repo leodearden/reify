@@ -328,9 +328,9 @@ pub enum DiagnosticCode {
     ConstraintRefuted,
     /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
     /// `reify_ir::SolveFailureCause::Infeasible` (task η #6675); rendered by
-    /// `crates/reify-constraints/src/relate_solve.rs::solve_frame` and
-    /// `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the construction
-    /// site.
+    /// `crates/reify-constraints/src/relate_solve.rs::FrameSolveOutcome::into_solve_result`
+    /// and `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the
+    /// construction site.
     ///
     /// The continuous solve stopped at a stationary point of `‖r̃‖²` that is not a
     /// root and that no descent probe around it lowers: the range cosine

@@ -140,35 +140,6 @@ impl RowSpaceQr {
     }
 }
 
-/// A minimum-norm least-squares solution with the rank and null space of the
-/// rows it solved.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MinNormSolution {
-    /// The solution, with no component in `null_space`.
-    pub x: Vec<f64>,
-    /// The number of independent rows.
-    pub rank: usize,
-    /// An orthonormal basis of the vectors every row annihilates.
-    pub null_space: Vec<Vec<f64>>,
-}
-
-/// The minimum-norm least-squares solution of `rows · x ≈ rhs`, through one
-/// [`RowSpaceQr`] of `rows` (whose common length is the dimension).
-pub fn least_squares_min_norm<R: AsRef<[f64]>>(
-    rows: &[R],
-    rhs: &[f64],
-    tolerance: RankTolerance,
-) -> MinNormSolution {
-    let dim = rows.first().map_or(0, |row| row.as_ref().len());
-    let mut qr = RowSpaceQr::new(dim, tolerance);
-    qr.push_rows(rows);
-    MinNormSolution {
-        x: qr.least_squares(rhs),
-        rank: qr.rank(),
-        null_space: qr.null_space(),
-    }
-}
-
 /// `a · b`.
 pub fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()

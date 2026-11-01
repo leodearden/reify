@@ -783,6 +783,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
 
 /// [`solve_relate_scope`] with the driving-set solve (and its conflict search)
 /// limited to `budget`.
+// G-allow: pub for the cross-crate B9 budget-exhaustion tests in tests/relate_solve_e2e.rs; the production caller, solve_relate_scope, is same-file, and the orphan audit counts only cross-file call sites
 pub fn solve_relate_scope_within(
     scope: &RelateScope,
     realized: &RealizedDatums,

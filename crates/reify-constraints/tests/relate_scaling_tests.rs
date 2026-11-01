@@ -6,7 +6,7 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
-    pose_from_frame, solve_frame, solve_frame_outcome, solve_scaling,
+    pose_from_frame, solve_frame_outcome, solve_scaling,
 };
 use reify_constraints::scaling::{
     RelateTolerance, ResidualUnit, Rung, SolveScaling, ToleranceLadderError, ToleranceRungs,
@@ -17,6 +17,19 @@ use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, s
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
 use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless};
+
+/// The Frame solve within the default budget, read through the
+/// [`SolveResult`] contract
+/// ([`FrameSolveOutcome::into_solve_result`](reify_constraints::relate_solve::FrameSolveOutcome::into_solve_result)).
+fn solve_frame_result(
+    driving: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> SolveResult {
+    solve_frame_outcome(driving, unknown, seed, scaling, SolveBudget::default())
+        .into_solve_result(unknown)
+}
 
 // ── The tolerance ladder ─────────────────────────────────────────────────────
 
@@ -875,7 +888,7 @@ fn solved_pose_meets_every_row_tolerance() {
     for k in [1.0, K] {
         let (relations, unknown, seed) = b15_fixture(k);
         let scaling = scaling_for(&relations, &unknown, &seed);
-        let (pose, _) = solved(&solve_frame(&relations, &unknown, &seed, &scaling));
+        let (pose, _) = solved(&solve_frame_result(&relations, &unknown, &seed, &scaling));
         let exceedance =
             max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
         assert!(exceedance <= 1.0, "k = {k}: max|r̃| = {exceedance}");

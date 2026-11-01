@@ -5,14 +5,14 @@
 //! - [`RowSpaceQr`]: an ORDERED rank-revealing factorization that takes rows in
 //!   input order and reports which of them widened the span, with an orthonormal
 //!   basis of what is left over (the null space);
-//! - [`least_squares_min_norm`]: the least-squares solution with no component in
-//!   that null space.
+//! - [`RowSpaceQr::least_squares`]: the least-squares solution with no component
+//!   in that null space.
 //!
 //! Exactness basis: Householder reflectors are orthogonal to working precision, so
 //! orthonormality and annihilation hold to a few ulp on these O(1) fixtures; the
 //! `1e-12` bars below leave thousands of ulp of headroom.
 
-use reify_constraints::linalg::{RankTolerance, RowSpaceQr, least_squares_min_norm};
+use reify_constraints::linalg::{RankTolerance, RowSpaceQr};
 
 const TOL: RankTolerance = RankTolerance {
     independence: 1e-8,
@@ -39,6 +39,25 @@ fn qr_of(dim: usize, rows: &[Vec<f64>]) -> RowSpaceQr {
     let mut qr = RowSpaceQr::new(dim, TOL);
     qr.push_rows(rows);
     qr
+}
+
+/// One factorization's answers for `rows · x ≈ rhs`.
+#[derive(Debug)]
+struct MinNorm {
+    x: Vec<f64>,
+    rank: usize,
+    null_space: Vec<Vec<f64>>,
+}
+
+/// Factorize `rows` (in order) and read the minimum-norm least-squares solution,
+/// the rank and the null space off the one [`RowSpaceQr`].
+fn min_norm_solve(rows: &[Vec<f64>], rhs: &[f64]) -> MinNorm {
+    let qr = qr_of(rows[0].len(), rows);
+    MinNorm {
+        x: qr.least_squares(rhs),
+        rank: qr.rank(),
+        null_space: qr.null_space(),
+    }
 }
 
 fn assert_orthonormal(vectors: &[Vec<f64>]) {
@@ -224,7 +243,7 @@ fn full_rank_square_system_is_solved_exactly() {
     ];
     let expected = [1.0, -2.0, 3.0];
     let rhs: Vec<f64> = rows.iter().map(|r| dot(r, &expected)).collect();
-    let solution = least_squares_min_norm(&rows, &rhs, TOL);
+    let solution = min_norm_solve(&rows, &rhs);
     assert_eq!(solution.rank, 3);
     assert!(solution.null_space.is_empty());
     for (got, want) in solution.x.iter().zip(expected) {
@@ -243,7 +262,7 @@ fn rank_deficient_consistent_system_leaves_the_null_direction_at_zero() {
         vec![0.0, 1.0, 0.0],
     ];
     let rhs = [3.0, 6.0, -1.0];
-    let solution = least_squares_min_norm(&rows, &rhs, TOL);
+    let solution = min_norm_solve(&rows, &rhs);
     for (row, b) in rows.iter().zip(rhs) {
         assert!(
             (dot(row, &solution.x) - b).abs() <= EXACT * 6.0,
@@ -265,7 +284,7 @@ fn inconsistent_overdetermined_system_returns_the_least_squares_minimizer() {
         vec![1.0, -2.0],
     ];
     let rhs = [1.0, 1.0, 0.0, 0.5];
-    let solution = least_squares_min_norm(&rows, &rhs, TOL);
+    let solution = min_norm_solve(&rows, &rhs);
     let g = normal_residual(&rows, &rhs, &solution.x);
     assert!(
         norm(&g) <= EXACT * frobenius(&rows) * norm(&rhs),
@@ -282,7 +301,7 @@ fn inconsistent_rank_deficient_system_is_minimal_and_minimum_norm() {
         vec![0.0, 2.0, 0.0, 0.0],
     ];
     let rhs = [1.0, 3.0, 4.0];
-    let solution = least_squares_min_norm(&rows, &rhs, TOL);
+    let solution = min_norm_solve(&rows, &rhs);
     let g = normal_residual(&rows, &rhs, &solution.x);
     assert!(
         norm(&g) <= EXACT * frobenius(&rows) * norm(&rhs),
@@ -295,8 +314,10 @@ fn inconsistent_rank_deficient_system_is_minimal_and_minimum_norm() {
     assert_eq!(solution.null_space.len(), 2);
 }
 
+/// A dependent row (row 2 = row 0 + row 1) among six unknowns — the Frame's
+/// dimension — still gives the minimum-norm least-squares minimizer.
 #[test]
-fn least_squares_reports_the_rank_and_null_space_of_its_rows() {
+fn a_dependent_row_among_six_unknowns_gives_the_minimum_norm_minimizer() {
     let rows = vec![
         vec![0.3, -1.2, 0.7, 2.0, 0.1, 0.0],
         vec![1.1, 0.4, -0.6, 0.0, 0.9, 0.0],
@@ -304,16 +325,23 @@ fn least_squares_reports_the_rank_and_null_space_of_its_rows() {
         vec![0.0, 0.0, 0.0, 0.0, 0.0, 3.0],
     ];
     let rhs = [1.0, -1.0, 0.0, 2.0];
-    let solution = least_squares_min_norm(&rows, &rhs, TOL);
-    let qr = qr_of(6, &rows);
-    assert_eq!(solution.rank, qr.rank());
-    assert_eq!(solution.null_space, qr.null_space());
+    let solution = min_norm_solve(&rows, &rhs);
+    let g = normal_residual(&rows, &rhs, &solution.x);
+    assert!(
+        norm(&g) <= EXACT * frobenius(&rows) * norm(&rhs),
+        "Aᵀ(Ax − b) = {g:?}"
+    );
+    for z in &solution.null_space {
+        assert!(dot(z, &solution.x).abs() <= EXACT, "{solution:?}");
+    }
+    assert_eq!(solution.rank, 3);
+    assert_eq!(solution.null_space.len(), 3);
 }
 
 #[test]
 fn only_zero_rows_give_the_zero_solution() {
     let rows: Vec<Vec<f64>> = vec![vec![0.0, 0.0]];
-    let solution = least_squares_min_norm(&rows, &[5.0], TOL);
+    let solution = min_norm_solve(&rows, &[5.0]);
     assert_eq!(solution.x, vec![0.0, 0.0]);
     assert_eq!(solution.rank, 0);
     assert_eq!(solution.null_space.len(), 2);
