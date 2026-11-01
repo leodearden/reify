@@ -4,7 +4,8 @@ use crate::git_ops::GitOps;
 use crate::jcodemunch_ops::JCodemunchOps;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // -----------------------------------------------------------------------
 // Public surface — finding shape
@@ -485,7 +486,75 @@ pub struct AuditContext<'a> {
     pub producer_branch: Option<String>,
 }
 
-impl AuditContext<'_> {
+impl<'a> AuditContext<'a> {
+    /// A context over `project_root` with no tasks, no target, and the run
+    /// clock read from the system clock now.
+    pub fn new(
+        project_root: impl Into<PathBuf>,
+        conn: &'a rusqlite::Connection,
+        git: &'a dyn GitOps,
+        jcodemunch: &'a dyn JCodemunchOps,
+    ) -> Self {
+        AuditContext {
+            project_root: project_root.into(),
+            conn,
+            git,
+            jcodemunch,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: Some(system_clock_epoch_seconds()),
+            producer_branch: None,
+        }
+    }
+
+    /// The task corpus the detectors examine.
+    pub fn with_tasks(mut self, task_metadata: HashMap<String, TaskMetadata>) -> Self {
+        self.task_metadata = task_metadata;
+        self
+    }
+
+    /// Restricts the sweep entry points to the single task `task_id`.
+    pub fn targeting(mut self, task_id: impl Into<String>) -> Self {
+        self.target_task_id = Some(task_id.into());
+        self
+    }
+
+    // G-allow: test-support synthetic clock for deterministic grace-window tests; production uses the clock read at construction
+    pub fn at_time(mut self, epoch_seconds: i64) -> Self {
+        self.now = Some(epoch_seconds);
+        self
+    }
+
+    pub fn project_root(&self) -> &Path {
+        &self.project_root
+    }
+
+    pub fn conn(&self) -> &'a rusqlite::Connection {
+        self.conn
+    }
+
+    pub fn git(&self) -> &'a dyn GitOps {
+        self.git
+    }
+
+    pub fn jcodemunch(&self) -> &'a dyn JCodemunchOps {
+        self.jcodemunch
+    }
+
+    pub fn task_metadata(&self) -> &HashMap<String, TaskMetadata> {
+        &self.task_metadata
+    }
+
+    pub fn target_task_id(&self) -> Option<&str> {
+        self.target_task_id.as_deref()
+    }
+
+    /// The run clock, in epoch seconds.
+    pub fn now(&self) -> i64 {
+        self.now.unwrap_or_else(system_clock_epoch_seconds)
+    }
+
     /// Contents of tracked file `path` (root-relative), or `None` when it
     /// cannot be read.
     ///
@@ -503,6 +572,13 @@ impl AuditContext<'_> {
     pub(crate) fn read_relative(&self, path: &str) -> Option<String> {
         std::fs::read_to_string(self.project_root.join(path)).ok()
     }
+}
+
+fn system_clock_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after UNIX_EPOCH")
+        .as_secs() as i64
 }
 
 #[cfg(test)]
@@ -584,7 +660,10 @@ mod tests {
         let after = epoch_seconds_now();
 
         assert_eq!(ctx.project_root(), Path::new("/tmp/fake-project"));
-        assert!(ctx.task_metadata().is_empty(), "a new context holds no tasks");
+        assert!(
+            ctx.task_metadata().is_empty(),
+            "a new context holds no tasks"
+        );
         assert_eq!(ctx.target_task_id(), None, "a new context targets no task");
         assert!(
             before <= ctx.now() && ctx.now() <= after,
