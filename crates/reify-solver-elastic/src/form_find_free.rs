@@ -762,12 +762,12 @@ fn form_find_group_ratios_combined(
     });
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest eigenvalues of the
-    // COMBINED D = line_D(q) + surface_mat. surface_mat is a fixed additive term.
-    // Un-normalised, unlike combined_eig_gap_objective's normalised_eig_gap:
-    // the search runs in units of the reference group's seed magnitude (both
-    // terms of D divided by it), so its objective, OBJ_TOL, stall guard, log
-    // grid and floors are dimensionless, and its verdict does not depend on the
-    // overall (seed, σ) scale. A `D` with no spectrum scores +∞, rejecting the
+    // COMBINED D = line_D(unit_densities) + unit_surface, where unit_surface is
+    // a fixed additive term. Un-normalised, unlike combined_eig_gap_objective's
+    // normalised_eig_gap: the search runs in units of the reference group's
+    // seed magnitude (both terms of D divided by it), so its objective,
+    // OBJ_TOL, stall guard, log grid and floors are dimensionless, and its
+    // verdict does not depend on the overall (seed, σ) scale. A `D` with no spectrum scores +∞, rejecting the
     // trial.
     let objective = |group_mag: &[f64]| -> f64 {
         let d = combined_force_density_matrix(

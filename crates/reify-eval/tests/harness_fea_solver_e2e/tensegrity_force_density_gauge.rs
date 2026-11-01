@@ -326,16 +326,18 @@ fn free_standing_member_forces_are_strictly_force_dimensioned() {
     assert_bridge_holds(&solve_free(), "free-standing");
 }
 
-/// The gauge-rescale factor, shared by both covariance tests. Positive, so the
+/// The gauge-rescale factor, shared by every covariance test. Positive, so the
 /// strut-q<0 / cable-q>0 sign contract survives it; not a power of two, so an exact
 /// binary rescale cannot mask a real dependence.
 const GAUGE_LAMBDA: f64 = 7.0;
 
-/// THE COVARIANCE ASSERTION, shared by both rescale tests: scaling the WHOLE gauge by λ
+/// THE COVARIANCE ASSERTION, shared by every rescale test: scaling the WHOLE gauge by λ
 /// must leave the solved GEOMETRY exactly where it was while scaling every member force
-/// by exactly λ. Tolerances are caller-supplied because the two emission paths reach the
-/// property by DIFFERENT mechanisms (see each caller), and pretending otherwise would
-/// either over-tighten the free path or silently slacken the anchored one.
+/// by exactly λ. Tolerances are caller-supplied because the emission paths reach the
+/// property by DIFFERENT mechanisms (see each caller): the anchored-surfaces path's
+/// cotangent fixed point needs a looser force tolerance than the anchored line-only and
+/// free-standing paths, whose residual is f64 round-off alone, and one shared pair would
+/// either over-tighten the surfaces path or silently slacken the other two.
 fn assert_gauge_covariance(
     base: &PersistentMap<String, Value>,
     scaled: &PersistentMap<String, Value>,
@@ -416,8 +418,8 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 ///
 /// MECHANISM — distinct from both other emitters, which is why it needs its own case.
 /// The anchored line-only path is an exact ALGEBRAIC identity (λ cancels in
-/// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on the homogeneity of
-/// the GroupRatios SEARCH. Here the geometry comes from a cotangent fixed point, so
+/// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on a GroupRatios SEARCH
+/// that runs in reference-group units. Here the geometry comes from a cotangent fixed point, so
 /// covariance is a property of its STOPPING RULE: `form_find.rs` judges
 /// `StiffnessScale::relative_residual` — each free row's `|(D·x)_i|` divided by that
 /// row's own `Σ_j |D_ij|` — against `SURFACE_EQUILIBRIUM_REL_TOL`.
@@ -505,17 +507,16 @@ fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_p
 /// for an entirely different reason and so needs its own case. Anchored covariance is an
 /// identity (above). Here the gauge is fixed by `reference_group`, whose magnitude is
 /// HELD at its seed while every other group's magnitude is SEARCHED — coordinate descent
-/// over a Σλ² eigenvalue objective, on log-spaced brackets seeded from `|seed_ratios|`
-/// (`form_find_free.rs`). So "scale every seed ratio by λ ⇒ same geometry, λ-scaled
-/// forces" is a property of that search's HOMOGENEITY, not algebra: the brackets and the
-/// log grid scale with λ and the objective ordering is λ²-invariant, but a regression in
-/// the bracketing or the warm start could break it with nothing else noticing.
+/// over a Σλ² eigenvalue objective on log-spaced brackets (`form_find_free.rs`). The
+/// whole search (brackets, log grid, objective, stopping rules and magnitude floors) runs
+/// in units of the reference group's seed magnitude (task #9272), so "scale every seed
+/// ratio by λ ⇒ same geometry, λ-scaled forces" is a change of unit the search never
+/// sees: both runs take the same search path. A regression that puts an absolute
+/// threshold, bracket or floor back into the search lands here.
 ///
-/// The search runs in units of the reference group's seed magnitude (task #9272), so a
-/// whole-gauge seed rescale is a change of unit: its objective, stopping rules, grid and
-/// floors are dimensionless, and both runs take the same search path. What is left at
-/// λ = 7 is rounding in the λ-scaled assembly, so the tolerances are the anchored line-only
-/// path's (1e-9 m, 1e-12 relative), sized on f64 round-off rather than on search noise.
+/// What is left at λ = 7 is f64 rounding in converting the ×λ seeds to reference units and
+/// the recovered magnitudes back, so the tolerances are the anchored line-only path's
+/// (1e-9 m, 1e-12 relative), sized on round-off rather than on search noise.
 #[test]
 fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
     let base = solve_free_at(&TRIPLEX_SEEDS);

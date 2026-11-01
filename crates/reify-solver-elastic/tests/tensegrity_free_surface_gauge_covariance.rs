@@ -172,9 +172,12 @@ fn free_surfaces_explicit_convergence_is_gauge_independent() {
 /// Unlike [`free_surfaces_explicit_convergence_is_gauge_independent`] above —
 /// which starts AT the bootstrap fixed point, so the outer loop breaks out at
 /// iteration 0 and never executes the (2b) null-space trial-move gate or the
-/// (3) eigenvalue-gap descent step — every cell here starts off-equilibrium,
-/// so both run under a gauge change, and under `GroupRatios` so does the
-/// adaptive search that derives `q`.
+/// (3) eigenvalue-gap descent step — every cell here starts off-equilibrium.
+/// On the caps rows (2b) and (3) therefore run under a gauge change, and under
+/// `GroupRatios` so does the combined search that derives `q`. The line-only
+/// rows pass no surfaces, so `form_find_free_surfaces` delegates them to the
+/// line-only path: there `GroupRatios` runs the line-only search and
+/// `Explicit` the direct null-space recovery.
 ///
 /// Grid: spec ∈ {`Explicit`, `GroupRatios`} × membrane ∈ {line-only, caps at
 /// σ ∈ {0.05, 0.2, 1.0}} × guess-perturbation scale `k` ∈ {1, 10, 50}, each
@@ -329,8 +332,8 @@ impl GaugeCell {
     }
 }
 
-/// Assert `scaled[i]` is `λ·base[i]` to [`REL_BOUND`] for every `i`, on a
-/// nonzero `base[i]` (at zero the relative check holds for any λ).
+/// Assert `scaled[i]` is `λ·base[i]` to [`REL_BOUND`] for every `i`, and that
+/// each `base[i]` is nonzero, since at zero the ×λ check is vacuous.
 fn assert_scaled_by_lambda(base: &[f64], scaled: &[f64], lambda: f64, field: &str, label: &str) {
     assert_eq!(
         base.len(),
