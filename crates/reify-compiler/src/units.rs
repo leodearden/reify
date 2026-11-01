@@ -2768,8 +2768,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(60, 64);
         // mm^2 = Pow(Unit("mm"), 2)
-        let expr =
-            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("mm".to_string())), 2);
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("mm".to_string())),
+            reify_core::Rational::new(2, 1),
+        );
         let (factor, dim) =
             resolve_unit_expr(&expr, &reg, use_span).expect("mm^2 must resolve successfully");
         // 0.001.powi(2) = 1e-6
@@ -2786,8 +2788,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(70, 74);
         // s^-2 = Pow(Unit("s"), -2)
-        let expr =
-            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("s".to_string())), -2);
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
+            reify_core::Rational::new(-2, 1),
+        );
         let (factor, dim) =
             resolve_unit_expr(&expr, &reg, use_span).expect("s^-2 must resolve successfully");
         assert!(
@@ -2804,8 +2808,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(80, 83);
         // m^0 = Pow(Unit("m"), 0)
-        let expr =
-            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("m".to_string())), 0);
+        let expr = reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
+            reify_core::Rational::ZERO,
+        );
         let (factor, dim) =
             resolve_unit_expr(&expr, &reg, use_span).expect("m^0 must resolve successfully");
         assert!(
@@ -2829,7 +2835,7 @@ mod tests {
             Box::new(reify_ast::UnitExpr::Unit("kg".to_string())),
             Box::new(reify_ast::UnitExpr::Pow(
                 Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
-                3,
+                reify_core::Rational::new(3, 1),
             )),
         );
         let (factor, dim) =
@@ -2843,6 +2849,78 @@ mod tests {
             dim,
             DimensionVector::MASS_DENSITY,
             "kg/m^3: dimension must be MASS_DENSITY"
+        );
+    }
+
+    // --- Task #9236: rational exponents fold through the Pow arm ---
+
+    /// `Pow(Unit(name), num/den)`.
+    fn rational_pow(name: &str, num: i16, den: i16) -> reify_ast::UnitExpr {
+        reify_ast::UnitExpr::Pow(
+            Box::new(reify_ast::UnitExpr::Unit(name.to_string())),
+            reify_core::Rational::new(num, den),
+        )
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_half_of_m_is_root_length_at_factor_exactly_one() {
+        use reify_core::{DimensionVector, SourceSpan};
+        let reg = make_resolver_registry();
+        let (factor, dim) =
+            resolve_unit_expr(&rational_pow("m", 1, 2), &reg, SourceSpan::new(0, 6))
+                .expect("m^1/2 must resolve");
+        assert_eq!(
+            factor.to_bits(),
+            1.0f64.to_bits(),
+            "m^1/2: a factor-1.0 atom must fold to exactly 1.0, got {factor}"
+        );
+        assert_eq!(dim, DimensionVector::LENGTH.root(2));
+    }
+
+    #[test]
+    fn resolve_unit_expr_pow_half_of_mm_takes_the_real_square_root_of_the_factor() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        let (factor, _) = resolve_unit_expr(&rational_pow("mm", 1, 2), &reg, SourceSpan::new(0, 7))
+            .expect("mm^1/2 must resolve");
+        assert_eq!(factor.to_bits(), 0.001f64.powf(0.5).to_bits());
+    }
+
+    #[test]
+    fn resolve_unit_expr_mpa_times_root_m_is_fracture_toughness() {
+        use reify_core::{ContentHash, DimensionVector, SourceSpan};
+        let mut reg = make_resolver_registry();
+        reg.register(UnitEntry {
+            name: "MPa".to_string(),
+            dimension: DimensionVector::PRESSURE,
+            factor: 1e6,
+            offset: None,
+            is_pub: true,
+            span: SourceSpan::empty(0),
+            content_hash: ContentHash::of_str("MPa"),
+            source_module: None,
+        })
+        .unwrap();
+        let expr = reify_ast::UnitExpr::Mul(
+            Box::new(reify_ast::UnitExpr::Unit("MPa".to_string())),
+            Box::new(rational_pow("m", 1, 2)),
+        );
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, SourceSpan::new(0, 9)).expect("MPa*m^1/2 must resolve");
+        assert_eq!(factor, 1e6, "MPa*m^1/2: factor must be 1e6");
+        assert_eq!(dim, DimensionVector::FRACTURE_TOUGHNESS);
+    }
+
+    /// The denominator is bounded too: `reify_core::unit_exponent_in_range`.
+    #[test]
+    fn resolve_unit_expr_pow_denominator_outside_i8_is_out_of_range() {
+        use reify_core::SourceSpan;
+        let reg = make_resolver_registry();
+        let err = resolve_unit_expr(&rational_pow("m", 1, 200), &reg, SourceSpan::new(0, 8))
+            .expect_err("m^1/200 must be rejected");
+        assert!(
+            matches!(err, UnitResolveError::ExponentOutOfRange { .. }),
+            "expected ExponentOutOfRange, got {err:?}"
         );
     }
 
