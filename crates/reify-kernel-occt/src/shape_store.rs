@@ -1,7 +1,7 @@
-//! The OCCT kernel's shape store: every resident native shape and its
-//! [`BRepKind`], the per-kind sub-shape extraction caches, and the child →
-//! parent provenance map. Handles are minted in one place ([`ShapeStore::insert`])
-//! and read through one chokepoint ([`ShapeStore::get`]).
+//! The OCCT kernel's shape store: every resident native shape, stored together
+//! with its [`BRepKind`] as one entry, the per-kind sub-shape extraction caches,
+//! and the child → parent provenance map. Handles are minted in one place
+//! ([`ShapeStore::insert`]) and read through one chokepoint ([`ShapeStore::get`]).
 
 use std::collections::HashMap;
 
@@ -91,12 +91,16 @@ impl TryFrom<FfiShapeKind> for BRepKind {
     }
 }
 
+/// A resident native shape and the [`BRepKind`] it was stored under.
+struct Entry {
+    shape: UniquePtr<ffi::ffi::OcctShape>,
+    repr: BRepKind,
+}
+
 pub(crate) struct ShapeStore {
-    /// Every resident native shape, by handle id.
-    shapes: HashMap<u64, UniquePtr<ffi::ffi::OcctShape>>,
-    /// Each resident shape's [`BRepKind`], written with it, so its keys are
-    /// exactly `shapes`' keys.
-    reprs: HashMap<u64, BRepKind>,
+    /// Every resident shape with its kind, by handle id: a shape cannot be
+    /// resident without one.
+    entries: HashMap<u64, Entry>,
     /// Parent handle id → its edge handles, in canonical
     /// `TopExp::MapShapes(.., TopAbs_EDGE, ..)` order. Makes
     /// [`Self::sub_shapes`] idempotent per (parent, kind): a caller that
@@ -117,8 +121,7 @@ pub(crate) struct ShapeStore {
 impl ShapeStore {
     pub(crate) fn new() -> Self {
         Self {
-            shapes: HashMap::new(),
-            reprs: HashMap::new(),
+            entries: HashMap::new(),
             extracted_edges: HashMap::new(),
             extracted_faces: HashMap::new(),
             extracted_vertices: HashMap::new(),
@@ -141,20 +144,15 @@ impl ShapeStore {
     fn mint(&mut self, shape: UniquePtr<ffi::ffi::OcctShape>, repr: BRepKind) -> GeometryHandle {
         let id = self.next_id;
         self.next_id += 1;
-        self.shapes.insert(id, shape);
-        self.reprs.insert(id, repr);
+        self.entries.insert(id, Entry { shape, repr });
         GeometryHandle {
             id: GeometryHandleId(id),
             repr: Some(repr),
         }
     }
 
-    /// The [`BRepKind`] `policy` assigns to `shape`.
-    ///
-    /// An `Inherit` source always has a recorded kind: every caller has
-    /// already read the source's shape, and [`Self::mint`] records a shape and
-    /// its kind together. A source with no kind is therefore a broken
-    /// invariant and an error, never a silent re-classification.
+    /// The [`BRepKind`] `policy` assigns to `shape`; an `Inherit` source that
+    /// is not resident is `InvalidReference`.
     fn resolve_repr(
         &self,
         shape: &ffi::ffi::OcctShape,
@@ -162,12 +160,7 @@ impl ShapeStore {
     ) -> Result<BRepKind, GeometryError> {
         match policy {
             ReprPolicy::Fixed(kind) => Ok(kind),
-            ReprPolicy::Inherit(source) => self.repr_of(source).ok_or_else(|| {
-                GeometryError::OperationFailed(format!(
-                    "ReprPolicy::Inherit source {source:?} has no recorded BRepKind: \
-                     the kernel's shapes and reprs are out of lock-step"
-                ))
-            }),
+            ReprPolicy::Inherit(source) => self.repr_of(source),
             ReprPolicy::Classify => brep_kind_of_shape(shape),
         }
     }
@@ -178,11 +171,11 @@ impl ShapeStore {
     /// Propagate with `?`; see reify-ir's `From<GeometryError>` impls for the
     /// mapping.
     pub(crate) fn get(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
-        let ptr = self
-            .shapes
+        let entry = self
+            .entries
             .get(&id.0)
             .ok_or(GeometryError::InvalidReference(id))?;
-        let shape = ptr.as_ref().ok_or_else(|| {
+        let shape = entry.shape.as_ref().ok_or_else(|| {
             GeometryError::OperationFailed(format!("shape handle {id:?} is null"))
         })?;
         // Reject a NON-null wrapper around null (IsNull) topology. Such a shape
@@ -199,9 +192,13 @@ impl ShapeStore {
         Ok(shape)
     }
 
-    /// The [`BRepKind`] recorded for `id`, or `None` if `id` is not resident.
-    pub(crate) fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
-        self.reprs.get(&id.0).copied()
+    /// The [`BRepKind`] stored with `id`; `InvalidReference` if `id` is not
+    /// resident.
+    pub(crate) fn repr_of(&self, id: GeometryHandleId) -> Result<BRepKind, GeometryError> {
+        self.entries
+            .get(&id.0)
+            .map(|entry| entry.repr)
+            .ok_or(GeometryError::InvalidReference(id))
     }
 
     /// The parent `child` was extracted from, or `None` if `child` was not
@@ -212,7 +209,7 @@ impl ShapeStore {
 
     /// Number of resident native shapes.
     pub(crate) fn len(&self) -> usize {
-        self.shapes.len()
+        self.entries.len()
     }
 
     fn cache(&mut self, kind: SubShapeKind) -> &mut HashMap<u64, Vec<GeometryHandleId>> {
@@ -317,28 +314,32 @@ impl ShapeStore {
         // Exhaustive (no `..`): a new field is a compile error here until it
         // is classified as cleared or kept.
         let Self {
-            shapes,
-            reprs,
+            entries,
             extracted_edges,
             extracted_faces,
             extracted_vertices,
             parent_handle,
             next_id: _,
         } = self;
-        shapes.clear();
-        reprs.clear();
+        entries.clear();
         extracted_edges.clear();
         extracted_faces.clear();
         extracted_vertices.clear();
         parent_handle.clear();
     }
 
-    /// Inject a null `UniquePtr<OcctShape>` at `id`, bumping `next_id` past
-    /// it. No insert path can produce a null `UniquePtr`, so this is the only
-    /// way to reach [`Self::get`]'s null-pointer arm.
+    /// Inject a null `UniquePtr<OcctShape>` stored as `repr` at `id`, bumping
+    /// `next_id` past it. No insert path can produce a null `UniquePtr`, so
+    /// this is the only way to reach [`Self::get`]'s null-pointer arm.
     #[cfg(test)]
-    pub(crate) fn insert_null_for_test(&mut self, id: u64) {
-        self.shapes.insert(id, UniquePtr::null());
+    pub(crate) fn insert_null_for_test(&mut self, id: u64, repr: BRepKind) {
+        self.entries.insert(
+            id,
+            Entry {
+                shape: UniquePtr::null(),
+                repr,
+            },
+        );
         if id >= self.next_id {
             self.next_id = id + 1;
         }
@@ -386,6 +387,7 @@ mod tests {
     #[test]
     fn insert_refuses_a_shape_it_cannot_name_a_kind_for() {
         const UNKNOWN_SOURCE: GeometryHandleId = GeometryHandleId(999_999);
+        type ExpectedError = fn(&GeometryError) -> bool;
         fn names_null_shape(err: &GeometryError) -> bool {
             matches!(err, GeometryError::OperationFailed(msg) if msg.contains("null shape"))
         }
@@ -393,7 +395,7 @@ mod tests {
             matches!(err, GeometryError::InvalidReference(id) if *id == UNKNOWN_SOURCE)
         }
         let mut store = ShapeStore::new();
-        let cases: [(&str, _, _, fn(&GeometryError) -> bool); 2] = [
+        let cases: [(&str, _, _, ExpectedError); 2] = [
             (
                 "null shape under Classify",
                 ffi::ffi::make_null_shape_for_test(),

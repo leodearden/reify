@@ -292,10 +292,10 @@ impl OcctKernel {
         }
     }
 
-    /// Return the [`BRepKind`] recorded for `id` when it was stored, or
-    /// `None` if `id` is unknown to this kernel.
+    /// Return the [`BRepKind`] `id` was stored under, or `None` iff `id` is
+    /// not resident (unknown, or freed by `reset`).
     pub fn repr_of(&self, id: GeometryHandleId) -> Option<BRepKind> {
-        self.store.repr_of(id)
+        self.store.repr_of(id).ok()
     }
 
     /// Number of native shapes currently resident in this kernel.
@@ -1141,21 +1141,13 @@ impl OcctKernel {
         // `fillet(translate(union(a, b)))` is rejected like `fillet(union(a, b))`.
         // Pinned by `repr_policy_table.rs`'s D5 block and
         // `occt_repr_policy_fixtures_e2e.rs`.
-        match self.repr_of(shape_id) {
-            Some(BRepKind::Solid) => {}
-            Some(other) => {
+        match self.store.repr_of(shape_id)? {
+            BRepKind::Solid => {}
+            other => {
                 return Err(GeometryError::OperationFailed(format!(
                     "local-feature operation requires a BRepKind::Solid input shape, got {other:?}"
                 )));
             }
-            // `repr_of` returns `None` iff `shape_id` is unknown to this kernel.
-            // The "repr-lost-but-shape-present" case is unreachable: `ShapeStore`
-            // records a shape and its kind together.
-            // Fall through to `ShapeStore::get` below, which returns
-            // `InvalidReference` for genuinely unknown handles rather than a false
-            // "requires Solid" rejection (esc-2655-26 suggestion #4 / task 2821
-            // amendment; comment aligned by task 2905 / esc-2821-61 #1).
-            None => {}
         }
         let (result_shape, records) = {
             let shape = self.store.get(shape_id)?;
@@ -2846,7 +2838,7 @@ impl OcctKernel {
                 // `sweep_guided_orientation_differs_from_plain_sweep`
                 // (`tests/harness_occt_measurement/sweep_guided_integration.rs`).
                 let shape = self.store.get(*id)?;
-                let pt = if self.repr_of(*id) == Some(BRepKind::Face) {
+                let pt = if self.store.repr_of(*id)? == BRepKind::Face {
                     ffi::ffi::query_face_centroid(shape)
                         .map_err(|e| QueryError::QueryFailed(e.to_string()))?
                 } else {
