@@ -62,6 +62,11 @@ impl<'d> StiffnessScale<'d> {
         Self { d, rows }
     }
 
+    /// The assembled `D` this scale judges against.
+    pub(crate) fn matrix(&self) -> &'d Mat<f64> {
+        self.d
+    }
+
     /// The stop criterion: [`StiffnessScale::relative_residual_against`] at
     /// the geometry's own coordinate scale, ~0 at a fixed point.
     pub(crate) fn relative_residual(&self, nodes: &[[f64; 3]]) -> f64 {
@@ -151,8 +156,10 @@ mod tests {
 
     #[test]
     fn a_nan_judged_row_is_not_at_equilibrium_beside_a_healthy_one() {
-        // `f64::max` is NaN-transparent, so a guard on the max over rows would
-        // land on the healthy row's 8.5 and miss the NaN row: it is per row.
+        // Pins the INFINITY verdict on a NaN row beside a healthy one. A NaN
+        // entry makes its row's net force NaN at every geometry, so the
+        // net-force check reaches this verdict on its own; the NaN-stiffness
+        // check in `StiffnessScale::of` is defence in depth behind it.
         let mut d = Mat::<f64>::zeros(3, 3);
         d[(1, 0)] = 8.5;
         d[(2, 0)] = f64::NAN;
@@ -216,15 +223,28 @@ mod tests {
     }
 
     #[test]
-    fn the_stop_test_is_the_guard_form_at_the_geometrys_own_scale() {
+    fn the_guard_judges_against_the_given_length_scale_not_the_geometrys() {
+        // The worst row is the soft one, at 2^-21, as in
+        // `each_row_is_judged_against_its_own_stiffness`. The geometry's own
+        // max|x| is ~1, so neither length scale below is it.
         let nodes = chain_nodes();
         let d = chain_d(1.0, TWO_POW_20);
         let stiffness = StiffnessScale::of(&d, RowSet::All);
-        let max_abs_x = 1.0 + 1.0 / TWO_POW_20;
-        assert_eq!(max_abs_coordinate(&nodes), max_abs_x);
+        let soft_imbalance = 1.0 / TWO_POW_20 / 2.0;
         assert_eq!(
-            stiffness.relative_residual_against(&nodes, max_abs_x),
-            stiffness.relative_residual(&nodes),
+            stiffness.relative_residual_against(&nodes, 0.0),
+            soft_imbalance
         );
+        assert_eq!(
+            stiffness.relative_residual_against(&nodes, 3.0),
+            soft_imbalance / 4.0
+        );
+    }
+
+    #[test]
+    fn max_abs_coordinate_is_zero_without_points_and_skips_nan() {
+        assert_eq!(max_abs_coordinate(&[] as &[[f64; 3]]), 0.0);
+        let points = [[1.0, -4.0, f64::NAN], [2.0, 3.0, 0.5]];
+        assert_eq!(max_abs_coordinate(&points), 4.0);
     }
 }

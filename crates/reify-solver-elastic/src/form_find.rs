@@ -691,7 +691,7 @@ where
             break;
         }
 
-        let solved = solve_reduced(&d, &stiffness, &current, &free_indices, &anchor_indices)?;
+        let solved = solve_reduced(&stiffness, &current, &free_indices, &anchor_indices)?;
         current = solved;
 
         // Line-only path: `D` is geometry-independent, so the single solve above
@@ -765,21 +765,21 @@ pub(crate) fn member_axial_forces(
         .collect()
 }
 
-/// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
-/// (already-assembled) `D`, its free rows' `stiffness`, and geometry, scattering
-/// the solved free rows back into a full node vector. The partition → faer
-/// partial-pivot LU → non-finite + scaled-residual guard
+/// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the
+/// assembled `D` that `stiffness` judges (its free rows) and geometry,
+/// scattering the solved free rows back into a full node vector. The partition
+/// → faer partial-pivot LU → non-finite + scaled-residual guard
 /// ([`is_singular_reduced_solve`]) is the landed line-solve core, called once per
 /// iteration by [`anchored_fixed_point`]. Returns
 /// [`ReducedSolveFailure::SingularReducedStiffness`] when the reduced system is
 /// rank-deficient.
 fn solve_reduced(
-    d: &Mat<f64>,
     stiffness: &StiffnessScale<'_>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
     anchor_indices: &[usize],
 ) -> Result<Vec<[f64; 3]>, ReducedSolveFailure> {
+    let d = stiffness.matrix();
     let nf = free_indices.len();
     // All three coordinate axes are solved at once as an |F|×3 RHS so D_ff is
     // factored only once.
