@@ -14,6 +14,10 @@
 //!   `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.6 / §3 P3 / §7 B4), over
 //!   `examples/` only.
 //!
+//! Since task #7560 both invariants cover that whole union and share one
+//! stale-residual policy; only the residual lists and the break-glass key stay
+//! per-invariant.
+//!
 //! # One eval, two checkers
 //!
 //! The merge is sound because `Engine::check_no_stale_undef` (`invariants.rs`)
@@ -27,54 +31,27 @@
 //!
 //! Task 5060 is explicit that the snapshot↔cache divergence audit is a DISTINCT
 //! invariant and the checkers must NOT be merged. They are not: each invariant
-//! keeps its own adapter fn, its own corpus SCOPE, its own residual-exemption
-//! list and its own failure POLICY, all carried as data on a per-invariant
-//! descriptor. This unit shares the expensive part (compile + eval) and nothing
-//! else.
+//! keeps its own adapter fn, plus its own residual-exemption list and
+//! break-glass key carried as data on a per-invariant descriptor. This unit
+//! shares the expensive part (compile + eval) and nothing else.
 //!
 //! # Residual reconciliation against the production registration (task #7431)
 //!
 //! The INV-EVAL-4 residuals were root-caused while that sweep built its engine
-//! with the bare `register_compute_fns`. This sweep unified on
-//! `gate_engine(true)` (`register_production_compute_fns`), a strict SUPERSET —
-//! and `examples/fea_shell_too_thick_annotated.ri` is precisely the file
-//! `eval_gate_support::gate_engine`'s doc names as having been swept on a
-//! DEGRADED dispatch (`shell-extract::extract`: no registered compute
-//! trampoline), so its divergence might have been an ARTEFACT of that
-//! registration rather than a real eval-surface limitation.
+//! with the bare `register_compute_fns`; this sweep unified on
+//! `gate_engine(true)` (`register_production_compute_fns`), a strict SUPERSET.
+//! Measured under it, the superset registration did NOT resolve
+//! `examples/fea_shell_too_thick_annotated.ri`: its divergence is a genuine
+//! compute-dispatch residual of the same class as `fdm_bracket.ri`, not an
+//! artefact of the degraded `shell-extract::extract` dispatch that
+//! `eval_gate_support::gate_engine`'s doc names. Recorded so a future reader
+//! does not re-litigate it.
 //!
-//! MEASURED on this tree rather than assumed — all 24 shards run under the
-//! unified production registration, finding counts read from their own printed
-//! residual-skip lines:
-//!
-//! | residual | invariant | findings |
-//! |---|---|---|
-//! | `examples/integration_corner_cases.ri` | INV-EVAL-5 | 2 |
-//! | `crates/reify-eval/tests/fixtures/match_block_decls_bolt.ri` | INV-EVAL-5 | 1 |
-//! | `examples/multi_load_bracket.ri` | INV-EVAL-5 | 1 |
-//! | `examples/surface_finish_functional.ri` | INV-EVAL-5 | 1 |
-//! | `examples/fdm_bracket.ri` | INV-EVAL-4 | 1 |
-//! | `examples/fea_shell_too_thick_annotated.ri` | INV-EVAL-4 | 1 |
-//!
-//! OUTCOME: every one of the six still produces findings, so NO entry is
-//! deleted. In particular the superset registration did NOT resolve
-//! `fea_shell_too_thick_annotated.ri` — its divergence is a genuine
-//! compute-dispatch eval-surface limitation of the same class as
-//! `fdm_bracket.ri`, exactly as its reason string already claimed, and not an
-//! artefact of the degraded dispatch. Recorded here so a future reader does not
-//! re-litigate it. `fdm_bracket.ri` persisting was the expectation (its
-//! `@optimized solve_elastic_static` dispatch is registered under BOTH
-//! configurations) and is likewise confirmed rather than assumed.
-//!
-//! This is self-reporting from here on: INV-EVAL-4 declares
-//! `stale_residual_is_fatal`, so a residual of ITS that stops diverging reds the
-//! sweep and forces the dead entry's deletion. The sweep passing with zero stale
-//! residuals is what the table above rests on. INV-EVAL-5 keeps its
-//! pre-unification print-only policy, so its four entries are re-confirmed by the
-//! counts above rather than by a gate. Separately,
-//! `residual_exemptions_and_failure_policy_stay_per_invariant` asserts every one
-//! of the six still matches EXACTLY ONE live corpus file, so a renamed `.ri`
-//! cannot silently void an exemption.
+//! Every residual of every invariant is self-reporting: a declared residual with
+//! zero findings reds the sweep (`GateTally::record`), and
+//! `residual_lists_and_bypass_keys_stay_per_invariant` holds each entry to
+//! exactly one live corpus file, so a renamed `.ri` cannot silently void an
+//! exemption.
 //!
 //! # Anti-silent-accept guards
 //!

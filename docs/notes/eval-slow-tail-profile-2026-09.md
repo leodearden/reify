@@ -249,6 +249,10 @@ meet it:**
 - The two failure policies stay un-harmonised: INV-EVAL-4 keeps its
   `REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS` break-glass and its stale-residual FAIL;
   INV-EVAL-5 keeps neither. Harmonising either direction is a semantic change.
+
+  Provenance: both bullets above were reversed by task #7560. INV-EVAL-4 now
+  sweeps the full union, a stale residual fails either invariant, and INV-EVAL-5
+  still has no bypass knob.
 - `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` is built by two different tests in
   `solve_elastic_static_body_e2e.rs`. Merging them would undo the deliberate
   #4152 split AND serialise two OCCT+gmsh builds into one longer straggler — a
