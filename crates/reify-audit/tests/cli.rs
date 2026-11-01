@@ -219,7 +219,8 @@ fn git_init_commit_all(dir: &Path) {
 mod cli {
     use super::*;
 
-    /// Smoke test: `--help` exits 0 and mentions the four key flags.
+    /// Smoke test: `--help` exits 0, mentions the key flags, and no longer
+    /// lists the deleted `--since`.
     #[test]
     fn binary_help_succeeds() {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
@@ -238,7 +239,7 @@ mod cli {
         );
 
         let stdout = String::from_utf8_lossy(&out.stdout);
-        for flag in &["--task", "--pre-done", "--since", "--pattern", "--jcodemunch-url", "--no-jcodemunch"] {
+        for flag in &["--task", "--pre-done", "--pattern", "--jcodemunch-url", "--no-jcodemunch"] {
             assert!(
                 stdout.contains(flag),
                 "--help stdout must contain '{}'\nFull stdout:\n{}",
@@ -246,6 +247,10 @@ mod cli {
                 stdout
             );
         }
+        assert!(
+            !stdout.contains("--since"),
+            "--help must not list the deleted --since\nFull stdout:\n{stdout}"
+        );
     }
 
     /// `--print-repo-id` must print exactly the same identity
@@ -1043,10 +1048,10 @@ mod cli {
         );
     }
 
-    /// `--since <date> --pattern P5` emits only the phantom-done finding;
-    /// a corroborated task produces no P5 finding.
+    /// A `--pattern P5` sweep emits only the phantom-done finding; a
+    /// corroborated task produces no P5 finding.
     #[test]
-    fn since_window_with_pattern_filter() {
+    fn pattern_p5_sweep_reports_only_phantom_done_findings() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
 
@@ -1078,8 +1083,6 @@ mod cli {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since",
-                "2026-05-01",
                 "--pattern",
                 "P5",
                 "--no-jcodemunch",
@@ -1091,7 +1094,7 @@ mod cli {
                 dir.to_str().unwrap(),
             ])
             .output()
-            .expect("invoke reify-audit --since --pattern P5");
+            .expect("invoke reify-audit --pattern P5");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         let findings = parse_findings_from_stderr(&stderr);
@@ -1131,8 +1134,8 @@ mod cli {
         );
     }
 
-    /// A default sweep — no `--pattern`, `--task` or `--since` — over more than
-    /// fifty tasks runs to completion. The whole corpus is the sweep contract
+    /// A default sweep — no `--pattern` or `--task` — over more than fifty
+    /// tasks runs to completion. The whole corpus is the sweep contract
     /// (PRD D6), so no corpus size is refused: there is no panic in a debug
     /// build and no "unbounded backlog" breadcrumb in either profile.
     #[test]
@@ -1207,9 +1210,10 @@ mod cli {
         );
     }
 
-    /// `--pre-done --since <date>` must error with exit 125.
+    /// `--since` never narrowed any detector and is gone: the binary rejects
+    /// it as an unknown flag with exit 125 and emits no findings array.
     #[test]
-    fn pre_done_and_since_is_an_error() {
+    fn since_is_an_unknown_flag() {
         let tmp = tempfile::tempdir().expect("create tempdir");
         let dir = tmp.path();
         let tasks = vec![task_fixture("1", "done", Some("merged"), Some("abc"))];
@@ -1219,22 +1223,27 @@ mod cli {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--task", "1",
-                "--pre-done",
-                "--since", "2026-05-01",
+                "--since", "2026-01-01",
                 "--tasks-file", tasks_file.to_str().unwrap(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
             ])
             .output()
-            .expect("invoke reify-audit --pre-done --since");
+            .expect("invoke reify-audit --since");
 
+        let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(
             out.status.code(),
             Some(125),
-            "--pre-done --since must exit 125; got {:?}\nstderr: {}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
+            "--since must exit 125; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("unknown flag '--since'"),
+            "--since must be rejected as an unknown flag; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr_has_parseable_findings_array(&stderr),
+            "a rejected argv runs no detector; stderr:\n{stderr}"
         );
     }
 
@@ -1585,7 +1594,7 @@ mod cli {
         );
     }
 
-    /// Default sweep (no --pattern/--task/--since) survives an unreachable
+    /// Default sweep (no --pattern/--task) survives an unreachable
     /// jcodemunch endpoint: P5 still runs and detects phantom-done tasks, exit
     /// code is non-zero (findings found), and the fallback breadcrumb appears.
     #[test]
@@ -3061,8 +3070,6 @@ mod cli {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since",
-                "1970-01-01",
                 "--no-jcodemunch",
                 "--project-root",
                 repo.path().to_str().unwrap(),
@@ -3797,7 +3804,7 @@ mod http_loader {
         );
     }
 
-    /// Sweep path via HTTP loader: `--since` (no `--pre-done`) routes
+    /// Sweep path via HTTP loader: a sweep (no `--pre-done`) routes
     /// through `get_tasks` + `collect_tasks_recursive` and must flatten
     /// subtasks before handing them to the detectors. This guards the
     /// parent/subtask plumbing that the pre-done tests don't exercise
@@ -3854,7 +3861,6 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since", "2026-05-01",
                 "--pattern", "P5",
                 "--no-jcodemunch",
                 "--fused-memory-url", mock.url(),
@@ -3862,7 +3868,7 @@ mod http_loader {
                 "--project-root", dir.to_str().unwrap(),
             ])
             .output()
-            .expect("invoke reify-audit --since (sweep)");
+            .expect("invoke reify-audit (sweep)");
 
         mock.stop();
 
@@ -4036,7 +4042,6 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since", "2026-01-01",
                 "--pattern", "P1",
                 "--no-jcodemunch",
                 "--fused-memory-url", mock.url(),
@@ -4082,7 +4087,6 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since", "1970-01-01",
                 "--fused-memory-url", mock.url(),
                 "--runs-db", runs_db.to_str().unwrap(),
                 "--project-root", dir.to_str().unwrap(),
@@ -4133,8 +4137,6 @@ mod http_loader {
         let bin = env!("CARGO_BIN_EXE_reify-audit");
         let out = Command::new(bin)
             .args([
-                "--since",
-                "1970-01-01",
                 "--fused-memory-url",
                 mock.url(),
                 "--runs-db",
@@ -5128,8 +5130,8 @@ mod freshness_gate {
     /// and
     /// §4.2 makes that the EXPECTED case, not an anomaly: identity is now
     /// per-checkout, so every task worktree derives an id nothing has indexed.
-    /// A default `reify-audit --since <date>` from any warm lane with the
-    /// serve up would exit 125 with zero findings.
+    /// A default sweep from any warm lane with the serve up would exit 125
+    /// with zero findings.
     ///
     /// So the corpus is still never queried (the Noop seam answers every
     /// jcodemunch call with nothing), but the run completes and emits its

@@ -1209,7 +1209,6 @@ mod tests {
         let args = parse_args(&[]).unwrap_or_else(|e| panic!("empty argv must parse: {e}"));
         assert!(args.task_id.is_none());
         assert!(!args.pre_done);
-        assert!(args.since.is_none());
         assert!(args.pattern.is_none());
         assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
@@ -1242,13 +1241,23 @@ mod tests {
         );
     }
 
+    /// `--since` never narrowed any detector and is gone: the catch-all arm
+    /// rejects it like any other unknown token.
+    #[test]
+    fn parse_args_rejects_since_as_an_unknown_flag() {
+        let err = unwrap_err(parse_args(&["--since".to_string(), "2026-01-01".to_string()]));
+        assert!(
+            err.contains("unknown flag '--since'"),
+            "--since must be rejected as an unknown flag; got: {err}"
+        );
+    }
+
     #[test]
     fn parse_args_missing_value_after_each_flag_returns_err() {
         // Every flag that takes a value must report its name in the error
         // when the value is missing (final-position bare flag).
         for flag in [
             "--task",
-            "--since",
             "--pattern",
             "--tasks-file",
             "--runs-db",
@@ -1314,8 +1323,6 @@ mod tests {
             "--task",
             "3242",
             "--pre-done",
-            "--since",
-            "2026-05-01",
             "--pattern",
             "P5",
             "--tasks-file",
@@ -1336,7 +1343,6 @@ mod tests {
         let args = parse_args(&argv).unwrap_or_else(|e| panic!("happy-path argv must parse: {e}"));
         assert_eq!(args.task_id.as_deref(), Some("3242"));
         assert!(args.pre_done);
-        assert_eq!(args.since.as_deref(), Some("2026-05-01"));
         assert_eq!(args.pattern.as_deref(), Some("P5"));
         assert_eq!(args.tasks_file.as_deref(), Some("/tmp/tasks.json"));
         assert_eq!(args.runs_db, "/tmp/runs.db");
@@ -1414,7 +1420,6 @@ mod tests {
         Args {
             task_id: None,
             pre_done,
-            since: None,
             pattern: pattern.map(|s| s.to_string()),
             tasks_file: None,
             fused_memory_url: String::new(),
