@@ -2161,3 +2161,30 @@ fn bolt_plate_publishes_the_spin_about_the_shank_as_its_free_twist() {
     let translation = twist.translation.iter().map(|t| t * t).sum::<f64>().sqrt();
     assert!(translation <= 1e-9, "a pure rotation: {twist:?}");
 }
+
+/// A `Plate` whose hole is drilled along `x` (rotated 90° about `y`), so the
+/// identity seed puts the shank's tilt row at its maximum.
+const SIDE_HOLE_PLATE: &str = "    let hole = rotate(cylinder(3.2mm, 5mm), 0.0, 1.0, 0.0, 90deg)
+    let hole_axis : Axis = hole.axis";
+
+fn side_hole_source() -> String {
+    bolt_scope_source(
+        SIDE_HOLE_PLATE,
+        None,
+        &["concentric(bolt.shank_axis, plate.hole_axis)"],
+    )
+}
+
+/// A seed at a stationary MAXIMUM of a relation's residual is not an
+/// infeasibility: the bolt seats in a side-drilled hole.
+#[test]
+fn a_side_drilled_hole_seats_the_bolt() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping a_side_drilled_hole_seats_the_bolt: OCCT not available");
+        return;
+    }
+    let solution = solve_bolt_plate(&side_hole_source());
+    assert_eq!(solution.failure, None, "{solution:?}");
+    assert!(errors(&solution).is_empty(), "{:?}", solution.diagnostics);
+    assert!(solution.poses.contains_key("bolt"), "{solution:?}");
+}

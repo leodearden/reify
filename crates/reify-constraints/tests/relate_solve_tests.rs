@@ -2434,3 +2434,104 @@ fn a_seed_near_a_full_turn_is_not_misreported_as_under_determined() {
     .expect("feasible");
     assert_eq!(solution.rank, 6, "{solution:?}");
 }
+
+// ── η #6675: stationary maxima are not certificates ─────────────────────────
+//
+// A relation's tilt row is bounded (a sine or cosine of the misalignment), so a
+// seed that puts it at its MAXIMUM is a first-order stationary point that is not
+// a root, although a feasible pose exists. Only a genuine least-squares minimum
+// may be certified infeasible.
+
+/// Solve `relations` for the bolt from the identity, with the default budget.
+fn solve_from_identity(relations: &[RelationInstance]) -> (FrameSolveOutcome, SolveScaling) {
+    let unknown = bolt_unknown();
+    let seed = Pose::identity();
+    let scaling = scaling_for(relations, &unknown, &seed);
+    let outcome = solve_frame_outcome(relations, &unknown, &seed, &scaling, SolveBudget::default());
+    (outcome, scaling)
+}
+
+/// The solve converged, and every relation holds at the solved pose.
+fn assert_seated(
+    relations: &[RelationInstance],
+    outcome: &FrameSolveOutcome,
+    scaling: &SolveScaling,
+) {
+    let solution = outcome
+        .result
+        .as_ref()
+        .unwrap_or_else(|cause| panic!("a feasible set must converge, got {cause:?}"));
+    let exceedance = max_relation_exceedance(relations, &bolt_unknown(), &solution.pose, |u| {
+        scaling.row_tolerance(u)
+    });
+    assert!(exceedance <= 1.0, "{exceedance} at {solution:?}");
+}
+
+/// The shank along `z` concentric with a hole drilled along `x`: the offsets
+/// already hold, and the tilt row sits at its maximum.
+#[test]
+fn a_side_drilled_hole_is_not_certified_infeasible() {
+    let relations = vec![relation(
+        "concentric",
+        vec![
+            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))),
+        ],
+        4,
+    )];
+    let (outcome, scaling) = solve_from_identity(&relations);
+    assert_seated(&relations, &outcome, &scaling);
+}
+
+/// A seat facing `z` flush to a wall facing `x`: the normal row sits at its
+/// maximum.
+#[test]
+fn a_seat_flush_to_a_side_wall_is_not_certified_infeasible() {
+    let relations = vec![relation(
+        "flush",
+        vec![
+            datum("bolt", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", plane((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))),
+        ],
+        3,
+    )];
+    let (outcome, scaling) = solve_from_identity(&relations);
+    assert_seated(&relations, &outcome, &scaling);
+}
+
+/// GUARD: one seat flush to BOTH a top facing `z` and a wall facing `x`. Its tilt
+/// cost (sin² + cos² of the rotation about `y`) is exactly flat along the valley,
+/// so the stationary point is a genuine minimum and stays certified.
+#[test]
+fn perpendicular_top_and_wall_flush_stays_certified() {
+    let seat = plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0));
+    let relations = vec![
+        relation(
+            "flush",
+            vec![
+                datum("bolt", seat.clone()),
+                datum("plate", plane((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            3,
+        ),
+        relation(
+            "flush",
+            vec![
+                datum("bolt", seat),
+                datum("plate", plane((0.0, 0.0, 0.0), (1.0, 0.0, 0.0))),
+            ],
+            3,
+        ),
+    ];
+    let (outcome, _) = solve_from_identity(&relations);
+    let SolveFailureCause::Infeasible(cert) = failure_of(&outcome) else {
+        panic!("expected Infeasible, got {outcome:?}");
+    };
+    assert!(cert.range_cosine <= RANGE_COSINE_TOLERANCE, "{cert:?}");
+    assert!(
+        cert.blame
+            .iter()
+            .any(|b| b.source == ResidualSource::Relation(1)),
+        "the wall flush must be blamed: {cert:?}"
+    );
+}

@@ -286,3 +286,30 @@ fn a_coupled_stiff_row_does_not_hide_a_violated_soft_row() {
         "{run:?}"
     );
 }
+
+/// `[100·cos x]`, seeded at its crest `x = 0`: the row is violated (`r̃ = 100`)
+/// and its Jacobian vanishes, so the point is stationary to first order — yet a
+/// root sits at `π/2`. A stationary MAXIMUM is not an infeasibility.
+struct Crest;
+
+impl LeastSquaresProblem for Crest {
+    fn dim(&self) -> usize {
+        1
+    }
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        vec![100.0 * x[0].cos()]
+    }
+    fn jacobian(&self, x: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![-100.0 * x[0].sin()]]
+    }
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(row)
+    }
+}
+
+#[test]
+fn a_stationary_crest_is_left_not_certified_infeasible() {
+    let run = run(&Crest, &[0.0]);
+    assert!(run.outcome.is_ok(), "{run:?}");
+    assert!(max_abs(&Crest.residual(&run.x)) <= 1.0, "{run:?}");
+}
