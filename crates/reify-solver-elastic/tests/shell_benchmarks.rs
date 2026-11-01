@@ -1377,7 +1377,7 @@ const TWISTED_BEAM_F_Y_TIP_REF: f64 = 5.424e-3;
 /// This test asserts only sign / finiteness / order-of-magnitude — see the
 /// pinched-cylinder smoke test for the same rationale.
 #[test]
-fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_signed() {
+fn twisted_beam_tip_f_y_in_plane_load_smoke_test_displacement_is_finite_and_signed() {
     const L: f64 = 12.0;
     const NZ: usize = 12; // segments along z
     const NY: usize = 2; // strips across width
@@ -1388,7 +1388,6 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
     };
     let thickness = 0.32;
 
-    // RED: `twisted_beam_mesh` is not yet defined — compile error expected.
     let (nodes, connectivity) = twisted_beam_mesh(NZ, NY);
     let n_nodes = nodes.len();
 
@@ -1433,7 +1432,8 @@ fn twisted_beam_tip_out_of_plane_load_smoke_test_displacement_is_finite_and_sign
         .position(|n| (n[2] - L).abs() < tol && n[0].abs() < tol && n[1].abs() < tol)
         .expect("tip centroid node (0, 0, L) not found in twisted-beam mesh");
 
-    // Out-of-plane displacement = u_y at tip centroid.
+    // u_y at the tip centroid, measured along the F_y load (MacNeal-Harder's
+    // tip in-plane case, TWISTED_BEAM_F_Y_TIP_REF).
     let tip_defl = u[centroid_node * 6 + 1];
 
     // Order-of-magnitude envelope around the reference (5.424e-3):
