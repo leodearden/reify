@@ -28,29 +28,18 @@
 //! the fallback in `expr.rs` emits it.
 
 use reify_core::{DimensionVector, Severity, Type};
-use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only};
-
-/// Every diagnostic in `module` carrying `code`, in source order.
-///
-/// Matches on the CODE, never on message text: the message is explicitly not a
-/// stable contract (`diagnostics.rs` says so for every coded diagnostic), and a
-/// text match would make this file break on rewording rather than on behaviour.
-fn diags_with_code(
-    module: &reify_compiler::CompiledModule,
-    code: reify_core::DiagnosticCode,
-) -> Vec<&reify_core::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(code))
-        .collect()
-}
+use reify_test_support::{
+    compile_source_with_stdlib, diags_with_code, errors_only, get_let_expr_in, warnings_only,
+};
 
 /// Every `UnresolvedFunction`-coded diagnostic in `module`, in source order.
 fn unresolved_function_diags(
     module: &reify_compiler::CompiledModule,
 ) -> Vec<&reify_core::Diagnostic> {
-    diags_with_code(module, reify_core::DiagnosticCode::UnresolvedFunction)
+    diags_with_code(
+        &module.diagnostics,
+        reify_core::DiagnosticCode::UnresolvedFunction,
+    )
 }
 
 /// Every Error-severity diagnostic MESSAGE in `module`, in source order.
@@ -403,7 +392,7 @@ fn zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning() {
 /// order.
 fn arg_shape_diags(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
     diags_with_code(
-        module,
+        &module.diagnostics,
         reify_core::DiagnosticCode::BuiltinArgShapeUnrecognized,
     )
 }
