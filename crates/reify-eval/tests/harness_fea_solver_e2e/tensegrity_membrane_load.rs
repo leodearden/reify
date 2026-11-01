@@ -25,7 +25,7 @@
 //! - `surface_slack`     : `List<Bool>` — per patch.
 //! - `converged`         : `Bool`.
 
-use crate::common::failed_diagnostics::joined_failure_messages;
+use crate::failed_diagnostics::joined_failure_messages;
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
@@ -466,7 +466,7 @@ fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
 /// Every needle is checked against ONE flattened diagnostic set, so a caller
 /// invokes the trampoline once and the assertions provably describe the same
 /// message rather than several independently-produced ones. The diagnostic
-/// flattening lives in `common::failed_diagnostics`; the
+/// flattening lives in `tests/common/failed_diagnostics.rs`; the
 /// single-needle form above delegates here.
 fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
     let joined = joined_failure_messages(outcome);

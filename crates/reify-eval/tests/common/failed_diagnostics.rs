@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 //! Shared flattening of a `ComputeOutcome::Failed`'s diagnostics for FEA e2e tests.
+//!
+//! Consumers include it from their test-crate root with
+//! `#[path = "common/failed_diagnostics.rs"] mod failed_diagnostics;`, following the
+//! `common/numeric_cell.rs` precedent.
 
 use reify_eval::ComputeOutcome;
 
