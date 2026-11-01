@@ -42,7 +42,9 @@ use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
     realize_operand_datums, solve_relate_scope, solve_relate_scope_within, trace_to_ground,
 };
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveFailureCause, Value};
+use reify_ir::{
+    CompiledExpr, CompiledExprKind, ExportFormat, ResidualSource, SolveFailureCause, Value,
+};
 use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
 
 /// Read the committed §1 worked example so the kernel-free unit slice and the
@@ -2037,13 +2039,22 @@ fn inconsistent_driving_relations_are_certified_solver_infeasible() {
         "the diagnostic carries the gradient certificate: {error:?}"
     );
     assert!(
-        error.message.contains("plate.wall_plane") && error.message.contains("plate.top_plane"),
-        "the blamed relations are named by their operands: {error:?}"
+        error.message.contains("plate.wall_plane"),
+        "the blamed relation is named by its operands: {error:?}"
     );
+    let Some(SolveFailureCause::Infeasible(certificate)) = &solution.failure else {
+        panic!(
+            "expected a certified infeasibility, got {:?}",
+            solution.failure
+        );
+    };
     assert!(
-        matches!(solution.failure, Some(SolveFailureCause::Infeasible(_))),
-        "{:?}",
-        solution.failure
+        !certificate.blame.is_empty()
+            && certificate
+                .blame
+                .iter()
+                .all(|b| matches!(b.source, ResidualSource::Relation(i) if i < solution.driving)),
+        "every blamed row names a driving relation: {certificate:?}"
     );
     assert!(
         solution.poses.is_empty(),

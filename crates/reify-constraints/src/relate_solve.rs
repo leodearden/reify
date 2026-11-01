@@ -1521,7 +1521,7 @@ impl LeastSquaresProblem for FrameProblem<'_> {
 
 /// Assemble a [`Value::Frame`] (origin `Point` + basis `Orientation` quaternion)
 /// from a solved [`Pose`]. The inverse of [`pose_from_frame`].
-fn frame_value(pose: &Pose) -> Value {
+pub fn frame_value(pose: &Pose) -> Value {
     Value::Frame {
         origin: Box::new(point_value(pose.translation)),
         basis: Box::new(orientation_from_exp_map(pose.rotation)),
