@@ -16,7 +16,6 @@ import os
 import shlex
 import sys
 import textwrap
-import unittest.mock
 
 
 # ---------------------------------------------------------------------------
@@ -91,40 +90,20 @@ def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
 # Grammar-e2e skip-guard — can a grammar probe run in this lane?
 # ---------------------------------------------------------------------------
 
-# Helper: parser.c path for the skip-guard
-_TS_GRAMMAR_PARSER = os.path.join(_REPO_ROOT, "tree-sitter-reify", "src", "parser.c")
-
-
-def _patch_parser_c(exists: bool):
-    """Patch os.path.isfile so parser.c reports `exists`; other paths are real.
-
-    Keeps every case that depends on the generated grammar independent of
-    whether this lane happened to generate it, without blinding unrelated
-    isfile() calls.  Module-level because both the skip-guard tests and the
-    --grammar-substrate-status CLI tests now need it: the CLI checks the same
-    file, resolved through pcc._find_repo_root(), which agrees with _REPO_ROOT.
-    """
-    real_isfile = os.path.isfile
-
-    def fake_isfile(path):
-        if path == _TS_GRAMMAR_PARSER:
-            return exists
-        return real_isfile(path)
-
-    return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
-
-
 # The grammar e2e needs tree-sitter to actually LOAD the reify grammar, which
 # isfile(parser.c) does not establish: in a sandboxed agent role the grammar is
 # generated but tree-sitter cannot write ~/.cache/tree-sitter/lock/, so the probe
 # fails to load the language, observe() classifies it HARNESS_ERROR, and the
 # suite reported a spurious FAIL (exit 70) instead of a clean skip.
 #
-# Order matters.  isfile() runs first and short-circuits, so a lane that never
-# generated the grammar pays no subprocess; only when parser.c exists do we spend
-# one probe asking whether it can be loaded.
-def _compute_grammar_e2e_status() -> tuple:
-    """Return (available, reason) for the grammar e2e.  Never raises.
+# Order matters.  grammar_generated() runs first and short-circuits, so a lane
+# that never generated the grammar pays no subprocess; only when parser.c exists
+# do we spend one probe asking whether it can be loaded.
+def _compute_grammar_e2e_status(ctx=None, runner=None) -> tuple:
+    """Return (available, reason) for the grammar e2e under ctx.  Never raises.
+
+    ctx defaults to pcc.ProbeContext.from_environment() and runner to
+    pcc.run_probe; a test hands in a fixture-repo ctx and a fake runner.
 
     The bare `except Exception` is deliberate: the only sane failure mode here is
     "cannot confirm the substrate → skip the one test that needs it".  The
@@ -132,10 +111,13 @@ def _compute_grammar_e2e_status() -> tuple:
     It is defence-in-depth, not the fix — the trigger is fixed at source in
     run_probe(), which represents an unlaunchable binary rather than raising.
     """
-    if not os.path.isfile(_TS_GRAMMAR_PARSER):
-        return (False, f"{_TS_GRAMMAR_PARSER} not found — grammar never generated")
     try:
-        usable, reason = pcc.grammar_substrate_usable()
+        if ctx is None:
+            ctx = pcc.ProbeContext.from_environment()
+        generated, parser_c = pcc.grammar_generated(ctx)
+        if not generated:
+            return (False, f"{parser_c} not found — grammar never generated")
+        usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner or pcc.run_probe)
     except Exception as exc:
         return (False, f"the grammar substrate could not be interrogated ({exc!r})")
     return (bool(usable), reason)
@@ -157,7 +139,7 @@ def _require_grammar_substrate(test) -> None:
     """skipTest unless a grammar probe can run here.  Call from a test body.
 
     Carries the MEASURED reason into the skip message: an unusable verdict caused
-    by tree-sitter exceeding _SUBSTRATE_PROBE_TIMEOUT_S on a loaded machine is a
+    by tree-sitter exceeding the substrate bound on a loaded machine is a
     coverage hole, not a real gap, and must be tellable from a genuine denial.
     """
     available, reason = _grammar_e2e_status()
@@ -245,8 +227,8 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
     """Stub that never answers within the test's patched timeout.
 
     Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock.
-    Tests pair it with a sub-second _SUBSTRATE_PROBE_TIMEOUT_S, so the sleep only
-    has to outlast that bound.
+    Tests pair it with a sub-second ProbeContext.substrate_timeout_s, so the sleep
+    only has to outlast that bound.
     """
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
 

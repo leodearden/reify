@@ -28,7 +28,6 @@ from _pcc_test_support import (
     _VALUE_CELLS_FIXTURE,
     _VALUE_CELLS_STDOUT,
     _argv_echo_stub,
-    _patch_parser_c,
     _require_grammar_substrate,
     _ts_stub_cache_denied,
     _ts_stub_clean,
@@ -206,11 +205,12 @@ class TestMain(_MainHarness, unittest.TestCase):
     #
     # Lets a shell caller ask "can a grammar probe run here?" WITHOUT running the
     # gate, so it can SKIP rather than report the sandbox's denial as a FAIL.
-    # Driven by TREE_SITTER_BIN stubs, never ambient state — see
-    # TestGrammarSubstrateUsable's docstring for why that is load-bearing.
+    # Driven by ctx.tree_sitter_bin stubs over a fixture repo root, never ambient
+    # state — see TestGrammarSubstrateUsable's docstring for why that is
+    # load-bearing.
 
     def _stub_dir(self):
-        """Per-test tempdir for TREE_SITTER_BIN stubs, removed on test teardown.
+        """Per-test tempdir for stubs and the fixture repo, removed on teardown.
 
         Uses addCleanup rather than setUp/tearDown so the other ~20 TestMain
         tests, which need no stubs, do not pay for a tempdir.
@@ -219,18 +219,37 @@ class TestMain(_MainHarness, unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmpdir, ignore_errors=True)
         return tmpdir
 
-    def _run_status_with_stub(self, stub):
-        """Run main(["--grammar-substrate-status"]) against a TREE_SITTER_BIN stub.
+    def _substrate_ctx(self, tree_sitter_bin="tree-sitter", parser_c=True):
+        """A ctx over a fixture repo root, with parser.c present unless told not.
 
-        Pins parser.c present as well as the stub.  The mode checks the generated
-        grammar before it probes, so without that patch every case below would
-        silently depend on whether this lane happened to run `tree-sitter
-        generate`, and would flip to 75 on one that had not — the ambient
-        conditioning TestGrammarSubstrateUsable's docstring rules out.
+        The mode checks the generated grammar before it probes, so without a
+        fixture root every case below would silently depend on whether this lane
+        happened to run `tree-sitter generate`, and would flip to 75 on one that
+        had not — the ambient conditioning TestGrammarSubstrateUsable's
+        docstring rules out.
         """
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}), \
-             _patch_parser_c(True):
-            return self._run_main_capturing(["--grammar-substrate-status"])
+        tmpdir = self._stub_dir()
+        return probe_context(
+            repo_root=make_fixture_repo(tmpdir, parser_c=parser_c),
+            tree_sitter_bin=tree_sitter_bin,
+            cache_home_override=os.path.join(tmpdir, "cache"),
+        )
+
+    def _run_status_with_stub(self, stub, *extra_argv):
+        """Run main(["--grammar-substrate-status", ...]) with the real runner on a stub."""
+        return self._run_main_capturing(
+            ["--grammar-substrate-status", *extra_argv], ctx=self._substrate_ctx(stub)
+        )
+
+    @staticmethod
+    def _recording_runner():
+        """A runner answering every probe with a clean run, recording each call."""
+        calls = []
+
+        def runner(probe, ctx, timeout=None):
+            calls.append((probe, ctx, timeout))
+            return pcc.ProbeRun(0, "", "")
+        return runner, calls
 
     def test_grammar_substrate_status_usable_returns_0(self):
         """(a) Usable substrate → exit 0 and a short 'usable' line on stdout."""
@@ -283,11 +302,9 @@ class TestMain(_MainHarness, unittest.TestCase):
         caller that passes --json unconditionally.
         """
         stub = _ts_stub_cache_denied(self._stub_dir())
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}), \
-             _patch_parser_c(True):
-            rc, out, _ = self._run_main_capturing(
-                ["--json", "--grammar-substrate-status"]
-            )
+        rc, out, _ = self._run_main_capturing(
+            ["--json", "--grammar-substrate-status"], ctx=self._substrate_ctx(stub)
+        )
         self.assertEqual(rc, 75, "--json must not perturb the mode's finding")
         self.assertIn("tree-sitter", out.lower(), "the reason is still emitted")
         with self.assertRaises(
@@ -304,37 +321,37 @@ class TestMain(_MainHarness, unittest.TestCase):
         unreadable file returns 64, so this pins that the mode short-circuits
         ahead of the probe-set IO as well as ahead of evaluation.
         """
-        sentinel = unittest.mock.Mock(side_effect=AssertionError(
-            "--grammar-substrate-status must not evaluate a probe set"
-        ))
-        stub = _ts_stub_clean(self._stub_dir())
-        with unittest.mock.patch.object(pcc, "evaluate", sentinel), \
-             unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}), \
-             _patch_parser_c(True):
-            rc, out, _ = self._run_main_capturing(
-                ["--grammar-substrate-status", "/nonexistent/probe-set.json"]
-            )
+        runner, calls = self._recording_runner()
+        rc, out, _ = self._run_main_capturing(
+            ["--grammar-substrate-status", "/nonexistent/probe-set.json"],
+            runner=runner, ctx=self._substrate_ctx(),
+        )
         self.assertEqual(
             rc, 0,
             "the substrate finding must win over the positional; a 64 here means "
             "the ignored probe set was read after all",
         )
         self.assertIn("usable", out.lower())
-        sentinel.assert_not_called()
+        self.assertEqual(len(calls), 1, "only the substrate probe may run")
 
-    def test_grammar_substrate_status_runs_no_probes(self):
-        """The status mode must never invoke the probe runner.
+    def test_grammar_substrate_status_runs_only_the_bounded_substrate_probe(self):
+        """The status mode runs exactly one probe: the bounded substrate probe.
 
         It reports on the substrate, so it cannot be allowed to perturb — or be
-        perturbed by — any probe verdict.
+        perturbed by — any probe verdict.  A probe-set run is unbounded, so the
+        bound on the one call is what marks it as the substrate probe.
         """
-        sentinel = unittest.mock.Mock(side_effect=AssertionError(
-            "--grammar-substrate-status must not evaluate probes"
-        ))
-        with unittest.mock.patch.object(pcc, "evaluate", sentinel):
-            rc, _, _ = self._run_status_with_stub(_ts_stub_clean(self._stub_dir()))
+        ctx = self._substrate_ctx()
+        runner, calls = self._recording_runner()
+        rc, _, _ = self._run_main_capturing(
+            ["--grammar-substrate-status"], runner=runner, ctx=ctx
+        )
         self.assertEqual(rc, 0)
-        sentinel.assert_not_called()
+        self.assertEqual(len(calls), 1)
+        probe, called_ctx, timeout = calls[0]
+        self.assertEqual(probe.probe_kind, pcc.ProbeKind.GRAMMAR)
+        self.assertIs(called_ctx, ctx)
+        self.assertEqual(timeout, ctx.substrate_timeout_s)
 
     def test_grammar_substrate_status_ungenerated_grammar_returns_75(self):
         """No generated parser.c → exit 75 naming it, and no probe is spawned.
@@ -346,10 +363,11 @@ class TestMain(_MainHarness, unittest.TestCase):
         would answer "usable" to a shell caller that then still collects exit 70
         from the probe run: the one answer the mode exists to spare it.
         """
-        probe = unittest.mock.Mock(return_value=(True, ""))
-        with _patch_parser_c(False), \
-             unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
-            rc, out, _ = self._run_main_capturing(["--grammar-substrate-status"])
+        runner, calls = self._recording_runner()
+        rc, out, _ = self._run_main_capturing(
+            ["--grammar-substrate-status"],
+            runner=runner, ctx=self._substrate_ctx(parser_c=False),
+        )
         self.assertEqual(
             rc, 75,
             "an ungenerated grammar must reach the caller as the same SKIP "
@@ -361,9 +379,9 @@ class TestMain(_MainHarness, unittest.TestCase):
             "path is the un-attributable message this task exists to remove",
         )
         self.assertEqual(
-            probe.call_count, 0,
-            "the isfile() precondition must short-circuit ahead of the probe: a "
-            "lane with no grammar should pay no tree-sitter subprocess",
+            calls, [],
+            "the grammar_generated() precondition must short-circuit ahead of the "
+            "probe: a lane with no grammar should pay no tree-sitter subprocess",
         )
 
     def test_grammar_substrate_status_generated_grammar_still_probes(self):
@@ -373,13 +391,13 @@ class TestMain(_MainHarness, unittest.TestCase):
         would reinstate the path-existence guard whose blindness to a denied
         cache is the reported bug.
         """
-        probe = unittest.mock.Mock(return_value=(True, ""))
-        with _patch_parser_c(True), \
-             unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
-            rc, _, _ = self._run_main_capturing(["--grammar-substrate-status"])
+        runner, calls = self._recording_runner()
+        rc, _, _ = self._run_main_capturing(
+            ["--grammar-substrate-status"], runner=runner, ctx=self._substrate_ctx()
+        )
         self.assertEqual(rc, 0)
         self.assertEqual(
-            probe.call_count, 1,
+            len(calls), 1,
             "isfile(parser.c) says the grammar was GENERATED, never that "
             "tree-sitter can load it; the behavioural probe must still run",
         )
@@ -802,10 +820,6 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_harness_failure_")
         self.addCleanup(shutil.rmtree, self._tmpdir, ignore_errors=True)
-        env = unittest.mock.patch.dict(os.environ, {})
-        env.start()
-        self.addCleanup(env.stop)
-        os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
 
     def _probe_set(self, kind, fixture):
         path = os.path.join(self._tmpdir, f"{kind}-probe-set.json")
@@ -842,7 +856,7 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
     def test_wedged_grammar_cache_is_setup(self):
         ctx = probe_context(tree_sitter_bin=_ts_stub_clean(self._tmpdir))
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            wedged = pcc._grammar_cache_home(pcc._find_repo_root())
+            wedged = pcc.grammar_cache_home(ctx)
             shutil.rmtree(wedged, ignore_errors=True)
             with open(wedged, "w") as fh:
                 fh.write("x")
@@ -859,10 +873,13 @@ class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
         self.assertIs(record["harness_failure"]["cache_denied"], True)
 
     def test_hanging_tree_sitter_under_substrate_status_is_75(self):
-        os.environ["TREE_SITTER_BIN"] = _ts_stub_hangs(self._tmpdir)
-        with unittest.mock.patch.object(pcc, "_SUBSTRATE_PROBE_TIMEOUT_S", 0.4), \
-             _patch_parser_c(True):
-            rc, out, err = self._run_main_capturing(["--grammar-substrate-status"])
+        ctx = probe_context(
+            repo_root=make_fixture_repo(os.path.join(self._tmpdir, "repo"), parser_c=True),
+            tree_sitter_bin=_ts_stub_hangs(self._tmpdir),
+            cache_home_override=os.path.join(self._tmpdir, "cache"),
+            substrate_timeout_s=0.4,
+        )
+        rc, out, err = self._run_main_capturing(["--grammar-substrate-status"], ctx=ctx)
         self.assertEqual(rc, 75, out + err)
         self.assertNotIn("[HARNESS ERROR", out + err)
 

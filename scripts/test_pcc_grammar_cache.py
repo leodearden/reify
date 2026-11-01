@@ -45,22 +45,15 @@ class TestGrammarCacheIsolation(unittest.TestCase):
     satisfied by the ambient value and would enshrine the bug.  Each case pins
     that the child's cache is neither the ambient one nor ``~/.cache``.
 
-    setUp clears REIFY_TS_CACHE_HOME for the WHOLE class, which is load-bearing
-    rather than tidiness.  Every case here hands its stub in on ctx and sets
-    only XDG_CACHE_HOME, so an ambient override — which
+    Every case hands its stub in on a ctx that carries no cache override, so an
+    exported REIFY_TS_CACHE_HOME — which
     .claude/skills/prd/references/grammar-gate.md actively encourages an operator
-    to export — would silently divert every case onto the OVERRIDE branch instead
-    of the derived one, and they would all still pass: exactly the vacuous green
-    the class docstring above says these assertions exist to avoid.  (It could
-    also fail spuriously, if the exported override happened to equal ~/.cache.)
+    to export — cannot divert a case onto the OVERRIDE branch: ctx, not the
+    environment, is what grammar_cache_home() reads.
     """
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_test_")
-        env_patch = unittest.mock.patch.dict(os.environ, {})
-        env_patch.start()
-        self.addCleanup(env_patch.stop)
-        os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
 
     def tearDown(self):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
@@ -331,7 +324,7 @@ class TestGrammarCacheIsolation(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestGrammarFingerprint(unittest.TestCase):
-    """Pins pcc._grammar_fingerprint(repo_root).  Hermetic: no subprocess.
+    """Pins pcc.grammar_fingerprint(ctx).  Hermetic: no subprocess.
 
     The fingerprint is half the cache key, so anything that makes it go stale
     silently restores the stale-hit this whole seam exists to kill — and does so
@@ -371,18 +364,18 @@ class TestGrammarFingerprint(unittest.TestCase):
         body = '{"name": "reify", "rules": {}}'
         root = self._repo("lane_a", grammar=body)
         self.assertEqual(
-            pcc._grammar_fingerprint(root),
+            pcc.grammar_fingerprint(probe_context(repo_root=root)),
             hashlib.sha256(body.encode("utf-8")).hexdigest(),
         )
 
     def test_changed_grammar_json_changes_the_fingerprint(self):
         """Regenerating the grammar must move the key."""
         root = self._repo("lane_a", grammar='{"v": 1}')
-        before = pcc._grammar_fingerprint(root)
+        before = pcc.grammar_fingerprint(probe_context(repo_root=root))
         with open(os.path.join(root, "tree-sitter-reify", "src",
                                "grammar.json"), "w") as f:
             f.write('{"v": 2}')
-        self.assertNotEqual(before, pcc._grammar_fingerprint(root))
+        self.assertNotEqual(before, pcc.grammar_fingerprint(probe_context(repo_root=root)))
 
     # -- (b) THE regression pin: a stale stamp must not mask a new grammar ---
 
@@ -396,7 +389,7 @@ class TestGrammarFingerprint(unittest.TestCase):
         src/.grammar_hash.stamp is refreshed ONLY by
         scripts/tree-sitter-generate.sh.  So after a cargo build the stamp is
         stale by construction.  A fingerprint that PREFERRED it — as an earlier
-        revision of _grammar_fingerprint() did — would be unchanged across that
+        revision of grammar_fingerprint() did — would be unchanged across that
         edit, leaving the cache key unchanged and handing the lane the reify.so
         compiled from the PREVIOUS grammar.  tree-sitter's own mtime backstop
         cannot be relied on to catch it: warm-lane seeding stamps mtimes, which
@@ -404,7 +397,7 @@ class TestGrammarFingerprint(unittest.TestCase):
         """
         stale = "a" * 64
         root = self._repo("lane_a", grammar='{"v": 1}', stamp=stale)
-        before = pcc._grammar_fingerprint(root)
+        before = pcc.grammar_fingerprint(probe_context(repo_root=root))
 
         with open(os.path.join(root, "tree-sitter-reify", "src",
                                "grammar.json"), "w") as f:
@@ -415,7 +408,7 @@ class TestGrammarFingerprint(unittest.TestCase):
             self.assertEqual(f.read(), stale,
                              "precondition: the stamp must still be the stale one")
 
-        after = pcc._grammar_fingerprint(root)
+        after = pcc.grammar_fingerprint(probe_context(repo_root=root))
         self.assertNotEqual(
             before, after,
             "a regenerated grammar.json must move the fingerprint even when "
@@ -434,7 +427,7 @@ class TestGrammarFingerprint(unittest.TestCase):
         bucket rather than keyed on a hash of a grammar that is not there.
         """
         root = self._repo("lane_a", stamp="c" * 64)
-        self.assertEqual(pcc._grammar_fingerprint(root), "")
+        self.assertEqual(pcc.grammar_fingerprint(probe_context(repo_root=root)), "")
 
     # -- (c) never raises, whatever the lane looks like ----------------------
 
@@ -446,7 +439,7 @@ class TestGrammarFingerprint(unittest.TestCase):
         """
         root = os.path.join(self._tmpdir, "never_generated")
         os.makedirs(root, exist_ok=True)
-        self.assertEqual(pcc._grammar_fingerprint(root), "")
+        self.assertEqual(pcc.grammar_fingerprint(probe_context(repo_root=root)), "")
 
     def test_unreadable_grammar_json_yields_empty_and_never_raises(self):
         """An unreadable grammar.json degrades to "" rather than propagating."""
@@ -461,7 +454,7 @@ class TestGrammarFingerprint(unittest.TestCase):
                 pass
             else:
                 self.skipTest("chmod 0o000 did not deny the read (running as root?)")
-            self.assertEqual(pcc._grammar_fingerprint(root), "")
+            self.assertEqual(pcc.grammar_fingerprint(probe_context(repo_root=root)), "")
         finally:
             # Restored here, not via addCleanup: cleanups run AFTER tearDown, by
             # which point rmtree has removed the file and the chmod would ENOENT.
@@ -473,7 +466,7 @@ class TestGrammarFingerprint(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestGrammarCacheHome(unittest.TestCase):
-    """Pins pcc._grammar_cache_home(repo_root).  Hermetic: no subprocess.
+    """Pins pcc.grammar_cache_home(ctx).  Hermetic: no subprocess.
 
     TestGrammarCacheIsolation proves "not the ambient dir".  That is necessary
     and NOT sufficient: it says nothing about the two properties that actually
@@ -518,10 +511,8 @@ class TestGrammarCacheHome(unittest.TestCase):
         return root
 
     def _cache_home(self, repo_root: str) -> str:
-        """Call the derivation with no REIFY_TS_CACHE_HOME override in effect."""
-        with unittest.mock.patch.dict(os.environ, {}):
-            os.environ.pop("REIFY_TS_CACHE_HOME", None)
-            path = pcc._grammar_cache_home(repo_root)
+        """Call the derivation on a ctx that carries no cache override."""
+        path = pcc.grammar_cache_home(probe_context(repo_root=repo_root))
         self._made.append(path)
         return path
 
@@ -611,8 +602,8 @@ class TestGrammarCacheHome(unittest.TestCase):
 
     # ── (f) the operator escape hatch ─────────────────────────────────────────
 
-    def test_cache_home_env_override_honoured(self):
-        """A non-empty REIFY_TS_CACHE_HOME is used verbatim, and created.
+    def test_cache_home_override_honoured(self):
+        """A ctx cache_home_override (REIFY_TS_CACHE_HOME) is used verbatim, and created.
 
         The debug seam: an operator inspecting or sharing a cache, and the pin an
         interactive session can set, without having to reverse the hash.
@@ -620,10 +611,9 @@ class TestGrammarCacheHome(unittest.TestCase):
         root = self._fake_repo("lane_a", "a" * 64)
         override = os.path.join(self._tmpdir, "operator_pinned_cache")
         self.assertFalse(os.path.exists(override))
-        with unittest.mock.patch.dict(
-            os.environ, {"REIFY_TS_CACHE_HOME": override}
-        ):
-            path = pcc._grammar_cache_home(root)
+        path = pcc.grammar_cache_home(
+            probe_context(repo_root=root, cache_home_override=override)
+        )
         self._made.append(path)
         self.assertEqual(path, override, "override must be used verbatim")
         self.assertTrue(os.path.isdir(path), "override dir must be created")
@@ -640,7 +630,7 @@ class TestGrammarCacheHome(unittest.TestCase):
     # ── (h) a bad override degrades to the DERIVED dir — isolation preserved ──
 
     def test_bad_override_falls_back_to_derived(self):
-        """An unusable REIFY_TS_CACHE_HOME yields exactly the derived path.
+        """An unusable cache_home_override yields exactly the derived path.
 
         "Does not raise" is necessary and NOT sufficient: it says nothing about
         WHICH dir the fallback lands on, and a fallback to the ambient shared
@@ -657,10 +647,7 @@ class TestGrammarCacheHome(unittest.TestCase):
             f.write("x")
         bad = os.path.join(blocker, "cache")
 
-        with unittest.mock.patch.dict(
-            os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: bad}
-        ):
-            path = pcc._grammar_cache_home(root)
+        path = pcc.grammar_cache_home(probe_context(repo_root=root, cache_home_override=bad))
         self.assertEqual(
             path, derived,
             "an unusable override must fall back to the DERIVED per-lane dir; "
@@ -671,7 +658,7 @@ class TestGrammarCacheHome(unittest.TestCase):
     def test_bad_override_never_raises(self):
         """Several OSError shapes all degrade rather than propagate.
 
-        Matches the "Never raises" contract _grammar_fingerprint() already
+        Matches the "Never raises" contract grammar_fingerprint() already
         upholds, and for the same reason: grammar_substrate_usable() runs at
         test-harness IMPORT time, where a raise costs the whole suite.
         """
@@ -705,10 +692,9 @@ class TestGrammarCacheHome(unittest.TestCase):
                             "this shape cannot exercise the fallback "
                             "(running as root?)"
                         )
-                    with unittest.mock.patch.dict(
-                        os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: bad}
-                    ):
-                        path = pcc._grammar_cache_home(root)
+                    path = pcc.grammar_cache_home(
+                        probe_context(repo_root=root, cache_home_override=bad)
+                    )
                     self._made.append(path)
                     self.assertTrue(
                         os.path.isdir(path),
@@ -734,30 +720,26 @@ class TestGrammarCacheHome(unittest.TestCase):
         world-writable, so any other uid can pre-create reify-ts-cache-<key> as a
         plain file.
         """
-        root = self._fake_repo("lane_a", "a" * 64)
+        ctx = probe_context(repo_root=self._fake_repo("lane_a", "a" * 64))
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(os.environ, {}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                derived = pcc._grammar_cache_home(root)
-                shutil.rmtree(derived, ignore_errors=True)
-                with open(derived, "w") as f:
-                    f.write("x")
-                self.assertTrue(
-                    os.path.isfile(derived),
-                    "precondition: the derived path must be a FILE",
-                )
-                with self.assertRaises(OSError):
-                    pcc._grammar_cache_home(root)
+            derived = pcc.grammar_cache_home(ctx)
+            shutil.rmtree(derived, ignore_errors=True)
+            with open(derived, "w") as f:
+                f.write("x")
+            self.assertTrue(
+                os.path.isfile(derived),
+                "precondition: the derived path must be a FILE",
+            )
+            with self.assertRaises(OSError):
+                pcc.grammar_cache_home(ctx)
 
 
     # ── (j) the derived dir is PRIVATE, and an untrusted one is refused ───────
 
     def _derived(self, root: str) -> str:
-        """Derive under a tempdir we own, with no override in effect."""
+        """Derive under a tempdir we own, on a ctx that carries no override."""
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(os.environ, {}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                return pcc._grammar_cache_home(root)
+            return pcc.grammar_cache_home(probe_context(repo_root=root))
 
     def test_new_derived_dir_is_private(self):
         """A dir this function creates grants nothing to group or other.
@@ -830,10 +812,10 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
 
     THE CONTRACT BEING DEFENDED is run_probe()'s own: "Represent rather than
     propagate: callers run this at import time in the test harness, where a raise
-    costs the whole suite instead of one skip."  _grammar_fingerprint() was
+    costs the whole suite instead of one skip."  grammar_fingerprint() was
     written to uphold the same rule ("Never raises").  But the env is built at
     ``env = _grammar_probe_env(repo_root)`` OUTSIDE run_probe()'s ``try:``, so
-    the os.makedirs() inside _grammar_cache_home() escapes both arms.
+    the os.makedirs() inside grammar_cache_home() escapes both arms.
 
     NOT merely an operator typo.  /tmp is world-writable, so any other uid on
     this host can pre-create ``reify-ts-cache-<key>`` as a plain file and wedge
@@ -885,7 +867,7 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         module global, so an env-only patch would be silently ignored once any
         earlier test had already called it.
         """
-        derived = pcc._grammar_cache_home(pcc._find_repo_root())
+        derived = pcc.grammar_cache_home(probe_context())
         shutil.rmtree(derived, ignore_errors=True)
         with open(derived, "w") as f:
             f.write("x")
@@ -908,11 +890,10 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
-        ctx = probe_context(tree_sitter_bin=stub)
-        with unittest.mock.patch.dict(
-            os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()}
-        ):
-            run = pcc.run_probe(probe, ctx)
+        ctx = probe_context(
+            tree_sitter_bin=stub, cache_home_override=self._unusable_override()
+        )
+        run = pcc.run_probe(probe, ctx)
         self.assertIsInstance(
             run, pcc.ProbeRun,
             "an unusable cache override must be represented, not propagated",
@@ -927,11 +908,10 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
-        ctx = probe_context(tree_sitter_bin=stub)
-        with unittest.mock.patch.dict(
-            os.environ, {pcc._CACHE_HOME_OVERRIDE_ENV: self._unusable_override()}
-        ):
-            run = pcc.run_probe(probe, ctx, timeout=10.0)
+        ctx = probe_context(
+            tree_sitter_bin=stub, cache_home_override=self._unusable_override()
+        )
+        run = pcc.run_probe(probe, ctx, timeout=10.0)
         self.assertIsInstance(
             run, pcc.ProbeRun,
             "an unusable cache override must be represented, not propagated",
@@ -950,9 +930,7 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         stub = _ts_stub_echo_cache(self._tmpdir)
         probe = self._make_probe()
         ctx = probe_context(tree_sitter_bin=stub)
-        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir), \
-             unittest.mock.patch.dict(os.environ):
-            os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
             wedged = self._wedge_derived_dir()
             runs = {
                 "unbounded": pcc.run_probe(probe, ctx),
@@ -985,7 +963,6 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
             ctx = probe_context(tree_sitter_bin=stub)
             with unittest.mock.patch.dict(os.environ, {"XDG_CACHE_HOME": sentinel}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
                 self._wedge_derived_dir()
                 run = pcc.run_probe(probe, ctx)
         self.assertNotIn(
@@ -1006,10 +983,8 @@ class TestGrammarCacheSetupFailure(unittest.TestCase):
         """
         stub = _ts_stub_echo_cache(self._tmpdir)
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                self._wedge_derived_dir()
-                usable, reason = pcc.grammar_substrate_usable()
+            self._wedge_derived_dir()
+            usable, reason = pcc.grammar_substrate_usable(probe_context(tree_sitter_bin=stub))
         self.assertFalse(usable, "a wedged grammar cache is an unusable substrate")
         self.assertTrue(reason, "an unusable substrate must explain itself")
 
