@@ -303,10 +303,14 @@ mkdir -p "$FAKE_MAIN"
 # sweep_ledger_snapshot <repo-root> — path, size and mtime of every *sweep* file
 # under <repo-root>/data/orchestrator. In the MAIN checkout that directory holds
 # the production ledger, so F3 compares before/after rather than asserting
-# absence: it must see only what THIS run did.
+# absence: it must see only what THIS run did. Empty when the directory is
+# absent, as it is in a task lane (gitignored, cleaned on acquire): the guard
+# keeps find's exit 1 from tripping pipefail there, and leaves any OTHER find
+# failure visible on stderr.
 sweep_ledger_snapshot() {
+    [ -d "$1/data/orchestrator" ] || return 0
     find "$1/data/orchestrator" -type f -name '*sweep*' \
-        -printf '%p %s %T@\n' 2>/dev/null | LC_ALL=C sort
+        -printf '%p %s %T@\n' | LC_ALL=C sort
 }
 export -f sweep_ledger_snapshot
 
