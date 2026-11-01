@@ -18,17 +18,18 @@
 //! (`[t_x, t_y, t_z, rot_x, rot_y, rot_z]`) is measured by central finite
 //! differences, giving an `m × 6` Jacobian block per relation. A relation is
 //! *driving* iff its rows add at least one new independent direction to the running
-//! rank (greedy rank-revealing Gram–Schmidt over normalized rows); otherwise every
-//! row already lies in the span and it joins the redundant remainder. The DOF
-//! accounting falls straight out: `spent = combined rank`, `free = 6 − spent`.
+//! rank (an ordered rank-revealing QR over the rows, [`crate::linalg::RowSpaceQr`]);
+//! otherwise every row already lies in the span and it joins the redundant
+//! remainder. The DOF accounting falls straight out: `spent = combined rank`,
+//! `free = 6 − spent`.
 //!
 //! The {driving, redundant} *counts* and the spent total are order-independent
 //! (any maximal independent subset has the same size); the specific relation that
 //! lands in the remainder may depend on input order, which is immaterial — the
 //! remainder is verified, not solved.
 //!
-//! Hand-rolled small linalg over `≤(rows × 6)` — the Frame Jacobian is tiny, so a
-//! heavy linalg dependency (nalgebra) is unjustified (design §4).
+//! The linear algebra is the in-crate [`crate::linalg`] — the Frame Jacobian is
+//! tiny, so a heavy linalg dependency (nalgebra) is unjustified (design §4).
 //!
 //! ## Driving-set solve (step-10)
 //!
@@ -61,6 +62,7 @@ use std::collections::HashMap;
 use reify_core::{Diagnostic, DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
 
+use crate::linalg::{RankTolerance, RowSpaceQr};
 use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
@@ -183,24 +185,24 @@ const FRAME_DOF: usize = 6;
 const FD_STEP: f64 = 1e-6;
 /// Below this norm a raw Jacobian row is numerically zero (a residual component
 /// insensitive to every DOF — well under the FD noise floor of ~1e-10). Scaled
-/// rows apply it divided by `ε_rel` ([`RankCutoffs`]).
+/// rows apply it divided by `ε_rel` ([`rank_tolerance`]).
 const ZERO_ROW_FLOOR: f64 = 1e-9;
 
 /// Rank-partition a per-scope relation set at the `witness` config into a driving
 /// set + a redundant remainder, with DOF accounting (ζ step-8).
 ///
 /// The rank is measured on the SCALED Jacobian of `scaling`, so translation and
-/// rotation columns are commensurate: after each row is normalized, a Gram–Schmidt
-/// residual above [`SolveScaling::rank_threshold`] counts as a new independent
-/// direction. See the module docs for the method.
+/// rotation columns are commensurate: a row whose normalized remainder outside the
+/// running span exceeds [`SolveScaling::rank_threshold`] counts as a new
+/// independent direction ([`RowSpaceQr`]). See the module docs for the method.
 pub fn partition_driving_set(
     relations: &[RelationInstance],
     frame_unknown: &FrameUnknown,
     witness: &Pose,
     scaling: &SolveScaling,
 ) -> RelationPartition {
-    let cutoffs = RankCutoffs::of(scaling);
-    let mut basis: Vec<[f64; FRAME_DOF]> = Vec::new();
+    let tolerance = rank_tolerance(scaling);
+    let mut running = RowSpaceQr::new(FRAME_DOF, tolerance);
     let mut driving = Vec::new();
     let mut redundant = Vec::new();
     let mut per_relation = Vec::new();
@@ -209,12 +211,11 @@ pub fn partition_driving_set(
         let (_, rows) = scaled_residual_jacobian(rel, frame_unknown, witness, scaling);
 
         // Individual rank: the rank of this relation's rows on their own (a fresh
-        // basis) — the geometry-measured codimension cross-checked against γ.
-        let mut solo: Vec<[f64; FRAME_DOF]> = Vec::new();
-        let individual_rank = add_rows_rank(&rows, &mut solo, cutoffs) as u32;
+        // factorization) — the geometry-measured codimension cross-checked against γ.
+        let individual_rank = RowSpaceQr::new(FRAME_DOF, tolerance).push_rows(&rows) as u32;
 
         // Contribution to the running rank, in input order.
-        let rank_contribution = add_rows_rank(&rows, &mut basis, cutoffs) as u32;
+        let rank_contribution = running.push_rows(&rows) as u32;
         if rank_contribution > 0 {
             driving.push(i);
         } else {
@@ -229,7 +230,7 @@ pub fn partition_driving_set(
         });
     }
 
-    let spent = basis.len() as u32;
+    let spent = running.rank() as u32;
     let free = (FRAME_DOF as u32).saturating_sub(spent);
     RelationPartition {
         driving,
@@ -1318,63 +1319,27 @@ fn vector_value(v: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
 }
 
-// ── Rank-revealing Gram–Schmidt ──────────────────────────────────────────────
+// ── Rank tolerance ───────────────────────────────────────────────────────────
 
-/// The cutoffs [`add_rows_rank`] applies to SCALED Jacobian rows.
-#[derive(Debug, Clone, Copy)]
-struct RankCutoffs {
-    /// The Gram–Schmidt residual above which a normalized row is independent.
-    independence: f64,
-    /// The norm below which a row is numerically zero: the raw [`ZERO_ROW_FLOOR`]
-    /// over `ε_rel`, the FD-noise cut of an angular or dimensionless row. A genuine
-    /// row of those units has norm ~`1/ε_rel` at every `L`; a genuine metre row has
-    /// ~`L / row_tolerance(Length)`, which is `1/ε_rel` above the 1 mm crossover and
-    /// `L / floor` below it (100 at the default `kernel_local`). Both stay far
-    /// above this cut.
-    zero_row: f64,
-}
-
-impl RankCutoffs {
-    fn of(scaling: &SolveScaling) -> Self {
-        Self {
-            independence: scaling.rank_threshold(),
-            zero_row: ZERO_ROW_FLOOR / scaling.relative_convergence(),
-        }
+/// The cutoffs a [`RowSpaceQr`] of SCALED Jacobian rows applies under `scaling`:
+/// independence at [`SolveScaling::rank_threshold`], and numerically zero below
+/// the raw [`ZERO_ROW_FLOOR`] over `ε_rel`, the FD-noise cut of an angular or
+/// dimensionless row. A genuine row of those units has norm ~`1/ε_rel` at every
+/// `L`; a genuine metre row has ~`L / row_tolerance(Length)`, which is `1/ε_rel`
+/// above the 1 mm crossover and `L / floor` below it (100 at the default
+/// `kernel_local`). Both stay far above the zero cut.
+fn rank_tolerance(scaling: &SolveScaling) -> RankTolerance {
+    RankTolerance {
+        independence: scaling.rank_threshold(),
+        zero_row: ZERO_ROW_FLOOR / scaling.relative_convergence(),
     }
 }
 
-/// Add `rows` to the orthonormal `basis` one at a time, returning how many were
-/// linearly independent of the running span. Each row is normalized before
-/// Gram–Schmidt so the rank test is purely about direction independence; a row
-/// whose post-orthogonalization residual exceeds `cutoffs.independence` is a new
-/// independent direction. Numerically-zero rows are skipped.
-fn add_rows_rank(
-    rows: &[[f64; FRAME_DOF]],
-    basis: &mut Vec<[f64; FRAME_DOF]>,
-    cutoffs: RankCutoffs,
-) -> usize {
-    let mut added = 0;
-    for row in rows {
-        let n = norm6(row);
-        if n < cutoffs.zero_row {
-            continue;
-        }
-        let mut v = *row;
-        scale6_inplace(&mut v, 1.0 / n);
-        for b in basis.iter() {
-            let d = dot6(&v, b);
-            for k in 0..FRAME_DOF {
-                v[k] -= d * b[k];
-            }
-        }
-        let r = norm6(&v);
-        if r > cutoffs.independence {
-            scale6_inplace(&mut v, 1.0 / r);
-            basis.push(v);
-            added += 1;
-        }
-    }
-    added
+/// The rank of a Jacobian block (number of linearly-independent rows).
+fn jacobian_rank(jac: &[[f64; FRAME_DOF]], tolerance: RankTolerance) -> usize {
+    let mut qr = RowSpaceQr::new(FRAME_DOF, tolerance);
+    qr.push_rows(jac);
+    qr.rank()
 }
 
 // ── Damped Gauss–Newton (Levenberg–Marquardt) over the 6-DOF pose ────────────
@@ -1400,7 +1365,7 @@ fn gauss_newton_solve(
     seed: &Pose,
     scaling: &SolveScaling,
 ) -> (Option<(Pose, bool)>, u32) {
-    let cutoffs = RankCutoffs::of(scaling);
+    let tolerance = rank_tolerance(scaling);
     let scales: [f64; FRAME_DOF] = std::array::from_fn(|dof| scaling.unknown_scale(dof_kind(dof)));
     // `λ` is stated relative to the scaled normal matrix's nominal curvature
     // `ε_rel⁻²`, so the schedule below keeps its unscaled meaning. That is the
@@ -1426,7 +1391,7 @@ fn gauss_newton_solve(
 
     for _ in 0..MAX_SOLVE_ITERS {
         if max_abs(&r) <= 1.0 {
-            let unique = rank_of(&jac, cutoffs) >= FRAME_DOF;
+            let unique = jacobian_rank(&jac, tolerance) >= FRAME_DOF;
             return (Some((vec6_to_pose(&x), unique)), iterations);
         }
         iterations += 1;
@@ -1474,7 +1439,7 @@ fn gauss_newton_solve(
 
     // Converged on the final iterate?
     let outcome = if max_abs(&r) <= 1.0 {
-        Some((vec6_to_pose(&x), rank_of(&jac, cutoffs) >= FRAME_DOF))
+        Some((vec6_to_pose(&x), jacobian_rank(&jac, tolerance) >= FRAME_DOF))
     } else {
         None
     };
@@ -1513,13 +1478,6 @@ fn combined_residual_jacobian(
         }
     }
     (res, jac)
-}
-
-/// The rank of a Jacobian block (number of linearly-independent rows), via the same
-/// rank-revealing Gram–Schmidt the partition uses.
-fn rank_of(jac: &[[f64; FRAME_DOF]], cutoffs: RankCutoffs) -> usize {
-    let mut basis = Vec::new();
-    add_rows_rank(jac, &mut basis, cutoffs)
 }
 
 /// Form the 6×6 normal matrix `A = JᵀJ` and gradient `g = Jᵀr`.
@@ -1777,18 +1735,4 @@ fn tangent_frame(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     };
     let e2 = cross3(nn, e1);
     (e1, e2)
-}
-
-fn dot6(a: &[f64; FRAME_DOF], b: &[f64; FRAME_DOF]) -> f64 {
-    (0..FRAME_DOF).map(|k| a[k] * b[k]).sum()
-}
-
-fn norm6(a: &[f64; FRAME_DOF]) -> f64 {
-    dot6(a, a).sqrt()
-}
-
-fn scale6_inplace(a: &mut [f64; FRAME_DOF], s: f64) {
-    for x in a.iter_mut() {
-        *x *= s;
-    }
 }

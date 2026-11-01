@@ -228,7 +228,10 @@ fn full_rank_square_system_is_solved_exactly() {
     assert_eq!(solution.rank, 3);
     assert!(solution.null_space.is_empty());
     for (got, want) in solution.x.iter().zip(expected) {
-        assert!((got - want).abs() <= EXACT * norm(&expected), "{solution:?}");
+        assert!(
+            (got - want).abs() <= EXACT * norm(&expected),
+            "{solution:?}"
+        );
     }
 }
 
@@ -242,7 +245,10 @@ fn rank_deficient_consistent_system_leaves_the_null_direction_at_zero() {
     let rhs = [3.0, 6.0, -1.0];
     let solution = least_squares_min_norm(&rows, &rhs, TOL);
     for (row, b) in rows.iter().zip(rhs) {
-        assert!((dot(row, &solution.x) - b).abs() <= EXACT * 6.0, "{solution:?}");
+        assert!(
+            (dot(row, &solution.x) - b).abs() <= EXACT * 6.0,
+            "{solution:?}"
+        );
     }
     assert!(solution.x[2].abs() <= EXACT, "{solution:?}");
     assert_eq!(solution.rank, 2);
