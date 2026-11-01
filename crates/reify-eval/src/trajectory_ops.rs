@@ -221,10 +221,10 @@ mod tests {
 
 use std::sync::Arc;
 
+use reify_ir::arg_acceptance::FieldRejection;
 use reify_ir::{OpaqueState, Value};
 use reify_stdlib::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
 
-use crate::compute_targets::rejected_input_outcome;
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 
 /// Generic warm-state cache entry for a completed trajectory ComputeNode
@@ -327,13 +327,22 @@ fn undef_outcome() -> ComputeOutcome {
     }
 }
 
+/// `Failed` carrying exactly the one `DimensionedArgRejected` Error that
+/// names the refused field of `builtin`'s input.
+fn rejected_outcome(rejection: &FieldRejection, builtin: &str) -> ComputeOutcome {
+    ComputeOutcome::Failed {
+        diagnostics: vec![rejection.to_error(builtin)],
+        structured_detail: vec![],
+    }
+}
+
 /// `@optimized("trajectory::simulate")` public `ComputeFn` for `fn
 /// simulate_trajectory` (registered in `compute_targets::register_compute_fns`).
 ///
 /// Three `value_inputs`: `[profile, mech, modal]` (same order as the .ri fn).
 ///
 /// A waypoint `t` the reader refuses is `Failed` carrying the one
-/// `DimensionedArgRejected` Error naming it (`rejected_input_outcome`).
+/// `DimensionedArgRejected` Error naming it ([`rejected_outcome`]).
 ///
 /// Cooperative cancellation: polls on entry; a pre-cancelled handle returns
 /// `Cancelled` immediately without running the simulation.
@@ -378,9 +387,7 @@ pub fn simulate_trajectory_trampoline(
     // Delegate to the stdlib Value→Value composer (runs the full simulation).
     let result = match reify_stdlib::simulate_trajectory_value(profile, mech, modal) {
         Ok(result) => result,
-        Err(rejection) => {
-            return rejected_input_outcome(rejection.to_error("simulate_trajectory"));
-        }
+        Err(rejection) => return rejected_outcome(&rejection, "simulate_trajectory"),
     };
     if matches!(result, Value::Undef) {
         return undef_outcome();
@@ -407,7 +414,7 @@ pub fn simulate_trajectory_trampoline(
 ///
 /// A field the readers refuse (a shaper limit, an actuator limit, a waypoint
 /// `t`) is `Failed` carrying the one `DimensionedArgRejected` Error naming it
-/// (`rejected_input_outcome`).
+/// ([`rejected_outcome`]).
 ///
 /// Cooperative cancellation: polls on entry.
 ///
@@ -444,7 +451,7 @@ pub fn input_shape_trampoline(
     // ── cache MISS ────────────────────────────────────────────────────────────
     let result = match reify_stdlib::input_shape_value(profile, shaper) {
         Ok(result) => result,
-        Err(rejection) => return rejected_input_outcome(rejection.to_error("input_shape")),
+        Err(rejection) => return rejected_outcome(&rejection, "input_shape"),
     };
     if matches!(result, Value::Undef) {
         return undef_outcome();
