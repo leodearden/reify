@@ -3858,7 +3858,7 @@ mod tests {
     fn corrupted_handles(kernel: &mut OcctKernel) -> Vec<(GeometryHandleId, String)> {
         let null_topology = kernel.store_null_topology_for_test();
         let null_pointer = GeometryHandleId(4000);
-        kernel.store.insert_null_for_test(null_pointer.0);
+        kernel.store.insert_null_for_test(null_pointer.0, BRepKind::Solid);
         [null_topology, null_pointer]
             .into_iter()
             .map(|h| (h, store_get_cause(kernel, h)))

@@ -360,7 +360,7 @@ mod tests {
             )
             .expect("a Fixed insert names its kind")
             .id;
-        store.insert_null_for_test(42);
+        store.insert_null_for_test(42, BRepKind::Solid);
 
         assert!(store.get(box_id).is_ok());
 
@@ -381,36 +381,79 @@ mod tests {
     }
 
     /// The one mint entry refuses, and stores nothing, when a policy cannot
-    /// name a kind: a null shape under `Classify`, or an `Inherit` source with
-    /// no recorded kind.
+    /// name a kind: a null shape under `Classify`, or an `Inherit` source that
+    /// is not resident.
     #[test]
     fn insert_refuses_a_shape_it_cannot_name_a_kind_for() {
+        const UNKNOWN_SOURCE: GeometryHandleId = GeometryHandleId(999_999);
+        fn names_null_shape(err: &GeometryError) -> bool {
+            matches!(err, GeometryError::OperationFailed(msg) if msg.contains("null shape"))
+        }
+        fn is_unknown_source(err: &GeometryError) -> bool {
+            matches!(err, GeometryError::InvalidReference(id) if *id == UNKNOWN_SOURCE)
+        }
         let mut store = ShapeStore::new();
-        let unknown_source = GeometryHandleId(999_999);
-        let cases = [
+        let cases: [(&str, _, _, fn(&GeometryError) -> bool); 2] = [
             (
                 "null shape under Classify",
                 ffi::ffi::make_null_shape_for_test(),
                 ReprPolicy::Classify,
-                "null shape",
+                names_null_shape,
             ),
             (
                 "Inherit from an unknown source",
                 ffi::ffi::make_box(0.01, 0.01, 0.01).expect("make_box"),
-                ReprPolicy::Inherit(unknown_source),
-                "out of lock-step",
+                ReprPolicy::Inherit(UNKNOWN_SOURCE),
+                is_unknown_source,
             ),
         ];
-        for (case, shape, policy, cause) in cases {
+        for (case, shape, policy, expected_error) in cases {
             match store.insert(shape, policy) {
-                Err(GeometryError::OperationFailed(msg)) => assert!(
-                    msg.contains(cause),
-                    "{case}: the error must name its cause {cause:?}, got: {msg}"
-                ),
-                other => panic!("{case}: expected OperationFailed, got {other:?}"),
+                Err(err) => assert!(expected_error(&err), "{case}: unexpected error {err:?}"),
+                Ok(handle) => panic!("{case}: expected an error, got {handle:?}"),
             }
             assert_eq!(store.len(), 0, "{case}: nothing may be stored");
         }
+    }
+
+    #[test]
+    fn repr_of_reads_the_kind_stored_with_the_shape() {
+        let mut store = ShapeStore::new();
+        let first_id = store
+            .insert(
+                ffi::ffi::make_box(0.01, 0.02, 0.03).expect("make_box"),
+                ReprPolicy::Fixed(BRepKind::Solid),
+            )
+            .expect("a Fixed insert names its kind")
+            .id;
+        let inherited_id = store
+            .insert(
+                ffi::ffi::make_box(0.01, 0.01, 0.01).expect("make_box"),
+                ReprPolicy::Inherit(first_id),
+            )
+            .expect("a resident source names its kind")
+            .id;
+        for (case, id) in [("Fixed(Solid)", first_id), ("Inherit(first)", inherited_id)] {
+            let got = store.repr_of(id);
+            assert!(
+                matches!(got, Ok(BRepKind::Solid)),
+                "{case}: expected Ok(Solid), got {got:?}"
+            );
+        }
+
+        let unknown = GeometryHandleId(999_999);
+        let got = store.repr_of(unknown);
+        assert!(
+            matches!(got, Err(GeometryError::InvalidReference(id)) if id == unknown),
+            "an unknown id: expected InvalidReference({unknown:?}), got {got:?}"
+        );
+
+        store.clear();
+        let got = store.repr_of(first_id);
+        assert!(
+            matches!(got, Err(GeometryError::InvalidReference(id)) if id == first_id),
+            "a cleared id: expected InvalidReference({first_id:?}), got {got:?}"
+        );
     }
 
     /// Every `TopAbs_ShapeEnum` value, through the one C++ switch and the
