@@ -345,7 +345,10 @@ tasks:
       (probe_legs) — its call result against the declared Field, then one sample of that result
       against the declared codomain — both by the same value_type_kind_matches oracle, and a row is
       reported at the worst leg of its worst probe. The argument data moved to the child module
-      crates/reify-eval/src/registry_parity_tests/probes.rs
+      crates/reify-eval/src/registry_parity_tests/probes.rs. At task 7563's amendment pass worst_probe
+      became worst_outcome, which takes the legs grouped per probe, so the fold that places each leg
+      at its probe is under its unit test; a mutation keeping only each probe's Call leg reds that
+      test, with every other test green (observed by mutate-run-revert, 2026-11-01)
     verdict: PASS
     delivered_check:
       kind: grep
@@ -397,12 +400,15 @@ tasks:
       Call leg. Originally recorded 2026-09-15 as OPEN, when every probe was concrete and
       eval_builtin's lack of Field handling made a Field probe read Vacuous (follow-up ticket
       tkt_0RTNCFGC08S8W935JZPBZ0CR8J). What stays outside is listed under the module header's 'What
-      this harness cannot see' — a kind-level oracle, one sample point per Field result, and only the
-      two backings tensor_backing admits
+      this harness cannot see' — a kind-level oracle, one sample point per Field result, only the
+      two backings tensor_backing admits, and a call stamped with the very type it is judged against.
+      The delivered_check greps probe_legs, the codomain-sample mechanism the closure rests on; the
+      'What this harness cannot see' heading it grepped until task 7563's amendment pass showed only that
+      the ceiling was recorded, not that the residue was closed
     verdict: PASS — residue CLOSED for the four rows by task 7563 (Callable and Grid Field probes, call and codomain-sample legs)
     delivered_check:
       kind: grep
-      pattern: What this harness cannot see
+      pattern: fn probe_legs
       paths:
       - crates/reify-eval/src
       expect: present
