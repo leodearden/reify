@@ -173,3 +173,7 @@ mod viewport_unmeasured_attribution;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/first_class_frame_datum_eval.rs"]
 mod first_class_frame_datum_eval;
+// Task #9572's stdlib-preset density pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_material_preset_density_e2e.rs"]
+mod stdlib_material_preset_density_e2e;
