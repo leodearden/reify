@@ -32,7 +32,7 @@ use reify_constraints::relate_solve::{
     solve_frame, solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
 use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
-use reify_constraints::trust_region::{GRADIENT_TOLERANCE, SolveBudget};
+use reify_constraints::trust_region::{RANGE_COSINE_TOLERANCE, SolveBudget};
 use reify_core::DiagnosticCode;
 use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
 
@@ -2154,8 +2154,8 @@ fn inconsistent_driving_set_is_certified_infeasible() {
         panic!("expected Infeasible, got {outcome:?}");
     };
     assert!(
-        cert.relative_gradient <= GRADIENT_TOLERANCE,
-        "the certificate must clear the published gradient tolerance: {cert:?}"
+        cert.range_cosine <= RANGE_COSINE_TOLERANCE,
+        "the certificate must clear the published range-cosine tolerance: {cert:?}"
     );
     assert!(cert.max_scaled_residual > 1.0, "{cert:?}");
     for relation in [0, 1] {

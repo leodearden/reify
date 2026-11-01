@@ -12,7 +12,7 @@ use reify_ir::{
 fn a_certified_infeasibility_is_e_solver_infeasible() {
     let cause = SolveFailureCause::Infeasible(InfeasibilityCertificate {
         gradient_norm: 1e-3,
-        relative_gradient: 1e-12,
+        range_cosine: 1e-12,
         max_scaled_residual: 4e5,
         blame: vec![RowBlame {
             source: ResidualSource::Relation(1),
@@ -39,7 +39,7 @@ fn an_uncertified_stall_is_a_search_failure() {
     let cause = SolveFailureCause::Stalled(SolveStall {
         iterations: 90,
         step_norm: 1e-17,
-        relative_gradient: 1.0,
+        range_cosine: 1.0,
         max_scaled_residual: 1e8,
     });
     assert_eq!(cause.code(), DiagnosticCode::ConstraintUnsatisfiable);

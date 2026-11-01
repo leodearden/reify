@@ -2035,7 +2035,7 @@ fn inconsistent_driving_relations_are_certified_solver_infeasible() {
         "{error:?}"
     );
     assert!(
-        error.message.contains("relative gradient"),
+        error.message.contains("range cosine"),
         "the diagnostic carries the gradient certificate: {error:?}"
     );
     assert!(

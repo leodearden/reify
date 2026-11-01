@@ -10,7 +10,7 @@ use std::f64::consts::PI;
 
 use reify_constraints::linalg::RankTolerance;
 use reify_constraints::trust_region::{
-    GRADIENT_TOLERANCE, LeastSquaresProblem, SolveBudget, TrustRegionRun, solve,
+    LeastSquaresProblem, RANGE_COSINE_TOLERANCE, SolveBudget, TrustRegionRun, solve,
 };
 use reify_ir::{ResidualSource, SolveFailureCause};
 
@@ -86,9 +86,9 @@ fn a_stationary_non_root_is_certified_infeasible_with_blame() {
         panic!("expected a certified infeasibility, got {run:?}");
     };
     assert!(
-        cert.relative_gradient <= GRADIENT_TOLERANCE,
-        "relative gradient {} above the published tolerance",
-        cert.relative_gradient
+        cert.range_cosine <= RANGE_COSINE_TOLERANCE,
+        "range cosine {} above the published tolerance",
+        cert.range_cosine
     );
     assert!(cert.gradient_norm >= 0.0);
     assert!(
@@ -227,4 +227,59 @@ fn the_normalize_chart_keeps_the_converged_point_in_range() {
     assert!(run.outcome.is_ok(), "{run:?}");
     assert!(-PI < run.x[0] && run.x[0] <= PI, "{run:?}");
     assert!(max_abs(&Angle.residual(&run.x)) <= 1.0, "{run:?}");
+}
+
+/// A satisfied stiff row beside a violated soft one, `[1e9·x₀, x₁ − 10]`:
+/// linear, full rank and consistent, so its root `(0, 10)` must be found. The
+/// stiff row's Jacobian entry must not hide the soft row's gradient from the
+/// stationarity test.
+struct DisparateRows;
+
+impl LeastSquaresProblem for DisparateRows {
+    fn dim(&self) -> usize {
+        2
+    }
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        vec![1e9 * x[0], x[1] - 10.0]
+    }
+    fn jacobian(&self, _x: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![1e9, 0.0], vec![0.0, 1.0]]
+    }
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(row)
+    }
+}
+
+#[test]
+fn a_satisfied_stiff_row_does_not_hide_a_violated_soft_row() {
+    let run = run(&DisparateRows, &[0.0, 0.0]);
+    assert!(run.outcome.is_ok(), "{run:?}");
+    assert!(max_abs(&DisparateRows.residual(&run.x)) <= 1.0, "{run:?}");
+}
+
+/// As [`DisparateRows`], but the stiff row couples both unknowns,
+/// `[1e9·(x₀ + x₁), x₁ − 10]`, so no single column's gradient ratio is large
+/// either: only the cosine between `r̃` and the range of `J̃` sees the soft row.
+struct CoupledStiffRows;
+
+impl LeastSquaresProblem for CoupledStiffRows {
+    fn dim(&self) -> usize {
+        2
+    }
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        vec![1e9 * (x[0] + x[1]), x[1] - 10.0]
+    }
+    fn jacobian(&self, _x: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![1e9, 1e9], vec![0.0, 1.0]]
+    }
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(row)
+    }
+}
+
+#[test]
+fn a_coupled_stiff_row_does_not_hide_a_violated_soft_row() {
+    let run = run(&CoupledStiffRows, &[0.0, 0.0]);
+    assert!(run.outcome.is_ok(), "{run:?}");
+    assert!(max_abs(&CoupledStiffRows.residual(&run.x)) <= 1.0, "{run:?}");
 }
