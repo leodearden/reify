@@ -997,6 +997,48 @@ mod tests {
     }
 
     #[test]
+    fn pow_rational_half_is_the_square_root() {
+        assert_eq!(
+            DimensionVector::LENGTH.pow_rational(Rational::new(1, 2)),
+            DimensionVector::LENGTH.root(2)
+        );
+    }
+
+    #[test]
+    fn pressure_times_root_length_is_fracture_toughness() {
+        let root_m = DimensionVector::LENGTH.pow_rational(Rational::new(1, 2));
+        assert_eq!(
+            DimensionVector::PRESSURE.mul(&root_m),
+            DimensionVector::FRACTURE_TOUGHNESS
+        );
+    }
+
+    #[test]
+    fn pow_rational_inverse_halves_cancel() {
+        let half = DimensionVector::LENGTH.pow_rational(Rational::new(1, 2));
+        let inv_half = DimensionVector::LENGTH.pow_rational(Rational::new(-1, 2));
+        assert!(inv_half.mul(&half).is_dimensionless());
+    }
+
+    #[test]
+    fn pow_rational_agrees_with_integer_pow() {
+        let dims = [
+            DimensionVector::LENGTH,
+            DimensionVector::PRESSURE,
+            DimensionVector::MASS_DENSITY,
+        ];
+        for d in dims {
+            for n in -10i16..=10 {
+                assert_eq!(
+                    d.pow_rational(Rational::new(n, 1)),
+                    d.pow(n as i8),
+                    "{d}^{n}: the rational and integer power paths disagree"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn content_hash_determinism_with_wide_values() {
         // DimensionVector with exponents > 127 must hash deterministically.
         let dv = DimensionVector::basis_n(0, 200);

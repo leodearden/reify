@@ -1042,4 +1042,35 @@ mod tests {
         }
     }
 
+    /// The one bound on a unit-expression exponent: numerator and denominator
+    /// each fit `i8`. For an integer exponent that is exactly the
+    /// `i8::try_from` bound `resolve_unit_expr` has always enforced; a rational
+    /// exponent extends it to the denominator.
+    #[test]
+    fn unit_exponent_in_range_accepts_exactly_i8_numerators_and_denominators() {
+        use crate::Rational;
+        let accepted = [
+            Rational::new(2, 1),
+            Rational::new(-2, 1),
+            Rational::ZERO,
+            Rational::new(1, 2),
+            Rational::new(-1, 2),
+            Rational::new(127, 1),
+            Rational::new(-128, 1),
+            Rational::new(3, 127),
+        ];
+        for r in accepted {
+            assert!(unit_exponent_in_range(r), "{r} must be in range");
+        }
+        let rejected = [
+            Rational::new(128, 1),
+            Rational::new(-129, 1),
+            Rational::new(200, 1),
+            Rational::new(1, 128),
+            Rational::new(1, 200),
+        ];
+        for r in rejected {
+            assert!(!unit_exponent_in_range(r), "{r} must be out of range");
+        }
+    }
 }
