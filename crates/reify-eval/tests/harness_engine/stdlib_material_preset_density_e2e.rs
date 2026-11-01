@@ -1,19 +1,29 @@
 //! A defaulted stdlib FEA material preset exposes `density` to evaluation as a
-//! dimensioned `Value::Scalar` (task #9572).
+//! dimensioned `Value::Scalar`, on the solver-free path and under both solving
+//! engine wirings (task #9572).
 //!
 //! The only other reader of a defaulted preset's `density` on the solver path
 //! is the heavy, gate-excluded bracket e2e (`harness_fea_solver_e2e`), and the
 //! goldens that print `density` are rewritten wholesale by
-//! `REIFY_REGENERATE_GOLDEN=1`. These pins assert the exact `Value::Scalar`
-//! instead, so a preset that stops carrying `density` fails the merge gate and
-//! names the field.
+//! `REIFY_REGENERATE_GOLDEN=1`. These pins assert exact values instead: a
+//! preset that stops carrying `density` fails the merge gate and names the
+//! field, and an FEA-free twin of the bracket's `minimize mass` loop reports an
+//! Undef density as an unresolved `thickness` without running the FEA solve.
 //!
 //! Lives under `harness_engine/` for the anti-re-accretion reason recorded in
 //! `dimensioned_ctor_migration_si_values.rs`.
 
+use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{DimensionVector, ValueCellId};
-use reify_ir::{StructureInstanceData, Value, ValueMap};
-use reify_test_support::{assert_dimensioned, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_eval::{Engine, EvalResult, SolverPosture};
+use reify_ir::{ResolutionProfile, StructureInstanceData, Value, ValueMap};
+use reify_test_support::{
+    MockConstraintChecker, assert_dimensioned, make_simple_engine, parse_and_compile_with_stdlib,
+    scalar_si,
+};
+
+/// `Steel_AISI_1045`'s `param density` default in `materials_fea.ri`, in SI kg/m^3.
+const STEEL_DENSITY_SI: f64 = 7850.0;
 
 const PRESET_DENSITIES_STRUCTURE: &str = "DefaultedPresetDensities";
 
@@ -41,7 +51,7 @@ const PRESETS: [Preset; 4] = [
     Preset {
         cell: "steel",
         type_name: "Steel_AISI_1045",
-        density_si: 7850.0,
+        density_si: STEEL_DENSITY_SI,
     },
     Preset {
         cell: "aluminium",
@@ -124,4 +134,118 @@ fn defaulted_stdlib_fea_presets_expose_density_as_dimensioned_scalar() {
             ),
         );
     }
+}
+
+const DENSITY_OBJECTIVE_STRUCTURE: &str = "PresetDensityObjective";
+
+/// The bracket design loop with the FEA constraint replaced by a plain bound.
+const DENSITY_OBJECTIVE_SRC: &str = r#"structure PresetDensityObjective {
+    param length : Length = 50mm
+    param width : Length = 30mm
+    param thickness : Length = auto(free)
+    let material = Steel_AISI_1045()
+    let rho = material.density
+    let mass = material.density * length * width * thickness
+    constraint thickness > 3mm
+    minimize mass
+}"#;
+
+const MASS_COHERENCE_REL_TOL: f64 = 1e-9;
+
+const SOLVE_FRESH: SolverPosture = SolverPosture::Solve(ResolutionProfile::FRESH);
+
+/// `reify eval`'s non-geometry engine (`reify-cli`'s `cmd/eval.rs`), minus its
+/// cache and compute-trampoline configuration.
+fn cli_eval_engine() -> Engine {
+    Engine::new(SOLVE_FRESH, Box::new(SimpleConstraintChecker), None)
+}
+
+/// The engine shape of `harness_fea_solver_e2e`'s `fea_loop_engine` (another
+/// test binary, so not importable) minus its FEA trampolines, which this
+/// fixture has no `@optimized` call to use.
+fn fea_design_loop_engine() -> Engine {
+    Engine::new(SOLVE_FRESH, Box::new(MockConstraintChecker::new()), None)
+        .with_solver(Box::new(DimensionalSolver))
+}
+
+type NamedEngine = (&'static str, fn() -> Engine);
+
+const SOLVING_ENGINES: [NamedEngine; 2] = [
+    ("reify-cli eval wiring", cli_eval_engine),
+    ("FEA design-loop harness wiring", fea_design_loop_engine),
+];
+
+#[test]
+fn minimize_objective_reading_defaulted_preset_density_resolves_auto_thickness() {
+    let compiled = parse_and_compile_with_stdlib(DENSITY_OBJECTIVE_SRC);
+
+    for (arm, build_engine) in SOLVING_ENGINES {
+        let mut engine = build_engine();
+        let result = engine.eval(&compiled);
+        assert_auto_thickness_resolved_through_preset_density(arm, &result);
+    }
+}
+
+fn assert_auto_thickness_resolved_through_preset_density(arm: &str, result: &EvalResult) {
+    let cell = |member: &str| -> Value {
+        result
+            .values
+            .get(&ValueCellId::new(DENSITY_OBJECTIVE_STRUCTURE, member))
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.{member} cell missing from eval result"
+                )
+            })
+    };
+    let resolved_si = |member: &str, dimension: DimensionVector| -> f64 {
+        let value = cell(member);
+        let si = scalar_si(
+            &value,
+            &format!(
+                "[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.{member} is not a resolved Scalar (an \
+                 Undef objective, which leaves `thickness` unresolved, is the #9572 signature); \
+                 eval diagnostics: {:#?}",
+                result.diagnostics
+            ),
+        );
+        assert_eq!(
+            value.dimension(),
+            dimension,
+            "[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.{member} has the wrong dimension"
+        );
+        si
+    };
+
+    assert_dimensioned(
+        &cell("rho"),
+        STEEL_DENSITY_SI,
+        DimensionVector::MASS_DENSITY,
+        &format!("[{arm}] {DENSITY_OBJECTIVE_STRUCTURE}.rho (`material.density` member access)"),
+    );
+
+    let thickness_si = resolved_si("thickness", DimensionVector::LENGTH);
+    assert!(
+        thickness_si.is_finite(),
+        "[{arm}] resolved thickness must be finite, got {thickness_si:?}"
+    );
+
+    let mass_si = resolved_si("mass", DimensionVector::MASS);
+    assert!(
+        mass_si.is_finite() && mass_si > 0.0,
+        "[{arm}] mass must be finite and positive, got {mass_si:?}"
+    );
+
+    let length_si = resolved_si("length", DimensionVector::LENGTH);
+    let width_si = resolved_si("width", DimensionVector::LENGTH);
+    let expected_mass_si = STEEL_DENSITY_SI * length_si * width_si * thickness_si;
+    let rel_err = (mass_si - expected_mass_si).abs() / expected_mass_si;
+    assert!(
+        rel_err < MASS_COHERENCE_REL_TOL,
+        "[{arm}] mass ({mass_si:.9e} kg) should equal density*length*width*thickness \
+         ({expected_mass_si:.9e} kg) at the resolved length {length_si:.6e} m, width \
+         {width_si:.6e} m and thickness {thickness_si:.6e} m; relative error {rel_err:.3e}. \
+         Every factor but the stdlib density is read back from the resolved cells, so a \
+         mismatch means the objective is not the closed-form mass the fixture declares."
+    );
 }
