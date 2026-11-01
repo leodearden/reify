@@ -9,7 +9,7 @@ D8, D13, §12).
 Each case compares exit code, stdout and stderr byte for byte, after a
 premise on bash's side: the case reaches the region shape it is named for (the
 heavy partition, a narrowed selector, the cargo-test fallback, the confirm
-paths, a config override, ...), so a bash change that stops reaching it reds
+paths, a config override, the release-delta skip, ...), so a bash change that stops reaching it reds
 here rather than passing vacuously. The grids are the test and all shards; the
 failed_only retry is test_verify_plan_parity_retry.py.
 
@@ -63,6 +63,18 @@ REGION_TIMEOUT_KNOBS = (
     "REIFY_VERIFY_GUI_FEATURE_TEST_TIMEOUT",
 )
 RUN_ALL = "tests/infra/run_all.sh"
+RELEASE_SKIP_MARKER = "echo 'RELEASE-PASS: skipped (delta-clean)'"
+RELEASE_PASS = " --release --config-file "
+SKIPPED = {"stdout": (RELEASE_SKIP_MARKER,), "absent": (RELEASE_PASS,)}
+KEPT = {"stdout": (RELEASE_PASS,), "absent": (RELEASE_SKIP_MARKER,)}
+NO_RELEASE = {"absent": (RELEASE_PASS, RELEASE_SKIP_MARKER)}
+DELTA_SKIP_MERGE = {"DF_VERIFY_ROLE": "merge", "REIFY_RELEASE_DELTA_SKIP": "1"}
+PROFILE_ARGS = {"implicit": (), "release": ("--profile", "release"), "debug": ("--profile", "debug")}
+DOCS_CHANGE = "docs/b1-release-delta.md"
+EVAL_CHANGE = "crates/reify-eval/src/cache.rs"
+DECLARED_LIST = "scripts/release-sensitive-crates.txt"
+DECLARED_MISSING = "ERROR: release-sensitive-crates.txt not found at "
+CLIPPY_WARNING = "WARNING: invalid REIFY_VERIFY_CLIPPY_TIMEOUT=bogus; using default "
 
 
 def tearDownModule():
@@ -71,7 +83,7 @@ def tearDownModule():
 
 @dataclass(frozen=True)
 class Case:
-    """A scenario and its bash-side premise: exit code, texts bash's stdout holds and lacks, texts its stderr holds."""
+    """A scenario and its bash-side premise: exit code, texts bash's stdout holds and lacks, texts its stderr holds in order."""
 
     scenario: Scenario
     stdout: tuple[str, ...] = ()
@@ -112,8 +124,11 @@ class RegionParity(InParityClone):
                 self.assertIn(text, pair.bash.stdout, f"premise [{scenario.label}]")
             for text in case.absent:
                 self.assertNotIn(text, pair.bash.stdout, f"premise [{scenario.label}]")
+            position = 0
             for text in case.stderr:
-                self.assertIn(text, pair.bash.stderr, f"premise [{scenario.label}]")
+                found = pair.bash.stderr.find(text, position)
+                self.assertNotEqual(found, -1, f"premise: bash's stderr holds {text!r}, in order [{scenario.label}]")
+                position = found + len(text)
             self.assert_parity(scenario, pair)
 
 
@@ -269,6 +284,99 @@ class TestRegionToolchain(RegionParity):
     def test_nextest_present_but_failing(self):
         env = nextest_env(self.scratch, "failing", FAILING_PROBE, cargo_nextest=True)
         self.check(Case(plan("test nextest failing", "test", "--scope", "all", env=env), exit_code=1))
+
+
+def merge_all(label, action="test", env=None) -> Scenario:
+    return plan(label, action, "--scope", "all", env={**DELTA_SKIP_MERGE, **(env or {})})
+
+
+class TestReleaseDeltaParity(RegionParity):
+    """The merge role's release-delta skip, decided at load for every action, and the declared release set.
+
+    Each clone state is set up, then planned, one at a time.
+    """
+
+    def commit_aside(self, path) -> str:
+        """A commit on top of HEAD that changes `path`; HEAD stays where it was."""
+        self.clone.commit_change(path)
+        aside = self.clone.git("rev-parse", "HEAD")
+        self.clone.git("reset", "-q", "--hard", "HEAD^")
+        return aside
+
+    def parents(self) -> list[str]:
+        return self.clone.git("rev-list", "--parents", "-n1", "HEAD").split()[1:]
+
+    def test_affected_crates_override_decides(self):
+        cases = []
+        for value, profile in itertools.product(("reify-doc", "reify-eval", "ALL"), PROFILE_ARGS):
+            if profile == "debug":
+                verdict = NO_RELEASE
+            else:
+                verdict = SKIPPED if value == "reify-doc" else KEPT
+            cases.append(Case(
+                plan(f"merge skip override={value!r} profile={profile}", "test", "--scope", "all",
+                     *PROFILE_ARGS[profile], env={**DELTA_SKIP_MERGE, "REIFY_AFFECTED_CRATES_OVERRIDE": value}),
+                **verdict,
+            ))
+        self.check(*cases)
+
+    def test_a_linear_head_is_underivable(self):
+        self.clone.commit("b1 release delta: a linear HEAD")
+        self.assertEqual(len(self.parents()), 1, "premise: HEAD has one parent")
+        self.check(Case(merge_all("linear HEAD, no MERGE_HEAD"), **KEPT))
+
+    def test_merge_head_delta(self):
+        for path, verdict in ((DOCS_CHANGE, SKIPPED), (EVAL_CHANGE, KEPT)):
+            self.clone.reset()
+            self.clone.merge_head().write_text(f"{self.commit_aside(path)}\n", encoding="utf-8")
+            self.check(
+                Case(merge_all(f"MERGE_HEAD changes {path}"), **verdict),
+                Case(merge_all(f"lint, MERGE_HEAD changes {path}", action="lint")),
+            )
+
+    def test_a_merge_commit_head_diffs_its_first_parent(self):
+        head = self.clone.git("rev-parse", "HEAD")
+        side = self.commit_aside(DOCS_CHANGE)
+        self.clone.git("merge", "-q", "--no-ff", "-m", f"b1 release delta: merge {DOCS_CHANGE}", side)
+        self.assertEqual(self.parents(), [head, side], "premise: HEAD is a two-parent merge")
+        self.check(Case(merge_all(f"HEAD merges a branch changing {DOCS_CHANGE}"), **SKIPPED))
+
+    def test_only_the_merge_role_and_knob_value_one_decide(self):
+        override = {"REIFY_AFFECTED_CRATES_OVERRIDE": "reify-doc"}
+        cases = [
+            Case(plan(f"role={role_label(role)} skip knob=1", "test", "--scope", "all", "--profile", "both",
+                      env={"DF_VERIFY_ROLE": role, "REIFY_RELEASE_DELTA_SKIP": "1", **override}), **KEPT)
+            for role in (None, "background")
+        ]
+        cases += [
+            Case(merge_all(f"merge skip knob={value!r}", env={"REIFY_RELEASE_DELTA_SKIP": value, **override}), **KEPT)
+            for value in ("0", "true")
+        ]
+        self.check(*cases)
+
+    def test_a_scratch_declared_list(self):
+        declared = self.scratch / "release-sensitive-crates.txt"
+        declared.write_text("# b1 scratch list\n  reify-doc  \n\nreify-ir\n", encoding="utf-8")
+        listed = {"RELEASE_SENSITIVE_CRATES_FILE": str(declared)}
+        self.check(
+            *(
+                Case(plan(f"role={role_label(role)} scratch declared list", "test", "--scope", "all",
+                          "--profile", "both", env={"DF_VERIFY_ROLE": role, **listed}),
+                     stdout=("cargo nextest run -p reify-doc -p reify-ir --release",))
+                for role in (None, "merge")
+            ),
+            Case(merge_all("merge skip override=reify-doc, reify-doc declared",
+                           env={**listed, "REIFY_AFFECTED_CRATES_OVERRIDE": "reify-doc"}), **KEPT),
+        )
+
+    def test_a_missing_declared_list_refuses(self):
+        (self.clone.root / DECLARED_LIST).unlink()
+        self.check(*(
+            Case(plan(f"{action}, {DECLARED_LIST} deleted", action, "--scope", "all",
+                      env={"REIFY_VERIFY_CLIPPY_TIMEOUT": "bogus"}),
+                 exit_code=1, stderr=(CLIPPY_WARNING, DECLARED_MISSING, f"/{DECLARED_LIST}"))
+            for action in ("lint", "test")
+        ))
 
 
 if __name__ == "__main__":
