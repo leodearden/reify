@@ -1,5 +1,6 @@
 //! `Value::Enum` rendering on the three formatter surfaces: `Display`,
-//! `Value::format_hover` and `Value::format_display`.
+//! `Value::format_hover` and `Value::format_display`, plus the GUI cell's
+//! entry point `Value::format_display_pair`.
 //!
 //! A data-carrying variant prints its named payload fields after the head,
 //! in stored (declaration) order; a unit variant prints exactly its head.
@@ -92,5 +93,26 @@ fn unit_variant_prints_exactly_its_head() {
         "Color::Red",
         "Color::Red",
         "Red",
+    );
+}
+
+#[test]
+fn gui_cell_entry_point_renders_payload_with_an_empty_unit() {
+    let planar = payload_enum(
+        "JointPosition",
+        "PlanarPosition",
+        vec![
+            ("x", Value::length(0.001)),
+            ("y", Value::length(0.002)),
+            ("angle", Value::angle(FRAC_PI_6)),
+        ],
+    );
+    // Nested scalars carry no unit here, as in every composite arm; owned by #9445.
+    assert_eq!(
+        planar.format_display_pair(),
+        (
+            "PlanarPosition { x: 1, y: 2, angle: 30 }".to_string(),
+            String::new()
+        ),
     );
 }
