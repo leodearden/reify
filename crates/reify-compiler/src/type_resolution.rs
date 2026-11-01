@@ -5831,8 +5831,8 @@ mod tests {
     //    rather than zero-diagnostics: an unresolved bare name returns None
     //    from `resolve_type_expr_with_aliases` WITHOUT a diagnostic → the joint
     //    DOF type becomes `Type::Error` → the §7.1 verdict gate in
-    //    `compile_builder::entities_phase` reads that as already-diagnosed,
-    //    sets `skip_verdict` and emits nothing (anti-cascade). So an
+    //    `joint_self_check::joint_dof_diagnostics` reads that as
+    //    already-diagnosed and emits nothing (anti-cascade). So an
     //    `Orientation` DOF was byte-identical in output to a `Blorp` one, and
     //    `stdlib/joints.ri`'s `with orientation: Orientation` silently disabled
     //    the self-check for every orientation-bearing joint.
