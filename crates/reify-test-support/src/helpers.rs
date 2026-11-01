@@ -2463,6 +2463,48 @@ mod tests {
         assert!(message.contains("unrelated noise"), "{message}");
     }
 
+    // ── diags_with_code ───────────────────────────────────────────────────
+    //
+    // The generic code-keyed filter `underdetermined_diags` specialises.
+    // These cases use `UnresolvedFunction` so they prove the helper is generic
+    // over `code` rather than restating the `Underdetermined` cases below.
+
+    /// Only diagnostics carrying the requested code come back, in input order.
+    /// Another code is excluded, and so is a CODELESS (`code: None`)
+    /// diagnostic.
+    #[test]
+    fn diags_with_code_selects_only_the_requested_code_in_input_order() {
+        let diags = vec![
+            Diagnostic::warning("first").with_code(DiagnosticCode::UnresolvedFunction),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("codeless noise"),
+            Diagnostic::warning("second").with_code(DiagnosticCode::UnresolvedFunction),
+        ];
+        let messages: Vec<&str> =
+            super::diags_with_code(&diags, DiagnosticCode::UnresolvedFunction)
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+        assert_eq!(messages, vec!["first", "second"]);
+    }
+
+    /// The filter is severity-BLIND: an Error carrying the code is returned
+    /// just as a Warning is, unlike the neighbouring `collect_errors`.
+    #[test]
+    fn diags_with_code_is_severity_blind() {
+        let diags = vec![
+            Diagnostic::error("escalated").with_code(DiagnosticCode::UnresolvedFunction),
+            Diagnostic::warning("plain").with_code(DiagnosticCode::UnresolvedFunction),
+        ];
+        let selected = super::diags_with_code(&diags, DiagnosticCode::UnresolvedFunction);
+        assert_eq!(
+            selected.len(),
+            2,
+            "both severities must be returned — this filter is code-keyed \
+             only; got {selected:#?}",
+        );
+    }
+
     // ── underdetermined_diags ─────────────────────────────────────────────
     //
     // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
