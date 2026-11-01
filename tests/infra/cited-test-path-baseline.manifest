@@ -167,6 +167,7 @@ docs/prds/v0_3/geometry-handle-runtime.md :: crates/reify-compiler/tests/solid_p
 docs/prds/v0_5/buckling-eigensolver.md :: crates/reify-compiler/tests/buckling_stdlib_compile.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md :: crates/reify-compiler/tests/si_units_tests.rs
+docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md :: crates/reify-compiler/tests/unit_label_round_trip.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.yaml :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.yaml :: crates/reify-compiler/tests/si_units_tests.rs
 docs/prds/v0_6/compiler-type-hygiene.md :: crates/reify-compiler/tests/mul_div_static_runtime_parity.rs
