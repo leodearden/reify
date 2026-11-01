@@ -24,7 +24,7 @@ use reify_ir::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::cell_commit::{
-    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+    CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result, commit_cell_result_at,
 };
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
@@ -32,7 +32,7 @@ use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_tr
 use crate::dirty::topological_sort;
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
-use crate::journal::{EvalEvent, EventKind, EventPayload};
+use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
 use crate::snapshot::Snapshot;
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
@@ -498,7 +498,9 @@ fn record_eval_completed(
     journal.record(EvalEvent {
         timestamp: Instant::now(),
         node_id,
-        kind: EventKind::Completed { outcome },
+        kind: EventKind::Completed {
+            outcome: Some(outcome),
+        },
         version,
         payload: Some(EventPayload::Duration(start.elapsed())),
     });
@@ -510,11 +512,11 @@ fn record_eval_completed(
 ///
 /// task #5238: both let evaluators (`evaluate_params_and_lets_unified`'s Let
 /// arm and `evaluate_let_bindings`) used to emit one shared
-/// `Started(payload: None)` at the TOP of the loop body, covering every exit.
+/// untagged `Started` at the TOP of the loop body, covering every exit.
 /// Migrating the main success-path commit onto `commit_cell_result` — which
-/// emits its own `Started(Custom(<provenance slug>))` — meant that shared
-/// event had to go, or it would be the FIRST `Started` observed for the cell
-/// and would mask the migrated commit's slug (§2.6).
+/// emits its own `Started` carrying a `CommitTag` — meant that shared event
+/// had to go, or it would be the FIRST `Started` observed for the cell and
+/// would mask the migrated commit's tag (§2.6).
 ///
 /// Deleting it outright, however, would leave every OTHER exit from the loop
 /// body emitting a terminal event with no paired `Started` — silently breaking
@@ -536,7 +538,7 @@ fn record_subpath_started(
     journal.record(EvalEvent {
         timestamp: start,
         node_id,
-        kind: EventKind::Started,
+        kind: EventKind::Started { commit: None },
         version,
         payload: None,
     });
@@ -4121,13 +4123,13 @@ fn emit_param_override_rejection_warning(
 ///
 /// **Cache / journal**: every value-write path in this helper funnels through
 /// [`commit_cell_result`] (task γ #5053), which writes the values/snapshot/
-/// cache/journal legs atomically and tags the `Started` event with the
-/// `guarded-group` [`TraceSource`] slug. Task-2195 first added journal+cache
+/// cache/journal legs atomically and tags the `Started` event with
+/// [`TraceSource::GuardedGroup`]. Task-2195 first added journal+cache
 /// recording here — mirroring the top-level Param branch in `Engine::eval`'s
 /// first pass, including the symmetric `REJECTED-OVERRIDE-NO-DEFAULT` arm — to
 /// make guarded-group Param evals visible to tooling that joins journal events
 /// against cache state; the γ migration preserves that visibility (identical
-/// values/snapshot/cache writes) while making the provenance slug explicit.
+/// values/snapshot/cache writes) while making the provenance explicit.
 ///
 /// **Journal-timing delta (γ #5053, non-load-bearing).** The pre-migration
 /// contract emitted the `Started` event *before* resolution and computed the
@@ -6336,7 +6338,7 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: start,
                                 node_id: node_id.clone(),
-                                kind: EventKind::Started,
+                                kind: EventKind::Started { commit: None },
                                 version: VersionId(res_version_id),
                                 payload: None,
                             });
@@ -6364,7 +6366,9 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
-                                kind: EventKind::Completed { outcome },
+                                kind: EventKind::Completed {
+                                    outcome: Some(outcome),
+                                },
                                 version: VersionId(res_version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
                             });
@@ -7746,7 +7750,7 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: start,
                         node_id: node_id.clone(),
-                        kind: EventKind::Started,
+                        kind: EventKind::Started { commit: None },
                         version: VersionId(res_version_id),
                         payload: None,
                     });
@@ -7772,7 +7776,9 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
-                        kind: EventKind::Completed { outcome },
+                        kind: EventKind::Completed {
+                            outcome: Some(outcome),
+                        },
                         version: VersionId(res_version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
@@ -8240,7 +8246,7 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: start,
                         node_id: node_id.clone(),
-                        kind: EventKind::Started,
+                        kind: EventKind::Started { commit: None },
                         version,
                         payload: None,
                     });
@@ -8265,7 +8271,9 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
-                        kind: EventKind::Completed { outcome },
+                        kind: EventKind::Completed {
+                            outcome: Some(outcome),
+                        },
                         version,
                         payload: Some(EventPayload::Duration(start.elapsed())),
                     });
@@ -8416,8 +8424,8 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-reuse`
-                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // typed Started/Completed pair carrying a `CachedReuse`
+                            // commit tag in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
                             // (Freshness dimension — CLOSED) + PRD §2.4/§7.2. (The Auto-cell
@@ -8498,7 +8506,7 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: start,
                                 node_id: node_id.clone(),
-                                kind: EventKind::Started,
+                                kind: EventKind::Started { commit: None },
                                 version,
                                 payload: None,
                             });
@@ -8604,7 +8612,9 @@ impl Engine {
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
-                                kind: EventKind::Completed { outcome },
+                                kind: EventKind::Completed {
+                                    outcome: Some(outcome),
+                                },
                                 version,
                                 payload: Some(EventPayload::Duration(start.elapsed())),
                             });
@@ -8653,8 +8663,8 @@ impl Engine {
                             // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
                             // the entry's own freshness forward verbatim (still
                             // record_evaluation_with_freshness under the hood) and emitting a
-                            // typed Started/Completed pair carrying the `cached-reuse`
-                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // typed Started/Completed pair carrying a `CachedReuse`
+                            // commit tag in place of the prior bare CacheHit — the sole
                             // observable delta, since value/determinacy/cache-content/freshness
                             // are all preserved. See cell_commit.rs "Known scope gaps"
                             // (Freshness dimension — CLOSED) + PRD §2.4/§7.2.
@@ -8800,7 +8810,7 @@ impl Engine {
                             // to `start.elapsed()`, spanning the eval. `commit_cell_result`
                             // captures its own `start` at the top of the commit — after the eval
                             // — so `Started` is now post-eval and the `Completed` `Duration`
-                            // covers only the four-leg commit. The added `cached-serve` slug is
+                            // covers only the four-leg commit. The added `CachedServe` tag is
                             // additive; the `Duration` magnitude is unconsumed (all journal
                             // consumers match `Duration(_)` for presence only).
                             let commit_outcome = commit_cell_result(
@@ -8816,21 +8826,20 @@ impl Engine {
                                 // `CachedServe` denotes eval_cached-PASS provenance, not a cache
                                 // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
                                 // a cold eval within the cached-serve pass. Kept as CachedServe
-                                // (not ColdEval) per the frozen γ plan; `TraceSource::as_str`
-                                // declares these strings stable once shipped.
+                                // (not ColdEval) per the frozen γ plan.
                                 //
-                                // task #5238: `cached-serve` identifies THIS arm uniquely. The
+                                // task #5238: `CachedServe` identifies THIS arm uniquely. The
                                 // two migrated preserve-freshness re-serves earlier in this
                                 // function stamp the distinct `TraceSource::CachedReuse`
-                                // (`cached-reuse`) instead, precisely so a §2.6 divergence
-                                // audit can separate a re-serve from a miss FROM THE JOURNAL
-                                // ALONE — neither the commit's `CacheLeg` (consumed inside
-                                // commit_cell_result, never recorded) nor `stats.cache_hits`/
+                                // instead, precisely so a §2.6 divergence audit can separate
+                                // a re-serve from a miss FROM THE JOURNAL ALONE — neither the
+                                // commit's `CacheLeg` variant (its tag records only Recorded
+                                // vs Skipped) nor `stats.cache_hits`/
                                 // `cache_misses` (per-pass, not per-node) is reachable from a
                                 // journal event.
                                 //
                                 // Still true: the Auto-cell pre-seed re-serve does NOT route
-                                // through commit_cell_result and emits no slug at all — see its
+                                // through commit_cell_result and records no tag at all — see its
                                 // own note for why it stays unmigrated.
                                 TraceSource::CachedServe,
                                 trace,
@@ -8838,7 +8847,6 @@ impl Engine {
                                 CacheLeg::Record,
                             );
                             let outcome = commit_outcome
-                                .cache_outcome()
                                 .expect("CacheLeg::Record always yields Some(outcome)");
 
                             // μ (#5062): store this freshly-evaluated cell's
@@ -9750,7 +9758,7 @@ impl Engine {
                     // preserved -- caller-supplied `version`,
                     // `DependencyTrace::default()`, `CacheLeg::Record` -- and
                     // `TraceSource::CachedServe` records the warm-serve
-                    // provenance slug (any `EventPayload::Custom` slug proves
+                    // provenance (any commit tag on the Started event proves
                     // the routing to the §2.6 divergence audit).
                     commit_cell_result(
                         CommitLegs {
@@ -10165,7 +10173,7 @@ impl Engine {
                 self.journal.record(EvalEvent {
                     timestamp: start,
                     node_id: node_id.clone(),
-                    kind: EventKind::Started,
+                    kind: EventKind::Started { commit: None },
                     version,
                     payload: None,
                 });
@@ -10187,7 +10195,9 @@ impl Engine {
                 self.journal.record(EvalEvent {
                     timestamp: Instant::now(),
                     node_id,
-                    kind: EventKind::Completed { outcome },
+                    kind: EventKind::Completed {
+                        outcome: Some(outcome),
+                    },
                     version,
                     payload: Some(EventPayload::Duration(start.elapsed())),
                 });
@@ -10282,7 +10292,7 @@ impl Engine {
                     self.journal.record(EvalEvent {
                         timestamp: start,
                         node_id: node_id_p.clone(),
-                        kind: EventKind::Started,
+                        kind: EventKind::Started { commit: None },
                         version,
                         payload: None,
                     });
@@ -10374,10 +10384,10 @@ impl Engine {
 
                     // task #5238: the main success-path commit below is now
                     // routed through `commit_cell_result`, which emits its OWN
-                    // Started(Custom slug)+Completed pair. No SHARED
-                    // Started(payload:None) is emitted here — it would be the
-                    // FIRST Started observed for the cell and would mask the
-                    // migrated commit's `cold-eval` provenance slug (§2.6).
+                    // tagged Started+Completed pair. No SHARED untagged
+                    // Started is emitted here — it would be the FIRST Started
+                    // observed for the cell and would mask the migrated
+                    // commit's `ColdEval` tag (§2.6).
                     //
                     // The sibling sub-paths in this arm (pre-eval Pending gate,
                     // @optimized Final-gate reuse, the three compute-dispatch
@@ -10433,7 +10443,7 @@ impl Engine {
                                 timestamp: Instant::now(),
                                 node_id: node_id.clone(),
                                 kind: EventKind::Completed {
-                                    outcome: EvalOutcome::Unchanged,
+                                    outcome: Some(EvalOutcome::Unchanged),
                                 },
                                 version: VersionId(version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10495,7 +10505,7 @@ impl Engine {
                                         timestamp: Instant::now(),
                                         node_id,
                                         kind: EventKind::Completed {
-                                            outcome: EvalOutcome::Unchanged,
+                                            outcome: Some(EvalOutcome::Unchanged),
                                         },
                                         version: VersionId(version_id),
                                         payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10646,7 +10656,7 @@ impl Engine {
                                             timestamp: Instant::now(),
                                             node_id,
                                             kind: EventKind::Completed {
-                                                outcome: EvalOutcome::Changed,
+                                                outcome: Some(EvalOutcome::Changed),
                                             },
                                             version: VersionId(version_id),
                                             payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10677,7 +10687,7 @@ impl Engine {
                                             timestamp: Instant::now(),
                                             node_id,
                                             kind: EventKind::Completed {
-                                                outcome: EvalOutcome::Unchanged,
+                                                outcome: Some(EvalOutcome::Unchanged),
                                             },
                                             version: VersionId(version_id),
                                             payload: Some(EventPayload::Duration(start.elapsed())),
@@ -10865,7 +10875,7 @@ impl Engine {
                     // false` + `UnconditionalDetermined` byte-match the pre-migration
                     // `record_evaluation_propagating_freshness(val, Determined, false)`,
                     // so value/determinacy/freshness are all preserved; the added
-                    // `cold-eval` Started slug is the only observable delta.
+                    // `ColdEval` Started tag is the only observable delta.
                     // `&mut *values` reborrows the &mut param (this commit is inside
                     // the topo loop; `values` is reused by later iterations and by
                     // `re_eval_consumers_of_in_walk_mints` after the loop).
@@ -11305,11 +11315,10 @@ impl Engine {
             };
 
             // task #5238: the main success-path commit below is now routed
-            // through `commit_cell_result`, which emits its OWN
-            // Started(Custom slug)+Completed pair. No SHARED Started(payload:None)
-            // is emitted here — it would be the FIRST Started observed for the
-            // cell and would mask the migrated commit's `cold-eval` provenance
-            // slug (§2.6).
+            // through `commit_cell_result`, which emits its OWN tagged
+            // Started+Completed pair. No SHARED untagged Started is emitted
+            // here — it would be the FIRST Started observed for the cell and
+            // would mask the migrated commit's `ColdEval` tag (§2.6).
             //
             // The sibling sub-paths in this loop body (pre-eval Pending gate,
             // @optimized Final-gate reuse, the three compute-dispatch outcomes,
@@ -11405,7 +11414,7 @@ impl Engine {
                         timestamp: Instant::now(),
                         node_id: node_id.clone(),
                         kind: EventKind::Completed {
-                            outcome: EvalOutcome::Unchanged,
+                            outcome: Some(EvalOutcome::Unchanged),
                         },
                         version: VersionId(version_id),
                         payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11479,7 +11488,7 @@ impl Engine {
                                 timestamp: Instant::now(),
                                 node_id,
                                 kind: EventKind::Completed {
-                                    outcome: EvalOutcome::Unchanged,
+                                    outcome: Some(EvalOutcome::Unchanged),
                                 },
                                 version: VersionId(version_id),
                                 payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11743,7 +11752,7 @@ impl Engine {
                                     timestamp: Instant::now(),
                                     node_id,
                                     kind: EventKind::Completed {
-                                        outcome: EvalOutcome::Changed,
+                                        outcome: Some(EvalOutcome::Changed),
                                     },
                                     version: VersionId(version_id),
                                     payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11787,7 +11796,7 @@ impl Engine {
                                     timestamp: Instant::now(),
                                     node_id,
                                     kind: EventKind::Completed {
-                                        outcome: EvalOutcome::Unchanged,
+                                        outcome: Some(EvalOutcome::Unchanged),
                                     },
                                     version: VersionId(version_id),
                                     payload: Some(EventPayload::Duration(start.elapsed())),
@@ -11966,7 +11975,7 @@ impl Engine {
             // `still_refining: false` + `UnconditionalDetermined` byte-match the
             // pre-migration `record_evaluation_propagating_freshness(val,
             // Determined, false)`, so value/determinacy/freshness are all
-            // preserved; the added `cold-eval` Started slug is the only
+            // preserved; the added `ColdEval` Started tag is the only
             // observable delta. Uses the freshly-computed `trace` (not the old
             // cached trace) so derivation is keyed off the current reads;
             // sorted_lets and let_traces share a key set, so take_trace cannot
@@ -12720,7 +12729,7 @@ mod combined_param_let_graph_geometry_let_tests {
 /// exactly as the impl-2 plan step's fallback describes.
 ///
 /// RED today: `reeval_cone_cell` records ONLY to `self.cache` (@~5346),
-/// emitting NO journal event, so `started_payload` is `None` in both cases
+/// emitting NO journal event, so `first_started_commit` is `None` in both cases
 /// below. GREEN after impl-2 migrates the commit onto `commit_cell_result`
 /// with `TraceSource::ConeReeval`.
 ///
@@ -12738,22 +12747,17 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
 
     use crate::Engine;
     use crate::cache::NodeId;
-    use crate::journal::{EventKind, EventPayload};
+    use crate::journal::{CacheLegKind, CommitTag, TraceSource};
     use reify_test_support::mocks::MockConstraintChecker;
 
-    /// Mirrors the integration test file's `started_payload` helper: the
-    /// first `Started` event's `EventPayload::Custom` slug for `id`, or
-    /// `None` if there is no such event or its payload isn't `Custom`.
-    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
-        let node_id = NodeId::Value(id.clone());
-        let events = engine.journal().events_for_node(&node_id);
-        let started = events
-            .iter()
-            .find(|event| matches!(event.kind, EventKind::Started))?;
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
-            _ => None,
-        }
+    /// Mirrors the integration test file's `first_started_commit` helper: the
+    /// commit tag of the first `Started` event for `id`, or `None` if there is
+    /// no such event or it carries no tag.
+    fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
+        engine
+            .journal()
+            .first_commit_for_node(&NodeId::Value(id.clone()))
+            .cloned()
     }
 
     #[test]
@@ -12778,10 +12782,13 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
         );
 
         assert_eq!(
-            started_payload(&engine, &vcid),
-            Some("cone-reeval".to_string()),
-            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
-             TraceSource slug once migrated onto commit_cell_result"
+            first_started_commit(&engine, &vcid),
+            Some(CommitTag {
+                trace: TraceSource::ConeReeval,
+                cache: CacheLegKind::Recorded,
+            }),
+            "reeval_cone_cell's Started event should carry the ConeReeval \
+             commit tag once migrated onto commit_cell_result"
         );
         assert_eq!(
             snapshot_values.get(&vcid),
@@ -12814,10 +12821,13 @@ mod reeval_cone_cell_provenance_and_determinacy_tests {
         );
 
         assert_eq!(
-            started_payload(&engine, &vcid),
-            Some("cone-reeval".to_string()),
-            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
-             TraceSource slug once migrated onto commit_cell_result"
+            first_started_commit(&engine, &vcid),
+            Some(CommitTag {
+                trace: TraceSource::ConeReeval,
+                cache: CacheLegKind::Recorded,
+            }),
+            "reeval_cone_cell's Started event should carry the ConeReeval \
+             commit tag once migrated onto commit_cell_result"
         );
         assert_eq!(
             snapshot_values.get(&vcid),
@@ -14050,8 +14060,8 @@ mod dependent_cells_admissibility_tests {
 // elaboration pass, gated on `!template.sub_components.is_empty()`), and even
 // then the now-migrated
 // `evaluate_params_and_lets_unified` (#5238 impl-2) emits its OWN first
-// `Started(Custom "cold-eval")` event for the same let cell, so
-// `started_payload`'s first-match semantics could not isolate
+// `ColdEval`-tagged `Started` event for the same let cell, so
+// `first_started_commit`'s first-match semantics could not isolate
 // `evaluate_let_bindings`' own commit. Calling `evaluate_let_bindings` directly
 // on a pre-seeded two-cell module (param `a` + let `b = a * 2.0`) makes its
 // `Started` event the SOLE one recorded for `b`, giving a clean RED signal.
@@ -14066,26 +14076,21 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
 
     use crate::Engine;
     use crate::cache::NodeId;
-    use crate::journal::{EventKind, EventPayload};
+    use crate::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
     use crate::snapshot::Snapshot;
     use reify_test_support::builders::{binop, literal, value_ref_typed};
     use reify_test_support::mocks::MockConstraintChecker;
     use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
 
-    /// First `Started`-event `Custom` slug for `id` (mirrors the integration
-    /// file's `started_payload` helper): `None` if there is no `Started` event
-    /// for `id` or if its payload isn't `Custom` — today's un-migrated
-    /// `payload: None` baseline.
-    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
-        let node_id = NodeId::Value(id.clone());
-        let events = engine.journal().events_for_node(&node_id);
-        let started = events
-            .iter()
-            .find(|event| matches!(event.kind, EventKind::Started))?;
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
-            _ => None,
-        }
+    /// Commit tag of the first `Started` event for `id` (mirrors the
+    /// integration file's `first_started_commit` helper): `None` if there is
+    /// no `Started` event for `id` or it carries no tag — the un-migrated
+    /// baseline.
+    fn first_started_commit(engine: &Engine, id: &ValueCellId) -> Option<CommitTag> {
+        engine
+            .journal()
+            .first_commit_for_node(&NodeId::Value(id.clone()))
+            .cloned()
     }
 
     /// The 2-cell synthetic module — param `a` = `Real(5.0)`, let `b = a * 2.0`
@@ -14123,7 +14128,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
     /// journal event with `payload: None` (from the shared pre-eval `Started`
     /// at the top of its loop body) and writes the cache leg via a direct
     /// `record_evaluation_propagating_freshness(val, Determined, false)` call,
-    /// so `started_payload(&engine, &b)` is `None`, not `Some("cold-eval")`.
+    /// so `first_started_commit(&engine, &b)` is `None`, not a `ColdEval` tag.
     /// GREEN after impl-3 migrates the commit onto `commit_cell_result` with
     /// `TraceSource::ColdEval` + `CacheLeg::RecordPropagating { still_refining:
     /// false }` (removing the superseded manual `Started(None)`/`Completed` pair
@@ -14177,7 +14182,10 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
             &runtime_sink,
         );
 
-        eprintln!("b started_payload = {:?}", started_payload(&engine, &b_id));
+        eprintln!(
+            "b first_started_commit = {:?}",
+            first_started_commit(&engine, &b_id)
+        );
         eprintln!("b snapshot value = {:?}", snapshot.values.get(&b_id));
         eprintln!(
             "b freshness = {:?}",
@@ -14185,12 +14193,15 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
         );
         eprintln!("diagnostics = {:?}", diagnostics);
 
-        // (1) Provenance — RED today (the main let path's Started payload is None).
+        // (1) Provenance — RED today (the main let path's Started is untagged).
         assert_eq!(
-            started_payload(&engine, &b_id),
-            Some("cold-eval".to_string()),
-            "evaluate_let_bindings' main let commit should carry the 'cold-eval' \
-             TraceSource slug once migrated onto commit_cell_result"
+            first_started_commit(&engine, &b_id),
+            Some(CommitTag {
+                trace: TraceSource::ColdEval,
+                cache: CacheLegKind::Recorded,
+            }),
+            "evaluate_let_bindings' main let commit should carry the ColdEval \
+             commit tag once migrated onto commit_cell_result"
         );
 
         // (2) Value + determinacy preserved (characterization guard — green throughout).
@@ -14222,7 +14233,7 @@ mod evaluate_let_bindings_provenance_and_freshness_tests {
         let shape: Vec<&'static str> = events
             .iter()
             .filter_map(|e| match e.kind {
-                EventKind::Started => Some("Started"),
+                EventKind::Started { .. } => Some("Started"),
                 EventKind::Completed { .. } => Some("Completed"),
                 EventKind::Failed { .. } => Some("Failed"),
                 _ => None,

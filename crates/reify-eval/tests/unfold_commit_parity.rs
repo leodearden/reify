@@ -6,9 +6,9 @@
 //! This is a behaviour-preserving refactor: committed values, determinacy,
 //! and no-garbage-on-skip semantics do not change, so those assertions are
 //! parity locks (green throughout). The one new observable the migration
-//! introduces is `commit_cell_result` writing the journal `Started` event's
-//! payload as `EventPayload::Custom("guarded-group")` — today's hand-inlined
-//! commit writes `payload: None`. That provenance assertion is the RED→GREEN
+//! introduces is `commit_cell_result` tagging the journal `Started` event
+//! with a `TraceSource::GuardedGroup` commit tag — the hand-inlined commit
+//! wrote an untagged one. That provenance assertion is the RED→GREEN
 //! driver for each site's migration step.
 //!
 //! Conventions follow `tests/recursive_unfold.rs` (`TopologyTemplateBuilder`,
@@ -17,7 +17,7 @@
 use reify_core::*;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
-use reify_eval::journal::{EventKind, EventPayload};
+use reify_eval::journal::{CommitTag, EventKind, TraceSource};
 use reify_ir::*;
 use reify_test_support::builders::{binop, conditional_expr, gt, literal, value_ref_typed};
 use reify_test_support::mocks::MockConstraintChecker;
@@ -66,13 +66,20 @@ fn eval_single_template(
     (engine, result)
 }
 
-/// True if `events` contains a `Started` event carrying
-/// `EventPayload::Custom("guarded-group")` — the provenance slug
-/// `commit_cell_result` writes for `TraceSource::GuardedGroup` commits.
+/// True if `events` contains a `Started` event whose commit tag names
+/// `TraceSource::GuardedGroup` — the tag `commit_cell_result` writes for a
+/// guarded-group commit.
 fn has_guarded_group_started_provenance(events: &[&reify_eval::journal::EvalEvent]) -> bool {
     events.iter().any(|e| {
-        matches!(&e.kind, EventKind::Started)
-            && matches!(&e.payload, Some(EventPayload::Custom(s)) if s == "guarded-group")
+        matches!(
+            &e.kind,
+            EventKind::Started {
+                commit: Some(CommitTag {
+                    trace: TraceSource::GuardedGroup,
+                    ..
+                })
+            }
+        )
     })
 }
 
@@ -84,8 +91,8 @@ fn has_guarded_group_started_provenance(events: &[&reify_eval::journal::EvalEven
 /// S(n=2) unfolds one level: S.child(n=1). Assertions (a)/(b) are parity
 /// locks (green throughout — the migration must not change committed value
 /// or determinacy). Assertion (c) is RED today: the current param commit
-/// writes journal `Started` with `payload: None`, not the
-/// `Custom("guarded-group")` slug `commit_cell_result` would write.
+/// writes an untagged journal `Started`, not the `GuardedGroup` commit tag
+/// `commit_cell_result` would write.
 #[test]
 fn unfold_param_cell_commits_via_primitive() {
     let template = build_recursive_s(2);
@@ -108,12 +115,12 @@ fn unfold_param_cell_commits_via_primitive() {
         "S.child.n determinacy should be Determined"
     );
 
-    // (c) RED: journal Started-event provenance slug.
+    // (c) RED: journal Started-event commit tag.
     let node_id = NodeId::Value(child_n.clone());
     let events = engine.journal().events_for_node(&node_id);
     assert!(
         has_guarded_group_started_provenance(&events),
-        "expected a Started event for S.child.n carrying EventPayload::Custom(\"guarded-group\"), \
+        "expected a Started event for S.child.n carrying a GuardedGroup commit tag, \
          got: {:?}",
         events
     );
@@ -128,8 +135,8 @@ fn unfold_param_cell_commits_via_primitive() {
 /// S(n=2) with `let total = if n>0 then n + S.child.total else n` exercises the
 /// cross-level (leaves-first) let-binding path. Assertions (a)/(b) are parity
 /// locks (green throughout). Assertion (c) is RED today: the current let
-/// commit writes journal `Started` with `payload: None`, not the
-/// `Custom("guarded-group")` slug `commit_cell_result` would write. The
+/// commit writes an untagged journal `Started`, not the `GuardedGroup`
+/// commit tag `commit_cell_result` would write. The
 /// step-2 (site-1/param) migration does not touch let cells, so this stays
 /// RED until site 2 migrates.
 #[test]
@@ -183,12 +190,12 @@ fn unfold_let_cell_commits_via_primitive() {
         "S.child.total determinacy should be Determined"
     );
 
-    // (c) RED: journal Started-event provenance slug.
+    // (c) RED: journal Started-event commit tag.
     let node_id = NodeId::Value(child_total.clone());
     let events = engine.journal().events_for_node(&node_id);
     assert!(
         has_guarded_group_started_provenance(&events),
-        "expected a Started event for S.child.total carrying EventPayload::Custom(\"guarded-group\"), \
+        "expected a Started event for S.child.total carrying a GuardedGroup commit tag, \
          got: {:?}",
         events
     );
