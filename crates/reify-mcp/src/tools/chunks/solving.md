@@ -64,7 +64,9 @@ A strict `auto` (the default) must be determined. Bounded on one side only, it i
 error: strict auto parameter resolution is not uniquely determined: no constraint bounds `Plate.thickness` above. Only the constraints declared in `Plate` take part in its solve, and they bound it only below, so a solve could only return the edge of the solver's internal default domain — add the missing bound in `Plate`, give `Plate` an objective, or declare it `auto(free)`
 ```
 
-Add the other bound and the value resolves to the bracket centre. A `minimize` or `maximize` objective chooses a different point instead. An objective whose optimum lies inside the bracket resolves to that optimum; this one resolves `thickness` to 3mm:
+Of the remedies that message lists, add the missing bound. An objective does not stand in for it today. With only `constraint thickness >= 2mm`, `minimize thickness` still makes `reify check` exit 1, with the shorter `error: strict auto parameter resolution is not uniquely determined`, and `maximize thickness` returns `Plate.thickness = 10 m`, the edge of the solver's internal domain, with exit 0 and no warning.
+
+Add the other bound and the value resolves to the bracket centre. An objective whose optimum lies strictly inside the bracket moves the value to that optimum; this one resolves `thickness` to about 3mm, and `reify eval` prints `Shim.thickness = 0.003000000000000555 m`:
 
 ```reify
 structure def Shim {
@@ -74,7 +76,12 @@ structure def Shim {
 }
 ```
 
-An objective that pushes the value onto one of its bounds does not reach that bound today. Measured: `minimize thickness` over the same [2mm, 6mm] bracket returns 4mm, the bracket centre, with no warning. If you need the value at a bound, write that bound as the constraint that fixes it.
+An objective that pushes the value toward one of its bounds does not reach that bound today. What happens depends on the direction of the push. Over the same [2mm, 6mm] bracket:
+
+- **Toward the lower bound** (`minimize thickness`; `maximize -thickness` likewise): the value is 4mm, the bracket centre. `reify check` exits 0 with no warning.
+- **Toward the upper bound** (`maximize thickness`; `minimize -thickness` likewise): `reify check` exits 1 with `error: strict auto parameter resolution is not uniquely determined`. The constraint reads INDETERMINATE and the value stays `undef`. `reify eval` exits 1 too.
+
+Switching to free mode, as that error suggests, does not reach the bound either: over the same bracket it returns 4mm under either `minimize thickness` or `maximize thickness`, with the free-mode warning. If you need the value at a bound, write that bound as the constraint that fixes it.
 
 Free mode is an explicit opt-in for exploration. It returns some feasible value and warns that the value is not uniquely determined:
 
