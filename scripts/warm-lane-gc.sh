@@ -429,7 +429,7 @@ if [ -z "$SEED_SCRIPT" ]; then
 fi
 
 # ── helper: name matches a glob pattern ───────────────────────────────────────
-# _matches_glob <name> <comma-separated-globs>
+# _matches_glob <value> <comma-separated-globs>
 _matches_glob() {
     local value="$1" g
     local -a globs=()
