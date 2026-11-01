@@ -892,11 +892,15 @@ tests/infra/harness-layout-lib.sh    tests/infra/test_verify_narrowing_selection
 scripts/verify-pipeline-infra-tests.txt    tests/infra/test_verify_narrowing_selection.sh
 
 # S18 γ1 (#9098; PRD verify-structured-plan-and-role-table D13, D14): B1, the plan-parity members.
-# The core member and its lint/typecheck grid shards share the harness and the clone, so the
-# shared modules select every member (the glob); each member's own .py selects its wrapper.
+# The core member, its per-action grid shards and the γ2 (#9099) test-region members share the
+# harness and the clone, so the shared modules select every member (the glob); each member's own
+# .py selects its wrapper.
 tests/infra/test_verify_plan_parity.py    tests/infra/test_verify_plan_parity.sh
 tests/infra/test_verify_plan_parity_lint.py    tests/infra/test_verify_plan_parity_lint.sh
 tests/infra/test_verify_plan_parity_typecheck.py    tests/infra/test_verify_plan_parity_typecheck.sh
+tests/infra/test_verify_plan_parity_test.py    tests/infra/test_verify_plan_parity_test.sh
+tests/infra/test_verify_plan_parity_all.py    tests/infra/test_verify_plan_parity_all.sh
+tests/infra/test_verify_plan_parity_region.py    tests/infra/test_verify_plan_parity_region.sh
 tests/infra/plan_parity_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/scope_record_harness.py    tests/infra/test_verify_plan_parity*.sh
 tests/infra/tree_under_test.py    tests/infra/test_verify_plan_parity*.sh

@@ -17,18 +17,23 @@ the first differing line, the plan section it sits in, the module of
 scripts/reify_verify/ that produces that section, and the port-window rule.
 
 EXPECTED_DIVERGENCES is the whole list of differences B1 accepts: PRD D8's
-listed divergences that γ1's corpus reaches, each asserted positively both
-ways by check_divergence(). Every other scenario compares byte-equal; there
-is no per-scenario opt-out.
+listed divergences that B1's corpus reaches and PRD §12's single plan
+divergence, each asserted positively both ways by check_divergence(). Every
+other scenario compares byte-equal; there is no per-scenario opt-out.
 
 GridParity runs one action's full grid (PRD D13: role × profile × scope, with
 --include-infra) in two clone states; each grid shard member subclasses it.
+
+The scenario fixtures the members share live here too: the PATH farms and
+stub cargos for the nextest and priority cases (path_farm, nextest_env), and
+the changed paths S22 B14 plans one at a time (CHANGED_PATH_FIXTURES).
 """
 
 import dataclasses
 import itertools
 import os
 import re
+import shutil
 import sys
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -59,17 +64,24 @@ __all__ = (
     "ExpectedDivergence",
     "GridParity",
     "InParityClone",
+    "CHANGED_PATH_FIXTURES",
+    "SYSTEM_BIN_DIRS",
     "base_env",
     "check_divergence",
     "compare",
     "discard_clone",
     "grid_scenarios",
+    "nextest_env",
+    "path_farm",
     "plan_sections",
     "run_both",
     "run_many",
     "shared_clone",
     "shared_env",
+    "stage_written",
     "the_clone",
+    "toolchain_env",
+    "write_stub",
 )
 
 PORT_WINDOW_RULE = (
@@ -85,9 +97,11 @@ HEADER_HINTS = (
     ("@@REIFY_RETRY_SCOPE=", "build.py (the retry marker's counts) / render.py (its text)"),
     ("# scope decision — ", "scope.py"),
     ("# narrowing — ", "narrowing.py"),
-    ("# heavy partition — ", "build.py"),
+    ("# heavy partition — ", "testregion.py"),
 )
 STDERR_HINTS = (
+    (re.compile(r"gen-nextest-config"), "nextest.py"),
+    (re.compile(r"release-sensitive"), "testregion.py"),
     (re.compile(r"stale jobserver FIFO"), "environment.py"),
     (re.compile(r"cargo-nextest|cargo nextest"), "environment.py"),
     (re.compile(r"REIFY_VERIFY_[A-Z_]*TIMEOUT"), "knobs.py"),
@@ -95,6 +109,37 @@ STDERR_HINTS = (
     (re.compile(r"MERGE_HEAD|--scope|merge-base|forcing"), "scope.py"),
     (re.compile(r"REIFY_AFFECTED_CRATES_OVERRIDE|affected|narrow"), "narrowing.py"),
     (re.compile(r"REIFY_GUI_RETRY_SPECS"), "build.py"),
+)
+COMMAND_HINTS = (
+    (re.compile(r"cargo nextest run|cargo test"), "nextest.py (the pass text: render.py)"),
+    (
+        re.compile(r"@@SEMAPHORE|test-run semaphore|psi-gate|RELEASE-PASS|reify-verify-attempt"),
+        "testregion.py (the region's steps: render.py)",
+    ),
+)
+SYSTEM_BIN_DIRS = (Path("/usr/bin"), Path("/bin"))
+# The changed paths tests/infra/test_verify_scope.sh plans one at a time with
+# `plan_for staged` (S22 B14); stage_written writes each as plan_for does.
+CHANGED_PATH_FIXTURES = (
+    "Cargo.lock",
+    "crates/reify-doc/src/lib.rs",
+    "crates/reify-eval/src/cache.rs",
+    "dark-factory-orchestrator.yaml",
+    "docs/gui-event-channels.md",
+    "docs/gui-event-channels/solver-progress.md",
+    "docs/note.md",
+    "docs/prds/v0_6/foo.md",
+    "examples/foo.ri",
+    "examples/foo/bar.ri",
+    "examples/auto/probe.ri",
+    "gui/src/editor/foo.ts",
+    "gui/src-tauri/src/main.rs",
+    "scripts/prd-capability-check.py",
+    "some_unrecognised_file",
+    "tests/prd-gate/corpus-probe-set.json",
+    "tests/prd-gate/fixtures/geometry_let_selector_consumer.ri",
+    "tests/prd-gate/fixtures/new_prd_fixture.ri",
+    "tests/prd-gate/fixtures/Probe.RI",
 )
 
 
@@ -181,6 +226,67 @@ def run_many(clone: Clone, scenarios) -> list[tuple[Scenario, Pair]]:
     return list(zip(scenarios, pairs))
 
 
+def stage_written(clone: Clone, path: str):
+    """plan_for's fixture: `path` holds exactly 'x\\n', staged."""
+    target = clone.root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("x\n", encoding="utf-8")
+    clone.git("add", "--", path)
+
+
+def toolchain_env() -> dict:
+    """RUSTUP_HOME and CARGO_HOME as the real HOME resolves them, so a scratch HOME keeps cargo working."""
+    env = base_env()
+    home = env["HOME"]
+    return {
+        "RUSTUP_HOME": env.get("RUSTUP_HOME", f"{home}/.rustup"),
+        "CARGO_HOME": env.get("CARGO_HOME", f"{home}/.cargo"),
+    }
+
+
+def write_stub(path: Path, body: str):
+    path.write_text(f"#!/bin/sh\n{body}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def path_farm(scratch: Path, *without: str) -> str:
+    """A PATH directory under `scratch` linking every /usr/bin and /bin entry except `without`."""
+    farm = scratch / "-".join(("farm-without", *without))
+    farm.mkdir()
+    for directory in SYSTEM_BIN_DIRS:
+        for entry in directory.iterdir():
+            link = farm / entry.name
+            if entry.name not in without and not os.path.lexists(link):
+                link.symlink_to(entry)
+    for tool in without:
+        if shutil.which(tool, path=str(farm)) is not None:
+            raise AssertionError(f"premise: {tool} is off the farm")
+    return str(farm)
+
+
+def nextest_env(scratch: Path, name: str, nextest_probe: str, cargo_nextest=False) -> dict:
+    """A scratch HOME without ~/.cargo/env, and PATH = a stub cargo whose `nextest --version` runs
+    `nextest_probe` (every other cargo call execs the real one), then /usr/bin and /bin."""
+    stubs = scratch / name
+    stubs.mkdir()
+    real_cargo = shutil.which("cargo", path=base_env()["PATH"])
+    write_stub(
+        stubs / "cargo",
+        'if [ "$1" = nextest ] && [ "$2" = --version ]; then\n'
+        f"{nextest_probe}"
+        "fi\n"
+        f'exec "{real_cargo}" "$@"\n',
+    )
+    if cargo_nextest:
+        write_stub(stubs / "cargo-nextest", "exit 0\n")
+    path = os.pathsep.join((str(stubs), *map(str, SYSTEM_BIN_DIRS)))
+    if (shutil.which("cargo-nextest", path=path) is not None) != cargo_nextest:
+        raise AssertionError("premise: cargo-nextest is on PATH iff the scenario stubs it")
+    home = scratch / f"{name}-home"
+    home.mkdir()
+    return {"HOME": str(home), "PATH": path, **toolchain_env()}
+
+
 def plan_sections(stdout: str) -> dict[str, list[str]]:
     """{header, environment, commands}: stdout split at the two markers.
 
@@ -231,6 +337,9 @@ def _module_hint(section: str, bash_lines, py_lines, line: str | None) -> str:
     if section == "commands":
         if line is not None and line.startswith(COMMANDS_MARKER):
             return "render.py"
+        for pattern, module in COMMAND_HINTS:
+            if line is not None and pattern.search(line):
+                return module
         if len(bash_lines) == len(py_lines):
             return "render.py (the step text)"
         return "build.py (which steps the plan holds)"
@@ -309,6 +418,16 @@ def _without_line(text: str, line: str) -> str:
     return "".join(kept for kept in text.splitlines(keepends=True) if kept.rstrip("\n") != line)
 
 
+def _gui_pass_names_the_override(bash: Outcome) -> Outcome:
+    lines = bash.stdout.splitlines(keepends=True)
+    edited = [
+        PLACEHOLDER_CONFIG_FILE.sub(f"--config-file {CALLER_NEXTEST_CONFIG}", line)
+        if GUI_FEATURE_PASS in line else line
+        for line in lines
+    ]
+    return dataclasses.replace(bash, stdout="".join(edited))
+
+
 def _write_merge_head(clone: Clone):
     clone.merge_head().write_text(f"{clone.base}\n", encoding="utf-8")
 
@@ -337,6 +456,9 @@ OFFLINE_DUPLICATE_KNOB_WARNING = (
     "verify.sh: WARNING: invalid REIFY_VERIFY_TEST_TIMEOUT_RELEASE=bogus; using default 90m"
 )
 LINT_ALL_PLAN = ("lint", "--scope", "all", "--print-plan")
+CALLER_NEXTEST_CONFIG = "/nonexistent/b1-scratch/caller-nextest.toml"
+GUI_FEATURE_PASS = "cargo nextest run -p reify-gui --features gui"
+PLACEHOLDER_CONFIG_FILE = re.compile(r"--config-file \S*reify-nextest-occt\.<print-plan-placeholder>")
 MERGE_HEAD_FROM_SCRIPTS = Scenario(
     "MERGE_HEAD present, run from scripts/", ("lint", "--scope", "staged", "--print-plan"),
     setup=_write_merge_head, cwd="scripts",
@@ -368,6 +490,17 @@ EXPECTED_DIVERGENCES = (
         "evaluated against the caller's cwd)",
         MERGE_HEAD_FROM_SCRIPTS,
         reference=dataclasses.replace(MERGE_HEAD_FROM_SCRIPTS, cwd=None),
+    ),
+    ExpectedDivergence(
+        "gui-feature-pass-honours-nextest-config",
+        "PRD §12's single plan divergence: the gui-feature pass names the caller's "
+        "REIFY_VERIFY_NEXTEST_CONFIG, where bash's hand copy names the generated file "
+        "(fk-b072e820e926)",
+        Scenario(
+            "task role, caller-owned nextest config", ("test", "--scope", "all", "--print-plan"),
+            {"REIFY_VERIFY_NEXTEST_CONFIG": CALLER_NEXTEST_CONFIG},
+        ),
+        _gui_pass_names_the_override,
     ),
 )
 

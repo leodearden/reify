@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 """
 test_verify_plan_model.py — the Python verify package's plan model, in
-process: its records' invariants, and the test-side emitters no γ1-printable
-plan reaches, compared with bash (S18 γ1, task 9098; PRD
+process: the invariants its records and build_steps enforce, and the seams no
+--print-plan reaches (S18 γ1 task 9098, γ2 task 9099; PRD
 docs/prds/v0_6/verify-structured-plan-and-role-table.md D2, D8, D12).
 
 The plan-parity members (test_verify_plan_parity*.py) compare whole plans
-through the CLI and never import reify_verify. Two things are out of their
-reach, so this member imports the package:
+through the CLI and never import reify_verify. What is out of their reach is
+here:
 
-- the invariants the records and build_steps enforce: a step's command
-  record must suit its kind, an emitter must declare every gate path its
-  steps name, and a record rendered inside single quotes refuses one;
-- the steps that need the test family over the Rust crates: the test-side
-  sync_comments check and the merge-tier pool (its release pre-builds, the
-  #4624 BUILTIN assertion, the bin-sha stamp and run_all.sh). The CLI refuses
-  such a plan until γ2 (#9099) ports the test region, so these steps are
-  built here from a PlanInputs, and each rendered step must be a line of
-  bash's plan, in bash's order. B1 compares them whole once γ2 lands.
-
-It also drives bashcall.source_delta over a scratch ~/.cargo/env.
+- the invariants: a step's command record must suit its kind, an emitter must
+  declare every gate path its steps name, PlanInputs holds a test region
+  exactly when the plan has one, and a record rendered inside quotes refuses
+  that quote;
+- nextest.nextest_config_path's generate arm, which only the executor reaches;
+- bashcall.source_delta over a scratch ~/.cargo/env.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_plan_model.sh.
@@ -27,7 +22,6 @@ thin wrapper tests/infra/test_verify_plan_model.sh.
 
 import dataclasses
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -50,12 +44,16 @@ from reify_verify import (  # noqa: E402
     render,
     scope,
     selection,
+    testregion,
 )
 from reify_verify.bashcall import BashCallError, SourcedFile  # noqa: E402
+from reify_verify.invocation import Action  # noqa: E402
 from reify_verify.plan import (  # noqa: E402
     ArtifactAssertion,
+    AttemptStamp,
     Guarded,
-    HeadStamp,
+    Marker,
+    NextestFlags,
     NodeProject,
     Phase,
     Refused,
@@ -63,10 +61,9 @@ from reify_verify.plan import (  # noqa: E402
     Step,
     StepKind,
 )
+from reify_verify.policy import HeavyPartition, Profile  # noqa: E402
 
-HANG_GUARD_SECS = 300
-COMMANDS_MARKER = "# --- commands"
-TEST_ALL_INFRA = ["test", "--scope", "all", "--include-infra", "--print-plan"]
+LINT_ALL_INFRA = ["lint", "--scope", "all", "--include-infra", "--print-plan"]
 
 
 def base_env(**overrides):
@@ -76,34 +73,16 @@ def base_env(**overrides):
     return env
 
 
-def bash_command_lines(argv, env) -> list[str]:
-    """The command lines of bash's --print-plan: every non-comment line after the commands marker."""
-    proc = subprocess.run(
-        ["bash", str(REPO_ROOT / "scripts" / "verify.sh"), *argv],
-        cwd=REPO_ROOT,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=HANG_GUARD_SECS,
-    )
-    if proc.returncode != 0:
-        raise AssertionError(f"bash verify.sh {argv} exited {proc.returncode}: {proc.stderr!r}")
-    lines = proc.stdout.decode("utf-8").splitlines()
-    starts = [n for n, line in enumerate(lines) if line.startswith(COMMANDS_MARKER)]
-    if len(starts) != 1:
-        raise AssertionError(f"bash's plan has {len(starts)} commands markers")
-    return [line for line in lines[starts[0] + 1:] if not line.startswith("#")]
+def lint_inputs(env) -> build.PlanInputs:
+    """PlanInputs for `verify.sh lint --scope all --include-infra`, resolved as the stages resolve them.
 
-
-def test_side_inputs(env, infra_suite_active=False) -> build.PlanInputs:
-    """PlanInputs for `verify.sh test --scope all --include-infra`, resolved as the stages resolve them.
-
-    The role must not be SELECTIVE: its selected leaves would need the
-    git-env scrub prefix, which build resolves privately.
+    A lint plan has no test region. The role must not be SELECTIVE: its
+    selected leaves would need the git-env scrub prefix, which build resolves
+    privately.
     """
-    invocation = cli.parse_invocation(list(TEST_ALL_INFRA), env)
+    invocation = cli.parse_invocation(list(LINT_ALL_INFRA), env)
     if invocation.action is None:
-        raise AssertionError("TEST_ALL_INFRA names no action")
+        raise AssertionError("LINT_ALL_INFRA names no action")
     role_policy = policy.ROLE_TABLE[invocation.role]
     if role_policy.infra_tier is policy.InfraTier.SELECTIVE:
         raise AssertionError(f"role {invocation.role.value} is SELECTIVE")
@@ -131,50 +110,9 @@ def test_side_inputs(env, infra_suite_active=False) -> build.PlanInputs:
         walls=walls,
         heavy_filter=bashcall.read_export(build.HEAVY_FILTER, REPO_ROOT, env),
         node_lane=build.NodeLane.compose(families, decision, vitest),
-        infra_suite_active=infra_suite_active,
+        infra_suite_active=False,
         git_env_scrub_prefix=None,
-    )
-
-
-class TestTestSideEmittersAgainstBash(unittest.TestCase):
-    """The steps the CLI cannot print yet, rendered, are lines of bash's plan in bash's order."""
-
-    def assert_in_bash_order(self, steps, bash_lines):
-        remaining = iter(bash_lines)
-        for step in steps:
-            rendered = render.render_step(step)
-            if not any(line == rendered for line in remaining):
-                self.fail(
-                    f"{step.phase.value} step is not a line of bash's plan after the "
-                    f"previous step's line:\n{rendered}\nbash's command lines:\n"
-                    + "\n".join(bash_lines)
-                )
-
-    def test_merge_tier_pool_and_test_side_infra_check(self):
-        env = base_env(DF_VERIFY_ROLE="merge")
-        steps = build.build_steps(test_side_inputs(env))
-        phases = [step.phase for step in steps]
-        self.assertEqual(phases.count(Phase.RELEASE_PREBUILD), 2)
-        self.assertIn(Phase.INFRA_POOL, phases)
-        self.assertIn(Phase.INFRA_STATIC, phases)
-        self.assertIn(StepKind.BUILTIN, [step.kind for step in steps])
-        self.assertTrue(any(_holds(step, HeadStamp) for step in steps))
-        self.assert_in_bash_order(steps, bash_command_lines(TEST_ALL_INFRA, env))
-
-    def test_an_active_infra_suite_drops_the_pool_on_both_sides(self):
-        env = base_env(DF_VERIFY_ROLE="merge", REIFY_INFRA_SUITE_ACTIVE="1")
-        steps = build.build_steps(test_side_inputs(env, infra_suite_active=True))
-        bash_lines = bash_command_lines(TEST_ALL_INFRA, env)
-        self.assertNotIn(Phase.INFRA_POOL, [step.phase for step in steps])
-        self.assertFalse(any(build.RUN_ALL.path in line for line in bash_lines), bash_lines)
-        self.assertIn(Phase.INFRA_STATIC, [step.phase for step in steps])
-        self.assert_in_bash_order(steps, bash_lines)
-
-
-def _holds(step: Step, record_type) -> bool:
-    command = step.command
-    return isinstance(command, record_type) or (
-        isinstance(command, Guarded) and isinstance(command.body, record_type)
+        test_region=None,
     )
 
 
@@ -196,7 +134,7 @@ class TestEmitterGateDeclarations(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.inputs = test_side_inputs(base_env(DF_VERIFY_ROLE="merge"))
+        cls.inputs = lint_inputs(base_env(DF_VERIFY_ROLE="merge"))
 
     def emitter(self, declared):
         step = Step(StepKind.TOOL, Phase.OTHER, Script("scripts/named.sh"), "scripts/named.sh", None)
@@ -372,10 +310,75 @@ class TestNextestConfigPath(unittest.TestCase):
 
 class TestPlanInputsScrubPrefix(unittest.TestCase):
     def test_a_prefix_without_selective_infra_is_refused(self):
-        inputs = test_side_inputs(base_env(DF_VERIFY_ROLE="merge"))
+        inputs = lint_inputs(base_env(DF_VERIFY_ROLE="merge"))
         with self.assertRaises(ValueError) as raised:
             dataclasses.replace(inputs, git_env_scrub_prefix="env -u GIT_DIR")
         self.assertIn("selective infra", str(raised.exception))
+
+
+class TestPlanInputsTestRegion(unittest.TestCase):
+    """PlanInputs holds a test region exactly when the plan has the test family over RUN_RUST."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.inputs = lint_inputs(base_env(DF_VERIFY_ROLE="merge"))
+
+    def region(self) -> testregion.TestRegion:
+        runner = nextest.TestRunner(
+            prio="", test_threads=None, config=None, heavy_filter="H", no_fail_fast=False, confirm=None
+        )
+        return testregion.TestRegion(
+            attempt_stamp=None, passes=(), gui_feature=None, runner=runner,
+            heavy_header=HeavyPartition.INCLUDED,
+        )
+
+    def test_a_region_on_a_plan_without_one_is_refused(self):
+        self.assertTrue(self.inputs.decision.run_rust, "premise: scope all runs the Rust families")
+        with self.assertRaises(ValueError) as raised:
+            dataclasses.replace(self.inputs, test_region=self.region())
+        message = str(raised.exception)
+        self.assertIn("test_region=", message)
+        self.assertIn("no test region", message)
+
+    def test_no_region_on_a_plan_with_one_is_refused(self):
+        with self.assertRaises(ValueError) as raised:
+            dataclasses.replace(self.inputs, families=build.Families.of(Action.TEST))
+        message = str(raised.exception)
+        self.assertIn("test_region=None", message)
+        self.assertIn("has a test region", message)
+
+
+class TestQuotedRegionRecords(unittest.TestCase):
+    """A region record rendered inside quotes refuses that quote, naming the record and field."""
+
+    def assert_refused(self, build_record, record, field):
+        with self.assertRaises(ValueError) as raised:
+            build_record()
+        message = str(raised.exception)
+        self.assertIn(record, message)
+        self.assertIn(field, message)
+
+    def flags(self, **overrides):
+        fields = dict(
+            heavy=HeavyPartition.EXCLUDED, heavy_filter="package(a)", no_fail_fast=False,
+            test_threads=None, retry_ids=(),
+        )
+        fields.update(overrides)
+        return NextestFlags(**fields)
+
+    def test_a_retry_id_holding_a_single_quote(self):
+        self.assert_refused(lambda: self.flags(retry_ids=("it's::a_test",)), "NextestFlags", "retry_ids")
+
+    def test_a_heavy_filter_holding_a_double_quote(self):
+        self.assert_refused(lambda: self.flags(heavy_filter='test("x")'), "NextestFlags", "heavy_filter")
+
+    def test_a_marker_holding_a_single_quote(self):
+        self.assert_refused(lambda: Marker("it's skipped"), "Marker", "text")
+
+    def test_an_attempt_stamp_path_holding_a_double_quote(self):
+        self.assert_refused(
+            lambda: AttemptStamp('target/"attempt".json', (Profile.DEBUG,)), "AttemptStamp", "path"
+        )
 
 
 if __name__ == "__main__":
