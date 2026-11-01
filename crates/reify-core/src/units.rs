@@ -894,6 +894,11 @@ mod tests {
             // policy layer (`80mm`, never `0.08m`) — this function is pure and
             // has no opinion about that; containment lives at the call site.
             (DimensionVector::LENGTH, "m"),
+            // Rational exponents (task #9236), in `Rational`'s `p/q` spelling.
+            (DimensionVector::FRACTURE_TOUGHNESS, "kg/m^1/2/s^2"),
+            (DimensionVector::LENGTH.root(2), "m^1/2"),
+            // All-negative: the signed-power form, with a rational exponent.
+            (one_slot(0, crate::Rational::new(-1, 2)), "m^-1/2"),
         ];
         for &(dim, expected) in cases {
             assert_eq!(
@@ -925,14 +930,6 @@ mod tests {
         // Nothing to emit.
         assert_eq!(ri_compound_unit_expr(&DimensionVector::DIMENSIONLESS), None);
 
-        // A fractional exponent: `UnitExpr::Pow` is integral, so `m^(1/2)` has
-        // no spelling at all.
-        assert_eq!(
-            ri_compound_unit_expr(&DimensionVector::LENGTH.root(2)),
-            None,
-            "a fractional exponent has no integral `UnitExpr::Pow` spelling"
-        );
-
         // An exponent outside `i8` — exactly the bound `resolve_unit_expr`
         // enforces via `i8::try_from`, so accepting one here would emit a
         // literal the compiler answers with `ExponentOutOfRange`.
@@ -940,6 +937,24 @@ mod tests {
             ri_compound_unit_expr(&one_slot(0, crate::Rational::new(200, 1))),
             None,
             "an exponent outside i8 is what `resolve_unit_expr` rejects"
+        );
+
+        // A denominator outside `unit_exponent_in_range`.
+        assert_eq!(
+            ri_compound_unit_expr(&one_slot(0, crate::Rational::new(1, 200))),
+            None,
+            "a denominator outside i8 is what `resolve_unit_expr` rejects"
+        );
+
+        // A positive slot forces the DENOMINATOR form, which writes the negated
+        // exponent: `kg/m^128/3`, whose numerator is outside the range.
+        let mut exps = [crate::Rational::ZERO; 10];
+        exps[0] = crate::Rational::new(-128, 3);
+        exps[1] = crate::Rational::ONE;
+        assert_eq!(
+            ri_compound_unit_expr(&DimensionVector(exps)),
+            None,
+            "the denominator form must not write `/m^128/3`"
         );
     }
 
@@ -967,6 +982,7 @@ mod tests {
             DimensionVector::CHARGE,
             DimensionVector::POWER,
             DimensionVector::DYNAMIC_VISCOSITY,
+            DimensionVector::FRACTURE_TOUGHNESS,
         ];
         let is_cross_guarded = |atom: &str| {
             RI_COMPOUND_BASE_SYMBOLS.contains(&Some(atom))
@@ -1049,6 +1065,22 @@ mod tests {
                 "ri_compound_unit_expr does not write {sym:?} for {:?} — the table \
                  is not consulted",
                 dim.canonical_name()
+            );
+        }
+    }
+
+    /// Every named dimension has a `.ri` compound spelling, so no rational
+    /// (or otherwise awkward) dimension can be silently carved out of the
+    /// emitter again.
+    #[test]
+    fn every_named_dimension_has_a_compound_spelling() {
+        for &(dim, name) in crate::NAMED_DIMENSIONS {
+            if dim.is_dimensionless() {
+                continue;
+            }
+            assert!(
+                ri_compound_unit_expr(&dim).is_some(),
+                "named dimension {name} ({dim}) has no `.ri` compound spelling"
             );
         }
     }
