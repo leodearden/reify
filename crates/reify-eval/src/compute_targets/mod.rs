@@ -1036,7 +1036,7 @@ mod tests {
             reason: "test",
         });
     }
-    /// step-3 RED (ruling #6164): the `rotation` derivative channel is the
+    /// Ruling #6164: the `rotation` derivative channel is the
     /// DESIGNATED CROSSING where the radian enters the elastic-result algebra.
     /// This test pins the whole mechanism by which the `rad` tag reaches the
     /// runtime: `sampled_rotation_field` DECLARES a `Vector3<Angle>` codomain,
@@ -1067,9 +1067,6 @@ mod tests {
     /// unchanged (only `data` and `name` may differ), which is what lets the
     /// rotation channel share the curl channel's Regular3D grid with no extra
     /// BVH resample pass.
-    ///
-    /// RED: neither `sampled_rotation_field` nor `rotation_sf_from_curl`
-    /// exists yet, so this does not compile until step-4.
     #[test]
     fn sampled_rotation_field_declares_angle_codomain_and_halves_curl() {
         use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};

@@ -7,7 +7,7 @@
 //! construction-gap closure) coexist and evaluate correctly in ONE runnable
 //! artifact through the full parse→compile→eval→ComputeNode pipeline.
 //!
-//! Each contract is its own test over one memoized evaluation of the example
+//! Each contract is its own test over a memoized evaluation of the example
 //! ([`gate_run`]), so one regression cannot mask the others.
 
 use std::sync::OnceLock;
@@ -102,8 +102,10 @@ struct GateRun {
     compute_targets: Vec<String>,
 }
 
-/// The memoized [`GateRun`]: one FEA solve per test binary, shared across
-/// libtest's threads.
+/// The memoized [`GateRun`]: one compile + FEA solve per test PROCESS. Under
+/// `cargo test` libtest's threads share it; under `cargo nextest run` (the
+/// merge gate) each test is its own process and pays its own solve, ~0.7s in
+/// debug. Another `gate_run()` test is cheap, not free.
 fn gate_run() -> &'static GateRun {
     static RUN: OnceLock<GateRun> = OnceLock::new();
     RUN.get_or_init(|| {
@@ -235,7 +237,7 @@ fn fea_lowers_to_elastic_static_compute_node() {
 
 /// Every `constraint` statement in the example evaluates to Satisfied.
 #[test]
-fn all_eleven_constraints_are_satisfied() {
+fn every_example_constraint_is_satisfied() {
     let constraint_results = &gate_run().check.constraint_results;
     assert_eq!(
         constraint_results.len(),
