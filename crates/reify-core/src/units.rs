@@ -325,9 +325,11 @@ pub fn unit_exponent_in_range(exponent: Rational) -> bool {
     i8::try_from(exponent.num()).is_ok() && i8::try_from(exponent.den()).is_ok()
 }
 
-/// Render one factor of a compound unit expression, omitting `^1`.
-fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
-    if exponent == 1 {
+/// Render one factor of a compound unit expression, omitting `^1`. A rational
+/// exponent uses `Rational`'s `p/q` spelling (`m^1/2`), which the unit grammar
+/// reads back as one exponent.
+fn ri_unit_factor(symbol: &str, exponent: Rational) -> String {
+    if exponent == Rational::ONE {
         symbol.to_owned()
     } else {
         format!("{symbol}^{exponent}")
@@ -368,7 +370,8 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 ///
 /// Only symbols with registry factor exactly `1.0` are ever written. For ANY
 /// tree shape the compiler folds them to exactly 1.0 — `Unit → 1.0`,
-/// `Pow: 1.0.powi(n) == 1.0`, `Mul: 1.0 * 1.0 == 1.0`, `Div: 1.0 / 1.0 == 1.0`
+/// `Pow: 1.0.powi(n) == 1.0` (and `1.0.powf(p/q) == 1.0` for a rational
+/// exponent), `Mul: 1.0 * 1.0 == 1.0`, `Div: 1.0 / 1.0 == 1.0`
 /// — so `expr.rs`'s single `si_value = value * factor` multiply is the IEEE
 /// identity and the caller can write the SI value VERBATIM as the magnitude.
 /// No ladder search and no fold-order matching: the emitter is independent of
@@ -389,8 +392,9 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 /// one symbol (`Pa`, never `kg/m/s^2`). Otherwise factors appear in
 /// [`crate::dimension::BASE_UNIT_SYMBOLS`] index order: positive exponents
 /// first joined by `*`, then each negative exponent introduced by its own `/`
-/// carrying the ABSOLUTE exponent (`kg/m/s`, `kg/m^3`, `m^2*kg/s^3/A`); `^n` is
-/// omitted when `n == 1`. That is the same partition and ordering
+/// carrying the ABSOLUTE exponent (`kg/m/s`, `kg/m^3`, `m^2*kg/s^3/A`,
+/// `kg/m^1/2/s^2`); `^n` is omitted when `n == 1`. That is the same partition
+/// and ordering
 /// `impl Display for DimensionVector` uses, so the two renderers share one
 /// convention.
 ///
@@ -402,13 +406,10 @@ fn ri_unit_factor(symbol: &str, exponent: i8) -> String {
 /// # Returns `None` for
 ///
 /// - a dimensionless vector — nothing to emit;
-/// - a FRACTIONAL exponent, since `UnitExpr::Pow` is integral;
-/// - an exponent outside `i8`. [`crate::Rational::as_i8`] is deliberately the
-///   whole integrality-and-range test: it is exactly the bound
-///   `resolve_unit_expr` enforces via `i8::try_from`, so the emitter's
-///   acceptance set cannot drift from the compiler's by construction;
-/// - a negative exponent whose ABSOLUTE value is outside `i8` — a tighter bound
-///   than `as_i8` alone, because the denominator form writes `|n|`;
+/// - an exponent (or, in the denominator form, its negation) outside
+///   [`unit_exponent_in_range`] — the one predicate `resolve_unit_expr` also
+///   enforces, so the emitter's acceptance set cannot drift from the
+///   compiler's;
 /// - any non-zero exponent on a slot [`RI_COMPOUND_BASE_SYMBOLS`] marks `None`.
 pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
     RI_NAMED_DERIVED_SYMBOLS
@@ -422,17 +423,16 @@ pub fn ri_compound_unit_expr(dim: &DimensionVector) -> Option<String> {
 /// [`RI_COMPOUND_BASE_SYMBOLS`].
 fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
     // Collect first, decide the form second: whether the numerator is empty is
-    // a property of the WHOLE vector, and the two forms accept different
-    // exponents (the signed form can write `s^-128`, the denominator form
-    // cannot write `/s^128`).
-    let mut factors: Vec<(&'static str, i8)> = Vec::new();
-    for (i, r) in dim.0.iter().enumerate() {
-        // TODO(#9236): this `?` is the fracture-toughness carve-out. `Rational::as_i8` is
-        // None for a rational exponent, so DimensionVector::FRACTURE_TOUGHNESS is dropped
-        // here silently. #9236 owns retiring the carve-out and its sibling assertions.
-        let exponent = r.as_i8()?;
-        if exponent == 0 {
+    // a property of the WHOLE vector, and the two forms write different
+    // exponents (the signed form writes `s^-128`, the denominator form would
+    // have to write `/s^128`, which is out of range).
+    let mut factors: Vec<(&'static str, Rational)> = Vec::new();
+    for (i, &exponent) in dim.0.iter().enumerate() {
+        if exponent.is_zero() {
             continue;
+        }
+        if !unit_exponent_in_range(exponent) {
+            return None;
         }
         factors.push((RI_COMPOUND_BASE_SYMBOLS[i]?, exponent));
     }
@@ -440,11 +440,11 @@ fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
         return None;
     }
 
-    if factors.iter().all(|&(_, n)| n < 0) {
+    if factors.iter().all(|&(_, r)| r.num() < 0) {
         return Some(
             factors
                 .iter()
-                .map(|&(sym, n)| ri_unit_factor(sym, n))
+                .map(|&(sym, r)| ri_unit_factor(sym, r))
                 .collect::<Vec<_>>()
                 .join("*"),
         );
@@ -452,16 +452,17 @@ fn ri_base_symbol_unit_expr(dim: &DimensionVector) -> Option<String> {
 
     let mut out = factors
         .iter()
-        .filter(|&&(_, n)| n > 0)
-        .map(|&(sym, n)| ri_unit_factor(sym, n))
+        .filter(|&&(_, r)| r.num() > 0)
+        .map(|&(sym, r)| ri_unit_factor(sym, r))
         .collect::<Vec<_>>()
         .join("*");
-    for &(sym, n) in factors.iter().filter(|&&(_, n)| n < 0) {
-        // The denominator writes the ABSOLUTE exponent, so `|n|` must itself be
-        // an exponent `resolve_unit_expr` accepts. `checked_neg` is that test
-        // and nothing more: it returns `None` only for `i8::MIN`, which would
-        // otherwise be written `^128` and answered with `ExponentOutOfRange`.
-        let magnitude = n.checked_neg()?;
+    for &(sym, r) in factors.iter().filter(|&&(_, r)| r.num() < 0) {
+        // The denominator writes the NEGATED exponent, which must itself be in
+        // range: `-128` is, `128` is not.
+        let magnitude = -r;
+        if !unit_exponent_in_range(magnitude) {
+            return None;
+        }
         out.push('/');
         out.push_str(&ri_unit_factor(sym, magnitude));
     }
