@@ -369,7 +369,8 @@ pub struct FrameSolution {
     /// How many of the 6 Frame DOF the relations pin at the solution.
     pub rank: usize,
     /// The `6 − rank` directions the relations leave free at the solution,
-    /// orthonormal in the solve's SCALED metric (translation over `L`).
+    /// orthonormal in the solve's SCALED metric (each DOF over its
+    /// [`SolveScaling::unknown_scale`]).
     pub null_space: Vec<Twist>,
 }
 
@@ -1416,8 +1417,9 @@ fn rank_tolerance(scaling: &SolveScaling) -> RankTolerance {
 
 // ── The Frame solve as a least-squares problem ───────────────────────────────
 
-/// A relate-scope Frame solve in the scaled unknowns `x̃ = [t / L, θ]` and the
-/// scaled residual rows of every driving relation, stacked in relation order.
+/// A relate-scope Frame solve in the scaled unknowns `x̃_j = x_j / s_j` (`s_j`
+/// the DOF's [`SolveScaling::unknown_scale`]) and the scaled residual rows of
+/// every driving relation, stacked in relation order.
 struct FrameProblem<'a> {
     relations: &'a [RelationInstance],
     unknown: &'a FrameUnknown,
@@ -1448,32 +1450,39 @@ impl<'a> FrameProblem<'a> {
         }
     }
 
-    fn length(&self) -> f64 {
-        self.scaling.characteristic_length()
+    /// Each DOF's nominal scale `s_j`, `[translation; rotation]`.
+    fn scales(&self) -> [f64; FRAME_DOF] {
+        std::array::from_fn(|j| self.scaling.unknown_scale(dof_kind(j)))
     }
 
     fn scaled(&self, pose: &Pose) -> Vec<f64> {
-        let l = self.length();
         pose.translation
             .iter()
-            .map(|t| t / l)
-            .chain(pose.rotation)
+            .chain(&pose.rotation)
+            .zip(self.scales())
+            .map(|(x, s)| x / s)
             .collect()
     }
 
+    /// `z_j · s_j`: a scaled 6-vector back in each DOF's SI unit.
+    fn unscaled(&self, z: &[f64]) -> [f64; FRAME_DOF] {
+        let s = self.scales();
+        std::array::from_fn(|j| z[j] * s[j])
+    }
+
     fn pose(&self, x: &[f64]) -> Pose {
-        let l = self.length();
+        let [tx, ty, tz, rx, ry, rz] = self.unscaled(x);
         Pose {
-            translation: [x[0] * l, x[1] * l, x[2] * l],
-            rotation: [x[3], x[4], x[5]],
+            translation: [tx, ty, tz],
+            rotation: [rx, ry, rz],
         }
     }
 
     fn twist(&self, z: &[f64]) -> Twist {
-        let l = self.length();
+        let [tx, ty, tz, rx, ry, rz] = self.unscaled(z);
         Twist {
-            translation: [z[0] * l, z[1] * l, z[2] * l],
-            rotation: [z[3], z[4], z[5]],
+            translation: [tx, ty, tz],
+            rotation: [rx, ry, rz],
         }
     }
 }
