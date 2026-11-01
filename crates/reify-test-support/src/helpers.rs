@@ -373,6 +373,22 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
+/// Every diagnostic in the slice carrying `code`, in input order.
+///
+/// Matches on the structured CODE, never on message text: a coded
+/// diagnostic's message is explicitly not a stable contract, so a text match
+/// would break on rewording rather than on behaviour.
+///
+/// Severity-blind, unlike [`collect_errors`] and [`error_diags`].
+pub fn diags_with_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> Vec<&Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(code))
+        .collect()
+}
+
+/// [`diags_with_code`] specialised to `Underdetermined`.
+///
 /// Every `Underdetermined`-coded diagnostic in the slice, matched on the
 /// STRUCTURED code rather than by substring on the rendered
 /// `W_UNDERDETERMINED` text — which is the property that makes this worth
@@ -389,10 +405,7 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
 /// Input order is preserved; call sites read the result positionally
 /// (task #6524).
 pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
-    diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
-        .collect()
+    diags_with_code(diagnostics, DiagnosticCode::Underdetermined)
 }
 
 /// Return only the `Severity::Error` diagnostics from a compiled module.
