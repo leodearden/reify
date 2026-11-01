@@ -3,7 +3,7 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the grammar-e2e skip-guard (with the un-memoized status it wraps),
+constants, the ProbeContext builders, the grammar-e2e skip-guard (with the un-memoized status it wraps),
 the measured cache-denial signature and the shared TREE_SITTER_BIN stub
 factories.  A fixture only one partition uses lives in that partition.  It
 imports no test file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
@@ -51,6 +51,40 @@ _VALUE_CELLS_STDOUT = (
     "ValueCleanEvalCells.degenerate_ratio = 0\n"
     "ValueCleanEvalCells.undef_ratio = undef\n"
 )
+
+
+# ---------------------------------------------------------------------------
+# ProbeContext builders — what a test hands α instead of an environment
+# ---------------------------------------------------------------------------
+
+def probe_context(**fields):
+    """A hermetic pcc.ProbeContext: this repo's root and bare PATH binary names.
+
+    Reads no environment variable, so a test's context never depends on what
+    the lane exported; **fields override any default, and every field not
+    named here keeps the class default.
+    """
+    defaults = {
+        "repo_root": _REPO_ROOT,
+        "reify_bin": "reify",
+        "tree_sitter_bin": "tree-sitter",
+    }
+    return pcc.ProbeContext(**{**defaults, **fields})
+
+
+def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
+    """Lay a fixture repo root out in `tmpdir` and return `tmpdir`.
+
+    Creates <tmpdir>/tree-sitter-reify/src/, plus an empty parser.c in it when
+    `parser_c`.  A test hands the result to ProbeContext as repo_root, since
+    α's own root discovery walks up from its file and no environment variable
+    redirects it.
+    """
+    src = os.path.join(tmpdir, "tree-sitter-reify", "src")
+    os.makedirs(src, exist_ok=True)
+    if parser_c:
+        open(os.path.join(src, "parser.c"), "w").close()
+    return tmpdir
 
 
 # ---------------------------------------------------------------------------
