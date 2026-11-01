@@ -34,11 +34,21 @@ describe('renderMarkdown', () => {
         const result = renderMarkdown(input);
         expect(result).toContain(`<pre><code class="language-${tag}">`);
         expect(result).toContain('let x = 1;');
-        // An unconsumed fence does not surface as ``` : the inline-code phase eats
-        // one backtick pair and leaves ``. Assert no backtick at all survives.
+        // no fence delimiter of any length may survive rendering
         expect(result).not.toContain('`');
       },
     );
+
+    it('keeps prose between consecutive hyphenated-tag fences outside both code blocks', () => {
+      const input =
+        '```reify-fragment\nlet x = 1;\n```\nprose between\n```reify-schematic\nlet y = 2;\n```';
+      const result = renderMarkdown(input);
+      expect(result.match(/<pre>[\s\S]*?<\/pre>/g)).toEqual([
+        '<pre><code class="language-reify-fragment">let x = 1;</code></pre>',
+        '<pre><code class="language-reify-schematic">let y = 2;</code></pre>',
+      ]);
+      expect(result).toContain('prose between');
+    });
 
     it('preserves code block content without inline transforms', () => {
       const input = '```\n**not bold** `not code`\n```';
