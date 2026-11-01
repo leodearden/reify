@@ -20,6 +20,7 @@ pub mod sketch;
 mod slvs_sys;
 mod solver;
 mod solvespace;
+pub mod trust_region;
 
 pub use classifier::ConstraintClassifier;
 pub use cpsat::{CpSatSolver, SolveAllResult};

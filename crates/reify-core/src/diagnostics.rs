@@ -287,6 +287,11 @@ pub enum DiagnosticCode {
     /// - `"constraints could not be satisfied (max absolute residual: …)"` (solver.rs, Severity::Error)
     /// - `"geometric constraints are inconsistent (<n> failed)"` (solvespace.rs, Severity::Error)
     /// - `"CpSatSolver: no satisfying assignment found for … auto params with … constraints"` (cpsat.rs, Severity::Error)
+    ///
+    /// Also the code of a trust-region STALL in the relate-solve
+    /// (`reify_ir::SolveFailureCause::Stalled`, rendered by
+    /// `crates/reify-eval/src/relate_solve.rs`): the step collapsed at a point that
+    /// is neither a root nor certified stationary — a search failure, not a proof.
     ConstraintUnsatisfiable,
     /// Origin: three producers, all carrying the shared "not uniquely determined" phrase:
     /// - `crates/reify-constraints/src/solver.rs::verify_uniqueness`, perturbation re-solve
@@ -321,6 +326,34 @@ pub enum DiagnosticCode {
     /// Distinct from [`Self::ConstraintUnsatisfiable`], which reports a SEARCH
     /// failure rather than a proof (solution-set-completeness C3).
     ConstraintRefuted,
+    /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
+    /// `reify_ir::SolveFailureCause::Infeasible` (task η #6675); rendered by
+    /// `crates/reify-constraints/src/relate_solve.rs::solve_frame` and
+    /// `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the construction
+    /// site.
+    ///
+    /// The continuous solve stopped at a stationary point of `‖r̃‖²` that is not a
+    /// root: the relative gradient `‖J̃ᵀr̃‖ / (‖J̃‖_F·‖r̃‖)` is within the solver's
+    /// gradient tolerance while some scaled row still exceeds its bar. The message
+    /// carries that certificate and blames the rows (and the relations they came
+    /// from) that remain violated.
+    ///
+    /// The PRD-prose mnemonic is `E_SOLVER_INFEASIBLE`
+    /// (`docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
+    SolverInfeasible,
+    /// Origin: `crates/reify-constraints/src/trust_region.rs::solve` via
+    /// `reify_ir::SolveFailureCause::BudgetExhausted` (task η #6675); rendered by
+    /// `crates/reify-eval/src/relate_solve.rs`. Severity::Error at the construction
+    /// site.
+    ///
+    /// The continuous solve used its whole iteration budget without converging
+    /// and without certifying infeasibility. The message states the iteration
+    /// count against the budget and the trend of the step norms, so a slow-but-
+    /// progressing solve reads differently from a stuck one.
+    ///
+    /// The PRD-prose mnemonic is `E_SOLVER_BUDGET_EXHAUSTED`
+    /// (`docs/prds/v0_6/geometry-algebra-solver-unification.md` §7.5).
+    SolverBudgetExhausted,
     /// Origin: `crates/reify-compiler/src/entity.rs::expand_constraint_inst`
     ///          (param-level argument type check, task 4546).
     ///

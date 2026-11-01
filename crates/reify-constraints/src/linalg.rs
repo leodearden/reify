@@ -179,6 +179,30 @@ pub fn norm(a: &[f64]) -> f64 {
     dot(a, a).sqrt()
 }
 
+/// `A v`, for `A` given by its rows.
+pub fn mat_vec<R: AsRef<[f64]>>(rows: &[R], v: &[f64]) -> Vec<f64> {
+    rows.iter().map(|row| dot(row.as_ref(), v)).collect()
+}
+
+/// `Aᵀ w`, for `A` given by its rows (of length `dim`).
+pub fn mat_t_vec<R: AsRef<[f64]>>(rows: &[R], w: &[f64], dim: usize) -> Vec<f64> {
+    let mut out = vec![0.0; dim];
+    for (row, wi) in rows.iter().zip(w) {
+        for (o, a) in out.iter_mut().zip(row.as_ref()) {
+            *o += a * wi;
+        }
+    }
+    out
+}
+
+/// The Frobenius norm of `A`, given by its rows.
+pub fn frobenius_norm<R: AsRef<[f64]>>(rows: &[R]) -> f64 {
+    rows.iter()
+        .map(|row| dot(row.as_ref(), row.as_ref()))
+        .sum::<f64>()
+        .sqrt()
+}
+
 /// A Householder reflector `H = I − β·v·vᵀ` acting on coordinates `offset..`.
 #[derive(Debug, Clone)]
 struct Reflector {

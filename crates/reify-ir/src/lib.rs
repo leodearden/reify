@@ -41,6 +41,7 @@ pub mod ranked;
 pub mod resolution_profile;
 pub mod ri_literal;
 pub mod sampled;
+pub mod solve_termination;
 pub mod structure_registry;
 pub mod traits;
 pub mod value;
@@ -64,6 +65,10 @@ pub use constraint::{
     TermContribution, dimension_of, objective_terms_coherent,
 };
 pub use resolution_profile::{IterationBudget, ResolutionProfile, StalenessPolicy};
+pub use solve_termination::{
+    BudgetExhaustion, InfeasibilityCertificate, ResidualSource, RowBlame, SolveFailureCause,
+    SolveStall,
+};
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,
     CompiledPattern, DeterminacyPredicateKind, ResolvedFunction, SelectorKind, TAG_AD_HOC_SELECTOR,
