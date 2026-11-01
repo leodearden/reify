@@ -19,13 +19,16 @@ use reify_core::Type;
 /// which is what lets an owning crate bind its rows exhaustively without
 /// re-deriving membership from a name list.
 ///
-/// α seeds two families; each later τ migration adds its own variant.
+/// Each τ migration adds its own variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     /// Fallible string→quantity parse builtins (task #4535).
     Parse,
     /// FEA stress-analysis reduction builtins (FEA-5, task #2884).
     Analysis,
+    /// The geometric-relation vocabulary (geometric-relations γ #4383, η #4387,
+    /// tangent #5540).
+    Relation,
 }
 
 /// How a builtin is bound to an implementation — PRD §3 decision 4.
@@ -37,9 +40,8 @@ pub enum Family {
 /// eventual variants — including ones it has no business knowing — just to stay
 /// `_`-free.
 ///
-/// All five variants are declared now even though α seeds only
-/// [`BindingKind::EvalBuiltin`], so a later τ adds rows rather than widening
-/// the vocabulary.
+/// Every variant is declared whether or not it holds rows yet, so a later τ
+/// adds rows rather than widening the vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BindingKind {
     /// Dispatched by `reify_stdlib::eval_builtin`.
@@ -50,8 +52,12 @@ pub enum BindingKind {
     EnginePostProcess,
     /// Lowered to a `CompiledGeometryOp` in reify-ir.
     GeometryOp,
-    /// Relations and markers — no runtime binding at all.
+    /// Markers — no runtime binding at all.
     CompileOnly,
+    /// Bound by reify-constraints' `relate_solve`. Relations have a per-kind
+    /// runtime binding (`residual_dispatch`), so they are not `CompileOnly`.
+    /// Its generated sub-enum is `RelationKind`.
+    Relation,
 }
 
 /// How many arguments a row accepts.
@@ -88,6 +94,19 @@ impl Arity {
         match self {
             Arity::Exact(n) => argc == *n,
             Arity::Range(lo, hi) => argc >= *lo && argc <= *hi,
+            Arity::Variadic => true,
+        }
+    }
+
+    /// Does a row declaring `slot_count` arg slots give every argument this
+    /// arity admits a slot of its own? A bounded arity needs exactly one slot
+    /// per argument up to its upper bound, optional trailing arguments
+    /// included; `Variadic` has no upper bound, so it constrains no count.
+    ///
+    /// `registry!` asserts this for every row at compile time.
+    pub const fn slot_count_matches(&self, slot_count: usize) -> bool {
+        match *self {
+            Arity::Exact(n) | Arity::Range(_, n) => slot_count == n,
             Arity::Variadic => true,
         }
     }
@@ -245,7 +264,8 @@ pub struct BuiltinRow<Id: Copy + 'static = crate::BuiltinId> {
     pub binding: BindingKind,
     /// How many arguments this row accepts.
     pub arity: Arity,
-    /// Per-slot argument constraints, one entry per declared slot.
+    /// Per-slot argument constraints, one entry per argument [`Self::arity`]
+    /// admits ([`Arity::slot_count_matches`]).
     pub arg_slots: &'static [ArgSlot],
     /// How this row's result type is computed.
     pub result: ResultSpec,
@@ -269,31 +289,31 @@ mod tests {
 
     // ── Family ───────────────────────────────────────────────────────────────
 
-    /// α seeds exactly two families. Both variants must exist and be
-    /// distinguishable.
+    /// Every declared family exists and is distinguishable from every other.
     #[test]
-    fn family_has_the_two_seed_variants() {
-        assert_ne!(
-            Family::Parse,
-            Family::Analysis,
-            "Parse and Analysis must be distinct Family variants"
-        );
+    fn family_variants_are_pairwise_distinct() {
+        let all = [Family::Parse, Family::Analysis, Family::Relation];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(a, b, "Family variants must be pairwise distinct");
+            }
+        }
     }
 
     // ── BindingKind ──────────────────────────────────────────────────────────
 
-    /// All five PRD decision-4 binding kinds are declared now, even though α
-    /// seeds only `EvalBuiltin`. The kind column must cover the full ~358-name
-    /// surface — a later τ adding `GeometryOp` rows must not also have to widen
-    /// the vocabulary.
+    /// All six binding kinds are declared. The kind column must cover the full
+    /// ~358-name surface — a later τ adding `GeometryOp` rows must not also
+    /// have to widen the vocabulary.
     #[test]
-    fn binding_kind_declares_all_five_decision_4_variants() {
+    fn binding_kind_declares_all_six_variants() {
         let all = [
             BindingKind::EvalBuiltin,
             BindingKind::ExprIntercept,
             BindingKind::EnginePostProcess,
             BindingKind::GeometryOp,
             BindingKind::CompileOnly,
+            BindingKind::Relation,
         ];
         // Pairwise-distinct: catches a copy-paste that aliases two variants.
         for (i, a) in all.iter().enumerate() {
@@ -329,6 +349,23 @@ mod tests {
     fn arity_variadic_matches_any_argc() {
         assert!(Arity::Variadic.matches(0), "Variadic must match argc 0");
         assert!(Arity::Variadic.matches(7), "Variadic must match argc 7");
+    }
+
+    /// A bounded arity's slot count is its upper bound, optional trailing
+    /// arguments included; `Variadic` constrains no slot count.
+    #[test]
+    fn arity_slot_count_matches_its_upper_bound() {
+        assert!(Arity::Exact(2).slot_count_matches(2));
+        assert!(!Arity::Exact(2).slot_count_matches(1));
+        assert!(!Arity::Exact(2).slot_count_matches(3));
+        assert!(Arity::Exact(0).slot_count_matches(0));
+        assert!(Arity::Range(3, 4).slot_count_matches(4));
+        assert!(
+            !Arity::Range(3, 4).slot_count_matches(3),
+            "a Range row needs a slot for its optional trailing argument too"
+        );
+        assert!(Arity::Variadic.slot_count_matches(0));
+        assert!(Arity::Variadic.slot_count_matches(3));
     }
 
     // ── ArgSlot ──────────────────────────────────────────────────────────────

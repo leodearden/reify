@@ -401,3 +401,52 @@ fn eval_pattern_composition_triple_form_does_not_crash() {
          panic under the additive list-form wiring.\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
+
+/// Task #7270: the shipped flat_map-over-lambda topology walk resolves its
+/// curated fillet edges on every CLI surface. Pre-fix, `check`, `eval` and
+/// `build` each exited 1 with "the edge selector did not resolve to a concrete
+/// edge list … [edge selector evaluated to Undef]".
+#[test]
+fn fillet_top_edges_example_check_eval_build_exit_clean() {
+    let path = common::example_path("topology_selectors/fillet_top_edges.ri");
+    let mut eval_stdout = String::new();
+    for subcommand in ["check", "eval"] {
+        let (status, stdout, stderr) = common::run_subcommand(subcommand, &path);
+        let has_error_line = stderr
+            .lines()
+            .any(|l| l.trim_start().to_ascii_lowercase().starts_with("error:"));
+        assert!(
+            status.success()
+                && !has_error_line
+                && !stderr.contains("did not resolve to a concrete edge list"),
+            "reify {subcommand} fillet_top_edges.ri must exit 0 with no error line.\
+             \nstdout: {stdout}\nstderr: {stderr}"
+        );
+        eval_stdout = stdout;
+    }
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping top_edges/build assertions: OCCT unavailable");
+        return;
+    }
+    let top_edges_rhs = eval_stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("FilletTopEdges.top_edges ="))
+        .unwrap_or_else(|| panic!("no FilletTopEdges.top_edges line.\nstdout: {eval_stdout}"))
+        .trim();
+    assert!(
+        top_edges_rhs.starts_with('[') && top_edges_rhs.matches("<Geometry:").count() == 4,
+        "FilletTopEdges.top_edges must resolve to a list of the box's four top-perimeter \
+         edge handles, got {top_edges_rhs:?}"
+    );
+
+    let built = common::run_build_at(&path);
+    let written = std::fs::metadata(&built.output_path).map_or(0, |m| m.len());
+    assert!(
+        built.status.success() && written > 0,
+        "reify build fillet_top_edges.ri must exit 0 and write a non-empty file \
+         ({written} bytes).\nstdout: {}\nstderr: {}",
+        built.stdout,
+        built.stderr
+    );
+}

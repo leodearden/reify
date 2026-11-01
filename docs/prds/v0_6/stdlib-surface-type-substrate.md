@@ -210,7 +210,7 @@ Phase B steps 9–14 re-cited every task-4548-listed in-family marker to its own
 
 | Family | Owning task (status) | Final disposition in tree | Marker sites (file:line) |
 |---|---|---|---|
-| `vec3-type` | **#4575** (blocked, LIVE at the 2026-06-13 closeout) | **CITED** `TODO(vec3-type, #4575)` — survives | fea_multi_case.ri:305/:433; kinematic.ri:99/:113/:122/:129/:130; trajectory.ri:94 |
+| `vec3-type` | **#4575** (blocked, LIVE at the 2026-06-13 closeout) | **CITED** `TODO(vec3-type, #4575)` — survived this closeout; **RESOLVED UPSTREAM after it**: #4575 tightened `Vec3` to `Vector3<Length>`, retiring every `vec3-type` marker (#4794 later generalized the alias to `Vec3<Q> = Vector3<Q>`) | fea_multi_case.ri:305/:433; kinematic.ri:99/:113/:122/:129/:130; trajectory.ri:94 (markers all gone) |
 | `pose3-type` + `location-id-type` | **#4577** (blocked, LIVE at this closeout; done since 2026-06-18) | **CITED** `TODO(pose3-type/location-id-type, #4577)` / `FIXME(location-id-type, #4577)` — survived this closeout; **RESOLVED UPSTREAM after it**: #4577 landed `Pose3 = Transform3` and modal `at : Selector`, deleting those markers and re-citing trajectory.ri's location-id-type to #4122; #4655 (`LocationId = FaceSelector`, merged 2026-07-05) deleted that last one | trajectory.ri:85/:104; modal_analysis.ri StepForce/ImpulseForce/HarmonicForce/SampledForce `at` (markers all gone) |
 | `range-type` / `range-angle-type` | **#4576** (done) | **RESOLVED UPSTREAM** — `Range<JointValue>` / `Range<Angle>` landed; markers deleted on main (not re-cited) | kinematic.ri, flexures.ri (gone) |
 | `part-structdef` | **#4578** (done) | **RESOLVED UPSTREAM** — `structure def Part` + `param part : Part` landed; FIXMEs deleted on main | modal_analysis.ri (gone) |

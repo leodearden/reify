@@ -33,7 +33,8 @@ only novel "syntax" in this PRD is CLI flags, not grammar).
   undef elements evades the notes loop's `v.is_undef()` filter (probe: the
   printed `P.holes` produced no note even though the loop ran).
 - `cli-skip-site` → PASS. Empty-cause `continue` in `cmd_eval`'s undef-notes
-  loop (`crates/reify-cli/src/main.rs`, "if causes.is_empty() { continue; }").
+  loop (`crates/reify-cli/src/main.rs`, "if causes.is_empty() { continue; }"). **[Amended 2026-10-22, υ #8775 BLK-1]**
+  delivered check `cli-empty-cause-loud` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is `cmd_eval`'s undef-notes loop, which moved to `crates/reify-cli/src/cmd/eval.rs`.
 - `diagnostic-code-home` → PASS. `DiagnosticCode` registry in
   `crates/reify-core/src/diagnostics.rs` (W_/E_ codes; task 2255/3416
   precedent) — `W_UNDEF_UNEXPLAINED` is a new coded variant there.

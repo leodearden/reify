@@ -329,14 +329,11 @@ fn workspace_root() -> std::path::PathBuf {
 /// some aborted run left behind. Either would turn this suite red while
 /// asserting, wrongly, that tracked source is ambiguous.
 ///
-/// `sanitize` strips the repo-redirect vars (`GIT_DIR`, `GIT_WORK_TREE`, …) so
-/// an ambient environment cannot point this `git -C <root>` at a different
-/// repository — the same precaution `reify_audit::git_env` requires of every
-/// repo-targeting call.
+/// Built through `reify_git_env::command`, so an ambient `GIT_DIR`/
+/// `GIT_WORK_TREE` cannot point this `git -C <root>` at a different repository.
 fn tracked_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(root).args(["ls-files", "-z", "--", "*.ri"]);
-    let output = reify_test_support::git_env::sanitize(&mut command)
+    let output = reify_git_env::command(root)
+        .args(["ls-files", "-z", "--", "*.ri"])
         .output()
         .unwrap_or_else(|e| panic!("cannot run `git ls-files` in {}: {e}", root.display()));
     assert!(

@@ -15,7 +15,8 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_eval::cache::NodeId;
 use reify_eval::{Engine, EngineError, EvalResult};
 use reify_test_support::{
-    MockConstraintChecker, bracket_compiled_module, parse_and_compile, wave2_flip_fixture,
+    MockConstraintChecker, bracket_compiled_module, parse_and_compile, scalar_si,
+    wave2_flip_fixture,
 };
 
 use reify_compiler::CompiledModule;
@@ -195,14 +196,6 @@ fn bracket_with_volume_expr(volume_expr: &str) -> String {
     )
 }
 
-/// Pull the SI numeric value out of a `Value::Scalar`, panicking otherwise.
-fn si(value: &Value, label: &str) -> f64 {
-    match value {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar for {label}, got {other:?}"),
-    }
-}
-
 /// Changing only the `volume` let expression must (a) update `volume` to
 /// the new expression's value, (b) leave the param values unchanged, and
 /// (c) make `last_eval_set()` contain the dependent `volume` node while
@@ -221,7 +214,7 @@ fn edit_source_modified_let_reevaluates_only_dependents() {
     let height_id = ValueCellId::new(e, "height");
     let thickness_id = ValueCellId::new(e, "thickness");
 
-    let volume_a = si(
+    let volume_a = scalar_si(
         result_a
             .values
             .get(&volume_id)
@@ -237,7 +230,7 @@ fn edit_source_modified_let_reevaluates_only_dependents() {
         .edit_source(&module_b)
         .expect("edit_source must succeed after eval");
 
-    let volume_b = si(
+    let volume_b = scalar_si(
         result_b
             .values
             .get(&volume_id)
@@ -334,7 +327,7 @@ fn edit_source_added_cell_is_evaluated_and_unchanged_cells_preserved() {
 
     // (a) perimeter evaluated against the canonical param defaults
     //     2 * (80mm + 100mm) = 360mm = 0.36 m.
-    let perimeter_b = si(
+    let perimeter_b = scalar_si(
         result_b
             .values
             .get(&perimeter_id)
@@ -601,7 +594,7 @@ fn edit_source_preserves_param_overrides_for_unchanged_params() {
 
     // Sanity: the override is installed in the snapshot pre-edit_source.
     let snapshot_pre = engine.snapshot().expect("snapshot must exist");
-    let width_pre = si(
+    let width_pre = scalar_si(
         snapshot_pre
             .values
             .get(&width_id)
@@ -626,7 +619,7 @@ fn edit_source_preserves_param_overrides_for_unchanged_params() {
 
     // (a) width must retain the override value — not revert to module_B's
     //     source default of 80mm.
-    let width_b = si(
+    let width_b = scalar_si(
         result_b
             .values
             .get(&width_id)
@@ -641,7 +634,7 @@ fn edit_source_preserves_param_overrides_for_unchanged_params() {
 
     // (b) volume must be evaluated against the overridden width, not the
     //     module_B source default. Expected: 0.12 * 0.10 * 0.005 * 2.0.
-    let volume_b = si(
+    let volume_b = scalar_si(
         result_b
             .values
             .get(&volume_id)

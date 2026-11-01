@@ -570,7 +570,12 @@ warm_lane_pool:
 # the serial-queue backlog. Correctness is the same gate as single merges (the train tip
 # is verified by verify.sh --scope all before advance). df tasks 1704-1708 landed the code.
 merge_train_former_enabled: true
-merge_train_coalesce_enabled: true  # dark_factory:1722; user-authorized 2026-06-10
+# Retroactive coalescing disabled per Leo's ruling 2026-10-30 (task 9612): match Dark
+# Factory (dark_factory 7739, ccaa563020), where deep merge-ahead chains supersede it
+# and compete with it for the same buffered singles. Evidence: dark-factory
+# plans/mcp-coalesce-trains-2026-10-26.md §0, §4.4. Declared atomic trains are unaffected.
+# Restart-only (red tier). Originally enabled by dark_factory:1722, 2026-06-10.
+merge_train_coalesce_enabled: false
 merge_train_max_members: 3  # already the default; explicit per GO-N3
 
 # Variable-depth speculative verify placement (task 2359) — ACTIVATE the deep
@@ -1413,6 +1418,13 @@ git:
   # phantom that lazy lowest-numbered-first acquire never demands. Fail-open,
   # idempotent, consulted once at startup.
   warm_lane_prewarm: true
+  # Soft-floor throttle (DF GitOps._warm_lane_soft_pressure_defer): defer FRESH lane
+  # allocations while free space or free inodes are under the soft floors
+  # (GitConfig.warm_lane_soft_free_gib / warm_lane_soft_free_inodes). NOT the top-level
+  # warm_lane_pool.soft_free_gib above: a different key, which this throttle never reads.
+  # warm_lane_disk_guard stays off, so the same check also defers below the HARD floor.
+  # Restart-tier: none of the soft-floor keys is in DF RELOADABLE_FIELDS.
+  warm_lane_soft_floor: true
 
 # Unknown-config-key census allowlist (dark-factory task 2989, filed as reify
 # task 5733 follow-up from escalation agent-followup-2989). 2989 adds a
@@ -1454,9 +1466,15 @@ project_root: "/home/leo/src/reify"
 
 # Task 3546 (mu gate), Leo's ruling of 2026-10-18 on esc-3546-1: enforce strand
 # conversion (task 3539) fleet-wide. Restart-only, so it takes effect at the next
-# scheduled fleet redeploy. workflow_exit_contract_enforce stays False until task
-# 3113 lands and a fresh soak shows zero would-violates.
+# scheduled fleet redeploy.
 convert_to_blocked_enforce: true
+# Task 3546 (mu gate), Leo's ruling E of 2026-10-20 (dark-factory task 7255):
+# enforce the run()-exit contract (task 3542) fleet-wide. Soak clean on
+# 2026-10-22: zero workflow_exit_contract events of any verdict in all 8 fleet
+# run stores since 2026-10-20T01:10Z, after 3113's deploy, with every unit
+# restarted inside the window. Restart-only, so it goes live at the next fleet
+# restart.
+workflow_exit_contract_enforce: true
 
 merge_deep:
   chain_cap: 6

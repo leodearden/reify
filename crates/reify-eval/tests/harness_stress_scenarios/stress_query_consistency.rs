@@ -141,9 +141,9 @@ fn centroid_of_box_at_origin() {
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -178,9 +178,9 @@ fn centroid_shifts_correctly_after_translate() {
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -231,9 +231,9 @@ fn box_volume_equals_whd() {
     let d_m = 0.03_f64;
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(20.0),
-            depth: mm(30.0),
+            size_x: mm(10.0),
+            size_y: mm(20.0),
+            size_z: mm(30.0),
         })
         .unwrap();
 
@@ -267,9 +267,9 @@ fn box_surface_area_equals_formula() {
     let d_m = 0.03_f64;
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(20.0),
-            depth: mm(30.0),
+            size_x: mm(10.0),
+            size_y: mm(20.0),
+            size_z: mm(30.0),
         })
         .unwrap();
 
@@ -303,9 +303,9 @@ fn box_volume_multiple_sizes() {
     // Case 1: 5mm cube → V = (0.005)³ = 1.25e-7 m³
     let cube = kernel
         .execute(&GeometryOp::Box {
-            width: mm(5.0),
-            height: mm(5.0),
-            depth: mm(5.0),
+            size_x: mm(5.0),
+            size_y: mm(5.0),
+            size_z: mm(5.0),
         })
         .unwrap();
     match kernel.query(&GeometryQuery::Volume(cube.id)).unwrap() {
@@ -328,9 +328,9 @@ fn box_volume_multiple_sizes() {
     // Case 2: 100mm × 1mm × 1mm slab → V = 0.1 * 0.001 * 0.001 = 1e-7 m³
     let slab = kernel
         .execute(&GeometryOp::Box {
-            width: mm(100.0),
-            height: mm(1.0),
-            depth: mm(1.0),
+            size_x: mm(100.0),
+            size_y: mm(1.0),
+            size_z: mm(1.0),
         })
         .unwrap();
     match kernel.query(&GeometryQuery::Volume(slab.id)).unwrap() {
@@ -364,9 +364,9 @@ fn mock_distance_self_is_zero() {
     // Create a shape to get handle 1
     kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -390,9 +390,9 @@ fn mock_centroid_dispatch() {
     let mut kernel = MockGeometryKernel::new().with_query_result(h1, centroid_json);
     kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 
@@ -428,9 +428,9 @@ fn mock_bbox_dispatch() {
     let mut kernel = MockGeometryKernel::new().with_query_result(h1, bbox_json);
     kernel
         .execute(&GeometryOp::Box {
-            width: mm(10.0),
-            height: mm(10.0),
-            depth: mm(10.0),
+            size_x: mm(10.0),
+            size_y: mm(10.0),
+            size_z: mm(10.0),
         })
         .unwrap();
 

@@ -1,4 +1,4 @@
-//! Pin: the 8 `pub fn` / `pub(crate) fn` that form the §3.2 engine-seam
+//! Pin: the `pub fn` / `pub(crate) fn` of the §3.2 engine-seam
 //! producer-orphan subset swept under engine-integration-norm task ε (#3533).
 //!
 //! User-observable signal:
@@ -28,11 +28,9 @@
 //! **Wide-scope trade-off**: the audit runs at the wide `crates/reify-*/src`
 //! scope (same as `new_orphans_2026_05_16_g_allow.rs`), so any name-token
 //! occurrence of a pinned function name elsewhere in that scope — e.g. a local
-//! `let eligible = ...` in another crate — can push `callers > 0`, silently
+//! binding of the same name in another crate — can push `callers > 0`, silently
 //! removing the function from `allowed[]` and tripping assertion (b) without a
-//! real consumer being wired.  The `eligible` pin
-//! (crates/reify-mesh-morph/src/lib.rs) carries the highest collision risk due
-//! to the word's frequency in English.  Before deleting any PINS row after an
+//! real consumer being wired.  Before deleting any PINS row after an
 //! assertion-(b) failure, confirm a real call edge was wired:
 //! `rg '\bFN_NAME\b' crates/reify-*/src`.
 //!
@@ -71,21 +69,13 @@ const PINS: &[(&str, &str)] = &[
     // crates/reify-mesh-morph/src/lib.rs invokes `compute_dirichlet_bcs` →
     // `laplacian_smooth`/`elasticity_morph` → `quality_check`. All four now have
     // production callers (no longer orphans), so per the removal contract above
-    // their PINS rows are deleted. The two rows below remain orphans BY DESIGN:
-    // task #4744 (done)'s `compose_morph` calls the `elasticity_morph` wrapper
-    // (not `elasticity_morph_with_cg_opts` directly) and `morph_eligible` (not
-    // the `eligible` skeleton), so neither gained a production caller.
+    // their PINS rows are deleted. The row below remains an orphan BY DESIGN:
+    // task #4744 (done)'s `compose_morph` calls the `elasticity_morph` wrapper,
+    // not `elasticity_morph_with_cg_opts` directly, so it gained no production
+    // caller.
     (
         "crates/reify-mesh-morph/src/elasticity.rs",
         "elasticity_morph_with_cg_opts",
-    ),
-    // NOTE: `eligible` is a common English word; at the wide `crates/reify-*/src`
-    // scope a future `let eligible = ...` in any crate could create a name-token
-    // collision (callers > 0 → exits allowed[]).  See module-doc "Wide-scope
-    // trade-off" before deleting this row after an assertion-(b) failure.
-    (
-        "crates/reify-mesh-morph/src/lib.rs",
-        "eligible",
     ),
 ];
 

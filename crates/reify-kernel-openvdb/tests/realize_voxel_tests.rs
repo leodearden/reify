@@ -7,45 +7,12 @@
 // Shared mesh fixtures
 // ---------------------------------------------------------------------------
 
-/// Build a 10mm × 10mm × 1mm thin-slab mesh: 8 corner vertices, 12 triangles
-/// closing the box. Faces are wound consistently (outward normals).
-///
-/// Used by `realize_voxel_from_thin_slab_mesh_returns_handle_with_expected_active_count`.
+/// A 10mm × 10mm × 1mm closed, outward-wound thin slab, as the vertex and
+/// triangle slices `realize_voxel_from_mesh` takes.
 #[cfg(has_openvdb)]
 fn thin_slab_mesh() -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
-    // 8 corners of a 10×10×1 box (mm units).
-    let verts: Vec<[f32; 3]> = vec![
-        [0.0, 0.0, 0.0],   // 0 bottom face
-        [10.0, 0.0, 0.0],  // 1
-        [10.0, 10.0, 0.0], // 2
-        [0.0, 10.0, 0.0],  // 3
-        [0.0, 0.0, 1.0],   // 4 top face
-        [10.0, 0.0, 1.0],  // 5
-        [10.0, 10.0, 1.0], // 6
-        [0.0, 10.0, 1.0],  // 7
-    ];
-    // 12 triangles (2 per face × 6 faces). Outward-normal convention.
-    let tris: Vec<[u32; 3]> = vec![
-        // Bottom face (z=0, normal -Z)
-        [0, 2, 1],
-        [0, 3, 2],
-        // Top face (z=1, normal +Z)
-        [4, 5, 6],
-        [4, 6, 7],
-        // Front face (y=0, normal -Y)
-        [0, 1, 5],
-        [0, 5, 4],
-        // Back face (y=10, normal +Y)
-        [2, 3, 7],
-        [2, 7, 6],
-        // Left face (x=0, normal -X)
-        [0, 4, 7],
-        [0, 7, 3],
-        // Right face (x=10, normal +X)
-        [1, 2, 6],
-        [1, 6, 5],
-    ];
-    (verts, tris)
+    use reify_kernel_openvdb::test_fixtures::{axis_aligned_box, vertex_and_triangle_arrays};
+    vertex_and_triangle_arrays(&axis_aligned_box([0.0; 3], [10.0, 10.0, 1.0]))
 }
 
 /// Build a unit-sphere mesh as a regular octahedron (8 triangles, 6 vertices).

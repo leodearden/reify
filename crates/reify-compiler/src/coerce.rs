@@ -47,7 +47,10 @@
 //! existing `try_default_padding` precedent that already lives there
 //! (see esc-4118-61).
 
-use super::*;
+use reify_core::Type;
+use reify_ir::{CompiledExpr, CompiledFunction};
+
+use crate::type_compat::type_compatible;
 
 /// `true` when `ty` is exactly `List<Geometry>` — the sole parameter shape the
 /// selector→list β coercion targets.
@@ -203,8 +206,9 @@ pub(crate) fn is_selector_kind_mismatch_nomatch(
 /// qualify, or when no argument is a `Selector` (so ordinary calls are
 /// bit-for-bit unchanged).
 ///
-/// Mirrors [`try_default_padding`]: a NoMatch-arm secondary resolver that lives
-/// alongside the primary exact-match path. Restricted to non-generic candidates
+/// Mirrors [`try_default_padding`](crate::type_compat::try_default_padding): a
+/// NoMatch-arm secondary resolver that lives alongside the primary exact-match
+/// path. Restricted to non-generic candidates
 /// because a generic `List<T>` parameter is already a resolution wildcard in
 /// `resolve_function_overload` and would have produced `Resolved` (never
 /// reaching this retry); keeping the retry concrete-only avoids perturbing

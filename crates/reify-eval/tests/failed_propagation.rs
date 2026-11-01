@@ -415,13 +415,13 @@ fn panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream() {
     let c_events = engine.journal().events_for_node(&c_node);
     let pass2_started_count = c_events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .count();
     let c_changed_after_pass1 = c_events.iter().rev().take(pass2_started_count).any(|e| {
         matches!(
             e.kind,
             EventKind::Completed {
-                outcome: EvalOutcome::Changed
+                outcome: Some(EvalOutcome::Changed)
             }
         )
     });
@@ -653,9 +653,9 @@ fn one_realization_box_module() -> reify_compiler::CompiledModule {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(80.0)),
-            ("height".into(), mm_lit(100.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(80.0)),
+            ("size_y".into(), mm_lit(100.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
 

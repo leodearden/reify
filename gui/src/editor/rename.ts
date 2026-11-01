@@ -23,6 +23,7 @@ import {
 } from './versionSkew';
 import type { PrepareRenameResult, Range, TextEdit, WorkspaceEdit } from './lspClient';
 import { lspRangeToCmRange } from './lspRange';
+import { isSameFile } from '../utils/pathUtils';
 
 /**
  * Apply an array of LSP TextEdits to a plain string, returning the result.
@@ -186,9 +187,9 @@ export interface WorkspaceEditDeps {
  * Route a WorkspaceEdit's per-URI edits to the appropriate sink.
  *
  * Routing logic per URI:
- *  - uri === activeUri         → deps.applyActive (uses the live CM view)
- *  - deps.isOpen(uri) === true → deps.applyOpenInactive (buffer update + persist)
- *  - else                      → deps.applyClosed (direct disk write)
+ *  - same document as activeUri (isSameFile) → deps.applyActive (uses the live CM view)
+ *  - deps.isOpen(uri) === true                → deps.applyOpenInactive (buffer update + persist)
+ *  - else                                     → deps.applyClosed (direct disk write)
  *
  * URIs with an absent or empty edit list are silently skipped.
  * Pure routing — no I/O of its own.
@@ -201,7 +202,7 @@ export function applyWorkspaceEditAcrossFiles(
   for (const { uri, edits } of workspaceEditTargets(edit)) {
     if (!edits || edits.length === 0) continue;
 
-    if (uri === activeUri) {
+    if (isSameFile(uri, activeUri)) {
       deps.applyActive(uri, edits);
     } else if (deps.isOpen(uri)) {
       deps.applyOpenInactive(uri, edits);
@@ -229,7 +230,7 @@ export function applyWorkspaceEdit(
   edit: WorkspaceEdit,
   uri: string,
 ): boolean {
-  const edits = workspaceEditTargets(edit).find((t) => t.uri === uri)?.edits;
+  const edits = workspaceEditTargets(edit).find((t) => isSameFile(t.uri, uri))?.edits;
   if (!edits || edits.length === 0) return false;
 
   const doc = view.state.doc;
@@ -370,7 +371,7 @@ export function renameCommand(
         // A file switch can swap the buffer while prepareRename is in flight (the
         // editor reuses one EditorView across files). Abandon a stale request
         // rather than prompting/refusing on the now-different document.
-        if (uriGetter() !== uri) return;
+        if (!isSameFile(uriGetter(), uri)) return;
         if (!target) {
           // Invariant-4 refusal: show the message, edit nothing.
           ui.showCannotRename(view);
@@ -392,7 +393,7 @@ export function renameCommand(
                 // now-different view; a stale apply would corrupt the new file.
                 // Checked HERE, after the LAST await, so a re-issued request's
                 // second await window is covered by the same guard.
-                if (!view.dom.isConnected || uriGetter() !== uri) return;
+                if (!view.dom.isConnected || !isSameFile(uriGetter(), uri)) return;
                 if (!edit) {
                   // Server rejected the accepted name (invalid identifier /
                   // no-op), or every answer it gave was stale: the field already

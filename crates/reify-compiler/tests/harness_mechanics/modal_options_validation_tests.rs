@@ -270,10 +270,9 @@ fn no_damping_marker_structure() {
 ///   (a) exactly 2 params, (b) the declared (name, dimension) PAIRS are
 ///       (alpha, Frequency) and (beta, Time). Declaration ORDER is not part
 ///       of the claim — it appears only because the assertion loop below
-///       walks `params` positionally. That ctor args bind by NAME, and that
-///       the mislabel path still binds leniently to `__arg{i}` (so a renamed
-///       param falls back to its default, under a Warning pre-δ), are pinned
-///       executably in the binder's own contract home,
+///       walks `params` positionally. That ctor args bind by NAME, and what
+///       an unknown (mislabelled) arg does, are pinned executably in the
+///       binder's own contract home,
 ///       `harness_structure_declarations/struct_ctor_field_conformance_tests.rs`,
 ///       by `structure_ctor_args_bind_by_name_not_positionally` and
 ///       `misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`,

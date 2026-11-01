@@ -10,7 +10,7 @@
 //!
 //! Step-3 tests (RED until step-4 impl lands):
 //!   - `floor_infeasible_emits_distinct_diagnostic`
-//!   - `non_money_infeasible_keeps_constraint_unsatisfiable`
+//!   - `non_money_infeasible_is_refuted_not_floor_infeasible`
 //!
 //! Task #5618 section (constraint-derived bounds) at the bottom of the file:
 //! a Money-objective auto bracketed away from 0 must not report a false
@@ -26,7 +26,7 @@
 //! Task #5618 step-9 sub-section (RED until step-10 impl lands) pins DIAGNOSTIC
 //! HONESTY for the shapes steps 2-8 cannot rescue:
 //!   - `margin_only_infeasibility_names_the_margin_not_an_empty_region`
-//!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording`
+//!   - `genuinely_unsatisfiable_constraints_are_refuted_not_blamed_on_the_margin`
 //!
 //! Task #5714 section (WITNESS SEARCH) at the bottom of the file extends that
 //! honesty to shapes whose floored converged point lands OUTSIDE the user's box,
@@ -39,8 +39,8 @@
 //!     (rung 2 where the bound derivation abstains entirely)
 //!   - `underivable_empty_box_keeps_the_region_empty_wording` (anti-shortcut
 //!     control: genuinely empty, yet its DERIVED box is non-degenerate)
-//!   - `genuinely_unsatisfiable_constraints_keep_the_region_empty_wording` above
-//!     serves as the second pair's empty half.
+//!   - `genuinely_unsatisfiable_constraints_are_refuted_not_blamed_on_the_margin`
+//!     above serves as the second pair's empty half.
 //!
 //! Task #5714 review rounds — a witness verified against one constraint set says
 //! NOTHING about another, so the emit site runs a SEPARATE search per claim and
@@ -68,7 +68,7 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{DiagnosticCode, DimensionVector, Type, ValueCellId};
 use reify_ir::{
-    AutoParam, BinOp, CompiledExpr, ConstraintSolver, ObjectiveSense,
+    AutoParam, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, ObjectiveSense,
     ObjectiveSet, ResolutionProblem, SolveResult, Value, ValueMap,
 };
 
@@ -591,9 +591,10 @@ fn floor_infeasible_emits_distinct_diagnostic() {
 }
 
 /// Control: a genuinely infeasible non-Money problem (x > 5mm AND x < 1mm)
-/// must still emit `ConstraintUnsatisfiable`, NOT `RobustnessFloorInfeasible`.
+/// must NOT emit `RobustnessFloorInfeasible`. Since task #6655 it is refuted
+/// before any solve, so its failure is the `ConstraintRefuted` proof.
 #[test]
-fn non_money_infeasible_keeps_constraint_unsatisfiable() {
+fn non_money_infeasible_is_refuted_not_floor_infeasible() {
     let x_id = ValueCellId::new("NonMoneyInfeasible", "x");
 
     // x > 5mm AND x < 1mm (inherently infeasible, no floor)
@@ -616,12 +617,12 @@ fn non_money_infeasible_keeps_constraint_unsatisfiable() {
     let result = DimensionalSolver.solve(&problem);
     match result {
         SolveResult::Infeasible { diagnostics } => {
-            let has_unsatisfiable = diagnostics.iter().any(|d| {
-                d.code == Some(DiagnosticCode::ConstraintUnsatisfiable)
-            });
+            let refuted = diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ConstraintRefuted));
             assert!(
-                has_unsatisfiable,
-                "expected ConstraintUnsatisfiable for non-money infeasible, got: {:?}",
+                refuted,
+                "expected ConstraintRefuted for non-money infeasible, got: {:?}",
                 diagnostics
             );
             let has_floor_code = diagnostics.iter().any(|d| {
@@ -1063,15 +1064,17 @@ fn margin_only_infeasibility_names_the_margin_not_an_empty_region() {
     );
 }
 
-/// CONTROL: constraints that are themselves unsatisfiable keep the region-empty
-/// wording, so the two situations stay distinguishable.
+/// CONTROL: constraints that are themselves unsatisfiable are never blamed on
+/// the margin, so the two situations stay distinguishable.
 ///
 /// `x >= 50mm ∧ x <= 10mm` admits no point at all, with or without the margin.
-/// A Money objective still activates the floor (so this lands in the same
-/// `floor_applied` arm as the test above), but here "the region is empty" is the
-/// literal truth and must survive.
+/// Since task #6655 it never reaches the `floor_applied` arm: it is refuted
+/// before any solve, so its failure is the `ConstraintRefuted` proof rather than
+/// a `RobustnessFloorInfeasible` report. The floor arm's region-empty wording is
+/// pinned on a shape the propagator cannot read, by
+/// `underivable_empty_box_keeps_the_region_empty_wording`.
 #[test]
-fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
+fn genuinely_unsatisfiable_constraints_are_refuted_not_blamed_on_the_margin() {
     let x_id = ValueCellId::new("ReallyEmpty", "x");
 
     let problem = ResolutionProblem {
@@ -1095,18 +1098,23 @@ fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
         functions: vec![].into(),
     };
 
-    let message = floor_infeasible_message(&problem);
-
+    let SolveResult::Infeasible { diagnostics } = DimensionalSolver.solve(&problem) else {
+        panic!("x >= 50mm ∧ x <= 10mm admits no point, so the solve must be Infeasible");
+    };
     assert!(
-        message.contains("the floored feasible region is empty"),
-        "x >= 50mm ∧ x <= 10mm is unsatisfiable on its own terms — the region-empty \
-         wording must survive so it stays distinguishable from a margin-only failure; \
-         got: {message}"
+        diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::ConstraintRefuted)),
+        "x >= 50mm ∧ x <= 10mm is unsatisfiable on its own terms, so it must be \
+         reported as a proof; got: {diagnostics:?}"
     );
     assert!(
-        !message.contains("original constraints ARE"),
-        "must not claim the original constraints are satisfied when they are not; \
-         got: {message}"
+        !diagnostics.iter().any(|d| {
+            d.code == Some(DiagnosticCode::RobustnessFloorInfeasible)
+                || d.message.contains("original constraints ARE")
+        }),
+        "must not blame the margin or claim the original constraints are satisfied \
+         when they are not; got: {diagnostics:?}"
     );
 }
 
@@ -1128,13 +1136,33 @@ fn genuinely_unsatisfiable_constraints_keep_the_region_empty_wording() {
 // measurement that makes a box-emptiness shortcut unsound.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── helper: `coeff * x OP bound_si_m` (Length) ──
+// ── helpers: `coeff * x OP bound_si_m` (Length) ──
 //
-// Sibling of `length_cmp` for the COEFFICIENT form.  `derive_param_intervals`
-// abstains on it entirely (measured: `DerivedInterval { lo: None, hi: None }`),
-// which is precisely what the #5714 tests need — a bracket the bound derivation
-// cannot read, so neither the seed nor any box check can stand in for a witness.
+// `coefficient_length_cmp` is the plain COEFFICIENT form, which the HC4 bound
+// derivation reads since task #6655.  `scaled_length_cmp` keeps what the #5714
+// tests need — a bracket the bound derivation cannot read, so neither the seed
+// nor any box check can stand in for a witness — by routing the same
+// `coeff * x` through a constant-condition conditional.  The solver evaluates
+// it bit-identically, but HC4 encloses a conditional forward only (its untaken
+// branch is never constrained), so nothing is derived through it and the seed
+// stays the fixed 0.01 these fixtures' measured margins were taken at.
 fn scaled_length_cmp(coeff: f64, op: BinOp, x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
+    let CompiledExprKind::BinOp { left, right, .. } =
+        coefficient_length_cmp(coeff, op, x_id, bound_si_m).kind
+    else {
+        unreachable!("coefficient_length_cmp builds a comparison");
+    };
+    let always = CompiledExpr::literal(Value::Bool(true), Type::Bool);
+    let opaque_scaled = reify_test_support::conditional_expr(always, (*left).clone(), *left);
+    CompiledExpr::binop(op, opaque_scaled, *right, Type::Bool)
+}
+
+fn coefficient_length_cmp(
+    coeff: f64,
+    op: BinOp,
+    x_id: &ValueCellId,
+    bound_si_m: f64,
+) -> CompiledExpr {
     let length_dim = DimensionVector::LENGTH;
     let dimensionless = DimensionVector::DIMENSIONLESS;
     let scaled = CompiledExpr::binop(
@@ -1373,6 +1401,42 @@ fn wide_underivable_bracket_does_not_blame_a_satisfiable_margin() {
         "the margin must still be identified even though it is not the culprit; \
          got: {message}"
     );
+}
+
+/// The SAME wide bracket written as a plain coefficient form now SOLVES.
+///
+/// `wide_underivable_bracket_does_not_blame_a_satisfiable_margin` keeps the
+/// bracket opaque to the bound derivation, so its floored solve starts from
+/// the fixed 0.01 and does not converge. Read directly, `2·x > 60mm ∧
+/// 2·x < 100mm` is the box (30mm, 50mm) to HC4 (task #6655), so the seed sits
+/// inside the user's bracket and the floored solve reaches the floor.
+#[test]
+fn readable_coefficient_bracket_solves_inside_its_floored_window() {
+    let x_id = ValueCellId::new("ReadableWide", "x");
+    let problem = bracketed_money_problem(
+        vec![length_auto_param(x_id.clone())],
+        vec![
+            coefficient_length_cmp(2.0, BinOp::Gt, &x_id, 0.060),
+            coefficient_length_cmp(2.0, BinOp::Lt, &x_id, 0.100),
+        ],
+        money_expr_x_per_mm(&x_id),
+    );
+    match DimensionalSolver.solve(&problem) {
+        SolveResult::Solved { values, .. } => {
+            let x = values
+                .get(&x_id)
+                .and_then(Value::as_f64)
+                .expect("numeric x");
+            assert!(
+                (x - 0.0306).abs() < 1e-12,
+                "cost pulls x onto the floored lower edge, 2·x = 60mm + 2% (measured: \
+                 30.6mm); got {x:e} m"
+            );
+        }
+        other => {
+            panic!("a readable bracket with a non-empty floored window must solve; got {other:?}")
+        }
+    }
 }
 
 /// The class-2/class-3 boundary, probed INSIDE the band the wide/tight pair

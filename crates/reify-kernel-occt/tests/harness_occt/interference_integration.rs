@@ -8,7 +8,8 @@
 //!
 //! Fixture: two 10×10×10 boxes — `box_a` centered at the origin (x∈[-5,5]),
 //! `box_b` translated along X by `dx` (x∈[dx-5, dx+5]).
-//! - `dx=50.0`: 40-unit gap (mirrors the `distance_between_shapes` lib.rs test at line 3340).
+//! - `dx=50.0`: 40-unit gap (mirrors `harness_occt_kernel/queries_export.rs`'s
+//!   `distance_between_shapes`).
 //! - `dx=5.0`: 50% overlap (x∈[0,5] is the common slab).
 
 #![cfg(has_occt)]
@@ -31,17 +32,17 @@ fn two_box_kernel(dx: f64) -> (OcctKernel, GeometryHandleId, GeometryHandleId) {
 
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box_a creation should succeed");
 
     let box_b_raw = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box_b creation should succeed");
 
@@ -90,7 +91,7 @@ fn shapes_intersect_returns_false_for_disjoint_boxes() {
 // ---------------------------------------------------------------------------
 
 /// Disjoint boxes (dx=50.0): box_a x∈[-5,5], box_b x∈[45,55] → gap = 40.
-/// Mirrors the `distance_between_shapes` lib.rs test (line ~3367).
+/// Mirrors `harness_occt_kernel/queries_export.rs`'s `distance_between_shapes`.
 #[test]
 fn min_clearance_between_disjoint_boxes_matches_gap() {
     let (kernel, box_a_id, box_b_id) = two_box_kernel(50.0);

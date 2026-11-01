@@ -3283,4 +3283,71 @@ assert "T9: no lock file was created for the lane that had none" \
 assert "T9: ...and it reads IDLE, an absent lock being a positive answer (T4/T5 pin the degraded runs)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-nolock .*live=IDLE"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block U — RESIDUE_GLOB is matched as a pattern, never pathname-expanded
+# against the caller's CWD (task 9661)
+#
+# The audit runs from whatever CWD its caller had. From the main checkout,
+# data/queue/*.db* names real files (write_queue.db-shm, write_queue.db-wal),
+# so a split that also pathname-expands turns the glob into those literals and
+# a residue-only lane misreports as wip. U_CWD reproduces that shape.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block U: RESIDUE_GLOB is CWD-independent ---"
+
+U_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-u-XXXXXX)"
+_TMPDIRS+=("$U_MOUNT")
+U_MAP="$(mktemp /tmp/test-warm-lane-audit-u-map-XXXXXX)"
+_TMPDIRS+=("$U_MAP")
+printf '9661 pending\n9662 pending\n' > "$U_MAP"
+
+# _lane-residue: Block E(a)'s recipe — the only dirty tracked path is residue.
+make_lane "$U_MOUNT/_lane-residue" "task/9661"
+_add_ahead_commit "$U_MOUNT/_lane-residue"
+mkdir -p "$U_MOUNT/_lane-residue/data/queue"
+printf 'db-v1\n' > "$U_MOUNT/_lane-residue/data/queue/write_queue.db"
+git -C "$U_MOUNT/_lane-residue" add data/queue/write_queue.db
+git -C "$U_MOUNT/_lane-residue" commit -q -m "add residue db"
+printf 'db-v2\n' > "$U_MOUNT/_lane-residue/data/queue/write_queue.db"
+
+# _lane-wip: Block E(b)'s recipe — the over-match guard.
+make_lane "$U_MOUNT/_lane-wip" "task/9662"
+_add_ahead_commit "$U_MOUNT/_lane-wip"
+printf 'uncommitted wip change\n' >> "$U_MOUNT/_lane-wip/README.md"
+
+U_CWD="$(mktemp -d /tmp/test-warm-lane-audit-u-cwd-XXXXXX)"
+_TMPDIRS+=("$U_CWD")
+mkdir -p "$U_CWD/data/queue" "$U_CWD/data/other"
+touch "$U_CWD/data/queue/write_queue.db-shm" "$U_CWD/data/queue/write_queue.db-wal" \
+    "$U_CWD/data/other/x"
+
+assert "U0: fixture precondition — the default residue glob really expands in U_CWD" \
+    bash -c 'cd "$1" && set -- data/queue/*.db* && [ "$1" != "data/queue/*.db*" ]' _ "$U_CWD"
+
+# -- U(a): default residue glob, run from U_CWD --------------------------------
+pushd "$U_CWD" >/dev/null
+ORACLE_MAP="$U_MAP" run_helper --mount "$U_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+popd >/dev/null
+assert "U1: exit 0" test "$RC" -eq 0
+assert "U2: _lane-residue dirty=residue-only from a CWD where the glob expands" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*dirty=residue-only"' _ "$OUT"
+assert "U3: _lane-residue classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*classification=RECLAIMABLE"' _ "$OUT"
+assert "U4: _lane-wip stays dirty=wip (the fix must not over-match)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-wip .*dirty=wip"' _ "$OUT"
+assert "U5: HEADROOM reclaimable=1" \
+    bash -c '[ "$1" = "1" ]' _ "$(_headroom_field "$OUT" reclaimable)"
+
+# -- U(b): a comma list whose every element expands in U_CWD -------------------
+# A split that stopped honouring `,` would leave one literal pattern that
+# matches nothing, so U6 also pins that the comma split survives the fix.
+pushd "$U_CWD" >/dev/null
+REIFY_WARM_LANE_AUDIT_RESIDUE_GLOB='data/other/*,data/queue/*.db*' ORACLE_MAP="$U_MAP" \
+    run_helper --mount "$U_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+popd >/dev/null
+assert "U6: _lane-residue still dirty=residue-only under a comma-separated list" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*dirty=residue-only"' _ "$OUT"
+assert "U7: _lane-wip still dirty=wip under a comma-separated list" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-wip .*dirty=wip"' _ "$OUT"
+
 test_summary

@@ -139,7 +139,8 @@ The only intended byte change is that member-captured `@@REIFY_SLOT_` / `@@REIFY
 |---|---|---|
 | `run_start` | `run_id`, `scope` (`all`/`host-infra`), `branch` (`pool`/`serial`/`subset`/`host-infra`), `discovered` (int) | run_all |
 | `member_start` | `member` (basename), `attempt` (1/2), `mode` (`capture`/`stream`) | `_ra_run_member` |
-| `member_finish` | `member`, `attempt`, `rc` (int), `verdict` (`PASS`/`FAIL`/`SKIP`/`FLAKY_PASS`), `duration_ms`, `fail_detail` (list of strings), `fail_detail_omitted` (int) | `_ra_run_member` (rc, detail) + `_ra_record_result` (verdict) — see note |
+| `member_finish` | `member`, `attempt`, `rc` (int), `verdict` (`PASS`/`FAIL`/`SKIP`/`FLAKY_PASS`), `duration_ms`, `queued_ns`, `started_ns`, `ended_ns` (int, epoch ns on the `ts_ns` clock; leaf φ's additive v1 extension), `fail_detail` (list of strings), `fail_detail_omitted` (int) | `_ra_run_member` (rc, detail, times) + `_ra_record_result` (verdict) — see note |
+| `phase_finish` | `phase` (`pool`/`serial`/`retry` on the pool branch, `serial` on every serial branch), `started_ns`, `ended_ns` (int) — leaf φ's additive v1 extension | `_ra_phase_finish`, once per phase, at its end |
 | `slot_timeout` | `reason`, `slots`, `waited`, `disposition` (`fatal`/`soft`), `lock` (string, JSON-escaped), `emitter` (`run_all_pool` or the calling lib basename) | `slot_emit_timeout`, for every caller in the verify tree (§9 R-1) |
 | `run_finish` | `discovered`, `failures`, `failed` (list), `flaky` (list), `skipped` (list), `interrupted` (bool) | run_all, normal path and `_ra_on_term` |
 

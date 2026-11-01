@@ -107,9 +107,9 @@ fn relational_selectors_v2_compile_and_return_correct_semantics() {
     // Build the same 10×10×10 mm box that relational_selectors_v2.ri models.
     let box_id = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("10×10×10 mm box should build via OCCT")
         .id;

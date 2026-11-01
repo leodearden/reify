@@ -64,12 +64,13 @@ crates/reify-compiler/src/units.rs 3
 crates/reify-compiler/src/variant_construct.rs 2
 crates/reify-constraints/src/relate_solve.rs 1
 crates/reify-eval/src/compute_targets/bc_resolve.rs 3
-crates/reify-eval/src/compute_targets/buckling_multi_case.rs 8
+crates/reify-eval/src/compute_targets/buckling_multi_case.rs 1
 crates/reify-eval/src/compute_targets/elastic_static.rs 12
 crates/reify-eval/src/compute_targets/fdm_slice.rs 2
 crates/reify-eval/src/compute_targets/form_find.rs 2
+crates/reify-eval/src/compute_targets/load_cases.rs 6
 crates/reify-eval/src/compute_targets/membrane_load.rs 1
-crates/reify-eval/src/compute_targets/multi_case.rs 8
+crates/reify-eval/src/compute_targets/multi_case.rs 1
 crates/reify-eval/src/compute_targets/tensegrity_load.rs 1
 crates/reify-eval/src/dynamics_ops.rs 4
 crates/reify-eval/src/engine_admin.rs 2

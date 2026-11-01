@@ -14,6 +14,7 @@
 #include <openvdb/tools/VolumeToMesh.h>
 #include <openvdb/tools/Interpolation.h>
 #include <openvdb/io/File.h>
+#include <tbb/global_control.h>
 
 #include <array>
 #include <cstddef>
@@ -54,6 +55,48 @@ std::unique_ptr<OpenVdbGridHandle> mesh_to_volume_ffi(
     rust::Slice<const std::array<uint32_t, 3>> tris,
     double voxel_size,
     double half_width_voxels);
+
+// ---------------------------------------------------------------------------
+// Dense SDF → level set
+// ---------------------------------------------------------------------------
+
+/// Build a level-set FloatGrid from a dense block of SDF samples laid out
+/// X-outermost row-major (`data[(ix * ny + iy) * nz + iz]`), voxel (0,0,0)
+/// centred at world `origin`. Every voxel of the block is set ACTIVE with its
+/// value clamped to ±band_half_width, which is also the background (D-8 of
+/// docs/prds/v0_6/implicit-solids.md). Throws std::runtime_error on an empty
+/// axis, a size mismatch, a block over GRID_DENSIFY_MAX_VOXELS, or a
+/// non-finite / non-positive argument or sample.
+std::unique_ptr<OpenVdbGridHandle> dense_sdf_to_level_set_ffi(
+    rust::Slice<const float> data,
+    std::array<uint32_t, 3> dims,
+    std::array<double, 3> origin,
+    double voxel_size,
+    double band_half_width);
+
+// ---------------------------------------------------------------------------
+// Level-set CSG
+// ---------------------------------------------------------------------------
+
+/// Union (a ∪ b), difference (a minus b) and intersection (a ∩ b) of two
+/// level-set grids, one policy for all three:
+/// - Both operands must be level sets: grid class GRID_LEVEL_SET and a
+///   background > 0. Otherwise std::runtime_error names the operand (left or
+///   right) and the class or background found.
+/// - OpenVDB CSG works in index space, so when the transforms differ the right
+///   operand is first resampled onto the left's transform with
+///   tools::resampleToMatch, which takes its level-set rebuild branch and the
+///   left's background. Resampling a large coarse right operand onto a much
+///   finer left lattice costs memory proportional to the finer resolution.
+/// - The result is a FRESH grid carrying the left's transform and metadata.
+/// - Neither input is mutated: the tools::csg*Copy variants read const
+///   inputs, whereas the in-place tools::csg* calls always leave B empty.
+std::unique_ptr<OpenVdbGridHandle> csg_union_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b);
+std::unique_ptr<OpenVdbGridHandle> csg_difference_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b);
+std::unique_ptr<OpenVdbGridHandle> csg_intersection_ffi(
+    const OpenVdbGridHandle& a, const OpenVdbGridHandle& b);
 
 // ---------------------------------------------------------------------------
 // Volume → Mesh (marching cubes)
@@ -144,5 +187,32 @@ rust::Vec<float> grid_densify_to_buffer(const OpenVdbGridHandle& h);
 /// 256M voxels = 1 GiB at 4 bytes/float. Any larger and we throw rather
 /// than allocate.
 constexpr int64_t GRID_DENSIFY_MAX_VOXELS = 256LL * 1024LL * 1024LL;
+
+// ---------------------------------------------------------------------------
+// TBB parallelism limit: compiled into every build, but the only Rust caller
+// is the test-fixtures-gated `tbb_scope` module.
+// ---------------------------------------------------------------------------
+
+/// Holds TBB to one thread for as long as it lives (tbb::global_control is
+/// process-global and RAII-scoped). The value is hard-wired so no invalid
+/// thread count can cross the FFI.
+struct TbbParallelismLimit {
+    tbb::global_control control;
+
+    TbbParallelismLimit() : control(tbb::global_control::max_allowed_parallelism, 1) {}
+};
+
+std::unique_ptr<TbbParallelismLimit> tbb_single_thread_limit_ffi();
+size_t tbb_max_allowed_parallelism_ffi();
+
+// ---------------------------------------------------------------------------
+// Fog-volume copy of a level set: compiled into every build, but the only
+// Rust caller is the test-fixtures-gated
+// `OpenVdbKernel::register_fog_volume_for_test`.
+// ---------------------------------------------------------------------------
+
+/// A fresh fog-volume copy of the level set `h` (tools::sdfToFogVolume);
+/// `h` is only read.
+std::unique_ptr<OpenVdbGridHandle> level_set_to_fog_volume_ffi(const OpenVdbGridHandle& h);
 
 } // namespace reify_openvdb

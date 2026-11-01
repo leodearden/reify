@@ -10,9 +10,10 @@ import std.ports.mechanical
 
 // A generic shaft coupling that connects a driver port to a driven port.
 // D and N are type parameters constrained to RotaryPort; no concrete
-// RotaryPort conformer is instantiated here (a conformer would need
-// max_torque, max_speed, and direction literals — avoidable risk
-// for this zero-Error signal per PRD §4 decision 4).
+// RotaryPort conformer is instantiated here, which keeps this zero-Error
+// signal free of avoidable risk (PRD §4 decision 4). A conformer would need
+// frame, max_speed, max_torque, and axis literals; the ground truth for that
+// set is rotary_port_concrete_conformer_compiles in ports_stdlib_compile.rs.
 //
 // Named ShaftCoupling (not Coupling) to avoid colliding with the unrelated
 // stdlib `Coupling<P: DrivingJoint + HasMotion>` kinematic joint type

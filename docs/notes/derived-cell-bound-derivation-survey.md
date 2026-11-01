@@ -71,7 +71,7 @@ the other.** Every auto that is constrained at all is constrained against litera
 
 | Model | Shape | Verdict |
 |---|---|---|
-| `examples/fea_bracket_minimize_mass.ri` | `let yield_limit = 310MPa` (:133), used at `.max_von_mises < yield_limit` (:212) | A derived cell reading NO auto — a named alias for a constant. Mining a bound from it is CORRECT and must keep working. (The file's only auto, `thickness` (:87), is `auto(free)`, and the constraint's near side is a method access on a call result, which `derive_from_side` cannot read regardless.) |
+| `examples/fea_bracket_minimize_mass.ri` | `let yield_limit = 310MPa` (:130), used at `max(von_mises(solve_elastic_static(...).stress)) < yield_limit` (:176-179) | A derived cell reading NO auto — a named alias for a constant. Mining a bound from it is CORRECT and must keep working. (The file's only auto, `thickness` (:84), is `auto(free)`, and the constraint's near side is a `max` FunctionCall reduction over a member read on a call result, which `derive_from_side` cannot read regardless.) |
 | `docs/prds/v0_6/fixtures/discrete_mixed.ri` | `param up : Bool = auto` (:4) with `constraint t >= (if up then 3.0 else 5.0)` (:6) | A genuinely non-constant floor, but INLINE — `collect_value_refs` recurses into `Conditional`, so the pre-existing syntactic guard already sees `up` and rejects it. |
 
 Both are pinned as regression cases in `solver.rs` `mod tests`

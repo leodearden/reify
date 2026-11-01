@@ -1323,28 +1323,46 @@ fn build_user_function_call_expr(
     }
 }
 
-/// The type a call to `callee` yields once unification over `arg_types` binds
-/// its type parameters (task 4231 β); a non-generic callee keeps its declared
-/// `return_type` (INV-6/D10). `arg_types` may be a strict prefix of
-/// `callee.params` (a default-padded call): trailing defaulted slots bind
-/// nothing, since a slot carrying a type parameter has no valid default
-/// (`FnParamDefaultTypeMismatch` at the definition). `Err` is the diagnostic
-/// to poison the call with: a double-binding (`E_FALLBACK_TYPE` for the
-/// recovery combinators, contract C-3 in `docs/prds/v0_6/result-and-fallback.md`;
-/// else `E_FN_TYPE_ARG_CONFLICT`) or a BARE unbound type-/dimension-param
-/// result. A NESTED unbound param such as `Field<D, Real>` is tolerated: an
-/// enclosing call pins it (B5).
+/// [`instantiate_return_type`] for a `CompiledFunction` callee.
 fn instantiate_call_return_type(
     callee: &CompiledFunction,
     call_name: &str,
     arg_types: &[Type],
     call_span: SourceSpan,
 ) -> Result<Type, Diagnostic> {
-    if callee.type_params.is_empty() {
-        return Ok(callee.return_type.clone());
+    instantiate_return_type(
+        !callee.type_params.is_empty(),
+        callee.params.iter().map(|(_, t)| t),
+        &callee.return_type,
+        call_name,
+        arg_types,
+        call_span,
+    )
+}
+
+/// The type a call yields once unification over `arg_types` binds its type
+/// parameters (task 4231 β); a non-generic callee keeps its `declared_return`
+/// (INV-6/D10). `arg_types` may be a strict prefix of `declared_params` (a
+/// default-padded call): trailing defaulted slots bind nothing, since a slot
+/// carrying a type parameter has no valid default (`FnParamDefaultTypeMismatch`
+/// at the definition). `Err` is the diagnostic to poison the call with: a
+/// double-binding (`E_FALLBACK_TYPE` for the recovery combinators, contract C-3
+/// in `docs/prds/v0_6/result-and-fallback.md`; else `E_FN_TYPE_ARG_CONFLICT`) or
+/// a BARE unbound type-/dimension-param result. A NESTED unbound param such as
+/// `Field<D, Real>` is tolerated: an enclosing call pins it (B5).
+fn instantiate_return_type<'p>(
+    is_generic: bool,
+    declared_params: impl IntoIterator<Item = &'p Type>,
+    declared_return: &Type,
+    call_name: &str,
+    arg_types: &[Type],
+    call_span: SourceSpan,
+) -> Result<Type, Diagnostic> {
+    if !is_generic {
+        return Ok(declared_return.clone());
     }
     let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
-    for ((_, declared), arg_ty) in callee.params.iter().zip(arg_types.iter()) {
+    for (declared, arg_ty) in declared_params.into_iter().zip(arg_types.iter()) {
         if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst) {
             let (code, prefix) = if is_fallback_combinator(call_name) {
                 (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
@@ -1361,7 +1379,7 @@ fn instantiate_call_return_type(
                 .with_label(DiagnosticLabel::new(call_span, "conflicting type argument")));
         }
     }
-    let substituted = type_resolution::substitute_type_params(&callee.return_type, &subst);
+    let substituted = type_resolution::substitute_type_params(declared_return, &subst);
     if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
         return Err(Diagnostic::error(format!(
             "cannot infer type argument(s) for generic call to '{}': \
@@ -3477,6 +3495,15 @@ fn compile_expr_guarded_with_expected_inner(
                     // and the shared verbs `angle`/`distance` are policed only in
                     // their arity-3 DRIVE form (a no-op for the arity-2 query forms).
                     relation_signatures::check_relation_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
+                    // Task 6249: a third diagnostic-only check, with the same
+                    // contract as the two above.
+                    math_signatures::check_forward_trig_arg_dimensions(
                         name,
                         &compiled_args,
                         expr.span,
@@ -6282,7 +6309,7 @@ fn compile_expr_guarded_with_expected_inner(
         // receiver and requires a structure type `S`; (ii) prepends the compiled
         // object as the bound `self` argument; (iii) validates (trait, method)
         // and types the call from the trait contract threaded into
-        // `scope.trait_assoc_fn_return_types` — the per-conformer CompiledFunction
+        // `scope.trait_assoc_fn_overloads` — the per-conformer CompiledFunction
         // is registered into the module function table only by the post-entity
         // pass, so it is not yet resolvable via overload here. Override-beats-
         // default falls out of the per-conformer symbol routing over δ's table.
@@ -6380,17 +6407,12 @@ fn compile_expr_guarded_with_expected_inner(
             //         (`reify_core::overload::slot_matches_wildcard_tier`) plus the
             //         exact-match tie-break; no head tier, NO Int→Real. (ε #3943)
             //
-            //         `is_generic` is held OPEN (#6505): `CompiledAssocFnSig` records
-            //         no type-param list, and a sig's type-param scope is fn-level ∪
-            //         trait-level (entity.rs's default-fn re-resolution when filling
-            //         `trait_assoc_fn_overloads`), so the free-fn
-            //         `!f.type_params.is_empty()` notion would misclassify a
-            //         trait-generic method as non-generic. Holding it open cannot widen
-            //         a non-generic sig: TypeParam/ScalarParam leaves only resolve from
-            //         a non-empty type-param scope. Pinned by
+            //         `is_generic` is the candidate's own (a non-empty fn ∪ trait
+            //         type-param scope, `AssocFnDispatchCandidate`). Pinned by
             //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` and
             //         `dispatch_concrete_param_slot_rejects_mismatched_arg` in
             //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.
+            let symbol = instance_assoc_fn_symbol(&conformer, trait_name, method);
             let overloads = scope
                 .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
@@ -6434,7 +6456,7 @@ fn compile_expr_guarded_with_expected_inner(
                             )),
                     );
                 }
-                Some(sigs) => {
+                Some(candidates) => {
                     // Overload resolution: match compiled arg types against non-self
                     // params. `compiled_args` holds only the non-self args (the self
                     // receiver is compiled separately and prepended in step (6)).
@@ -6448,30 +6470,28 @@ fn compile_expr_guarded_with_expected_inner(
                     if arg_types.contains(&Type::Error) {
                         return propagate_poison();
                     }
-                    let genericity_unrecorded_so_held_open = true;
-                    let matches: Vec<&CompiledAssocFnSig> = sigs
+                    let matches: Vec<&AssocFnDispatchCandidate> = candidates
                         .iter()
-                        .filter(|sig| {
-                            sig.params.len() == arg_types.len()
-                                && sig.params.iter().zip(arg_types.iter()).all(
-                                    |(param_ty, arg_ty)| {
-                                        slot_matches_wildcard_tier(
-                                            param_ty,
-                                            arg_ty,
-                                            genericity_unrecorded_so_held_open,
-                                        )
-                                    },
-                                )
+                        .filter(|c| {
+                            let params = &c.sig().params;
+                            params.len() == arg_types.len()
+                                && params
+                                    .iter()
+                                    .zip(arg_types.iter())
+                                    .all(|(param_ty, arg_ty)| {
+                                        slot_matches_wildcard_tier(param_ty, arg_ty, c.is_generic())
+                                    })
                         })
                         .collect();
                     // Tiebreak: prefer candidates with ALL exact matches (no
                     // wildcard relaxation), mirroring `resolve_function_overload`'s
                     // exact-match tiebreak.
-                    let exact: Vec<&CompiledAssocFnSig> = matches
+                    let exact: Vec<&AssocFnDispatchCandidate> = matches
                         .iter()
                         .copied()
-                        .filter(|sig| {
-                            sig.params
+                        .filter(|c| {
+                            c.sig()
+                                .params
                                 .iter()
                                 .zip(arg_types.iter())
                                 .all(|(param_ty, arg_ty)| param_ty == arg_ty)
@@ -6479,15 +6499,32 @@ fn compile_expr_guarded_with_expected_inner(
                         .collect();
                     let resolved = if exact.is_empty() { matches } else { exact };
                     match resolved.len() {
-                        // Exactly one match — type from the resolved overload.
-                        1 => resolved[0].return_type.clone(),
+                        // Exactly one match — type from the resolved overload's
+                        // return type, instantiated against the arg types.
+                        1 => {
+                            let candidate = resolved[0];
+                            match instantiate_return_type(
+                                candidate.is_generic(),
+                                &candidate.sig().params,
+                                &candidate.sig().return_type,
+                                &symbol,
+                                &arg_types,
+                                expr.span,
+                            ) {
+                                Ok(ty) => ty,
+                                Err(diagnostic) => {
+                                    return make_poison_literal(diagnostics, diagnostic);
+                                }
+                            }
+                        }
                         // Ambiguous: ≥2 overloads match — emit AmbiguousCall + poison
                         // (anti-cascade). Mirrors the free-fn OverloadResolution::Ambiguous
                         // arm at ~expr.rs:2516 in message shape and DiagnosticLabel.
                         _ if resolved.len() > 1 => {
                             let candidate_sigs: Vec<String> = resolved
                                 .iter()
-                                .map(|sig| {
+                                .map(|c| {
+                                    let sig = c.sig();
                                     format!(
                                         "fn {}(self{}) -> {}",
                                         method,
@@ -6598,7 +6635,6 @@ fn compile_expr_guarded_with_expected_inner(
             //     symbol is the sole source of truth shared with the registration
             //     pass; eval resolves it via find_matching_compiled_function
             //     (exact self-type match).
-            let symbol = instance_assoc_fn_symbol(&conformer, trait_name, method);
             let mut call_args = Vec::with_capacity(compiled_args.len() + 1);
             call_args.push(compiled_object);
             call_args.extend(compiled_args);

@@ -30,9 +30,12 @@
 //! `F32_STORAGE_REL` tolerance. Prefer those in any test that CAN reach
 //! them. This module is the deliberate exception rather than a fourth
 //! copy: see the "Judgment call (task #6387)" section on
-//! [`unit_cube_mesh`] for the link constraint that forces it, and
-//! `tests/cube_fixture_agreement.rs` for the executable guard that keeps
-//! the two definitions in agreement.
+//! [`unit_cube_mesh`] for the link constraint that forces it. The cube's
+//! triangle index block is not local: it is the shared data file
+//! `crates/reify-ir/src/box_triangle_indices.rs`, which the canonical
+//! builder also `include!`s. Only the offset vertex literal stays here, and
+//! `tests/cube_fixture_agreement.rs` is the executable guard that keeps it
+//! in agreement with the canonical vertices.
 
 use reify_ir::Mesh;
 use crate::kernel::manifold_from_reify_mesh;
@@ -52,10 +55,13 @@ use crate::kernel::manifold_from_reify_mesh;
 ///
 /// # Judgment call (task #6387)
 ///
-/// This function keeps its own box literal and deliberately does NOT
-/// delegate to `reify_test_support::mesh_fixtures::unit_cube_mesh`, even
-/// though that is now the workspace-canonical copy. Three reasons, in
-/// order of how binding they are:
+/// This function keeps its own offset vertex literal and deliberately
+/// does NOT delegate to `reify_test_support::mesh_fixtures::unit_cube_mesh`,
+/// even though that is now the workspace-canonical copy. Its triangle index
+/// block is shared rather than copied: it `include!`s
+/// `crates/reify-ir/src/box_triangle_indices.rs`, the same data file the
+/// canonical builder includes, which needs no Cargo edge. Three reasons the
+/// vertices stay local, in order of how binding they are:
 ///
 /// 1. **It would not compile.** This module is gated on
 ///    `cfg(any(test, feature = "test-fixtures"))`, and the
@@ -78,7 +84,7 @@ use crate::kernel::manifold_from_reify_mesh;
 ///    `crates/reify-kernel-manifold/tests/cube_fixture_agreement.rs` is
 ///    the executable guard: it asserts this fixture is bit-identical to
 ///    the canonical one at zero offset, and an exact per-component
-///    translation of it at a dyadic offset. Edit either copy in
+///    translation of it at a dyadic offset. Edit either vertex literal in
 ///    isolation and that test reds immediately.
 ///
 /// So the goal #6387 was filed for — kill DRIFT, not bytes — is met here
@@ -113,21 +119,7 @@ pub fn unit_cube_mesh(offset: [f32; 3]) -> Mesh {
             1.0 + dy,
             1.0 + dz, // 7
         ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, so CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
+        indices: include!("../../reify-ir/src/box_triangle_indices.rs").to_vec(),
         normals: None,
     }
 }

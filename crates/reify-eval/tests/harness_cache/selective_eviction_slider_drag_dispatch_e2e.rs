@@ -38,11 +38,11 @@ fn body_template(name: &str, width_mm: f64, translates: usize) -> reify_compiler
         kind: PrimitiveKind::Box,
         args: vec![
             (
-                "width".into(),
+                "size_x".into(),
                 CompiledExpr::value_ref(ValueCellId::new(name, "w"), Type::length()),
             ),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     }];
     for step in 0..translates {

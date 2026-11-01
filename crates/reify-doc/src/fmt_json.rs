@@ -25,11 +25,13 @@ use crate::model::DocModel;
 ///
 /// `unwrap`s the `serde_json` result.  Every field in the [`DocModel`] graph
 /// is plain serde-derived data — no `#[serde(serialize_with = ...)]` adapters,
-/// no fallible custom `Serialize` impls — so `to_string` / `to_string_pretty`
-/// can only fail on a writer error, and we serialize into a `String` whose
-/// writer is infallible.  An unwrap here is therefore "never panics in
-/// practice"; we annotate the call with `expect` for diagnosability if a
-/// future refactor introduces a fallible adapter.
+/// no fallible custom `Serialize` impls; the one conversion,
+/// [`crate::expr_text::ExprText`]'s `#[serde(into = ...)]` wire form, is an
+/// infallible `From` — so `to_string` / `to_string_pretty` can only fail on a
+/// writer error, and we serialize into a `String` whose writer is infallible.
+/// An unwrap here is therefore "never panics in practice"; we annotate the
+/// call with `expect` for diagnosability if a future refactor introduces a
+/// fallible adapter.
 pub fn render_json(model: &DocModel, compact: bool) -> String {
     if compact {
         serde_json::to_string(model).expect("DocModel serde never fails")
@@ -41,6 +43,7 @@ pub fn render_json(model: &DocModel, compact: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::render_json;
+    use crate::expr_text::ExprText;
     use crate::model::{DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc};
 
     /// Build a small `DocModel` with one `ModuleDoc` containing a single
@@ -146,7 +149,7 @@ mod tests {
                             pragmas: vec![],
                         },
                         kind: ItemKind::ConstraintDef {
-                            expr_repr: "v <= 5.5 V".to_string(),
+                            expr_repr: ExprText::Source("v <= 5.5 V".into()),
                         },
                     },
                 ],

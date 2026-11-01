@@ -22,27 +22,7 @@ use reify_ir::{OpaqueState, PersistentMap, Value};
 use reify_test_support::tensegrity_fixtures::{
     canonical_triplex_tensegrity, triplex_group_ids, triplex_seeds,
 };
-use reify_test_support::{compile_source_with_stdlib, make_simple_engine};
-
-// ── value extractors ─────────────────────────────────────────────────────────
-
-/// Extract an f64 from a Length Scalar (or bare Real) coordinate component.
-fn coord(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real coordinate, got {other:?}"),
-    }
-}
-
-/// Extract an f64 from a Force Scalar (or bare Real) force value.
-fn force_val(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real force, got {other:?}"),
-    }
-}
+use reify_test_support::{compile_source_with_stdlib, make_simple_engine, read_real_or_scalar};
 
 /// Invoke `solve_form_find_free_trampoline` with the standard no-realization /
 /// no-warm-state args.
@@ -103,14 +83,14 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
         "expected 12 member forces (3 struts + 9 cables)"
     );
     for (i, v) in forces.iter().enumerate().take(3) {
-        let f = force_val(v);
+        let f = read_real_or_scalar(v, &format!("member_forces[{i}]"));
         assert!(
             f < 0.0,
             "strut member_forces[{i}] must be compressive (< 0), got {f}"
         );
     }
     for (i, v) in forces.iter().enumerate().skip(3) {
-        let f = force_val(v);
+        let f = read_real_or_scalar(v, &format!("member_forces[{i}]"));
         assert!(
             f > 0.0,
             "cable member_forces[{i}] must be tensile (> 0), got {f}"
@@ -129,21 +109,21 @@ fn assert_triplex_form_find_result(fields: &PersistentMap<String, Value>) {
     );
     let sqrt3 = 3.0_f64.sqrt();
     for (i, v) in fds.iter().enumerate().take(3) {
-        let q = coord(v);
+        let q = read_real_or_scalar(v, &format!("force_densities[{i}]"));
         assert!(
             (q - (-sqrt3)).abs() < 1e-6,
             "strut force_densities[{i}] must be ≈ −√3, got {q}"
         );
     }
     for (i, v) in fds.iter().enumerate().skip(3).take(6) {
-        let q = coord(v);
+        let q = read_real_or_scalar(v, &format!("force_densities[{i}]"));
         assert!(
             (q - 1.0).abs() < 1e-12,
             "horizontal force_densities[{i}] (reference group) must be = 1, got {q}"
         );
     }
     for (i, v) in fds.iter().enumerate().skip(9) {
-        let q = coord(v);
+        let q = read_real_or_scalar(v, &format!("force_densities[{i}]"));
         assert!(
             (q - sqrt3).abs() < 1e-6,
             "vertical force_densities[{i}] must be ≈ +√3, got {q}"

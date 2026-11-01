@@ -1,0 +1,16 @@
+[Unit]
+Description=Reify leo-laptop _merge-verify cargo-target trim: prune deps/ units no build has consulted lately
+
+[Service]
+Type=oneshot
+Nice=10
+IOSchedulingClass=idle
+# Installed on leo-laptop only, by dark_factory's
+# scripts/deploy/install_laptop_merge_verify_trim.sh (task 7042), never by a
+# reify installer. Runs the installed copy of scripts/prune-unconsulted-target.sh,
+# never the laptop checkout's; flags, locks and exit codes: that script's header.
+ExecStart=%h/.local/lib/reify-verify-host/prune-unconsulted-target.sh --window-days 3 --free-floor-gib 70 --min-window-days 2 --lock /home/leo/src/reify/.worktrees/_merge-verify.lock --lock /home/leo/src/reify/.worktrees/.merge_verify.lock /home/leo/src/reify/.worktrees/_merge-verify/target/debug /home/leo/src/reify/.worktrees/_merge-verify/target/release
+StandardOutput=journal
+StandardError=journal
+
+# No [Install] section: reify-merge-verify-trim.timer owns activation.

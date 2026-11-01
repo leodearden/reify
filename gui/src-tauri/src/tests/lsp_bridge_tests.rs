@@ -440,12 +440,13 @@ async fn lsp_request_on_worker_matches_direct_results_for_covered_methods() {
     }
 }
 
-/// The bridge's PLACEMENT: `definition`, `prepareRename`, `rename` and
-/// `references` answer with tokio's blocking pool saturated, so their
-/// parse/compile work runs on whatever thread polls `handle_request` rather than
-/// on a ~2 MiB blocking-pool thread. In production that is the query-pool
-/// consumer that drives it: the production entry point reaches a lane thread per
-/// `lsp_lane_routing_tests`' (q), and its (i) routes these four to `LSP_POOL`.
+/// The bridge's PLACEMENT: the query methods of `blocking_work_requests` answer
+/// with tokio's blocking pool saturated, so their parse/compile work runs on
+/// whatever thread polls `handle_request` rather than on a ~2 MiB blocking-pool
+/// thread. In production that is the query-pool consumer that drives it: the
+/// production entry point reaches a lane thread per `lsp_lane_routing_tests`'
+/// (q), and `blocking_work_methods_route_to_the_query_pool` checks that every
+/// one of them routes to `LSP_POOL`.
 ///
 /// Driven through [`lsp_request_impl`], not `lsp_request_on_worker`: the
 /// property under test is the bridge's placement, and parking the
@@ -499,6 +500,38 @@ fn lsp_bridge_answers_the_blocking_work_methods_with_the_blocking_pool_saturated
                 );
             }
         });
+    }
+}
+
+/// Every query method of `blocking_work_requests` routes to `LSP_POOL`, as the
+/// placement test above assumes. Without this check, a handler that gained
+/// blocking work and a `blocking_work_requests` row but no `lane_for_method`
+/// arm would run that work on the size-1 ordered lane, and the placement test
+/// would still pass.
+///
+/// Compared by pointer identity, as in `lsp_lane_routing_tests`' (i).
+#[test]
+fn blocking_work_methods_route_to_the_query_pool() {
+    use reify_lsp::blocking_work::test_support::blocking_work_requests;
+
+    use crate::large_stack::LSP_POOL;
+    use crate::lsp_bridge::lane_for_method;
+
+    let pool = LSP_POOL.sender().map(std::ptr::from_ref);
+    assert!(
+        pool.is_some(),
+        "precondition: the query pool must have started, or every row below \
+         would compare `None` to `None` and pass vacuously"
+    );
+
+    for (method, _) in blocking_work_requests("file:///routing.ri") {
+        assert_eq!(
+            lane_for_method(method).map(std::ptr::from_ref),
+            pool,
+            "{method} is a query whose work runs on the thread that drives it, \
+             so it must travel the query pool; on the ordered lane that work \
+             would hold up every edit queued behind it"
+        );
     }
 }
 

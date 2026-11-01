@@ -1336,6 +1336,8 @@ mod tests {
             path,
             vec![(12, "    unimplemented!()".to_string())],
         );
+        // The marker is still on main (otherwise route 1 correctly drops it).
+        git.set_file_lines_on("main", path, vec![(12, "    unimplemented!()".to_string())]);
         // Deliberately do NOT set_diff_added_lines("main", "task/4500", ...)
         // → simulates a reaped branch returning empty from RealGitOps.
 

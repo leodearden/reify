@@ -32,9 +32,9 @@ use reify_kernel_occt::{boolean_pass_count, reset_boolean_pass_count, OcctKernel
 fn unit_box(kernel: &mut OcctKernel) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(1.0),
-            height: Value::Real(1.0),
-            depth: Value::Real(1.0),
+            size_x: Value::Real(1.0),
+            size_y: Value::Real(1.0),
+            size_z: Value::Real(1.0),
         })
         .expect("unit box creation should succeed")
         .id

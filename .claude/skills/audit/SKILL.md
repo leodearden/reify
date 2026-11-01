@@ -97,7 +97,7 @@ Lanes added after η emit kinds this table does not list, `g-allow-orphaned` (Hi
 
 ## Structural lanes: PDSSENTINEL, PDIAG, PDOCCOVER, PDCHECK, PCITE, PPRDSTATUS, PLINECITE
 
-Seven more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the loaded task corpus (the fused-memory live loader, or `--tasks-file`), never `tasks.db`:
+Seven more deterministic detectors that, like PTODO, read the tracked tree and never contact jcodemunch. PDCHECK also reads `tasks.db`; PPRDSTATUS instead reads the task corpus the fused-memory live loader returns, never `tasks.db`:
 
 | Pattern | Detects |
 |---|---|
@@ -107,7 +107,7 @@ Seven more deterministic detectors that, like PTODO, read the tracked tree and n
 | `PDCHECK` | `metadata.delivered_checks` grep rows that name no tracked path. Needs `tasks.db` |
 | `PCITE` | Symbols a `docs/prds/**/*.capability-manifest.md` row cites as `grep:` evidence that no tracked non-prose file contains. Medium only (report-only) |
 | `PPRDSTATUS` | PRD status-prose drift: PRDs whose decomposition leaves are all terminal but whose Status header is not, and `#NNNN` cites whose status parenthetical contradicts the cited task. Reads the loaded task corpus |
-| `PLINECITE` | Hard `<file>.rs:<line>` / `<file>.ri:<line>` cites in source comments (stdlib `.ri`, `crates/*/src` `.rs`). Medium only (report-only) |
+| `PLINECITE` | Hard line cites (`foo.rs:12` and the other lead-ins of `docs/prds/reify-audit-stale-line-cite-detector.md` §4) in source comments (stdlib `.ri`, `crates/*/src` `.rs`). Medium only (report-only) |
 
 PDCHECK honours `--task <id>`, checking only that task's rows; it ignores `--since`. The other six key their findings by repo path and ignore both `--task` and `--since`. Default-sweep membership: `references/severity-routing.md` §0. Kinds, severities, scopes, remedies and measured counts: `references/modes.md` §4.
 
@@ -118,12 +118,12 @@ Route each finding by its `severity` field immediately after parsing the CLI's J
 | Severity | Action | Tool |
 |---|---|---|
 | **High** | Escalate (advisory, non-blocking) | `mcp__escalation__escalate_info` |
-| **Medium** | File a deferred follow-up task | `mcp__fused-memory__submit_task(planning_mode=True)` |
+| **Medium** | File a deferred follow-up task, then re-stamp it as a human-owned hold | `mcp__fused-memory__submit_task(planning_mode=True)`, then `mcp__fused-memory__commit_planning` (the call and how to read its response: `references/severity-routing.md` §1) |
 | **Low** | Log into per-run JSON only | _(no side effects)_ |
 
-The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage. See `references/severity-routing.md` for dedupe contract, per-pattern task-title templates, and the do-not-flip-status invariant.
+The skill **never** calls `set_task_status`. State-mutation of the offending task is a human decision made during triage, and so is releasing a filed proposal. See `references/severity-routing.md` for dedupe contract, the re-stamp that makes a proposal a human-owned hold, per-pattern task-title templates, and the do-not-flip-status invariant.
 
-**PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task. The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
+**PTODO severity routing (post-η):** route each finding by its own `severity` field: a High kind escalates via `escalate_info`, and every other kind files a deferred follow-up task exactly as for any Medium finding, re-stamp included (`references/severity-routing.md` §1). The High kinds are listed once, in `references/modes.md` §4 PTODO notes. See `references/severity-routing.md` §2 for the PTODO title template and per-kind routing notes.
 
 **Structural-lane routing (PDSSENTINEL / PDIAG / PDOCCOVER / PDCHECK / PCITE / PPRDSTATUS / PLINECITE):** route each finding by its own `severity` field, like every other pattern, with two exceptions, the batched patterns: PDOCCOVER's findings and PPRDSTATUS's findings each go out as **one batched escalation per run**, not one per finding. PPRDSTATUS's is filed by running `scripts/pprdstatus-escalate.py`, never by a hand-built `escalate_info`, and it files no follow-up tasks (`references/severity-routing.md` §2). Every High, for every pattern, goes through the single complete `escalate_info` call in `references/severity-routing.md` §1, including its subject rule for `task_id`. Which tokens carry a task id, and each token's `Finding.pattern` values, are in the §0 pattern registry.
 

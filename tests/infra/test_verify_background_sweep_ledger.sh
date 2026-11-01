@@ -300,6 +300,38 @@ echo "--- Block F: the default ledger path is resolved outside the running workt
 FAKE_MAIN="$WORK/fake-main-checkout"
 mkdir -p "$FAKE_MAIN"
 
+# sweep_ledger_snapshot <repo-root> — path, size and mtime of every *sweep* file
+# under <repo-root>/data/orchestrator. In the MAIN checkout that directory holds
+# the production ledger, so F3 compares before/after rather than asserting
+# absence: it must see only what THIS run did. Empty when the directory is
+# absent, as it is in a task lane (gitignored, cleaned on acquire): the guard
+# keeps find's exit 1 from tripping pipefail there, and leaves any OTHER find
+# failure visible on stderr.
+sweep_ledger_snapshot() {
+    [ -d "$1/data/orchestrator" ] || return 0
+    find "$1/data/orchestrator" -type f -name '*sweep*' \
+        -printf '%p %s %T@\n' | LC_ALL=C sort
+}
+
+# sweep_ledgers_unchanged_since <repo-root> <snapshot> — F3's predicate. In the
+# MAIN checkout a production sweep finishing inside Block F's few-second window
+# appends to the very ledger being watched and reds F3 too (rare; size and mtime
+# cannot say whose append it was). A change is therefore reported with the
+# before/after snapshots and each ledger's newest record, whose action tells the
+# two apart: this run writes `typecheck`, a production sweep `lint` or `test`.
+sweep_ledgers_unchanged_since() {
+    local _after
+    _after="$(sweep_ledger_snapshot "$1")"
+    if [ "$_after" = "$2" ]; then return 0; fi
+    printf 'sweep files under %s/data/orchestrator, before the run:\n%s\nafter it:\n%s\nnewest record of each:\n' \
+        "$1" "${2:-(none)}" "${_after:-(none)}"
+    find "$1/data/orchestrator" -type f -name '*sweep*' -exec tail -v -n 1 {} +
+    return 1
+}
+export -f sweep_ledger_snapshot sweep_ledgers_unchanged_since
+
+SWEEP_SNAPSHOT_BEFORE="$(sweep_ledger_snapshot "$REPO_ROOT")"
+
 REIFY_TEST_STUB_CARGO_RC=0 DF_VERIFY_ROLE=background REIFY_MAIN_CHECKOUT="$FAKE_MAIN" run_hermetic_typecheck
 
 assert "F1: with no explicit ledger path, the record lands under the MAIN CHECKOUT's data/orchestrator/ — the sweep's ephemeral worktree cannot take it with it" \
@@ -315,9 +347,9 @@ rec=json.loads(lines[0])
 sys.exit(0 if rec.get(\"role\") == \"background\" and \"verdict\" in rec else 1)" "$1"' \
     _ "$FAKE_MAIN"
 
-assert "F3: the default path is NOT relative to the running worktree — no ledger appeared under it" \
-    bash -c '[ -z "$(find "$1/data/orchestrator" -type f -name "*sweep*" 2>/dev/null | head -n1)" ]' \
-    _ "$REPO_ROOT"
+assert "F3: the default path is NOT relative to the running worktree — this run created or touched no sweep ledger under it" \
+    bash -c 'sweep_ledgers_unchanged_since "$1" "$2"' \
+    _ "$REPO_ROOT" "$SWEEP_SNAPSHOT_BEFORE"
 
 assert "F4: resolving the default path did not change the run's exit code" \
     test "$RUN_RC" -eq 0

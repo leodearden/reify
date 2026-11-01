@@ -724,8 +724,9 @@ fn edit_param_two_foralls_same_variable_same_collection_sub_emit_distinct_constr
 // endpoint is a typed `PortPath`, materialised per element by
 // `PortPath::at_element`; the runtime allocates a synthetic
 // `ConstraintNodeId` per element and pushes a `CompiledConnection` into
-// `graph.connections` paired with a `Bool::True`-bodied compatibility
-// constraint into `graph.constraints` (label `forall_connect@<var>[<i>]`).
+// `graph.connections` paired with a compatibility constraint into
+// `graph.constraints` (label `forall_connect@<var>[<i>]`) whose literal body is
+// the capture-time direction verdict.
 
 /// Canonical fixture for the forall-Connect runtime tests. Mirrors
 /// `FORALL_FIXTURE_SRC` (n is undef, count cell synthesised from
@@ -901,8 +902,80 @@ fn edit_param_count_undef_to_known_emits_per_element_forall_connections() {
             CompiledExprKind::Literal(Value::Bool(true)) => {}
             other => panic!(
                 "forall-Connect[{}] compatibility-constraint expr must be a Bool::True \
-                 literal (mirrors the placeholder direction-check policy in the task plan), \
-                 got {:?}",
+                 literal (the fixture's Out -> In directions are compatible), got {:?}",
+                i, other
+            ),
+        }
+    }
+}
+
+/// `FORALL_CONNECT_FIXTURE_SRC` with `Vent.inlet` flipped to `in`, so the
+/// deferred `forall v in vents: connect v.inlet -> air_channel` is In -> In.
+const FORALL_CONNECT_INCOMPATIBLE_FIXTURE_SRC: &str = r#"
+trait Air { param d : Length }
+structure def Vent {
+    port inlet : in Air { param d : Length = 5mm }
+}
+structure def S {
+    sub vents : List<Vent>
+    param n : Int
+    constraint vents.count == n
+    port air_channel : in Air { param d : Length = 5mm }
+    forall v in vents: connect v.inlet -> air_channel
+}
+"#;
+
+/// The capture-time direction verdict reaches every re-emitted element: an
+/// incompatible deferred forall connect re-emits `Bool(false)` compatibility
+/// constraints once the count becomes known, as `compile_connection` bakes on
+/// the resolved path.
+#[test]
+fn edit_param_count_known_emits_false_compat_constraints_for_incompatible_deferred_forall_connect()
+{
+    // Fully qualified: this module carries a compile error, which the local
+    // `compile_source` (wrapping the panicking `parse_and_compile`) refuses.
+    let module = reify_test_support::compile_source(FORALL_CONNECT_INCOMPATIBLE_FIXTURE_SRC);
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error
+                && d.message
+                    .contains("incompatible port directions for connect: In -> In")),
+        "expected the capture-time direction error, got {:?}",
+        module.diagnostics
+    );
+
+    let mut engine = fresh_engine();
+    let _initial = engine.eval(&module);
+    let _ = engine
+        .edit_param(ValueCellId::new("S", "n"), Value::Int(2))
+        .expect("edit_param should succeed");
+
+    let snap = engine.snapshot().expect("snapshot after edit_param");
+    let connections = collect_forall_connect_connections(snap);
+    assert_eq!(
+        connections.len(),
+        2,
+        "expected exactly 2 forall-emitted connections after edit_param to Int(2), got {}",
+        connections.len()
+    );
+    for (i, c) in connections.iter().enumerate() {
+        let constraint = snap
+            .graph
+            .constraints
+            .get(&c.compatibility_constraint)
+            .unwrap_or_else(|| {
+                panic!(
+                    "forall-Connect[{}] missing compatibility constraint {} in graph.constraints",
+                    i, c.compatibility_constraint
+                )
+            });
+        match &constraint.expr.kind {
+            CompiledExprKind::Literal(Value::Bool(false)) => {}
+            other => panic!(
+                "forall-Connect[{}] compatibility-constraint expr must be a Bool::False \
+                 literal (the fixture's In -> In directions are incompatible), got {:?}",
                 i, other
             ),
         }

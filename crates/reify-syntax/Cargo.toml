@@ -14,4 +14,5 @@ tree-sitter-reify.workspace = true
 [dev-dependencies]
 reify-ast.workspace = true
 reify-core.workspace = true
+reify-git-env.workspace = true
 reify-test-support.workspace = true

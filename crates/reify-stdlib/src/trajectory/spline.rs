@@ -13,6 +13,8 @@
 //! Suppress the lint rather than adding a premature marshalling layer.
 #![allow(dead_code)]
 
+use std::ops::RangeInclusive;
+
 /// Boundary condition for cubic interpolating splines.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum BoundaryCondition {
@@ -360,10 +362,15 @@ impl CubicSpline {
         2.0 * self.c[i] + s * 6.0 * self.d[i]
     }
 
+    /// The absolute time span `[first knot, last knot]` the spline is fitted on.
+    fn domain(&self) -> RangeInclusive<f64> {
+        self.knots[0]..=self.knots[self.knots.len() - 1]
+    }
+
     /// Return the total duration (last knot - first knot).
     pub(crate) fn duration(&self) -> f64 {
-        let n = self.knots.len();
-        self.knots[n - 1] - self.knots[0]
+        let domain = self.domain();
+        domain.end() - domain.start()
     }
 }
 
@@ -557,10 +564,15 @@ impl QuinticSpline {
             + s * (6.0 * self.d[i] + s * (12.0 * self.e[i] + s * 20.0 * self.f[i]))
     }
 
+    /// The absolute time span `[first knot, last knot]` the spline is fitted on.
+    fn domain(&self) -> RangeInclusive<f64> {
+        self.knots[0]..=self.knots[self.knots.len() - 1]
+    }
+
     /// Return the total duration.
     pub(crate) fn duration(&self) -> f64 {
-        let n = self.knots.len();
-        self.knots[n - 1] - self.knots[0]
+        let domain = self.domain();
+        domain.end() - domain.start()
     }
 }
 
@@ -582,12 +594,9 @@ impl MultiJointSpline {
         if joints.is_empty() {
             return None;
         }
-        let t_start = joints[0].knots[0];
-        let t_end = *joints[0].knots.last().unwrap();
-        for j in &joints[1..] {
-            if j.knots[0] != t_start || *j.knots.last().unwrap() != t_end {
-                return None;
-            }
+        let domain = joints[0].domain();
+        if joints[1..].iter().any(|j| j.domain() != domain) {
+            return None;
         }
         Some(MultiJointSpline::Cubic(joints))
     }
@@ -601,12 +610,9 @@ impl MultiJointSpline {
         if joints.is_empty() {
             return None;
         }
-        let t_start = joints[0].knots[0];
-        let t_end = *joints[0].knots.last().unwrap();
-        for j in &joints[1..] {
-            if j.knots[0] != t_start || *j.knots.last().unwrap() != t_end {
-                return None;
-            }
+        let domain = joints[0].domain();
+        if joints[1..].iter().any(|j| j.domain() != domain) {
+            return None;
         }
         Some(MultiJointSpline::Quintic(joints))
     }
@@ -639,16 +645,22 @@ impl MultiJointSpline {
         }
     }
 
+    /// The absolute time span `[first knot, last knot]` every joint shares
+    /// (`new_cubic` / `new_quintic` guarantee they agree). `eval*` take times
+    /// on this same axis, so a sampler covers the profile's motion by sampling
+    /// this range. An empty joint list has the degenerate domain `0.0..=0.0`.
+    pub(crate) fn domain(&self) -> RangeInclusive<f64> {
+        let first = match self {
+            MultiJointSpline::Cubic(splines) => splines.first().map(CubicSpline::domain),
+            MultiJointSpline::Quintic(splines) => splines.first().map(QuinticSpline::domain),
+        };
+        first.unwrap_or(0.0..=0.0)
+    }
+
     /// Return total duration (same for all joints).
     pub(crate) fn duration(&self) -> f64 {
-        match self {
-            MultiJointSpline::Cubic(splines) => {
-                splines.first().map(|s| s.duration()).unwrap_or(0.0)
-            }
-            MultiJointSpline::Quintic(splines) => {
-                splines.first().map(|s| s.duration()).unwrap_or(0.0)
-            }
-        }
+        let domain = self.domain();
+        domain.end() - domain.start()
     }
 }
 

@@ -13,8 +13,10 @@
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
 //! `assert_module_compiles`, `rejected_form_rows`, `strip_reify_comments`,
-//! `wrap_form`, `named_length_argument`, `squash_whitespace` — the last five
-//! pinned directly by the "Scanner unit tests" block at the bottom.
+//! `wrap_form`, `squash_whitespace` — the last four pinned directly by the
+//! "Scanner unit tests" block at the bottom. Reading the blamed slot out of a
+//! LENGTH-slot rejection is `reify_test_support::named_length_argument`, shared
+//! with reify-lsp's box-signature differential and unit-tested where it lives.
 //!
 //! # What this file guards
 //!
@@ -46,9 +48,10 @@
 //!
 //! - **No prose is pinned.** Nothing here matches a sentence, a heading, or an
 //!   ordering. The only structural pins are the byte-exact fence info strings
-//!   (```` ```reify ```` / ```` ```reify-rejected ````) and the one-cite-per-line
-//!   format, all of which are house convention precisely so the surrounding
-//!   wording stays free to change.
+//!   (```` ```reify ```` / ```` ```reify-rejected ````), the one-cite-per-line
+//!   format, and the inert `<!-- LENGTH-ARGS-XREF -->` marker with the backticked
+//!   topic its region must name, all of which are house convention precisely so
+//!   the surrounding wording stays free to change.
 //! - **Compile-acceptance is a parse/shape/slot result, not a full signature
 //!   check.** A `structure def` body types an unresolved call from its FIRST
 //!   argument's `result_type`, so an unknown call NAME is not itself an error —
@@ -60,12 +63,15 @@
 //!   that reason, and `cited_test_paths_in_the_units_chunk_resolve` only checks
 //!   that the eval-side cites it DOES make resolve to real tests.
 
+use std::path::Path;
+
 use reify_core::units::LENGTH_MIGRATION_HINT;
+use reify_test_support::{LENGTH_SLOT_DIAGNOSTIC_MARKER, named_length_argument};
 
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
-use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
-use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH, UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::{section_body, tagged_fence_bodies};
 use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
 
@@ -143,44 +149,6 @@ const BARE_ZERO_FORM: &str = "box(0, 0, 0)";
 /// there — a false negative dressed as a deletion.
 fn squash_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-/// The compile layer's marker phrase for a LENGTH-slot rejection, as emitted by
-/// `reify_compiler::builtin_signatures` (see its
-/// `"box: width argument expects Length, got Int; …"` template).
-///
-/// A LOCAL CONST, NOT AN IMPORTED ONE, and knowably second-best: the sibling
-/// migration-hint assertion is made BY REFERENCE to
-/// `reify_core::units::LENGTH_MIGRATION_HINT`, so a D9 rewording moves the
-/// constant and every consumer together. This phrase has no such constant behind
-/// it, so a rewording to an equally-valid shape — e.g. the eval layer's own
-/// `missing or non-Length argument '<arg>' for <op>` — would make
-/// [`assert_rejected_as_documented`] fail with "no Error message contains …"
-/// while the gate and the chunk were both perfectly correct.
-///
-/// Exporting a const from `builtin_signatures.rs` is the real fix and is left
-/// UNDONE ON PURPOSE: that file is outside task 5759's locked scope. What is
-/// done here instead is to name the phrase once and unit-test the extraction
-/// that reads it ([`named_length_argument_reads_the_argument_out_of_a_message`]),
-/// so the brittleness is at least visible and localised to one line.
-const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
-
-/// The ARGUMENT NAME a LENGTH-slot rejection blames, or `None` if `message` is
-/// not one.
-///
-/// The token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`]: in
-/// `"box: width argument expects Length, got Int; …"` that is `width`. Split out
-/// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
-/// test over a synthetic message rather than only through the live compiler,
-/// which is this file's convention for every hand-rolled text scan (see the
-/// "Scanner unit tests" block at the bottom).
-fn named_length_argument(message: &str) -> Option<&str> {
-    let before = message.split(LENGTH_SLOT_DIAGNOSTIC_MARKER).next()?;
-    if before.len() == message.len() {
-        // No marker present — `split` yielded the whole string unchanged.
-        return None;
-    }
-    before.split_whitespace().next_back()
 }
 
 /// Wrap one documented FORM in the minimal compilable module the rejected-forms
@@ -343,9 +311,9 @@ fn assert_rejected_as_documented(form: &str) {
     //     author with no idea which of six coordinates to fix.
     //
     //     THIS IS THE ONE DIAGNOSTIC-WORDING PIN IN THIS FILE, and it is a
-    //     second-best: see `LENGTH_SLOT_DIAGNOSTIC_MARKER` for why the phrase is
-    //     a local const rather than one imported from the compile layer, and for
-    //     the failure mode a rewording produces here.
+    //     second-best: see `reify_test_support::LENGTH_SLOT_DIAGNOSTIC_MARKER`
+    //     for why the phrase is not imported from the compile layer, and for the
+    //     failure mode a rewording produces here.
     let named: Vec<(&String, &str)> = messages
         .iter()
         .filter_map(|m| named_length_argument(m).map(|arg| (m, arg)))
@@ -623,6 +591,41 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
     );
 }
 
+/// Line that opens units.md's pointer to the per-position length-argument catalogue.
+const LENGTH_ARGS_XREF_MARKER: &str = "<!-- LENGTH-ARGS-XREF -->";
+
+/// What [`LENGTH_ARGS_XREF_MARKER`]'s region is called in a failure message.
+const LENGTH_ARGS_XREF_TITLE: &str = "length-argument catalogue cross-reference";
+
+/// The topic that retrieves the chunk holding the length-argument catalogue:
+/// [`GEOMETRY_CHUNK_PATH`]'s filename stem, which `fence_gate`'s check 4 holds
+/// equal to the topic serving that file.
+fn length_args_catalogue_topic() -> &'static str {
+    Path::new(GEOMETRY_CHUNK_PATH)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{GEOMETRY_CHUNK_PATH} must have a UTF-8 filename stem"))
+}
+
+/// units.md routes a reader to the length-argument catalogue's topic (scope: module header).
+#[test]
+fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
+    let region = section_body(
+        &read_chunk(UNITS_CHUNK_PATH),
+        LENGTH_ARGS_XREF_MARKER,
+        UNITS_CHUNK_PATH,
+        LENGTH_ARGS_XREF_TITLE,
+    );
+
+    let topic_key = format!("`{}`", length_args_catalogue_topic());
+    assert!(
+        region.contains(&topic_key),
+        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names topic {topic_key}, \
+         which retrieves {GEOMETRY_CHUNK_PATH} — a pointer that names no destination points \
+         nowhere. FIX: route the reader to topic {topic_key} of `reify_language_reference`."
+    );
+}
+
 /// The constructors units.md names as caught only at build/eval time really are
 /// INVISIBLE to the compile layer.
 ///
@@ -706,9 +709,9 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `rejected_form_rows`, `strip_reify_comments`, `named_length_argument`,
-// `squash_whitespace` and `wrap_form` are this module's own hand-rolled text
-// helpers, and every rejection assertion above is downstream of one of them.
+// `rejected_form_rows`, `strip_reify_comments`, `squash_whitespace` and
+// `wrap_form` are this module's own hand-rolled text helpers, and every
+// rejection assertion above is downstream of one of them.
 // They are pinned DIRECTLY here rather than only through the chunk. The failure
 // these guard against is self-concealing: a helper that quietly stopped
 // extracting anything would leave every floor and sentinel above satisfied,
@@ -754,45 +757,6 @@ fn strip_reify_comments_removes_a_block_comment_and_preserves_line_count() {
         out.contains("sphere(1mm)"),
         "code after the comment must survive"
     );
-}
-
-/// The argument-name extraction reads the blamed argument out of a SYNTHETIC
-/// message, so it is pinned independently of whatever the compiler emits today.
-///
-/// The input is the byte-exact template `builtin_signatures.rs` documents. If
-/// the live diagnostic ever diverges from it, `documented_rejected_forms_are_
-/// actually_rejected` goes red while THIS stays green — which is the signal that
-/// the wording moved rather than the gate breaking. See
-/// [`LENGTH_SLOT_DIAGNOSTIC_MARKER`].
-#[test]
-fn named_length_argument_reads_the_argument_out_of_a_message() {
-    assert_eq!(
-        named_length_argument(
-            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"
-        ),
-        Some("width")
-    );
-    // A multi-word prefix must still yield the LAST token, not the first.
-    assert_eq!(
-        named_length_argument("linear_pattern: spacing argument expects Length, got Int"),
-        Some("spacing")
-    );
-}
-
-/// A message that is not a LENGTH-slot rejection yields `None` rather than a
-/// bogus name.
-///
-/// The regression this catches is the one the marker const's doc names: if the
-/// compile layer reworded to the eval layer's shape, a scanner that "recovered"
-/// some token anyway would let `assert_rejected_as_documented`'s per-message
-/// identifier assertion pass on a message it never actually parsed.
-#[test]
-fn named_length_argument_rejects_a_message_without_the_marker() {
-    assert_eq!(
-        named_length_argument("missing or non-Length argument 'ox' for mirror"),
-        None
-    );
-    assert_eq!(named_length_argument(""), None);
 }
 
 /// A row missing its `-->` separator PANICS rather than being skipped.

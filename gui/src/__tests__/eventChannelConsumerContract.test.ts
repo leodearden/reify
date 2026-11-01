@@ -119,7 +119,7 @@ describe('CHANNEL_ROW_SCAN_RE', () => {
     // excluded BY CONSTRUCTION per the doc, which is what lets this pattern and
     // the section walk agree on one row set.
     expect(CHANNEL_ROW_SCAN_RE.test('| **solver-cancel-request** | `{run_id}` | f → b |')).toBe(false);
-    expect(CHANNEL_ROW_SCAN_RE.test('| `morph_stats` | `()` | `MorphStats` | accessor |')).toBe(false);
+    expect(CHANNEL_ROW_SCAN_RE.test('| `example_rpc` | `()` | `ExampleReply` | accessor |')).toBe(false);
     expect(CHANNEL_ROW_SCAN_RE.test('| `Mesh-Update` | x | y |')).toBe(false);
   });
 });
@@ -201,7 +201,7 @@ describe('parseEventChannelRows', () => {
     '',
     '| RPC | Request shape | Response shape | Producer | Consumer | Upstream prereq |',
     '|---|---|---|---|---|---|',
-    '| `morph_stats` | `()` | `MorphStats` | stats accessor | `mcp__reify-debug__morph_stats` | task 2949 |',
+    '| `example_rpc` | `()` | `ExampleReply` | accessor | `mcp__reify-debug__example_rpc` | task 0 |',
     '',
     '## §4 — Out-of-scope: payload extensions to existing channels',
     '',
@@ -249,7 +249,7 @@ describe('parseEventChannelRows', () => {
 
   it('excludes §3 snake_case RPC rows and §4/§5 content', () => {
     const channels = rows.map((r) => r.channel);
-    expect(channels).not.toContain('morph_stats');
+    expect(channels).not.toContain('example_rpc');
     // §4's rows name `mesh-update` in their SECOND column; nothing outside
     // §1/§2 may contribute a row, or §4 would re-register §1 channels.
     expect(channels.filter((c) => c === 'mesh-update').length).toBe(1);
@@ -343,7 +343,7 @@ describe('eventChannelTableHeaders', () => {
     '## §3 — Debug-MCP RPCs',
     '| RPC | Request shape | Response shape | Producer | Consumer | Upstream prereq |',
     '|---|---|---|---|---|---|',
-    '| `morph_stats` | `()` | `MorphStats` | accessor | `mcp__reify-debug__morph_stats` | task 2949 |',
+    '| `example_rpc` | `()` | `ExampleReply` | accessor | `mcp__reify-debug__example_rpc` | task 0 |',
   ].join('\n');
 
   it('returns the header cells of each §1/§2 table, tagged by section', () => {

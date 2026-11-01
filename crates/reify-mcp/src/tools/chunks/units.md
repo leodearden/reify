@@ -125,7 +125,7 @@ Every rejection reads the same way — one diagnostic per offending argument, so
 bare dimensions reports three:
 
 ```text
-box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`
+box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`
 ```
 
 The `pass a dimensioned length such as `5mm`` tail is `reify-core::units::LENGTH_MIGRATION_HINT`,
@@ -204,10 +204,11 @@ direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimens
 in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
 bare because it is what you mean, not because you will be told.
 
+<!-- LENGTH-ARGS-XREF -->
 **Which argument of which constructor is length-semantic** is catalogued per position in the
-`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor,
-under "Dimensioned arguments". This section states the rule and the idiom; that one enumerates the
-positions — read it before dimensioning an unfamiliar signature.
+`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor.
+This section states the rule and the idiom; that one enumerates the positions — read it before
+dimensioning an unfamiliar signature.
 
 Worked, compile-gated exemplar: `examples/best_practices/dimensioned_arguments.ri`.
 
@@ -238,7 +239,7 @@ it demonstrates the algebra but not the arithmetic. `arc2` is the direction an
 author usually wants: an arc length computed from an angle that was *not* derived
 from a ratio.
 
-Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error in structure body`.
+Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `` Parse error: syntax error in structure body — if `rad` in `x` is a unit, it must follow its number with no whitespace: write `1rad` in place of `1 rad` ``.
 
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 

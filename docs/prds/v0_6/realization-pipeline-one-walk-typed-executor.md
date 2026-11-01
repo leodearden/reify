@@ -142,7 +142,7 @@
 - **D7 — The rollback scope is unchanged and stated (δ).** Rollback restores `step_handles` and removes every intermediate this realization inserted, including those inserted by the failing op before it failed. Topology-attribute entries and kernel-side geometry from rolled-back ops are per-build state and stay, as today. The commit owner's doc says so, and B-δ1 pins it.
 - **D8 — R3: the oracle owns kernel and repr (ε).**
   - `realization_handles` becomes `HashMap<RealizationNodeId, RealizedTerminal { handle: KernelHandle, repr: ReprKind }>`. It is still written and cleared only on build surfaces (S1's asymmetry, unchanged).
-  - Every reader that needs a realization's geometry takes the owner kernel and the repr from the entry, never from the graph node: the projection, `realize_solid_sdf`, `measure_min_feature`/`measure_min_wall`, `revalidate_geometry_handle`, the redispatch pre-tessellation, and S12's `capture_measurement`, whose context entries carry the `RealizedTerminal`. `engine_constraints`' three direct reads are retired by S12 ε1 #9017 (its row C6), a dependency of ε.
+  - Every reader that needs a realization's geometry takes the owner kernel and the repr from the entry, never from the graph node: the projection, `realize_solid_sdf` (and through it `measure_thickness_pair`, the one DFM thickness reader), `revalidate_geometry_handle`, the redispatch pre-tessellation, and S12's `capture_measurement`, whose context entries carry the `RealizedTerminal`. `engine_constraints`' three direct reads are retired by S12 ε1 #9017 (its row C6), a dependency of ε.
   - The selector gate is not an oracle reader: it reads the walk-local map (D2).
   - The graph node's `produced_repr` / `produced_kernel` become the last surface's outcome: provenance, `realization_kernel_provenance` and the CLI's `--verbose` line.
 - **D9 — One write-back sink (η introduces it, θ completes it; R4).**
@@ -329,7 +329,7 @@ impl PerBuildState {
 }
 ```
 - `post_process_geometry_handle_cells` writes the entry from the terminal `KernelHandle` and the outcome's repr, on build surfaces only. The reset table is S1's, unchanged.
-- **Readers** take the owner kernel (`entry.handle.kernel`, routed through S10's `select(OnHandle{owner})`) and the repr (`entry.repr`) from the entry: `project_realization_read_handle` and its resolver, `realize_solid_sdf`, `measure_min_feature`, `measure_min_wall`, `revalidate_geometry_handle`, and the redispatch pre-tessellation.
+- **Readers** take the owner kernel (`entry.handle.kernel`, routed through S10's `select(OnHandle{owner})`) and the repr (`entry.repr`) from the entry: `project_realization_read_handle` and its resolver, `realize_solid_sdf` (the DFM thickness reader `measure_thickness_pair` reaches the oracle only through it), `revalidate_geometry_handle`, and the redispatch pre-tessellation.
 - **S12's context.** `capture_measurement` copies entries into `MeasurementContext` with their upstream hash. A context entry carries a `RealizedTerminal`, not a bare `GeometryHandleId` (cross-reference to S12, §8).
 - **Node fields.** The node's `produced_repr`/`produced_kernel` are read only by `realization_kernel_provenance` (the CLI's verbose print reads it) and `realized_reprs_snapshot` until η deletes it (ratchet row `node-outcome-read`, §5.9).
 

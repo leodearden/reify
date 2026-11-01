@@ -52,6 +52,8 @@ pub(super) enum FeaValueShapeError {
         expected: &'static str,
         got: String,
     },
+    /// A numeric datum that is present and correctly shaped but NaN or ±Inf.
+    NonFinite { context: &'static str, got: String },
     /// A present field value its reader's `ArgSpec` refuses, a non-number
     /// included: a `fea_loads` magnitude or an elastic law's field,
     /// lifted by `?` through the `From` impl below. Rendered through
@@ -90,6 +92,9 @@ impl std::fmt::Display for FeaValueShapeError {
             } => {
                 write!(f, "expected {expected} for {context}, got {got}")
             }
+            FeaValueShapeError::NonFinite { context, got } => {
+                write!(f, "expected a finite value for {context}, got {got}")
+            }
             FeaValueShapeError::Rejected(field) => write!(f, "{field}"),
         }
     }
@@ -108,7 +113,8 @@ impl FeaValueShapeError {
             | FeaValueShapeError::ExpectedReal { .. }
             | FeaValueShapeError::ExpectedList { .. }
             | FeaValueShapeError::MissingField { .. }
-            | FeaValueShapeError::Unresolved { .. } => None,
+            | FeaValueShapeError::Unresolved { .. }
+            | FeaValueShapeError::NonFinite { .. } => None,
         }
     }
 }

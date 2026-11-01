@@ -85,14 +85,14 @@ for the assoc-fn machinery (G4 seam owner: that PRD).
 ```reify
 // Compile-time error: half_space is Unbounded, volume requires Bounded.
 fn err_unbounded_volume() -> Real {
-    let h = half_space(plane_xy(0mm))
+    let h = half_space(plane_xy(0mm));
     volume(h)            // error[GeometryUnbounded] at this call site
 }
 
 // OK: intersection with a Bounded solid restores Bounded.
 fn ok_clipped_volume() -> Real {
-    let h = half_space(plane_xy(0mm))
-    let clip = box(10mm, 10mm, 10mm)
+    let h = half_space(plane_xy(0mm));
+    let clip = box(10mm, 10mm, 10mm);
     volume(intersection(h, clip))   // Bounded inferred → no diagnostic
 }
 

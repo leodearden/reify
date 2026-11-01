@@ -433,7 +433,8 @@ and cannot be marked accepted. Every `Contextual` row must state its `rename` va
 no default (the refused `Contextual` words are listed in the second amendment below). The
 completion lists stay UX tables over the same words;
 reify-audit's `RI_KEYWORDS` consumers read `KEYWORDS` (reify-audit gains a direct reify-syntax
-dependency; it already has one transitively through reify-test-support, #6356). The table is
+dependency, a new production edge: since #6356 reify-test-support is a dev-dependency only, so
+reify-audit no longer reaches reify-syntax transitively). The table is
 grammar vocabulary, not a builtin fact, so it is not a reify-builtins row.
 
 *Amended 2026-10-16 (Leo, esc-8910-2):* `unit` is Contextual (parses as a binding name, D15);

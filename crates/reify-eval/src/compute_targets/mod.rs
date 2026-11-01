@@ -52,6 +52,8 @@ mod fea_loads;
 /// Task 6922 (γ1): the FEA value-shape error shared by the FEA trampolines.
 mod fea_value_shape;
 pub mod form_find;
+/// Task 9219: the LoadCase sweep shared by the multi-case trampolines.
+mod load_cases;
 pub mod multi_case;
 pub mod shell_solve;
 /// Shared Tensegrity input-cracking helpers (node / index-pair / scalar / index

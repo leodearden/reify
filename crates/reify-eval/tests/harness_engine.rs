@@ -99,6 +99,9 @@ mod let_tracing_transitive_e2e;
 // same anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
 mod instance_path_underdetermined_e2e;
+// Task #6655's BT5 end to end: an interval-refutable model reports the proof.
+#[path = "harness_engine/interval_refutation_e2e.rs"]
+mod interval_refutation_e2e;
 // Task #5240's `eval_cached` guarded-groups fall-through tests land here for the
 // same anti-re-accretion reason as #5196's and #5360's above. They are
 // also a topical fit: they drive `Engine::eval_cached`, the engine-level
@@ -162,3 +165,11 @@ mod indeterminate_reason_carrier_e2e;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/solver_posture_construction.rs"]
 mod solver_posture_construction;
+// Task #6667's viewport-attribution pins land here for the same anti-re-accretion
+// reason as #5196's and #5360's above.
+#[path = "harness_engine/viewport_unmeasured_attribution.rs"]
+mod viewport_unmeasured_attribution;
+// Task #6100's first-class frame-datum eval regressions land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/first_class_frame_datum_eval.rs"]
+mod first_class_frame_datum_eval;

@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { DiagnosticEntry } from '../panels/DiagnosticsPanel';
-import { diagnosticKey, groupDiagnostics, filterDiagnostics } from '../panels/diagnosticsView';
+import {
+  diagnosticKey,
+  groupDiagnostics,
+  filterDiagnostics,
+  diagnosticSourceLocation,
+} from '../panels/diagnosticsView';
 import type { DiagnosticSource } from '../panels/diagnosticsView';
 
 // ────────────────────────────────────────────────────────────
@@ -212,5 +217,37 @@ describe('filterDiagnostics', () => {
     expect(result).toHaveLength(2);
     expect(result[0]).toBe(compileWarning);
     expect(result[1]).toBe(tessWarning);
+  });
+});
+
+// ────────────────────────────────────────────────────────────
+// diagnosticSourceLocation
+// ────────────────────────────────────────────────────────────
+
+describe('diagnosticSourceLocation', () => {
+  const located = makeEntry({
+    file_path: 'main.ri',
+    line: 7,
+    column: 4,
+    end_line: 7,
+    end_column: 9,
+    severity: 'Error',
+    message: 'boom',
+    code: 'E001',
+    source: 'tessellation',
+  });
+  const span = { file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9 };
+
+  it('maps a located diagnostic to exactly its five SourceLocation fields', () => {
+    expect(diagnosticSourceLocation(located)).toEqual(span);
+  });
+
+  it('refuses a span-less diagnostic (has_location: false) with null', () => {
+    expect(diagnosticSourceLocation({ ...located, has_location: false })).toBeNull();
+  });
+
+  it('treats an absent or true has_location as line-tied', () => {
+    expect(diagnosticSourceLocation({ ...located, has_location: undefined })).toEqual(span);
+    expect(diagnosticSourceLocation({ ...located, has_location: true })).toEqual(span);
   });
 });

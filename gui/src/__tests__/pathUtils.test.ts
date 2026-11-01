@@ -61,6 +61,11 @@ describe('isSameFile', () => {
   it('matches a percent-encoded URI against its decoded bare-path equivalent', () => {
     expect(isSameFile('/project/hello world.ri', 'file:///project/hello%20world.ri')).toBe(true);
   });
+
+  it('applies the canonicalizeKey identity rule: dot segments, repeated slashes, scheme and encoding', () => {
+    expect(isSameFile('/a/./b//hello world.ri', 'file:///a/c/../b/hello%20world.ri')).toBe(true);
+    expect(isSameFile('/a/b/../foo.ri', '/a/b/foo.ri')).toBe(false);
+  });
 });
 
 describe('canonicalizeKey', () => {

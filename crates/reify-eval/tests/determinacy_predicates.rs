@@ -352,7 +352,7 @@ fn partially_determined_false_for_auto_with_constraint() {
         r#"
         structure S {
             param x : Length = auto
-            constraint x > 0
+            constraint x > 0 && x < 1m
             let r = partially_determined(x)
         }
     "#,

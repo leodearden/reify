@@ -40,7 +40,7 @@ tasks:
       kind: grep
       pattern: 'cause unrecorded'
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: silent-baseline-real
     binding: 'signal premise — probe 2026-07-24 (fixture committed): eval prints P.holes = [undef ×4], no note, exit 0; check prints All constraints satisfied., exit 0'
@@ -169,7 +169,7 @@ tasks:
       kind: grep
       pattern: 'PDIAG'
       paths:
-      - crates/reify-audit/src/lib.rs
+      - crates/reify-audit/src/pdiag.rs
       expect: present
   - name: infra-gate-registered-same-diff
     binding: 'drift-guard (overlay rule, esc-4914-162 precedent) — the new tests/infra/test_reify_audit_pdiag.sh must carry its run-all-classification.manifest bucket row in the same diff'

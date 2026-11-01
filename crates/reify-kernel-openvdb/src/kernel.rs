@@ -18,7 +18,7 @@
 // already guarantees this; the explicit `cfg` attributes below make the
 // intent clear inline (mirrors OCCT's `src/stubs.rs` pattern).
 
-use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
+use reify_ir::{DenseSdfGrid, ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, Mesh, QueryError, TessError, Value};
 
 const STUB_MSG: &str = "OpenVDB voxel kernel not yet implemented; \
     reify-kernel-openvdb is a registration-only scaffold for v0.2 task 2645. \
@@ -79,11 +79,19 @@ impl GeometryKernel for OpenVdbKernel {
     fn tessellate(&self, _handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
         Err(TessError::TessellationFailed(STUB_MSG.into()))
     }
-    // extract_edges, extract_faces, execute_with_history, query_many,
-    // realize_mesh_from_voxel, surface_options_content_hash all use the
-    // trait defaults — they error (or, for surface_options_content_hash,
-    // return the NO_OPTIONS-equivalent ContentHash(0)) in the standard
-    // "not supported" fashion.
+
+    fn ingest_dense_sdf(
+        &mut self,
+        _grid: &DenseSdfGrid,
+        _opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        Err(GeometryError::OperationFailed(STUB_MSG.into()))
+    }
+    // The remaining provided methods (extract_edges, extract_faces,
+    // execute_with_history, query_many, realize_mesh_from_voxel,
+    // surface_options_content_hash, …) use the trait defaults — they error
+    // (or, for surface_options_content_hash, return the NO_OPTIONS-equivalent
+    // ContentHash(0)) in the standard "not supported" fashion.
 }
 
 #[cfg(all(test, not(has_openvdb)))]
@@ -91,4 +99,22 @@ mod tests {
     use super::*;
 
     reify_test_support::assert_stub_kernel_errors!(OpenVdbKernel::new, "OpenVDB");
+
+    /// The stub has a dedicated `ingest_dense_sdf` arm returning its own
+    /// message, not the generic trait-default text.
+    #[test]
+    fn stub_ingest_dense_sdf_returns_stub_message() {
+        let grid = DenseSdfGrid::from_fn([2, 2, 2], [0.0; 3], 1e-3, |_| 0.0).unwrap();
+        let opts = ImplicitOptions::new(grid.h(), 1).unwrap();
+        match OpenVdbKernel::new().ingest_dense_sdf(&grid, &opts) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(msg.contains("OpenVDB"), "expected STUB_MSG; got {msg:?}");
+                assert!(
+                    !msg.contains("does not ingest dense SDF grids"),
+                    "the stub must not fall through to the trait default; got {msg:?}",
+                );
+            }
+            other => panic!("expected Err(OperationFailed(STUB_MSG)); got {other:?}"),
+        }
+    }
 }

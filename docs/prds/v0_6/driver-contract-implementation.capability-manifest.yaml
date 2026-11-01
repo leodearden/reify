@@ -123,7 +123,7 @@ tasks:
       pattern: run_measurement_pass
       expect: present
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
   - name: openvdb-attach-api-exists
     binding: capability->producer, wired on main — Engine::ensure_openvdb_kernel is idempotent,
       registry-driven, and returns false when the adapter is absent. Two production callers

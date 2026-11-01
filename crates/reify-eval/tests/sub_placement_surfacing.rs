@@ -19,7 +19,7 @@ use reify_core::Severity;
 use reify_ir::{ExportFormat, GeometryOp, Value};
 use reify_test_support::{
     MockConstraintChecker, MockGeometryKernel, compile_source_with_stdlib,
-    make_engine_with_mock_kernel, mesh_aabb,
+    make_engine_with_mock_kernel, mesh_aabb, scalar_si,
 };
 
 /// Build a real-OCCT engine via the production `SingleKernelHolder` planner.
@@ -1325,10 +1325,7 @@ structure HolderAt {
     // Assert the Box's `len`-axis width is the OVERRIDDEN 600mm (0.6m in SI),
     // NOT the 200mm (0.2m) definition default.
     let width_si = match &box_rec.op {
-        GeometryOp::Box { width, .. } => match width {
-            Value::Scalar { si_value, .. } => *si_value,
-            other => panic!("expected Scalar width in Box op; got {:?}", other),
-        },
+        GeometryOp::Box { size_x: width, .. } => scalar_si(width, "Box op width"),
         _ => unreachable!(),
     };
     let expected_m = 0.6_f64; // 600mm override in SI
@@ -1544,7 +1541,7 @@ structure Asm {
         .filter(|rec| {
             matches!(
                 &rec.op,
-                GeometryOp::Box { width, .. }
+                GeometryOp::Box { size_x: width, .. }
                 if matches!(width, Value::Scalar { si_value, .. } if (*si_value - 0.02_f64).abs() < 1e-9)
             )
         })

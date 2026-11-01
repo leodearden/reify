@@ -27,8 +27,9 @@ impl McpServer {
 
     /// Handle a single JSON-RPC message (in-process mode).
     ///
-    /// Takes a JSON string, dispatches it, and returns a JSON string response.
-    pub fn handle_message(&self, json: &str) -> String {
+    /// Takes a JSON string, dispatches it, and returns the JSON string response,
+    /// or `None` for a notification, which gets no response.
+    pub fn handle_message(&self, json: &str) -> Option<String> {
         let dispatcher = McpDispatcher::new(&self.registry, self.context.as_ref());
         dispatcher.dispatch(json)
     }
@@ -36,6 +37,7 @@ impl McpServer {
     /// Run the MCP server on stdin/stdout (CLI mode).
     ///
     /// Reads newline-delimited JSON from stdin, writes responses to stdout.
+    /// Notifications are consumed without writing anything.
     pub async fn run_stdio(&self) {
         let stdin = tokio::io::stdin();
         let stdout = tokio::io::stdout();
@@ -48,6 +50,7 @@ impl McpServer {
     /// Run the MCP server on arbitrary async streams (for testing and embedding).
     ///
     /// Reads newline-delimited JSON from reader, writes responses to writer.
+    /// Notifications are consumed without writing anything.
     /// Returns `Ok(())` on graceful shutdown (EOF), `Err` on I/O failure.
     pub async fn run_on_streams<R, W>(&self, reader: R, mut writer: W) -> Result<(), std::io::Error>
     where
@@ -62,7 +65,9 @@ impl McpServer {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    let response = self.handle_message(trimmed);
+                    let Some(response) = self.handle_message(trimmed) else {
+                        continue;
+                    };
                     let output = format!("{response}\n");
                     if let Err(e) = writer.write_all(output.as_bytes()).await {
                         eprintln!("MCP write error: {e}");

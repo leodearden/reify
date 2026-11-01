@@ -11,8 +11,8 @@ use crate::CompiledModule;
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::entity::build_structure_def_skeleton;
 use crate::functions::compile_function;
-use crate::merge_prelude_functions;
-use crate::types::{EntityKind, TopologyTemplate};
+use crate::name_env::{self, Origin};
+use crate::types::TopologyTemplate;
 
 /// Run phase-7 (functions).
 ///
@@ -23,12 +23,11 @@ use crate::types::{EntityKind, TopologyTemplate};
 ///    [`compile_function`] with the registry, `ctx.resolution_enums`,
 ///    accumulated `ctx.functions`, and `ctx.alias_registry`.  When `fn_refs`
 ///    is empty this block is skipped — skeleton compilation would be wasted.
-///    Prelude entries are inserted first so same-module skeletons shadow them,
-///    mirroring the prelude-first / local-shadows composition in
-///    `compile_entity`.
-/// 2. (always) Build `ctx.resolution_functions` by merging user functions with
-///    prelude functions via [`merge_prelude_functions`] — the canonical shadow
-///    predicate for the Reify function table. User functions appear first so
+///    The skeletons are the local tier of
+///    [`name_env::ctor_template_registry`], so they shadow prelude templates of
+///    the same name.
+/// 2. (always) Build `ctx.resolution_functions` via
+///    [`build_resolution_functions`]. User functions appear first so
 ///    first-match-wins dispatch shadows duplicate prelude entries.
 pub(crate) fn phase_functions(
     ctx: &mut CompilationCtx,
@@ -58,18 +57,10 @@ pub(crate) fn phase_functions(
             })
             .collect();
 
-        // Build the merged registry: prelude entries first (so same-module skeletons
-        // shadow prelude templates of the same name — mirrors compile_entity's
-        // entity_template_registry composition at entity.rs:396-405).
-        let mut merged_registry: HashMap<String, &TopologyTemplate> = prelude
-            .iter()
-            .flat_map(|m| m.templates.iter())
-            .filter(|t| t.entity_kind == EntityKind::Structure)
-            .map(|t| (t.name.clone(), t))
-            .collect();
-        for sk in skeletons.iter() {
-            merged_registry.insert(sk.name.clone(), sk);
-        }
+        // Same-module skeletons are the local tier: they shadow prelude
+        // templates of the same name.
+        let merged_registry: HashMap<String, &TopologyTemplate> =
+            name_env::ctor_template_registry(&skeletons, prelude);
 
         // Compile user functions in source order.
         //
@@ -103,14 +94,23 @@ pub(crate) fn phase_functions(
     }
 
     // 3. Build the resolution function list for compile-time overload dispatch.
-    //
-    // User functions appear first (shadowing priority); prelude functions with
-    // distinct `(name, arity, param_types)` triples are appended. See
-    // `merge_prelude_functions()` for the canonical shadow predicate.
     // `ctx.functions` (user-only) remains the output stored in CompiledModule.
-    let prelude_fns: Vec<CompiledFunction> = prelude
+    ctx.resolution_functions = build_resolution_functions(&ctx.functions, prelude);
+}
+
+/// The compile-time overload-dispatch table: every user function, then each
+/// prelude function that wins its `(name, param types)` key under NS-P1
+/// ([`name_env`]: imports before std modules, first wins). A prelude function
+/// sharing a user function's key is shadowed.
+pub(crate) fn build_resolution_functions(
+    user: &[CompiledFunction],
+    prelude: &[&CompiledModule],
+) -> Vec<CompiledFunction> {
+    let bindings = name_env::bind(user, prelude.iter().copied());
+    let prelude_winners = bindings
+        .winning_candidates()
         .iter()
-        .flat_map(|m| m.functions.iter().cloned())
-        .collect();
-    ctx.resolution_functions = merge_prelude_functions(&ctx.functions, &prelude_fns);
+        .filter(|candidate| candidate.origin != Origin::Local)
+        .map(|candidate| candidate.definition.clone());
+    user.iter().cloned().chain(prelude_winners).collect()
 }

@@ -515,7 +515,7 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
 /// `fabrication_findings` reports a malformed marker keyed on a name, and the
 /// obvious way to find that name is to read `chunk_call_mentions`' output for
 /// the marked line. That coupling is a trap: every filter #5647 added there
-/// (`.`/`@` left delimiter, `RI_KEYWORDS`, file-scoped `ri_declared_name`,
+/// (`.`/`@` left delimiter, `reify_syntax::KEYWORDS`, file-scoped `ri_declared_name`,
 /// elided `(...)`) can drop the ONLY call-shaped token on a marked line, and a
 /// marker that yields no name yields no finding. The erosion is silent — the
 /// lane reports clean, nothing goes RED — and `allow-missing-reason:` is one of
@@ -530,7 +530,7 @@ fn fabrication_lane_reports_names_that_exist_nowhere() {
 fn reasonless_marker_survives_every_mention_side_filter() {
     for (filter, chunk, expected_name) in [
         (
-            "RI_KEYWORDS membership (`auto` is a value literal, spec §2.10:207)",
+            "reify_syntax::KEYWORDS membership (`auto` is a value literal, spec §2.10)",
             "# Params\n\n- `auto(free)` <!-- pdoccover:allow -->\n\
              - `extrude(profile, height)` — real.\n",
             "auto",
@@ -1676,15 +1676,16 @@ const REGISTRY_CENSUS_SOURCES: &[&str] = &[
     "crates/reify-compiler/src/math_signatures.rs",
 ];
 
-/// `RI_KEYWORDS` must never intersect the registered-builtin census drawn from
-/// [`REGISTRY_CENSUS_SOURCES`]. A token that is BOTH a reserved word and a
-/// registered builtin name would be silently dropped from every chunk claim by
-/// `chunk_call_mentions`'s keyword filter, blinding the fabrication lane to
-/// that builtin — a false negative with no bound, which is exactly the risk of
-/// widening the mention-side filter from `RI_DECL_KEYWORDS` to the full
-/// reserved-word set. Measured empty today (47 keywords against both files'
-/// `*_NAMES` registries). If this ever fails, remove the colliding token from
-/// `RI_KEYWORDS` — do NOT delete this guard.
+/// No [`reify_syntax::KEYWORDS`] word may intersect the registered-builtin
+/// census drawn from [`REGISTRY_CENSUS_SOURCES`]. A token that is BOTH a
+/// keyword and a registered builtin name would be silently dropped from every
+/// chunk claim by `chunk_call_mentions`'s keyword filter, blinding the
+/// fabrication lane to that builtin — a false negative with no bound, which is
+/// exactly the risk of widening the mention-side filter from
+/// `RI_DECL_KEYWORDS` to the full keyword table. Measured empty today (47
+/// keywords against both files' `*_NAMES` registries). If this ever fails,
+/// resolve the collision in `reify_syntax::KEYWORDS` or the registry — do NOT
+/// delete this guard.
 ///
 /// ## Scope: the `*_NAMES` registries, deliberately NOT the whole oracle
 ///
@@ -1697,10 +1698,10 @@ const REGISTRY_CENSUS_SOURCES: &[&str] = &[
 /// deleted rather than a keyword removed. The `*_NAMES` registries are the
 /// population where a collision is genuinely actionable, so they are what this
 /// guard covers; a builtin declared outside them is out of its reach and is
-/// covered instead by `ri_keywords_excludes_the_spec_carve_outs` on the
+/// covered instead by `keyword_filter_excludes_the_spec_carve_outs` on the
 /// spec-facing side.
 #[test]
-fn ri_keywords_never_collides_with_the_real_registry_census() {
+fn keyword_table_never_collides_with_the_real_registry_census() {
     let mut census: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for rel in REGISTRY_CENSUS_SOURCES {
         let path = repo_root().join(rel);
@@ -1723,18 +1724,38 @@ fn ri_keywords_never_collides_with_the_real_registry_census() {
         census.extend(regs.iter().flat_map(|r| r.entries.iter()).map(|e| e.name.clone()));
     }
 
-    let collisions: Vec<&str> = reify_audit::pdoccover::RI_KEYWORDS
+    let collisions: Vec<&str> = reify_syntax::KEYWORDS
         .iter()
-        .copied()
+        .map(|k| k.word)
         .filter(|kw| census.contains(*kw))
         .collect();
     assert!(
         collisions.is_empty(),
-        "{collisions:?} are BOTH RI_KEYWORDS members AND registered builtin \
-         names in the real {REGISTRY_CENSUS_SOURCES:?} census. Every chunk \
-         claim naming one of them is silently dropped by the mention-side \
-         keyword filter, blinding the fabrication lane to that builtin. Remove \
-         the colliding token(s) from RI_KEYWORDS — do NOT delete this guard."
+        "{collisions:?} are registered builtin names in the real \
+         {REGISTRY_CENSUS_SOURCES:?} census: a KEYWORDS word that is also a \
+         registered builtin blinds the fabrication lane; resolve the collision \
+         in reify_syntax::KEYWORDS or the registry — do NOT delete this guard."
+    );
+}
+
+/// The mention-side keyword filter drops every [`reify_syntax::KEYWORDS`]
+/// word: each row written call-shaped yields no claim, while a non-keyword
+/// written the same way (`extrude`) is still extracted.
+#[test]
+fn mention_filter_drops_every_keyword_table_word() {
+    for k in reify_syntax::KEYWORDS {
+        let hits = reify_audit::pdoccover::chunk_call_mentions(&format!("`{}(x)`\n", k.word));
+        assert!(
+            hits.is_empty(),
+            "{:?} is a reify_syntax::KEYWORDS row, so a call-shaped mention of \
+             it is not a builtin claim; got {hits:?}",
+            k.word
+        );
+    }
+    assert_eq!(
+        reify_audit::pdoccover::chunk_call_mentions("`extrude(x)`\n"),
+        vec![("extrude".to_string(), 1)],
+        "a non-keyword written call-shaped must still be extracted as a claim"
     );
 }
 

@@ -41,6 +41,11 @@ module dev_capstan
 //    compares every cell, the constraint count, and the two structures' compiled
 //    content hash — the last of which covers the body tree, so "code-identical"
 //    is substantiated rather than approximated.
+//  - Capstan: THIS file is the original and printer.ri embeds a copy, minus
+//    the `blank_volume`/`body_volume` machining metric.
+//    crates/reify-eval/tests/harness_sweep/capstan_copies_lockstep.rs
+//    fails if the two fork, so a code edit to the Capstan here must be ported
+//    to printer.ri in the same diff.
 
 #version(0.1)
 

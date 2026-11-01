@@ -4,9 +4,11 @@
 //! CONSTRUCTION layer's labels come from the seam binding
 //! (`SeamUnavailable`'s rendering in `src/jcodemunch_seam.rs`), emitted when
 //! the handshake fails and the whole run binds the inert stub; the PER-CALL
-//! layer's come from `src/jcodemunch_client.rs`, emitted when one
-//! `tools/call` fails after a successful handshake. Test binaries consume
-//! them for two DIFFERENT and complementary reasons:
+//! layer's come from `RealJCodemunchOps::call_or_fail` in
+//! `src/jcodemunch_client.rs`, which renders `jcodemunch <tool>: …` (or
+//! `jcodemunch <tool>(<subject>): …`) when one `tools/call` fails after a
+//! successful handshake. Test binaries consume them for two DIFFERENT and
+//! complementary reasons:
 //!
 //! - the hermetic CLI tests (`tests/cli.rs`, `tests/jcodemunch_fallback_cli.rs`)
 //!   assert the literal is PRESENT in the real binary's stderr, on the
@@ -16,9 +18,10 @@
 //!   ABSENT from a live leg's stderr. That is the vacuity check — links 3
 //!   (construction) and 4 (per call) of the five-part chain, whose canonical
 //!   statement is the header of `tests/jcodemunch_live.rs` ("THE FIVE-PART
-//!   CHAIN"). The short version: nothing else in that chain can tell an
-//!   empty-by-failure run from an empty-by-fact one, so the breadcrumb is the
-//!   only signal there is.
+//!   CHAIN"). The short version: a per-call failure also leaves a Low
+//!   unexamined record in the findings array, but no link of that chain reads
+//!   finding patterns, so the breadcrumb is what the capstone checks — and why
+//!   these literals stay shared.
 //!
 //! # Why they live here rather than in either consumer
 //!

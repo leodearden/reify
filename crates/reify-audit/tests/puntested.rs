@@ -285,6 +285,50 @@ mod tests {
         );
     }
 
+    /// A `get_untested_symbols` query that FAILED is not a repo whose every
+    /// symbol is tested. PUNTESTED's one query is its whole sweep, so the
+    /// failure replaces the run's result with exactly one Low
+    /// `PUntestedUnexamined` naming the tool and the failure.
+    #[test]
+    fn a_failed_untested_symbols_query_reports_puntested_unexamined_not_clean() {
+        const TIMEOUT: &str = "read body: timed out reading response";
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.fail_untested_symbols(TIMEOUT);
+
+        let ctx = AuditContext {
+            project_root: PathBuf::from("/tmp/fake-project"),
+            conn: &conn,
+            git: &git,
+            jcodemunch: &jc,
+            task_metadata: HashMap::new(),
+            target_task_id: None,
+            window: None,
+            now: None,
+            producer_branch: None,
+        };
+
+        let findings = puntested::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a failed query must yield exactly one finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PUntestedUnexamined, "got {f:?}");
+        assert_eq!(f.severity, Severity::Low, "Low keeps the exit code neutral");
+        assert_eq!(f.task_id, "", "PUNTESTED is repo-wide; got {f:?}");
+        for needle in ["get_untested_symbols", TIMEOUT] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the failed tool and the \
+                 failure); got {:?}",
+                f.summary
+            );
+        }
+    }
+
 } // mod tests
 
 } // mod puntested

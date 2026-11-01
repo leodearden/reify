@@ -285,61 +285,61 @@ fn rounded_box_lowers_to_boolean_compose() {
                 let keys: Vec<&str> = args.iter().map(|(k, _)| k.as_str()).collect();
                 assert_eq!(
                     keys,
-                    &["width", "height", "depth"],
-                    "Box op[{i}] must have args [width, height, depth], got: {keys:?}"
+                    &["size_x", "size_y", "size_z"],
+                    "Box op[{i}] must have args [size_x, size_y, size_z], got: {keys:?}"
                 );
             }
             other => panic!("op[{i}] must be Primitive(Box), got: {other:?}"),
         }
     }
 
-    // Box A (op[0])'s "height" slot (index 1) must be a derived (dimensioned)
+    // Box A (op[0])'s "size_y" slot (index 1) must be a derived (dimensioned)
     // expression — depth - 2*corner_r — NOT a bare pass-through of `depth`.
     match &ops[0] {
         CompiledGeometryOp::Primitive { args, .. } => {
-            let (_, height_expr) = &args[1];
+            let (_, size_y_expr) = &args[1];
             assert_ne!(
-                height_expr.result_type,
+                size_y_expr.result_type,
                 Type::dimensionless_scalar(),
-                "Box A height-slot must be dimensioned Length, got {:?}",
-                height_expr.result_type
+                "Box A size_y slot must be dimensioned Length, got {:?}",
+                size_y_expr.result_type
             );
             assert!(
                 matches!(
-                    height_expr.kind,
+                    size_y_expr.kind,
                     CompiledExprKind::BinOp {
                         op: BinOp::Sub,
                         ..
                     }
                 ),
-                "Box A height-slot must be a Sub expr (depth - 2*corner_r), got: {:?}",
-                height_expr.kind
+                "Box A size_y slot must be a Sub expr (depth - 2*corner_r), got: {:?}",
+                size_y_expr.kind
             );
         }
         _ => unreachable!(),
     }
 
-    // Box B (op[1])'s "width" slot (index 0) must similarly be derived —
+    // Box B (op[1])'s "size_x" slot (index 0) must similarly be derived —
     // width - 2*corner_r.
     match &ops[1] {
         CompiledGeometryOp::Primitive { args, .. } => {
-            let (_, width_expr) = &args[0];
+            let (_, size_x_expr) = &args[0];
             assert_ne!(
-                width_expr.result_type,
+                size_x_expr.result_type,
                 Type::dimensionless_scalar(),
-                "Box B width-slot must be dimensioned Length, got {:?}",
-                width_expr.result_type
+                "Box B size_x slot must be dimensioned Length, got {:?}",
+                size_x_expr.result_type
             );
             assert!(
                 matches!(
-                    width_expr.kind,
+                    size_x_expr.kind,
                     CompiledExprKind::BinOp {
                         op: BinOp::Sub,
                         ..
                     }
                 ),
-                "Box B width-slot must be a Sub expr (width - 2*corner_r), got: {:?}",
-                width_expr.kind
+                "Box B size_x slot must be a Sub expr (width - 2*corner_r), got: {:?}",
+                size_x_expr.kind
             );
         }
         _ => unreachable!(),

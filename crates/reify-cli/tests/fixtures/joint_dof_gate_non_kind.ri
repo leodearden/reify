@@ -1,0 +1,6 @@
+// #8740 (compiler-declaration-passes B12): a DOF typed with a non-kind (`Axis`)
+// draws one targeted error naming the field, and no joint DOF verdict.
+
+module joint_dof_gate_non_kind
+
+joint j(a: Axis, b: Axis) with foo: Axis = concentric(a, b)

@@ -1500,9 +1500,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -1638,9 +1638,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -1697,9 +1697,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -1830,9 +1830,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -1963,9 +1963,9 @@ structure Assembly {
         let box_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
         let cyl_ops = vec![CompiledGeometryOp::Primitive {
@@ -2098,9 +2098,9 @@ structure Assembly {
         let box_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
         // A realization that will fail to compile: OOB step reference forces the
@@ -2290,9 +2290,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -2446,9 +2446,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -2515,9 +2515,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -2937,17 +2937,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3110,17 +3110,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3275,17 +3275,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3432,17 +3432,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3595,17 +3595,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3745,17 +3745,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3856,9 +3856,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -3974,17 +3974,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -4116,9 +4116,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -4217,9 +4217,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -4368,17 +4368,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -4576,9 +4576,9 @@ structure Assembly {
         let a_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         };
         let ops = vec![
@@ -4725,17 +4725,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5004,9 +5004,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5255,17 +5255,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5404,9 +5404,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -5564,9 +5564,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -5731,9 +5731,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5841,9 +5841,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5987,9 +5987,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -6135,9 +6135,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -6336,9 +6336,9 @@ structure Assembly {
         let box_op = CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(80.0)),
-                ("height".into(), mm_lit(100.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(80.0)),
+                ("size_y".into(), mm_lit(100.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         };
 
@@ -6419,9 +6419,9 @@ structure Assembly {
             // ── Primitives ────────────────────────────────────────────────────
             Case {
                 op: GeometryOp::Box {
-                    width: Value::Real(0.01),
-                    height: Value::Real(0.02),
-                    depth: Value::Real(0.005),
+                    size_x: Value::Real(0.01),
+                    size_y: Value::Real(0.02),
+                    size_z: Value::Real(0.005),
                 },
                 expected: vec![],
                 label: "Box → empty (primitive, no parents)",
@@ -6999,7 +6999,7 @@ structure Assembly {
         // ── None-role: primitives — scalar fields only, nothing to substitute ─
         let no_handles = make_map(&[(999, 9999)]); // map with irrelevant entries
 
-        let mut op = GeometryOp::Box { width: Value::Real(1.0), height: Value::Real(1.0), depth: Value::Real(1.0) };
+        let mut op = GeometryOp::Box { size_x: Value::Real(1.0), size_y: Value::Real(1.0), size_z: Value::Real(1.0) };
         seen.insert(GeometryOpDiscriminants::from(&op));
         substitute_op_parents(&mut op, &no_handles); // must not panic
 
@@ -7544,9 +7544,9 @@ structure Assembly {
             // Primitives
             Case {
                 op: GeometryOp::Box {
-                    width: r(0.01),
-                    height: r(0.01),
-                    depth: r(0.01),
+                    size_x: r(0.01),
+                    size_y: r(0.01),
+                    size_z: r(0.01),
                 },
                 expected: Operation::PrimitiveBox,
                 label: "Box → PrimitiveBox",
@@ -9142,9 +9142,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 

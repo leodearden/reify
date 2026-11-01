@@ -32,19 +32,20 @@
 // Real-kernel end-to-end coverage (real OCCT kernel + UnifiedDag scheduler)
 // lives in crates/reify-eval/tests/fillet_curated_edges_e2e.rs:
 //
-//   * fillet_curated_edges_3205_e2e — curated-vs-fillet-all volume contrast.
-//     It selects edges with `edges_at_height`; it does NOT drive this file's
-//     faces_by_normal → single → adjacent_faces → shared_edges → flat_map
-//     chain (an earlier revision of this header claimed it did — it never
-//     has; corrected by #5208).
+//   * fillet_top_edges_example_builds_clean_e2e — builds THIS file, driving
+//     its faces_by_normal → single → adjacent_faces → shared_edges → flat_map
+//     chain to one curated fillet over the 4 top-perimeter edges, with less
+//     volume than the box (#7270). The CLI pin
+//     fillet_top_edges_example_check_eval_build_exit_clean in
+//     crates/reify-cli/tests/harness_cli/cli_eval_geometry.rs holds
+//     `reify check`, `reify eval` and `reify build` on this file to exit 0.
+//   * fillet_curated_edges_3205_e2e — curated-vs-fillet-all volume contrast,
+//     selecting edges with `edges_at_height` (not this file's chain).
 //   * bottom_deck_selectors_example_builds_clean_e2e — production-build e2e
 //     over examples/topology_selectors/bottom_deck_selectors.ri (7 curated
 //     fillets: edges_parallel_to on blank lets, a boolean-result parent, and
 //     chained named-let stages). The same example is driven through the CLI
 //     entry point by crates/reify-cli/tests/harness_cli/cli_eval_geometry.rs.
-//
-// The topology-walk chain used by THIS file is covered at the parse and
-// compile tiers (below); its real-kernel eval coverage is still open (#4727).
 //
 // Smoke-test coverage tiers in
 //   crates/reify-eval/tests/harness_topology_selector/topology_selector_smoke_tests.rs:
@@ -56,12 +57,10 @@
 //                         crates/reify-compiler/tests/harness_compilation_surface/examples_smoke.rs,
 //                         so the bulk walker compiles it too.
 //   eval (bare MockGeometryKernel) → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
-//                         — still blocked on #4727 (pending): the bare mock
-//                         kernel records only the Box op and never reaches
-//                         Fillet, so the topology walk needs a real-OCCT +
-//                         set_build_scheduler(UnifiedDag) rewrite (re-verified
-//                         2026-07-26 with `--ignored`). That capability is
-//                         covered by the two e2e tests above.
+//                         — still blocked on #4727: the bare mock kernel has no
+//                         seeded topology, so it records only the Box op and
+//                         never reaches Fillet. The real-kernel eval of the
+//                         walk is fillet_top_edges_example_builds_clean_e2e.
 
 structure def FilletTopEdges {
     let b = box(50mm, 30mm, 10mm)

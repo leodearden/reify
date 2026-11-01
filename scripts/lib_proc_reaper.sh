@@ -183,6 +183,14 @@ _reaper_reap_orphans() {
         echo "lib_proc_reaper.sh: WARNING: host-wide ps scan exceeded ${REIFY_REAPER_PS_TIMEOUT:-15}s under load; skipping orphan sweep this cycle" >&2
         return 0  # deterministic skip: discard any partial ps output captured before SIGKILL
     fi
+    # Split once with read: an unquoted expansion would also pathname-expand
+    # the deps globs against the caller's CWD (test_proc_reaper.sh Part 10).
+    # -d '' reads past newlines, so one-entry-per-line lists keep every line;
+    # read then reports EOF, hence || true.
+    local -a _deps_globs=() _orphan_ppid_list=() _reaper_comm_list=()
+    IFS=$' \t\n' read -r -d '' -a _deps_globs <<< "$_deps_glob" || true
+    IFS=$' \t\n' read -r -d '' -a _orphan_ppid_list <<< "$_orphan_ppids" || true
+    IFS=$' \t\n' read -r -d '' -a _reaper_comm_list <<< "$_reaper_comms" || true
     local _pid _ppid _etimes _exe _ppid_comm _glob _matched
     while read -r _pid _ppid _etimes; do
         _pid="${_pid# }"; _pid="${_pid% }"
@@ -199,7 +207,7 @@ _reaper_reap_orphans() {
 
         # Deps-glob filter: check against each glob pattern.
         _matched=0
-        for _glob in $_deps_glob; do
+        for _glob in "${_deps_globs[@]+"${_deps_globs[@]}"}"; do
             # shellcheck disable=SC2254
             case "$_exe" in
                 $_glob) _matched=1; break ;;
@@ -211,11 +219,11 @@ _reaper_reap_orphans() {
         _ppid_comm=$(_reaper_bounded_ps "${REIFY_REAPER_PS_PPID_TIMEOUT:-5}" -o comm= -p "$_ppid" 2>/dev/null | tr -d ' ' || echo "")
         _matched=0
         local _opid _comm
-        for _opid in $_orphan_ppids; do
+        for _opid in "${_orphan_ppid_list[@]+"${_orphan_ppid_list[@]}"}"; do
             [ "$_ppid" = "$_opid" ] && { _matched=1; break; }
         done
         if [ "$_matched" -eq 0 ]; then
-            for _comm in $_reaper_comms; do
+            for _comm in "${_reaper_comm_list[@]+"${_reaper_comm_list[@]}"}"; do
                 [ "$_ppid_comm" = "$_comm" ] && { _matched=1; break; }
             done
         fi

@@ -1,4 +1,4 @@
-//! Pins for `common::git_env::libtest_summary_count` — the single parser every
+//! Pins for `common::replay::libtest_summary_count` — the single parser every
 //! replay child's libtest summary is read through.
 //!
 //! Its readers are spread across binaries: the replay harness's own
@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::git_env::{SummaryField, libtest_summary_count};
+use common::replay::{SummaryField, libtest_summary_count};
 
 /// Each field is read as the number belonging to that field, in both of
 /// libtest's verdict shapes.

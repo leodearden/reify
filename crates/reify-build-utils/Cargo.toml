@@ -16,3 +16,5 @@ toml.workspace = true
 # transitively resolved for consumers.
 [dev-dependencies]
 tempfile.workspace = true
+syn = { version = "2", features = ["full"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

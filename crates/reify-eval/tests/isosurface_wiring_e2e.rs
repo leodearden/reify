@@ -185,13 +185,145 @@ fn isosurface_wiring_builds_honest_voxel_operand_and_mesh_terminal() {
     );
 }
 
+/// `isosurface(union(a, b))` runs the union on OpenVDB as level-set CSG.
+///
+/// The isosurface consumer demands `Voxel` for `u`, and only the OpenVDB
+/// kernel declares `(BooleanUnion, Voxel)`, so `u`'s plan tessellates each
+/// BRep operand on occt, ingests it into openvdb and executes the union there;
+/// `shell` then surfaces the union grid by marching cubes.
+///
+/// The operands cross as a plus sign (30 × 10 × 10 mm along X, 10 × 30 × 10 mm
+/// along Y, both origin-centred), so only a genuine union spans more than
+/// 25 mm on BOTH X and Y: either operand alone, or their intersection, spans
+/// 10 mm on one of them. The basis for the 25 mm / 15 mm bounds: honest_floor
+/// puts h = 30 mm / 64 ≈ 0.47 mm, and the zero set of `meshToLevelSet` lies
+/// within about a voxel of the true surface, so the extents are 30, 30 and
+/// 10 mm ± ~1 mm.
+#[cfg(has_openvdb)]
+#[test]
+fn isosurface_of_union_runs_the_union_on_openvdb_and_surfaces_a_mesh() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::Severity;
+    use reify_ir::{ExportFormat, KernelId, ReprKind};
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping isosurface_of_union_runs_the_union_on_openvdb_and_surfaces_a_mesh: \
+             OCCT not available (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let source = r#"structure IsoUnion {
+    let a = box(30mm, 10mm, 10mm)
+    let b = box(10mm, 30mm, 10mm)
+    let u = union(a, b)
+    let shell = isosurface(u)
+}"#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::with_registered_kernel(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(checker),
+    );
+    assert!(
+        engine.ensure_openvdb_kernel(),
+        "ensure_openvdb_kernel() must return true under cfg(has_openvdb)"
+    );
+
+    let _eval = engine.eval(&compiled);
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    let errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "isosurface(union(a, b)) must build with no error-severity diagnostics \
+         (a voxel union the OpenVDB kernel declares but cannot execute fails here); \
+         got: {errors:?}"
+    );
+
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after a successful build()");
+    let mut nodes: Vec<_> = snap
+        .graph
+        .realizations
+        .iter()
+        .filter(|(id, _)| id.entity == "IsoUnion")
+        .collect();
+    nodes.sort_by_key(|(id, _)| id.index);
+    assert_eq!(
+        nodes.len(),
+        4,
+        "expected the realizations a, b, u, shell for entity IsoUnion; got {:?}",
+        nodes
+            .iter()
+            .map(|(id, _)| id.to_string())
+            .collect::<Vec<_>>()
+    );
+
+    let (_, union_node) = nodes[2];
+    assert_eq!(
+        (union_node.produced_repr, union_node.produced_kernel),
+        (ReprKind::Voxel, Some(KernelId::OpenVdb)),
+        "u = union(a, b) must be executed as a voxel union on the OpenVDB kernel"
+    );
+
+    let (shell_id, shell_node) = nodes[3];
+    assert_eq!(
+        shell_node.produced_repr,
+        ReprKind::Mesh,
+        "shell = isosurface(u) must surface the union grid as a Mesh"
+    );
+
+    let shell_path = shell_id.to_string();
+    let tess = engine.tessellate_realizations(&compiled);
+    let shell_mesh = tess
+        .meshes
+        .iter()
+        .find(|m| m.entity_path == shell_path)
+        .unwrap_or_else(|| {
+            panic!(
+                "tessellate_realizations must surface a MeshSurface at entity_path \
+                 {shell_path:?}; got paths: {:?}",
+                tess.meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !shell_mesh.mesh.vertices.is_empty() && !shell_mesh.mesh.indices.is_empty(),
+        "the union's isosurface must be a non-empty mesh"
+    );
+
+    let extent = |axis: usize| {
+        let coords = shell_mesh.mesh.vertices.chunks_exact(3).map(|v| v[axis]);
+        let lo = coords.clone().fold(f32::INFINITY, f32::min);
+        let hi = coords.fold(f32::NEG_INFINITY, f32::max);
+        hi - lo
+    };
+    let (ex, ey, ez) = (extent(0), extent(1), extent(2));
+    assert!(
+        ex > 0.025 && ey > 0.025 && ez < 0.015,
+        "the plus-shaped union spans ≈ 30 × 30 × 10 mm; got {ex} × {ey} × {ez} m"
+    );
+}
+
 /// Review fix-forward: placed-isosurface transform guard.
 ///
 /// `walk_placed_realizations` (geometry_ops.rs) dispatches
 /// `GeometryOp::ApplyTransform` to the kernel that OWNS each handle whenever
 /// the composed world pose is non-identity. Before this fix,
-/// `OpenVdbKernel::execute` only matched `GeometryOp::Surface` and returned
-/// `Err(VOXEL_BOOL_STUB_MSG)` for `ApplyTransform`, so a PLACED isosurface
+/// `OpenVdbKernel::execute` only matched `GeometryOp::Surface` and its
+/// catch-all returned `Err(OperationFailed(..))` for `ApplyTransform`, so a PLACED isosurface
 /// (mesh handle) OR a PLACED Voxel operand (grid handle) hit the `Err` arm,
 /// pushed a "transform application error" diagnostic, and was dropped from
 /// the surfaced output — silently. `isosurface_wiring_builds_honest_voxel_operand_and_mesh_terminal`

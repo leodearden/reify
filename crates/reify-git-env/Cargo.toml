@@ -1,0 +1,16 @@
+[package]
+name = "reify-git-env"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The workspace's single constructor and sanitizer for git invocations that target a specific repository"
+
+[dependencies]
+
+[features]
+# Exposes `removed_vars`, a test-side reader, to dependents' tests. Enable it
+# from a [dev-dependencies] entry only.
+test-utils = []
+
+[dev-dependencies]
+tempfile.workspace = true

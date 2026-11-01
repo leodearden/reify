@@ -143,7 +143,7 @@ fn length_rejection_line(builtin: &str, arg: &str, got: &str) -> String {
 /// §6 row 1 — a bare-`Int` primitive dimension is rejected at the process boundary,
 /// naming EVERY offending argument rather than only the first.
 ///
-/// All three of `width`, `height` and `depth` are asserted: a gate that fired on one
+/// All three of `size_x`, `size_y` and `size_z` are asserted: a gate that fired on one
 /// position and silently passed the other two would still exit 1, so the exit code alone
 /// cannot distinguish a whole gate from a third of one.
 #[test]
@@ -155,7 +155,7 @@ fn bare_box_dimensions_exit_1_naming_every_rejected_argument() {
         "`reify eval` on bare box dimensions must exit nonzero — this IS the §1 \
          headline signal;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    for arg in ["width", "height", "depth"] {
+    for arg in ["size_x", "size_y", "size_z"] {
         expect_length_rejection(&stderr, "box", arg, "Int");
     }
 }
@@ -224,7 +224,7 @@ structure def S {
         !status.success(),
         "D1: a bare zero must be rejected, not exempted;\nstdout: {stdout}\nstderr: {stderr}"
     );
-    for arg in ["width", "height", "depth"] {
+    for arg in ["size_x", "size_y", "size_z"] {
         expect_length_rejection(&stderr, "box", arg, "Int");
     }
 }
@@ -464,7 +464,7 @@ fn check_and_eval_agree_on_a_bare_primitive_dimension() {
             "`reify {subcommand}` must exit nonzero on a bare primitive dimension;\n\
              stdout: {stdout}\nstderr: {stderr}"
         );
-        expect_length_rejection(&stderr, "box", "width", "Int");
+        expect_length_rejection(&stderr, "box", "size_x", "Int");
     }
 }
 
@@ -715,7 +715,7 @@ fn every_units_rejection_uses_the_one_wording_template() {
         ChokepointRoute {
             fixture: &BARE_BOX,
             builtin: "box",
-            arg: "width",
+            arg: "size_x",
             leaf: "β (primitive, raw-Value route)",
         },
         ChokepointRoute {

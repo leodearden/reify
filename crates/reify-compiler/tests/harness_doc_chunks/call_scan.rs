@@ -4,8 +4,9 @@
 //!
 //! Reify SOURCE — a chunk's ```` ```reify ```` fences, an example `.ri` file, a
 //! signature fixture — is never read here. It is parsed and walked by
-//! `doc_forms.rs` (`call_forms` / `fence_call_forms`), and arity is read only by
-//! `doc_forms`.
+//! `doc_forms.rs` (`call_forms` / `fence_call_forms`). This module reads names
+//! only; arity is read by `doc_forms` (signature-shaped spans and parsed
+//! sources) and by `written_calls` (call forms in code text).
 
 /// Does `text` call `name`: a `name(` whose parens balance?
 ///

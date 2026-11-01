@@ -1,0 +1,8 @@
+module p5_shadow
+structure def Main {
+    let dir = vec3(0.0, 0.0, 1.0)
+    let vector = vec3(1.0, 0.0, 0.0)
+    let frame = frame_at(point3(0mm, 0mm, 0mm), axis_y(point3(0mm, 0mm, 0mm)).dir, axis_x(point3(0mm, 0mm, 0mm)).dir)
+    let a = axis_y(point3(0mm, 0mm, 0mm)).dir
+    let b = frame.x
+}

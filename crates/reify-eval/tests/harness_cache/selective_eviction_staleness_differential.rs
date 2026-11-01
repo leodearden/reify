@@ -88,10 +88,10 @@ fn canonical_shape(records: &[GeometryOpRecord], handle: GeometryHandleId) -> St
     let parent = |h: &GeometryHandleId| canonical_shape(records, *h);
     match &record.op {
         GeometryOp::Box {
-            width,
-            height,
-            depth,
-        } => format!("box({}, {}, {})", si(width), si(height), si(depth)),
+            size_x,
+            size_y,
+            size_z,
+        } => format!("box({}, {}, {})", si(size_x), si(size_y), si(size_z)),
         GeometryOp::Cylinder { radius, height } => {
             format!("cylinder({}, {})", si(radius), si(height))
         }
@@ -407,11 +407,11 @@ fn body_template(name: &str, width_mm: f64) -> reify_compiler::TopologyTemplate 
         kind: PrimitiveKind::Box,
         args: vec![
             (
-                "width".into(),
+                "size_x".into(),
                 CompiledExpr::value_ref(ValueCellId::new(name, "w"), Type::length()),
             ),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     };
     TopologyTemplateBuilder::new(name)

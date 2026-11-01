@@ -208,40 +208,15 @@ fn imported_field_e2e_vdb_cube_sdf() {
     use reify_expr::{EvalContext, sampled};
     use reify_ir::SampledField;
     use reify_ir::ValueMap;
+    use reify_kernel_openvdb::test_fixtures::{box_mesh, vertex_and_triangle_arrays};
     use reify_kernel_openvdb::{OpenVdbKernel, read_vdb_file};
 
     // ---------------------------------------------------------------------------
-    // Fixture: unit cube mesh (8 verts, 12 tris, half-extent = 1.0).
-    // Outward normals per face — mesh_to_volume_ffi uses OpenVDB's sign convention:
+    // Fixture: closed outward-wound cube mesh, half-extent = 1.0.
+    // mesh_to_volume_ffi uses OpenVDB's sign convention:
     // SDF < 0 inside, > 0 outside, ≈0 at surface.
     // ---------------------------------------------------------------------------
-    let verts: Vec<[f32; 3]> = vec![
-        // Bottom face (z = -1)
-        [-1.0, -1.0, -1.0], // 0
-        [1.0, -1.0, -1.0],  // 1
-        [1.0, 1.0, -1.0],   // 2
-        [-1.0, 1.0, -1.0],  // 3
-        // Top face (z = +1)
-        [-1.0, -1.0, 1.0], // 4
-        [1.0, -1.0, 1.0],  // 5
-        [1.0, 1.0, 1.0],   // 6
-        [-1.0, 1.0, 1.0],  // 7
-    ];
-    #[rustfmt::skip]
-    let tris: Vec<[u32; 3]> = vec![
-        // Bottom (z=-1): outward = -Z → CCW from below
-        [0, 2, 1], [0, 3, 2],
-        // Top (z=+1): outward = +Z → CCW from above
-        [4, 5, 6], [4, 6, 7],
-        // Front (y=-1): outward = -Y
-        [0, 1, 5], [0, 5, 4],
-        // Back (y=+1): outward = +Y
-        [2, 3, 7], [2, 7, 6],
-        // Left (x=-1): outward = -X
-        [3, 0, 4], [3, 4, 7],
-        // Right (x=+1): outward = +X
-        [1, 2, 6], [1, 6, 5],
-    ];
+    let (verts, tris) = vertex_and_triangle_arrays(&box_mesh(1.0, 1.0, 1.0));
 
     let voxel_size = 0.1_f64;
     let half_width = 3.0_f64;
@@ -514,33 +489,8 @@ fn imported_field_cache_hash_triggers_reingest_on_content_change() {
 
     /// Build a cube mesh with the given half-extent.
     fn cube_mesh(half: f32) -> (Vec<[f32; 3]>, Vec<[u32; 3]>) {
-        let h = half;
-        let verts = vec![
-            [-h, -h, -h],
-            [h, -h, -h],
-            [h, h, -h],
-            [-h, h, -h],
-            [-h, -h, h],
-            [h, -h, h],
-            [h, h, h],
-            [-h, h, h],
-        ];
-        #[rustfmt::skip]
-        let tris: Vec<[u32; 3]> = vec![
-            // Bottom (z=-1): outward = -Z
-            [0, 2, 1], [0, 3, 2],
-            // Top (z=+1): outward = +Z
-            [4, 5, 6], [4, 6, 7],
-            // Front (y=-1): outward = -Y
-            [0, 1, 5], [0, 5, 4],
-            // Back (y=+1): outward = +Y
-            [2, 3, 7], [2, 7, 6],
-            // Left (x=-1): outward = -X
-            [3, 0, 4], [3, 4, 7],
-            // Right (x=+1): outward = +X
-            [1, 2, 6], [1, 6, 5],
-        ];
-        (verts, tris)
+        use reify_kernel_openvdb::test_fixtures::{box_mesh, vertex_and_triangle_arrays};
+        vertex_and_triangle_arrays(&box_mesh(half, half, half))
     }
 
     let voxel_size = 0.1_f64;

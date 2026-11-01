@@ -3,14 +3,19 @@
 use std::collections::HashSet;
 
 use reify_compiler::{
-    CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate,
-    ValueCellKind, find_template,
+    CompiledConnection, CompiledForallTemplate, CompiledGeometryOp, TopologyTemplate, ValueCellKind,
 };
 use reify_core::{
     ComputeNodeId, ConstraintNodeId, ContentHash, KernelId, RealizationNodeId, ResolutionNodeId,
     Type, ValueCellId,
 };
 use reify_ir::{CompiledExpr, MemberKey, OpaqueState, PersistentMap, ReprKind, Value, ValueMap};
+
+pub mod cell_contributions;
+#[cfg(test)]
+mod value_cell_fold_tests;
+
+use cell_contributions::{ContributedCell, SubShape, contributed_cells};
 
 /// A value cell node in the evaluation graph.
 /// Corresponds to a param or let binding in the topology.
@@ -310,6 +315,28 @@ pub struct EvaluationGraph {
     pub auto_type_substitution: Vec<(String, String)>,
 }
 
+/// Insert `cell` as a node, unless its policy defers to a cell already there.
+fn insert_contributed_cell(
+    cells: &mut PersistentMap<ValueCellId, ValueCellNode>,
+    cell: ContributedCell<'_>,
+) {
+    let Some(id) = cell.landing_id(|id| cells.contains_key(id)) else {
+        return;
+    };
+    let expr_hash = cell
+        .default_expr()
+        .map(|e| e.content_hash)
+        .unwrap_or(ContentHash(0));
+    let node = ValueCellNode {
+        id: id.clone(),
+        kind: cell.kind(),
+        cell_type: cell.cell_type().clone(),
+        default_expr: cell.default_expr().cloned(),
+        content_hash: ContentHash::of_str(&id.to_string()).combine(expr_hash),
+    };
+    cells.insert(id, node);
+}
+
 impl EvaluationGraph {
     /// Build an EvaluationGraph from compiled topology templates.
     ///
@@ -317,6 +344,9 @@ impl EvaluationGraph {
     /// - ValueCellDecl → ValueCellNode
     /// - CompiledConstraint → ConstraintNodeData
     /// - RealizationDecl → RealizationNodeData
+    ///
+    /// `value_cells` is exactly the fold of
+    /// [`cell_contributions::contributed_cells`].
     pub fn from_templates(templates: &[TopologyTemplate]) -> Self {
         let mut graph = EvaluationGraph::default();
 
@@ -337,23 +367,6 @@ impl EvaluationGraph {
             graph
                 .connections
                 .extend(template.connections.iter().cloned());
-
-            for cell in &template.value_cells {
-                let id_hash = ContentHash::of_str(&format!("{}", cell.id));
-                let expr_hash = cell
-                    .default_expr
-                    .as_ref()
-                    .map(|e| e.content_hash)
-                    .unwrap_or(ContentHash(0));
-                let node = ValueCellNode {
-                    id: cell.id.clone(),
-                    kind: cell.kind,
-                    cell_type: cell.cell_type.clone(),
-                    default_expr: cell.default_expr.clone(),
-                    content_hash: id_hash.combine(expr_hash),
-                };
-                graph.value_cells.insert(cell.id.clone(), node);
-            }
 
             for constraint in &template.constraints {
                 let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
@@ -436,228 +449,59 @@ impl EvaluationGraph {
                 graph.realizations.insert(realization.id.clone(), node);
             }
 
-            // Sub-component elaboration: create scoped ValueCellNode entries
+            // Sub-component registration. The scoped instance cells themselves
+            // come from the value-cell fold below.
             for sub in &template.sub_components {
-                // Keyed subs (task 3931 γ) carry the element structure in
-                // `type_args[0]`; their `structure_name` is the "Keyed" wrapper,
-                // which find_template would miss (so keyed subs would be skipped
-                // entirely). Resolve the element name first.
-                let effective_structure_name: &str = if sub.keyed_members.is_empty() {
-                    &sub.structure_name
-                } else {
-                    match sub.type_args.first() {
-                        Some(Type::StructureRef(name)) => name,
-                        _ => &sub.structure_name,
-                    }
+                let Some(elab) = cell_contributions::resolve_sub(templates, template, sub) else {
+                    continue; // skip unknown structures silently
                 };
-                let child_template = match find_template(templates, effective_structure_name) {
-                    Some(t) => t,
-                    None => continue, // skip unknown structures silently
-                };
-
-                if sub.is_collection {
-                    // Collection sub: determine count from the count cell's default_expr literal
-                    let count = sub.count_cell.as_ref().and_then(|count_id| {
-                        // Look up the count cell in this template's value_cells
-                        template
-                            .value_cells
-                            .iter()
-                            .find(|vc| vc.id == *count_id)
-                            .and_then(|vc| vc.default_expr.as_ref())
-                            .and_then(|expr| {
-                                // If the count expr is a literal Int, use it directly
-                                if let reify_ir::CompiledExprKind::Literal(Value::Int(n)) =
-                                    &expr.kind
-                                {
-                                    Some(*n)
-                                } else {
-                                    // For ValueRef expressions, look up the referenced cell's default
-                                    if let reify_ir::CompiledExprKind::ValueRef(ref_id) = &expr.kind
-                                    {
-                                        template
-                                            .value_cells
-                                            .iter()
-                                            .find(|vc| vc.id == *ref_id)
-                                            .and_then(|vc| vc.default_expr.as_ref())
-                                            .and_then(|e| {
-                                                if let reify_ir::CompiledExprKind::Literal(
-                                                    Value::Int(n),
-                                                ) = &e.kind
-                                                {
-                                                    Some(*n)
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                    } else {
-                                        None
-                                    }
-                                }
-                            })
-                    });
-
-                    if let Some(n) = count {
-                        for i in 0..n {
-                            let scoped_entity = format!("{}.{}[{}]", template.name, sub.name, i);
-                            for child_cell in &child_template.value_cells {
-                                let scoped_id =
-                                    ValueCellId::new(&scoped_entity, &child_cell.id.member);
-                                let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                                let expr_hash = child_cell
-                                    .default_expr
-                                    .as_ref()
-                                    .map(|e| e.content_hash)
-                                    .unwrap_or(ContentHash(0));
-                                let node = ValueCellNode {
-                                    id: scoped_id.clone(),
-                                    kind: child_cell.kind,
-                                    cell_type: child_cell.cell_type.clone(),
-                                    default_expr: child_cell.default_expr.clone(),
-                                    content_hash: id_hash.combine(expr_hash),
-                                };
-                                graph.value_cells.insert(scoped_id, node);
-                            }
+                match elab.shape {
+                    SubShape::Collection => {
+                        // Stored for count-driven re-elaboration.
+                        if let Some(count_id) = &sub.count_cell {
+                            graph.collection_subs.push(CollectionSubInfo {
+                                parent_entity: template.name.clone(),
+                                sub_name: sub.name.clone(),
+                                structure_name: sub.structure_name.clone(),
+                                count_cell: count_id.clone(),
+                                child_value_cells: elab
+                                    .child
+                                    .value_cells
+                                    .iter()
+                                    .map(|vc| {
+                                        (
+                                            vc.id.member.clone(),
+                                            vc.kind,
+                                            vc.cell_type.clone(),
+                                            vc.default_expr.clone(),
+                                        )
+                                    })
+                                    .collect(),
+                            });
                         }
                     }
-                    // Store collection sub info for re-elaboration
-                    if let Some(count_id) = &sub.count_cell {
-                        graph.collection_subs.push(CollectionSubInfo {
+                    SubShape::Keyed(member_keys) => {
+                        // Registered so the structural classifier can recognise
+                        // the keyed sub's (optional) count cell as Structural
+                        // (task 3932 δ).
+                        graph.keyed_subs.push(KeyedSubInfo {
                             parent_entity: template.name.clone(),
                             sub_name: sub.name.clone(),
-                            structure_name: sub.structure_name.clone(),
-                            count_cell: count_id.clone(),
-                            child_value_cells: child_template
-                                .value_cells
-                                .iter()
-                                .map(|vc| {
-                                    (
-                                        vc.id.member.clone(),
-                                        vc.kind,
-                                        vc.cell_type.clone(),
-                                        vc.default_expr.clone(),
-                                    )
-                                })
-                                .collect(),
+                            structure_name: elab.element_structure.to_string(),
+                            count_cell: sub.count_cell.clone(),
+                            member_keys: member_keys.to_vec(),
                         });
                     }
-                    // If count is None (Undef), no instances are created
-                } else if !sub.keyed_members.is_empty() {
-                    // Keyed sub (task 3931 γ): one scoped child entity per
-                    // author-assigned key at `<parent>.<sub>["key"]`. Mirrors the
-                    // positional collection loop above, but enumerated by key
-                    // (via `MemberKey::path_segment`) rather than by index, so the
-                    // scoped entity string matches the compiler/eval scope
-                    // byte-for-byte. Per-key overrides are applied at eval time
-                    // (engine_eval.rs); here we only stamp the static cell graph.
-                    for key in &sub.keyed_members {
-                        let scoped_entity =
-                            format!("{}.{}", template.name, key.path_segment(&sub.name));
-                        for child_cell in &child_template.value_cells {
-                            let scoped_id =
-                                ValueCellId::new(&scoped_entity, &child_cell.id.member);
-                            let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                            let expr_hash = child_cell
-                                .default_expr
-                                .as_ref()
-                                .map(|e| e.content_hash)
-                                .unwrap_or(ContentHash(0));
-                            let node = ValueCellNode {
-                                id: scoped_id.clone(),
-                                kind: child_cell.kind,
-                                cell_type: child_cell.cell_type.clone(),
-                                default_expr: child_cell.default_expr.clone(),
-                                content_hash: id_hash.combine(expr_hash),
-                            };
-                            graph.value_cells.insert(scoped_id, node);
-                        }
-                    }
-                    // Register this keyed sub in the keyed_subs registry so the
-                    // structural classifier can recognise its (optional) count
-                    // cell as Structural (task 3932 δ). Uses the already-resolved
-                    // `effective_structure_name` (the element type, NOT "Keyed").
-                    graph.keyed_subs.push(KeyedSubInfo {
-                        parent_entity: template.name.clone(),
-                        sub_name: sub.name.clone(),
-                        structure_name: effective_structure_name.to_string(),
-                        count_cell: sub.count_cell.clone(),
-                        member_keys: sub.keyed_members.clone(),
-                    });
-                } else {
-                    // Non-collection sub: single scoped entity
-                    let scoped_entity = format!("{}.{}", template.name, sub.name);
-
-                    for child_cell in &child_template.value_cells {
-                        let scoped_id = ValueCellId::new(&scoped_entity, &child_cell.id.member);
-
-                        // task 3806 (γ) precedence rule: if the parent template
-                        // already inserted an override cell for this scoped id
-                        // (lines 284-298 above, from the parent's own value_cells
-                        // — e.g. a `sub b : Bearing { bore = auto }` override
-                        // emitted by entity.rs step-4), let that cell stand.
-                        // Overwriting it with the child-default-derived node
-                        // would change its `kind` from `Auto` to `Param`, which
-                        // would cause `Snapshot::from_compiled_module` to
-                        // initialise the cell as `Undetermined` instead of `Auto`
-                        // and break incremental-eval cache-key invariants.
-                        if graph.value_cells.contains_key(&scoped_id) {
-                            continue;
-                        }
-
-                        let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
-                        let expr_hash = child_cell
-                            .default_expr
-                            .as_ref()
-                            .map(|e| e.content_hash)
-                            .unwrap_or(ContentHash(0));
-                        let node = ValueCellNode {
-                            id: scoped_id.clone(),
-                            kind: child_cell.kind,
-                            cell_type: child_cell.cell_type.clone(),
-                            default_expr: child_cell.default_expr.clone(),
-                            content_hash: id_hash.combine(expr_hash),
-                        };
-                        graph.value_cells.insert(scoped_id, node);
-                    }
+                    SubShape::Single => {}
                 }
             }
 
-            // Guarded groups: create guard ValueCell nodes, member/else nodes,
-            // constraint/else-constraint nodes, and store GuardedGroupInfo metadata.
+            // Guarded groups: constraint/else-constraint nodes and
+            // GuardedGroupInfo metadata. The guard, member and else-member
+            // cells come from the value-cell fold below.
             for group in &template.guarded_groups {
-                // 1. Create ValueCellNode for the guard cell (Bool, Let kind)
                 let guard_id = &group.guard_value_cell;
-                let guard_id_hash = ContentHash::of_str(&format!("{}", guard_id));
-                let guard_expr_hash = group.guard_expr.content_hash;
-                let guard_node = ValueCellNode {
-                    id: guard_id.clone(),
-                    kind: reify_compiler::ValueCellKind::Let,
-                    cell_type: Type::Bool,
-                    default_expr: Some(group.guard_expr.clone()),
-                    content_hash: guard_id_hash.combine(guard_expr_hash),
-                };
-                graph.value_cells.insert(guard_id.clone(), guard_node);
 
-                // 2. Create ValueCellNodes for all members
-                let mut member_ids = Vec::new();
-                for cell in &group.members {
-                    let id_hash = ContentHash::of_str(&format!("{}", cell.id));
-                    let expr_hash = cell
-                        .default_expr
-                        .as_ref()
-                        .map(|e| e.content_hash)
-                        .unwrap_or(ContentHash(0));
-                    let node = ValueCellNode {
-                        id: cell.id.clone(),
-                        kind: cell.kind,
-                        cell_type: cell.cell_type.clone(),
-                        default_expr: cell.default_expr.clone(),
-                        content_hash: id_hash.combine(expr_hash),
-                    };
-                    graph.value_cells.insert(cell.id.clone(), node);
-                    member_ids.push(cell.id.clone());
-                }
-
-                // 3. Create ConstraintNodeData for guard-true constraints
                 let mut constraint_ids = Vec::new();
                 for constraint in &group.constraints {
                     let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
@@ -672,27 +516,6 @@ impl EvaluationGraph {
                     constraint_ids.push(constraint.id.clone());
                 }
 
-                // 4. Create ValueCellNodes for else_members
-                let mut else_member_ids = Vec::new();
-                for cell in &group.else_members {
-                    let id_hash = ContentHash::of_str(&format!("{}", cell.id));
-                    let expr_hash = cell
-                        .default_expr
-                        .as_ref()
-                        .map(|e| e.content_hash)
-                        .unwrap_or(ContentHash(0));
-                    let node = ValueCellNode {
-                        id: cell.id.clone(),
-                        kind: cell.kind,
-                        cell_type: cell.cell_type.clone(),
-                        default_expr: cell.default_expr.clone(),
-                        content_hash: id_hash.combine(expr_hash),
-                    };
-                    graph.value_cells.insert(cell.id.clone(), node);
-                    else_member_ids.push(cell.id.clone());
-                }
-
-                // 5. Create ConstraintNodeData for else constraints
                 let mut else_constraint_ids = Vec::new();
                 for constraint in &group.else_constraints {
                     let id_hash = ContentHash::of_str(&format!("{}", constraint.id));
@@ -707,18 +530,20 @@ impl EvaluationGraph {
                     else_constraint_ids.push(constraint.id.clone());
                 }
 
-                // 6. Store GuardedGroupInfo
                 graph.guarded_groups.push(GuardedGroupInfo {
                     guard_cell: guard_id.clone(),
-                    members: member_ids,
+                    members: group.members.iter().map(|c| c.id.clone()).collect(),
                     constraints: constraint_ids,
-                    else_members: else_member_ids,
+                    else_members: group.else_members.iter().map(|c| c.id.clone()).collect(),
                     else_constraints: else_constraint_ids,
                 });
 
-                // 7. Add guard cell to structure_controlling
                 graph.structure_controlling.insert(guard_id.clone());
             }
+        }
+
+        for cell in contributed_cells(templates) {
+            insert_contributed_cell(&mut graph.value_cells, cell);
         }
 
         graph
@@ -1091,15 +916,15 @@ mod tests {
             kind: PrimitiveKind::Box,
             args: vec![
                 (
-                    "width".to_string(),
+                    "size_x".to_string(),
                     CompiledExpr::literal(Value::length(0.08), Type::length()),
                 ),
                 (
-                    "height".to_string(),
+                    "size_y".to_string(),
                     CompiledExpr::literal(Value::length(0.10), Type::length()),
                 ),
                 (
-                    "depth".to_string(),
+                    "size_z".to_string(),
                     CompiledExpr::literal(Value::length(0.005), Type::length()),
                 ),
             ],
@@ -1957,15 +1782,15 @@ mod tests {
             kind: PrimitiveKind::Box,
             args: vec![
                 (
-                    "width".to_string(),
+                    "size_x".to_string(),
                     CompiledExpr::literal(Value::length(0.08), Type::length()),
                 ),
                 (
-                    "height".to_string(),
+                    "size_y".to_string(),
                     CompiledExpr::literal(Value::length(0.10), Type::length()),
                 ),
                 (
-                    "depth".to_string(),
+                    "size_z".to_string(),
                     CompiledExpr::literal(Value::length(0.005), Type::length()),
                 ),
             ],

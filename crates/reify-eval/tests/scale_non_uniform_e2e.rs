@@ -76,9 +76,9 @@ fn scale_non_uniform_occt_acceptance() {
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("Box execute must succeed");
     let scaled = kernel
@@ -112,9 +112,9 @@ fn scale_non_uniform_occt_acceptance() {
 
     let vol_box = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box execute must succeed");
     let vol_scaled = kernel

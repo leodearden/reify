@@ -102,6 +102,7 @@ use reify_solver_elastic::{
     element_stiffness, element_stress_p1, mark_dorfler, recover_nodal_stress_p1,
     refine_marked_elements, run_adaptive_refinement, solve_cg, tet_volume_p1,
 };
+use reify_test_support::mesh_fixtures::prismatic_box_mesh;
 
 // ─── ported FEA harness helpers (tests/analytical_validation.rs, task 2928) ─
 
@@ -888,46 +889,6 @@ fn fea_adaptive_problem_solve_and_estimate_patch_test_yields_near_zero_indicator
 // runtime (a legitimate RED: the test binary compiles, this ONE test fails).
 // GREEN lands in step-6.
 
-/// Closed-surface box mesh `[0,Lx] x [0,Ly] x [0,Lz]` (8 vertices, 12
-/// outward-winding triangles). Generalizes the unit-cube fixture from
-/// `crates/reify-kernel-gmsh/tests/refine_volume_tests.rs` to arbitrary box
-/// dimensions; winding convention copied verbatim. Needed starting step-5:
-/// unlike the step-3/4 `dummy_surface` placeholder (never touched by
-/// `solve_and_estimate`), `refine` performs a REAL remesh from `surface`, so
-/// a genuine closed, outward-wound boundary is required.
-fn box_surface_mesh(lx: f64, ly: f64, lz: f64) -> Mesh {
-    let (lxf, lyf, lzf) = (lx as f32, ly as f32, lz as f32);
-    Mesh {
-        #[rustfmt::skip]
-        vertices: vec![
-            0.0,  0.0,  0.0, // 0
-            lxf,  0.0,  0.0, // 1
-            lxf,  lyf,  0.0, // 2
-            0.0,  lyf,  0.0, // 3
-            0.0,  0.0,  lzf, // 4
-            lxf,  0.0,  lzf, // 5
-            lxf,  lyf,  lzf, // 6
-            0.0,  lyf,  lzf, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
-
 /// Seed an initial [`VolumeMesh`] from a closed `surface` via a UNIFORM
 /// background size field — the real-gmsh counterpart to the procedural
 /// [`box_p1_mesh`] fixtures above.
@@ -1089,7 +1050,7 @@ fn avg_size_in_region(
 /// [`mark_dorfler`] marks a geometrically-coherent subset there.
 fn refine_test_box_problem() -> FeaAdaptiveProblem {
     let (lx, ly, lz) = (1.0_f64, 1.0, 1.0);
-    let surface = box_surface_mesh(lx, ly, lz);
+    let surface = prismatic_box_mesh(lx as f32, ly as f32, lz as f32);
     let options = MeshingOptions {
         mesh_size: Some(0.25),
         deterministic: true,
@@ -1342,7 +1303,7 @@ impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
 fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
     let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
     let mesh_size = 0.25_f64;
-    let surface = box_surface_mesh(lx, ly, lz);
+    let surface = prismatic_box_mesh(lx as f32, ly as f32, lz as f32);
     let options = MeshingOptions {
         mesh_size: Some(mesh_size),
         deterministic: true,
@@ -1661,7 +1622,7 @@ const L_SHAPE_MESH_SIZE: f64 = 0.163;
 /// `leg_a`, width `leg_t`, `leg_t < leg_a`) extruded along z from `0` to
 /// `lz` — the classic re-entrant (reflex, 270°) corner elasticity-singularity
 /// benchmark. Cross-section vertices, CCW in the xy-plane (outward `+Z` for
-/// the top cap, mirroring [`box_surface_mesh`]'s winding convention):
+/// the top cap, mirroring [`prismatic_box_mesh`]'s winding convention):
 ///
 /// ```text
 ///  y
@@ -1682,9 +1643,9 @@ const L_SHAPE_MESH_SIZE: f64 = 0.163;
 /// triangle's vertices all satisfy `y <= leg_t` (the `(v0,v1,v2)`/`(v0,v2,v3)`
 /// pair) or `x <= leg_t` (the `(v0,v3,v4)`/`(v0,v4,v5)` pair) — so none
 /// crosses into the removed `(leg_t,leg_a] x (leg_t,leg_a]` notch — giving a
-/// valid, non-overlapping decomposition of the cap. Side walls use the same
-/// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern
-/// as [`box_surface_mesh`]: for a CCW polygon, the outward normal of edge
+/// valid, non-overlapping decomposition of the cap. Side walls use the
+/// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern:
+/// for a CCW polygon, the outward normal of edge
 /// `(p_i, p_{i+1})` is that edge's direction rotated -90 deg, a rule that
 /// stays correct at the reflex corner too (independent of local convexity),
 /// so all 6 side faces come out consistently outward-wound.
@@ -2274,7 +2235,7 @@ fn distributed_axial_load(end: &[usize], axis: usize, f_mag: f64) -> Vec<(usize,
 /// quarter-circle arc's facet count.
 ///
 /// Cross-section vertices, CCW in the xy-plane (outward `+Z` for the top cap,
-/// mirroring [`box_surface_mesh`]/[`l_prism_surface_mesh`]'s winding
+/// mirroring [`prismatic_box_mesh`]/[`l_prism_surface_mesh`]'s winding
 /// convention), fan apex `v0 = (half_width, half_height)` (the far corner
 /// from the hole):
 ///
@@ -2302,7 +2263,7 @@ fn distributed_axial_load(end: &[usize], axis: usize, f_mag: f64) -> Vec<(usize,
 /// [`l_prism_surface_mesh`]'s fan reasoning (there star-shaped from `v0` for
 /// an analogous reflex-corner domain). Side walls use the same
 /// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern
-/// as [`box_surface_mesh`]/[`l_prism_surface_mesh`].
+/// as [`l_prism_surface_mesh`].
 fn plate_with_hole_surface_mesh(
     half_width: f64,
     half_height: f64,

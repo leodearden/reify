@@ -425,6 +425,37 @@ impl DimensionVector {
         self.0.iter().all(|r| r.is_zero())
     }
 
+    /// Names this DIMENSION for a diagnostic that has already named the value
+    /// (`"… must be Vector3<Length>; got {label}"`): `"dimensionless"`, else
+    /// the canonical name, else the `Display` exponents.
+    ///
+    /// Intentionally separate from [`Self::diagnostic_scalar_label`] — do not
+    /// merge; `diagnostic_dimension_label_names_the_dimension` pins the difference.
+    pub fn diagnostic_dimension_label(&self) -> String {
+        if self.is_dimensionless() {
+            return "dimensionless".to_string();
+        }
+        self.canonical_name()
+            .map(str::to_string)
+            .unwrap_or_else(|| self.to_string())
+    }
+
+    /// Names a `Value::Scalar` carrying this dimension, for an argument
+    /// rejection's `got` slot: `"{qualifier} Scalar"`, where an unnamed
+    /// dimension is the generic `"dimensioned"`.
+    ///
+    /// Intentionally separate from [`Self::diagnostic_dimension_label`] — do not
+    /// merge; `diagnostic_scalar_label_names_a_scalar_value_of_the_dimension`
+    /// pins the difference.
+    pub fn diagnostic_scalar_label(&self) -> String {
+        let qualifier = if self.is_dimensionless() {
+            "dimensionless"
+        } else {
+            self.canonical_name().unwrap_or("dimensioned")
+        };
+        format!("{qualifier} Scalar")
+    }
+
     /// Multiply dimensions (add exponents).
     pub fn mul(&self, other: &DimensionVector) -> DimensionVector {
         let mut result = [Rational::ZERO; 10];
@@ -1189,6 +1220,54 @@ mod tests {
         }
         // DIMENSIONLESS is intentionally not named (self-explanatory to users).
         assert_eq!(DimensionVector::DIMENSIONLESS.canonical_name(), None);
+    }
+
+    // --- diagnostic label tests ---
+
+    /// Dimension form: no " Scalar" suffix; an unnamed dimension prints its
+    /// `Display` exponents. Deliberately different from the scalar form below.
+    #[test]
+    fn diagnostic_dimension_label_names_the_dimension() {
+        let cases = [
+            (
+                "DIMENSIONLESS",
+                DimensionVector::DIMENSIONLESS,
+                "dimensionless",
+            ),
+            ("LENGTH", DimensionVector::LENGTH, "Length"),
+            ("MASS", DimensionVector::MASS, "Mass"),
+            (
+                "MONEY/MASS",
+                DimensionVector::MONEY.div(&DimensionVector::MASS),
+                "USD\u{00B7}kg^-1",
+            ),
+        ];
+        for (label, dim, expected) in cases {
+            assert_eq!(dim.diagnostic_dimension_label(), expected, "{label}");
+        }
+    }
+
+    /// Scalar form: " Scalar" suffix; an unnamed dimension is the generic
+    /// "dimensioned". Deliberately different from the dimension form above.
+    #[test]
+    fn diagnostic_scalar_label_names_a_scalar_value_of_the_dimension() {
+        let cases = [
+            (
+                "DIMENSIONLESS",
+                DimensionVector::DIMENSIONLESS,
+                "dimensionless Scalar",
+            ),
+            ("LENGTH", DimensionVector::LENGTH, "Length Scalar"),
+            ("MASS", DimensionVector::MASS, "Mass Scalar"),
+            (
+                "MONEY/MASS",
+                DimensionVector::MONEY.div(&DimensionVector::MASS),
+                "dimensioned Scalar",
+            ),
+        ];
+        for (label, dim, expected) in cases {
+            assert_eq!(dim.diagnostic_scalar_label(), expected, "{label}");
+        }
     }
 
     #[test]

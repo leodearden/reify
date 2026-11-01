@@ -117,6 +117,17 @@ scripts/verify-pipeline-infra-tests.txt
 scripts/gen-nextest-config.sh
 scripts/verify-ledger.py
 #
+# scripts/verify_events_lib.py (task 9309): the C2 event-record parser that
+#   scripts/verify-ledger.py imports to fold each plan step's
+#   step-<i>.run-all.jsonl into the record's run_all block. verify.sh invokes
+#   verify-ledger.py rather than sourcing it, and a Python import is invisible
+#   to both of verify-pipeline-guard.sh's auto-derivation clauses, so an edit
+#   here would otherwise take the config fast-path while changing what every
+#   ledger record says about run_all. verify-ledger.py imports it at module
+#   top level, so any copy of verify-ledger.py (a fixture, a copy list) must
+#   ship this sibling with it: without it every subcommand fails on import.
+scripts/verify_events_lib.py
+#
 # scripts/confirm-failed-manifest.sh (task 7423): the ONE JUnit-report reader
 #   behind `--confirm-failed`. Both callers are inside the verify pipeline —
 #   the recording pass's inline manifest write (fused into emit_nextest_pass's
@@ -208,6 +219,15 @@ tests/infra/run-all-ambient-vars.manifest
 #   and do not close that fast-path. The engine needs no entry here: the
 #   glob already routes adoption_ratchet.py to the full gate.
 tests/infra/adoption-ratchet.manifest
+#
+# tests/infra/compiler-namespace-ratchet-baseline.txt: the exact counts (task
+#   #8613, PRD compiler-module-namespace §4 C7) read only by
+#   tests/infra/test_compiler_namespace_ratchet.py. A .txt falls outside the
+#   tests/infra/*.{sh,py} glob, so without this entry a baseline-only diff could
+#   take the merge-worker config fast-path; the baseline is exact, so such a
+#   diff would red main. The engine (source_count_ratchet.py) and the member
+#   need no entry here: the glob already routes them to the full gate.
+tests/infra/compiler-namespace-ratchet-baseline.txt
 #
 # scripts/check-nan-safe-ordering.sh / scripts/check-compute-trampoline-
 #   registration.sh (task 6243): the two INV-FEA lint gates, hand-registered

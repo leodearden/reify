@@ -21,6 +21,7 @@ use crate::assembly::ElementStiffness;
 use crate::constitutive::IsotropicElastic;
 use crate::elements::shell_frame::{
     ShellFrame, build_shell_frame, membrane_node_pair_block, plane_stress_d, rotate_blockdiag,
+    scaled,
 };
 use crate::shell_kinematics::shell_kinematics;
 
@@ -72,12 +73,7 @@ pub(crate) fn element_stiffness_membrane_cst_with_frame(
 
     // Pre-scale the plane-stress constitutive matrix by thickness: t · D_pl.
     let d_pl = plane_stress_d(material);
-    let mut t_dpl = [[0.0_f64; 3]; 3];
-    for i in 0..3 {
-        for j in 0..3 {
-            t_dpl[i][j] = thickness * d_pl[i][j];
-        }
-    }
+    let t_dpl = scaled(&d_pl, thickness);
 
     // Assemble the local 9×9 in-plane membrane block at local DOFs 3i + {0, 1}
     // using the shell's patch-test-validated CST strain-displacement core.

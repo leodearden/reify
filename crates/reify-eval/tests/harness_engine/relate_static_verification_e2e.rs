@@ -509,7 +509,7 @@ fn autoful_scope_is_unperturbed_by_a_zero_auto_scope_in_the_same_module() {
     // The bound is the solver's own convergence rung: two runs of the same solve
     // agree to at least that, and anything coarser would not be a perturbation
     // test at all.
-    let tol = reify_constraints::relate_solve::RelateTolerance::kernel_default()
+    let tol = reify_constraints::scaling::RelateTolerance::kernel_default()
         .solver_convergence();
     for axis in 0..3 {
         assert!(

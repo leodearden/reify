@@ -124,8 +124,8 @@ fn box_centered_lowering_matches_box() {
                 keys_box, keys_centered,
                 "arg keys differ between box and box_centered: box={keys_box:?}, centered={keys_centered:?}"
             );
-            // Keys must be width / height / depth in that order
-            assert_eq!(keys_centered, &["width", "height", "depth"]);
+            // Keys must be the X / Y / Z extents in that order
+            assert_eq!(keys_centered, &["size_x", "size_y", "size_z"]);
         }
         (box_op, centered_op) => {
             panic!(

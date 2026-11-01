@@ -125,8 +125,9 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # host-wide arithmetic, corrected task 6018:
 #   REIFY_TEST_SEMAPHORE_CONCURRENCY is 1, not the 2 an earlier draft of this
 #   paragraph cited (dropped 2 -> 1 in dark-factory commit 712e6230d6 and
-#   hot-reloaded; dark-factory-orchestrator.yaml:331).  With one task slot plus
-#   the merge role's bypass (scripts/lib_test_semaphore.sh:91 — DF_VERIFY_ROLE
+#   hot-reloaded; the REIFY_TEST_SEMAPHORE_CONCURRENCY key in
+#   dark-factory-orchestrator.yaml verify_env).  With one task slot plus
+#   the merge role's bypass (test_semaphore_acquire in scripts/lib_test_semaphore.sh — DF_VERIFY_ROLE
 #   = merge skips acquisition entirely), the reachable steady state is
 #   2 × test-threads: ~32 before task 6018, ~64 after.
 #

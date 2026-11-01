@@ -11,11 +11,12 @@
 //! OpenVDB ingestion (file read, sample buffer, lowering to `sampled`).
 
 use reify_kernel_openvdb::ingest::{
-    IngestError, IngestOutcome, OpenVdbGridKind, OpenVdbGridSource, OpenVdbInterpolation,
-    lower_to_sampled, read_vdb_file,
+    IngestError, IngestOutcome, KNOWN_UNITS, OpenVdbGridKind, OpenVdbGridSource,
+    OpenVdbInterpolation, lower_to_sampled, read_vdb_file,
 };
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
-use reify_ir::{InterpolationKind, SampledGridKind};
+use reify_expr::{EvalContext, sampled};
+use reify_ir::{InterpolationKind, SampledGridKind, Value, ValueMap};
 
 /// Step-1 happy path: a 1D `Length` grid lowered with linear interpolation
 /// produces a `SampledField` whose semantic content (kind, bounds, spacing,
@@ -804,6 +805,148 @@ fn lower_to_sampled_real_codomain_with_meter_grid_returns_unit_mismatch() {
             assert_eq!(found_unit, "m");
         }
         other => panic!("expected Err(IngestError::UnitMismatch {{ … }}), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit scaling: lowered values are SI; the voxel transform is metres
+// ---------------------------------------------------------------------------
+
+/// The 1D [0, 3] / spacing-1 shape of [`unit_test_grid`], carrying `data`.
+fn unit_scaling_grid(units: Option<&str>, data: Vec<f64>) -> OpenVdbGridSource {
+    OpenVdbGridSource {
+        data,
+        ..unit_test_grid(units)
+    }
+}
+
+#[test]
+fn lower_to_sampled_scales_mpa_values_to_pascals() {
+    let grid = unit_scaling_grid(Some("MPa"), vec![1.0; 4]);
+    let outcome = lower_to_sampled(&grid, "p", &pressure_type()).unwrap();
+    assert_eq!(outcome.field.data, vec![1e6; 4]);
+
+    let empty_values = ValueMap::new();
+    let sampled_value = sampled::sample_at_point(
+        &outcome.field,
+        &Value::Real(1.5),
+        &pressure_type(),
+        &EvalContext::simple(&empty_values),
+    );
+    match sampled_value {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::PRESSURE);
+            assert!(
+                (si_value - 1e6).abs() <= 1e-6,
+                "an MPa grid holding 1.0 must sample to 1e6 Pa, got {si_value}"
+            );
+        }
+        other => panic!("expected Value::Scalar for a Pressure codomain, got {other:?}"),
+    }
+}
+
+#[test]
+fn lower_to_sampled_scales_kpa_values_to_pascals() {
+    let grid = unit_scaling_grid(Some("kPa"), vec![0.0, 1.0, 2.5, 4.0]);
+    let outcome = lower_to_sampled(&grid, "p", &pressure_type()).unwrap();
+    assert_eq!(outcome.field.data, vec![0.0, 1e3, 2.5e3, 4e3]);
+}
+
+#[test]
+fn lower_to_sampled_scales_cm_values_to_metres_but_keeps_voxel_transform_in_metres() {
+    let grid = unit_scaling_grid(Some("cm"), vec![0.0, 100.0, 200.0, 300.0]);
+    let outcome = lower_to_sampled(&grid, "d", &Type::length()).unwrap();
+    let field = &outcome.field;
+
+    let expected_metres = [0.0, 1.0, 2.0, 3.0];
+    assert_eq!(field.data.len(), expected_metres.len());
+    for (i, (actual, expected)) in field.data.iter().zip(expected_metres).enumerate() {
+        assert!(
+            (actual - expected).abs() <= 1e-12,
+            "data[{i}]: a cm value must lower to metres; expected {expected}, got {actual}"
+        );
+    }
+
+    assert_eq!(field.bounds_min, vec![0.0]);
+    assert_eq!(field.bounds_max, vec![3.0]);
+    assert_eq!(field.spacing, vec![1.0]);
+    assert_eq!(field.axis_grids, vec![vec![0.0, 1.0, 2.0, 3.0]]);
+}
+
+/// Expected SI scale and dimension, written independently of `KNOWN_UNITS`,
+/// for the OpenVDB units that `reify_core::units::unit_symbol_to_si` does not
+/// resolve.
+const UNITS_OUTSIDE_REIFY_CORE: [(&str, f64, DimensionVector); 6] = [
+    ("km", 1e3, DimensionVector::LENGTH),
+    ("Pa", 1.0, DimensionVector::PRESSURE),
+    ("kPa", 1e3, DimensionVector::PRESSURE),
+    ("MPa", 1e6, DimensionVector::PRESSURE),
+    ("GPa", 1e9, DimensionVector::PRESSURE),
+    ("kg/m^3", 1.0, DimensionVector::MASS_DENSITY),
+];
+
+/// `symbol`'s SI scale and dimension from a source other than `KNOWN_UNITS`.
+fn independent_si_unit(symbol: &str) -> Option<(f64, DimensionVector)> {
+    reify_core::units::unit_symbol_to_si(symbol).or_else(|| {
+        UNITS_OUTSIDE_REIFY_CORE
+            .iter()
+            .find(|(pinned_symbol, ..)| *pinned_symbol == symbol)
+            .map(|&(_, si_scale, dimension)| (si_scale, dimension))
+    })
+}
+
+/// The data of a 4-voxel grid holding 1.0 in `symbol`, lowered onto a Scalar
+/// codomain of `dimension`.
+fn lowered_unit_values(symbol: &str, dimension: DimensionVector) -> Vec<f64> {
+    let grid = unit_scaling_grid(Some(symbol), vec![1.0; 4]);
+    lower_to_sampled(&grid, "f", &Type::Scalar { dimension })
+        .unwrap_or_else(|e| panic!("unit '{symbol}' must lower on its own dimension: {e}"))
+        .field
+        .data
+}
+
+#[test]
+fn every_known_unit_row_lowers_by_an_si_scale_pinned_outside_the_table() {
+    for row in KNOWN_UNITS {
+        let (si_scale, dimension) = independent_si_unit(row.symbol).unwrap_or_else(|| {
+            panic!(
+                "unit '{}' has no SI scale outside KNOWN_UNITS to check it against; \
+                 pin it in UNITS_OUTSIDE_REIFY_CORE",
+                row.symbol
+            )
+        });
+        assert_eq!(
+            lowered_unit_values(row.symbol, dimension),
+            vec![si_scale; 4],
+            "unit '{}' must scale lowered values by {si_scale}",
+            row.symbol
+        );
+    }
+}
+
+#[test]
+fn every_unit_pinned_outside_reify_core_lowers_by_its_literal_si_scale() {
+    for (symbol, si_scale, dimension) in UNITS_OUTSIDE_REIFY_CORE {
+        assert_eq!(
+            lowered_unit_values(symbol, dimension),
+            vec![si_scale; 4],
+            "unit '{symbol}' must scale lowered values by {si_scale}"
+        );
+    }
+}
+
+#[test]
+fn known_units_symbols_are_unique() {
+    let mut seen_symbols = std::collections::HashSet::new();
+    for row in KNOWN_UNITS {
+        assert!(
+            seen_symbols.insert(row.symbol),
+            "duplicate KNOWN_UNITS symbol '{}' (the linear lookup shadows it)",
+            row.symbol
+        );
     }
 }
 

@@ -35,9 +35,9 @@ const BOX_D_M: f64 = 15.0e-3;
 fn build_box(kernel: &OcctKernelHandle) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_W_M),
-            height: Value::Real(BOX_H_M),
-            depth: Value::Real(BOX_D_M),
+            size_x: Value::Real(BOX_W_M),
+            size_y: Value::Real(BOX_H_M),
+            size_z: Value::Real(BOX_D_M),
         })
         .expect("box should build")
         .id

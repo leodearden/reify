@@ -125,9 +125,10 @@ trait MotivePort : MechanicalPort {}
 //   max_speed  : AngularVelocity — maximum continuous rotational speed (rad/s).
 //   max_torque : Torque          — maximum continuous torque (the built-in
 //                Torque dimension, Force·Length/Angle).
-//   axis       : Vector3<Length> — rotation axis (Vector3<Length> per the
-//                constitutive.ri axis convention; the geometry Axis value type is
-//                unconstructible at stdlib scope).
+//   axis       : Vector3<Dimensionless> — rotation axis. A DIRECTION, so the
+//                quantity slot is dimensionless (task 5848; the ruling lives on
+//                the `Vec3<Q>` alias in trajectory.ri). A vector because the
+//                geometry Axis value type is unconstructible at stdlib scope.
 // `max_torque` (required Torque) re-declares MechanicalPort's optional
 // `max_torque : Option<Torque> = none`; a required member and an optional default
 // of the same name never collide (trait_requirements.rs conflicts only
@@ -136,7 +137,7 @@ trait MotivePort : MechanicalPort {}
 trait RotaryPort : MotivePort {
     param max_speed : AngularVelocity
     param max_torque : Torque
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 
 // Linear actuator port — delivers thrust along an axis over a finite stroke.
@@ -144,12 +145,13 @@ trait RotaryPort : MotivePort {
 //               NAMED_DIMENSIONS builtin; back-compat `pub type Velocity` in units.ri).
 //   max_force : Force           — maximum continuous thrust.
 //   stroke    : Length          — usable travel range.
-//   axis      : Vector3<Length> — travel axis (constitutive.ri convention).
+//   axis      : Vector3<Dimensionless> — travel axis; a DIRECTION, typed as
+//               RotaryPort.axis is and for the same reasons.
 trait LinearPort : MotivePort {
     param max_speed : Velocity
     param max_force : Force
     param stroke : Length
-    param axis : Vector3<Length>
+    param axis : Vector3<Dimensionless>
 }
 
 // ── Parameterised threaded port ───────────────────────────────────────────────

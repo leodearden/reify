@@ -90,7 +90,7 @@ Machine-readable twin: `solution-set-completeness.capability-manifest.yaml`. Its
 
 | Capability | Evidence | Verdict |
 |---|---|---|
-| warm paths exist to instrument | capability→producer — `edit_param` (`crates/reify-eval/src/engine_edit.rs`) seeds `current_values` from the prior snapshot **including previously solved autos**; reached from the GUI `set_parameter` and `crates/reify-cli/src/mcp_context.rs`. `Engine::eval_cached` is the second warm path (LSP). | **PASS** |
+| warm paths exist to instrument | capability→producer — `edit_param` (`crates/reify-eval/src/engine_edit.rs`) seeds `current_values` from the prior snapshot **including previously solved autos**; reached from the GUI `set_parameter` and `crates/reify-cli/src/mcp_context.rs` *(that CLI caller was deleted by bbfbc7dd29 (#6665); the GUI path `EngineSession::preview_parameter` → `Engine::edit_check` → `Engine::edit_param` remains)*. `Engine::eval_cached` is the second warm path (LSP). | **PASS** |
 | the cold-only hole is real | capability→producer — `W_SOLVER_OPTIMALITY_UNPROVEN` and `detect_underdetermined` have production call sites only in `Engine::eval`, not `eval_cached`; `dispatch_merged_cluster_solve_cached` documents the consequence in-tree.<br>`grep:W_BASIN_CHANGED\|BasinChanged` → `present` in `crates/reify-core/src/diagnostics.rs` | **PASS** |
 | entry-point parity | **DAG-direction, WIRED** — P1 leaf κ = **#6699**, real edge 6712 → 6699. η owns basin identity; P1 owns parity. | **PASS**, edge WIRED |
 

@@ -63,6 +63,10 @@ mod cli_check_cfg_example;
 mod cli_check_connect_direction;
 #[path = "harness_cli/cli_check_connect_undeclared_member.rs"]
 mod cli_check_connect_undeclared_member;
+#[path = "harness_cli/cli_check_driver_parity.rs"]
+mod cli_check_driver_parity;
+#[path = "harness_cli/cli_check_joint_dof_gates.rs"]
+mod cli_check_joint_dof_gates;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
@@ -147,6 +151,8 @@ mod cli_module_decl_remedy;
 mod cli_module_visibility_example;
 #[path = "harness_cli/cli_objective_inheritance_golden.rs"]
 mod cli_objective_inheritance_golden;
+#[path = "harness_cli/cli_one_sided_auto.rs"]
+mod cli_one_sided_auto;
 #[path = "harness_cli/cli_orientation_rotvec_dimension.rs"]
 mod cli_orientation_rotvec_dimension;
 #[path = "harness_cli/cli_purpose.rs"]

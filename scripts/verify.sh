@@ -1616,6 +1616,8 @@ is_occt_crate() {
 #     occt_internals_fillet_extruded_wire.ri,
 #     occt_internals_fillet_translated_disjoint_union.ri (built via
 #     Engine::build by occt_repr_policy_fixtures_e2e.rs, task 8669)
+#     ssc_refuted_pair.ri (read via std::fs::read_to_string by
+#     harness_engine/interval_refutation_e2e.rs, task 6655)
 #   compile-time embeds (include_str! bakes the bytes straight into the test
 #   binary — a tighter coupling than a runtime read, since the fixture is a
 #   build input of the target, not just a file it happens to open):
@@ -1638,7 +1640,14 @@ is_occt_crate() {
 #     committed shifted/unshifted modal pair, embedded by
 #     shift_invert_modal_e2e.rs's shift_changes_the_mode_set_and_warns_once —
 #     the two files differ ONLY in their `sigma:` literal and header, so the
-#     mode-set difference between them IS the signal, task 7261)
+#     mode-set difference between them IS the signal, task 7261);
+#     driver_parity_one_sided_auto.ri, driver_parity_one_sided_auto_free.ri,
+#     driver_parity_two_sided_auto.ri (the one-sided strict-auto refusal and its
+#     two negatives, embedded by one_sided_auto_tests.rs and
+#     one_sided_auto_refusal_e2e.rs and run by cli_one_sided_auto.rs, task 6692)
+#     driver_parity_auto_ctl.ri (the constant-pinned constructor auto that
+#     `reify check` and `reify build` must report Satisfied, run by
+#     cli_check_driver_parity.rs, task 6693)
 #   named by a WAIVER TABLE in a compiled test (task 5305): the six fixtures
 #     keyed by (file, param) in harness_ctor_conformance_survey/disposition.rs's
 #     CTOR_CONFORMANCE_CORPUS_RESIDUAL —
@@ -1685,7 +1694,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1733,7 +1742,7 @@ _RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently
 # rots on the next addition — this one already had, still reading 10 after the
 # list had grown past it, when task #5784 added unit_middot_mul.ri.
-_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri adv_beta_undef_arith_control.ri adv_beta_v7_degraded_arith.ri adv_beta_v7_pm_is_real_zero.ri adv_ivf_undef_ctor_arg_check_silent.ri adv_ivf_undef_flow_constraint_indeterminate_exit0.ri angle_crossing_idiom.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri compose_fn_field_resolves.ri compose_middle_type_mismatch_rejected.ri compose_one_arg_rejected.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_contract_allow_indeterminate.ri driver_contract_dfm_measurement_arm.ri driver_contract_eval_blind_to_violation.ri driver_contract_geometry_test_indeterminate.ri driver_contract_header_mismatch.ri driver_contract_report_blind_to_violation.ri driver_parity_auto_ctl.ri driver_parity_eq_plus_ineq.ri driver_parity_one_sided_auto.ri driver_parity_relate_conflict.ri driver_parity_two_sided_auto.ri dwr_cantilever_energy.ri dwr_cantilever_qoi.ri dwr_qoi_readback.ri dwr_qoi_without_adaptive.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri frame_to_frame_resolves.ri frame_to_frame_transform3_nomatch.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri gui_purpose_surface.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri instantiation_value_flow_probe.ri ir_clean_eval.ri ivf_override_violates_constraint.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri numeric_floor_bare_baseline.ri numeric_floor_dimensioned_silent_accept.ri numeric_floor_two_arg_parses.ri numeric_sinh_bare_baseline.ri numeric_sinh_dimensioned_silent_accept.ri objective_inherit_ambiguous.ri orient_axis_angle_member_parses.ri orient_to_axis_angle_call_resolves.ri parse_length_match_resolves.ri pnrg_cost_split_sphere.ri pnrg_envelope_cone.ri pnrg_envelope_fillet_blend.ri pnrg_envelope_loft.ri pnrg_envelope_nurbs_surface.ri pnrg_envelope_pipe.ri pnrg_envelope_sphere.ri pnrg_envelope_spline.ri pnrg_envelope_sweep.ri pnrg_envelope_torus.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri raw_lambda_material_field_rejected.ri revolute_silent_accept.ri rotational_closure_prestate.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri shear_angles_component_deg_compare_pre.ri shear_angles_field_decl_pre.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri single_sub_pose_resolves.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri solver_unification_ineq_eq_penalty_offset.ri solver_unification_ineq_eq_two_sided_control.ri solver_unification_tangent_silent_accept.ri spec_conformance_directive_block.ri ssc_ineq_bracketed_strict.ri ssc_refuted_pair.ri ssc_single_root_free.ri ssc_two_roots_free.ri ssc_two_roots_strict.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri unknown_fn_silent_accept_baseline.ri value_clean_eval_cells.ri "
+_GUI_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri adv_beta_undef_arith_control.ri adv_beta_v7_degraded_arith.ri adv_beta_v7_pm_is_real_zero.ri adv_ivf_undef_ctor_arg_check_silent.ri adv_ivf_undef_flow_constraint_indeterminate_exit0.ri angle_crossing_idiom.ri bare_angle_silently_accepted.ri collection_expr_index_resolves.ri collection_sub_at_placement_rejected.ri collection_sub_member_cell_consumable.ri collection_sub_per_member_cells.ri collection_sub_value_position_undef_baseline.ri compiler_type_hygiene_integration_gate.ri compiler_type_hygiene_mul_scale_guard_defeat.ri compiler_type_hygiene_mul_vec_silent_int.ri compiler_type_hygiene_trait_args_silent_accept.ri compose_fn_field_resolves.ri compose_middle_type_mismatch_rejected.ri compose_one_arg_rejected.ri cost_min_money_objective.ri cost_robustness_tradeoff_form.ri cross_sub_geometry_ref.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dce_runtime_payload.ri dcr_dimension_rejection_channel_fires.ri dcr_fn_force_param_already_rejects.ri dcr_langsurface_crossdim_silent.ri dcr_load_ctor_dimension_silent.ri dcr_load_retype_target_resolves.ri dcr_material_dimension_correct.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_bare.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_contract_allow_indeterminate.ri driver_contract_dfm_measurement_arm.ri driver_contract_eval_blind_to_violation.ri driver_contract_geometry_test_indeterminate.ri driver_contract_header_mismatch.ri driver_contract_report_blind_to_violation.ri driver_parity_auto_ctl.ri driver_parity_eq_plus_ineq.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_relate_conflict.ri driver_parity_two_sided_auto.ri dwr_cantilever_energy.ri dwr_cantilever_qoi.ri dwr_qoi_readback.ri dwr_qoi_without_adaptive.ri engine_build_hardening_kappa_mixed_kernel_selector.ri expected_type_pushdown_arg.ri expected_type_pushdown_let.ri faces_by_normal_symbolic_eval_silent.ri forall_collection_resolves.ri forall_range_domain_rejected.ri frame_to_frame_resolves.ri frame_to_frame_transform3_nomatch.ri geometry_let_selector_consumer_edit.ri geometry_let_selector_consumer.ri gui_purpose_surface.ri hand_placed_twin_two_subs_eval.ri indexed_sub_bare_member_resolves.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_oob_computed_silent_undef.ri indexed_sub_oob_literal_silent_undef.ri indexed_sub_self_member_misrouted.ri indexed_sub_self_member_nogeom_unsupported.ri indexed_sub_silent_undef_baseline.ri indexed_sub_spec_arm_baseline.ri instantiation_value_flow_probe.ri ir_clean_eval.ri ivf_override_violates_constraint.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri numeric_floor_bare_baseline.ri numeric_floor_dimensioned_silent_accept.ri numeric_floor_two_arg_parses.ri numeric_sinh_bare_baseline.ri numeric_sinh_dimensioned_silent_accept.ri objective_inherit_ambiguous.ri orient_axis_angle_member_parses.ri orient_to_axis_angle_call_resolves.ri parse_length_match_resolves.ri pnrg_cost_split_sphere.ri pnrg_envelope_cone.ri pnrg_envelope_fillet_blend.ri pnrg_envelope_loft.ri pnrg_envelope_nurbs_surface.ri pnrg_envelope_pipe.ri pnrg_envelope_sphere.ri pnrg_envelope_spline.ri pnrg_envelope_sweep.ri pnrg_envelope_torus.ri posed_subs_distance_query_unresolvable.ri purpose_nested_structure.ri quantifier_expr_int_domain_resolves.ri quantifier_expr_member_access_rejected.ri quantifier_expr_range_domain_rejected.ri r3b_displacement_at_selector_grammar.ri raw_lambda_material_field_rejected.ri revolute_silent_accept.ri rotational_closure_prestate.ri scalar_codomain_mismatch.ri self_collection_count_redirect_rejected.ri shear_angles_component_deg_compare_pre.ri shear_angles_field_decl_pre.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri single_sub_pose_resolves.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri solver_unification_ineq_eq_penalty_offset.ri solver_unification_ineq_eq_two_sided_control.ri solver_unification_tangent_silent_accept.ri spec_conformance_directive_block.ri ssc_ineq_bracketed_strict.ri ssc_refuted_pair.ri ssc_single_root_free.ri ssc_two_roots_free.ri ssc_two_roots_strict.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member_modal.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri stdlib_ns_std_nonexistent_import.ri stdlib_units_import_resolves.ri subbody_objective_ignored.ri transform3_unresolved.ri typeparam_member_access.ri uncons_box_no_error.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri unknown_fn_silent_accept_baseline.ri value_clean_eval_cells.ri "
 
 decide_scope() {
     if [ "$SCOPE" = "all" ]; then
@@ -2316,7 +2325,7 @@ select_harness_kloc_guard
 # no-op against a stamped target/ keeps that state reachable there. Whether
 # the merge tier should also require the ratchet is a decision about
 # REIFY_AUDIT_NO_COLD_BUILD=1 on that pool leaf — a budget question about its
-# 30m wall — which this selector cannot answer and does not claim to; it is
+# outer envelope — which this selector cannot answer and does not claim to; it is
 # filed separately.
 # ---------------------------------------------------------------------------
 select_cheap_ptodo_gate() {
@@ -4303,7 +4312,7 @@ build_plan() {
     # --include-infra, while EVERY per-task lane passes --include-infra — so gating
     # run_all.sh on INCLUDE_INFRA (as before) ran the full 103-test suite on every
     # task lane and NEVER at merge, starving the shared 16-slot pool (M-way
-    # contention -> 30m timeout -> exit 124 -> BLOCKED). Gating on role instead
+    # contention -> outer-envelope timeout -> exit 124 -> BLOCKED). Gating on role instead
     # makes DF_VERIFY_ROLE=merge (stamped by both merge seams: hooks/pre-merge-commit
     # and the dark-factory merge-verify command) the single source of truth: the
     # full pool runs exactly once, at merge; per-task lanes get the cheap selective
@@ -4345,7 +4354,7 @@ build_plan() {
     # Section B, which proves the merge-role semaphore bypass — would re-satisfy
     # this role==merge gate and re-emit run_all.sh, recursing unboundedly
     # (run_all -> semaphore-e2e -> merge-role verify -> run_all -> ...) until the
-    # 30m wall SIGKILLs it. The gate keys on the INHERITED env var
+    # outer-envelope wall SIGKILLs it. The gate keys on the INHERITED env var
     # DF_VERIFY_ROLE, so the break is also an inherited env var. It is set
     # NARROWLY, at the single recursion source (that Section-B spawn), NOT
     # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
@@ -4356,7 +4365,7 @@ build_plan() {
     # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
     # nested background spawn, mirroring Section B's merge spawn).
     if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
-        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
+        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh outer envelope.
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
         # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
@@ -4455,11 +4464,9 @@ build_plan() {
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-        # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
-        # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
-        # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
-        # tipping a suite already near its budget over the wall (exit 124). 30m
-        # restores headroom for the full --scope all / merge gate.
+        # Envelope sized for the full infra suite; each member is bounded inside
+        # it by run_all.sh's REIFY_RUN_ALL_MEMBER_TIMEOUT (introduced by #9441;
+        # stopgap history: git log -L on this line).
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
@@ -4517,7 +4524,7 @@ build_plan() {
         # trip the ledger drift guard and drag in a per-var hostile-ambient
         # sub-case. Both known bites of the leak (esc-4581-87, task 5321) were
         # infra tests reached through this line.
-        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
+        add_tool "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 60m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra

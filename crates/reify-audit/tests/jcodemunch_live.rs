@@ -52,19 +52,21 @@
 //! 4. no PER-CALL fail-soft — `jcodemunch <tool>: …`, the `Err` arms of
 //!    `RealJCodemunchOps::{get_changed_symbols, find_references,
 //!    get_dead_code}`, emitted when ONE `tools/call` errors after a SUCCESSFUL
-//!    handshake and that single op degrades — `find_references` and
-//!    `get_dead_code` to `Vec::new()`, `get_changed_symbols` to an `Err` that
-//!    P1 records as a Low `P1TaskUnexamined` finding;
+//!    handshake. That single op then returns an `Err`, which its detector
+//!    records as a Low unexamined finding: `P1TaskUnexamined` for the P1 pair,
+//!    `PDeadCodeUnexamined` for `get_dead_code`;
 //! 5. `count_symbols(index_dir, repo_id) > 0`.
 //!
 //! Links 3 and 4 are the load-bearing ones, and they are INDEPENDENT layers —
 //! 4 is NOT implied by 3, which is why omitting it left a hole. A per-call
 //! failure happens AFTER the handshake, so link 3 is silent, link 2 has
-//! already admitted the run, link 1 sees exit 0, and the findings array is a
-//! perfectly well-formed `[]`. Link 5 does not close it either: it reads the
-//! index DB directly and says nothing about whether the serve ANSWERED. Both
-//! degraded paths therefore look exactly like a genuine zero-finding success
-//! — which is precisely how §2.3 survived ten weeks.
+//! already admitted the run, and link 1 sees exit 0. The findings array does
+//! carry the failure, as that Low unexamined record, but no link of the chain
+//! reads finding patterns, so the breadcrumb remains the chain's per-call
+//! link. Link 5 does not close it either: it reads the index DB directly and
+//! says nothing about whether the serve ANSWERED. Without links 3 and 4, both
+//! degraded paths pass the chain exactly as a genuine success does — which is
+//! precisely how §2.3 survived ten weeks.
 //!
 //! One caveat, carried from the constants rather than papered over: within P1,
 //! `find_references` is only reachable per symbol returned by
@@ -83,20 +85,20 @@
 //! The per-call layer is pinned at TWO levels, neither of which needs a serve:
 //!
 //! * BEHAVIOURALLY, against the REAL binary on the ordinary merge gate —
-//!   `tests/cli.rs`'s
-//!   `freshness_gate::per_call_fail_soft_is_a_vacuous_pass_the_capstone_must_catch`
-//!   and `::per_call_fail_soft_on_the_p1_pair`, which stand a mock MCP
-//!   endpoint that completes `initialize` and then errors the `tools/call`,
-//!   and assert the breadcrumb is PRESENT. That is what stops the literals
-//!   below from rotting if the `eprintln!` is reworded.
+//!   `tests/cli.rs`'s `freshness_gate::per_call_fail_soft_on_pdead`,
+//!   `::per_call_fail_soft_on_the_p1_pair` and
+//!   `::per_call_fail_soft_on_p1s_second_call`, which stand a mock MCP
+//!   endpoint that completes `initialize` and then errors the `tools/call`
+//!   (the last answers `get_changed_symbols` and errors only
+//!   `find_references`, dispatching on the call's arguments), and assert the
+//!   breadcrumb is PRESENT. That is what stops the literals below from
+//!   rotting if the `eprintln!` is reworded.
 //! * AT THE SEAM, against synthetic stderr — `live_leg_seam` below, which
 //!   asserts `assert_live_leg` FIRES on each literal, and includes a POSITIVE
 //!   CONTROL proving the check is not unconditional.
 //!
 //! Neither level subsumes the other: the first proves the string is real, the
-//! second proves the capstone reacts to it. The one gap, recorded rather than
-//! papered over: `find_references` is unreachable under the mock (its caller
-//! errored), so its literal has only the seam-level lock.
+//! second proves the capstone reacts to it.
 //!
 //! ## What the capstone does NOT assert
 //!

@@ -209,9 +209,9 @@ fn circle_face_at(kernel: &mut OcctKernelHandle, radius: f64, z: f64) -> Geometr
 fn box_solid_at(kernel: &mut OcctKernelHandle, z: f64) -> GeometryHandleId {
     let solid = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.002),
-            height: Value::Real(0.002),
-            depth: Value::Real(0.002),
+            size_x: Value::Real(0.002),
+            size_y: Value::Real(0.002),
+            size_z: Value::Real(0.002),
         })
         .expect("Box should build")
         .id;

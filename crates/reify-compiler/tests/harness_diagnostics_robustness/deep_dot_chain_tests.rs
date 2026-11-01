@@ -10,7 +10,8 @@
 //! helpers from `reify-test-support`, mirroring the style of
 //! `import_warning_tests.rs` and `diagnostic_coverage_checkpoint.rs`.
 
-use reify_core::DiagnosticCode;
+use reify_ast::{Declaration, ExprKind, MemberDecl};
+use reify_core::{DiagnosticCode, ModulePath};
 use reify_test_support::{compile_source, warnings_only};
 
 /// A chain at exactly the threshold (length 4 — `a.b.c.d`) must not warn.
@@ -571,8 +572,8 @@ structure S {
 ///
 /// The param body (default = 0) deliberately contains NO deep chain so the
 /// asserted count of 1 isolates the warning to the annotation-arg position.
-/// If `walk_members` silently skips Param annotations (the coverage hole
-/// for this arm), the count is 0 and this test FAILS — expected pre-impl.
+/// If `walk_member_own_exprs` silently skips Param annotations (the coverage
+/// hole for this arm), the count is 0 and this test FAILS — expected pre-impl.
 #[test]
 fn walker_visits_param_member_annotation_arg() {
     let source = r#"
@@ -588,8 +589,8 @@ structure S {
 /// member-level annotation arg on a `let`.
 ///
 /// Tested separately from Param because the two are independent `match` arms
-/// in `walk_members`; a regression that wires `walk_annotations` into only
-/// one of them would silently lose coverage on the other.
+/// in `walk_member_own_exprs`; a regression that wires `walk_annotations` into
+/// only one of them would silently lose coverage on the other.
 ///
 /// The let value (= 0) deliberately contains NO deep chain so the asserted
 /// count of 1 isolates the warning to the annotation-arg position.
@@ -805,4 +806,217 @@ trait Reachy {
 }
 "#;
     assert_deep_chain_warning_count(source, 1, "trait MemberDecl::Fn body nested result_expr");
+}
+
+// ── Match-arm decl groups and nested member bodies (task #7127) ──────────────
+//
+// Positions reached only through a member container: the decl-level `match`
+// group's own discriminant, and the member lists nested inside other members.
+// Each test first pins its fixture's AST shape with `structure_s_members`, then
+// counts warnings.
+
+/// Parse `source` and return its declarations, refusing a fixture the parser
+/// could not read cleanly.
+fn parse_clean_declarations(source: &str) -> Vec<Declaration> {
+    let parsed = reify_syntax::parse(source, ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture must parse cleanly, got {:?} for source:\n{source}",
+        parsed.errors
+    );
+    parsed.declarations
+}
+
+/// Parse `source` and return the members of its `structure S`.
+///
+/// Each nested-site test asserts that S's ONLY member is the container it names,
+/// so the chain can be reached only through that container. A parser change that
+/// hoisted the member to top level, where an existing site would already find
+/// it, then fails the shape check instead of passing vacuously.
+fn structure_s_members(source: &str) -> Vec<MemberDecl> {
+    parse_clean_declarations(source)
+        .into_iter()
+        .find_map(|decl| match decl {
+            Declaration::Structure(s) if s.name == "S" => Some(s.members),
+            _ => None,
+        })
+        .expect("fixture must declare `structure S`")
+}
+
+/// Position 30: `MemberDecl::MatchArmDeclGroup.discriminant`.
+///
+/// The arms of a decl-level `match` are bare `sub name : Type` declarations
+/// (grammar `match_arm_sub_decl`) and hold no expressions, so the discriminant
+/// is the only place a match-arm decl can carry a dot-chain.
+#[test]
+fn walker_visits_match_arm_decl_group_discriminant() {
+    let source = r#"
+structure S {
+    match a.b.c.d.e { Hex => sub head : HexHead, Socket => sub head : SocketHead }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::MatchArmDeclGroup(g)]
+                if matches!(g.discriminant.kind, ExprKind::MemberAccess { .. })
+        ),
+        "fixture must lower to exactly one MatchArmDeclGroup whose discriminant is the \
+         `a.b.c.d.e` chain"
+    );
+    assert_deep_chain_warning_count(source, 1, "MatchArmDeclGroup.discriminant");
+}
+
+// Recursion-set discriminators. reify-ast's member walker descends into
+// `where`/`else` branches and match arms under every `MemberRecursionSet`; port
+// bodies, sub specialization overrides and sketch bodies are the cells that
+// differ between the sets, and `sketch_body` is true only in ALL_MEMBER_BODIES.
+// The port-body, sub-override and sketch-body tests therefore catch this lint
+// being wired to the wrong set, and the `else`-branch test pins a recursion site
+// no other test covers.
+
+/// Position 31: `MemberDecl::GuardedGroup.else_members` — nested member chain.
+#[test]
+fn walker_recurses_into_guarded_group_else_members() {
+    let source = r#"
+structure S {
+    where 1 > 0 {
+        let g = 0
+    } else {
+        let h = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::GuardedGroup(g)] if !g.else_members.is_empty()
+        ),
+        "fixture must lower to exactly one GuardedGroup with a non-empty `else` branch"
+    );
+    assert_deep_chain_warning_count(source, 1, "GuardedGroup.else_members (nested Let.value)");
+}
+
+/// Position 32: `MemberDecl::Port.members` — nested member chain.
+#[test]
+fn walker_recurses_into_port_body_members() {
+    let source = r#"
+trait MyPort { param diameter: Real }
+structure S {
+    port p : out MyPort {
+        param diameter: Real = 1
+        let v = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Port(p)] if p.frame_expr.is_none()
+        ),
+        "fixture must lower to exactly one Port with no `frame` expression"
+    );
+    assert_deep_chain_warning_count(source, 1, "Port.members (nested Let.value)");
+}
+
+/// Position 33: `MemberDecl::Sub.body` — chain nested in a specialization body.
+#[test]
+fn walker_recurses_into_sub_specialization_body() {
+    let source = r#"
+structure S {
+    sub m : Motor {
+        let x = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Sub(s)] if s.body.is_some()
+        ),
+        "fixture must lower to exactly one Sub that opens a specialization body"
+    );
+    assert_deep_chain_warning_count(source, 1, "Sub.body (nested Let.value)");
+}
+
+/// Position 34: `MemberDecl::Sub.keyed_members[].overrides` — chain nested in a
+/// keyed entry's overrides.
+#[test]
+fn walker_recurses_into_keyed_sub_overrides() {
+    let source = r#"
+structure S {
+    sub p : Foo { "a" => { let x = a.b.c.d.e } }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Sub(s)] if s.body.is_none() && s.keyed_members.len() == 1
+        ),
+        "fixture must lower to exactly one Sub with a single keyed entry and no body"
+    );
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Sub.keyed_members[].overrides (nested Let.value)",
+    );
+}
+
+/// Position 36: `MemberDecl::Sketch.members` — chain nested in a sketch body.
+///
+/// The lint is a parse-level pre-pass, so it warns even though entity compile
+/// later rejects the sketch block.
+#[test]
+fn walker_recurses_into_sketch_body() {
+    let source = r#"
+structure S {
+    sketch p {
+        let x = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            structure_s_members(source).as_slice(),
+            [MemberDecl::Sketch(s)] if matches!(s.members.as_slice(), [MemberDecl::Let(_)])
+        ),
+        "fixture must lower to exactly one Sketch whose body is exactly one `let`"
+    );
+    assert_deep_chain_warning_count(source, 1, "Sketch.members (nested Let.value)");
+}
+
+// ── Structures nested in a purpose body ──────────────────────────────────────
+
+/// Position 35: `Declaration::Purpose.structures[*].members` — chain inside a
+/// structure nested in a purpose body.
+///
+/// The shape guard pins that the purpose has no members of its own, so the
+/// chain can be reached only through the nested structure.
+#[test]
+fn walker_visits_purpose_nested_structure_members() {
+    let source = r#"
+purpose my_purpose(subject: Structure) {
+    structure Inner {
+        let x = a.b.c.d.e
+    }
+}
+"#;
+    assert!(
+        matches!(
+            parse_clean_declarations(source).as_slice(),
+            [Declaration::Purpose(p)]
+                if p.members.is_empty()
+                    && matches!(
+                        p.structures.as_slice(),
+                        [s] if matches!(s.members.as_slice(), [MemberDecl::Let(_)])
+                    )
+        ),
+        "fixture must lower to one purpose with no members of its own and a single \
+         nested structure whose only member is the `let`"
+    );
+    assert_deep_chain_warning_count(
+        source,
+        1,
+        "Declaration::Purpose.structures[*].members (nested Let.value)",
+    );
 }

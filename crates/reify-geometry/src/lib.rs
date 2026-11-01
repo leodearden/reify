@@ -1,5 +1,5 @@
 use reify_core::hash::ContentHash;
-use reify_ir::{AttributeHistory, ElementOrderTag, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VolumeMesh, VoxelResolution};
+use reify_ir::{AttributeHistory, DenseSdfGrid, ElementOrderTag, ExportError, ExportFormat, ExportOptions, ExportWarning, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, ImplicitOptions, KernelAttributeHook, Mesh, QueryError, SampledField, TessError, Value, VolumeMesh, VoxelResolution};
 
 /// A single-kernel holder that wraps an optional geometry kernel.
 ///
@@ -285,6 +285,22 @@ impl GeometryKernel for SingleKernelHolder {
         }
     }
 
+    /// The `None` arm deliberately answers as the trait default does ("…
+    /// SingleKernelHolder does not ingest dense SDF grids"), by calling that
+    /// default's own message constructor, per this impl's INVARIANT. Like
+    /// `no_mesh_kernel_error`, it reports the holder as the kernel lacking the
+    /// capability rather than naming the missing registration.
+    fn ingest_dense_sdf(
+        &mut self,
+        grid: &DenseSdfGrid,
+        opts: &ImplicitOptions,
+    ) -> Result<GeometryHandle, GeometryError> {
+        match self.kernel.as_mut() {
+            Some(k) => k.ingest_dense_sdf(grid, opts),
+            None => Err(reify_ir::unsupported_dense_sdf_ingest::<Self>()),
+        }
+    }
+
     fn attribute_hook(&self) -> Option<&dyn KernelAttributeHook> {
         match self.kernel.as_ref() {
             Some(k) => k.attribute_hook(),
@@ -413,9 +429,9 @@ mod tests {
     fn execute_no_kernel_returns_error() {
         let mut planner = SingleKernelHolder::new();
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         let result = planner.execute(&op);
         assert!(result.is_err());
@@ -437,9 +453,9 @@ mod tests {
         planner.register_kernel(Box::new(MockGeometryKernel::new()));
 
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         let handle = planner.execute(&op).expect("execute should succeed");
         assert_eq!(handle.id, GeometryHandleId(1));
@@ -474,9 +490,9 @@ mod tests {
 
         // Execute an op first to create handle 1
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         planner.execute(&op).unwrap();
 
@@ -510,9 +526,9 @@ mod tests {
 
         // Execute an op to create a handle
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         planner.execute(&op).unwrap();
 
@@ -547,9 +563,9 @@ mod tests {
 
         // Execute an op to create a handle
         let op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         };
         planner.execute(&op).unwrap();
 
@@ -580,9 +596,9 @@ mod tests {
 
         // Create a box
         let box_op = GeometryOp::Box {
-            width: Value::length(0.01),
-            height: Value::length(0.02),
-            depth: Value::length(0.03),
+            size_x: Value::length(0.01),
+            size_y: Value::length(0.02),
+            size_z: Value::length(0.03),
         };
         let box_handle = planner.execute(&box_op).expect("box should succeed");
         assert_eq!(box_handle.id, GeometryHandleId(1));

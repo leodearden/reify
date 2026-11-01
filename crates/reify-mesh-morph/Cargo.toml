@@ -7,10 +7,10 @@ description = "Mesh morphing classifier and engine for Reify"
 build = "build.rs"
 
 [features]
-# Enables `stats::reset_for_test()` in the compiled artifact (not just in the
-# same-crate `#[cfg(test)]` context). Activate from any crate's
-# `[dev-dependencies]` to reset the process-global stats between cross-crate
-# test cases once engine wiring (PRD #2947-#2949) lands.
+# Compiles `diagnostics::reset_for_test` and `diagnostics::seed_for_test` into
+# the artifact (not just the same-crate `#[cfg(test)]` context), so cross-crate
+# tests can reset and seed the process-global diagnostic counters. Activate
+# from a consumer's `[dev-dependencies]`.
 testing = []
 
 [build-dependencies]

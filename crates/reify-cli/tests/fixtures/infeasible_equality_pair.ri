@@ -1,0 +1,17 @@
+module infeasible_equality_pair
+// The auto `tolerance` is the subject: two equalities pin it to different
+// values, so no assignment satisfies both and a driver that solves must report
+// the pair infeasible. The geometry does not read the auto, so `reify build`
+// still realizes and writes the body.
+//
+// The auto must not gain a constraint that also reads an Undef operand: that
+// makes the solve Infeasible for a different reason and would hide this one.
+pub structure Bracket {
+    param thickness : Length = 5mm
+    param tolerance : Length = auto
+
+    constraint tolerance == 10mm
+    constraint tolerance == 20mm
+
+    let body = box(80mm, 100mm, thickness)
+}

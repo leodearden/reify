@@ -56,6 +56,8 @@ mod joint_dof_self_check_tests;
 mod kinematic_stdlib_compile;
 #[path = "harness_mechanics/mechanism_nondriving_joint_compile.rs"]
 mod mechanism_nondriving_joint_compile;
+#[path = "harness_mechanics/modal_analysis_fns_stdlib_compile.rs"]
+mod modal_analysis_fns_stdlib_compile;
 #[path = "harness_mechanics/modal_mechanism_compile.rs"]
 mod modal_mechanism_compile;
 #[path = "harness_mechanics/modal_options_validation_tests.rs"]

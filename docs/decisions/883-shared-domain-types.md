@@ -4,6 +4,8 @@
 **Date:** 2026-04-10  
 **Task:** #883
 
+*Later note (2026-10-24, #6714) — not part of the accepted decision: `crates/reify-cli/src/mcp_context.rs` (`CliToolContext`) was deleted with `reify mcp-server` by bbfbc7dd29 (#6665), and reify-cli no longer depends on reify-mcp, so the reify-cli consumer named under Option A and the second file named under Scope boundary no longer exist. Every bare `mcp_context.rs` in this ADR means the GUI's `gui/src-tauri/src/mcp_context.rs`, which still exists.*
+
 ---
 
 ## Context
@@ -112,7 +114,7 @@ Only `DiagnosticInfo` and `SourceLocationInfo` are moved. The other `*Info` type
 (`ParameterInfo`, `ConstraintInfo`, `OpenFileInfo`, `SelectionInfo`, `EvalStatusInfo`,
 `SourceContent`, `UpdateResult`, `SetParamResult`) remain in reify-mcp — they are
 produced and consumed exclusively at the MCP boundary by `mcp_context.rs` and
-`reify-cli/src/mcp_context.rs`, and do not participate in the layering violation.
+`reify-cli/src/mcp_context.rs` *(deleted by bbfbc7dd29 (#6665))*, and do not participate in the layering violation.
 
 Only `engine.rs` and `engine_tests.rs` are updated to use `reify_types::` imports;
 all other MCP-boundary consumers retain their `reify_mcp::` paths, making it clear

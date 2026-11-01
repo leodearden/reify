@@ -910,7 +910,7 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
 
 ### ι₃ (#8992) — KernelSet keyed by KernelId; the sentinel goes
 - **Keys:** none.
-- **Files:** `crates/reify-eval/src/kernel_set.rs` (new), `crates/reify-eval/src/{lib,engine_admin,engine_build,engine_constraints,engine_eval,geometry_ops,realization_content,realize_solid_sdf,kernel_registry,dispatcher,measure_min_feature,measure_min_wall,realization_read_test_support}.rs`, `crates/reify-eval/src/kernel_owner.rs` (from #6308), `crates/reify-eval/src/engine_build/tests.rs`, every file that calls `with_test_kernels_and_registry` (11 by `git grep -l`, including `crates/reify-eval/src/geometry_op_characterization_probe.rs`), `gui/src-tauri/src/tests/openvdb_kernel_tests.rs`, `crates/reify-eval/tests/ensure_openvdb_kernel.rs`, `tests/infra/adoption-ratchet.manifest`.
+- **Files:** `crates/reify-eval/src/kernel_set.rs` (new), `crates/reify-eval/src/{lib,engine_admin,engine_build,engine_constraints,engine_eval,geometry_ops,realization_content,realize_solid_sdf,kernel_registry,dispatcher,realization_read_test_support}.rs`, `crates/reify-eval/src/kernel_owner.rs` (from #6308), `crates/reify-eval/src/engine_build/tests.rs`, every file that calls `with_test_kernels_and_registry` (11 by `git grep -l`, including `crates/reify-eval/src/geometry_op_characterization_probe.rs`), `gui/src-tauri/src/tests/openvdb_kernel_tests.rs`, `crates/reify-eval/tests/ensure_openvdb_kernel.rs`, `tests/infra/adoption-ratchet.manifest`.
 - **Deps:** ι₂, #6308.
 - **Work:**
   - As in §4.6. `DispatchPlan.kernel: KernelId`.
@@ -950,12 +950,12 @@ Priorities follow the severity of the stamped key, and enablers take medium. **H
 
 ### ι₆ (#8998) — CapabilityDescriptor declares queries, exports and projections; the hard-coded arms become rows
 - **Keys:** fk-80c2f82c17d6.
-- **Files:** `crates/reify-ir/src/geometry/capability.rs`, `crates/reify-kernel-{occt,manifold,fidget,openvdb,gmsh}/src/register.rs`, `crates/reify-eval/src/{dispatcher,engine_build,realization_content,realize_solid_sdf,engine_admin,engine_constraints,kernel_registry,measure_min_feature,measure_min_wall}.rs`, `crates/reify-kernel-conformance/tests/descriptor_accessor_parity.rs` (new; reify-kernel-conformance is in the nextest `occt` group, so no registration is needed), `tests/infra/adoption-ratchet.manifest`.
+- **Files:** `crates/reify-ir/src/geometry/capability.rs`, `crates/reify-kernel-{occt,manifold,fidget,openvdb,gmsh}/src/register.rs`, `crates/reify-eval/src/{dispatcher,engine_build,realization_content,realize_solid_sdf,engine_admin,engine_constraints,kernel_registry}.rs`, `crates/reify-kernel-conformance/tests/descriptor_accessor_parity.rs` (new; reify-kernel-conformance is in the nextest `occt` group, so no registration is needed), `tests/infra/adoption-ratchet.manifest`.
 - **Deps:** ι₅, ε₄, ι₂.
 - **Work:**
   - Add `queries: Vec<(QueryKind, ReprKind)>`, `exports: Vec<(ExportFormat, ReprKind)>` and `projections: Vec<(ReprKind, ProjectionKind)>`. Keep `Operation::Convert{from}`.
   - The seven hard-coded lookups become `select(Convert|Project)`.
-  - `kernel_registry::openvdb_kernel_name` and its 14 call sites go (realization_content, realize_solid_sdf, measure_min_feature, measure_min_wall, engine_constraints).
+  - `kernel_registry::openvdb_kernel_name` and its 13 call sites go (realization_content, realize_solid_sdf, engine_constraints, engine_admin, kernel_registry). The DFM thickness reader `Engine::measure_thickness_pair` reaches OpenVDB only through `realize_solid_sdf`; the dead `measure_min_*` twins were deleted by #9217.
   - realization_content's densify keys on the node's owner.
   - The registry test asserts both directions over every registration: each row implies its accessor is `Some`, and each `Some` accessor implies at least one row (L8).
   - gmsh's `register.rs` rows are born-then-deleted under #8288 (L17).

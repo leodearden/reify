@@ -34,9 +34,9 @@
 #![allow(clippy::mutable_key_type)]
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, Value};
+use reify_ir::{CompiledExprKind, Value};
 use reify_test_support::{
-    compile_source, errors_only, make_simple_engine, parse_and_compile_with_stdlib,
+    compile_source, errors_only, get_let_expr_in, make_simple_engine, parse_and_compile_with_stdlib,
 };
 
 // ── (a) Intra-trait overload survival ────────────────────────────────────────
@@ -746,25 +746,6 @@ structure def C : T {}
 
 // ── (#6505) Tier-3 dispatch filter: trait-generic slots are wildcards, concrete slots are not ──
 
-fn assembly_member_expr<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    member: &str,
-) -> &'m CompiledExpr {
-    let assembly = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Assembly")
-        .expect("compiled module should contain an Assembly template");
-    let cell = assembly
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("Assembly should have a let binding '{member}'"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{member}' should have a compiled default expr"))
-}
-
 fn assert_dispatch_resolves_without_site_diagnostic(
     source: &str,
     member: &str,
@@ -789,7 +770,7 @@ fn assert_dispatch_resolves_without_site_diagnostic(
         module.diagnostics
     );
 
-    let expr = assembly_member_expr(&module, member);
+    let expr = get_let_expr_in(&module, "Assembly", member);
     assert!(
         matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
         "'{member}' should lower to UserFunctionCall, not a poison literal; got: {:?}",
@@ -804,8 +785,8 @@ fn assert_dispatch_resolves_without_site_diagnostic(
 /// A slot typed by a TRAIT-level type param (`trait Boxed<T>`) matches any
 /// argument: the candidate's own fn-level type-param list is empty, so a
 /// free-fn-style `!f.type_params.is_empty()` gate would reject the slot and
-/// cascade a TraitMethodUnknown onto the root cause. Pins the tier-3
-/// `is_generic` gate held open at expr.rs's trait-assoc-fn filter (#6505).
+/// cascade a TraitMethodUnknown onto the root cause. Pins that the candidate's
+/// recorded fn ∪ trait type-param scope makes it generic (#6505).
 #[test]
 fn dispatch_trait_generic_type_param_slot_is_a_wildcard() {
     let source = r#"
@@ -824,7 +805,8 @@ structure def Assembly {
 /// A slot typed by a TRAIT-level dimension param (`trait Gauge<Q: Dimension>`,
 /// `Scalar<Q>`) matches any argument, for the same reason as the type-param
 /// case: the candidate's fn-level type-param list is empty, so gating on it
-/// would reject the slot. Pins the tier-3 `is_generic` gate held open (#6505).
+/// would reject the slot. Pins that the candidate's recorded fn ∪ trait
+/// type-param scope makes it generic (#6505).
 #[test]
 fn dispatch_trait_generic_dim_param_slot_is_a_wildcard() {
     let source = r#"
@@ -840,8 +822,8 @@ structure def Assembly {
     assert_dispatch_resolves_without_site_diagnostic(source, "got", Type::dimensionless_scalar());
 }
 
-/// A CONCRETE slot still rejects a mismatched argument: holding the tier-3
-/// `is_generic` gate open widens only type-param / dim-param slots, so
+/// A CONCRETE slot still rejects a mismatched argument: a candidate's
+/// `is_generic` widens only type-param / dim-param slots, so
 /// `fn f(self, x: Length)` called with an Angle matches no overload. The call
 /// emits exactly one TraitMethodUnknown from the no-match arm and poisons
 /// (#6505).
@@ -879,7 +861,7 @@ structure def Assembly {
         unknown[0].message
     );
 
-    let expr = assembly_member_expr(&module, "bad");
+    let expr = get_let_expr_in(&module, "Assembly", "bad");
     assert_eq!(
         expr.result_type,
         Type::Error,

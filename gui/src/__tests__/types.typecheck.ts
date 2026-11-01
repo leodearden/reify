@@ -23,7 +23,6 @@ import type {
   ConstraintUpdate,
   DiagnosticInfo,
   EntityTreeNode,
-  MorphStats,
 } from '../types';
 import { convertRawMesh } from '../types';
 
@@ -453,36 +452,6 @@ type AssertTrue<T extends true> = T;
 type _AssertBuildContextHandledFieldsExhaustive = AssertTrue<
   Equals<(typeof BUILD_CONTEXT_HANDLED_FIELDS)[number], keyof Required<MessageContext>>
 >;
-
-// --- MorphStats (GR-016 θ morph_stats RPC response) ---
-// (a) Fully-populated form.
-const morphStats: MorphStats = {
-  morph_count: 7,
-  remesh_count: 3,
-  last_rejection_reason: 'Ineligible(StructuralChange)',
-};
-void morphStats;
-
-// (b) last_rejection_reason omitted (skip-serializing on Rust side → undefined here).
-const morphStatsNoReason: MorphStats = {
-  morph_count: 0,
-  remesh_count: 0,
-};
-void morphStatsNoReason;
-
-// (c) morph_count is required (omitting it is a type error).
-// @ts-expect-error morph_count is a required field
-const _missingMorphCount: MorphStats = {
-  remesh_count: 0,
-};
-void _missingMorphCount;
-
-// (d) remesh_count is required.
-// @ts-expect-error remesh_count is a required field
-const _missingRemeshCount: MorphStats = {
-  morph_count: 0,
-};
-void _missingRemeshCount;
 
 // --- AppearanceDirective + DisplayStyleData (PRD-2 γ, task #4772) ---
 // RED until AppearanceDirective/DisplayStyleData are added to types.ts (step-6).

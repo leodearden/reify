@@ -35,6 +35,8 @@
 //! constructed from it conforms.
 #[path = "common/mod.rs"]
 mod common;
+#[path = "harness_structure_declarations/acceptance_divergence_parity_tests.rs"]
+mod acceptance_divergence_parity_tests;
 #[path = "harness_structure_declarations/collection_compile_tests.rs"]
 mod collection_compile_tests;
 #[path = "harness_structure_declarations/collection_sub_tests.rs"]

@@ -645,6 +645,16 @@ impl Engine {
         self.achieved_repr_tol.get(occurrence).copied()
     }
 
+    /// Every recorded `(occurrence, deviation)` pair, in ascending
+    /// occurrence-key order. Same map, population and freshness rules as
+    /// [`achieved_repr_tol`](Self::achieved_repr_tol).
+    ///
+    /// Each value is the exact f64 the `RepresentationWithin` comparator
+    /// reads; `reify check --verbose` prints these.
+    pub fn achieved_repr_tol_by_occurrence(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
+        self.achieved_repr_tol.iter().map(|(k, v)| (k.as_str(), *v))
+    }
+
     /// The static-relate consumption ledger produced by the LAST build — one
     /// `(scope_name, facts)` row per ZERO-AUTO relate scope, in `solve_scopes`
     /// order (DIC α, task 5415).
@@ -857,8 +867,7 @@ impl Engine {
     ///
     /// **No compute trampolines are registered.** Call
     /// [`Self::register_production_compute_fns`] on the returned engine unless you
-    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
-    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    /// are deliberately building a trampoline-free engine.
     ///
     /// This is the standard constructor for production use. For tests that
     /// require an isolated or empty prelude, use `Engine::with_prelude`.
@@ -883,8 +892,7 @@ impl Engine {
     ///
     /// **No compute trampolines are registered.** Call
     /// [`Self::register_production_compute_fns`] on the returned engine unless you
-    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
-    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    /// are deliberately building a trampoline-free engine.
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the **BRep-preferring lex-smallest** entry (see

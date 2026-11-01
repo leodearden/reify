@@ -45,6 +45,14 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 /// Maximum combined recursion depth across the two compiler expression
 /// recursion entry points before the cap fires.
 ///
+/// This is the single expression-nesting bound for compilation. The pre-compile
+/// lint walkers in `compile_builder` (`dot_chain_lint`, `shadow_lint`) stop
+/// silently past it; for compiled expressions the user-facing outcome is this
+/// guard's `E_EXPR_NESTING_TOO_DEEP` (pinned end to end by
+/// `over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking`).
+/// Those walkers recurse on the caller's raw stack with no `stacker` growth, so
+/// raising this value also raises their raw-stack recursion depth.
+///
 /// Rationale: realistic designs nest at most a few dozen levels
 /// (`designs/litter_tray/bottom_deck_split.ri` ≈ 9 boolean levels), and even
 /// the 8 MiB CLI main thread only fits ~55 fat debug frames today — so any
@@ -68,6 +76,18 @@ pub(crate) const MAX_COMPILE_RECURSION_DEPTH: usize = 256;
 const _: () = assert!(
     MAX_COMPILE_RECURSION_DEPTH > 128,
     "MAX_COMPILE_RECURSION_DEPTH must exceed realistic-nesting headroom (128)"
+);
+
+/// Compile-time pin: the lint walkers recurse to this depth on an ungrown stack.
+/// At 256 they are measured to fit on a 2 MiB tokio worker stack in two ways: the
+/// end-to-end test named on the constant, which drives `BinOp` nesting through the
+/// real pipeline, and each lint's per-arm cap test, which drives every recursion
+/// arm of its walker from a fresh 2 MiB thread. Re-measure them, or give them
+/// their own bound, before raising it.
+const _: () = assert!(
+    MAX_COMPILE_RECURSION_DEPTH <= 256,
+    "MAX_COMPILE_RECURSION_DEPTH is also the compile_builder lint walkers' raw-stack \
+     depth (no stacker growth); re-measure them or bound them separately before raising it"
 );
 
 /// `stacker::maybe_grow` red zone: if fewer than this many bytes of stack
@@ -228,6 +248,9 @@ pub(crate) fn recursion_too_deep_diagnostic(span: SourceSpan) -> Diagnostic {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -359,5 +382,58 @@ mod tests {
             "the latch must re-arm once the depth counter returns to 0"
         );
         drop(guards);
+    }
+
+    /// Over-cap nesting through the public pipeline reaches this guard's
+    /// `E_EXPR_NESTING_TOO_DEEP`, because the pre-compile lints stop silently at
+    /// the same cap instead of panicking first — and that error is the only one.
+    #[test]
+    fn over_cap_nesting_through_public_compile_reports_too_deep_instead_of_panicking() {
+        const NEST_DEPTH: usize = 300;
+        const {
+            assert!(
+                NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH,
+                "this test must overshoot the cap: the expected outcome is the \
+                 too-deep diagnostic, not a clean compile"
+            )
+        };
+
+        let mut expr = "1".to_string();
+        for _ in 0..NEST_DEPTH {
+            expr = format!("(1 + {expr})");
+        }
+        let source = format!("structure S {{\n    let x = {expr}\n}}");
+
+        // The recursive-descent parser is a separate, unguarded surface, so it
+        // gets a big stack of its own.
+        let parsed = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || reify_syntax::parse(&source, reify_core::ModulePath::single("test")))
+            .expect("spawn parse thread")
+            .join()
+            .expect("the parser must not crash on this depth with a big stack");
+        assert!(
+            parsed.errors.is_empty(),
+            "the nested source must parse cleanly, got: {:?}",
+            parsed.errors
+        );
+
+        let diagnostics =
+            test_support::on_tokio_worker_stack(move || crate::compile(&parsed).diagnostics);
+
+        let is_too_deep =
+            |d: &Diagnostic| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep);
+        assert!(
+            diagnostics.iter().any(is_too_deep),
+            "depth {NEST_DEPTH} is past the cap and must be refused, got: {diagnostics:?}"
+        );
+        let other_errors: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.severity == reify_core::Severity::Error && !is_too_deep(d))
+            .collect();
+        assert!(
+            other_errors.is_empty(),
+            "the too-deep refusal must not cascade into other errors, got: {other_errors:?}"
+        );
     }
 }

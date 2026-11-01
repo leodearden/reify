@@ -1,0 +1,60 @@
+//! Feature-activation liveness gate: a registered (provider, feature) pair may
+//! be activated only by a crate that names one of the items the provider gates
+//! on that feature. It lives in reify-build-utils so a per-crate manifest
+//! touch runs it at task scope: docs/prds/verify-scope-contract.md §3, "Per-crate
+//! manifest touches also contribute the crate-DAG gate".
+
+use std::path::{Path, PathBuf};
+
+mod detector;
+mod fixture;
+mod gated_surface;
+mod manifest;
+mod usage;
+
+use detector::RegisteredPair;
+
+/// Pairs whose gated surface is reachable only by naming a gated item; the
+/// scan enforces that through gated_surface's Shape rules. Adding a row is a
+/// one-line change the gate itself validates.
+const REGISTRY: &[RegisteredPair] = &[
+    RegisteredPair {
+        provider: "reify-eval",
+        feature: "test-instrumentation",
+    },
+    RegisteredPair {
+        provider: "reify-mcp",
+        feature: "test-support",
+    },
+];
+
+#[test]
+fn registered_feature_activations_are_live() {
+    assert!(!REGISTRY.is_empty(), "an empty REGISTRY gates nothing");
+    let root = workspace_root();
+    let findings = detector::check(&root, REGISTRY).unwrap_or_else(|e| {
+        panic!(
+            "feature-activation liveness gate cannot read {}: {e}",
+            root.display()
+        )
+    });
+    let report: Vec<String> = findings.iter().map(ToString::to_string).collect();
+    assert!(
+        findings.is_empty(),
+        "{} feature-activation liveness finding(s):\n{}",
+        findings.len(),
+        report.join("\n")
+    );
+}
+
+/// The runtime CARGO_MANIFEST_DIR first: a test binary CoW-seeded from
+/// another lane has that lane's path baked into env!().
+fn workspace_root() -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
+    Path::new(&manifest_dir)
+        .parent()
+        .and_then(Path::parent)
+        .expect("reify-build-utils sits two levels below the workspace root")
+        .to_path_buf()
+}

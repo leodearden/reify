@@ -143,9 +143,9 @@ struct Inputs {
 
 fn box_op(side: f64) -> GeometryOp {
     GeometryOp::Box {
-        width: Value::length(side),
-        height: Value::length(side),
-        depth: Value::length(side),
+        size_x: Value::length(side),
+        size_y: Value::length(side),
+        size_z: Value::length(side),
     }
 }
 
@@ -759,17 +759,17 @@ fn booleans_classify_the_bodies_they_built() {
     let bar = t.input(
         "bar",
         GeometryOp::Box {
-            width: Value::length(0.03),
-            height: Value::length(0.01),
-            depth: Value::length(0.01),
+            size_x: Value::length(0.03),
+            size_y: Value::length(0.01),
+            size_z: Value::length(0.01),
         },
     );
     let slab = t.input(
         "slab across the bar's middle",
         GeometryOp::Box {
-            width: Value::length(0.002),
-            height: Value::length(0.02),
-            depth: Value::length(0.02),
+            size_x: Value::length(0.002),
+            size_y: Value::length(0.02),
+            size_z: Value::length(0.02),
         },
     );
 

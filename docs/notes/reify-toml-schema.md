@@ -4,6 +4,13 @@ Brief reference for the `reify.toml` manifest schema. The authoritative schema
 documentation lives in the `reify-config` crate rustdoc (`crates/reify-config/src/lib.rs`
 `# Schema` section).
 
+## Status: parsed and validated, not loaded
+
+**No shipped binary loads a `reify.toml`; the CLI cache reads
+`~/.config/reify/config.toml` and `<project>/.reify/config.toml` (see
+`reify_config::cache`), different files.** Canonical statement: rustdoc on
+`reify_config::Manifest`.
+
 ## `[kernels]`
 
 Maps kernel ids to pinned versions. Supported ids: `occt`, `manifold`, `fidget`,
@@ -27,7 +34,8 @@ below for how a converted entry ranks.
 ### Status: parsed and validated, not enforced
 
 1. **No shipped binary reads `[[node_overrides]]`.** No binary loads
-   `reify.toml`, and `from_config_overrides` has no production caller.
+   `reify.toml` (see the status above), and `from_config_overrides` has no
+   production caller.
 2. **No scheduler consults a resolved commitment policy.** The concurrent
    scheduler was deleted in c1b8dba3f7 (task ο, #5065). The enforcement code,
    `check_commitment` and `CommitmentTracker`, is kept, but nothing in

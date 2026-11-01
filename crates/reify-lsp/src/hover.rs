@@ -1,3 +1,7 @@
+use reify_ast::{
+    ChainDecl, Declaration, ForallConnectBody, ForallConnectDecl, MemberDecl, ParsedModule,
+    walk_all_member_bodies,
+};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
 
 use crate::analysis::{AnalysisContext, format_value};
@@ -29,7 +33,7 @@ pub fn compute_hover_in_context(
     position: Position,
 ) -> Option<Hover> {
     let offset = position_to_offset(source, position);
-    let (_word_start, word) = find_word_at_offset(source, offset)?;
+    let (word_start, word) = find_word_at_offset(source, offset)?;
 
     // Determine the enclosing structure so member lookup is scoped correctly
     let enclosing = ctx.enclosing_decl_name_at(offset);
@@ -227,8 +231,12 @@ pub fn compute_hover_in_context(
         return Some(make_hover_markdown(md));
     }
 
-    // Try keyword
-    if let Some(desc) = keyword_description(word) {
+    // Try keyword. This arm runs last, so a contextual keyword's spelling alone
+    // is not enough: an identifier the lookups above do not resolve (a sub, a
+    // loop variable, a `.field` segment) lands here too.
+    if let Some(desc) = keyword_description(word)
+        && is_keyword_use(&ctx.parsed, word, word_start)
+    {
         let md = format!("**{word}** — {desc}");
         return Some(make_hover_markdown(md));
     }
@@ -384,6 +392,10 @@ pub(crate) const KEYWORD_DESCRIPTIONS: &[(&str, &str)] = &[
     ("maximize", "Declares a quantity to maximize."),
     ("port", "Declares an interface port for connections."),
     ("connect", "Declares a connection between ports."),
+    (
+        "chain",
+        "Connects a sequence of ports or occurrences in series; an occurrence's unique output/input port is inferred for each hop.",
+    ),
     ("where", "Introduces additional type or value constraints."),
 ];
 
@@ -395,9 +407,88 @@ fn keyword_description(word: &str) -> Option<&'static str> {
         .map(|(_, desc)| *desc)
 }
 
+/// Whether `word`, read at byte offset `start`, is the keyword it spells rather
+/// than an identifier that happens to share its spelling.
+///
+/// Every keyword in [`KEYWORD_DESCRIPTIONS`] is a reserved word and answers by
+/// spelling alone, except `chain`: the grammar reads it as the keyword only at
+/// the head of a chain statement and leaves it an ordinary identifier everywhere
+/// else (`sub chain = Pipe()`). The parsed module settles it, since a chain
+/// statement starts at `start` or it does not. Completion's
+/// `CONTEXTUAL_BODY_KEYWORDS` names the words that need this.
+///
+/// A half-typed statement (`chain a ->`) lowers to no chain, so it gets no
+/// description until it parses. The concrete syntax tree would cover it, but
+/// this crate only sees the AST.
+fn is_keyword_use(parsed: &ParsedModule, word: &str, start: usize) -> bool {
+    match word {
+        "chain" => chain_statement_starts_at(parsed, start),
+        _ => true,
+    }
+}
+
+/// Whether a `chain` statement, bare or as the body of a `forall`, starts at
+/// byte offset `start`: where its keyword sits.
+fn chain_statement_starts_at(parsed: &ParsedModule, start: usize) -> bool {
+    parsed
+        .declarations
+        .iter()
+        .flat_map(member_bodies)
+        .any(|members| {
+            let mut found = false;
+            walk_all_member_bodies(members, &mut |member| {
+                found |= chain_statement_of(member)
+                    .is_some_and(|chain| chain.span.start as usize == start);
+            });
+            found
+        })
+}
+
+/// The chain statement `member` is, or carries as its `forall` body.
+fn chain_statement_of(member: &MemberDecl) -> Option<&ChainDecl> {
+    match member {
+        MemberDecl::Chain(chain)
+        | MemberDecl::ForallConnect(ForallConnectDecl {
+            body: ForallConnectBody::Chain(chain),
+            ..
+        }) => Some(chain),
+        _ => None,
+    }
+}
+
+/// The member lists a declaration owns: its own body, plus the `structure def`s
+/// nested in a `purpose`, which the AST keeps out of the purpose's `members`.
+///
+/// WILDCARD-FREE, like `decl_oracle::decl_name_and_span`: a new `Declaration`
+/// kind is a compile error here instead of a body whose chain statements lose
+/// their hover.
+fn member_bodies(decl: &Declaration) -> Vec<&[MemberDecl]> {
+    match decl {
+        Declaration::Structure(s) => vec![&s.members],
+        Declaration::Occurrence(o) => vec![&o.members],
+        Declaration::Trait(t) => vec![&t.members],
+        Declaration::Purpose(p) => std::iter::once(&p.members)
+            .chain(p.structures.iter().map(|s| &s.members))
+            .map(Vec::as_slice)
+            .collect(),
+        Declaration::Import(_)
+        | Declaration::Enum(_)
+        | Declaration::Function(_)
+        | Declaration::Field(_)
+        | Declaration::Constraint(_)
+        | Declaration::Unit(_)
+        | Declaration::TypeAlias(_)
+        | Declaration::Default(_)
+        | Declaration::Module(_)
+        | Declaration::Joint(_) => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decl_oracle::test_fixtures::occurrences;
+    use crate::convert::offset_to_position;
     use tower_lsp::lsp_types::Url;
 
     fn test_uri() -> Url {
@@ -1004,11 +1095,14 @@ structure B {
     fn all_completion_keywords_have_hover_descriptions() {
         use std::collections::HashSet;
 
-        use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
+        use crate::completion::{
+            BODY_KEYWORDS, CONTEXTUAL_BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS,
+        };
 
         let completion_union: HashSet<&str> = TOP_LEVEL_KEYWORDS
             .iter()
             .chain(BODY_KEYWORDS.iter())
+            .chain(CONTEXTUAL_BODY_KEYWORDS.iter())
             .chain(EXPR_KEYWORDS.iter())
             .copied()
             .collect();
@@ -1707,6 +1801,209 @@ structure Bolt {
         assert!(
             md.contains("**type**"),
             "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    // --- `chain`: a keyword only at the head of a body statement ---
+
+    /// The keyword hover is the last arm of `compute_hover_in_context`, reached
+    /// only after the member, entity, declaration and relation lookups all miss,
+    /// so hovering the `chain` of a real chain statement also pins that none of
+    /// them claims it first.
+    #[test]
+    fn hover_on_chain_keyword_of_chain_statement_shows_description() {
+        let source = "\
+trait FluidPort { param diameter : Length }
+occurrence def Pipe {
+    port inlet : in FluidPort { param diameter : Length = 25mm }
+    port outlet : out FluidPort { param diameter : Length = 25mm }
+}
+structure def Pipeline {
+    sub p1 = Pipe()
+    sub p2 = Pipe()
+    chain p1 -> p2
+}
+";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+            .expect("hover on the 'chain' keyword must return Some");
+        assert!(
+            md.contains("**chain**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    /// `chain` is an ordinary identifier outside statement position, so a binding
+    /// that borrows the name hovers as that binding, at its declaration and at a
+    /// use, and never as the keyword.
+    #[test]
+    fn hover_on_binding_named_chain_shows_the_binding_not_the_keyword() {
+        let source = "structure def S {\n    param a : Length = 1mm\n    param b : Length = 2mm\n    let chain = a < b\n    constraint chain\n}\n";
+        let sites = occurrences(source, "chain");
+        assert_eq!(
+            sites.len(),
+            2,
+            "fixture should hold the declaration and one use of `chain`"
+        );
+        for site in sites {
+            let md = hover_markdown(source, offset_to_position(source, site as u32))
+                .expect("hover on a binding named 'chain' must return Some");
+            assert!(
+                md.contains("let chain"),
+                "should show the binding, got: {md}"
+            );
+            assert!(
+                !md.contains("**chain**"),
+                "must not show the keyword description, got: {md}"
+            );
+        }
+    }
+
+    /// The other form that carries the keyword: the `chain` that is a `forall`'s
+    /// body, which sits mid-line after the `forall … :` head.
+    #[test]
+    fn hover_on_chain_keyword_of_forall_chain_shows_description() {
+        let source = "structure def S {\n    forall v in vents: chain v.out -> hub.a -> hub.b\n}\n";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+            .expect("hover on the 'chain' of a forall body must return Some");
+        assert!(
+            md.contains("**chain**"),
+            "keyword hover should bold the keyword, got: {md}"
+        );
+    }
+
+    /// The keyword is found wherever the grammar lets a chain statement stand
+    /// beyond a structure body: an occurrence's body, and a `structure def`
+    /// nested in a `purpose`, which the AST keeps out of the purpose's own members.
+    #[test]
+    fn hover_on_chain_keyword_shows_description_in_occurrence_and_purpose_nested_structure() {
+        let fixtures = [
+            (
+                "occurrence",
+                "occurrence def Line {\n    sub p1 = Pipe()\n    sub p2 = Pipe()\n    chain p1 -> p2\n}\n",
+            ),
+            (
+                "structure nested in a purpose",
+                "purpose Exploration() {\n    structure def Inner {\n        sub p1 = Pipe()\n        sub p2 = Pipe()\n        chain p1 -> p2\n    }\n}\n",
+            ),
+        ];
+        for (container, source) in fixtures {
+            let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "{container} fixture must parse clean: {:?}",
+                parsed.errors
+            );
+            let keyword = occurrences(source, "chain")[0];
+            let md = hover_markdown(source, offset_to_position(source, keyword as u32))
+                .unwrap_or_else(|| panic!("hover on the 'chain' in {container} must return Some"));
+            assert!(
+                md.contains("**chain**"),
+                "{container}: keyword hover should bold the keyword, got: {md}"
+            );
+        }
+    }
+
+    /// An identifier hover does not resolve reaches the keyword arm, and must not
+    /// read as the keyword there: a name no binding declares (a typo, or one
+    /// declared further down), a `.field` segment, a `forall` loop variable.
+    #[test]
+    fn hover_on_chain_identifier_no_lookup_resolves_shows_no_keyword_description() {
+        let fixtures = [
+            (
+                "unresolved name",
+                "structure def S {\n    param a : Length = 1mm\n    let x = chain\n}\n",
+            ),
+            (
+                "field segment",
+                "structure def S {\n    sub s = T()\n    let x = s.chain\n}\n",
+            ),
+            (
+                "forall variable",
+                "structure def S {\n    forall chain in vents: connect chain.a -> hub.b\n}\n",
+            ),
+        ];
+        for (position, source) in fixtures {
+            let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "{position} fixture must parse clean, so `chain` is an identifier: {:?}",
+                parsed.errors
+            );
+            for site in occurrences(source, "chain") {
+                let md = hover_markdown(source, offset_to_position(source, site as u32));
+                assert!(
+                    md.as_deref().is_none_or(|md| !md.contains("**chain**")),
+                    "{position}: an identifier must not read as the keyword, got: {md:?}"
+                );
+            }
+        }
+    }
+
+    /// A sub is not among the names hover resolves, so one named like a
+    /// contextual keyword reaches the keyword arm at its declaration and at a
+    /// use. Looping over completion's contextual keywords also makes this the
+    /// guard that `is_keyword_use` gates every one of them.
+    #[test]
+    fn hover_on_sub_named_like_a_contextual_keyword_shows_no_keyword_description() {
+        use crate::completion::CONTEXTUAL_BODY_KEYWORDS;
+
+        for keyword in CONTEXTUAL_BODY_KEYWORDS {
+            let source = "structure def Drive {\n    sub KEYWORD = Pipe()\n    sub other = Pipe()\n    connect KEYWORD.outlet -> other.inlet\n}\n"
+                .replace("KEYWORD", keyword);
+            let parsed = reify_syntax::parse(&source, reify_core::ModulePath::single("test"));
+            assert!(
+                parsed.errors.is_empty(),
+                "fixture must parse clean: {:?}",
+                parsed.errors
+            );
+            let sites = occurrences(&source, keyword);
+            assert_eq!(
+                sites.len(),
+                2,
+                "fixture should hold the declaration and one use of `{keyword}`"
+            );
+            for site in sites {
+                let md = hover_markdown(&source, offset_to_position(&source, site as u32));
+                assert!(
+                    md.as_deref()
+                        .is_none_or(|md| !md.contains(&format!("**{keyword}**"))),
+                    "a sub named `{keyword}` must not read as the keyword, got: {md:?}"
+                );
+            }
+        }
+    }
+
+    /// A statement still being typed lowers to no chain, so nothing in the AST
+    /// shows that its `chain` is the keyword and hover stays silent until it
+    /// parses. Pinned on purpose: `is_keyword_use` documents the trade, and a
+    /// check backed by the syntax tree would turn this into a description.
+    #[test]
+    fn hover_on_chain_keyword_of_half_typed_statement_shows_no_keyword_description() {
+        let source = "structure def S {\n    param a : Length = 1mm\n    chain a ->\n}\n";
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            !parsed.errors.is_empty(),
+            "fixture must be half-typed: the statement must not parse"
+        );
+        let keyword = occurrences(source, "chain")[0];
+        let md = hover_markdown(source, offset_to_position(source, keyword as u32));
+        assert!(
+            md.as_deref().is_none_or(|md| !md.contains("**chain**")),
+            "a statement that has not parsed has no chain to show, got: {md:?}"
         );
     }
 }

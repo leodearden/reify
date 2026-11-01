@@ -207,8 +207,7 @@ fn compliance_matrix(material: &IsotropicElastic) -> [[f64; 6]; 6] {
     let nu = material.poisson_ratio;
     let inv_e = 1.0 / e;
     let neg_nu_over_e = -nu / e;
-    let g = e / (2.0 * (1.0 + nu));
-    let inv_g = 1.0 / g;
+    let inv_g = 1.0 / material.shear_modulus();
 
     let mut s = [[0.0_f64; 6]; 6];
     // Normal-stress block (rows/cols 0..3): diagonal = 1/E, off-diagonal = -ν/E.

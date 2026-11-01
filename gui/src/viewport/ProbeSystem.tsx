@@ -9,10 +9,10 @@
  *   pickAndAddProbe(event) — raycast → computeBarycentric → addProbe
  *   resampleAll() — re-sample all probes; update or markStale + grey marker
  *   removeProbe(id) — remove from store + scene + dispose
- *   refreshMarkers() — reconcile marker Map with current store probes
+ *   refreshMarkers() — reconcile markers with the store: restyle, move live ones onto the current surface
  *   dispose() — tear down all markers and resources
  *
- * <ProbePopup store={store} onRemove={fn} onRepin={fn} /> — thin SolidJS panel.
+ * <ProbePopup store={store} onRemove={fn} onRepin?={fn} /> — thin SolidJS panel.
  */
 import { For, Show } from 'solid-js';
 import { Raycaster, SphereGeometry, MeshBasicMaterial, Mesh, Vector2 } from 'three';
@@ -58,15 +58,6 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   const raycaster = new Raycaster();
   (raycaster as any).firstHitOnly = true;
 
-  let cachedRect: DOMRect | null = null;
-
-  function getRect(): DOMRect {
-    if (cachedRect === null) {
-      cachedRect = domElement.getBoundingClientRect();
-    }
-    return cachedRect;
-  }
-
   // Map from probe id → Three.js Mesh marker (+ its geometry/material for disposal)
   const markerMap = new Map<string, Mesh>();
 
@@ -74,12 +65,12 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   // Marker helpers
   // ---------------------------------------------------------------------------
 
+  /** The probe point on the live geometry, or null when its entity or face is not displayed. */
   function computeWorldPosition(
     entityPath: string,
     faceId: number,
     bary: BarycentricUV,
-  ): { x: number; y: number; z: number } {
-    // Try to compute from the live mesh geometry
+  ): { x: number; y: number; z: number } | null {
     const meshes = getMeshes();
     const mesh = meshes.get(entityPath);
     if (mesh) {
@@ -101,7 +92,13 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
         }
       }
     }
-    return { x: 0, y: 0, z: 0 };
+    return null;
+  }
+
+  /** Moves `marker` onto the probe point; leaves it in place when that point is not displayed. */
+  function placeMarker(marker: Mesh, entityPath: string, faceId: number, bary: BarycentricUV): void {
+    const pos = computeWorldPosition(entityPath, faceId, bary);
+    if (pos) marker.position.set(pos.x, pos.y, pos.z);
   }
 
   function createMarker(
@@ -117,8 +114,7 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
       opacity: stale ? MARKER_OPACITY_STALE : 1.0,
     });
     const marker = new Mesh(geo, mat);
-    const pos = computeWorldPosition(entityPath, faceId, bary);
-    marker.position.set(pos.x, pos.y, pos.z);
+    placeMarker(marker, entityPath, faceId, bary);
     return marker;
   }
 
@@ -156,7 +152,7 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   // ---------------------------------------------------------------------------
 
   function pickAndAddProbe(event: MouseEvent): void {
-    const rect = getRect();
+    const rect = domElement.getBoundingClientRect();
     const ndc = new Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
@@ -199,11 +195,12 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
   // ---------------------------------------------------------------------------
 
   function refreshMarkers(): void {
-    // Restyle existing markers based on current stale state
+    // A live marker follows its pin on the current (possibly deformed) surface; a stale one stays put.
     for (const probe of store.state.probes) {
       const marker = markerMap.get(probe.id);
       if (marker) {
         updateMarkerStyle(marker, probe.stale);
+        if (!probe.stale) placeMarker(marker, probe.entity_path, probe.face_id, probe.barycentric_uv);
       }
     }
     // Remove markers for probes no longer in the store
@@ -241,7 +238,6 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
     }
     markerMap.clear();
     store.clear();
-    cachedRect = null;
   }
 
   return { addProbe, pickAndAddProbe, resampleAll, removeProbe, refreshMarkers, dispose };
@@ -254,7 +250,8 @@ export function createProbeSystem(options: ProbeSystemOptions): ProbeSystemConte
 export interface ProbePopupProps {
   store: ProbeStore;
   onRemove: (id: string) => void;
-  onRepin: (id: string) => void;
+  /** Re-anchors a stale probe; without it a stale row offers only removal. */
+  onRepin?: (id: string) => void;
 }
 
 function formatVec(v: [number, number, number]): string {
@@ -293,14 +290,16 @@ export function ProbePopup(props: ProbePopupProps) {
                 </span>
               </Show>
             </Show>
-            <Show when={probe.stale}>
-              <button
-                class="probe-repin-btn"
-                data-testid="probe-repin"
-                onClick={() => props.onRepin(probe.id)}
-              >
-                Re-pin
-              </button>
+            <Show when={probe.stale && props.onRepin}>
+              {(onRepin) => (
+                <button
+                  class="probe-repin-btn"
+                  data-testid="probe-repin"
+                  onClick={() => onRepin()(probe.id)}
+                >
+                  Re-pin
+                </button>
+              )}
             </Show>
             <button
               class="probe-remove-btn"

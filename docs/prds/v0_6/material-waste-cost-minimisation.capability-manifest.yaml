@@ -81,7 +81,7 @@ tasks:
       kind: manual
       reason: B1, B2, B12, B15 assert the codes; spellings are §11 Q2.
   - name: solverless-and-kernelless-paths
-    binding: 'existing-substrate — LSP (reify-lsp analysis.rs and diagnostics.rs: Engine::new(checker, None)), reify test (reify_eval::run_tests in test_runner.rs: Engine::new(checker, None)) and the reify-cli MCP ensure_engine (mcp_context.rs: Engine::new(SimpleConstraintChecker, None)) run with neither solver nor kernel. reify check builds Engine::with_registered_kernel or Engine::new(None) and never calls with_solver; cmd_build documents its solver-free posture in a NOTE at the engine construction. Only cmd_eval wires the full solver through configured_eval_engine.'
+    binding: 'existing-substrate — LSP (reify-lsp analysis.rs and diagnostics.rs: Engine::new(checker, None)), reify test (reify_eval::run_tests in test_runner.rs: Engine::new(checker, None)) and the reify-cli MCP ensure_engine (mcp_context.rs: Engine::new(SimpleConstraintChecker, None)) (that host was deleted by bbfbc7dd29 (#6665) after this manifest was written) run with neither solver nor kernel. reify check builds Engine::with_registered_kernel or Engine::new(None) and never calls with_solver; cmd_build documents its solver-free posture in a NOTE at the engine construction. Only cmd_eval wires the full solver through configured_eval_engine.'
     verdict: PASS
     delivered_check:
       kind: manual

@@ -31,9 +31,9 @@
 //! ### NORMATIVE: how the slot is CHECKED (task 5766; param side ruled task 6159)
 //!
 //! This section is the single normative home of the quantity-slot conformance
-//! rule.  `crates/reify-compiler/src/conformance/mod.rs` implements it as
+//! rule.  `crates/reify-compiler/src/type_acceptance.rs` implements it as
 //! `param_quantity_slot_dimension` / `arg_quantity_slot_dimension`, compared in
-//! `emit_if_quantity_conflict`; PRD
+//! `quantity_verdict`; PRD
 //! `docs/prds/v0_6/dimensioned-construction-strictness.md` §12 points here rather
 //! than restating it.
 //!
@@ -204,9 +204,10 @@
 //! non-zero-risk.  This is a ruling, not an oversight — do not "fix" the asymmetry
 //! with the other four arms by symmetry.  Pinned by
 //! `field_param_given_erased_analytical_field_stays_clean`
-//! (`crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`); the
-//! false-warning count that motivated the arm is recorded once, in the
-//! `Type::Field` arm's own comment in `conformance/mod.rs`.
+//! (`crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`).
+//! What motivated the shape-only arm: before it existed,
+//! `examples/fea_shell_channels.ri` alone produced six such false warnings (top /
+//! mid / bottom / displacement / stress / frame).
 //!
 //! **Why the ARG side is tolerant rather than strict.**  This rationale is
 //! ARG-SIDE ONLY — it is what the param-side ruling above does *not* inherit.
@@ -214,7 +215,7 @@
 //! compare a declaration against a hole.  TWO erasure routes carry this:
 //! `Matrix<3,3,MomentOfInertia>` is spelled `List<List<Real>>` at every corpus
 //! site; and a `Field`'s slots always erase to `Field<Real, Real>`, which is what
-//! produced the false warnings that arm's comment records.  Neither route exists
+//! produced the `fea_shell_channels.ri` false warnings recorded above.  Neither route exists
 //! on the param side, where the slot is always written out.
 //!
 //! There used to be a THIRD, listed first: `point3(…)` is an eval-builtin with no
@@ -242,13 +243,7 @@
 //! That is the same bounded-cost class as the `Point` arm's tolerance of a
 //! scalar-family arg (any `Type::Scalar { .. }`, dimensioned or not, plus `Int`
 //! and `ScalarParam` — not a bare literal alone), and it is accepted for the
-//! same reason.  Task 5848 has since
-//! LANDED and retyped the direction fields this paragraph used to name —
-//! `kinematic.ri`'s `axis` and `ports.ri`'s `Frame3.x_axis/y_axis/z_axis` are
-//! `Vec3<Dimensionless>` today — but the residual is structural, not a property
-//! of those sites, and `ports_mechanical.ri`'s `RotaryPort.axis` /
-//! `LinearPort.axis` (`Vector3<Length>`) are surviving instances.  Retyping what remains is a stdlib type-vocabulary
-//! ruling of its own and is deliberately not folded in here.  Pinned by
+//! same reason.  Pinned by
 //! `vector_param_accepts_dimensionless_vector_arg` (`conformance/mod.rs`) and
 //! `vec3_dimensionless_at_dimensioned_vector_param_stays_clean`
 //! (`struct_ctor_field_conformance_tests.rs`).
@@ -270,7 +265,7 @@
 //! row 0.
 //!
 //! The consequence for THIS rule: a heterogeneous aggregate's arg slot names no
-//! dimension, so `arg_quantity_slot_dimension` (`conformance/mod.rs`) returns
+//! dimension, so `arg_quantity_slot_dimension` (`type_acceptance.rs`) returns
 //! `None` and the rule falls silent BY CONSTRUCTION — no case for it in the
 //! walker, and none is wanted.  Read that precisely in both directions.  The
 //! false-REJECT is GONE: a correctly-declared heterogeneous matrix is no longer
@@ -297,7 +292,7 @@
 //! non-vacuous.
 //!
 //! **The unknown-ness fence is preserved.**  `is_numeric_placeholder_leaf`
-//! (`conformance/mod.rs`) still admits a scalar-family arg at the `Point` and
+//! (`type_acceptance.rs`) still admits a scalar-family arg at the `Point` and
 //! `Matrix`/`Tensor` arms, and `arg_type_is_unverifiable` is NOT widened to carry
 //! this rule.  The quantity check runs only AFTER an arm's family/arity check has
 //! passed and only on args that actually carry a quantity slot, so a placeholder

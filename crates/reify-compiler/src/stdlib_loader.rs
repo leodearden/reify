@@ -59,7 +59,10 @@ static STDLIB_CONTEXT_CACHE: OnceLock<PreludeContext<'static>> = OnceLock::new()
 /// is what is *resolvable* during the sequential prelude build (the footgun
 /// above), not what a resolvable name *means*.  That inertness is the §5
 /// precondition the ζ task consumes.
-pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
+///
+/// Public for `reify_doc_build::build_stdlib_doc_model`, which pairs each
+/// compiled stdlib module with its source by module path.
+pub fn stdlib_sources() -> Vec<(&'static str, String)> {
     let si_units_source = si_units::build_si_units_source();
     vec![
         ("std.units", include_str!("../stdlib/units.ri").to_owned()),
@@ -298,7 +301,8 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
         ("std.joints", include_str!("../stdlib/joints.ri").to_owned()),
         // `std.ports` declares the Directionality enum, the Port base trait,
-        // and the `Frame3` structure (origin + x/y/z axes, all Vector3<Length>).
+        // and the `Frame3` structure (a `Vec3<Length>` origin, which is a
+        // position, and `Vec3<Dimensionless>` x/y/z axes, which are directions).
         // No inter-module dependencies beyond built-in types.
         // Reconstruction of lost work per PRD task α.
         //

@@ -836,7 +836,26 @@ fn is_stdlib_path(p: &str) -> bool {
     p == "std" || p.starts_with("std.")
 }
 
-/// Build the `(error_string, diag_infos)` payload for an error result.
+/// What a successful compile produced, in one order everywhere.
+pub(crate) struct CompiledSource {
+    pub(crate) parsed: reify_ast::ParsedModule,
+    pub(crate) compiled: CompiledModule,
+}
+
+/// Why a compile was rejected.
+///
+/// Not the session's stored [`CompileFailure`]: that record also carries the
+/// failure's [`CompileFailureKind`], which only the session can know, and is
+/// built from this one by `record_compile_failure`.
+pub(crate) struct CompileRejection {
+    /// `"{prefix}: msg1; msg2; …"`, e.g. `"Parse errors: …"` /
+    /// `"Compile errors: …"` — the reload entry points' `Err` string.
+    pub(crate) message: String,
+    /// The same errors in structured form, for the diagnostics panel.
+    pub(crate) diags: Vec<DiagnosticInfo>,
+}
+
+/// Build the [`CompileRejection`] for an error result.
 ///
 /// Centralises the mechanical pattern shared by all parse- and compile-error
 /// return sites in `compile_single_file_with_stdlib` and
@@ -845,18 +864,19 @@ fn is_stdlib_path(p: &str) -> bool {
 /// wire payload.
 ///
 /// `prefix` becomes the leading label (e.g. `"Parse errors"`, `"Compile errors"`).
-/// The returned string has the form `"{prefix}: msg1; msg2; …"`, preserving the
+/// The message has the form `"{prefix}: msg1; msg2; …"`, preserving the
 /// wire-format invariant the function docstrings promise.
 fn build_err_payload(
     prefix: &str,
     diags: &[Diagnostic],
     file_path: &str,
     source: &str,
-) -> (String, Vec<DiagnosticInfo>) {
+) -> CompileRejection {
     let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-    let error_string = format!("{}: {}", prefix, msgs.join("; "));
-    let diag_infos = diagnostics_to_info(diags, file_path, source);
-    (error_string, diag_infos)
+    CompileRejection {
+        message: format!("{}: {}", prefix, msgs.join("; ")),
+        diags: diagnostics_to_info(diags, file_path, source),
+    }
 }
 
 /// Synthesize [`Diagnostic`] values from a slice of [`reify_syntax::ParseError`]s
@@ -869,7 +889,7 @@ fn parse_errs_to_payload(
     errors: &[reify_ast::ParseError],
     file_path: &str,
     source: &str,
-) -> (String, Vec<DiagnosticInfo>) {
+) -> CompileRejection {
     let synthetic_diags: Vec<Diagnostic> = errors
         .iter()
         .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
@@ -877,15 +897,45 @@ fn parse_errs_to_payload(
     build_err_payload("Parse errors", &synthetic_diags, file_path, source)
 }
 
+/// Reject `compiled` if any of its diagnostics is an error.
+///
+/// The one compile-error filter both compile helpers share: the rejection
+/// carries only the `Severity::Error` diagnostics, under the
+/// `"Compile errors"` prefix, keyed by `module_key(module_name)`.
+fn reject_compile_errors(
+    compiled: CompiledModule,
+    module_name: &str,
+    source: &str,
+) -> Result<CompiledModule, CompileRejection> {
+    if !compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return Ok(compiled);
+    }
+    let error_diags: Vec<Diagnostic> = compiled
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    Err(build_err_payload(
+        "Compile errors",
+        &error_diags,
+        &module_key(module_name),
+        source,
+    ))
+}
+
 /// Parse and compile a single-file source string using the stdlib prelude.
 ///
-/// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing
-/// a human-readable error string (preserving the existing `"Parse errors: …"` /
-/// `"Compile errors: …"` format so existing substring assertions remain valid)
-/// **and** a `Vec<DiagnosticInfo>` with the same errors in structured form.
-/// The structured payload is used by callers to populate
-/// `EngineSession::compile_failure` (via `record_compile_failure`) so `build_gui_state`
-/// can surface the failure in the diagnostics panel.
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`]
+/// whose message preserves the existing `"Parse errors: …"` /
+/// `"Compile errors: …"` format (so existing substring assertions remain
+/// valid) and whose diagnostics carry the same errors in structured form.
+/// Callers store those diagnostics in `EngineSession::compile_failure` (via
+/// `record_compile_failure`) so `build_gui_state` can surface the failure in
+/// the diagnostics panel.
 ///
 /// This is the single-file counterpart to `compile_entry_with_imports`.  It is
 /// called by both `load_from_source` (which always uses the single-file path) and
@@ -893,7 +943,7 @@ fn parse_errs_to_payload(
 fn compile_single_file_with_stdlib(
     content: &str,
     module_name: &str,
-) -> Result<(reify_ast::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<CompiledSource, CompileRejection> {
     // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
@@ -905,30 +955,17 @@ fn compile_single_file_with_stdlib(
         &parsed,
         &reify_constraints::SimpleConstraintChecker,
     );
-    let has_errors = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error);
-    if has_errors {
-        let error_diags: Vec<Diagnostic> = compiled
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        let file_path = module_key(module_name);
-        return Err(build_err_payload(
-            "Compile errors",
-            &error_diags,
-            &file_path,
-            content,
-        ));
-    }
-    Ok((parsed, compiled))
+    let compiled = reject_compile_errors(compiled, module_name, content)?;
+    Ok(CompiledSource { parsed, compiled })
 }
 
 /// Parse and compile `source` with multi-file import resolution.
 ///
 /// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`] in the
+/// same shape and message format as `compile_single_file_with_stdlib`'s (an
+/// import that fails to compile is reported under its own
+/// `"Compile errors in import '…'"` prefix, keyed by the import's file).
 ///
 /// `reify_compiler::module_dag::compile_project_with_entry_source` (at
 /// module_dag.rs:607) covers most of the same scaffolding — parse,
@@ -988,7 +1025,7 @@ fn compile_entry_with_imports(
     entry_path: &Path,
     source: &str,
     module_name: &str,
-) -> Result<(CompiledModule, reify_ast::ParsedModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<CompiledSource, CompileRejection> {
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
@@ -1081,31 +1118,12 @@ fn compile_entry_with_imports(
         .collect();
 
     let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
-    let mut compiled = reify_compiler::compile_with_prelude_context_checked(
+    let compiled = reify_compiler::compile_with_prelude_context_checked(
         &parsed,
         &ctx,
         &reify_constraints::SimpleConstraintChecker,
     );
-
-    // Surface compile errors.
-    let has_errors = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error);
-    if has_errors {
-        let error_diags: Vec<Diagnostic> = compiled
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        let file_path = module_key(module_name);
-        return Err(build_err_payload(
-            "Compile errors",
-            &error_diags,
-            &file_path,
-            source,
-        ));
-    }
+    let mut compiled = reject_compile_errors(compiled, module_name, source)?;
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
     // compiled.templates so that reify_eval::Engine::eval / unfold can find them
@@ -1134,7 +1152,7 @@ fn compile_entry_with_imports(
         &merge_inputs,
     );
 
-    Ok((compiled, parsed))
+    Ok(CompiledSource { parsed, compiled })
 }
 
 impl EngineSession {
@@ -1535,15 +1553,15 @@ impl EngineSession {
     /// and the no-interruption limitation.
     fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
         // Task 5212 (bound OCCT native-shape memory across reloads): every
-        // whole-file reload entry (load_file / update_source / load_from_source)
-        // funnels through here exactly once, so this is the single place to
-        // reset the geometry kernels — freeing the previous design's resident
-        // native shapes — AND clear the realization cache. Both are required:
-        // reloads preserve prior module identity, so build-2 entities collide on
-        // entity_id with build-1 and would otherwise cache-hit a build-1
-        // KernelHandle whose shape this reset just evicted → InvalidReference →
-        // broken render; clearing the cache forces a fresh re-execution against
-        // the reset kernel. Idempotent no-op on a cold engine (first load).
+        // reload funnels through here exactly once, from `reload_compiled`, so
+        // this is the single place to reset the geometry kernels — freeing the
+        // previous design's resident native shapes — AND clear the realization
+        // cache. Both are required: reloads preserve prior module identity, so
+        // build-2 entities collide on entity_id with build-1 and would otherwise
+        // cache-hit a build-1 KernelHandle whose shape this reset just evicted →
+        // InvalidReference → broken render; clearing the cache forces a fresh
+        // re-execution against the reset kernel. Idempotent no-op on a cold
+        // engine (first load).
         //
         // Placement: the reset must live on THIS funnel, not deeper in the
         // pipeline. tessellate_snapshot / execute_realization_ops also run on
@@ -1600,10 +1618,12 @@ impl EngineSession {
 
     /// The single post-engine-call telemetry choke-point (INV-GUI-2).
     ///
-    /// Every engine-mutating entry point (`check_and_emit_for_test`,
-    /// `load_from_source`, `preview_parameter`, `load_file`, `update_source`,
-    /// `load_from_compiled`) calls this ONE method after committing state,
-    /// instead of hand-rolling its own copy of the five-call emit sequence.
+    /// Every engine-mutating entry point calls this ONE method after committing
+    /// state, instead of hand-rolling its own copy of the five-call emit
+    /// sequence: the reload entry points (`load_from_source`, `load_file`,
+    /// `update_source`, `load_from_compiled`) reach it through
+    /// [`Self::reload_compiled`]; `preview_parameter` and
+    /// `check_and_emit_for_test` call it directly.
     /// Collapsing to a single call site means every entry point fires the
     /// full quintet in the same order. There is no separate structural
     /// source-introspection guard for this; the invariant is enforced by each
@@ -2175,33 +2195,14 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let (parsed, compiled) =
-            compile_single_file_with_stdlib(source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, source, module_name);
-                msg
-            })?;
-
-        // Evaluate + check constraints (borrows compiled by shared ref, so all
-        // field mutations can safely be deferred until after check() returns).
-        // check_with_solve_slot fires the SolveCancellationSink lifecycle around
-        // engine.check() — publish handle before, clear after (task γ/4086).
-        let check_result = self.check_with_solve_slot(&compiled);
-
-        // Atomically commit all state after check() succeeds.
         // Preserve file_path: load_from_source has no file on disk; keep any
         // existing file_path from a prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, source, FilePathUpdate::Preserve);
-
-        // Emit auto-resolve events after committing state.
-        //
-        // Cross-cutting ordering invariant: all four mutating entry points
-        // (load_from_source, load_file, update_source, preview_parameter) emit AFTER all
-        // session state mutations are committed.  Combined with `core.commit_state` /
-        // `core.commit_check` writing `last_check` unconditionally, a panic during state
-        // commit cannot leak phantom auto-resolve events to the GUI.
-        self.post_engine_call_telemetry();
-
-        self.build_gui_state()
+        self.reload(
+            compile_single_file_with_stdlib(source, module_name),
+            module_name,
+            source,
+            FilePathUpdate::Preserve,
+        )
     }
 
     /// The shared cell lookup: the declared [`reify_core::Type`] of the value
@@ -3186,21 +3187,14 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let (compiled, parsed) =
-            compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, &source, module_name);
-                msg
-            })?;
-        // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
-        let check_result = self.check_with_solve_slot(&compiled);
-        // Atomically commit all five core fields in a single call.
-        // `path.to_path_buf()` is evaluated as a call argument — before the callee body
-        // runs — so a panic in `to_path_buf()` lands in the pre-commit window: none of
-        // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
-        self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
-        // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.post_engine_call_telemetry();
-        self.build_gui_state()
+        // `path.to_path_buf()` is evaluated as a call argument — before reload
+        // runs — so a panic in it lands in the pre-commit window: nothing is written.
+        self.reload(
+            compile_entry_with_imports(path, &source, module_name),
+            module_name,
+            &source,
+            FilePathUpdate::Set(path.to_path_buf()),
+        )
     }
 
     /// Update source code and re-evaluate from scratch.
@@ -3239,40 +3233,66 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path().map(|p| p.to_path_buf()) {
+        let compiled = match self.core.file_path().map(Path::to_path_buf) {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
             // imports.  Both module_name and the project-root anchor come from
             // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
-            let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
-                .map_err(|(msg, diags)| {
-                    self.record_compile_failure(diags, content, module_name);
-                    msg
-                })?;
-            (parsed, compiled)
-        } else {
-            // Single-file flow — no prior load_file means no project_root anchor;
-            // delegate to compile_single_file_with_stdlib (shared with load_from_source).
-            compile_single_file_with_stdlib(content, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, content, module_name);
-                msg
-            })?
+            Some(entry_path) => compile_entry_with_imports(&entry_path, content, module_name),
+            // Single-file flow — no prior load_file means no project_root anchor.
+            None => compile_single_file_with_stdlib(content, module_name),
         };
 
-        // Parse+compile succeeded — run check() before mutating any state, so
-        // that a panic in check() leaves the session completely unchanged.
-        // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
-        let check_result = self.check_with_solve_slot(&compiled);
-
-        // Atomically commit all state after check() succeeds.
         // Preserve file_path: update_source does not change which file is loaded;
         // Preserve keeps the file_path set by the prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
+        self.reload(compiled, module_name, content, FilePathUpdate::Preserve)
+    }
 
-        // Emit AFTER all state is committed — cross-cutting ordering invariant.
+    /// The one reload pipeline, shared by every whole-file entry point
+    /// (`load_from_source`, `load_file`, `update_source`).
+    ///
+    /// A rejected compile is recorded for the diagnostics panel (see
+    /// [`Self::record_compile_failure`]) and its message returned as the `Err`;
+    /// nothing else is touched — no check, no commit, no telemetry. An accepted
+    /// compile runs [`Self::reload_compiled`], then builds the new state.
+    fn reload(
+        &mut self,
+        compiled: Result<CompiledSource, CompileRejection>,
+        module_name: &str,
+        source: &str,
+        file: FilePathUpdate,
+    ) -> Result<GuiState, String> {
+        match compiled {
+            Ok(compiled) => {
+                self.reload_compiled(compiled, module_name, source, file);
+                self.build_gui_state()
+            }
+            Err(rejection) => {
+                self.record_compile_failure(rejection.diags, source, module_name);
+                Err(rejection.message)
+            }
+        }
+    }
+
+    /// Reload's post-compile half up to the build: check, commit, emit.
+    ///
+    /// The one place a reload runs [`Self::check_with_solve_slot`]. Check runs
+    /// before any state is written, so a panic in it leaves the session
+    /// unchanged. Telemetry fires only after [`Self::commit_state`] has
+    /// committed everything — so a panic during the commit cannot leak phantom
+    /// events to the GUI, and every emitter reads the freshly committed
+    /// `last_check`. The build is left to the caller so `load_from_compiled`
+    /// can break `module_name` before it.
+    fn reload_compiled(
+        &mut self,
+        compiled: CompiledSource,
+        module_name: &str,
+        source: &str,
+        file: FilePathUpdate,
+    ) {
+        let check_result = self.check_with_solve_slot(&compiled.compiled);
+        self.commit_state(compiled, check_result, module_name, source, file);
         self.post_engine_call_telemetry();
-
-        self.build_gui_state()
     }
 
     /// Route failure diagnostics into `compile_failure` based on whether a prior successful
@@ -3427,18 +3447,17 @@ impl EngineSession {
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
-    /// The field assignment was previously duplicated in `load_from_source`
-    /// and `update_source`; centralising it here prevents the two sites from
-    /// drifting apart.
+    /// [`Self::reload_compiled`] is the one caller, so every commit — compiled
+    /// or injected by `load_from_compiled` — runs this one reset list.
     fn commit_state(
         &mut self,
-        parsed: reify_ast::ParsedModule,
-        compiled: CompiledModule,
+        compiled: CompiledSource,
         check_result: CheckResult,
         module_name: &str,
         source: &str,
         file_path: FilePathUpdate,
     ) {
+        let CompiledSource { parsed, compiled } = compiled;
         // Commit the five canonical core fields atomically via CoreState::commit_state.
         // A panic between the core commit and the cache updates below leaves core fields
         // consistent (at new values) while caches may be stale — that is tolerated per
@@ -4462,8 +4481,8 @@ impl EngineSession {
         // See design decision: "Terminal-mechanism filter narrows the suggestion
         // text to body() consumption only."
         //
-        // When `parsed_cache` is `None` (test-injection without a full parse/compile
-        // cycle), the consumed-idents set is empty and every mechanism cell passes —
+        // When `parsed_cache` is `None` (`inject_compiled_for_test` without a full
+        // parse/compile cycle), the consumed-idents set is empty and every mechanism cell passes —
         // preserving the pre-filter behaviour for legacy test helpers.  A WARN event
         // is emitted *once per call* in this case so a future regression that
         // accidentally drops `parsed_cache` (e.g. a load path that forgets to
@@ -4976,9 +4995,8 @@ impl EngineSession {
     /// Unlike [`Self::get_containing_definition`] and
     /// [`Self::get_entity_at_source_location`], this method does NOT gate on
     /// `resolve_source()` and carries no `debug_assert!` on the caches: spans
-    /// come straight from the AST, and `parsed_cache` is legitimately `None` on
-    /// a `load_from_compiled`-injected session. Plain `as_ref()?` is the correct
-    /// degradation.
+    /// come straight from the AST, and `parsed_cache` is legitimately `None`
+    /// before the first load. Plain `as_ref()?` is the correct degradation.
     pub fn resolve_param_default_span(&self, cell_id_str: &str) -> Option<reify_core::SourceSpan> {
         self.resolve_param_default_expr(cell_id_str).map(|e| e.span)
     }
@@ -7431,6 +7449,14 @@ impl EngineSession {
         self.consumed_idents_cache.as_ref()
     }
 
+    /// Return the retained geometry-derived panel values.
+    ///
+    /// Intended only for tests that need to inspect cache state without widening
+    /// the production API.  Mirrors the style of `consumed_idents_cache_for_test`.
+    pub(crate) fn geometry_derived_cache_for_test(&self) -> &HashMap<ValueCellId, Value> {
+        &self.geometry_derived_cache
+    }
+
     /// Replace the consumed-idents cache with `cache`, for testing purposes.
     ///
     /// Used by `get_mechanism_descriptors_reads_from_consumed_idents_cache` to
@@ -7475,23 +7501,26 @@ impl EngineSession {
     /// compilation.
     ///
     /// Source-bypassing analog of [`EngineSession::load_from_source`]: runs
-    /// `check_with_solve_slot`, commits the core fields via
-    /// [`CoreState::commit_state`], then immediately clears `module_name` via
-    /// [`CoreState::break_module_name`] so that `resolve_source()` returns `None`.
-    /// Emits the four event families and returns [`GuiState`].
+    /// reload's post-compile half ([`Self::reload_compiled`] — check, commit,
+    /// telemetry, with the one reset list every reload uses) over the parse of
+    /// the empty source it commits. `source_map` gets
+    /// `module_key(module_name) -> ""`, and the parse caches hold that empty
+    /// parse. It then clears `module_name` via
+    /// [`CoreState::break_module_name`] so that `resolve_source()` returns
+    /// `None`, and only then builds the returned [`GuiState`] — so that state,
+    /// like every later build on the session, is built over the unresolved
+    /// source.
     ///
     /// Distinct from [`EngineSession::inject_compiled_for_test`], which sets
     /// `compiled` ONLY.  Use `load_from_compiled` when tests need `compiled` and
     /// `last_check` both populated (e.g. to drive `get_entity_tree`).
     ///
     /// **Parse-dependent APIs degrade gracefully to `None`/`[]` on an injected
-    /// session.**  Because `break_module_name` is called after `commit_state`,
+    /// session.**  Because `break_module_name` runs after the commit,
     /// `resolve_source()` returns `None`, so [`get_containing_definition`],
     /// [`get_entity_at_source_location`], and [`get_source_location`] all
-    /// short-circuit at their `resolve_source()?` guard — before the
-    /// `debug_assert!(parsed_cache.is_some() && line_offsets_cache.is_some(), …)`
-    /// in those methods.  The production invariant "resolve_source succeeds ⟹
-    /// parsed_cache and line_offsets_cache are `Some`" remains vacuously true.
+    /// short-circuit at their `resolve_source()?` guard, and never look up the
+    /// injected module's spans in the empty source.
     ///
     /// `get_diagnostics` also degrades safely because it early-exits on empty
     /// diagnostics before calling `resolve_source`.  **Injected modules must
@@ -7500,45 +7529,19 @@ impl EngineSession {
     /// `debug_assert` (the "resolve_source returned None with non-empty
     /// diagnostics" path exercised by
     /// `get_diagnostics_debug_asserts_when_module_name_broken`).
-    ///
-    /// `build_gui_state` explicitly tolerates `parsed_cache = None` for
-    /// test-injected sessions (the `parsed_cache` check in `build_gui_state` is
-    /// warn-only), so [`GuiState`] is still returned correctly.
     pub(crate) fn load_from_compiled(
         &mut self,
         compiled: CompiledModule,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let check_result = self.check_with_solve_slot(&compiled);
-        // Commit the five core fields via CoreState::commit_state.
-        // Empty source: there is no on-disk text; source_map gets
-        // module_key(module_name) -> "".
-        self.core.commit_state(
-            compiled,
-            check_result,
+        let parsed = reify_compiler::parse_with_stdlib("", ModulePath::single(module_name));
+        self.reload_compiled(
+            CompiledSource { parsed, compiled },
             module_name,
             "",
             FilePathUpdate::Preserve,
         );
-        // Immediately break module_name so resolve_source() returns None.
-        // This ensures get_containing_definition / get_entity_at_source_location /
-        // get_source_location short-circuit at resolve_source()? BEFORE their
-        // debug_assert on the (None) parse caches, preserving the invariant
-        // "resolve_source succeeds => parsed_cache & line_offsets_cache are Some"
-        // vacuously.  source_map is left intact so build_gui_state's `files`
-        // output is byte-identical to before.
         self.core.break_module_name();
-        // Replicate the cache resets from the commit_state cache-reset block.
-        // parsed_cache and line_offsets_cache stay None (no parse available).
-        self.def_preview_cache.clear();
-        self.parsed_cache = None;
-        self.line_offsets_cache = None;
-        self.consumed_idents_cache = None;
-        self.reserved_param_warned.clear();
-        self.compile_failure = None;
-        self.last_reload_error = None;
-        // Emit ordering mirrors the emit-ordering block in load_from_source.
-        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 

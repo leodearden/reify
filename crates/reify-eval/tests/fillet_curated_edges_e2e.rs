@@ -335,6 +335,101 @@ fn bottom_deck_selectors_example_builds_clean_e2e() {
     );
 }
 
+/// Task #7270: production-build e2e over the committed
+/// `examples/topology_selectors/fillet_top_edges.ri`, whose fillet edges come
+/// from the faces_by_normal → single → adjacent_faces → shared_edges → flat_map
+/// walk. The flat_map cell must resolve through the real kernel to the four
+/// top-perimeter edges, and the filleted body must be smaller than the box.
+#[test]
+fn fillet_top_edges_example_builds_clean_e2e() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping fillet_top_edges_example_builds_clean_e2e: OCCT not available");
+        return;
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/topology_selectors/fillet_top_edges.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let compiled = compile_source_with_stdlib(&source);
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "the committed example must compile with no errors, got: {:#?}",
+        errors_only(&compiled)
+    );
+
+    let recording_kernel =
+        RecordingKernel::new(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
+    let ops_ref = recording_kernel.ops_ref();
+    let op_handles_ref = recording_kernel.op_handles_ref();
+    let volumes_ref = recording_kernel.volumes_ref();
+    let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(recording_kernel)),
+    );
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let errors: Vec<String> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "fillet_top_edges.ri must build with NO Severity::Error diagnostic; errors={errors:#?}"
+    );
+
+    let ops = ops_ref.lock().unwrap();
+    let op_handles = op_handles_ref.lock().unwrap();
+    let volumes = volumes_ref.lock().unwrap();
+
+    // Distinct by (target, radius), as in the bottom_deck e2e above: a
+    // re-dispatch of the same fillet is an efficiency property, not a second fillet.
+    let curated: std::collections::BTreeMap<String, (usize, usize)> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(i, op)| match op {
+            GeometryOp::Fillet {
+                target,
+                edges,
+                radius,
+            } if !edges.is_empty() => Some((format!("{target:?}|{radius:?}"), (i, edges.len()))),
+            _ => None,
+        })
+        .collect();
+    let edge_counts: Vec<usize> = curated.values().map(|(_, n)| *n).collect();
+    assert_eq!(
+        edge_counts,
+        vec![4],
+        "exactly one curated fillet must dispatch, over the 4 top-perimeter edges; \
+         recorded ops: {ops:?}"
+    );
+
+    const EPSILON: f64 = 1e-10; // 0.1 mm³ in m³
+    let box_idx = ops
+        .iter()
+        .position(|op| matches!(op, GeometryOp::Box { .. }))
+        .expect("Box op must be recorded by RecordingKernel");
+    let v_blank = *volumes
+        .get(&op_handles[box_idx])
+        .expect("box volume must be cached by RecordingKernel");
+    let fillet_idx = curated
+        .values()
+        .next()
+        .expect("one curated fillet asserted above")
+        .0;
+    let v_filleted = *volumes
+        .get(&op_handles[fillet_idx])
+        .expect("curated fillet volume must be cached by RecordingKernel");
+    assert!(
+        v_filleted < v_blank - EPSILON,
+        "filleting the top edges must REMOVE material: v_filleted={v_filleted:.15e} \
+         must be < v_blank={v_blank:.15e} (EPSILON={EPSILON:e})"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RecordingKernel: transparent GeometryKernel proxy that captures executed ops,
 // their result handles, and — via immediate post-execute kernel query — their

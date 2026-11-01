@@ -772,8 +772,8 @@ fn eq_expr(x_id: &ValueCellId, bound_si_m: f64) -> CompiledExpr {
     CompiledExpr::binop(BinOp::Eq, x_ref, bound, Type::Bool)
 }
 
-/// Builds `k * x_id > bound_si_m` — a COEFFICIENT form, outside the three
-/// shapes `derive_from_side` recognises.
+/// Builds `k * x_id > bound_si_m` — a COEFFICIENT form, read by the HC4
+/// derivation since task #6655.
 fn scaled_gt_expr(x_id: &ValueCellId, k: f64, bound_si_m: f64) -> CompiledExpr {
     let length_dim = DimensionVector::LENGTH;
     let dimensionless = DimensionVector::DIMENSIONLESS;
@@ -802,9 +802,9 @@ fn scaled_gt_expr(x_id: &ValueCellId, k: f64, bound_si_m: f64) -> CompiledExpr {
 }
 
 /// Builds `y_id < total_si_m - x_id` — a COUPLED bound: `y`'s upper side is
-/// supplied by the user's model, but names another auto, so
-/// `constant_operand_value` rejects the far operand and no bound is derived
-/// for EITHER param.
+/// supplied by the user's model, but names another auto, so the per-leaf
+/// derivation (which starts every auto at the whole real line) derives no
+/// bound for EITHER param.
 fn coupled_lt_expr(y_id: &ValueCellId, total_si_m: f64, x_id: &ValueCellId) -> CompiledExpr {
     let length_dim = DimensionVector::LENGTH;
     let y_ref = CompiledExpr::value_ref(y_id.clone(), Type::Scalar { dimension: length_dim });
@@ -872,8 +872,8 @@ fn assert_not_non_unique(problem: &ResolutionProblem, what: &str) {
 }
 
 /// `constraint t == 2mm` — the canonical DSL way to determine a strict auto
-/// (`examples/auto_binding_sites.ri`) — is skipped outright by
-/// `derive_from_expr`'s op rule, so BOTH derived sides are `None`. That must
+/// (`examples/auto_binding_sites.ri`) — is not a derivation input (it reads
+/// order relations only), so BOTH derived sides are `None`. That must
 /// abstain, not error.
 #[test]
 fn gamma_strict_auto_eq_determined_is_not_non_unique() {
@@ -888,8 +888,8 @@ fn gamma_strict_auto_eq_determined_is_not_non_unique() {
 }
 
 /// A COEFFICIENT lower bound (`2*t > 3mm`, i.e. `t > 1.5mm`) paired with a
-/// readable upper bound (`t < 4mm`). The interval is bounded on both sides by
-/// the user's own model; only the derivation cannot see the lower one.
+/// direct upper bound (`t < 4mm`). The interval is bounded on both sides by
+/// the user's own model, and since task #6655 the derivation reads both.
 #[test]
 fn gamma_strict_auto_coefficient_bound_is_not_non_unique() {
     let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
@@ -905,7 +905,7 @@ fn gamma_strict_auto_coefficient_bound_is_not_non_unique() {
 /// The reviewer's measured case [B]: `1mm < x < 4mm ∧ y > 1mm ∧ y < 5mm - x`.
 /// The region is bounded and well-determined (x > 1mm ⇒ y < 4mm), and the
 /// plain-`Minimize` path accepts the identical constraints — but `y`'s upper
-/// bound names another auto, so `derive_from_side` yields `None` for it.
+/// bound names another auto, so the per-leaf derivation yields `None` for it.
 #[test]
 fn gamma_strict_autos_coupled_bound_is_not_non_unique() {
     let x_id = ValueCellId::new("CostRobustnessTradeoff", "x");
@@ -991,86 +991,103 @@ fn gamma_flat_blend_over_bracket_is_accepted_as_unique() {
     }
 }
 
+/// `t > 1mm`, alone or with ONE redundant coefficient conjunct.
+fn one_sided_constraints(t_id: &ValueCellId, extra: Option<CompiledExpr>) -> Vec<CompiledExpr> {
+    std::iter::once(gt_expr(t_id, 0.001)).chain(extra).collect()
+}
+
+fn assert_non_unique(problem: &ResolutionProblem, what: &str) {
+    match DimensionalSolver.solve(problem) {
+        SolveResult::Infeasible { diagnostics } => assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+            "{what}: must stay ConstraintNonUnique; got {diagnostics:?}"
+        ),
+        other => panic!("{what}: a one-sided strict auto must error; got {other:?}"),
+    }
+}
+
+/// A one-sided strict auto stays `ConstraintNonUnique` when it carries a
+/// redundant COEFFICIENT conjunct.
+///
+/// CONTROL (`t > 1mm` alone) is the shape of
+/// `gamma_strict_auto_one_sided_stays_non_unique` and of
+/// `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`: t's upper side
+/// comes from `default_bounds_for`, so every λ errors. Adding `2*t > 1mm`
+/// (which restates `t > 0.5mm`) changes nothing: HC4 (task #6655) reads the
+/// coefficient form, so it is evidence rather than a blind spot, `t` stays out
+/// of the abstention set, and its missing upper side still counts. Before
+/// #6655 this conjunct was unreadable and opened the abstention door below.
+#[test]
+fn gamma_one_sided_plus_coefficient_conjunct_stays_non_unique() {
+    let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
+    for lambda in [0.0_f64, 0.5, 1.0] {
+        let problem = |extra| {
+            strict_problem_with(
+                std::slice::from_ref(&t_id),
+                &t_id,
+                lambda,
+                one_sided_constraints(&t_id, extra),
+            )
+        };
+        assert_non_unique(&problem(None), &format!("λ={lambda}, control"));
+        assert_non_unique(
+            &problem(Some(scaled_gt_expr(&t_id, 2.0, 0.001))),
+            &format!("λ={lambda}, with `2*t > 1mm`"),
+        );
+    }
+}
+
 /// The ACCEPTED RISK of the esc-5711-3 abstention, pinned in the direction
 /// that actually LOSES safety — the half `gamma_flat_blend_over_bracket_is_
-/// accepted_as_unique` does not reach (review suggestion 2).
+/// accepted_as_unique` does not reach.
 ///
 /// `params_in_underivable_constraints` is deliberately general: a strict auto
 /// mentioned by ANY constraint the derivation cannot read abstains, including
-/// one whose missing side really is `default_bounds_for`'s. The unit tests
-/// pin the set-building half and `default_bounded_strict_autos_abstains_for_
-/// underivable_param` pins the evidence function, but nothing pinned the COMPOSED
-/// verdict for a model that is genuinely unbounded on a side AND carries one
-/// unreadable conjunct. This is that model.
+/// one whose missing side really is `default_bounds_for`'s. This is a model
+/// genuinely unbounded above that carries one such conjunct: `t > 1mm ∧
+/// (t > 0.5mm OR t > 0.6mm)`. The disjunction is REDUNDANT (implied by
+/// `t > 1mm`) but an `Or` yields no relation, so `t` abstains and its missing
+/// upper side stops counting as evidence: every λ reports
+/// `Solved { unique: true }` where the control above errors.
 ///
-/// The two arms are the SAME model up to one extra constraint, so the contrast
-/// is the whole point:
+/// MEASURED (task #6655), and this is the safety loss: λ=0 resolves
+/// `t = 10.0 m` — literally `default_bounds_for(Length)`'s ceiling, a value a
+/// solver-internal default pinned for a mm-scale part — while λ=0.5 resolves
+/// `t = 1.100 mm` and λ=1 `t = 1.000 mm`. That is the regression class
+/// `gamma_strict_auto_one_sided_stays_non_unique` exists to block, reached
+/// through the abstention door.
 ///
-/// - CONTROL (`t > 1mm` alone) — the shape of
-///   `gamma_strict_auto_one_sided_stays_non_unique` and of
-///   `tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri`: t's upper side
-///   comes from `default_bounds_for`, so every λ errors `ConstraintNonUnique`.
-/// - ABSTENTION DOOR (`t > 1mm ∧ 2*t > 1mm`) — the added conjunct is REDUNDANT
-///   (it restates `t > 0.5mm`, already implied) and changes the feasible region
-///   not at all, but it is a COEFFICIENT form, so the derivation cannot read
-///   it, `t` lands in the abstention set, and the missing upper side stops
-///   counting as evidence. Every λ now reports `Solved { unique: true }`.
-///
-/// MEASURED, and this is the safety loss: λ=0 resolves `t = 10.0 m` — literally
-/// `default_bounds_for(Length)`'s ceiling, a value pinned by a solver-internal
-/// default the user never authored, for a mm-scale part. λ=0.5 resolves
-/// `t = 1.328859 mm` and λ=1 resolves `t = 1.000 mm` exactly (cost pulls to the
-/// lower bound, which the γ clamp box now reaches). That is the SAME regression
-/// class `gamma_strict_auto_one_sided_stays_non_unique` exists to block — a loud
-/// error becoming a silent 10 m — reached through the abstention door rather
-/// than through a blanket abstention.
-///
-/// It is accepted rather than fixed because the alternative direction of error
-/// is worse: reading a blind spot as evidence was measured to REJECT valid,
-/// bounded models (the three `..._is_not_non_unique` fixtures above). Narrowing
-/// it means teaching `derive_from_expr` the missing shapes — coefficient forms
-/// first, which would close this exact fixture — not tightening the abstention
-/// test.
+/// It is accepted rather than fixed because the alternative direction of
+/// error is worse: reading a blind spot as evidence was measured to REJECT
+/// valid, bounded models (the `..._is_not_non_unique` fixtures above).
+/// Narrowing it means teaching the derivation the missing shapes, not
+/// tightening the abstention test.
 ///
 /// A CHARACTERISATION test: it asserts today's behaviour, not desired
 /// behaviour. If a future change makes this error again, that is progress —
 /// re-decide it deliberately here and in `params_in_underivable_constraints`'
-/// "ACCEPTED CONSEQUENCE" note, rather than discovering it as a surprise.
+/// "ACCEPTED CONSEQUENCE" note.
 #[test]
 fn gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved() {
     let t_id = ValueCellId::new("CostRobustnessTradeoff", "t");
-
+    let disjunction = || {
+        CompiledExpr::binop(
+            BinOp::Or,
+            gt_expr(&t_id, 0.0005),
+            gt_expr(&t_id, 0.0006),
+            Type::Bool,
+        )
+    };
     for lambda in [0.0_f64, 0.5, 1.0] {
-        // CONTROL: `t > 1mm` alone — no abstention evidence, so the missing
-        // upper side is read as default-bounds-determined.
-        let control = strict_problem_with(
+        let problem = strict_problem_with(
             std::slice::from_ref(&t_id),
             &t_id,
             lambda,
-            vec![gt_expr(&t_id, 0.001)],
+            one_sided_constraints(&t_id, Some(disjunction())),
         );
-        match DimensionalSolver.solve(&control) {
-            SolveResult::Infeasible { diagnostics } => assert!(
-                diagnostics
-                    .iter()
-                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
-                "λ={lambda}: control must stay ConstraintNonUnique; got {diagnostics:?}"
-            ),
-            other => panic!(
-                "λ={lambda}: the control arm is the same shape as \
-                 `gamma_strict_auto_one_sided_stays_non_unique` and must error; got {other:?}"
-            ),
-        }
-
-        // ABSTENTION DOOR: `2*t > 1mm` adds NO feasible-region information
-        // (it restates `t > 0.5mm`), only unreadability.
-        let with_blind_spot = strict_problem_with(
-            std::slice::from_ref(&t_id),
-            &t_id,
-            lambda,
-            vec![gt_expr(&t_id, 0.001), scaled_gt_expr(&t_id, 2.0, 0.001)],
-        );
-        match DimensionalSolver.solve(&with_blind_spot) {
+        match DimensionalSolver.solve(&problem) {
             SolveResult::Solved { values, unique } => {
                 assert!(
                     unique,
@@ -1083,10 +1100,8 @@ fn gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved() {
                     .and_then(|v| v.as_f64())
                     .expect("solved value for t missing or non-numeric");
                 if lambda == 0.0 {
-                    // Pinned as a MAGNITUDE, not the exact 10.0 measured, so a
-                    // blend/seed retune cannot red this on a technicality — the
-                    // fact being pinned is "orders of magnitude outside the
-                    // user's mm design scale", not the precise artifact value.
+                    // Pinned as a MAGNITUDE, not the exact 10.0 measured: the fact is
+                    // "orders of magnitude outside the user's mm design scale".
                     assert!(
                         t_si >= 1.0,
                         "λ=0: the accepted loss is that `t` resolves to the \
@@ -1098,7 +1113,7 @@ fn gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved() {
                     assert!(
                         t_si > 0.001,
                         "λ={lambda}: cost pulls `t` toward its lower bound (measured: \
-                         1.328859mm at λ=0.5, 1.000mm at λ=1); it must still satisfy \
+                         1.100mm at λ=0.5, 1.000mm at λ=1); it must still satisfy \
                          `t > 1mm`, got {t_si:.6e} m"
                     );
                 }

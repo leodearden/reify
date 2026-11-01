@@ -100,7 +100,7 @@ ran `target/debug/reify` (2026-08-05; interim commits docs-only). Sidecar twin:
   STEP cone semi-angle (`occt_wrapper.cpp` export_step; probe: `CONICAL_SURFACE` writes raw
   radians under OCCT's *default* radian unit), OCCT `angle_rad` FFI fields, SolveSpace
   `angle_deg` (degrees, `solvespace.rs:230`), MCP `set_parameter` (inbound bare f64 →
-  installed as SI radians silently, `mcp_context.rs:499-530`; schema text misdescribes),
+  installed as SI radians silently, `mcp_context.rs:499-530` *(the CLI host was deleted by bbfbc7dd29 (#6665))*; schema text misdescribes),
   dynamics `compliance_cell_f64` silent erasure (`dynamics/eval.rs:98-110`), 2π marshalling
   (`input_shape.rs:116-126`, `free_vibration.rs:25-31`). PASS.
 - **declaration-precedents** → `eigenvalue_to_frequency_hz` name+formula;

@@ -83,7 +83,7 @@ def _patch_parser_c(exists: bool):
 # The grammar e2e needs tree-sitter to actually LOAD the reify grammar, which
 # isfile(parser.c) does not establish: in a sandboxed agent role the grammar is
 # generated but tree-sitter cannot write ~/.cache/tree-sitter/lock/, so the probe
-# fails to load the language, observe() classifies it _HARNESS_ERROR, and the
+# fails to load the language, observe() classifies it HARNESS_ERROR, and the
 # suite reported a spurious FAIL (exit 70) instead of a clean skip.
 #
 # Order matters.  isfile() runs first and short-circuits, so a lane that never

@@ -116,21 +116,24 @@
 # test fns, a CHILD of debug_server::tests, so recursing gui/src-tauri/src/tests
 # never reaches it -- in the very crate that produced all four flakes. So the
 # claim is derived rather than trusted. Section 3 builds ground truth from the
-# tree (every directory NAMED `tests` that holds a tracked .rs file) and reds on
-# any of them this list does not cover, naming it. A test directory split out
-# tomorrow therefore reds the gate instead of quietly becoming a second blind
-# spot.
+# tree (see SCOPE IS CARGO'S TARGET MODEL below) and reds on any root this list
+# does not cover, naming it. A test directory split out tomorrow therefore reds
+# the gate instead of quietly becoming a second blind spot.
 #
-# THE CHECK IS ONLY AS COMPLETE AS THAT NAME, and the promise is worded to
-# match. A Rust test root called something else -- a `benches/` or `examples/`
-# directory, or a Cargo `[[test]] path = "it/main.rs"` target -- is invisible
-# to the check for the same reason it is invisible to the scan, and adding one
-# would create a second blind spot with nothing redding. Measured: no tracked
-# .rs file lives in any benches/ or examples/ directory and no Cargo.toml
-# declares a `[[test]]` or `[[bench]]` target, so this bounds the claim rather
-# than dents it. Whether a benchmark should be scanned at all is a SCOPE
-# question -- see the production-code argument below, which turns on what a
-# directory CONTAINS, not what it is called -- and it belongs in a review.
+# SCOPE IS CARGO'S TARGET MODEL. A root is in scope when its CONTENTS are tests,
+# and Cargo's target kinds decide that without parsing Rust: test, bench and
+# example targets are harness code no artifact ships; lib, bin and build targets
+# are shipped code and stay out (PRODUCTION CODE IS EXCLUDED, below). Cargo finds
+# the three harness kinds in tests/, benches/ and examples/ by name, and a `path`
+# key on `[[test]]`, `[[bench]]` or `[[example]]` can put any of them elsewhere,
+# so ground truth is both. Benches are in because the production argument rests
+# on code that asserts nothing, and an elapsed upper bound is the assert most
+# natural in a benchmark: it inverts under load wherever it runs, the gate
+# compiles benches, and `test = true` runs one under nextest. Examples share
+# that door and are in so each kind gets one rule. A genuinely real-time
+# measurement window takes the argued escape. A bench or example root cannot be
+# pre-listed in `_LIVE_ROOTS` (a glob matching nothing is a hard error), so the
+# check names it the day it lands.
 #
 # THE BASELINE, AND THE DISTINCTION A READER MUST NOT BLUR. Widening the scan
 # could not be a one-line change: violating lines already existed across
@@ -159,11 +162,12 @@
 # oversight. A "root" here is a directory whose CONTENTS are tests -- which is
 # why gui/src-tauri/src/tests is IN (a test root that happens to live under
 # src/) while crates/*/src is OUT. Re-running the two rules over the whole tree
-# finds 5 more matching lines that this guard deliberately drops:
+# also matches these production sites, which this guard deliberately drops:
 #   * crates/reify-fdm/src/slice.rs:333,340 -- `fn wait_within` polls a real
 #     child process for exit within a grace window, then escalates to SIGKILL.
 #     (Verified: that file contains no #[cfg(test)] module at all.)
-#   * tree-sitter-reify/build.rs:43,58 -- the identical shape in a build script.
+#   * tree-sitter-reify/build_support.rs, fn run_with_timeout -- the identical
+#     shape in build-script code.
 # Both rules exist for TEST flake: an upper bound on elapsed time INVERTS under
 # load. A subprocess grace period asserts nothing, cannot invert into a failure,
 # and has no WaitClock seam to be routed through -- it IS a real-time wait, by
@@ -172,8 +176,7 @@
 #
 # THE REMAINING BLIND SPOT, named exactly as #6438 named its own. Exactly ONE
 # KIND of uncovered location exists on this tree -- a measured claim rather
-# than a hopeful one, and bounded, as everything here is, by the naming
-# assumption stated above. An inline `#[cfg(test)]` module inside a production
+# than a hopeful one. An inline `#[cfg(test)]` module inside a production
 # src/ file is NOT scanned, even though its contents genuinely are tests.
 # Finding one lexically needs brace nesting -- i.e. the Rust grammar this guard
 # deliberately refuses to grow (see NO LINE JOINER at the engine). One instance
@@ -949,6 +952,78 @@ _wallclock_uncovered_test_roots() {
     done
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# _wallclock_candidate_test_roots
+#
+# Reads tracked .rs paths on STDIN, one per line, and prints (stdout) the
+# candidate test roots they imply -- each directory named `tests`, `benches` or
+# `examples` that holds one -- once each, sorted under LC_ALL=C. Returns 0 with
+# or without candidates, because the LIST is the result (same contract as
+# _wallclock_uncovered_test_roots); an rc >= 2 from the pipeline propagates.
+# WHY those three names: the header's SCOPE IS CARGO'S TARGET MODEL paragraph.
+#
+# Both halves match a WHOLE path component, and the `(^|` arm is what lets a
+# TOP-LEVEL directory through: its path has no leading `/` (fixtures 4f-6, 4f-8).
+# ---------------------------------------------------------------------------
+_wallclock_candidate_test_roots() {
+    local _roots _rc=0
+    _roots="$(sed -E 's#(^|.*/)(tests|benches|examples)/.*#\1\2#' \
+        | grep -E '(^|/)(tests|benches|examples)$')" || _rc=$?
+    # grep's rc 1 is "no candidate": an answer, not a failure.
+    [ "$_rc" -le 1 ] || return "$_rc"
+    _emit_record_stream "$_roots" | LC_ALL=C sort -u
+}
+
+# ---------------------------------------------------------------------------
+# _wallclock_declared_target_dirs <manifest>...
+#
+# Prints (stdout) the directory of every `[[test]]`, `[[bench]]` and
+# `[[example]]` target that a Cargo.toml relocates with a `path` key, one per
+# target, as the path was named: a relative manifest gives a relative directory,
+# the same convention as the engine. It is the half of the completeness check's
+# ground truth that no directory NAME can give. A TOML reader and not a grep for
+# table headers, because a header cannot say where the target was put.
+#
+# Not printed: a target with no `path` (Cargo puts it in the auto-discovered
+# tests/, benches/ or examples/, which _wallclock_candidate_test_roots already
+# derives) and any lib, bin or build-script entry (shipped code; the header's
+# SCOPE IS CARGO'S TARGET MODEL paragraph).
+#
+# Returns 0, or 2 if ANY manifest could not be read or parsed. That manifest is
+# named on stderr and the rest are still read, so one run reports every bad
+# one, and the status is sticky. 2 and never a skip: a skipped manifest is a
+# silent blind spot. For the same reason there is no tomllib-missing SKIP -- an
+# interpreter without it fails here, loudly, rather than passing vacuously.
+#
+# The Python holds no single-quote character, comments included:
+# test_no_new_wallclock_upper_bounds.sh scans this file with a shell quote-state
+# line joiner that knows nothing of heredocs.
+# ---------------------------------------------------------------------------
+_wallclock_declared_target_dirs() {
+    python3 - "$@" <<'PY'
+import os
+import sys
+import tomllib
+
+status = 0
+for manifest in sys.argv[1:]:
+    try:
+        with open(manifest, "rb") as handle:
+            doc = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError) as err:
+        print(f"ERROR: cannot read Cargo manifest {manifest}: {err}", file=sys.stderr)
+        status = 2
+        continue
+    for kind in ("test", "bench", "example"):
+        for target in doc.get(kind, []):
+            if "path" in target:
+                print(os.path.normpath(os.path.join(
+                    os.path.dirname(manifest), os.path.dirname(target["path"]))))
+sys.exit(status)
+PY
+}
+
 # ===========================================================================
 # Section 1: Hermetic positive-detection -- the detector must flag a planted
 #             hand-rolled real-clock deadline (Rule A).
@@ -1595,37 +1670,17 @@ done
 # THE LIST IS COMPLETE -- checked against the tree, not asserted in the header.
 # Naming members one at a time can only pin the roots someone thought of; the
 # failure the #6597 review actually found was a root NOBODY thought of
-# (gui/src-tauri/src/debug_server/tests). So ground truth is DERIVED: every
-# directory NAMED `tests` that holds a tracked .rs file. `git ls-files` is the
-# right source precisely because it is TRACKED-only -- an untracked scratch
-# directory must not red the gate.
-#
-# THE DERIVATION ASSUMES A NAME, and that assumption is the exact boundary of
-# what "complete" means here -- so it is stated rather than left for a reader
-# to infer from the sed. A Rust test root called anything else is invisible to
-# BOTH this check and the scan itself: a `benches/` or `examples/` directory,
-# or a Cargo `[[test]] path = "it/main.rs"` target. Measured on this tree when
-# the check was written: zero tracked .rs files in any benches/ or examples/
-# directory, and zero `[[test]]`/`[[bench]]` declarations in any Cargo.toml --
-# so this is a latent boundary, not a live gap. `benches/` is the one worth
-# naming, because an elapsed-time upper bound is a natural thing to write
-# there. Widening to it is a SCOPE decision (is a benchmark a test?), which
-# belongs in a review rather than in a quiet edit to this pipeline.
-#
-# Both halves handle a TOP-LEVEL `tests/`, which the first draft dropped: its
-# path has no leading `/`, so an anchored `(.*/tests)` could not match it and
-# a `/tests$` filter discarded what was left. There is no such directory today
-# (measured), and a derivation that silently cannot see one is not worth
-# keeping. Verified to derive the same root set as the old expression on this
-# tree, and to catch a synthetic top-level root the old one dropped.
+# (gui/src-tauri/src/debug_server/tests). So ground truth is DERIVED, from the
+# two sources the header's SCOPE IS CARGO'S TARGET MODEL paragraph names:
+# directory names first, then Cargo-declared target paths. `git ls-files` is the
+# right source for both precisely because it is TRACKED-only -- an untracked
+# scratch directory must not red the gate.
 #
 # Coverage is by PREFIX, not equality: the roots scan recursively, so a nested
-# `a/tests/b/tests` is genuinely reached from `a/tests`. See Section 4f.
+# `a/tests/b/tests` is genuinely reached from `a/tests`. A TOP-LEVEL tests/ is
+# derived too. Both are pinned in Section 4f.
 _s3_gt_rc=0
-_s3_gt="$(git ls-files '*.rs' \
-    | sed -E 's#(^|.*/)tests/.*#\1tests#' \
-    | LC_ALL=C sort -u \
-    | grep -E '(^|/)tests$')" || _s3_gt_rc=$?
+_s3_gt="$(git ls-files '*.rs' | _wallclock_candidate_test_roots)" || _s3_gt_rc=$?
 assert "live scan: the ground-truth test-root derivation succeeds" \
     test "$_s3_gt_rc" -eq 0
 
@@ -1638,8 +1693,33 @@ _s3_gt_n="$(_emit_record_stream "$_s3_gt" | grep -c . || true)"
 assert "live scan: the ground-truth derivation found a plausible number of test roots" \
     test "$_s3_gt_n" -ge 20
 
+# THE OTHER HALF of ground truth: targets a Cargo.toml PLACES, which no
+# directory name gives away. The manifests come from `git ls-files` for the same
+# reason the sources do -- tracked-only -- through a glob pathspec, so the
+# top-level manifest is listed with the nested ones.
+_s3_man_rc=0
+_s3_manifests="$(git ls-files -- ':(glob)**/Cargo.toml')" || _s3_man_rc=$?
+assert "live scan: the Cargo manifest listing succeeds" \
+    test "$_s3_man_rc" -eq 0
+
+# A floor for the reason given above it: a pathspec that stopped matching would
+# leave the declared-target derivation reading nothing, the completeness check
+# passing on that, and nothing else here noticing.
+_s3_man_n="$(_emit_record_stream "$_s3_manifests" | grep -c . || true)"
+assert "live scan: the manifest listing found a plausible number of Cargo.toml files" \
+    test "$_s3_man_n" -ge 10
+
+# stderr is NOT diverted: a manifest the derivation cannot read is named in the log.
+mapfile -t _s3_manifest_list < <(_emit_record_stream "$_s3_manifests")
+_s3_decl_rc=0
+_s3_decl="$(_wallclock_declared_target_dirs "${_s3_manifest_list[@]}")" || _s3_decl_rc=$?
+assert "live scan: the Cargo-declared target derivation succeeds" \
+    test "$_s3_decl_rc" -eq 0
+_s3_decl_n="$(_emit_record_stream "$_s3_decl" | grep -c . || true)"
+
 _s3_unc_rc=0
-_s3_uncovered="$(_emit_record_stream "$_s3_gt" \
+_s3_uncovered="$({ _emit_record_stream "$_s3_gt"; _emit_record_stream "$_s3_decl"; } \
+    | LC_ALL=C sort -u \
     | _wallclock_uncovered_test_roots "${_LIVE_ROOTS[@]}")" || _s3_unc_rc=$?
 assert "live scan: the completeness check runs (returns 0 -- the LIST is the result)" \
     test "$_s3_unc_rc" -eq 0
@@ -1649,11 +1729,15 @@ if [ -n "$_s3_uncovered" ]; then
     echo "Tracked Rust TEST ROOTS that _LIVE_ROOTS does not cover:" >&2
     printf '%s\n' "$_s3_uncovered" | sed 's/^/  /' >&2
     echo "" >&2
-    echo "Each directory above holds tracked Rust tests that this guard is NOT scanning," >&2
-    echo "so a hand-rolled deadline or an elapsed upper bound can land there unseen." >&2
-    echo "Add it to _LIVE_ROOTS above. If it is genuinely not a test root, say why in the" >&2
-    echo "header's SCOPE paragraph rather than quietly narrowing the derivation -- an" >&2
-    echo "unexplained exclusion is how the gap this check exists to catch got here." >&2
+    echo "Each directory above is a tests/, benches/ or examples/ directory, or the" >&2
+    echo "directory of a Cargo [[test]]/[[bench]]/[[example]] 'path =' target. It holds" >&2
+    echo "tracked Rust code that this guard is NOT scanning, so a hand-rolled deadline or" >&2
+    echo "an elapsed upper bound can land there unseen. Add it to _LIVE_ROOTS above." >&2
+    echo "A target whose path sits in production code (src/) is the exception: move it to" >&2
+    echo "a tests/, benches/ or examples/ root rather than widening the scan into shipped" >&2
+    echo "code. If a root is genuinely not a test root, say why in the header's SCOPE IS" >&2
+    echo "CARGO'S TARGET MODEL paragraph rather than quietly narrowing the derivation --" >&2
+    echo "an unexplained exclusion is how the gap this check exists to catch got here." >&2
 fi
 
 assert "live scan: _LIVE_ROOTS covers EVERY tracked Rust test root" \
@@ -1698,7 +1782,7 @@ assert "live scan: the floor -- at least 1000 .rs files were actually scanned" \
 # through the ratchet's own loader, so "what counts as a row" is not spelled
 # twice.
 _s3_rows="$(_wallclock_baseline_rows "$_BASELINE_FILE" 2>/dev/null | grep -c . || true)"
-echo "  scanned: ${#_LIVE_ROOTS[@]} roots (${_s3_gt_n} named \`tests\` in tree), ${_s3_files:-0} .rs files, ${_s3_rows} baselined rows"
+echo "  scanned: ${#_LIVE_ROOTS[@]} roots (${_s3_gt_n} named tests/benches/examples in tree, ${_s3_decl_n} Cargo-declared target dirs), ${_s3_files:-0} .rs files, ${_s3_rows} baselined rows"
 
 # --- (4) the escape allowlist ----------------------------------------------
 # The allowlist as a NUMBER rather than as prose. One escape:
@@ -2564,6 +2648,9 @@ assert "4e-13: a missing baseline over a CLEAN tree is rc 2, never a vacuous 0" 
 # and the function always returns 0. The verdict belongs to the caller, which
 # is why every fixture below asserts rc 0 alongside the output.
 #
+# 4f-6 onward pin `_wallclock_candidate_test_roots`, the derivation that FEEDS
+# the primitive above: tracked .rs paths in, candidate root directories out.
+#
 # PURE STRING LOGIC -- synthetic stdin against synthetic args, no filesystem,
 # no mktemp. These roots need not exist, and deliberately do not: the question
 # is whether the LIST covers a name, which is independent of what is on disk
@@ -2641,5 +2728,281 @@ assert "4f-5: BOTH uncovered roots are printed, not just the first" \
 assert "4f-5: coverage is tested against every argument, not only the first" \
     test "$_s4f5_out" = "a/tests
 c/tests"
+
+# ---------------------------------------------------------------------------
+# 4f-6: TODAY'S BEHAVIOUR, pinned before the scope widens. A tests/ directory
+#       is derived ONCE however many files or levels sit under it, and a
+#       TOP-LEVEL `tests/` is derived too: its path has no leading `/`, which
+#       is the case the first draft of this derivation dropped.
+# ---------------------------------------------------------------------------
+_s4f6_rc=0
+_s4f6_out="$(printf '%s\n' 'a/tests/x.rs' 'a/tests/sub/y.rs' 'tests/z.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null)" || _s4f6_rc=$?
+assert "4f-6: the derivation returns 0 -- the list is the result" \
+    test "$_s4f6_rc" -eq 0
+assert "4f-6: each tests/ root is derived once, the top-level one included" \
+    test "$_s4f6_out" = "a/tests
+tests"
+
+# ---------------------------------------------------------------------------
+# 4f-7: THE NEW SCOPE. benches/ and examples/ are candidate roots exactly as
+#       tests/ is -- nested or top-level, one entry per directory. The header's
+#       SCOPE IS CARGO'S TARGET MODEL paragraph argues why; this pins that the
+#       derivation follows it. C order, like every other list in this file.
+# ---------------------------------------------------------------------------
+_s4f7_rc=0
+_s4f7_out="$(printf '%s\n' 'a/benches/b.rs' 'a/benches/sub/c.rs' 'benches/top.rs' \
+    'a/examples/e.rs' 'examples/top.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null)" || _s4f7_rc=$?
+assert "4f-7: the widened derivation returns 0" \
+    test "$_s4f7_rc" -eq 0
+assert "4f-7: benches/ and examples/ roots are derived, nested and top-level, in C order" \
+    test "$_s4f7_out" = "a/benches
+a/examples
+benches
+examples"
+
+# ---------------------------------------------------------------------------
+# 4f-8: SHIPPED CODE AND NEAR-MISS NAMES stay out. lib, bin and build-script
+#       sources are not test, bench or example targets, and `benches2`,
+#       `mybenches` and `examples_util.rs` each CONTAIN a candidate name
+#       without being one: the match is on a whole path component. Finding
+#       nothing is also rc 0 -- grep's "no match" rc 1 must not leak out of a
+#       function whose contract is that the list is the result.
+# ---------------------------------------------------------------------------
+_s4f8_rc=0
+_s4f8_out="$(printf '%s\n' 'a/src/lib.rs' 'a/src/bin/tool.rs' 'a/build.rs' \
+    'a/benches2/x.rs' 'a/mybenches/x.rs' 'a/src/examples_util.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null)" || _s4f8_rc=$?
+assert "4f-8: a stream with no candidate is rc 0 -- an empty list is an answer" \
+    test "$_s4f8_rc" -eq 0
+assert "4f-8: production code and near-miss names yield no candidate" \
+    test -z "$_s4f8_out"
+
+# ---------------------------------------------------------------------------
+# 4f-9: THE COMPOSITION THE SCOPE DECISION RESTS ON. A bench directory beside a
+#       covered tests/ root is reported uncovered, by name -- so the day one
+#       lands, the completeness check reds on it. That is the whole mechanism
+#       by which a benches/ or examples/ root joins the scan: it cannot be
+#       pre-listed in _LIVE_ROOTS (an unmatched glob is a hard error), so the
+#       check names it when it appears.
+# ---------------------------------------------------------------------------
+_s4f9_rc=0
+_s4f9_out="$(printf '%s\n' 'a/benches/b.rs' \
+    | _wallclock_candidate_test_roots 2>/dev/null \
+    | _wallclock_uncovered_test_roots 'a/tests' 2>/dev/null)" || _s4f9_rc=$?
+assert "4f-9: the composed derivation and completeness check returns 0" \
+    test "$_s4f9_rc" -eq 0
+assert "4f-9: a new bench directory is reported uncovered, by name" \
+    test "$_s4f9_out" = "a/benches"
+
+# ===========================================================================
+# Section 4g: CARGO-DECLARED TARGET DIRS -- the second ground-truth input.
+#
+# 4f pins what a directory NAME can say about a test root. A name cannot say
+# where Cargo was TOLD to look: a `[[test]]`, `[[bench]]` or `[[example]]` table
+# with a `path` key puts its target anywhere. `_wallclock_declared_target_dirs
+# <manifest>...` reads those tables from Cargo.toml files and prints the
+# directory of each such target, so Section 3 can add them to the candidates
+# that `_wallclock_candidate_test_roots` derives from names.
+#
+# UNLIKE 4f this needs REAL FILES, because the subject is a TOML reader: the
+# synthetic manifests are written with _fixture into one mktemp directory
+# (registered in _TMPDIRS), never into the real tree. Every fixture captures
+# rc, for the reason given at 4f.
+#
+# The weight sits on 4g-3 and 4g-7. 4g-3: a target under a root the list already
+# covers must come out COVERED, or the explicit `[[test]] path = ...` entries
+# of docs/prds/v0_6/cargo-native-harness-layout.md would red a correct tree.
+# 4g-7: an unreadable manifest is rc 2 and never skipped, because a skipped
+# manifest is a silent blind spot.
+# ===========================================================================
+echo ""
+echo "--- Section 4g: Cargo-declared target dirs ---"
+
+_s4g_tmp="$(mktemp -d)"; _TMPDIRS+=("$_s4g_tmp")
+mkdir -p "$_s4g_tmp/pkg" "$_s4g_tmp/bad"
+
+# ---------------------------------------------------------------------------
+# 4g-1: a `[[test]]` with a `path` is derived to the DIRECTORY holding that
+#       file -- roots are directories, and the path is echoed as it was named.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "it"' \
+    'path = "it/main.rs"'
+_s4g1_rc=0
+_s4g1_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g1_rc=$?
+assert "4g-1: the derivation returns 0" \
+    test "$_s4g1_rc" -eq 0
+assert "4g-1: a relocated [[test]] target names its directory" \
+    test "$_s4g1_out" = "$_s4g_tmp/pkg/it"
+
+# ---------------------------------------------------------------------------
+# 4g-2: [[bench]] and [[example]] are read exactly as [[test]] is. Compared
+#       sorted: the order of the derivation's output is not part of its contract.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[bench]]' \
+    'name = "perf"' \
+    'path = "perf/main.rs"' \
+    '[[example]]' \
+    'name = "show"' \
+    'path = "demos/show.rs"'
+_s4g2_rc=0
+_s4g2_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g2_rc=$?
+_s4g2_sorted="$(_emit_record_stream "$_s4g2_out" | LC_ALL=C sort)"
+assert "4g-2: the derivation returns 0 for bench and example targets" \
+    test "$_s4g2_rc" -eq 0
+assert "4g-2: [[bench]] and [[example]] targets name their directories" \
+    test "$_s4g2_sorted" = "$_s4g_tmp/pkg/demos
+$_s4g_tmp/pkg/perf"
+
+# ---------------------------------------------------------------------------
+# 4g-3: A TARGET UNDER A COVERED ROOT IS COVERED. An explicit entry for a
+#       harness under tests/ is the shape a harness-layout migration writes
+#       for every harness; the derivation names its directory, and that
+#       directory must come out of the completeness check as covered by the
+#       tests/ root already in the list, not as a false red.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "harness_x"' \
+    'path = "tests/harness_x/main.rs"'
+_s4g3_rc=0
+_s4g3_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g3_rc=$?
+_s4g3_cov_rc=0
+_s4g3_cov="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null \
+    | _wallclock_uncovered_test_roots "$_s4g_tmp/pkg/tests")" || _s4g3_cov_rc=$?
+assert "4g-3: the derivation returns 0" \
+    test "$_s4g3_rc" -eq 0
+assert "4g-3: the harness entry names its directory under tests/" \
+    test "$_s4g3_out" = "$_s4g_tmp/pkg/tests/harness_x"
+assert "4g-3: the derivation composed with the completeness check returns 0" \
+    test "$_s4g3_cov_rc" -eq 0
+assert "4g-3: a target under an existing tests/ root is covered (nothing printed)" \
+    test -z "$_s4g3_cov"
+
+# ---------------------------------------------------------------------------
+# 4g-4: only a RELOCATED test, bench or example target is a candidate. A
+#       [[test]] with no `path` defaults to the auto-discovered tests/ (which
+#       the name derivation already covers), and lib, bin and build-script
+#       sources are shipped code, excluded by the header's argument.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[package]' \
+    'name = "pkg"' \
+    'build = "gen.rs"' \
+    '[lib]' \
+    'path = "core/lib.rs"' \
+    '[[bin]]' \
+    'name = "x"' \
+    'path = "tools/x.rs"' \
+    '[[test]]' \
+    'name = "t"' \
+    'harness = false'
+_s4g4_rc=0
+_s4g4_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g4_rc=$?
+assert "4g-4: a manifest with no relocated target returns 0" \
+    test "$_s4g4_rc" -eq 0
+assert "4g-4: path-less [[test]], [lib], [[bin]] and build script yield nothing" \
+    test -z "$_s4g4_out"
+
+# ---------------------------------------------------------------------------
+# 4g-5: the path is NORMALIZED. Coverage compares path strings, so a spelling
+#       with `.` or `..` components must come out as the clean path a root
+#       list would hold.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "it"' \
+    'path = "./it/../it/main.rs"'
+_s4g5_rc=0
+_s4g5_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g5_rc=$?
+assert "4g-5: the derivation returns 0 for a non-canonical path" \
+    test "$_s4g5_rc" -eq 0
+assert "4g-5: dot and dot-dot components are normalized away" \
+    test "$_s4g5_out" = "$_s4g_tmp/pkg/it"
+
+# ---------------------------------------------------------------------------
+# 4g-6: a RELATIVE manifest argument gives a RELATIVE directory. That is the
+#       form Section 3 feeds the completeness check -- repo-relative, exactly
+#       as `git ls-files` names the manifests -- so it must not be made
+#       absolute on the way through.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "it"' \
+    'path = "it/main.rs"'
+_s4g6_rc=0
+_s4g6_out="$(cd "$_s4g_tmp/pkg" && _wallclock_declared_target_dirs Cargo.toml 2>/dev/null)" || _s4g6_rc=$?
+assert "4g-6: the derivation returns 0 for a relative manifest" \
+    test "$_s4g6_rc" -eq 0
+assert "4g-6: a relative manifest yields a relative directory" \
+    test "$_s4g6_out" = "it"
+
+# ---------------------------------------------------------------------------
+# 4g-7: FAIL CLOSED. A manifest that cannot be read or parsed is rc 2 (grep's
+#       "an input was unusable" code, as everywhere in this file), is named on
+#       stderr, and is NEVER skipped. The status is also STICKY: a good
+#       manifest before or after the bad one cannot turn it into a green.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/bad" "Cargo.toml" '[[test]'
+_s4g7a_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/bad/Cargo.toml" \
+    >/dev/null 2>"$_s4g_tmp/bad.err" || _s4g7a_rc=$?
+assert "4g-7: a malformed manifest is rc 2 -- not skipped, not 0, not 1" \
+    test "$_s4g7a_rc" -eq 2
+assert "4g-7: the error names the malformed manifest" \
+    grep -qF -- "$_s4g_tmp/bad/Cargo.toml" "$_s4g_tmp/bad.err"
+
+_s4g7b_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/absent/Cargo.toml" \
+    >/dev/null 2>"$_s4g_tmp/absent.err" || _s4g7b_rc=$?
+assert "4g-7: a manifest that does not exist is rc 2" \
+    test "$_s4g7b_rc" -eq 2
+assert "4g-7: the error names the missing manifest" \
+    grep -qF -- "$_s4g_tmp/absent/Cargo.toml" "$_s4g_tmp/absent.err"
+
+_s4g7c_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" "$_s4g_tmp/bad/Cargo.toml" \
+    >/dev/null 2>&1 || _s4g7c_rc=$?
+assert "4g-7: a bad manifest AFTER a good one is still rc 2" \
+    test "$_s4g7c_rc" -eq 2
+_s4g7d_rc=0
+_wallclock_declared_target_dirs "$_s4g_tmp/bad/Cargo.toml" "$_s4g_tmp/pkg/Cargo.toml" \
+    >/dev/null 2>&1 || _s4g7d_rc=$?
+assert "4g-7: a bad manifest BEFORE a good one is still rc 2 -- never a partial green" \
+    test "$_s4g7d_rc" -eq 2
+
+# ---------------------------------------------------------------------------
+# 4g-8: a workspace-only manifest declares no target of its own: empty, rc 0.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[workspace]' \
+    'members = ["a"]'
+_s4g8_rc=0
+_s4g8_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g8_rc=$?
+assert "4g-8: a workspace-only manifest returns 0" \
+    test "$_s4g8_rc" -eq 0
+assert "4g-8: a workspace-only manifest declares no target directory" \
+    test -z "$_s4g8_out"
+
+# ---------------------------------------------------------------------------
+# 4g-9: a target FILE sitting directly in the package directory names that
+#       directory. It is reported, not skipped for having no directory part of
+#       its own: the package directory is where its source lives, and a skip
+#       would leave exactly that blind spot.
+# ---------------------------------------------------------------------------
+_fixture "$_s4g_tmp/pkg" "Cargo.toml" \
+    '[[test]]' \
+    'name = "flat"' \
+    'path = "flat.rs"'
+_s4g9_rc=0
+_s4g9_out="$(_wallclock_declared_target_dirs "$_s4g_tmp/pkg/Cargo.toml" 2>/dev/null)" || _s4g9_rc=$?
+assert "4g-9: the derivation returns 0 for a target in the package directory" \
+    test "$_s4g9_rc" -eq 0
+assert "4g-9: a target file beside the manifest names the package directory" \
+    test "$_s4g9_out" = "$_s4g_tmp/pkg"
 
 test_summary

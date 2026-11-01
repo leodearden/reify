@@ -18,6 +18,8 @@ const HOST: Host = Host {
 };
 
 const SOLVE_REDUCED_DEFINITION_AND_TEST_ITEMS: &[&str] = &[TEST_ITEMS[0], "fn solve_reduced"];
+const COMBINED_BUILDER_AND_TEST_ITEMS: &[&str] =
+    &[TEST_ITEMS[0], "fn combined_force_density_matrix"];
 
 const SRC: &[&str] = &["src/"];
 const SRC_AND_TESTS: &[&str] = &["src/", "tests/"];
@@ -41,7 +43,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "bubble-condensation-copies",
         home: "the one guarded bubble-condensation fn (solver-crates-layering D6, leaf γ)",
-        baseline: 2,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "let det_bb =",
             SRC,
@@ -51,7 +53,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "shear-correction-literal",
         home: "ShellSection::SHEAR_CORRECTION (solver-crates-layering D5, leaf γ)",
-        baseline: 2,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "5.0 / 6.0",
             SRC,
@@ -61,7 +63,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "inline-shear-modulus",
         home: "IsotropicElastic::shear_modulus (solver-crates-layering D5, leaf γ)",
-        baseline: 16,
+        baseline: 1,
         measure: Measure::Occurrences(Pattern::whole_file(
             "/ (2.0 * (1.0 + nu))",
             SRC,
@@ -71,7 +73,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "thickness-scaled-d-blocks",
         home: "the shared scaled(d, s) helper (solver-crates-layering D6, leaf γ)",
-        baseline: 5,
+        baseline: 0,
         measure: Measure::Occurrences(Pattern::production(
             "td[i][j] = ",
             SRC,
@@ -94,7 +96,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "element-stiffness-data-indexing",
         home: "the ElementStiffness accessors (solver-crates-layering D8, leaf ε)",
-        baseline: 74,
+        baseline: 71,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/mod.rs", "src/resample.rs"],
             ..Pattern::whole_file(".data[", SRC_AND_TESTS, "let v = k_e.data[0];")
@@ -170,7 +172,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "line-rank1-scatters",
-        home: "scatter_line_members in form_find.rs (solver-crates-layering D3, leaf η)",
+        home: "assemble_d in fd_matrix.rs (solver-crates-layering D3, leaf η; φ-ff)",
         baseline: 1,
         measure: Measure::Occurrences(Pattern::production(
             "[(j, k)] -= qi",
@@ -199,7 +201,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "mpc-row-literals",
         home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
-        baseline: 2,
+        baseline: 0,
         measure: Measure::Occurrences(Pattern {
             skip_items: &["impl MpcRow", "pub struct MpcRow"],
             view: View::CodeAndDocs,
@@ -213,11 +215,42 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "duplicated-test-helpers",
         home: "tests/common/fea_harness.rs (solver-crates-layering D11, leaf ι)",
-        baseline: 84,
+        baseline: 76,
         measure: Measure::DuplicateTopLevelFns {
             root: "tests/",
             shared_dir: "tests/common/",
         },
+    },
+    Ratchet {
+        name: "eigen-calls-outside-spectrum-module",
+        home: "SymmetricSpectrum::of in fd_matrix.rs (solver-crates-layering gap-fill φ-ff)",
+        baseline: 0,
+        measure: Measure::Occurrences(Pattern {
+            exclude: &["src/fd_matrix.rs"],
+            ..Pattern::whole_file(
+                ".self_adjoint_eigen(",
+                SRC,
+                "let eig = d.self_adjoint_eigen(Side::Lower);",
+            )
+        }),
+    },
+    // A line-plus-surface sum needs a line `D`, and `assemble_d` is the one
+    // line-`D` builder, so a hand-summed combined `D` shows up here however it
+    // spells its `+`. The baseline's two are surface-free: the line-only group
+    // search's objective and `explicit_form`.
+    Ratchet {
+        name: "line-d-assemblies-outside-the-combined-builder",
+        home: "combined_force_density_matrix in form_find_free.rs, for any D with a surface term \
+               (solver-crates-layering gap-fill χ-ff)",
+        baseline: 2,
+        measure: Measure::Occurrences(Pattern {
+            skip_items: COMBINED_BUILDER_AND_TEST_ITEMS,
+            ..Pattern::production(
+                "assemble_d(",
+                &["src/form_find_free.rs"],
+                "let d = assemble_d(n, members, &q) + &surface_mat;",
+            )
+        }),
     },
 ];
 

@@ -479,6 +479,34 @@ fn try_dispatch_declines_every_name_the_registry_does_not_own() {
     }
 }
 
+/// (b′) A row bound by ANOTHER kind is declined at every arity it accepts:
+/// `lookup` resolves it, and the `as_eval_builtin` narrowing in
+/// `try_dispatch` is what declines it, so the call falls through to the
+/// dispatcher that owns the name instead of panicking or being routed here.
+#[test]
+fn try_dispatch_declines_every_row_it_does_not_bind() {
+    let foreign: Vec<_> = rows()
+        .iter()
+        .filter(|r| r.binding != BindingKind::EvalBuiltin)
+        .collect();
+    assert!(
+        !foreign.is_empty(),
+        "premise guard: every row is an EvalBuiltin, so the sweep asserts nothing"
+    );
+    for row in foreign {
+        for argc in (0..=4usize).filter(|argc| row.arity.matches(*argc)) {
+            assert_eq!(
+                try_dispatch(row.name, &vec![Value::Undef; argc]),
+                None,
+                "row '{}' is bound by {:?}, so try_dispatch(name, {argc} arg(s)) \
+                 must decline it",
+                row.name,
+                row.binding
+            );
+        }
+    }
+}
+
 /// (c) The public entry point's answer for a seed name IS the registry's
 /// answer — not a coincidence of a parallel matcher that happens to agree.
 #[test]

@@ -468,7 +468,7 @@ else
     done
     [ "$probe_ok" = "1" ] || die "the wrapper never got past exit 125 in $PROBE_RETRIES attempts.
      The pre-done hook is wired in but is failing for an infrastructure reason
-     (fused-memory MCP unreachable? jq/curl missing?). Every done-flip on reify
+     (fused-memory MCP unreachable?). Every done-flip on reify
      will now be blocked until this is fixed — this needs a human now.
      Reproduce: $WRAPPER --task $PROBE_TASK_ID --pre-done"
 fi

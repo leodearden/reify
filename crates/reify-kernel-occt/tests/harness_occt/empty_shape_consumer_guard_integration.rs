@@ -43,9 +43,9 @@ use reify_kernel_occt::OcctKernel;
 fn cube(kernel: &mut OcctKernel, side: f64) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(side),
-            height: Value::Real(side),
-            depth: Value::Real(side),
+            size_x: Value::Real(side),
+            size_y: Value::Real(side),
+            size_z: Value::Real(side),
         })
         .expect("box creation should succeed")
         .id

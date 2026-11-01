@@ -128,6 +128,15 @@ BARE_ITEM_TEMPLATES = [
     ("{attr}\nuse std::cmp::Ordering;\npub fn after() {{\n    body();\n}}\n", [1, 2, 3, 4, 5]),
     ("{attr} use std::cmp::Ordering;\npub fn after() {{\n    body();\n}}\n", [1, 2, 3, 4]),
 ]
+PROD_MOD_BODY = "    fn prod_marker() { x.partial_cmp(&y).unwrap() }\n}\nfn after() {}\n"
+SELF_TERMINATING_MOD_CASES = [
+    ("#[cfg(test)]\nmod tests;\nmod production_mod {\n" + PROD_MOD_BODY, [1, 2, 3, 4, 5, 6]),
+    ("#[cfg(test)]\nmod tests;\n\nmod production_mod {\n" + PROD_MOD_BODY, [1, 2, 3, 4, 5, 6, 7]),
+    ("#[cfg(test)]\nmod tests;\npub mod real {\n" + PROD_MOD_BODY, [1, 2, 3, 4, 5, 6]),
+    ("#[cfg(test)] mod tests;\nmod production_mod {\n" + PROD_MOD_BODY, [1, 2, 3, 4, 5]),
+    ("#[cfg(test)]\n#[allow(dead_code)]\nmod tests;\nmod production_mod {\n" + PROD_MOD_BODY,
+     [1, 2, 3, 4, 5, 6, 7]),
+]
 ARMING_MATRIX = (
     [(attr, ARMED_VISIBLE) for attr in ARMING_ATTRS]
     + [(attr, UNARMED_VISIBLE) for attr in NON_ARMING_ATTRS]
@@ -312,6 +321,11 @@ class TestTestModuleArming(TempDirCase):
 
     def test_a_cfg_split_across_lines_reads_as_production(self):
         self.assertEqual(self.visible_lines(SPLIT_CFG_MOD), [1, 2, 3, 4, 5, 6, 7])
+
+    def test_a_self_terminating_test_mod_leaves_the_next_production_mod_visible(self):
+        for template, expected in SELF_TERMINATING_MOD_CASES:
+            with self.subTest(template=template):
+                self.assertEqual(self.visible_lines(template), expected)
 
     def test_a_compound_gate_on_a_non_mod_item_does_not_arm(self):
         for template, expected in BARE_ITEM_TEMPLATES:

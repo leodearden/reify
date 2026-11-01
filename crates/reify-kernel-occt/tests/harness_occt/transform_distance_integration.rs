@@ -29,17 +29,17 @@ fn two_box_kernel(dx: f64) -> (OcctKernel, GeometryHandleId, GeometryHandleId) {
 
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box_a creation should succeed");
 
     let box_b_raw = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box_b creation should succeed");
 
@@ -88,9 +88,9 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
     // box_a: 12×8×6 brick centered at origin. Width→X, Height→Y, Depth→Z.
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(12.0),
-            height: Value::Real(8.0),
-            depth: Value::Real(6.0),
+            size_x: Value::Real(12.0),
+            size_y: Value::Real(8.0),
+            size_z: Value::Real(6.0),
         })
         .expect("box_a (12×8×6 brick) creation should succeed");
     let box_a_id = box_a.id;
@@ -98,9 +98,9 @@ fn distance_with_transform_rotation_only_matches_rotated_shape() {
     // box_b: 10×10×10 cube translated to (30, 0, 0) → X∈[25,35].
     let box_b_raw = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box_b_raw creation should succeed");
     let box_b = kernel
@@ -180,9 +180,9 @@ fn distance_with_transform_rotation_and_translation_matches_composed_shape() {
     // box_a: 12×8×6 brick centered at origin.
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(12.0),
-            height: Value::Real(8.0),
-            depth: Value::Real(6.0),
+            size_x: Value::Real(12.0),
+            size_y: Value::Real(8.0),
+            size_z: Value::Real(6.0),
         })
         .expect("box_a (12×8×6 brick) creation should succeed");
     let box_a_id = box_a.id;
@@ -190,9 +190,9 @@ fn distance_with_transform_rotation_and_translation_matches_composed_shape() {
     // box_b: 10×10×10 cube translated to (30, 0, 0) → X∈[25,35].
     let box_b_raw = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box_b_raw creation should succeed");
     let box_b = kernel

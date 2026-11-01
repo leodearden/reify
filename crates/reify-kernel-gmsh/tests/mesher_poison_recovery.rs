@@ -114,7 +114,7 @@ fn two_disjoint_unit_cubes() -> Mesh {
 ///
 /// The `ierr=` is load-bearing, which is why it is asserted in ONE place: the
 /// FFI layer formats a real failure as `<symbol>: ierr=<n> (<msg>)`, whereas
-/// the zero-tet backstop in `init::read_tet_connectivity` opens
+/// the zero-tet backstop in `tet_readback::read_tet_connectivity` opens
 /// `gmshModelMeshGenerate reported success but …`. Matching the bare symbol
 /// name would let a test pass having poisoned nothing and exercised no
 /// recovery — and a per-test copy of this assertion is exactly what drifts

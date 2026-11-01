@@ -73,9 +73,9 @@ fn affine_apply_non_uniform_scale_occt_acceptance() {
     let mut kernel = reify_kernel_occt::OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("Box execute must succeed");
     let transformed = kernel
@@ -267,9 +267,9 @@ fn affine_apply_rigid_parity_with_apply_transform() {
 
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("Box execute must succeed");
     let rigid = kernel
@@ -286,9 +286,9 @@ fn affine_apply_rigid_parity_with_apply_transform() {
 
     let box_b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.01),
-            height: Value::Real(0.01),
-            depth: Value::Real(0.01),
+            size_x: Value::Real(0.01),
+            size_y: Value::Real(0.01),
+            size_z: Value::Real(0.01),
         })
         .expect("Box execute must succeed");
     let affine = kernel

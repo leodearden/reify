@@ -393,18 +393,15 @@ pub mod ffi {
 
         /// Return OCCT's `Precision::Confusion()` value (~1e-7).
         ///
-        /// Test-fixture-style helper intentionally compiled across the cxx bridge
-        /// in every build.  Cfg-gating cxx::bridge entries is awkward, so the
-        /// symbol is visible to all callers of `crate::ffi::ffi` even though the
-        /// only present-day call site is the crate-private test module in
-        /// `lib.rs`, which pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
-        /// against the authoritative OCCT value at runtime.
+        /// Test-only: pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (see
+        /// `ffi_contract_tests.rs`). It ships in every build because cfg-gating a
+        /// cxx::bridge entry is awkward.
         /// `Precision::Confusion()` is a `constexpr` literal in OCCT — cannot
         /// throw, no `Result` wrapper needed.
         fn precision_confusion() -> f64;
 
         // --- Primitive construction ---
-        fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_box(size_x: f64, size_y: f64, size_z: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;

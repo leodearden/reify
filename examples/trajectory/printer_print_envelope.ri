@@ -57,7 +57,7 @@
 //   (FEAMaterialInput for modal_analysis is a separate FEA shim, retained here.)
 //
 // Verification:
-//   crates/reify-compiler/tests/printer_print_envelope_example_tests.rs —
+//   crates/reify-compiler/tests/harness_physical_modeling/printer_print_envelope_example_tests.rs —
 //     parse + compile-clean + PrinterPrintEnvelope template presence.
 //   crates/reify-eval/tests/printer_print_envelope_e2e.rs —
 //     register_compute_fns + engine.eval + ValueCellId reads + ComputeNode presence.
@@ -79,14 +79,14 @@ structure def PrinterPrintEnvelope {
     // The asymmetric 60 × 40 mm cross-section keeps vertical/lateral bending
     // families non-degenerate so modes are strictly distinct.
     //
-    // Argument binding is BY NAME (task-4522's by-name ctor binder resolves each
-    // `name:` label against ModalOptions' declared params; only UNLABELLED args
-    // fill the remaining slots in declaration order: n_modes,
-    // boundary_conditions, damping, shift_frequency, tol, max_iters,
-    // reference_direction, element_order). All params are still spelled out
-    // because a MISSPELLED label is STILL bound leniently — appended as
-    // `__arg{i}`, leaving the intended param (here element_order) at its P1
-    // default — under only an `E_CTOR_UNKNOWN_FIELD` Warning today (Error at δ).
+    // Ctor args bind BY NAME (task 4522), so a MISSPELLED label is the hazard
+    // here: the typo'd arg never claims `element_order`, which then falls back
+    // to its `ElementOrder.P1` default and reinstates the P1 bending lock the
+    // gantry modal setup runs at P2 to avoid. Every param is written out purely
+    // so a typo stays visible under review. What the compiler does with the
+    // typo'd arg, and how loudly it says so, are deliberately NOT restated
+    // here; both are pinned in
+    // `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs::misspelled_ctor_label_is_diagnosed_but_still_leniently_appended`.
 
     let gantry_length = 500mm
     let gantry_width  = 60mm

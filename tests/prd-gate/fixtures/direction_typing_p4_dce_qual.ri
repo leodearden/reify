@@ -1,0 +1,11 @@
+module p4_dce_qual
+enum PressureDirection {
+    Normal,
+    Fixed { dir: Direction },
+}
+structure def P {
+    param direction : PressureDirection = PressureDirection::Normal
+}
+structure def Main {
+    let a = P()
+}

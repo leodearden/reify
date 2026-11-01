@@ -586,7 +586,7 @@ pub(crate) fn optional_length_value(
 /// [`required_length_values`] (which this delegates to at `N == 1`, so
 /// `reify_ir::Value::length` is still called from exactly one site) — the IR
 /// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
-/// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
+/// primitive and profile dimensions (`Box` size_x/size_y/size_z, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
 /// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
 /// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
@@ -827,7 +827,7 @@ fn required_angle_args<const N: usize>(
 /// the `N == 1` special case of it, not a second minting site.
 ///
 /// ALL FAILURES AT ONCE, restated here because it is the reason this exists
-/// (reviewer amendment, task 5743): a primitive's `width`/`height`/`depth` and
+/// (reviewer amendment, task 5743): a box's `size_x`/`size_y`/`size_z` and
 /// a profile's `semi_major`/`semi_minor` are written as ONE gesture, exactly
 /// like a `translate` triple, so a bare primitive is usually bare in EVERY
 /// dimension. Reading them through per-field `?`-chained
@@ -1205,22 +1205,14 @@ fn accept_variadic_length_args(
 /// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
 /// wordings are lifted VERBATIM from [`required_length_arg`].
 ///
-/// SCOPE OF "byte-identical", stated precisely because the phrase recurs
-/// throughout this module: it is a claim about the pushed `Diagnostic` and about
-/// the `Err` STRING THIS FUNCTION RETURNS, not about whatever a caller then
-/// wraps that string in. The value-form pattern callers keep their PRE-δ
-/// per-builtin prefix — [`pattern_mirror`] wraps the decoder result in
-/// `format!("mirror: {}", e)` and [`pattern_circular`] in
-/// `format!("circular_pattern: {}", e)` — so the op-compile `Err` reaching
-/// `engine_build`'s "failed to compile geometry operation" wrapper reads
-/// `mirror: missing or non-Length argument 'ox' for mirror`, where the SCALAR
-/// branch's un-wrapped [`required_length_origin3`] reads
-/// `missing or non-Length argument 'ox' for mirror`. That stutter is cosmetic
-/// and PRE-EXISTS δ (it is on the merge-base at both sites), and the string is
-/// not the user-facing contract — the `Diagnostic` is, and that one IS identical
-/// across both forms. δ deliberately does not drop the prefix: doing so would
-/// change a pre-δ caller-facing message, which is precisely what the rest of
-/// this leaf's discipline forbids.
+/// SCOPE OF "byte-identical": it holds for a given label, and the label is the
+/// caller's to choose. The value-form callers pass the decoder `Err` through
+/// unwrapped, and each decoder prefixes only its own non-units messages with the
+/// label it is given. [`pattern_mirror`] passes `kind` ("mirror", identical to
+/// its scalar branch); [`pattern_circular`] passes its `surface_name`
+/// ("circular_pattern"), so its value form names the builtin the author typed,
+/// while the scalar branch's [`required_length_origin3`] still renders
+/// `PatternKind`'s "circular" label.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -1229,9 +1221,9 @@ fn accept_variadic_length_args(
 ///
 /// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
 /// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
-/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
-/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
-/// message survives byte-identical.
+/// nothing of its own — so the wording of a shape message, label prefix
+/// included, is entirely the caller's. This helper replaces
+/// [`point3_components`]' ACCEPTANCE policy, not its shape check.
 ///
 /// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
 /// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
@@ -1277,8 +1269,8 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
-    // whatever the caller's `shape_err` pushes is the whole of it.
+    // arity. A mismatch returns the caller's `shape_err` text and mints nothing
+    // here: whatever that closure pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
         _ => return Err(shape_err(diagnostics)),
@@ -2027,6 +2019,18 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
     Ok([v[0] / mag, v[1] / mag, v[2] / mag])
 }
 
+/// A decoder's OWN failure (wrong variant, wrong shape, degenerate vector), led
+/// by the label of the builtin it decodes for: `mirror: expected a Plane value,
+/// got …`.
+///
+/// The one home of that prefix. A units rejection never passes through here:
+/// [`accept_length_point3`] renders it already naming the label
+/// (`missing or non-Length argument 'ox' for mirror`), so prefixing it as well
+/// would print the builtin twice.
+fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display) -> String {
+    format!("{kind_label}: {failure}")
+}
+
 /// Decode a [`Value::Plane`] into `(origin, unit_normal)` — an SI metre triple
 /// and a dimensionless unit vector, returned as `([f64; 3], [f64; 3])`.
 ///
@@ -2077,8 +2081,8 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
 ///     `decode_plane_non_finite_length_origin_warns_without_a_code`);
 ///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
 ///     or a normal with non-numeric / non-finite components — these keep their
-///     pre-δ wording and push no diagnostic, because a wrong shape is not a
-///     units rejection;
+///     pre-δ wording behind the `kind_label` prefix and push no diagnostic,
+///     because a wrong shape is not a units rejection;
 ///   - zero-magnitude normal.
 ///
 /// # Visibility
@@ -2093,27 +2097,42 @@ pub(crate) fn decode_plane(
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
-            return Err(format!("expected a Plane value, got {}", other));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected a Plane value, got {other}"),
+            ));
         }
     };
-    // The plane ORIGIN is a point in space — LENGTH-gated. The shape message is
-    // handed through unchanged as `shape_err`, so a wrong-arity origin still
-    // reads exactly as it did pre-δ.
+    // The plane ORIGIN is a point in space — LENGTH-gated. A wrong-arity origin
+    // is no units rejection, so `accept_length_point3` returns this `shape_err`
+    // unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| {
+            labelled(
+                kind_label,
+                "Plane origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
     // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
-        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+        labelled(
+            kind_label,
+            "Plane normal is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_normal =
-        unit_vector3(normal_raw).map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    let unit_normal = unit_vector3(normal_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Plane has a degenerate normal: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -2153,8 +2172,9 @@ pub(crate) fn decode_plane(
 ///     `decode_axis_non_finite_length_origin_warns_without_a_code`;
 ///   - origin or direction of the wrong SHAPE (not a 3-component
 ///     `Point`/`Vector`), or a direction with non-numeric / non-finite
-///     components — these keep their pre-δ wording and push no diagnostic. A
-///     kernel-minted `Value::Direction` still lands here, unchanged;
+///     components — these keep their pre-δ wording behind the `kind_label`
+///     prefix and push no diagnostic. A kernel-minted `Value::Direction` still
+///     lands here, unchanged;
 ///   - zero-magnitude direction.
 ///
 /// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
@@ -2173,26 +2193,41 @@ pub(crate) fn decode_axis(
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
-            return Err(format!("expected an Axis value, got {}", other));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected an Axis value, got {other}"),
+            ));
         }
     };
-    // The axis ORIGIN is a point in space — LENGTH-gated, with the pre-δ shape
-    // message handed through unchanged as `shape_err`.
+    // The axis ORIGIN is a point in space — LENGTH-gated; a wrong-shape origin
+    // comes back as this `shape_err`, unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| {
+            labelled(
+                kind_label,
+                "Axis origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
     // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
-        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+        labelled(
+            kind_label,
+            "Axis direction is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_dir =
-        unit_vector3(dir_raw).map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    let unit_dir = unit_vector3(dir_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Axis has a degenerate direction: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_dir))
 }
 
@@ -2909,8 +2944,8 @@ fn prim_box(
     // ONE grouped read, not three `?`-chained ones: a bare `box(20, 20, 10)`
     // is bare in every dimension, so every failing slot must be diagnosed in a
     // single build (see `required_length_values`).
-    let [width, height, depth] = required_length_values(
-        ["width", "height", "depth"],
+    let [size_x, size_y, size_z] = required_length_values(
+        ["size_x", "size_y", "size_z"],
         kind,
         args,
         values,
@@ -2919,9 +2954,9 @@ fn prim_box(
         diagnostics,
     )?;
     Ok(reify_ir::GeometryOp::Box {
-        width,
-        height,
-        depth,
+        size_x,
+        size_y,
+        size_z,
     })
 }
 
@@ -4145,8 +4180,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
-            .map_err(|e| format!("{}: {}", surface_name, e))?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, surface_name, diagnostics)?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -4253,8 +4287,7 @@ fn pattern_mirror(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
-        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)
-            .map_err(|e| format!("mirror: {}", e))?;
+        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)?;
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
             plane_origin,
@@ -6872,30 +6905,12 @@ fn resolve_int_value_ref(
     }
 }
 
-/// Dimension-qualified label for a `Value::Scalar`, mirroring
-/// `arg_acceptance::value_short_label` so the `got` payload of task ε's
-/// non-scalar resolvers (int / point / vec3 / range / string) reports the
-/// SAME dimension-qualified Scalar wording as the density / scalar-dim paths
-/// that route through `accept_arg` — e.g. `"MASS_DENSITY Scalar"`,
-/// `"dimensionless Scalar"`, `"dimensioned Scalar"`. `value_short_label` is
-/// module-private to `arg_acceptance` (owned by task δ, not modified here), so
-/// the Scalar arm is replicated rather than shared.
-fn scalar_got_label(dimension: &reify_core::DimensionVector) -> String {
-    if dimension.is_dimensionless() {
-        "dimensionless Scalar".to_string()
-    } else if let Some(name) = dimension.canonical_name() {
-        format!("{name} Scalar")
-    } else {
-        "dimensioned Scalar".to_string()
-    }
-}
-
 /// Short human-readable label for a `Value` that failed Int classification,
 /// used as the `got` field of the rejection diagnostic (task ε).
 fn int_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::String(_) => "String".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -8291,246 +8306,6 @@ fn eval_selector_feature_datum(
     crate::feature_datum::feature_datum_projection(&combined, member, diagnostics)
 }
 
-// ── geometric-relations η: intrinsic `self`-datum projections (task 4387) ─────
-
-/// Intrinsic `self`-datum projection member names (geometric-relations η). A
-/// structure's `self` is its own identity frame (design §6), so these project
-/// the structure's intrinsic identity-frame constants. LOCKSTEP with the
-/// compiler typing table (`datum_projection.rs` `Type::StructureRef(_)` arm) and
-/// the `expr.rs` self-datum lowering — exactly the members
-/// `datum_projection_result_type` resolves on a `StructureRef` receiver.
-const SELF_DATUM_PROJECTION_MEMBERS: [&str; 8] = [
-    "origin", "frame", "x", "y", "z", "xy_plane", "yz_plane", "zx_plane",
-];
-
-/// The world origin as a length-dimensioned `Point3` (all components 0 m).
-fn self_datum_origin_point() -> reify_ir::Value {
-    reify_ir::Value::Point(vec![
-        reify_ir::Value::length(0.0),
-        reify_ir::Value::length(0.0),
-        reify_ir::Value::length(0.0),
-    ])
-}
-
-/// A dimensionless 3-vector plane normal — matches `frame_xy_plane`'s
-/// `Vector([Real; 3])` plane-normal convention in reify-expr.
-fn self_datum_normal(x: f64, y: f64, z: f64) -> reify_ir::Value {
-    reify_ir::Value::Vector(vec![
-        reify_ir::Value::Real(x),
-        reify_ir::Value::Real(y),
-        reify_ir::Value::Real(z),
-    ])
-}
-
-/// Kernel-free evaluation of an intrinsic `self`-datum projection
-/// (`self.origin` / `.frame` / `.x` / `.y` / `.z` / `.xy_plane` / `.yz_plane` /
-/// `.zx_plane`), geometric-relations η (design §6).
-///
-/// The compiler (η step-8) lowers `self.<datum>` to a
-/// `MethodCall { object: ValueRef(__self : StructureRef), method, args: [] }`.
-/// There is no `__self` value cell at eval time (mirroring the structural-query
-/// `self.children`/`self.members` path — see [`crate::structural_query`]), so
-/// the pure `eval_expr` short-circuits the `__self` receiver to `Undef`. This
-/// intercepts such a node by its STATIC shape — a `StructureRef`-typed receiver
-/// plus a self-datum member name — and returns the structure's intrinsic
-/// identity-frame constant:
-///   - `origin`   → `Point3<Length>` at the world origin
-///   - `frame`    → identity `Frame` (world origin, identity quaternion)
-///   - `x`/`y`/`z`→ unit-axis `Direction`s
-///   - `*_plane`  → principal `Plane`s through the origin (axis normals)
-///
-/// The `StructureRef` receiver gate distinguishes self-datums from β's datum→
-/// datum projections (`axis.origin`, `frame.x`, …), whose receivers are
-/// `Axis`/`Frame`/… typed and which the pure `eval_datum_projection` owns.
-///
-/// Returns `None` for any node that is not a self-datum projection.
-pub(crate) fn try_eval_self_datum_projection(
-    expr: &reify_ir::CompiledExpr,
-) -> Option<reify_ir::Value> {
-    let (object, member) = match &expr.kind {
-        reify_ir::CompiledExprKind::MethodCall {
-            object,
-            method,
-            args,
-        } if args.is_empty() && SELF_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) => {
-            (object.as_ref(), method.as_str())
-        }
-        _ => return None,
-    };
-    if !matches!(object.result_type, reify_core::ty::Type::StructureRef(_)) {
-        return None;
-    }
-    Some(match member {
-        "origin" => self_datum_origin_point(),
-        "frame" => reify_ir::Value::Frame {
-            origin: Box::new(self_datum_origin_point()),
-            basis: Box::new(reify_ir::Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-        },
-        "x" => reify_ir::Value::Direction {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        "y" => reify_ir::Value::Direction {
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-        },
-        "z" => reify_ir::Value::Direction {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        },
-        "xy_plane" => reify_ir::Value::Plane {
-            origin: Box::new(self_datum_origin_point()),
-            normal: Box::new(self_datum_normal(0.0, 0.0, 1.0)),
-        },
-        "yz_plane" => reify_ir::Value::Plane {
-            origin: Box::new(self_datum_origin_point()),
-            normal: Box::new(self_datum_normal(1.0, 0.0, 0.0)),
-        },
-        "zx_plane" => reify_ir::Value::Plane {
-            origin: Box::new(self_datum_origin_point()),
-            normal: Box::new(self_datum_normal(0.0, 1.0, 0.0)),
-        },
-        // SELF_DATUM_PROJECTION_MEMBERS is the exhaustive gate above; defensive.
-        _ => return None,
-    })
-}
-
-/// Returns `true` if `expr` contains any intrinsic `self`-datum projection node.
-///
-/// Gates the clone+rewrite+re-eval pass so cells without self-datums are not
-/// re-evaluated. Uses the canonical [`reify_ir::CompiledExpr::walk`] traversal
-/// (visits self + every sub-expression), so it needs no hand-rolled recursion.
-pub(crate) fn contains_self_datum_projection(expr: &reify_ir::CompiledExpr) -> bool {
-    let mut found = false;
-    expr.walk(&mut |e| {
-        if try_eval_self_datum_projection(e).is_some() {
-            found = true;
-        }
-    });
-    found
-}
-
-/// Rewrite every intrinsic `self`-datum projection node within `expr` in-place
-/// to a [`reify_ir::CompiledExpr::literal`] holding its intrinsic constant
-/// (preserving the projection's `result_type`), so the pure `eval_expr`
-/// evaluates the containing cell — including NESTED operands such as
-/// `midplane(self.xy_plane, self.zx_plane)`.
-///
-/// Mirrors [`crate::structural_query`]'s `expand_structural_query` `&mut`
-/// tree-walk (there is no generic `walk_mut`): each `MethodCall` on a
-/// `StructureRef` receiver naming a self-datum is replaced by its constant,
-/// otherwise the walk recurses into sub-expressions.
-pub(crate) fn rewrite_self_datum_projections(expr: &mut reify_ir::CompiledExpr) {
-    use reify_ir::CompiledExprKind as K;
-    // Replace this node if it is itself a self-datum projection.
-    if let Some(value) = try_eval_self_datum_projection(expr) {
-        *expr = reify_ir::CompiledExpr::literal(value, expr.result_type.clone());
-        return;
-    }
-    match &mut expr.kind {
-        K::Literal(_)
-        | K::ValueRef(_)
-        | K::CrossSubGeometryRef(_)
-        | K::OptionNone
-        | K::MetaAccess { .. }
-        | K::DeterminacyPredicate { .. }
-        | K::PurposeReflectiveAggregation { .. } => {}
-        K::BinOp { left, right, .. } => {
-            rewrite_self_datum_projections(left);
-            rewrite_self_datum_projections(right);
-        }
-        K::UnOp { operand, .. } => rewrite_self_datum_projections(operand),
-        K::FunctionCall { args, .. } | K::UserFunctionCall { args, .. } => {
-            for arg in args {
-                rewrite_self_datum_projections(arg);
-            }
-        }
-        K::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            rewrite_self_datum_projections(condition);
-            rewrite_self_datum_projections(then_branch);
-            rewrite_self_datum_projections(else_branch);
-        }
-        K::Match { discriminant, arms } => {
-            rewrite_self_datum_projections(discriminant);
-            for arm in arms {
-                rewrite_self_datum_projections(&mut arm.body);
-            }
-        }
-        K::Lambda { body, .. } => rewrite_self_datum_projections(body),
-        K::ListLiteral(elements)
-        | K::SetLiteral(elements)
-        | K::ReflectiveCellList(elements) => {
-            for elem in elements {
-                rewrite_self_datum_projections(elem);
-            }
-        }
-        K::MapLiteral(entries) => {
-            for (key, val) in entries {
-                rewrite_self_datum_projections(key);
-                rewrite_self_datum_projections(val);
-            }
-        }
-        K::IndexAccess { object, index } => {
-            rewrite_self_datum_projections(object);
-            rewrite_self_datum_projections(index);
-        }
-        K::MethodCall { object, args, .. } => {
-            rewrite_self_datum_projections(object);
-            for arg in args {
-                rewrite_self_datum_projections(arg);
-            }
-        }
-        K::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            rewrite_self_datum_projections(collection);
-            rewrite_self_datum_projections(predicate);
-        }
-        K::OptionSome(inner) => rewrite_self_datum_projections(inner),
-        K::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                rewrite_self_datum_projections(lo);
-            }
-            if let Some(hi) = upper {
-                rewrite_self_datum_projections(hi);
-            }
-        }
-        K::AdHocSelector { base, args, .. } => {
-            rewrite_self_datum_projections(base);
-            for arg in args {
-                rewrite_self_datum_projections(arg);
-            }
-        }
-        K::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                rewrite_self_datum_projections(arg);
-            }
-            for (_, def) in defaults {
-                rewrite_self_datum_projections(def);
-            }
-        }
-        K::ResolveSelector { selector } => rewrite_self_datum_projections(selector),
-    }
-}
-
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
 ///
 /// PREFERRED path: inline reconstruction from a nested selector FunctionCall
@@ -8902,6 +8677,87 @@ fn resolve_index_usize(
     }
 }
 
+/// Kernel-aware `flat_map(list, |x| body)` over relational topology selectors,
+/// e.g. `flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))`: binds each
+/// list element to the lambda param and concatenates the `List`s the body
+/// yields through [`try_eval_topology_selector`].
+///
+/// `None` means "not mine; keep the pure-eval value". It is returned unless the
+/// list arg is a `ValueRef` to a `List` or a call this function resolves to a
+/// `List`, the lambda has one param and a `FunctionCall` body, and every
+/// element's body resolves to a `List`. A `Selector`-valued list arg such as
+/// `faces(b)` is not supported. `Some(Undef)` only propagates a kernel failure
+/// the nested helper already reported. The diagnostics the walk's nested
+/// helpers report are kept only with a `Some`: a declined cell leaves none.
+///
+/// A `ValueRef` list arg reads another selector cell's resolved `List`, so its
+/// result depends on that cell being hydrated first: UnifiedDag's HydrateCell
+/// walk guarantees it; the whole-template post-process sees it only when that
+/// cell is declared first (see `Engine::post_process_topology_selectors`).
+///
+/// It is reached from inside `try_eval_topology_selector` so both hydration
+/// ladders, a nested `flat_map` and the `single(...)` fallback share one entry.
+fn try_eval_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let mut walk_diagnostics = Vec::new();
+    let walked = walk_topology_flat_map(args, named_steps, values, kernel, &mut walk_diagnostics)?;
+    diagnostics.append(&mut walk_diagnostics);
+    Some(walked)
+}
+
+/// The walk behind [`try_eval_topology_flat_map`]. It reports into
+/// `diagnostics` even on the paths that return `None`.
+fn walk_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let [list_arg, lambda_arg] = args else {
+        return None;
+    };
+    let (param_id, body) = match &lambda_arg.kind {
+        reify_ir::CompiledExprKind::Lambda {
+            param_ids, body, ..
+        } if param_ids.len() == 1 => (&param_ids[0], body.as_ref()),
+        _ => return None,
+    };
+    if !matches!(body.kind, reify_ir::CompiledExprKind::FunctionCall { .. }) {
+        return None;
+    }
+    let items = match &list_arg.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id)? {
+            reify_ir::Value::List(items) => items.clone(),
+            _ => return None,
+        },
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(list_arg, named_steps, values, kernel, diagnostics)? {
+                reify_ir::Value::List(items) => items,
+                reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let mut scope = values.clone();
+    let mut out = Vec::new();
+    for item in items {
+        scope.insert(param_id.clone(), item);
+        match try_eval_topology_selector(body, named_steps, &scope, kernel, diagnostics)? {
+            reify_ir::Value::List(sub) => out.extend(sub),
+            reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+            _ => return None,
+        }
+    }
+    Some(reify_ir::Value::List(out))
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
@@ -8914,6 +8770,13 @@ pub(crate) fn try_eval_topology_selector(
         reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
+
+    // (1b) `flat_map` is a generic combinator, checked before the helper-name
+    // match (which would reject it); it claims the cell only when its lambda
+    // body resolves through this function.
+    if function.name == "flat_map" {
+        return try_eval_topology_flat_map(args, named_steps, values, kernel, diagnostics);
+    }
 
     // (2) Must be one of the recognised helper names.
     let helper = match function.name.as_str() {
@@ -10377,7 +10240,7 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
         }
         reify_ir::Value::Point(_) => "Point with a non-Length or non-Scalar component".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -10583,7 +10446,7 @@ fn vec3_got_label(value: &reify_ir::Value) -> String {
             "Vector with a dimensioned or non-numeric component".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Point(_) => "Point".to_string(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
@@ -10818,7 +10681,7 @@ fn range_got_label(value: &reify_ir::Value) -> String {
             "Range with a wrong-dimension or non-Scalar bound".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -11830,7 +11693,7 @@ fn string_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -12389,24 +12252,6 @@ fn fold_pose_chain<'a>(poses: impl Iterator<Item = &'a reify_ir::Value>) -> reif
     })
 }
 
-/// Human-readable label for a [`reify_core::DimensionVector`], suitable for a
-/// user-facing diagnostic.
-///
-/// [`reify_core::DimensionVector::canonical_name`] deliberately excludes
-/// `DIMENSIONLESS` from its named-singleton table and returns `None` for it —
-/// which is precisely the case task 6099 is about — so the dimensionless check
-/// comes FIRST and yields the literal `"dimensionless"`. Unnamed composite
-/// dimensions (e.g. `MONEY/MASS`) fall through to the `Display` exponent form.
-fn dimension_label(d: reify_core::DimensionVector) -> String {
-    if d.is_dimensionless() {
-        return "dimensionless".to_string();
-    }
-    match d.canonical_name() {
-        Some(name) => name.to_string(),
-        None => format!("{d}"),
-    }
-}
-
 /// The translation dimension of a pose [`reify_ir::Value::Transform`], if it has one.
 ///
 /// Goes through the `translation` field on purpose: `Value::dimension()` called
@@ -12538,8 +12383,8 @@ pub(crate) fn diagnose_pose_composition_failure(
              cannot be composed, so `{sub_name}` would be placed at the origin. \
              Give the pose length-dimensioned components, e.g. \
              `vec3(5.0mm, 0.0mm, 0.0mm)`.",
-            dimension_label(sd),
-            dimension_label(pd),
+            sd.diagnostic_dimension_label(),
+            pd.diagnostic_dimension_label(),
         )));
     }
 
@@ -13233,3 +13078,6 @@ mod tests;
 
 #[cfg(test)]
 mod dispatch_table_uniqueness;
+
+#[cfg(test)]
+mod flat_map_tests;

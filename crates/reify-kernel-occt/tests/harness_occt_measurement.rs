@@ -72,6 +72,8 @@ mod common;
 mod analytic_datum_tests;
 #[path = "harness_occt_measurement/boolean_result_normalization_integration.rs"]
 mod boolean_result_normalization_integration;
+#[path = "harness_occt_measurement/box_primitive_axes_integration.rs"]
+mod box_primitive_axes_integration;
 #[path = "harness_occt_measurement/chamfer_with_history_integration.rs"]
 mod chamfer_with_history_integration;
 #[path = "harness_occt_measurement/closest_point_on_shape_integration.rs"]

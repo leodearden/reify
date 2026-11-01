@@ -1004,23 +1004,22 @@ fn real_stdlib_build_is_collision_free() {
 // guard against a future implementer coarsening the scan and detonating the
 // real stdlib build:
 //
-//   (g) cross-module function OVERLOADS — `unwrap_or` (option_recovery.ri:37 vs
-//       result.ri:52), `or_else` (:42 vs :57), `fallback` (:56 vs :75). Three
-//       real pairs. Keying functions by name alone panics the real build.
-//   (h) cross-KIND name reuse — `structure def Planar` (kinematic.ri:163) vs
-//       `trait Planar {}` (geometry_traits.ri:56).
+//   (g) cross-module function OVERLOADS — `unwrap_or`, `or_else` and
+//       `fallback`, each declared in both option_recovery.ri and result.ri.
+//       Three real pairs. Keying functions by name alone panics the real build.
+//   (h) cross-KIND name reuse — `structure def Planar` (kinematic.ri) vs
+//       `trait Planar {}` (geometry_traits.ri).
 //   (i) ASSOCIATED types are not module-level type aliases — `type MotionValue`
-//       is declared in `trait HasMotion` (kinematic.ri:110) and bound in
-//       `Prismatic` (:133), `Revolute` (:151) and `Coupling` (:198). A syntactic
+//       is declared in `trait HasMotion` (kinematic.ri) and bound in
+//       `Prismatic`, `Revolute` and `Coupling`. A syntactic
 //       `^\s*(pub )?type <name>` scan sees four `MotionValue`s and panics on day
 //       one; reading `CompiledModule.type_aliases` (module-level only) does not.
 //
 // Deliberately NOT covered: INTRA-module duplicates. `displacement_at` x2
-// (modal_analysis_fns.ri:153,193), `solve_elastic_static` x3
-// (solver_elastic.ri:727,768,809) and `solve_load_cases` x2
-// (fea_multi_case.ri:653,700) are all same-module overloads, out of a
-// cross-module scan's reach by construction, and remain the business of the
-// per-module duplicate path at ctx.rs:157.
+// (modal_analysis_fns.ri), `solve_elastic_static` x3 (solver_elastic.ri) and
+// `solve_load_cases` x2 (fea_multi_case.ri) are all same-module overloads, out
+// of a cross-module scan's reach by construction, and remain the business of
+// the per-module duplicate path (`record_or_report_duplicate` in ctx.rs).
 
 /// Assert that building `sources` does NOT panic — the negative counterpart of
 /// [`assert_collision_panic`].
@@ -1162,8 +1161,8 @@ fn cross_module_function_overloads_are_accepted() {
 }
 
 /// (h) Cross-KIND name reuse must be accepted — per-kind namespaces. Mirrors
-/// `structure def Planar` (kinematic.ri:163) and `trait Planar {}`
-/// (geometry_traits.ri:56). A kind-agnostic scan would force an out-of-scope
+/// `structure def Planar` (kinematic.ri) and `trait Planar {}`
+/// (geometry_traits.ri). A kind-agnostic scan would force an out-of-scope
 /// rename of `Planar`.
 #[test]
 fn cross_kind_name_reuse_is_accepted() {
@@ -1180,7 +1179,7 @@ fn cross_kind_name_reuse_is_accepted() {
 
 /// (i) ASSOCIATED types are members of their template, not module-level
 /// aliases, so the same associated-type name in two modules must be accepted.
-/// Mirrors `type MotionValue` in `trait HasMotion` (kinematic.ri:110) and its
+/// Mirrors `type MotionValue` in `trait HasMotion` (kinematic.ri) and its
 /// bindings in `Prismatic` / `Revolute` / `Coupling`.
 ///
 /// This is the case that makes "scan the materialized surface, not the syntax"

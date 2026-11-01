@@ -57,9 +57,9 @@ fn make_box_kernel() -> (OcctKernel, reify_ir::GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(BOX_10MM),
-            height: Value::Real(BOX_10MM),
-            depth: Value::Real(BOX_10MM),
+            size_x: Value::Real(BOX_10MM),
+            size_y: Value::Real(BOX_10MM),
+            size_z: Value::Real(BOX_10MM),
         })
         .expect("10mm cube creation should succeed");
     (kernel, h.id)

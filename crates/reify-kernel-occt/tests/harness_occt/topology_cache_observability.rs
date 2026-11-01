@@ -16,9 +16,9 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box creation should succeed");
     (kernel, box_h.id)

@@ -180,7 +180,7 @@ fn edit_param_revaluates_in_driver_schedule_order() {
     // re-evaluation order restricted to the eval_set.
     let started: Vec<NodeId> = engine.journal().all_events()[len_before..]
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .map(|e| e.node_id.clone())
         .collect();
 
@@ -850,7 +850,7 @@ fn edit_source_revaluates_in_driver_schedule_order() {
 
     let started: Vec<NodeId> = engine.journal().all_events()[len_before..]
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .map(|e| e.node_id.clone())
         .collect();
 

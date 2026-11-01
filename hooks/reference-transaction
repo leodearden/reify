@@ -202,15 +202,15 @@ STASH_REFUSAL
     if [ -e "$sentinel" ]; then
         _token="$(main_gate_token)"
         rm -f "$sentinel" 2>/dev/null
-        if [ -z "$_token" ]; then
-            main_gate_log "sanctioned (legacy unbound sentinel) main move ${_old} -> ${_new}"
-            continue
-        fi
         if [ "$_token" = "$_old" ]; then
             main_gate_log "sanctioned main move ${_old} -> ${_new}"
             continue
         fi
-        main_gate_log "stale sentinel ${_token} discarded"
+        if [ -n "$_token" ]; then
+            main_gate_log "stale sentinel ${_token} discarded"
+        else
+            main_gate_log "unbound (empty) sentinel discarded"
+        fi
     fi
 
     main_gate_log "UNSANCTIONED main move ${_old} -> ${_new}"

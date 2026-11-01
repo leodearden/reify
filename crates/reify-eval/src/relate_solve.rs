@@ -25,10 +25,11 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, comparable_datum_operands,
-    max_relation_residual, ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame,
-    solve_frame, static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
+    max_relation_exceedance, ResidualRow, partition_driving_set, pose_from_frame, solve_frame,
+    solve_scaling, static_relation_residuals,
 };
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
 
@@ -577,8 +578,8 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
 /// StructureRef), method, [] }` (η step-8/10) — distinct from a `<sub>.<member>`
 /// `IndexAccess` (which [`decode_operand`] owns). So a no-arg `MethodCall` on a
 /// `StructureRef`-typed receiver is the `self` anchor operand. Mirrors the
-/// self-datum discriminator the compiler's `classify` / eval's
-/// `try_eval_self_datum_projection` use.
+/// self-datum discriminator the compiler's `classify` / reify-expr's
+/// `eval_self_datum_projection` use.
 ///
 /// The member name is carried rather than a bare `bool` so the zero-auto verifier
 /// can NAME the operand (`self.frame`) it could not compare against; the two
@@ -816,10 +817,13 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // datums already encode the target, so identity is the correct witness here.
     let seed = Pose::identity();
 
-    // 2. Partition at the witness into driving + redundant; the rank-revealing
-    //    tolerance is tied to the solver-convergence tol (design §4).
-    let partition =
-        partition_driving_set(instances, &frame_unknown, &seed, tol.solver_convergence());
+    // ONE scaling for the whole scope, over every instance at the seed, so the
+    // partition, the solve, the conflict search and the re-check share one `L`.
+    let scaling = solve_scaling(instances, &frame_unknown, &seed, tol);
+
+    // 2. Partition at the witness into driving + redundant, by the rank of the
+    //    scaled Jacobian.
+    let partition = partition_driving_set(instances, &frame_unknown, &seed, &scaling);
 
     let mut solution = RelateSolution {
         spent: partition.spent,
@@ -833,7 +837,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // 3. Solve ONLY the driving set for the auto Frame.
     let driving_rels: Vec<RelationInstance> =
         partition.driving.iter().map(|&i| instances[i].clone()).collect();
-    let result = solve_frame(&driving_rels, &frame_unknown, &seed, tol.solver_convergence());
+    let result = solve_frame(&driving_rels, &frame_unknown, &seed, &scaling);
 
     let solved_pose = match result {
         // The solver's `unique` flag is intentionally not consumed here. For strict
@@ -867,7 +871,7 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
                 &partition.driving,
                 &frame_unknown,
                 &seed,
-                tol.solver_convergence(),
+                &scaling,
             );
             solution.diagnostics.push(conflict_diagnostic(&conflict, &built, &frame_unknown.sub));
             None
@@ -890,9 +894,15 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     if let Some(pose) = solved_pose {
         for &i in &partition.redundant {
             let rel = &instances[i];
-            let resid =
-                max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
-            if resid <= tol.assertion() {
+            // Each row against the assertion rung for its own unit, the metre rung
+            // scaled with the scope's `L` (PRD §7.3 "Coherence at every scale").
+            let exceedance = max_relation_exceedance(
+                std::slice::from_ref(rel),
+                &frame_unknown,
+                &pose,
+                |u| scaling.assertion_rung(u),
+            );
+            if exceedance <= 1.0 {
                 // Satisfied within the assertion tolerance ⇒ silent (a consistent
                 // redundant relation, B2): an opt-in lint hook only, no diagnostic.
                 continue;
@@ -999,9 +1009,10 @@ enum StaticVerdict {
 ///    relation name / operand-kind combination. Never folded into "satisfied".
 ///    Arm 4 runs first so this arm's reason is only ever given for a genuinely
 ///    UNMODELLED combination;
-/// 6. otherwise each row against the assertion rung for ITS OWN unit
-///    ([`assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
-///    violated.
+/// 6. otherwise each row against the ABSOLUTE assertion rung for ITS OWN unit
+///    ([`RelateTolerance::absolute_assertion_rung`], which says why it does not
+///    scale with the model): every row within ⇒ verified (silent), any row beyond
+///    ⇒ violated.
 ///
 /// The counts therefore always sum to the scope's relation count, which is what
 /// makes a silently-skipped relation impossible to hide.
@@ -1025,7 +1036,7 @@ enum StaticVerdict {
 /// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
 /// degrees for an orientation row, and a bare number for a direction/dot/cosine
 /// row, which has no length reading at all. That same unit tag also selects the
-/// rung the row is JUDGED against ([`assertion_rung`]) — rendering a row in one
+/// rung the row is JUDGED against ([`RelateTolerance::absolute_assertion_rung`]) — rendering a row in one
 /// unit while thresholding it in another would leave the category error in place
 /// where it does the most damage, since a static violation FAILS the build. [`conflict_diagnostic`] is deliberately NOT reused: it
 /// needs an auto sub and a driving/redundant partition that a zero-auto scope does
@@ -1207,26 +1218,13 @@ fn static_verdict(
     let (dominant, exceedance) = rows
         .iter()
         .copied()
-        .map(|row| (row, row.value.abs() / assertion_rung(row.unit, &tol)))
+        .map(|row| (row, row.value.abs() / tol.absolute_assertion_rung(row.unit)))
         .reduce(|m, r| if r.1 > m.1 { r } else { m })
         .expect("rows is non-empty — the empty case returned Unverifiable above");
     if exceedance <= 1.0 {
         StaticVerdict::Verified
     } else {
         StaticVerdict::Violated(dominant, inst)
-    }
-}
-
-/// The assertion rung a residual row is judged against — the one for ITS unit.
-///
-/// The three rungs are all derived from [`RelateTolerance`]'s single base length
-/// (see [`RelateTolerance::assertion_angle`]), so they move together under an edit
-/// to the hierarchy and cannot drift into three independent hand-picked epsilons.
-fn assertion_rung(unit: ResidualUnit, tol: &RelateTolerance) -> f64 {
-    match unit {
-        ResidualUnit::Length => tol.assertion(),
-        ResidualUnit::Angle => tol.assertion_angle(),
-        ResidualUnit::Dimensionless => tol.assertion_dimensionless(),
     }
 }
 
@@ -1255,7 +1253,7 @@ fn self_anchor_operand_name(rel: &CompiledExpr) -> Option<String> {
 /// dominant `concentric` row for the B1 fixture is `−0.03`, which read out as "off
 /// by −30 mm" — and "off by" states a distance from satisfaction, which has no
 /// direction a reader can act on. Unsigned is also the pre-existing convention on
-/// this path: `max_relation_residual` accumulates `r.abs()`, and every other
+/// this path: `max_relation_exceedance` folds `|r_i|`, and every other
 /// reader-facing magnitude here is a magnitude. Taken ONCE, here, so all three arms
 /// agree rather than each remembering.
 fn fmt_residual(row: ResidualRow) -> String {
@@ -1426,7 +1424,7 @@ pub fn solve_scopes(
 struct ScopeInstances<'a> {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
-    /// `solve_frame`, `max_relation_residual`, `minimal_infeasible_subset`) expects
+    /// `solve_frame`, `max_relation_exceedance`, `minimal_infeasible_subset`) expects
     /// and returns POSITIONS into.
     instances: Vec<RelationInstance>,
     /// `sources[i]` is the `scope.relations` index `instances[i]` was built from,
@@ -1712,13 +1710,13 @@ fn minimal_infeasible_subset(
     driving: &[usize],
     unknown: &FrameUnknown,
     seed: &Pose,
-    tol: f64,
+    scaling: &SolveScaling,
 ) -> Vec<usize> {
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
             let pair = [instances[i].clone(), instances[j].clone()];
             if matches!(
-                solve_frame(&pair, unknown, seed, tol),
+                solve_frame(&pair, unknown, seed, scaling),
                 SolveResult::Infeasible { .. }
             ) {
                 return vec![i, j];
@@ -2440,8 +2438,8 @@ structure PerpendicularScope {
         // to pass the signed value straight to `fmt_mm`, so the Error read "off by
         // −30 mm". A residual's sign is an artefact of operand order and tangent-
         // frame choice; "off by" is a distance from satisfaction and has no
-        // direction to carry. `max_relation_residual` is the sibling convention
-        // (it accumulates `r.abs()`).
+        // direction to carry. `max_relation_exceedance` is the sibling convention
+        // (it folds `|r_i|`).
         assert!(
             d.message.contains("off by 30 mm") && d.message.contains("off by 5 mm"),
             "both measured magnitudes must render unsigned, in mm; got {:?}",
@@ -2459,6 +2457,32 @@ structure PerpendicularScope {
                 violated: 2,
                 unverifiable: 0,
             })
+        );
+    }
+
+    /// A static scope is held to the ABSOLUTE metre rung however large the model:
+    /// a 5e-5 m `flush` miss among datums spread over 20 m is a violation, although
+    /// a solved scope of that size accepts it under its `L`-scaled rung.
+    #[test]
+    fn verify_static_scope_holds_a_large_model_to_the_absolute_metre_rung() {
+        let miss = 5e-5;
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v((20.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v((0.0, 0.0, miss), (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&scope("StaticScope"), &datums);
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "`concentric` holds and the 5e-5 m `flush` miss exceeds the absolute \
+             1e-5 m rung; got {:?}",
+            solution.diagnostics
         );
     }
 

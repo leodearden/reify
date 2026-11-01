@@ -92,6 +92,10 @@
 #       gen's lock impossible to OPEN while the caller has leaked an unrelated
 #       FD 9 into gc — the seed must still not run, rather than "lock" the
 #       leaked file and proceed with no reader lock on the gen
+#   U — PROTECT_GLOB / LANE_GLOB are matched as patterns, never pathname-
+#       expanded against the caller's CWD (task 9661): run from a CWD holding
+#       _mainsweep-decoy/ and _lane-decoy/, the DEFAULT globs must still protect
+#       a clean landed _mainsweep-* worktree and reset (not remove) a _lane-*
 #
 # The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
 # task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
@@ -2306,6 +2310,62 @@ assert "T4c: a stderr line says gc cannot pin a base generation" \
     bash -c 'printf "%s\n" "$1" | grep -qF "cannot pin a base generation"' _ "$ERR_OUT"
 assert "T4d: the lane is reset cold (reset=1 removed=0 preserved=0, reset_cold=1)" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=0 .*reset_cold=1"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block U — PROTECT_GLOB / LANE_GLOB are matched as patterns, never
+# pathname-expanded against the caller's CWD (task 9661)
+# gc runs from whatever CWD its caller had. A split that also pathname-expands
+# turns `_mainsweep-*` into a literal decoy name when that CWD holds a matching
+# entry, so the protect glob fails OPEN and Pass 2 removes a clean landed
+# _mainsweep-* worktree; `_lane-*` collapses the same way and a pool lane is
+# removed as an orphan instead of reset. DF-faithful like Block M: --mount only,
+# so the DEFAULT comma lists are what is tested (`_mainsweep-*` is the third
+# element of the protect list, so the comma split is exercised too).
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block U: PROTECT_GLOB / LANE_GLOB are CWD-independent ---"
+
+U_ROOT="$(mktemp -d /tmp/test-gc-u-XXXXXX)"
+_TMPDIRS+=("$U_ROOT")
+make_gc_fixture "$U_ROOT"
+U_REPO="$U_ROOT/repo"
+U_WORKTREES="$U_ROOT/worktrees"
+
+# Clean and landed, so ONLY the default protect glob keeps Pass 2 off it.
+git -C "$U_REPO" worktree add -q "$U_WORKTREES/_mainsweep-abcd1234"
+touch "$U_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
+
+# A pool lane: must be reset via the seed stub, never removed as an orphan.
+make_task_lane "$U_REPO" "$U_WORKTREES" "_lane-1" "task/9661"
+
+U_CWD="$(mktemp -d /tmp/test-gc-u-cwd-XXXXXX)"
+_TMPDIRS+=("$U_CWD")
+mkdir -p "$U_CWD/_mainsweep-decoy" "$U_CWD/_lane-decoy"
+
+U_SEED_LOG="$U_ROOT/seed_calls.log"
+U_SEED_STUB="$U_ROOT/seed_stub.sh"
+_seed_stub_body > "$U_SEED_STUB"
+chmod +x "$U_SEED_STUB"
+export SEED_LOG="$U_SEED_LOG"
+
+assert "U0: fixture precondition — _mainsweep-* and _lane-* really expand to the decoys in U_CWD" \
+    bash -c 'cd "$1" && set -- _mainsweep-* && [ "$1" = _mainsweep-decoy ] && set -- _lane-* && [ "$1" = _lane-decoy ]' _ "$U_CWD"
+
+pushd "$U_CWD" >/dev/null
+run_helper reclaim \
+    --mount "$U_WORKTREES" \
+    --seed-script "$U_SEED_STUB"
+popd >/dev/null
+
+assert "U1: exit 0" test "$RC" -eq 0
+assert "U2: _mainsweep-abcd1234 preserved with PROTECTED_MARKER intact (protect glob fails CLOSED from any CWD)" \
+    test -f "$U_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
+assert "U3: _lane-1 reset as a pool lane (seed stub invoked for it)" \
+    bash -c '[ -f "$1" ] && grep -q "_lane-1" "$1"' _ "$U_SEED_LOG"
+assert "U3: ...and not removed as an orphan" \
+    test -d "$U_WORKTREES/_lane-1"
+assert "U4: summary shows preserved=1 reset=1 removed=0 (nothing else protected or skipped)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1 removed=0 preserved=1 "' _ "$OUT"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Block TRASH: shared-trash litter guard (task 5612). Two asserts, deliberately

@@ -1,0 +1,4 @@
+[
+  { "file": "large_assembly.ri", "minRenderedBodies": 7, "minHiddenBodies": 0 },
+  { "file": "aux_assembly.ri", "minRenderedBodies": 3, "minHiddenBodies": 4 }
+]

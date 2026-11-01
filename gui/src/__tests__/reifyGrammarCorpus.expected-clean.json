@@ -312,6 +312,7 @@
   "tests/prd-gate/fixtures/driver_parity_auto_ctl.ri",
   "tests/prd-gate/fixtures/driver_parity_eq_plus_ineq.ri",
   "tests/prd-gate/fixtures/driver_parity_one_sided_auto.ri",
+  "tests/prd-gate/fixtures/driver_parity_one_sided_auto_free.ri",
   "tests/prd-gate/fixtures/driver_parity_relate_conflict.ri",
   "tests/prd-gate/fixtures/driver_parity_two_sided_auto.ri",
   "tests/prd-gate/fixtures/dwr_cantilever_energy.ri",

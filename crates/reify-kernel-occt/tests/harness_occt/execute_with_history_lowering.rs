@@ -26,9 +26,9 @@ fn cube_10mm(kernel: &mut OcctKernel) -> GeometryHandleId {
     make(
         kernel,
         GeometryOp::Box {
-            width: Value::length(10.0 * MM),
-            height: Value::length(10.0 * MM),
-            depth: Value::length(10.0 * MM),
+            size_x: Value::length(10.0 * MM),
+            size_y: Value::length(10.0 * MM),
+            size_z: Value::length(10.0 * MM),
         },
     )
 }
@@ -170,9 +170,9 @@ fn history_lowering_routes_each_op_to_its_record_kind() {
         ),
         (
             GeometryOp::Box {
-                width: Value::length(10.0 * MM),
-                height: Value::length(10.0 * MM),
-                depth: Value::length(10.0 * MM),
+                size_x: Value::length(10.0 * MM),
+                size_y: Value::length(10.0 * MM),
+                size_z: Value::length(10.0 * MM),
             },
             |h| matches!(h, AttributeHistory::None),
         ),

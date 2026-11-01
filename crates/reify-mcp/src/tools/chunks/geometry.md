@@ -127,7 +127,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 
 | Primitive | Anchor | Notes |
 |---|---|---|
-| `box` | **centred at origin**, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally; already centroid-centred |
+| `box` | **centred at origin**, all 3 axes | corner at `(-width/2, -depth/2, -height/2)` — width/depth/height are the X/Y/Z extents, which diagnostics and completion name `size_x`/`size_y`/`size_z`; already centroid-centred |
 | `box_centered` | **centred at origin**, all 3 axes | op-identical alias of `box` — exists for symmetry with `cylinder_centered` so a designer doesn't have to remember box is the odd one out |
 | `sphere` | **centred at origin** | radius extends equally in all directions from `(0,0,0)` |
 | `torus` | **centred at origin**; axis is **+Z** | major/minor radii both measured from the ring centred on the origin |

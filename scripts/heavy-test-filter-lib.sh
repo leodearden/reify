@@ -88,10 +88,12 @@ _REIFY_HEAVY_TEST_FILTER_LIB_SOURCED=1
 # a whole-binary atom would evict all of them to relieve one.
 #
 # MEASURED COST, stated plainly because it is smaller than the 7th atom's and
-# the difference matters: 66s / 93s / 105s across three runs on a contended
-# 32-core host -- roughly 5x cheaper than the producer's ~490s, but still ~30x
-# the harness's 2.25s per-test mean and consistently at or above nextest's 60s
-# SLOW threshold. It is the slowest test in the binary after the producer. The
+# the difference matters: 77s / 90s / 106s across three runs on a contended
+# 32-core host (1-min load average 47-93), measured for the explicit
+# field-reduction predicate `max(von_mises(.stress)) < yield_limit` (task #7333)
+# -- roughly 5x cheaper than the producer's ~490s, but still ~34-47x the
+# harness's 2.25s per-test mean and consistently above nextest's 60s SLOW
+# threshold. It is the slowest test in the binary after the producer. The
 # cost is irreducible rather than incidental: the assertion that earns the
 # runtime is that the auto thickness converges STRICTLY INTERIOR to its bounds,
 # which is what distinguishes a binding FEA stress constraint from a silent

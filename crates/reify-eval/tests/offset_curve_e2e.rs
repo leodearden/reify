@@ -29,7 +29,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib, scalar_si};
 
 // ── Source fixtures ──────────────────────────────────────────────────────────
 //
@@ -128,12 +128,7 @@ fn point3_si(value: &Value, what: &str) -> [f64; 3] {
         Value::Point(components) if components.len() == 3 => {
             let mut out = [0.0_f64; 3];
             for (i, comp) in components.iter().enumerate() {
-                out[i] = match comp {
-                    Value::Scalar { si_value, .. } => *si_value,
-                    other => {
-                        panic!("{what}: component {i} should be Scalar<Length>, got {other:?}")
-                    }
-                };
+                out[i] = scalar_si(comp, &format!("{what}: component {i}"));
             }
             out
         }

@@ -1,8 +1,8 @@
 //! Marlin-dialect parser.
 //!
 //! Line-based hand-written tokenizer — each line is `[CMD] [PARAM]*`
-//! where PARAM is `<letter><number>`. See plan design decision #2 for
-//! why a parser-generator dep is avoided.
+//! where PARAM is `<letter><number>`. No parser-generator dependency is
+//! used.
 //!
 //! Populated incrementally by the TDD steps in
 //! `docs/prds/v0_3/trajectory-input-shaping.md` §11 task μ.
@@ -23,8 +23,8 @@ use crate::error::{ParseError, ParseErrorKind};
 ///   by `tests/parse_errors.rs::line_counter_counts_blank_and_comment_lines`.)
 /// - Errors short-circuit: the first failing line aborts the whole parse
 ///   (via `?` propagation through `parse_line`). No further lines are
-///   consumed after the first failure. See plan design decision #8 for
-///   why partial-success recovery is out of scope at v0.3.
+///   consumed after the first failure. Partial-success recovery is out of
+///   scope at v0.3.
 pub fn parse_marlin(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
     let mut out = Vec::new();
     for (idx, raw) in src.split('\n').enumerate() {
@@ -45,7 +45,7 @@ pub fn parse_marlin(src: &str) -> Result<Vec<GcodeCommand>, ParseError> {
 ///
 /// Visible to `crate::klipper` so the Klipper parser reuses the
 /// comment-stripping logic verbatim (Klipper shares Marlin's `;`-to-EOL
-/// comment syntax). See plan reuse-item #2 / design decision #7.
+/// comment syntax).
 pub(crate) fn strip_comment_and_trim(line: &str) -> &str {
     let body = match line.find(';') {
         Some(idx) => &line[..idx],
@@ -62,7 +62,7 @@ pub(crate) fn strip_comment_and_trim(line: &str) -> &str {
 /// the authoritative dispatch for G0/G1/G2/G3/G92, standalone `F`, and
 /// the ignored-M-code allowlist (M82/M83/M104/M109). Do NOT duplicate
 /// these arms in `klipper.rs`; extend them here so both dialects stay
-/// in lock-step. See plan reuse-item #1 / design decision #7.
+/// in lock-step.
 pub(crate) fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, ParseError> {
     let mut tokens = line.split_whitespace();
     // Caller guarantees `line` is non-empty and non-whitespace (see
@@ -107,7 +107,7 @@ pub(crate) fn parse_line(line_no: usize, line: &str) -> Result<GcodeCommand, Par
             // Standalone feedrate: the leading token is itself an `F<number>`
             // parameter rather than a recognised G/M command code. Reject
             // `F` with no numeric body so the InvalidParameter diagnostic
-            // path (per plan step-8) is observable.
+            // path is observable.
             if let Some(body) = other.strip_prefix('F').or_else(|| other.strip_prefix('f')) {
                 if body.is_empty() {
                     return Err(ParseError {

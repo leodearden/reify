@@ -58,6 +58,8 @@ mod display_annotation_tests;
 mod display_style_appearance_tests;
 #[path = "harness_statement_semantics/feature_datum_axis_example_tests.rs"]
 mod feature_datum_axis_example_tests;
+#[path = "harness_statement_semantics/forall_connect_deferred_check_tests.rs"]
+mod forall_connect_deferred_check_tests;
 #[path = "harness_statement_semantics/forall_statement_lower_tests.rs"]
 mod forall_statement_lower_tests;
 #[path = "harness_statement_semantics/forall_statement_stub_tests.rs"]

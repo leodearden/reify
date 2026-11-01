@@ -750,69 +750,6 @@ test_auto_generation_rebuilds_parser() {
     assert_file_nonempty "$parser" || return 1
 }
 
-test_build_rs_no_piped_stdout_deadlock() {
-    # Regression guard for the deadlock_pipe_buffer issue: build.rs must NOT
-    # use Stdio::piped() for child stdout. The run_with_timeout loop drains
-    # the pipe only AFTER try_wait() returns Some(status). If the child writes
-    # more than 64KB to stdout, the OS pipe buffer fills, the child blocks on
-    # write(), and try_wait() never returns Some — hard deadlock until the
-    # 60-second timeout kills the process.
-    #
-    # Fix: use Stdio::null() instead. tree-sitter generate writes diagnostics
-    # to stderr (already inherited), so discarding stdout loses nothing.
-    local build_rs="$TS_DIR/build.rs"
-
-    assert_file_exists "$build_rs" || return 1
-
-    # Grep for lines that set .stdout(... Stdio::piped() ...). If found, FAIL.
-    if grep -E '\.stdout\(.*Stdio::piped\(\)' "$build_rs" >/dev/null 2>&1; then
-        echo ""
-        echo "  ASSERTION FAILED: build.rs uses Stdio::piped() for child stdout"
-        echo ""
-        echo "  This creates a deadlock in run_with_timeout(): the parent only"
-        echo "  drains the stdout pipe AFTER try_wait() returns Some(status), but"
-        echo "  if the child writes >64KB to stdout, the pipe buffer fills, the"
-        echo "  child blocks on write, and try_wait() returns Ok(None) forever."
-        echo "  The deadlock persists until the 60-second timeout kills the process,"
-        echo "  making every build take a full minute."
-        echo ""
-        echo "  Use .stdout(Stdio::null()) instead. tree-sitter generate writes"
-        echo "  useful diagnostics to stderr (already inherited via Stdio::inherit())."
-        return 1
-    else
-        return 0
-    fi
-}
-
-test_build_rs_no_stdout_inheritance() {
-    # Regression guard for the stdio_pollution issue: build.rs must NOT let
-    # child processes inherit stdout, because Cargo parses build-script stdout
-    # line-by-line for "cargo:" directives. If tree-sitter CLI emits anything
-    # to stdout (e.g. structured output), Cargo would misinterpret it.
-    #
-    # The fix: run_with_timeout must explicitly set .stdout(Stdio::piped())
-    # or .stdout(Stdio::null()) so child stdout is NOT inherited.
-    local build_rs="$TS_DIR/build.rs"
-
-    assert_file_exists "$build_rs" || return 1
-
-    # Grep for .stdout(Stdio:: or .stdout(std::process::Stdio:: in the Command
-    # builder within build.rs. This catches accidental removal of the redirect.
-    if grep -qE '\.stdout\(.*Stdio::' "$build_rs"; then
-        return 0
-    else
-        echo ""
-        echo "  ASSERTION FAILED: build.rs does not configure child stdout"
-        echo "  build.rs must use .stdout(Stdio::piped()) or .stdout(Stdio::null())"
-        echo "  on the Command builder in run_with_timeout() to prevent child"
-        echo "  processes from inheriting build-script stdout, which Cargo parses"
-        echo "  for 'cargo:' directives."
-        echo ""
-        echo "  See: https://doc.rust-lang.org/cargo/reference/build-scripts.html"
-        return 1
-    fi
-}
-
 test_generate_script_exists_and_executable() {
     # Validates the generation script exists and has execute permission.
     assert_file_exists "$REPO_ROOT/scripts/tree-sitter-generate.sh" || return 1

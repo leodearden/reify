@@ -161,7 +161,7 @@ pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
 }
 
 /// Usage line printed to stderr for any `reify check` usage error.
-pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
+pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
 
 /// Usage line printed to stderr for any `reify explain` usage error.
 pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";

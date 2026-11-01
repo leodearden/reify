@@ -81,6 +81,7 @@ fn lint_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
 mod tests {
     use reify_ast::MAX_MEMBER_NESTING_DEPTH;
     use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+    use reify_test_support::specialization_fixtures::single_keyed_sub_entries;
 
     use super::{lint_members, lint_module};
 
@@ -342,31 +343,9 @@ structure S {
     // --- recursion-set discriminator: keyed sub entries ---
 
     /// The overrides of the single keyed entry of the single `sub` member in
-    /// `members`, asserting the keyed lowering on the way through.
-    ///
-    /// NON-VACUITY guard shared by the two keyed tests below, in the same spirit
-    /// as the hand-rolled guards in the sub-body and port-body tests above: a
-    /// `priv` member the parser hoisted into `SubDecl.body` — or up to top level
-    /// — would already be found by a pre-existing recursion site, so it would
-    /// discriminate nothing.
+    /// `members`, via the shared non-vacuity guard [`single_keyed_sub_entries`].
     fn single_keyed_entry_overrides(members: &[reify_ast::MemberDecl]) -> &[reify_ast::MemberDecl] {
-        let subs: Vec<_> = members
-            .iter()
-            .filter_map(|m| match m {
-                reify_ast::MemberDecl::Sub(s) => Some(s),
-                _ => None,
-            })
-            .collect();
-        let sub = match subs.as_slice() {
-            [s] => *s,
-            other => panic!("fixture must contain exactly one Sub member, got {other:#?}"),
-        };
-        assert!(
-            sub.body.is_none(),
-            "the keyed form must lower with `body: None`, got {:#?}",
-            sub.body
-        );
-        match sub.keyed_members.as_slice() {
+        match single_keyed_sub_entries(members) {
             [entry] => &entry.overrides,
             other => panic!("fixture must lower to exactly one keyed entry, got {other:#?}"),
         }

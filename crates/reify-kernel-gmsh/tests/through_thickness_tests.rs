@@ -17,26 +17,7 @@ use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 /// Surface mesh of an axis-aligned 10×10×0.5 slab — six faces, two
 /// triangles per face = 12 triangles. The thickness direction is Z.
 fn slab_surface_mesh() -> Mesh {
-    let v = vec![
-        // Bottom face Z=0 (4 verts: 0..3)
-        0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 10.0, 0.0, 0.0, 10.0, 0.0,
-        // Top face Z=0.5 (4 verts: 4..7)
-        0.0, 0.0, 0.5, 10.0, 0.0, 0.5, 10.0, 10.0, 0.5, 0.0, 10.0, 0.5,
-    ];
-    let i = vec![
-        // Bottom (CCW from below)
-        0, 2, 1, 0, 3, 2, // Top
-        4, 5, 6, 4, 6, 7, // Side faces (we don't care about exact winding for this test)
-        0, 1, 5, 0, 5, 4, //
-        1, 2, 6, 1, 6, 5, //
-        2, 3, 7, 2, 7, 6, //
-        3, 0, 4, 3, 4, 7, //
-    ];
-    Mesh {
-        vertices: v,
-        indices: i,
-        normals: None,
-    }
+    reify_test_support::mesh_fixtures::prismatic_box_mesh(10.0, 10.0, 0.5)
 }
 
 /// Slab with only ONE tet spanning the thickness direction triggers a

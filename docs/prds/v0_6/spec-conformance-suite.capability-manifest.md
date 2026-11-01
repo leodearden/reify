@@ -162,7 +162,7 @@ no-lockstep-duplication invariant at four separate places.
 
 ### δ — #6762 · spec-conformance δ: check-faithful reify-test-support rung + library-vs-binary parity gate
 
-- **`four-named-infidelity-axes-are-real-and-symbol-level-verified`** — G6 branch 3: the PRD asserts reify-test-support is unfaithful to `reify check` on four axes. Verified at decompose: (1) the real `SimpleConstraintChecker` is injected only by reify-cli (crates/reify-cli/src/main.rs, mcp_context.rs) and the GUI — compile rungs default to the stub `CompileTimeIndeterminateChecker` (crates/reify-compiler); (2) crates/reify-test-support/src/helpers.rs `compile_source` compiles with an empty prelude while Engine::new evals against the full stdlib (`with_prelude`, `prelude_backed_functions`); (3) module identity is hardcoded; (4) MockConstraintChecker defaults every constraint Satisfied. All four are producer-present and fixable in-crate.
+- **`four-named-infidelity-axes-are-real-and-symbol-level-verified`** — G6 branch 3: the PRD asserts reify-test-support is unfaithful to `reify check` on four axes. Verified at decompose: (1) the real `SimpleConstraintChecker` is injected only by reify-cli (crates/reify-cli/src/main.rs, mcp_context.rs) (mcp_context.rs was deleted by bbfbc7dd29 (#6665) after decompose) and the GUI — compile rungs default to the stub `CompileTimeIndeterminateChecker` (crates/reify-compiler); (2) crates/reify-test-support/src/helpers.rs `compile_source` compiles with an empty prelude while Engine::new evals against the full stdlib (`with_prelude`, `prelude_backed_functions`); (3) module identity is hardcoded; (4) MockConstraintChecker defaults every constraint Satisfied. All four are producer-present and fixable in-crate.
   - verdict **PASS** · check: `grep -E 'check_source_as'` in `crates/reify-test-support/src` → **present**
 - **`trusted-binary-freshness-substrate-is-LANDED`** — G3: the parity gate's staleness refusal leans on the sha-sidecar mechanism from task #5133 (status `done`). Verified present at HEAD: `resolve_trusted_reify_bin` / `target/.reify-bin-sha` in scripts/reify-bin-freshness.sh, scripts/verify.sh and scripts/prd-gate-substrate-guard.sh. A stale binary must yield UNPROVABLE with an attributable reason, never a verdict.
   - verdict **PASS** · check: `grep -E 'reify-bin-sha'` in `crates/reify-spec-conformance, crates/reify-test-support` → **present**
@@ -261,7 +261,7 @@ no-lockstep-duplication invariant at four separate places.
 - **`pbless-is-trailing-quality-control-not-a-blocking-gate`** — Scope fence, deliberate: sampling re-adjudication rides /audit and is NON-blocking. Blocking on a sampled LLM re-adjudication would make merge outcomes non-deterministic. The blocking gate is ν's mechanical hash check.
   - verdict **PASS** · check: `grep -E 'PBLESS'` in `crates/reify-audit/src` → **present**
 - **`audit-pattern-registration-convention-is-live`** — G3: same convention as ζ — enum variant + module + dispatch arm + `--pattern` registration in crates/reify-audit, verified present for PTODO/PDOCCOVER at HEAD.
-  - verdict **PASS** · check: `grep -E 'PBLESS'` in `crates/reify-audit/src/lib.rs` → **present**
+  - verdict **PASS** · check: `grep -E 'PBLESS'` in `crates/reify-audit/src/lib.rs` or `crates/reify-audit/src/model.rs` → **present** (widened 2026-10-26: #8806 moved the Pattern enum into model.rs)
 
 ### ο — #6774 · spec-conformance ο: loud-rename unfaithful rungs + call-site migration ratchet
 

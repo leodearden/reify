@@ -26,8 +26,10 @@
 //! chain inside `IndexAccess.index` or a `FunctionCall.args` element) are
 //! detected too.
 
-use reify_ast::{Expr, ExprKind, ParsedModule};
+use reify_ast::{Expr, ExprKind, MemberDecl, ParsedModule, walk_all_member_bodies};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
+
+use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
 
 /// Maximum allowed chain length before the lint fires.
 ///
@@ -35,24 +37,6 @@ use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel};
 /// (i.e., `N - 1` levels of `MemberAccess` wrapping). At threshold = 4, the
 /// chain `a.b.c.d` is OK; `a.b.c.d.e` (length 5) warns.
 pub(crate) const DEEP_DOT_CHAIN_THRESHOLD: usize = 4;
-
-/// Stack-safety bound on the structural recursion in [`walk_expr`].
-///
-/// The chain-counting `while let` loop in the `MemberAccess` arm is iterative
-/// and unbounded (a single chain of N segments is one frame). The exposure is
-/// the structural recursion through children of every other `ExprKind` variant
-/// — a deeply-nested `Conditional`/`BinOp`/`Lambda` tree, possibly synthesised
-/// by a fuzzer or a future parser bug, would burn one Rust frame per level.
-/// 256 is generous (typical hand-written code never exceeds ~20) and stops well
-/// short of overflowing default Rust stacks.
-///
-/// Exceeding this bound is treated as a "should never happen" invariant
-/// violation: in debug/test builds (i.e. when `debug_assertions` are enabled)
-/// `walk_expr_depth` fires a `debug_assert!(false, …)` so that fuzzers and the
-/// test suite catch a regression immediately via a panic. Release builds keep
-/// the existing silent-`return` fast-path — the `debug_assert!` compiles out —
-/// leaving production behaviour unchanged.
-const MAX_EXPR_DEPTH: usize = 256;
 
 /// Visit every expression-bearing position in `parsed` and emit a Warning for
 /// each maximal `MemberAccess` chain whose length exceeds
@@ -73,6 +57,8 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 /// Visits:
 ///   * `Structure`/`Occurrence`/`Trait`/`Purpose`: `annotations[*].args` +
 ///     `members` (delegates to [`walk_members`]).
+///   * `Purpose` also: each of its `structures`, walked like a top-level
+///     `Structure` (delegates to [`walk_structure`]).
 ///   * `Function`: `annotations[*].args` + `body.let_bindings[*].value` +
 ///     `body.result_expr`.
 ///   * `Field`: `annotations[*].args` + `source` (Analytical/Composed `expr`,
@@ -85,21 +71,21 @@ pub(crate) fn lint_module(parsed: &ParsedModule, diagnostics: &mut Vec<Diagnosti
 fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnostic>) {
     use reify_ast::{Declaration, FieldSource};
     match decl {
-        Declaration::Structure(s) => {
-            walk_annotations(&s.annotations, diagnostics);
-            walk_members(&s.members, diagnostics, 0);
-        }
+        Declaration::Structure(s) => walk_structure(s, diagnostics),
         Declaration::Occurrence(o) => {
             walk_annotations(&o.annotations, diagnostics);
-            walk_members(&o.members, diagnostics, 0);
+            walk_members(&o.members, diagnostics);
         }
         Declaration::Trait(t) => {
             walk_annotations(&t.annotations, diagnostics);
-            walk_members(&t.members, diagnostics, 0);
+            walk_members(&t.members, diagnostics);
         }
         Declaration::Purpose(p) => {
             walk_annotations(&p.annotations, diagnostics);
-            walk_members(&p.members, diagnostics, 0);
+            walk_members(&p.members, diagnostics);
+            for s in &p.structures {
+                walk_structure(s, diagnostics);
+            }
         }
         Declaration::Function(f) => {
             walk_annotations(&f.annotations, diagnostics);
@@ -168,8 +154,23 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
     }
 }
 
-/// Recurse through a member list, walking every expression-bearing position
-/// of every `MemberDecl` variant.
+/// Walk a structure's `annotations[*].args` and `members`. It is the one walk for
+/// both a top-level structure and a structure nested in a purpose body.
+fn walk_structure(s: &reify_ast::StructureDef, diagnostics: &mut Vec<Diagnostic>) {
+    walk_annotations(&s.annotations, diagnostics);
+    walk_members(&s.members, diagnostics);
+}
+
+/// Walk every member under `members`; recursion and depth bound are reify-ast's
+/// ([`walk_all_member_bodies`]).
+fn walk_members(members: &[MemberDecl], diagnostics: &mut Vec<Diagnostic>) {
+    walk_all_member_bodies(members, &mut |member| {
+        walk_member_own_exprs(member, diagnostics)
+    });
+}
+
+/// Walk the expressions `member` carries itself. Nested member lists are NOT
+/// walked here; [`walk_members`] reaches them.
 ///
 /// Visits:
 ///   * `Param`: `annotations[*].args` + `default` + `where_clause.condition`.
@@ -178,164 +179,144 @@ fn walk_declaration(decl: &reify_ast::Declaration, diagnostics: &mut Vec<Diagnos
 ///   * `ConstraintInst`: `args[*].1` + `where_clause.condition`.
 ///   * `Sub`: `args[*].1` + `where_clause.condition`.
 ///   * `Minimize`/`Maximize`: `expr` + `where_clause.condition`.
-///   * `GuardedGroup`: `condition` + nested `members`/`else_members` (recursive).
-///   * `Port`: `frame_expr` + nested `members` (recursive).
+///   * `GuardedGroup`: `condition`.
+///   * `Port`: `frame_expr`.
+///   * `MatchArmDeclGroup`: `discriminant`.
 ///   * `Connect`: `left.expr`, `right.expr`, `params[*].1`.
 ///   * `Chain`: each `elements[*]`.
 ///   * `ForallConnect`: `collection` + every body expr (delegated to
 ///     [`super::forall_walk::walk_forall_connect_body`]).
 ///   * `ForallConstraint`: `collection` + every body expr (delegated to
 ///     [`super::forall_walk::walk_forall_constraint_body`]).
+///   * `Sketch`: no own expressions; its body is reached via [`walk_members`].
 ///   * `AssociatedType`/`MetaBlock`: no expressions, no-op.
 ///
-/// Recursion into nested `GuardedGroup`/`Port` member lists is bounded by
-/// [`reify_syntax::MAX_MEMBER_NESTING_DEPTH`] to prevent stack overflow on
-/// pathological input — mirrors `find_named_member_span_depth` in
-/// `reify-syntax`.
-fn walk_members(
-    members: &[reify_ast::MemberDecl],
-    diagnostics: &mut Vec<Diagnostic>,
-    depth: usize,
-) {
-    use reify_ast::MemberDecl;
-    if depth > reify_ast::MAX_MEMBER_NESTING_DEPTH {
-        return;
-    }
-    for member in members {
-        match member {
-            // A sketch body holds ordinary `let` and bare-relation members, so
-            // recurse: dot-chain lints must apply inside `sketch { … }` too
-            // (constrained-2d-sketch α, task 5506). Skipping it would make the
-            // block a lint blind spot — the same silent-no-op failure mode the
-            // loud compile-side rejection exists to prevent.
-            MemberDecl::Sketch(s) => {
-                walk_members(&s.members, diagnostics, depth + 1);
+/// The match has no `_` wildcard: reify-ast's walker forces the recursion
+/// decision for a new `MemberDecl` variant, and this match forces its
+/// expression decision.
+fn walk_member_own_exprs(member: &MemberDecl, diagnostics: &mut Vec<Diagnostic>) {
+    match member {
+        // Relate-block relations are ordinary expressions — walk them so
+        // dot-chain lints apply inside `relate { … }` too (task δ 4384).
+        MemberDecl::Relate(r) => {
+            for rel in &r.relations {
+                walk_expr(rel, diagnostics);
             }
-            // Relate-block relations are ordinary expressions — walk them so
-            // dot-chain lints apply inside `relate { … }` too (task δ 4384).
-            MemberDecl::Relate(r) => {
-                for rel in &r.relations {
-                    walk_expr(rel, diagnostics);
-                }
+        }
+        MemberDecl::Param(p) => {
+            walk_annotations(&p.annotations, diagnostics);
+            if let Some(default) = &p.default {
+                walk_expr(default, diagnostics);
             }
-            MemberDecl::Param(p) => {
-                walk_annotations(&p.annotations, diagnostics);
-                if let Some(default) = &p.default {
+            if let Some(wc) = &p.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Let(l) => {
+            walk_annotations(&l.annotations, diagnostics);
+            walk_expr(&l.value, diagnostics);
+            if let Some(wc) = &l.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Constraint(c) => {
+            walk_expr(&c.expr, diagnostics);
+            if let Some(wc) = &c.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::ConstraintInst(c) => {
+            for (_, expr) in &c.args {
+                walk_expr(expr, diagnostics);
+            }
+            if let Some(wc) = &c.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Sub(s) => {
+            for (_, expr) in &s.args {
+                walk_expr(expr, diagnostics);
+            }
+            if let Some(wc) = &s.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Minimize(m) => {
+            walk_expr(&m.expr, diagnostics);
+            if let Some(wc) = &m.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::Maximize(m) => {
+            walk_expr(&m.expr, diagnostics);
+            if let Some(wc) = &m.where_clause {
+                walk_expr(&wc.condition, diagnostics);
+            }
+        }
+        MemberDecl::GuardedGroup(g) => walk_expr(&g.condition, diagnostics),
+        MemberDecl::Port(p) => {
+            if let Some(frame) = &p.frame_expr {
+                walk_expr(frame, diagnostics);
+            }
+        }
+        MemberDecl::MatchArmDeclGroup(g) => walk_expr(&g.discriminant, diagnostics),
+        MemberDecl::Connect(c) => {
+            walk_expr(&c.left.expr, diagnostics);
+            walk_expr(&c.right.expr, diagnostics);
+            for (_, expr) in &c.params {
+                walk_expr(expr, diagnostics);
+            }
+        }
+        MemberDecl::Chain(c) => {
+            for elem in &c.elements {
+                walk_expr(elem, diagnostics);
+            }
+        }
+        MemberDecl::ForallConnect(f) => {
+            walk_expr(&f.collection, diagnostics);
+            super::forall_walk::walk_forall_connect_body(&f.body, |expr| {
+                walk_expr(expr, diagnostics);
+            });
+        }
+        MemberDecl::ForallConstraint(f) => {
+            walk_expr(&f.collection, diagnostics);
+            super::forall_walk::walk_forall_constraint_body(&f.body, |expr| {
+                walk_expr(expr, diagnostics);
+            });
+        }
+        // Trait associated-fn bodies (task ζ 3941). ζ makes trait-fn bodies
+        // live, so the deep-dot-chain lint now recurses into every
+        // expression-bearing position of the fn: each param default, each
+        // let-binding value (and its where-clause condition), and the result
+        // expression. A bodyless required trait fn (`fn req(self) -> Real`
+        // with no `{ … }`) has `body: None` and contributes no expressions.
+        //
+        // NOTE: `shadow_lint.rs::walk_members_depth` makes the same
+        // per-member expression decisions; a newly added expression-bearing
+        // member kind must be handled in both. Only those decisions are
+        // duplicated: this lint takes its recursion from reify-ast, but
+        // shadow_lint still hand-rolls its own, because it pushes a scope
+        // frame per nested body.
+        MemberDecl::Fn(f) => {
+            for param in &f.params {
+                if let Some(default) = &param.default {
                     walk_expr(default, diagnostics);
                 }
-                if let Some(wc) = &p.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
             }
-            MemberDecl::Let(l) => {
-                walk_annotations(&l.annotations, diagnostics);
-                walk_expr(&l.value, diagnostics);
-                if let Some(wc) = &l.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Constraint(c) => {
-                walk_expr(&c.expr, diagnostics);
-                if let Some(wc) = &c.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::ConstraintInst(c) => {
-                for (_, expr) in &c.args {
-                    walk_expr(expr, diagnostics);
-                }
-                if let Some(wc) = &c.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Sub(s) => {
-                for (_, expr) in &s.args {
-                    walk_expr(expr, diagnostics);
-                }
-                if let Some(wc) = &s.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Minimize(m) => {
-                walk_expr(&m.expr, diagnostics);
-                if let Some(wc) = &m.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::Maximize(m) => {
-                walk_expr(&m.expr, diagnostics);
-                if let Some(wc) = &m.where_clause {
-                    walk_expr(&wc.condition, diagnostics);
-                }
-            }
-            MemberDecl::GuardedGroup(g) => {
-                walk_expr(&g.condition, diagnostics);
-                walk_members(&g.members, diagnostics, depth + 1);
-                walk_members(&g.else_members, diagnostics, depth + 1);
-            }
-            MemberDecl::Port(p) => {
-                if let Some(frame) = &p.frame_expr {
-                    walk_expr(frame, diagnostics);
-                }
-                walk_members(&p.members, diagnostics, depth + 1);
-            }
-            MemberDecl::Connect(c) => {
-                walk_expr(&c.left.expr, diagnostics);
-                walk_expr(&c.right.expr, diagnostics);
-                for (_, expr) in &c.params {
-                    walk_expr(expr, diagnostics);
-                }
-            }
-            MemberDecl::Chain(c) => {
-                for elem in &c.elements {
-                    walk_expr(elem, diagnostics);
-                }
-            }
-            MemberDecl::ForallConnect(f) => {
-                walk_expr(&f.collection, diagnostics);
-                super::forall_walk::walk_forall_connect_body(&f.body, |expr| {
-                    walk_expr(expr, diagnostics);
-                });
-            }
-            MemberDecl::ForallConstraint(f) => {
-                walk_expr(&f.collection, diagnostics);
-                super::forall_walk::walk_forall_constraint_body(&f.body, |expr| {
-                    walk_expr(expr, diagnostics);
-                });
-            }
-            // Trait associated-fn bodies (task ζ 3941). ζ makes trait-fn bodies
-            // live, so the deep-dot-chain lint now recurses into every
-            // expression-bearing position of the fn: each param default, each
-            // let-binding value (and its where-clause condition), and the result
-            // expression. A bodyless required trait fn (`fn req(self) -> Real`
-            // with no `{ … }`) has `body: None` and contributes no expressions.
-            //
-            // NOTE: this `MemberDecl` match runs in parallel with the one in
-            // `shadow_lint.rs::walk_members_depth`; a newly added
-            // expression-bearing member kind must be handled in both. Unifying
-            // the two walkers is a larger refactor (the two carry different
-            // scope-frame state) and is intentionally out of scope here.
-            MemberDecl::Fn(f) => {
-                for param in &f.params {
-                    if let Some(default) = &param.default {
-                        walk_expr(default, diagnostics);
+            if let Some(body) = &f.body {
+                for let_decl in &body.let_bindings {
+                    walk_expr(&let_decl.value, diagnostics);
+                    if let Some(wc) = &let_decl.where_clause {
+                        walk_expr(&wc.condition, diagnostics);
                     }
                 }
-                if let Some(body) = &f.body {
-                    for let_decl in &body.let_bindings {
-                        walk_expr(&let_decl.value, diagnostics);
-                        if let Some(wc) = &let_decl.where_clause {
-                            walk_expr(&wc.condition, diagnostics);
-                        }
-                    }
-                    walk_expr(&body.result_expr, diagnostics);
-                }
+                walk_expr(&body.result_expr, diagnostics);
             }
-            // Members with no embedded expressions (or not yet handled).
-            MemberDecl::AssociatedType(_)
-            | MemberDecl::MetaBlock(_)
-            | MemberDecl::MatchArmDeclGroup(_) => {}
         }
+        // No expression of its own; `walk_members` reaches its body.
+        MemberDecl::Sketch(_) => {}
+        // Members with no embedded expressions.
+        MemberDecl::AssociatedType(_) | MemberDecl::MetaBlock(_) => {}
     }
 }
 
@@ -368,29 +349,16 @@ fn walk_annotations(annotations: &[reify_ast::Annotation], diagnostics: &mut Vec
 /// For non-`MemberAccess` expressions, recurse into every `Box<Expr>` /
 /// `Vec<Expr>` child.
 ///
-/// Recursion into expression children is bounded by [`MAX_EXPR_DEPTH`] for
-/// stack safety on pathological input (see the constant doc).
+/// Recursion into expression children is bounded by
+/// [`MAX_COMPILE_RECURSION_DEPTH`] for stack safety on pathological input.
 fn walk_expr(expr: &Expr, diagnostics: &mut Vec<Diagnostic>) {
     walk_expr_depth(expr, diagnostics, 0);
 }
 
 fn walk_expr_depth(expr: &Expr, diagnostics: &mut Vec<Diagnostic>, depth: usize) {
-    if depth > MAX_EXPR_DEPTH {
-        // Should never happen on real source: 256 is generous (typical hand-
-        // written code never exceeds ~20). Hitting this guard means a fuzzer
-        // input or upstream parser bug produced a pathologically deep AST and
-        // the dot-chain lint silently lost coverage on that subtree. Panic in
-        // debug/test builds so a regression bisects directly to this site;
-        // keep the silent `return` in release so end-users never see the
-        // unactionable diagnostic.
-        debug_assert!(
-            false,
-            "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = {} (depth = {}); \
-             dot-chain lint coverage truncated at this subtree — likely \
-             upstream parser bug or fuzzer input producing pathologically \
-             deep AST",
-            MAX_EXPR_DEPTH, depth
-        );
+    // Past the shared cap the lint stops silently; for compiled expressions the
+    // compiler's guard reports E_EXPR_NESTING_TOO_DEEP.
+    if depth > MAX_COMPILE_RECURSION_DEPTH {
         return;
     }
     let next = depth + 1;
@@ -592,484 +560,65 @@ fn render_chain_text(root: &Expr, members_outer_to_inner: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH as CAP;
+    use crate::recursion_guard::test_support::{NestingArm, on_tokio_worker_stack};
     use reify_core::SourceSpan;
 
-    /// Table-driven depth-guard test: asserts that every structural-recursion arm
-    /// in `walk_expr_depth` correctly forwards `next = depth + 1` to child nodes.
-    ///
-    /// A regression that accidentally passes `depth` (unchanged) instead of `next`
-    /// in any single arm would silently truncate dot-chain lint coverage on that
-    /// subtree. This test loops over all `(variant, target-field)` pairs so that a
-    /// failing arm surfaces as a named `ArmKind` in the test output rather than a
-    /// generic "walked silently" failure.
-    ///
-    /// `MemberAccess` chain walk: the iterative `while let` loop in the
-    /// `MemberAccess` arm does NOT increment `depth` per chain segment (one Rust
-    /// frame regardless of chain length). However, the trailing
-    /// `walk_expr_depth(cursor, …, next)` call on the leaf root IS a
-    /// depth-forwarding site and IS covered here by `ArmKind::MemberAccessLeafRoot`.
-    /// Each wrap layer interleaves a non-MA `UnOp` wrapper so the chain walk
-    /// terminates at every layer, forcing the trailing recursion to run once per
-    /// layer. See `depth_per_layer` for the per-arm depth-increment accounting.
-    ///
-    /// Depth arithmetic: most arms contribute 1 to depth per layer, so
-    /// `MAX_EXPR_DEPTH + 1` (= 257) wraps suffice to trip the guard.
-    /// `MemberAccessLeafRoot` contributes 2 per layer (one from the MA trailing
-    /// recursion, one from the interleaved UnOp), so `MAX_EXPR_DEPTH / 2 + 1`
-    /// (= 129) wraps suffice. The `depth_per_layer` helper is the source of
-    /// truth; the wrap-count formula `MAX_EXPR_DEPTH / depth_per_layer(arm) + 1`
-    /// derives from it directly so adding a new arm with a different regime stays
-    /// consistent.
+    /// Every recursion arm of `walk_expr_depth` forwards `depth + 1`, and the
+    /// lint covers nesting up to the shared compile cap and stops silently past
+    /// it: a deep chain nested so it sits AT the cap is reported, one level
+    /// deeper it is skipped. Runs on a 2 MiB stack, the GUI's compile stack.
     #[test]
-    #[cfg(debug_assertions)]
-    fn walk_expr_depth_panics_for_every_recursion_arm() {
-        #[derive(Debug, Clone, Copy)]
-        enum ArmKind {
-            UnOp,
-            BinOpLeft,
-            BinOpRight,
-            FunctionCallFirstArg,
-            ConditionalCondition,
-            ConditionalThen,
-            ConditionalElse,
-            ListLiteralFirst,
-            SetLiteralFirst,
-            MapLiteralFirstKey,
-            MapLiteralFirstValue,
-            IndexAccessObject,
-            IndexAccessIndex,
-            MatchScrutinee,
-            MatchFirstArmBody,
-            LambdaBody,
-            QuantifierCollection,
-            QuantifierPredicate,
-            AdHocSelectorBase,
-            AdHocSelectorFirstArg,
-            QualifiedAccessQualifier,
-            InstanceQualifiedAccessObject,
-            InstanceQualifiedAccessQualified,
-            RangeLower,
-            RangeUpper,
-            // Second-element entries for variadic arms: guards against a
-            // regression where only the first iteration of a for-loop forwards
-            // `next` while subsequent iterations capture the wrong variable.
-            FunctionCallSecondArg,
-            ListLiteralSecond,
-            SetLiteralSecond,
-            MapLiteralSecondKey,
-            MapLiteralSecondValue,
-            AdHocSelectorSecondArg,
-            MatchSecondArmBody,
-            // Covers the trailing `walk_expr_depth(cursor, …, next)` at the
-            // leaf-root recursion after the iterative MemberAccess chain walk.
-            MemberAccessLeafRoot,
-            // TraitMethodCall: object + first/second arg.
-            TraitMethodCallObject,
-            TraitMethodCallFirstArg,
-            TraitMethodCallSecondArg,
-            // TraitStaticCall: first/second arg (no object).
-            TraitStaticCallFirstArg,
-            TraitStaticCallSecondArg,
-        }
-
-        const ALL_ARMS: &[ArmKind] = &[
-            ArmKind::UnOp,
-            ArmKind::BinOpLeft,
-            ArmKind::BinOpRight,
-            ArmKind::FunctionCallFirstArg,
-            ArmKind::ConditionalCondition,
-            ArmKind::ConditionalThen,
-            ArmKind::ConditionalElse,
-            ArmKind::ListLiteralFirst,
-            ArmKind::SetLiteralFirst,
-            ArmKind::MapLiteralFirstKey,
-            ArmKind::MapLiteralFirstValue,
-            ArmKind::IndexAccessObject,
-            ArmKind::IndexAccessIndex,
-            ArmKind::MatchScrutinee,
-            ArmKind::MatchFirstArmBody,
-            ArmKind::LambdaBody,
-            ArmKind::QuantifierCollection,
-            ArmKind::QuantifierPredicate,
-            ArmKind::AdHocSelectorBase,
-            ArmKind::AdHocSelectorFirstArg,
-            ArmKind::QualifiedAccessQualifier,
-            ArmKind::InstanceQualifiedAccessObject,
-            ArmKind::InstanceQualifiedAccessQualified,
-            ArmKind::RangeLower,
-            ArmKind::RangeUpper,
-            ArmKind::FunctionCallSecondArg,
-            ArmKind::ListLiteralSecond,
-            ArmKind::SetLiteralSecond,
-            ArmKind::MapLiteralSecondKey,
-            ArmKind::MapLiteralSecondValue,
-            ArmKind::AdHocSelectorSecondArg,
-            ArmKind::MatchSecondArmBody,
-            ArmKind::MemberAccessLeafRoot,
-            ArmKind::TraitMethodCallObject,
-            ArmKind::TraitMethodCallFirstArg,
-            ArmKind::TraitMethodCallSecondArg,
-            ArmKind::TraitStaticCallFirstArg,
-            ArmKind::TraitStaticCallSecondArg,
-        ];
-
-        fn shallow_leaf(span: SourceSpan) -> Expr {
-            Expr {
-                kind: ExprKind::NumberLiteral {
-                    value: 0.0,
-                    is_real: false,
-                },
+    fn deep_chain_is_linted_through_the_nesting_cap_and_skipped_past_it_for_every_arm() {
+        /// `a.b.c.d.e`: chain length 5, one past DEEP_DOT_CHAIN_THRESHOLD.
+        fn deep_chain() -> Expr {
+            let span = SourceSpan::empty(0);
+            let mut chain = Expr {
+                kind: ExprKind::Ident("a".to_string()),
                 span,
-            }
-        }
-
-        fn wrap_in_arm(arm: ArmKind, leaf: Expr, span: SourceSpan) -> Expr {
-            use reify_ast::{MatchArm, QuantifierKind};
-            let kind = match arm {
-                ArmKind::UnOp => ExprKind::UnOp {
-                    op: "-".to_string(),
-                    operand: Box::new(leaf),
-                },
-                ArmKind::BinOpLeft => ExprKind::BinOp {
-                    op: "+".to_string(),
-                    left: Box::new(leaf),
-                    right: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::BinOpRight => ExprKind::BinOp {
-                    op: "+".to_string(),
-                    left: Box::new(shallow_leaf(span)),
-                    right: Box::new(leaf),
-                },
-                ArmKind::FunctionCallFirstArg => ExprKind::FunctionCall {
-                    name: "f".to_string(),
-                    args: vec![leaf],
-                    arg_names: vec![None],
-                },
-                ArmKind::ConditionalCondition => ExprKind::Conditional {
-                    condition: Box::new(leaf),
-                    then_branch: Box::new(shallow_leaf(span)),
-                    else_branch: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::ConditionalThen => ExprKind::Conditional {
-                    condition: Box::new(shallow_leaf(span)),
-                    then_branch: Box::new(leaf),
-                    else_branch: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::ConditionalElse => ExprKind::Conditional {
-                    condition: Box::new(shallow_leaf(span)),
-                    then_branch: Box::new(shallow_leaf(span)),
-                    else_branch: Box::new(leaf),
-                },
-                ArmKind::ListLiteralFirst => ExprKind::ListLiteral(vec![leaf]),
-                ArmKind::SetLiteralFirst => ExprKind::SetLiteral(vec![leaf]),
-                ArmKind::MapLiteralFirstKey => {
-                    ExprKind::MapLiteral(vec![(leaf, shallow_leaf(span))])
-                }
-                ArmKind::MapLiteralFirstValue => {
-                    ExprKind::MapLiteral(vec![(shallow_leaf(span), leaf)])
-                }
-                ArmKind::IndexAccessObject => ExprKind::IndexAccess {
-                    object: Box::new(leaf),
-                    index: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::IndexAccessIndex => ExprKind::IndexAccess {
-                    object: Box::new(shallow_leaf(span)),
-                    index: Box::new(leaf),
-                },
-                ArmKind::MatchScrutinee => ExprKind::Match {
-                    discriminant: Box::new(leaf),
-                    arms: vec![MatchArm {
-                        patterns: vec![],
-                        body: shallow_leaf(span),
-                        span,
-                    }],
-                },
-                ArmKind::MatchFirstArmBody => ExprKind::Match {
-                    discriminant: Box::new(shallow_leaf(span)),
-                    arms: vec![MatchArm {
-                        patterns: vec![],
-                        body: leaf,
-                        span,
-                    }],
-                },
-                ArmKind::LambdaBody => ExprKind::Lambda {
-                    params: vec![],
-                    body: Box::new(leaf),
-                },
-                ArmKind::QuantifierCollection => ExprKind::Quantifier {
-                    kind: QuantifierKind::ForAll,
-                    variable: "x".into(),
-                    variable_span: span,
-                    collection: Box::new(leaf),
-                    predicate: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::QuantifierPredicate => ExprKind::Quantifier {
-                    kind: QuantifierKind::ForAll,
-                    variable: "x".into(),
-                    variable_span: span,
-                    collection: Box::new(shallow_leaf(span)),
-                    predicate: Box::new(leaf),
-                },
-                ArmKind::AdHocSelectorBase => ExprKind::AdHocSelector {
-                    base: Box::new(leaf),
-                    selector: "_".into(),
-                    args: vec![],
-                },
-                ArmKind::AdHocSelectorFirstArg => ExprKind::AdHocSelector {
-                    base: Box::new(shallow_leaf(span)),
-                    selector: "_".into(),
-                    args: vec![leaf],
-                },
-                ArmKind::QualifiedAccessQualifier => ExprKind::QualifiedAccess {
-                    qualifier: Box::new(leaf),
-                    member: "m".to_string(),
-                },
-                ArmKind::InstanceQualifiedAccessObject => ExprKind::InstanceQualifiedAccess {
-                    object: Box::new(leaf),
-                    qualified: Box::new(shallow_leaf(span)),
-                },
-                ArmKind::InstanceQualifiedAccessQualified => ExprKind::InstanceQualifiedAccess {
-                    object: Box::new(shallow_leaf(span)),
-                    qualified: Box::new(leaf),
-                },
-                ArmKind::RangeLower => ExprKind::Range {
-                    lower: Some(Box::new(leaf)),
-                    upper: Some(Box::new(shallow_leaf(span))),
-                    lower_inclusive: true,
-                    upper_inclusive: true,
-                },
-                ArmKind::RangeUpper => ExprKind::Range {
-                    lower: Some(Box::new(shallow_leaf(span))),
-                    upper: Some(Box::new(leaf)),
-                    lower_inclusive: true,
-                    upper_inclusive: true,
-                },
-                ArmKind::FunctionCallSecondArg => ExprKind::FunctionCall {
-                    name: "f".to_string(),
-                    args: vec![shallow_leaf(span), leaf],
-                    arg_names: vec![None, None],
-                },
-                ArmKind::ListLiteralSecond => ExprKind::ListLiteral(vec![shallow_leaf(span), leaf]),
-                ArmKind::SetLiteralSecond => ExprKind::SetLiteral(vec![shallow_leaf(span), leaf]),
-                ArmKind::MapLiteralSecondKey => ExprKind::MapLiteral(vec![
-                    (shallow_leaf(span), shallow_leaf(span)),
-                    (leaf, shallow_leaf(span)),
-                ]),
-                ArmKind::MapLiteralSecondValue => ExprKind::MapLiteral(vec![
-                    (shallow_leaf(span), shallow_leaf(span)),
-                    (shallow_leaf(span), leaf),
-                ]),
-                ArmKind::AdHocSelectorSecondArg => ExprKind::AdHocSelector {
-                    base: Box::new(shallow_leaf(span)),
-                    selector: "_".into(),
-                    args: vec![shallow_leaf(span), leaf],
-                },
-                ArmKind::MatchSecondArmBody => ExprKind::Match {
-                    discriminant: Box::new(shallow_leaf(span)),
-                    arms: vec![
-                        MatchArm {
-                            patterns: vec![],
-                            body: shallow_leaf(span),
-                            span,
-                        },
-                        MatchArm {
-                            patterns: vec![],
-                            body: leaf,
-                            span,
-                        },
-                    ],
-                },
-                // The UnOp interleave acts as a chain-walk terminator: the
-                // iterative `while let MemberAccess` loop ends at the UnOp,
-                // forcing the trailing `walk_expr_depth(cursor, …, next)` to
-                // run once per layer (not once per homogeneous MA chain).
-                ArmKind::MemberAccessLeafRoot => ExprKind::MemberAccess {
-                    object: Box::new(Expr {
-                        kind: ExprKind::UnOp {
-                            op: "-".to_string(),
-                            operand: Box::new(leaf),
-                        },
-                        span,
-                    }),
-                    member: "f".to_string(),
-                },
-                ArmKind::TraitMethodCallObject => ExprKind::TraitMethodCall {
-                    object: Box::new(leaf),
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![],
-                },
-                ArmKind::TraitMethodCallFirstArg => ExprKind::TraitMethodCall {
-                    object: Box::new(shallow_leaf(span)),
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![leaf],
-                },
-                ArmKind::TraitMethodCallSecondArg => ExprKind::TraitMethodCall {
-                    object: Box::new(shallow_leaf(span)),
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![shallow_leaf(span), leaf],
-                },
-                ArmKind::TraitStaticCallFirstArg => ExprKind::TraitStaticCall {
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![leaf],
-                },
-                ArmKind::TraitStaticCallSecondArg => ExprKind::TraitStaticCall {
-                    trait_name: "T".to_string(),
-                    method: "m".to_string(),
-                    args: vec![shallow_leaf(span), leaf],
-                },
             };
-            Expr { kind, span }
-        }
-
-        // Returns how many levels of depth each wrap layer contributes.
-        // Used to compute the minimum wrap count needed to trip MAX_EXPR_DEPTH.
-        //
-        // The match is intentionally exhaustive (no wildcard): the compiler
-        // rejects a new ArmKind variant until it is listed here, preventing
-        // the wrap-count formula from silently inheriting the wrong depth.
-        // After updating this match, also add the new variant to ALL_ARMS.
-        fn depth_per_layer(arm: ArmKind) -> usize {
-            match arm {
-                // Each MemberAccessLeafRoot layer contributes 2: one from the
-                // trailing `walk_expr_depth(cursor, …, next)` after the chain
-                // walk, and one from the interleaved UnOp's own recursion.
-                ArmKind::MemberAccessLeafRoot => 2,
-                // All other arms produce exactly one depth-increment per layer.
-                ArmKind::UnOp
-                | ArmKind::BinOpLeft
-                | ArmKind::BinOpRight
-                | ArmKind::FunctionCallFirstArg
-                | ArmKind::ConditionalCondition
-                | ArmKind::ConditionalThen
-                | ArmKind::ConditionalElse
-                | ArmKind::ListLiteralFirst
-                | ArmKind::SetLiteralFirst
-                | ArmKind::MapLiteralFirstKey
-                | ArmKind::MapLiteralFirstValue
-                | ArmKind::IndexAccessObject
-                | ArmKind::IndexAccessIndex
-                | ArmKind::MatchScrutinee
-                | ArmKind::MatchFirstArmBody
-                | ArmKind::LambdaBody
-                | ArmKind::QuantifierCollection
-                | ArmKind::QuantifierPredicate
-                | ArmKind::AdHocSelectorBase
-                | ArmKind::AdHocSelectorFirstArg
-                | ArmKind::QualifiedAccessQualifier
-                | ArmKind::InstanceQualifiedAccessObject
-                | ArmKind::InstanceQualifiedAccessQualified
-                | ArmKind::RangeLower
-                | ArmKind::RangeUpper
-                | ArmKind::FunctionCallSecondArg
-                | ArmKind::ListLiteralSecond
-                | ArmKind::SetLiteralSecond
-                | ArmKind::MapLiteralSecondKey
-                | ArmKind::MapLiteralSecondValue
-                | ArmKind::AdHocSelectorSecondArg
-                | ArmKind::MatchSecondArmBody
-                | ArmKind::TraitMethodCallObject
-                | ArmKind::TraitMethodCallFirstArg
-                | ArmKind::TraitMethodCallSecondArg
-                | ArmKind::TraitStaticCallFirstArg
-                | ArmKind::TraitStaticCallSecondArg => 1,
+            for member in ["b", "c", "d", "e"] {
+                chain = Expr {
+                    kind: ExprKind::MemberAccess {
+                        object: Box::new(chain),
+                        member: member.to_string(),
+                    },
+                    span,
+                };
             }
+            chain
         }
 
-        let span = SourceSpan::empty(0);
-        for arm in ALL_ARMS.iter().copied() {
-            // Sanity pass: a single-layer wrap must NOT panic. Guards against
-            // `wrap_in_arm` silently constructing a broken or depth-saturated
-            // AST, which would make the depth-saturation assertion below
-            // trivially vacuous (or erroneously attribute a construction panic
-            // to a missing `next` forward).
-            let shallow_wrapped = wrap_in_arm(arm, shallow_leaf(span), span);
-            let sanity = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut diagnostics: Vec<Diagnostic> = Vec::new();
-                walk_expr(&shallow_wrapped, &mut diagnostics);
-            }));
+        fn deep_dot_chain_count(arm: NestingArm, depth: usize) -> usize {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            walk_expr(&arm.nest_at_depth(deep_chain(), depth), &mut diagnostics);
             assert!(
-                sanity.is_ok(),
-                "arm {:?} panicked on a single-layer (depth-1) wrap — \
-                 wrap_in_arm may construct a broken AST or a leaf-equivalent node",
-                arm
+                diagnostics
+                    .iter()
+                    .all(|d| d.code == Some(DiagnosticCode::DeepDotChain)),
+                "arm {arm:?} with the chain at depth {depth} emitted a non-DeepDotChain \
+                 diagnostic: {diagnostics:?}"
             );
-
-            let mut expr = Expr {
-                kind: ExprKind::NumberLiteral {
-                    value: 0.0,
-                    is_real: false,
-                },
-                span,
-            };
-            for _ in 0..(MAX_EXPR_DEPTH / depth_per_layer(arm) + 1) {
-                expr = wrap_in_arm(arm, expr, span);
-            }
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut diagnostics: Vec<Diagnostic> = Vec::new();
-                walk_expr(&expr, &mut diagnostics);
-            }));
-            match result {
-                Ok(_) => panic!(
-                    "arm {:?} did NOT trip MAX_EXPR_DEPTH guard — depth was not forwarded",
-                    arm
-                ),
-                Err(payload) => {
-                    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else if let Some(s) = payload.downcast_ref::<String>() {
-                        s.clone()
-                    } else {
-                        String::new()
-                    };
-                    assert!(
-                        msg.contains("MAX_EXPR_DEPTH"),
-                        "arm {:?} panicked but message {:?} did not mention MAX_EXPR_DEPTH",
-                        arm,
-                        msg
-                    );
-                    // Verify the panic fired at the expected depth boundary, not
-                    // via some unrelated pathway.  Each wrap layer contributes
-                    // `depth_per_layer(arm)` (= N) to depth; with
-                    // `MAX_EXPR_DEPTH / N + 1` wraps the first overflow call
-                    // lands at a depth in (MAX_EXPR_DEPTH, MAX_EXPR_DEPTH + N].
-                    // If `depth_per_layer` lies or the wrap shape is wrong, the
-                    // actual overflow depth would fall outside this window and
-                    // the assertion below would catch it even though the arm
-                    // 'panicked with MAX_EXPR_DEPTH' check above passed.
-                    let overflow_depth = parse_overflow_depth(&msg);
-                    assert!(
-                        overflow_depth > MAX_EXPR_DEPTH
-                            && overflow_depth <= MAX_EXPR_DEPTH + depth_per_layer(arm),
-                        "arm {:?} overflowed at depth {} — expected range ({}, {}]; \
-                         depth_per_layer or wrap shape may be inconsistent with \
-                         the walk_expr_depth implementation",
-                        arm,
-                        overflow_depth,
-                        MAX_EXPR_DEPTH,
-                        MAX_EXPR_DEPTH + depth_per_layer(arm)
-                    );
-                }
-            }
+            diagnostics.len()
         }
-    }
 
-    fn parse_overflow_depth(msg: &str) -> usize {
-        msg.split("(depth = ")
-            .nth(1)
-            .and_then(|s| s.split(')').next())
-            .and_then(|s| s.parse().ok())
-            .expect("panic message must contain `(depth = N)` — format string drifted?")
-    }
-
-    #[test]
-    fn parse_overflow_depth_extracts_value_from_well_formed_panic_message() {
-        let msg = "dot_chain_lint walk_expr_depth exceeded MAX_EXPR_DEPTH = 256 (depth = 257); \
-                   dot-chain lint coverage truncated at this subtree";
-        assert_eq!(parse_overflow_depth(msg), 257);
+        on_tokio_worker_stack(|| {
+            for &arm in NestingArm::ALL {
+                assert_eq!(
+                    deep_dot_chain_count(arm, CAP),
+                    1,
+                    "arm {arm:?}: a deep chain at depth {CAP} sits at the cap and must \
+                     be linted"
+                );
+                assert_eq!(
+                    deep_dot_chain_count(arm, CAP + 1),
+                    0,
+                    "arm {arm:?}: a deep chain at depth {} sits past the cap and must be \
+                     skipped — a non-zero count means this arm did not forward depth + 1",
+                    CAP + 1
+                );
+            }
+        });
     }
 
     /// `render_chain_text` falls back to `_` for root variants that are
@@ -1080,8 +629,9 @@ mod tests {
     /// Done as a unit test rather than an integration test because constructing
     /// a `BinOp`-rooted chain via parsed source depends on `parenthesized_expression`
     /// lowering specifics that are orthogonal to this task. The existing
-    /// `walk_expr_depth_panics_for_every_recursion_arm` test already builds
-    /// `Expr` trees by hand with `SourceSpan::empty(0)` — same pattern here.
+    /// `deep_chain_is_linted_through_the_nesting_cap_and_skipped_past_it_for_every_arm`
+    /// test already builds `Expr` trees by hand with `SourceSpan::empty(0)` —
+    /// same pattern here.
     #[test]
     fn render_chain_text_uses_underscore_for_other_root_variants() {
         let span = SourceSpan::empty(0);

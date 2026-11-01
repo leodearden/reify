@@ -10708,8 +10708,7 @@ mod tests {
     /// `reify-compiler/stdlib/modal_analysis_fns.ri` :: `displacement_at`.
     ///
     /// Why this cannot be folded into the compile-side pin
-    /// (`reify-compiler/tests/modal_mechanism_compile.rs`, nested module
-    /// `modal_analysis_fns_stdlib_compile`): the `.ri`
+    /// (`reify-compiler/tests/harness_mechanics/modal_analysis_fns_stdlib_compile.rs`): the `.ri`
     /// declared return type and the trampoline's emitted `Value` are checked
     /// NOWHERE against each other. `ComputeNodeData` carries no type slot,
     /// `ComputeOutcome::Completed` carries an untyped `Value`, and no

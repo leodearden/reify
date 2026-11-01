@@ -7,8 +7,8 @@
 pub mod cache;
 pub mod cache_divergence;
 pub use cache_divergence::{SnapshotCacheDivergence, check_snapshot_cache_divergence};
-// Task α (#5038): commit_cell_result primitive + DeterminacyRule/TraceSource/
-// CacheLeg (PRD eval-cell-commit-substrate.md §2.1–2.4). pub(crate) — no
+// Task α (#5038): commit_cell_result primitive + DeterminacyRule/CacheLeg
+// (PRD eval-cell-commit-substrate.md §2.1–2.4). pub(crate) — no
 // external callers yet; migration leaves γ/δ/ε/ι wire it in from within the crate.
 pub(crate) mod cell_commit;
 // Task λ (#5043): shared post-pass detector registry (PRD
@@ -40,8 +40,6 @@ mod engine_admin;
 pub use engine_admin::{ShellGuiMeshData, sweep_persistent_cache_at_startup};
 mod engine_build;
 mod engine_compute;
-pub(crate) mod measure_min_feature;
-pub(crate) mod measure_min_wall;
 // task #3428 step-5/6: persistent-cache write/lookup hooks at dispatch boundary.
 mod compute_persist;
 pub(crate) mod realization_content;
@@ -112,7 +110,10 @@ pub(crate) use reify_ir::arg_acceptance;
 mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
+mod engine_viewport_attribution;
+mod unmeasured_attribution;
 mod geometry_ops;
+mod sub_instance_scope;
 pub(crate) mod kernel_owner;
 pub(crate) mod volume_mesh_sources;
 #[cfg(test)]

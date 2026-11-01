@@ -53,9 +53,9 @@ const BOX_SIDE_M: f64 = 10.0e-3;
 /// Build the `GeometryOp::Box` for a 10mm cube.
 fn ten_mm_box_op() -> GeometryOp {
     GeometryOp::Box {
-        width: Value::Real(BOX_SIDE_M),
-        height: Value::Real(BOX_SIDE_M),
-        depth: Value::Real(BOX_SIDE_M),
+        size_x: Value::Real(BOX_SIDE_M),
+        size_y: Value::Real(BOX_SIDE_M),
+        size_z: Value::Real(BOX_SIDE_M),
     }
 }
 

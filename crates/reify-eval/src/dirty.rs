@@ -2193,9 +2193,9 @@ mod tests {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".to_string(), width_ref()),
-                ("height".to_string(), mm(100.0)),
-                ("depth".to_string(), mm(5.0)),
+                ("size_x".to_string(), width_ref()),
+                ("size_y".to_string(), mm(100.0)),
+                ("size_z".to_string(), mm(5.0)),
             ],
         }];
 

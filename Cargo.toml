@@ -34,6 +34,7 @@ members = [
     "crates/reify-ast",
     "crates/reify-ir",
     "crates/reify-build-utils",
+    "crates/reify-git-env",
     "crates/reify-test-support",
     "crates/reify-builtins",
     "tree-sitter-reify",
@@ -75,6 +76,7 @@ reify-audit = { path = "crates/reify-audit" }
 reify-ast = { path = "crates/reify-ast" }
 reify-ir = { path = "crates/reify-ir" }
 reify-build-utils = { path = "crates/reify-build-utils" }
+reify-git-env = { path = "crates/reify-git-env" }
 reify-test-support = { path = "crates/reify-test-support" }
 reify-builtins = { path = "crates/reify-builtins" }
 

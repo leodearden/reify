@@ -62,7 +62,7 @@ substrate/task-store facts whose continuous check is PVAC failure mode (c).
 module family live — the additive shape covers failure modes (a)–(d) only; the (e) vacuity floor
 needs the D9 stats plumbing (PTODO's `check_with_stats` never reaches the bin dispatch, measured).
 Unknown-pattern CLI exit is 125, distinct from findings-exit 1 — γ's tests must discriminate.
-Check: grep `P[Vv][Aa][Cc]` in `crates/reify-audit/src/lib.rs`, expect **present** — case-tolerant
+Check: grep `P[Vv][Aa][Cc]` in `crates/reify-audit/src/lib.rs` or `crates/reify-audit/src/model.rs` (widened 2026-10-26: #8806 moved the Pattern enum into model.rs), expect **present** — case-tolerant
 deliberately (variant casing is γ's call); RED today, verified. The yaml adds
 `premise-probe-harness-disposition` (γ premises are not α-probe-bindable) and β adds
 `mechanism-modal-fake-family-allowlisted-to-7012` + `v7-v8-not-release-gated` — see the yaml for

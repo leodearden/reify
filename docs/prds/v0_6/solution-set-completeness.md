@@ -471,7 +471,7 @@ Walked against `docs/legibility/design-invariants.md` (reify's normative list: t
 - A stochastic global optimiser for above-envelope components (D5) → future PRD, triggered only if real models need it.
 - Pareto-front exploration → spec §10.4, a tooling concern.
 - GUI rendering of the solution set. The GUI drops eval diagnostics wholesale (`get_diagnostics` reads `compiled.diagnostics` only; `CheckResult.diagnostics` / `EvalResult.diagnostics` are never read in `gui/src-tauri/`), so surfacing anything there is a GUI-plumbing PRD, not this one → **P4 solver legibility**.
-- MCP exposure of solve verdicts (`CliToolContext::get_constraints` hardcodes `status: "unknown"`; `load_file`/`update_source` discard `EvalResult` entirely) → **P4**.
+- MCP exposure of solve verdicts (`CliToolContext::get_constraints` hardcodes `status: "unknown"`; `load_file`/`update_source` discard `EvalResult` entirely) *(`CliToolContext` was deleted by bbfbc7dd29 (#6665))* → **P4**.
 
 ---
 

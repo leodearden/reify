@@ -1508,24 +1508,26 @@ pub(crate) fn compile_entity(
         }
         scope.trait_members.insert(trait_name.clone(), members);
 
-        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<CompiledAssocFnSig>
+        // Populate trait_assoc_fn_overloads: (trait, method) → Vec<AssocFnDispatchCandidate>
         // so the `obj.(Trait::fn)(…)` dispatch arm (expr.rs, ε #3943) can resolve
         // the correct overload by arg types and type the lowered call from the
-        // RESOLVED sig's return type — registration-order independent (the
+        // RESOLVED candidate — registration-order independent (the
         // per-conformer CompiledFunction is injected into ctx.functions only by
         // the post-entity pass).
         //
         // Required (bodyless) fns carry an already-resolved `CompiledAssocFnSig`
-        // (non-self params + return_type). Default-providing fns carry a raw
-        // `FnDef` whose params and return type are re-resolved here against a
-        // throwaway diagnostics sink (the trait fn was already compiled in
-        // `phase_traits`; re-reporting errors would double-diagnose).
+        // (non-self params + return_type), resolved with no type params in scope.
+        // Default-providing fns carry a raw `FnDef` whose params and return type
+        // are re-resolved here against a throwaway diagnostics sink (the trait fn
+        // was already compiled in `phase_traits`; re-reporting errors would
+        // double-diagnose); their candidate is generic iff that resolution's
+        // type-param scope is non-empty.
         //
         // Accumulates ALL overloads into per-method Vecs (replaces the old
         // name-keyed `assoc_fn_returns: HashMap<String, Type>` which was
         // last-write-wins). Required fns and defaults with the same name push
         // independently; the dispatch arm resolves by arity + param types.
-        let mut assoc_fn_overloads: HashMap<String, Vec<CompiledAssocFnSig>> = HashMap::new();
+        let mut assoc_fn_overloads: HashMap<String, Vec<AssocFnDispatchCandidate>> = HashMap::new();
         for req in &compiled_trait.required_members {
             if let RequirementKind::Fn(sig) = &req.kind
                 && sig.has_self
@@ -1533,7 +1535,7 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(sig.name.clone())
                     .or_default()
-                    .push(sig.clone());
+                    .push(AssocFnDispatchCandidate::new(sig.clone(), &HashSet::new()));
             }
         }
         for default in &compiled_trait.defaults {
@@ -1552,13 +1554,13 @@ pub(crate) fn compile_entity(
                 // above; the default branch is the only one that re-resolves from
                 // the raw FnDef, so the trait params must be re-supplied here
                 // (reviewer amendment, correctness).
-                let fn_type_params: HashSet<String> = fn_def
+                let sig_type_params: HashSet<String> = fn_def
                     .type_params
                     .iter()
                     .map(|tp| tp.name.clone())
                     .chain(compiled_trait.type_params.iter().map(|tp| tp.name.clone()))
                     .collect();
-                let fn_dim_params: HashSet<String> = fn_def
+                let sig_dim_params: HashSet<String> = fn_def
                     .type_params
                     .iter()
                     .filter(|tp| tp.bounds.iter().any(|b| b == "Dimension"))
@@ -1574,8 +1576,8 @@ pub(crate) fn compile_entity(
                 let return_type = match &fn_def.return_type {
                     Some(te) => resolve_type_expr_with_aliases_kinded(
                         te,
-                        &fn_type_params,
-                        &fn_dim_params,
+                        &sig_type_params,
+                        &sig_dim_params,
                         alias_registry,
                         &mut Vec::new(),
                         structure_names,
@@ -1592,8 +1594,8 @@ pub(crate) fn compile_entity(
                     .map(|p| {
                         resolve_type_expr_with_aliases_kinded(
                             &p.type_expr,
-                            &fn_type_params,
-                            &fn_dim_params,
+                            &sig_type_params,
+                            &sig_dim_params,
                             alias_registry,
                             &mut Vec::new(),
                             structure_names,
@@ -1605,12 +1607,15 @@ pub(crate) fn compile_entity(
                 assoc_fn_overloads
                     .entry(fn_def.name.clone())
                     .or_default()
-                    .push(CompiledAssocFnSig {
-                        name: fn_def.name.clone(),
-                        has_self: true,
-                        params,
-                        return_type,
-                    });
+                    .push(AssocFnDispatchCandidate::new(
+                        CompiledAssocFnSig {
+                            name: fn_def.name.clone(),
+                            has_self: true,
+                            params,
+                            return_type,
+                        },
+                        &sig_type_params,
+                    ));
             }
         }
         if !assoc_fn_overloads.is_empty() {
@@ -1873,17 +1878,14 @@ pub(crate) fn compile_entity(
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Install the module's enum names as the ambient fallback set for type
-    // resolution of this structure's members (task 2998), so an enum may appear as
-    // an inner type arg of a parameterized builtin in a `param` type — e.g.
+    // Install the module's enums as the ambient fallback for type resolution of
+    // this structure's members (task 2998), so an enum may appear as an inner
+    // type arg of a parameterized builtin in a `param` type — e.g.
     // `target_quantity_of_interest : Option<QoIDescriptor>` in std.solver.elastic.
-    // Bare enum params (e.g. `element_order : ElementOrder`) already resolve via
-    // the `resolve_enum_type` None-path fallback below; this scope additionally
-    // covers the nested-in-builtin case the generic resolver cannot otherwise see.
+    // Bare enum params (e.g. `element_order : ElementOrder`) resolve through the
+    // same scope, which also holds a bare generic enum to R2(b)/R3.
     // Dropped at end of this function.
-    let _enum_scope = crate::type_resolution::EnumNameScope::new(
-        enum_defs.iter().map(|e| e.name.clone()).collect(),
-    );
+    let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
 
     for member in structure.members {
         match member {

@@ -56,9 +56,9 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -487,25 +487,25 @@ fn cascading_kernel_failures_aborted_after_first() {
     let box_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(10.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(10.0)),
+            ("size_y".into(), mm_literal(20.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let box_op_1 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(30.0)),
-            ("height".into(), mm_literal(40.0)),
-            ("depth".into(), mm_literal(15.0)),
+            ("size_x".into(), mm_literal(30.0)),
+            ("size_y".into(), mm_literal(40.0)),
+            ("size_z".into(), mm_literal(15.0)),
         ],
     };
     let box_op_2 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(50.0)),
-            ("height".into(), mm_literal(60.0)),
-            ("depth".into(), mm_literal(25.0)),
+            ("size_x".into(), mm_literal(50.0)),
+            ("size_y".into(), mm_literal(60.0)),
+            ("size_z".into(), mm_literal(25.0)),
         ],
     };
 
@@ -562,9 +562,9 @@ fn realization_abort_is_per_realization() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -707,9 +707,9 @@ fn mixed_failure_then_dependent_ops_aborted() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -807,9 +807,9 @@ fn partial_failure_tessellate_produces_no_mesh() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -910,9 +910,9 @@ fn partial_failure_build_produces_no_geometry() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -984,9 +984,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     let box_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let union_op = CompiledGeometryOp::Boolean {
@@ -999,9 +999,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     let box_op_1 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(40.0)),
-            ("height".into(), mm_literal(50.0)),
-            ("depth".into(), mm_literal(10.0)),
+            ("size_x".into(), mm_literal(40.0)),
+            ("size_y".into(), mm_literal(50.0)),
+            ("size_z".into(), mm_literal(10.0)),
         ],
     };
 
@@ -1084,9 +1084,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 // Regression guard: missing primitive arg → no kernel call, no 'geometry error'
 // ---------------------------------------------------------------------------
 
-/// When a Box primitive is missing a required arg ('width'), build() should:
+/// When a Box primitive is missing a required arg ('size_x'), build() should:
 /// 1. Short-circuit: return geometry_output=None (kernel never called).
-/// 2. Emit a Warning: "missing required geometry argument" mentioning 'width'.
+/// 2. Emit a Warning: "missing required geometry argument" mentioning 'size_x'.
 /// 3. Emit an Error: "failed to compile geometry operation".
 /// 4. NOT emit any diagnostic containing "geometry error" (kernel was never reached).
 ///
@@ -1097,13 +1097,13 @@ fn build_primitive_missing_arg_no_kernel_error() {
     let e = "TestShape";
     let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
-    // Box with height and depth present, but 'width' deliberately omitted
+    // Box with size_y and size_z present, but 'size_x' deliberately omitted
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-            // width deliberately omitted
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
+            // size_x deliberately omitted
         ],
     };
 
@@ -1130,7 +1130,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         None,
-        &["missing required geometry argument", "width"],
+        &["missing required geometry argument", "size_x"],
     );
 }
 
@@ -1148,7 +1148,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
 ///
 /// The invariants pinned here:
 /// - `.filter(|d| Severity::Warning).count() == 1` — one (not two) warnings.
-/// - That Warning contains 'missing required geometry argument' and 'width'.
+/// - That Warning contains 'missing required geometry argument' and 'size_x'.
 /// - Exactly one `failed to compile geometry operation` Error diagnostic.
 /// - No diagnostic contains 'expected Geometry' or 'found Undef' (no cascade).
 ///
@@ -1164,9 +1164,9 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-            // width deliberately omitted
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
+            // size_x deliberately omitted
         ],
     };
 
@@ -1184,20 +1184,20 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (a) Exactly one Warning containing the missing-arg message and 'width'.
+    // (a) Exactly one Warning containing the missing-arg message and 'size_x'.
     let matching_warnings: Vec<&Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
             d.severity == reify_core::Severity::Warning
                 && d.message.contains("missing required geometry argument")
-                && d.message.contains("width")
+                && d.message.contains("size_x")
         })
         .collect();
     assert_eq!(
         matching_warnings.len(),
         1,
-        "expected exactly one Warning about missing 'width'; got {}: {:?}",
+        "expected exactly one Warning about missing 'size_x'; got {}: {:?}",
         matching_warnings.len(),
         result
             .diagnostics
@@ -1320,9 +1320,9 @@ fn build_modify_missing_arg_case(
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -1507,9 +1507,9 @@ fn build_scale_negative_factor_emits_diagnostic() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -2443,9 +2443,9 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     // Circular pattern with full ox/oy/oz/ax/ay/az/angle but no `count`.
@@ -2504,9 +2504,9 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     // Circular pattern missing `ax` (axis X-component).
@@ -2564,9 +2564,9 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let mirror_op = CompiledGeometryOp::Pattern {
@@ -2723,9 +2723,9 @@ fn run_boolean_unresolved_ref_case(
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let boolean_op = CompiledGeometryOp::Boolean { op, left, right };

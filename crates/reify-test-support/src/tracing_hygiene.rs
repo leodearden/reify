@@ -307,11 +307,7 @@ mod tests {
 
     #[test]
     fn workspace_tracing_subscribers_are_built_only_by_reify_test_support() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("crates/reify-test-support has a parent (crates/)")
-            .parent()
-            .expect("crates/ has a parent (the repo root)");
+        let repo_root = crate::workspace_root::workspace_root();
 
         crate::workspace_sweep::assert_workspace_rs_walk_is_healthy(repo_root, REACH_SENTINEL);
 

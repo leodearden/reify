@@ -22,6 +22,7 @@ use crate::annotations::{
     lower_annotations, optimized_target, validate_annotations, validate_pragmas,
 };
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::name_env;
 use crate::type_resolution::{
     EnumNameScope, TypeAliasRegistry, convert_type_params, resolve_enum_type,
     resolve_type_expr_with_aliases, unresolved_alias_body_name,
@@ -56,7 +57,7 @@ pub(crate) fn format_shadow_warning(name: &str, winner: &str, loser: &str) -> St
 /// # Precondition: a live [`EnumNameScope`]
 ///
 /// An enum-typed param resolves only while an [`EnumNameScope`] is installed
-/// over the ambient `RESOLUTION_ENUM_NAMES` set; the sole caller,
+/// over the ambient `RESOLUTION_ENUM_NAMES` map; the sole caller,
 /// [`phase_constraint_defs`], installs one across its whole loop (task 6416).
 /// Without it every such param silently stores `ty: None`, which is the defect
 /// 6416 fixed. Why the scope reaches what it does — and what it does NOT reach
@@ -198,18 +199,19 @@ pub(crate) fn phase_constraint_defs(
     // phase_traits (traits_phase.rs:71-79).
     let mut structure_names: Option<HashSet<String>> = None;
 
-    // Ambient enum-name set for constraint-def param type resolution (task
+    // Ambient enum scope for constraint-def param type resolution (task
     // 6416), mirroring entity.rs's struct-param scope and functions.rs's
     // fn-param/return scopes. Held in this binding for the whole loop: it is an
-    // RAII guard, so dropping it early would uninstall the set that
+    // RAII guard, so dropping it early would uninstall the enums that
     // `compile_constraint_def`'s params loop depends on.
     //
     // Built here, once for the whole loop, rather than inside
-    // `compile_constraint_def`: the set is the same for every def in the module,
-    // and constructing it clones every name in `ctx.resolution_enums` (prelude
-    // ++ local — 38 enums from stdlib alone). Lazily, on the same
-    // first-`Declaration::Constraint` trigger as `structure_names` above, so a
-    // module with zero constraint defs still allocates nothing.
+    // `compile_constraint_def`: the scope is the same for every def in the module,
+    // and constructing it clones every name and type-param list in
+    // `ctx.resolution_enums` (prelude ++ local — 38 enums from stdlib alone).
+    // Lazily, on the same first-`Declaration::Constraint` trigger as
+    // `structure_names` above, so a module with zero constraint defs still
+    // allocates nothing.
     //
     // Widening its reach from one def to the whole loop is behaviour-preserving:
     // the only thing that reads `RESOLUTION_ENUM_NAMES` is type resolution, and
@@ -223,14 +225,7 @@ pub(crate) fn phase_constraint_defs(
             // Install on first use; the returned reference is not needed — the
             // guard acts through the thread-local, and `compile_constraint_def`
             // documents the precondition it satisfies.
-            enum_scope.get_or_insert_with(|| {
-                EnumNameScope::new(
-                    ctx.resolution_enums
-                        .iter()
-                        .map(|e| e.name.clone())
-                        .collect(),
-                )
-            });
+            enum_scope.get_or_insert_with(|| EnumNameScope::new(&ctx.resolution_enums));
             let names = structure_names.get_or_insert_with(|| {
                 ctx.seen_entity_names
                     .iter()
@@ -260,9 +255,9 @@ pub(crate) fn phase_constraint_defs(
 
 /// Emit the phase-10 one-time shadow warnings for cross-prelude constraint
 /// def name collisions. Two different prelude modules exporting the same
-/// `pub constraint def` name trigger a warning naming the winner (first
-/// imported) and loser (later imported). The first-imported definition
-/// wins silently; later imports are discarded.
+/// `pub constraint def` name trigger a warning naming the winner and the
+/// loser — read off the same [`name_env`] binding the registry is built from,
+/// so the warning and the registry cannot disagree.
 ///
 /// The entity phase rebuilds the registry fresh without re-emitting these
 /// warnings — they are only reported here, at phase-10.
@@ -270,31 +265,27 @@ fn emit_constraint_def_shadow_warnings(
     ctx: &mut CompilationCtx,
     prelude: &[&crate::CompiledModule],
 ) {
-    // Maps def name → path of the first module that contributed it.
-    let mut prelude_source: HashMap<String, String> = HashMap::new();
-    for m in prelude {
-        let module_path_str = m.path.to_string();
-        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
-            if let Some(prev_path) = prelude_source.get(&cd.name) {
-                if *prev_path != module_path_str {
-                    ctx.diagnostics
-                        .push(Diagnostic::warning(format_shadow_warning(
-                            &cd.name,
-                            prev_path,
-                            &module_path_str,
-                        )));
-                }
-                // First-import wins: do not record a second source.
-            } else {
-                prelude_source.insert(cd.name.clone(), module_path_str.clone());
-            }
+    let bindings = name_env::bind::<CompiledConstraintDef, _>(&[], prelude.iter().copied());
+    for shadowing in bindings.shadowings() {
+        let (Some(winner), Some(shadowed)) = (
+            shadowing.winner.origin.module(),
+            shadowing.shadowed.origin.module(),
+        ) else {
+            continue;
+        };
+        if winner != shadowed {
+            ctx.diagnostics
+                .push(Diagnostic::warning(format_shadow_warning(
+                    shadowing.key,
+                    &winner.to_string(),
+                    &shadowed.to_string(),
+                )));
         }
     }
 }
 
-/// Build a combined constraint-def registry: prelude pub defs first
-/// (first-imported wins on cross-prelude name collisions), then local defs
-/// override on name collision with prelude.
+/// Build the constraint-def registry: every name bound by [`name_env`]
+/// (NS-P1: local, then imports, then std modules, first wins).
 ///
 /// Borrows from `local` (module-local constraint defs in ctx) and every prelude
 /// module's `constraint_defs`. Non-pub prelude defs are excluded — only pub
@@ -306,25 +297,14 @@ fn emit_constraint_def_shadow_warnings(
 /// they were already emitted once in [`phase_constraint_defs`] via
 /// [`emit_constraint_def_shadow_warnings`]. The downstream entity-phase
 /// rebuild must not re-emit them to avoid duplicate diagnostics.
-///
-/// Asymmetry with `build_trait_registry` (design decision #2 task 2080):
-/// uses `.entry().or_insert()` for prelude (preserving first-imported-wins
-/// policy pinned by `cross_module_constraint_def_name_collision_emits_shadow_warning`)
-/// and `.insert()` for local (allowing local override of any prelude def).
 pub(crate) fn build_constraint_def_registry<'a>(
     local: &'a [CompiledConstraintDef],
     prelude: &[&'a CompiledModule],
 ) -> HashMap<String, &'a CompiledConstraintDef> {
-    let mut registry: HashMap<String, &'a CompiledConstraintDef> = HashMap::new();
-    for m in prelude {
-        for cd in m.constraint_defs.iter().filter(|c| c.is_pub) {
-            registry.entry(cd.name.clone()).or_insert(cd);
-        }
-    }
-    for cd in local {
-        registry.insert(cd.name.clone(), cd);
-    }
-    registry
+    name_env::bind(local, prelude.iter().copied())
+        .winners()
+        .map(|cd| (cd.name.clone(), cd))
+        .collect()
 }
 
 #[cfg(test)]

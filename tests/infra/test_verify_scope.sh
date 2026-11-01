@@ -827,8 +827,8 @@ assert "PG-DRIFT: marker self-test — the SIBLING 'pg-drift-dir:allow' does NOT
 # which prints `path:count` rather than a bare number.
 _PG_ALLOWED_MENTIONS="$(git -C "$REPO_ROOT" grep -h -E "$_PG_FIX_PAT" -- '*.rs' \
     | grep 'pg-drift:allow' | wc -l || true)"
-assert "PG-DRIFT: exactly six reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, harness_ctor_conformance_survey/render.rs's two SYNTHETIC one.ri drift-render inputs, the two S-4 witness citations of getar_wildcard_headed_arg_silent.ri in overload.rs and result_combinator_resolution_tests.rs, task 8014, and sweep_pose_guard_e2e.rs's pose-proxy citation of pnrg_envelope_sweep.ri, task 7248); found $_PG_ALLOWED_MENTIONS" \
-    test "$_PG_ALLOWED_MENTIONS" -eq 6
+assert "PG-DRIFT: exactly seven reviewed 'pg-drift:allow' fixture mentions are expected in *.rs (tangent_operand_check_tests.rs's uncoupled-probe sentence, harness_ctor_conformance_survey/render.rs's two SYNTHETIC one.ri drift-render inputs, the two S-4 witness citations of getar_wildcard_headed_arg_silent.ri in overload.rs and result_combinator_resolution_tests.rs, task 8014, sweep_pose_guard_e2e.rs's pose-proxy citation of pnrg_envelope_sweep.ri, task 7248, and generic_enum_pattern_binder_tests.rs's structure-param-row mirror of getar_bare_result_annotation_match_panics.ri, task 8013); found $_PG_ALLOWED_MENTIONS" \
+    test "$_PG_ALLOWED_MENTIONS" -eq 7
 # (B) ABUSE SURFACE. The marker asserts "prose only — nothing compiled reads
 # this", so every marked path must classify RUN_RUST=0 against verify.sh's REAL
 # classifier. A marked basename that IS in _RUST_COUPLED_RI_FIXTURES would mean
@@ -980,8 +980,9 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 # Scenario PT-DRIFT: the bash extension list in verify.sh's
 # select_cheap_ptodo_gate is a DERIVED COPY of reify-audit's swept-extension
-# set (crates/reify-audit/src/ptodo.rs::is_swept_ext). This scenario
-# re-derives the set from that function's SOURCE on every infra run and
+# set (crates/reify-audit/src/ptodo.rs::SWEPT_EXTENSIONS, the table
+# is_swept_ext looks paths up in). This scenario
+# re-derives the set from that table's SOURCE on every infra run and
 # asserts every derived member fires the gate (same derive-from-source idiom
 # as PG-DRIFT / PG-DRIFT-GUI above). This is ONE-DIRECTIONAL: it goes RED if
 # is_swept_ext gains an extension verify.sh's list lacks, but nothing here
@@ -996,10 +997,12 @@ assert "PT-1-vacuity: tests/infra/test_reify_audit_ptodo.sh exists (the emitted 
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Scenario PT-DRIFT: every is_swept_ext-derived extension fires the cheap PTODO gate under docs/* ---"
-_PT_EXTS="$(sed -n '/^pub fn is_swept_ext/,/^}/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
-    | grep -o 'ends_with("\.[a-z]*")' | sed 's/.*("\.\([a-z]*\)")/\1/' | sort -u)"
-# Non-empty FIRST: a renamed/reshaped is_swept_ext or a broken sed range must
-# fail loudly here rather than vacuously pass an empty loop.
+_PT_EXTS="$(sed -n '/^const SWEPT_EXTENSIONS/,/^];/p' "$REPO_ROOT/crates/reify-audit/src/ptodo.rs" \
+    | grep -o '("\.[a-z]*",' | sed 's/("\.\([a-z]*\)",/\1/' | sort -u)" || true
+# Non-empty FIRST: a renamed/reshaped SWEPT_EXTENSIONS or a broken sed range
+# must fail loudly here rather than vacuously pass an empty loop (`|| true`
+# above keeps an empty scrape from aborting the run under pipefail before
+# this assert can name it).
 assert "PT-DRIFT: derived swept-extension set is NON-EMPTY (guard is not vacuous)" \
     test -n "$_PT_EXTS"
 while IFS= read -r _pt_ext; do

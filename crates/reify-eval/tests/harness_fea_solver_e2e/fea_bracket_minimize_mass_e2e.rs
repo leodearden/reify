@@ -61,17 +61,15 @@
 //!
 //! # Runtime
 //!
-//! MEASURED 66s / 93s / 105s across three runs on a contended 32-core host — a
-//! real Nelder-Mead-over-FEA loop. Cheaper than the producer's ~490s but still
-//! ~30x this harness's 2.25s per-test mean, so it is evicted from the merge gate
-//! by its own test-scoped atom in `scripts/heavy-test-filter-lib.sh`.
+//! A real Nelder-Mead-over-FEA loop, so it is evicted from the merge gate by its
+//! own test-scoped atom in `scripts/heavy-test-filter-lib.sh`; that atom's
+//! comment carries its measured cost.
 
 use crate::fea_design_loop_support::{
     INTERIOR_LOWER_THRESHOLD_SI, INTERIOR_UPPER_THRESHOLD_SI, fea_loop_engine,
 };
 use reify_core::ValueCellId;
-use reify_ir::Value;
-use reify_test_support::{collect_errors, compile_source_with_stdlib};
+use reify_test_support::{collect_errors, compile_source_with_stdlib, scalar_si};
 
 /// The shipped example under test, resolved from `CARGO_MANIFEST_DIR` so it works
 /// in any worktree.
@@ -90,7 +88,7 @@ const TEMPLATE_NAME: &str = "FeaBracketMinimizeMass";
 /// The OTHER inputs — the example's `length` and `width` — are deliberately NOT
 /// hardcoded here: they are read back from the eval result. Pinning them would
 /// silently re-encode the example's mounting envelope, so a benign resizing of
-/// the bracket would fail this ~88s test with a message about the objective
+/// the bracket would fail this slow test with a message about the objective
 /// expression while the thing that actually drifted was a constant in this file.
 /// Density is different: it is sourced from the stdlib material, not from the
 /// example, so it cannot drift with the example's geometry.
@@ -104,8 +102,8 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
     // ── (a) Cheap precondition: the example compiles clean ───────────────────
     //
     // Checked here as well as in the compile-surface test so that a compile
-    // regression fails FAST and legibly, rather than surfacing ~400s later as a
-    // confusing unresolved-thickness panic.
+    // regression fails FAST and legibly, rather than surfacing at the end of the
+    // slow design loop as a confusing unresolved-thickness panic.
     let compiled = compile_source_with_stdlib(&src);
     let errors = collect_errors(&compiled.diagnostics);
     assert!(
@@ -129,15 +127,14 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
     // naming the cell. Used below for the example's own fixed dimensions, so the
     // mass-coherence check reads them from the design rather than restating them.
     let resolved_si = |member: &str| -> f64 {
-        match result.values.get(&ValueCellId::new(TEMPLATE_NAME, member)) {
-            Some(Value::Scalar { si_value, .. }) => *si_value,
-            other => {
-                panic!("expected a resolved Scalar for {TEMPLATE_NAME}.{member}, got {other:?}")
-            }
-        }
+        let value = result
+            .values
+            .get(&ValueCellId::new(TEMPLATE_NAME, member))
+            .unwrap_or_else(|| panic!("{TEMPLATE_NAME}.{member} missing from result.values"));
+        scalar_si(value, &format!("{TEMPLATE_NAME}.{member}"))
     };
 
-    // Reported so a future failure of this ~100s test can be diagnosed from the
+    // Reported so a future failure of this slow test can be diagnosed from the
     // captured output alone, without a re-run under --no-capture.
     eprintln!(
         "fea_bracket_minimize_mass: thickness = {:?}, mass = {:?}",
@@ -153,15 +150,14 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         .get(&thickness_id)
         .expect("thickness should be in values after resolution");
 
-    let thickness_si = match thickness_val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {TEMPLATE_NAME}.thickness, got {other:?}. \
-             An Undef here means the auto-resolution reported Infeasible and never \
-             wrote a value: the stress constraint never decomposed into a satisfiable \
-             numeric residual. See the module doc for the failure modes."
+    let thickness_si = scalar_si(
+        thickness_val,
+        &format!(
+            "{TEMPLATE_NAME}.thickness (Undef => auto-resolution reported Infeasible: the \
+             stress constraint never decomposed into a satisfiable numeric residual; see \
+             module doc)"
         ),
-    };
+    );
 
     // ── (c) Finite ───────────────────────────────────────────────────────────
 
@@ -201,14 +197,13 @@ fn fea_bracket_minimize_mass_example_converges_to_an_interior_thickness() {
         .get(&mass_id)
         .expect("mass should be in values after eval — it is the compiled objective");
 
-    let mass_si = match mass_val {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!(
-            "expected a resolved Scalar for {TEMPLATE_NAME}.mass (the minimize \
-             objective), got {other:?}. An Undef objective would leave the optimiser \
-             with no gradient to descend."
+    let mass_si = scalar_si(
+        mass_val,
+        &format!(
+            "{TEMPLATE_NAME}.mass (the minimize objective; Undef => the optimiser has no \
+             gradient to descend)"
         ),
-    };
+    );
     assert!(
         mass_si.is_finite() && mass_si > 0.0,
         "mass must be finite and positive, got {mass_si:?}"

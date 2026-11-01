@@ -3,28 +3,28 @@
 
 use reify_solver_elastic::{
     AnisoFormFindError, AnisotropicSurfaceStress, ForceDensityInputError, ForceDensitySpec,
-    FormFindError, FreeFormError, GroupSpecDefect, IndexedInput, MemberKind, form_find_anchored,
-    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso, form_find_free,
-    form_find_free_surfaces,
+    FormFindError, FreeFormError, GroupSpecDefect, IndexedInput, MemberKind, RealInput,
+    SurfaceStressDefect, form_find_anchored, form_find_anchored_surfaces,
+    form_find_anchored_surfaces_aniso, form_find_free, form_find_free_surfaces,
 };
 use reify_test_support::tensegrity_fixtures::{TRIPLEX_MEMBERS, TRIPLEX_SEEDS, TRIPLEX_STRUTS};
 
 #[test]
-fn cable_admits_exactly_positive_densities() {
-    for q in [1.0, f64::MIN_POSITIVE, f64::INFINITY] {
+fn cable_admits_exactly_finite_positive_densities() {
+    for q in [1.0, f64::MIN_POSITIVE, f64::MAX] {
         assert!(MemberKind::Cable.admits(q), "a cable must admit q = {q}");
     }
-    for q in [0.0, -0.0, -1.0, f64::NAN] {
+    for q in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(!MemberKind::Cable.admits(q), "a cable must reject q = {q}");
     }
 }
 
 #[test]
-fn strut_admits_exactly_negative_densities() {
-    for q in [-1.0, -f64::MIN_POSITIVE, f64::NEG_INFINITY] {
+fn strut_admits_exactly_finite_negative_densities() {
+    for q in [-1.0, -f64::MIN_POSITIVE, -f64::MAX] {
         assert!(MemberKind::Strut.admits(q), "a strut must admit q = {q}");
     }
-    for q in [0.0, -0.0, 1.0, f64::NAN] {
+    for q in [0.0, -0.0, 1.0, f64::NAN, f64::NEG_INFINITY, f64::INFINITY] {
         assert!(!MemberKind::Strut.admits(q), "a strut must reject q = {q}");
     }
 }
@@ -189,9 +189,11 @@ fn a_density_against_its_kind_is_one_sign_violation_on_every_anchored_entry() {
         (MemberKind::Cable, 0.0),
         (MemberKind::Cable, -1.0),
         (MemberKind::Cable, f64::NAN),
+        (MemberKind::Cable, f64::INFINITY),
         (MemberKind::Strut, 0.0),
         (MemberKind::Strut, 1.0),
         (MemberKind::Strut, f64::NAN),
+        (MemberKind::Strut, f64::NEG_INFINITY),
     ];
     for (kind, q) in violations {
         let mut case = FdAnchoredCase::valid();
@@ -219,7 +221,7 @@ fn surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
 #[test]
 fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
     let non_tension = ForceDensityInputError::NonTensionSurfaceStress { surface: 0 };
-    for sigma in [0.0, -1.0, f64::NAN] {
+    for sigma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let mut case = FdAnchoredCase::valid();
         case.sigma = vec![sigma];
         assert_eq!(
@@ -228,12 +230,123 @@ fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
             "σ = {sigma}"
         );
     }
-    for stress in [fd_aniso_stress(0.0, 1.0), fd_aniso_stress(1.0, f64::NAN)] {
+    for stress in [
+        fd_aniso_stress(0.0, 1.0),
+        fd_aniso_stress(1.0, f64::NAN),
+        fd_aniso_stress(f64::INFINITY, 1.0),
+        fd_aniso_stress(1.0, f64::INFINITY),
+    ] {
         let mut case = FdAnchoredCase::valid();
         case.aniso = vec![stress];
         assert_eq!(
             case.anisotropic(),
             Err(AnisoFormFindError::Input(non_tension))
+        );
+    }
+}
+
+#[test]
+fn a_non_finite_node_coordinate_is_rejected_by_every_anchored_entry() {
+    for (index, axis, coordinate) in [(1, 2, f64::NAN), (3, 0, f64::INFINITY)] {
+        let mut case = FdAnchoredCase::valid();
+        case.nodes[index][axis] = coordinate;
+        case.assert_every_entry_rejects(ForceDensityInputError::NonFinite {
+            what: RealInput::NodeCoordinate,
+            index,
+        });
+    }
+}
+
+/// #7800: a free node seeded at NaN, tied by two cables to anchors beside a flat
+/// symmetric membrane tent, must be a located input error — not a converged
+/// solve that echoes the NaN coordinates back.
+#[test]
+fn a_nan_seeded_free_node_is_a_non_finite_input_not_a_converged_nan_solve() {
+    let nodes = [
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [f64::NAN, f64::NAN, f64::NAN],
+        [0.0, 0.0, -0.5],
+        [0.0, 0.0, 0.5],
+    ];
+    let surfaces = [(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
+    let surface_stresses = [2.0; 4];
+    let members = [(5, 6), (5, 7)];
+    let kinds = [MemberKind::Cable; 2];
+    let q = [1.0; 2];
+    let anchors = [1, 2, 3, 4, 6, 7];
+    let solve = form_find_anchored_surfaces(
+        &nodes,
+        &members,
+        &kinds,
+        &q,
+        &surfaces,
+        &surface_stresses,
+        &anchors,
+    );
+    assert_eq!(
+        solve.map(|s| s.nodes),
+        Err(FormFindError::Input(ForceDensityInputError::NonFinite {
+            what: RealInput::NodeCoordinate,
+            index: 5,
+        }))
+    );
+}
+
+#[test]
+fn anisotropic_surface_stress_new_admits_a_finite_tension_with_a_warp_direction() {
+    let stress = AnisotropicSurfaceStress::new([1.0, 0.0, 0.0], 2.0, 1.0)
+        .expect("a finite tension with a warp direction is admissible");
+    assert_eq!(
+        (stress.warp_dir, stress.sigma_warp, stress.sigma_weft),
+        ([1.0, 0.0, 0.0], 2.0, 1.0)
+    );
+}
+
+#[test]
+fn anisotropic_surface_stress_new_rejects_a_stress_that_is_not_a_finite_tension() {
+    for s in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for (sigma_warp, sigma_weft) in [(s, 1.0), (1.0, s)] {
+            assert_eq!(
+                AnisotropicSurfaceStress::new([1.0, 0.0, 0.0], sigma_warp, sigma_weft).err(),
+                Some(SurfaceStressDefect::NonTension),
+                "σ_w = {sigma_warp}, σ_f = {sigma_weft}"
+            );
+        }
+    }
+}
+
+#[test]
+fn anisotropic_surface_stress_new_rejects_a_warp_direction_that_fixes_no_frame() {
+    // The last direction is finite, but its squared norm overflows.
+    for warp_dir in [
+        [0.0, 0.0, 0.0],
+        [f64::NAN, 0.0, 0.0],
+        [0.0, f64::INFINITY, 0.0],
+        [1e200, 0.0, 0.0],
+    ] {
+        assert_eq!(
+            AnisotropicSurfaceStress::new(warp_dir, 1.0, 1.0).err(),
+            Some(SurfaceStressDefect::DegenerateMaterialFrame),
+            "warp_dir = {warp_dir:?}"
+        );
+    }
+}
+
+#[test]
+fn a_zero_or_nan_warp_direction_is_a_degenerate_material_frame_input_error() {
+    for warp_dir in [[0.0, 0.0, 0.0], [f64::NAN, 0.0, 0.0]] {
+        let mut case = FdAnchoredCase::valid();
+        case.aniso[0].warp_dir = warp_dir;
+        assert_eq!(
+            case.anisotropic(),
+            Err(AnisoFormFindError::Input(
+                ForceDensityInputError::DegenerateMaterialFrame { surface: 0 }
+            )),
+            "warp_dir = {warp_dir:?}"
         );
     }
 }
@@ -422,9 +535,11 @@ fn an_explicit_density_against_its_kind_is_one_sign_violation_on_both_free_entri
         (MemberKind::Cable, 0.0),
         (MemberKind::Cable, -1.0),
         (MemberKind::Cable, f64::NAN),
+        (MemberKind::Cable, f64::INFINITY),
         (MemberKind::Strut, 0.0),
         (MemberKind::Strut, 1.0),
         (MemberKind::Strut, f64::NAN),
+        (MemberKind::Strut, f64::NEG_INFINITY),
     ];
     for (kind, q) in violations {
         let mut case = FdFreeCase::explicit();
@@ -436,9 +551,9 @@ fn an_explicit_density_against_its_kind_is_one_sign_violation_on_both_free_entri
 
 #[test]
 fn a_seed_against_its_group_kind_is_a_sign_violation_before_any_search() {
-    // Group 0 holds the struts, members 0..3: a tensile or NaN seed for it
-    // contradicts the first strut's kind.
-    for strut_seed in [1.0, f64::NAN] {
+    // Group 0 holds the struts, members 0..3: a tensile, NaN or infinite seed
+    // for it contradicts the first strut's kind.
+    for strut_seed in [1.0, f64::NAN, f64::NEG_INFINITY] {
         let mut case = FdFreeCase::group_ratios();
         if let ForceDensitySpec::GroupRatios { seed_ratios, .. } = &mut case.spec {
             seed_ratios[0] = strut_seed;
@@ -488,7 +603,9 @@ fn a_malformed_group_spec_names_its_defect_on_both_free_entries() {
             },
             ..FdFreeCase::explicit()
         };
-        let expected = Err(FreeFormError::MalformedGroupSpec(defect));
+        let expected = Err(FreeFormError::Input(
+            ForceDensityInputError::MalformedGroupSpec(defect),
+        ));
         assert_eq!(case.line_only(), expected, "line-only");
         assert_eq!(case.with_surfaces(), expected, "with surfaces");
     }
@@ -508,8 +625,8 @@ fn a_group_spec_with_no_seeds_has_an_unseeded_reference_group() {
         sigma: Vec::new(),
         ..FdFreeCase::explicit()
     };
-    let expected = Err(FreeFormError::MalformedGroupSpec(
-        GroupSpecDefect::UnseededReferenceGroup,
+    let expected = Err(FreeFormError::Input(
+        ForceDensityInputError::MalformedGroupSpec(GroupSpecDefect::UnseededReferenceGroup),
     ));
     assert_eq!(case.line_only(), expected, "line-only");
     assert_eq!(case.with_surfaces(), expected, "with surfaces");
@@ -529,7 +646,7 @@ fn free_surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
 
 #[test]
 fn a_free_surface_stress_that_is_not_tension_is_rejected_including_nan() {
-    for sigma in [0.0, f64::NAN] {
+    for sigma in [0.0, f64::NAN, f64::INFINITY] {
         let mut case = FdFreeCase::explicit();
         case.sigma = vec![sigma];
         assert_eq!(
@@ -539,6 +656,17 @@ fn a_free_surface_stress_that_is_not_tension_is_rejected_including_nan() {
             )),
             "σ = {sigma}"
         );
+    }
+}
+
+#[test]
+fn a_non_finite_node_guess_is_rejected_by_both_free_entries() {
+    for mut case in [FdFreeCase::explicit(), FdFreeCase::group_ratios()] {
+        case.nodes[0][1] = f64::NAN;
+        case.assert_both_entries_reject(ForceDensityInputError::NonFinite {
+            what: RealInput::NodeCoordinate,
+            index: 0,
+        });
     }
 }
 

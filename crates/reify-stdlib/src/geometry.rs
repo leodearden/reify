@@ -1939,34 +1939,6 @@ use crate::orientation::{normalize_quaternion, quat_conj, quat_mul, quat_rotate}
 // which stays green through exactly that drift.
 use crate::orientation::rotation_vector_dimension_error;
 
-/// Human-readable name for a dimension, for use in diagnostic messages.
-///
-/// `DimensionVector::canonical_name()` yields `"Length"` / `"Angle"` / `"Mass"` from
-/// the `NAMED_DIMENSIONS` table, and deliberately returns `None` for DIMENSIONLESS,
-/// whose `Display` renders `"dimensionless"`. This is what lets a message NAME the
-/// offending dimension instead of hardcoding one string.
-///
-/// KNOWN NEAR-DUPLICATE, and the divergence is deliberate — do not blind-unify. Two
-/// sibling helpers in `reify-eval` branch on the same `canonical_name()`:
-/// `arg_acceptance.rs`'s `value_short_label` and `geometry_ops.rs`'s
-/// `scalar_got_label` (whose own doc already notes it is replicated rather than
-/// shared). Both label a VALUE, so both suffix `" Scalar"` and render DIMENSIONLESS as
-/// `"dimensionless Scalar"` and an unnamed dimension as the generic
-/// `"dimensioned Scalar"`. This one labels a DIMENSION, in a sentence that has already
-/// named the value ("a twist's `linear` must be Vector3<Length>; got …"), so it
-/// diverges on both counts on purpose: the `Scalar` suffix would be redundant AND
-/// wrong (the offending component may be a `Value::Real`, never a `Value::Scalar`),
-/// and the fallback goes through `Display` so an unnamed dimension still prints its
-/// actual exponents rather than the uninformative word "dimensioned". Hoisting a
-/// shared `DimensionVector::diagnostic_label()` to `reify-core` is worth doing, but it
-/// must carry BOTH renderings rather than collapsing them; that lives outside this
-/// crate's scope and is filed as follow-up work.
-fn dimension_label(dim: DimensionVector) -> String {
-    dim.canonical_name()
-        .map(str::to_string)
-        .unwrap_or_else(|| dim.to_string())
-}
-
 /// Classify a SCALAR value at a position that must carry LENGTH.
 ///
 /// The one predicate that owns "is this a LENGTH rejection" in this module.
@@ -2374,7 +2346,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 reify_core::Diagnostic::error(format!(
                     "transform_log: a Transform's translation must be Vector3<Length>; got {} \
                      (a twist's `linear` half carries Length — RULING #6126)",
-                    dimension_label(t_dim)
+                    t_dim.diagnostic_dimension_label()
                 ))
                 .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
             )
@@ -2420,7 +2392,7 @@ pub fn diagnose(name: &str, args: &[Value]) -> Option<reify_core::Diagnostic> {
                 reify_core::Diagnostic::error(format!(
                     "transform_exp: a twist's `linear` must be Vector3<Length>; got {} \
                      (RULING #6126)",
-                    dimension_label(lin_dim)
+                    lin_dim.diagnostic_dimension_label()
                 ))
                 .with_code(reify_core::DiagnosticCode::DimensionedArgRejected),
             )
@@ -2552,12 +2524,13 @@ fn classify_bbox_corner(v: &Value) -> BboxCorner {
 /// decoder the eval gate reads, so this arm cannot speak for a corner eval
 /// accepted nor stay quiet on one eval rejected on dimension grounds.
 ///
-/// The dimension half of the message goes through [`dimension_label`] (added by
-/// RULING #6126) rather than re-rolling a fourth rendering of the same thing, so an
-/// unnamed dimension prints its actual exponents instead of the uninformative word
-/// "dimensioned". DIMENSIONLESS is the one divergence and it is deliberate: the label
-/// lands in a TYPE-ARGUMENT slot (`Point3<…>`), where the spelling is `Real`, not
-/// `dimension_label`'s prose "dimensionless".
+/// The dimension half of the message goes through
+/// [`DimensionVector::diagnostic_dimension_label`] rather than re-rolling another
+/// rendering of the same thing, so an unnamed dimension prints its actual exponents
+/// instead of the uninformative word "dimensioned". DIMENSIONLESS is the one
+/// divergence and it is deliberate: the label lands in a TYPE-ARGUMENT slot
+/// (`Point3<…>`), where the spelling is `Real`, not `diagnostic_dimension_label`'s
+/// prose "dimensionless".
 ///
 /// The message mirrors `ArgRejection::message`'s
 /// `"{builtin}: {arg_name} argument expects {expected}, got {got}"` shape
@@ -2571,7 +2544,7 @@ fn classify_bbox_corner(v: &Value) -> BboxCorner {
 /// (helpers.rs's test module) pins that `reify_ir::arg_acceptance` IS importable
 /// from here. What keeps this rendering separate is the divergence documented
 /// directly above: the label lands in a TYPE-ARGUMENT slot (`Point3<…>`), where
-/// DIMENSIONLESS spells `Real` rather than `dimension_label`'s prose
+/// DIMENSIONLESS spells `Real` rather than `diagnostic_dimension_label`'s prose
 /// "dimensionless". Copying the wording across a boundary remains established
 /// practice for the genuinely-unreachable case (see
 /// `reify-compiler/src/conformance/mod.rs`, annotated "COPIED from
@@ -2584,7 +2557,7 @@ fn diagnose_bbox_corners(min: &Value, max: &Value) -> Option<reify_core::Diagnos
             // The one accepted corner: nothing to explain.
             BboxCorner::Uniform(dim) if dim == DimensionVector::LENGTH => continue,
             BboxCorner::Uniform(dim) if dim.is_dimensionless() => "Point3<Real>".to_string(),
-            BboxCorner::Uniform(dim) => format!("Point3<{}>", dimension_label(dim)),
+            BboxCorner::Uniform(dim) => format!("Point3<{}>", dim.diagnostic_dimension_label()),
             // No single quantity to name, so the slot describes the fault instead
             // of pretending to a `Point3<…>` spelling the argument does not have.
             BboxCorner::Mixed => "a Point3 with mixed component dimensions".to_string(),
@@ -8412,11 +8385,13 @@ mod tests {
     }
 
     /// An UNNAMED composite dimension must still print its actual exponents, not a
-    /// generic label — the `dimension_label` fallback branch, which every other test
-    /// here bypasses by using a NAMED dimension (Length/Angle/Mass) or DIMENSIONLESS.
+    /// generic label — `DimensionVector::diagnostic_dimension_label`'s `Display`
+    /// fallback, exercised through the transform_exp diagnostic, which every other
+    /// test here bypasses by using a NAMED dimension (Length/Angle/Mass) or
+    /// DIMENSIONLESS.
     ///
-    /// That fallback is the documented divergence from the two `reify-eval` siblings
-    /// (`value_short_label` / `scalar_got_label`), which collapse this case to the
+    /// That fallback is the deliberate divergence from the VALUE form,
+    /// `DimensionVector::diagnostic_scalar_label`, which collapses this case to the
     /// uninformative word "dimensioned". `MONEY / MASS` is the codebase's canonical
     /// no-canonical-name example (see `canonical_name_composite_returns_none` in
     /// reify-core), and `Display` renders it "USD·kg^-1" — so a regression that

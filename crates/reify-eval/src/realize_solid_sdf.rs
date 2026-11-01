@@ -292,25 +292,11 @@ mod tests {
     //     expects None (the densify-Err path).  Step-4 fixes (a) by wiring the
     //     full tessellate→ingest→densify recipe.
 
-    /// Closed box mesh (±1.0 mm on each axis, 12 triangles).
-    /// Same fixture as realization_content.rs::box_2mm; defined without a
+    /// Closed box mesh (±1.0 mm on each axis, 12 triangles). Defined without a
     /// `cfg(has_openvdb)` gate so TessellatingBoxKernel can be used in both
     /// the cfg(has_openvdb) success test and the cfg-independent densify-Err test.
     fn box_2mm() -> reify_ir::Mesh {
-        let v: Vec<f32> = vec![
-            -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
-            1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
-        ];
-        #[rustfmt::skip]
-        let i: Vec<u32> = vec![
-            0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
-            2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
-        ];
-        reify_ir::Mesh {
-            vertices: v,
-            indices: i,
-            normals: None,
-        }
+        reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
     }
 
     /// Mock kernel whose `tessellate` returns the closed `box_2mm()` mesh.

@@ -16,7 +16,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use reify_core::{DimensionVector, Severity, ValueCellId};
 use reify_eval::{CancellationHandle, ComputeFn, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value};
-use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple_engine, point3};
+use reify_test_support::{
+    collect_errors, compile_source_with_stdlib, make_simple_engine, point3, read_real_or_scalar,
+    read_real_or_scalar3,
+};
 
 // ── step-7: stdlib declaration type-checks ───────────────────────────────────
 
@@ -147,15 +150,6 @@ fn call_form_find(value_inputs: &[Value]) -> ComputeOutcome {
     )
 }
 
-/// Extract an f64 from a Length Scalar (or bare Real) coordinate component.
-fn coord(v: &Value) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        Value::Real(r) => *r,
-        other => panic!("expected a Scalar/Real coordinate, got {other:?}"),
-    }
-}
-
 /// (a) Happy path: the trampoline cracks the Tensegrity / force-densities /
 /// anchors Values, calls the FD kernel, and returns `Completed` with a
 /// `FormFindResult` whose `nodes` is a List of 5 Points, node 0 at the anchor
@@ -203,10 +197,7 @@ fn trampoline_happy_path_solves_to_anchor_centroid() {
         "expected 5 solved nodes (1 free + 4 anchors)"
     );
 
-    let n0 = match &nodes[0] {
-        Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
-        other => panic!("nodes[0] must be a 3-component Point, got {other:?}"),
-    };
+    let n0 = read_real_or_scalar3(&nodes[0], "nodes[0]");
     let expected = [0.0, 0.0, 0.5];
     for (i, (got, exp)) in n0.iter().zip(expected.iter()).enumerate() {
         assert!(
@@ -515,11 +506,16 @@ fn degenerate_membrane_tensegrity() -> Value {
 
 /// Extract `FormFindResult.surface_stresses` as a list of f64 echoes, asserting
 /// it is a (possibly empty) `Value::List` — never `Undef` and never absent. Each
-/// entry is read via `coord` (accepts a dimensioned Scalar or a bare Real), so
-/// this stays agnostic to the trampoline's exact numeric encoding.
+/// entry is read via `read_real_or_scalar` (accepts a dimensioned Scalar or a
+/// bare Real), so this stays agnostic to the trampoline's exact numeric
+/// encoding.
 fn surface_stress_echoes(fields: &PersistentMap<String, Value>) -> Vec<f64> {
     match fields.get(&"surface_stresses".to_string()) {
-        Some(Value::List(items)) => items.iter().map(coord).collect(),
+        Some(Value::List(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| read_real_or_scalar(v, &format!("surface_stresses[{i}]")))
+            .collect(),
         other => panic!(
             "FormFindResult.surface_stresses must be a Value::List \
              (never Undef / absent), got {other:?}"
@@ -727,10 +723,8 @@ fn form_nodes_and_converged(form: &Value) -> (Vec<[f64; 3]>, bool) {
     let nodes = match data.fields.get(&"nodes".to_string()) {
         Some(Value::List(ns)) => ns
             .iter()
-            .map(|p| match p {
-                Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
-                other => panic!("FormFindResult.nodes entry must be a 3-Point, got {other:?}"),
-            })
+            .enumerate()
+            .map(|(j, p)| read_real_or_scalar3(p, &format!("nodes[{j}]")))
             .collect(),
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
@@ -1170,10 +1164,7 @@ fn trampoline_dimensionless_scalar_force_density_still_solves() {
         Some(Value::List(ns)) => ns,
         other => panic!("FormFindResult.nodes must be a List, got {other:?}"),
     };
-    let n0 = match &nodes[0] {
-        Value::Point(c) if c.len() == 3 => [coord(&c[0]), coord(&c[1]), coord(&c[2])],
-        other => panic!("nodes[0] must be a 3-component Point, got {other:?}"),
-    };
+    let n0 = read_real_or_scalar3(&nodes[0], "nodes[0]");
     for (i, (got, exp)) in n0.iter().zip([0.0, 0.0, 0.5].iter()).enumerate() {
         assert!(
             (got - exp).abs() < 1e-9,

@@ -295,15 +295,15 @@ fn apply_transform_occt_acceptance() {
 
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Scalar {
+            size_x: Value::Scalar {
                 si_value: 0.01,
                 dimension: reify_core::DimensionVector::LENGTH,
             },
-            height: Value::Scalar {
+            size_y: Value::Scalar {
                 si_value: 0.01,
                 dimension: reify_core::DimensionVector::LENGTH,
             },
-            depth: Value::Scalar {
+            size_z: Value::Scalar {
                 si_value: 0.01,
                 dimension: reify_core::DimensionVector::LENGTH,
             },

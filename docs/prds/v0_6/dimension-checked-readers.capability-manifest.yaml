@@ -77,7 +77,7 @@ tasks:
       kind: grep
       pattern: d\.severity == Severity::Error
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: I5-specific-UndefCause-has-no-exercised-path-today
     binding: 'UNLISTED PREMISE. `push_op_contract_failure` (crates/reify-expr/src/lib.rs:2898)

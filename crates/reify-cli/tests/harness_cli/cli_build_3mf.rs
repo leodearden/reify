@@ -1,6 +1,17 @@
+use std::path::Path;
+use std::process::ExitStatus;
+
 use crate::common;
 
-use std::process::Command;
+/// Run `reify build <design> -o <output_path>`; return `(status, stdout, stderr)`.
+fn run_build_to(design: &str, output_path: &Path) -> (ExitStatus, String, String) {
+    common::run_with_args(&[
+        "build",
+        design,
+        "-o",
+        output_path.to_str().expect("temp path is not valid UTF-8"),
+    ])
+}
 
 /// Build a box fixture to a `.3mf` output path and assert valid OPC package
 /// structure in the resulting bytes (Stored=uncompressed, no zip reader needed).
@@ -12,25 +23,12 @@ fn build_box_to_3mf_writes_valid_package() {
     let dir = tempfile::tempdir().expect("failed to create temp dir");
     let output_path = dir.path().join("out.3mf");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &common::fixture_path("box_3mf.ri"),
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let (status, stdout, stderr) = run_build_to(&common::fixture_path("box_3mf.ri"), &output_path);
 
     assert!(
-        output.status.success(),
-        "reify build should exit 0 for valid box_3mf.ri\nstdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build should exit 0 for valid box_3mf.ri; got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
     assert!(
         stdout.contains("Wrote"),
@@ -75,25 +73,13 @@ fn build_colored_box_to_3mf_writes_basematerials() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let output_path = dir.path().join("out.3mf");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-            .args([
-                "build",
-                &common::fixture_path("box_3mf_colored.ri"),
-                "-o",
-                output_path.to_str().expect("temp path is not valid UTF-8"),
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .expect("failed to execute reify binary");
-
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let (status, stdout, stderr) =
+            run_build_to(&common::fixture_path("box_3mf_colored.ri"), &output_path);
 
         assert!(
-            output.status.success(),
-            "B7: reify build should exit 0 for box_3mf_colored.ri\nstdout: {stdout}\nstderr: {stderr}"
+            status.success(),
+            "B7: reify build should exit 0 for box_3mf_colored.ri; got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            status.code()
         );
         assert!(output_path.exists(), "B7: output file must be written");
 
@@ -121,25 +107,13 @@ fn build_colored_box_to_3mf_writes_basematerials() {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let output_path = dir.path().join("out.3mf");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-            .args([
-                "build",
-                &common::fixture_path("box_3mf.ri"),
-                "-o",
-                output_path.to_str().expect("temp path is not valid UTF-8"),
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .expect("failed to execute reify binary");
-
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let (status, stdout, stderr) =
+            run_build_to(&common::fixture_path("box_3mf.ri"), &output_path);
 
         assert!(
-            output.status.success(),
-            "B8: reify build should exit 0 for box_3mf.ri\nstdout: {stdout}\nstderr: {stderr}"
+            status.success(),
+            "B8: reify build should exit 0 for box_3mf.ri; got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            status.code()
         );
 
         let bytes = std::fs::read(&output_path).expect("B8: failed to read output file");

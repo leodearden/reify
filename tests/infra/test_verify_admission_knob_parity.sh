@@ -58,12 +58,11 @@ echo "=== admission-knob verify_env/default parity tests (task 6393) ==="
 
 ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
-# verify_env_exports — parse KEY=VALUE from the yaml verify_env block.
-# Mirrored VERBATIM from tests/infra/test_verify_env_ambient_isolation.sh:59-85
-# (task 4966's drift-guard), the established copy convention -- see the same
-# reuse-note in tests/infra/test_verify_release_delta_skip.sh:435-441 for why
-# no shared lib exists.  This is the 3rd mirror; refresh all copies together
-# if the awk logic ever changes.
+# verify_env_exports — parse KEY=VALUE from the yaml verify_env block: the awk
+# form of the parse contract stated in the docstring of
+# test_verify_env_ambient_isolation.py::verify_env_exports. Identical copies
+# live in other members (`git grep -n '^verify_env_exports() {' -- tests/infra`);
+# change every copy and that function together.
 verify_env_exports() {
     local yaml_file="$1"
     awk '

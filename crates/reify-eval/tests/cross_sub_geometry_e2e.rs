@@ -958,7 +958,7 @@ pub structure Outer {
 
     let recorded = ops_ref.lock().unwrap().clone();
 
-    // (c) Find the per-instance Box with width/height/depth == 70 mm.
+    // (c) Find the per-instance Box with size_x/size_y/size_z == 70 mm.
     // 70 mm = 0.07 m in SI units, stored as Value::Scalar with LENGTH dimension.
     let override_size = Value::Scalar {
         si_value: 0.07,
@@ -966,14 +966,14 @@ pub structure Outer {
     };
     let per_instance_box = recorded.iter().find(|rec| match &rec.op {
         GeometryOp::Box {
-            width,
-            height,
-            depth,
-        } => width == &override_size && height == &override_size && depth == &override_size,
+            size_x,
+            size_y,
+            size_z,
+        } => size_x == &override_size && size_y == &override_size && size_z == &override_size,
         _ => false,
     });
     let per_instance_box = per_instance_box.expect(
-        "expected a Box op with width=height=depth=0.07 m (70 mm) for Inner(size: 70mm) \
+        "expected a Box op with size_x=size_y=size_z=0.07 m (70 mm) for Inner(size: 70mm) \
          override; on main this fails because the structure-keyed snapshot uses Inner's \
          default 10mm param (si_value=0.01)",
     );
@@ -1122,10 +1122,10 @@ pub structure Outer {
 
     let recorded = ops_ref.lock().unwrap().clone();
 
-    // (c) Find the per-instance Box with width=depth=10mm (default for `w`)
-    // and height=50mm (override for `h`).  This is the discriminator:
+    // (c) Find the per-instance Box with size_x=size_z=10mm (default for `w`)
+    // and size_y=50mm (override for `h`).  This is the discriminator:
     // on main the structure-keyed snapshot path produces a Box with
-    // height=20mm (Inner's default), so this assertion fails.
+    // size_y=20mm (Inner's default), so this assertion fails.
     let default_w = Value::Scalar {
         si_value: 0.01,
         dimension: DimensionVector::LENGTH,
@@ -1136,16 +1136,16 @@ pub structure Outer {
     };
     let per_instance_box = recorded.iter().find(|rec| match &rec.op {
         GeometryOp::Box {
-            width,
-            height,
-            depth,
-        } => width == &default_w && height == &override_h && depth == &default_w,
+            size_x,
+            size_y,
+            size_z,
+        } => size_x == &default_w && size_y == &override_h && size_z == &default_w,
         _ => false,
     });
     let per_instance_box = per_instance_box.expect(
-        "expected a Box op with width=depth=0.01 m (10 mm default for `w`) AND height=0.05 m \
+        "expected a Box op with size_x=size_z=0.01 m (10 mm default for `w`) AND size_y=0.05 m \
          (50 mm override for `h`) for Inner(h: 50mm); on main this fails because the \
-         structure-keyed snapshot uses Inner's default 20mm height (si_value=0.02)",
+         structure-keyed snapshot uses Inner's default 20mm `h` (si_value=0.02)",
     );
     let override_box_handle = per_instance_box.result_handle;
 
@@ -1284,11 +1284,11 @@ pub structure Outer {
     };
 
     let box_50 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_50,
+        GeometryOp::Box { size_x, .. } => size_x == &size_50,
         _ => false,
     });
     let box_80 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_80,
+        GeometryOp::Box { size_x, .. } => size_x == &size_80,
         _ => false,
     });
 
@@ -1370,7 +1370,7 @@ pub structure Outer {
 ///
 /// Assertions:
 /// * (a) No Error-severity diagnostics.
-/// * (b) A Box op with width/height/depth = 70mm (per-instance box) exists.
+/// * (b) A Box op with size_x/size_y/size_z = 70mm (per-instance box) exists.
 /// * (c) A Translate op with x = 5mm (Inner's internal translate) whose
 ///   target is the per-instance Box handle (H_box) exists.
 /// * (d) A Translate op with x = 200mm (Outer's placed) whose target equals
@@ -1432,22 +1432,22 @@ pub structure Outer {
 
     let recorded = ops_ref.lock().unwrap().clone();
 
-    // (b) Find the per-instance Box with width/height/depth = 70mm.
+    // (b) Find the per-instance Box with size_x/size_y/size_z = 70mm.
     let size_70 = Value::Scalar {
         si_value: 0.07,
         dimension: DimensionVector::LENGTH,
     };
     let box_70 = recorded.iter().find(|rec| match &rec.op {
         GeometryOp::Box {
-            width,
-            height,
-            depth,
-        } => width == &size_70 && height == &size_70 && depth == &size_70,
+            size_x,
+            size_y,
+            size_z,
+        } => size_x == &size_70 && size_y == &size_70 && size_z == &size_70,
         _ => false,
     });
     let h_box = box_70
         .expect(
-            "expected a Box op with width=height=depth=0.07m (70mm per-instance override); \
+            "expected a Box op with size_x=size_y=size_z=0.07m (70mm per-instance override); \
              on a broken per_instance_step_handles accumulator this would be absent or \
              have the default 10mm dimensions",
         )

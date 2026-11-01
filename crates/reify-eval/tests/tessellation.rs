@@ -50,9 +50,9 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -108,9 +108,9 @@ fn tessellate_multiple_realizations() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 

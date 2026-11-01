@@ -32,9 +32,9 @@ fn make_sub_ref_module(result_ops: Vec<CompiledGeometryOp>) -> reify_compiler::C
     let body_ops = vec![CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(20.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(20.0)),
+            ("size_x".into(), mm_lit(20.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(20.0)),
         ],
     }];
 

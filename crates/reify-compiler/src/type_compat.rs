@@ -353,7 +353,7 @@ pub(crate) fn enum_payload_compatible(
 /// This is the SINGLE oracle for "which enum is this type, ignoring the
 /// D1/F-Mono erasure gap between the bare and applied spellings". Both
 /// [`enum_payload_compatible`] (the payload-field / declared-side guard) and the
-/// ctor-conformance walker's enum accept in `conformance/mod.rs` route through
+/// ctor-conformance relation's enum arm in `type_acceptance.rs` route through
 /// it, so the two cannot disagree about what counts as an applied enum.
 ///
 /// **Why the `enum_defs` membership check.** `Type::Applied { name, .. }` is not

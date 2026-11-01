@@ -679,13 +679,12 @@ export async function runValueScenario(
  */
 export const KNOWN_DEBUG_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Rust-dispatched tools (debug_server.rs dispatch_tool, incl. its
-  // dispatch_stateless_tool delegate for morph_stats/mesh_morph_stats)
+  // dispatch_stateless_tool delegate for mesh_morph_stats)
   "health",
   "engine_status",
   "engine_state",
   "demand_dispatch",
   "mesh_stats",
-  "morph_stats",
   "mesh_morph_stats",
   "load_fixture",
   "set_fea_case",

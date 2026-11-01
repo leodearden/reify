@@ -139,7 +139,7 @@ pub fn mesh_plane_2d(
 /// it into the model, and apply the recombine request to that surface.
 ///
 /// The [`crate::init::GmshGuard`] is an admission ticket only, as in
-/// `kernel_real::build_meshable_region`: never touched, taken so holding
+/// `meshable_region::build_meshable_region`: never touched, taken so holding
 /// `GMSH_LOCK` is a precondition the compiler checks. Split out of
 /// [`mesh_plane_2d`] so this span's failures reach the caller's `LogCapture`
 /// at one seam.
@@ -305,7 +305,7 @@ fn read_back_plane_mesh(
 }
 
 /// Reject a readback holding no elements at all — the 2D form of the
-/// emptiness rejection `init::read_tet_connectivity` applies to the three tet
+/// emptiness rejection `tet_readback::read_tet_connectivity` applies to the three tet
 /// meshers.
 ///
 /// Gmsh can report a successful generate and hold nothing, and a

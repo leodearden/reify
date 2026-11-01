@@ -1110,7 +1110,9 @@ fn eval_records_cache_entry_alongside_journal_pair_for_top_level_s4_path() {
     // (b) Journal sanity check: Started + Completed pair present.
     let events = engine.journal().events_for_node(&node_id);
     assert!(
-        events.iter().any(|e| matches!(e.kind, EventKind::Started)),
+        events
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::Started { .. })),
         "journal must have a Started event for p (S4 path)"
     );
     assert!(
@@ -1158,7 +1160,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_active_branch_par
         "guarded-group active-branch Param must emit exactly one Started+Completed pair (task-2195)"
     );
     assert!(
-        matches!(events[0].kind, EventKind::Started),
+        matches!(events[0].kind, EventKind::Started { .. }),
         "first journal event for x must be Started (task-2195)"
     );
     assert!(
@@ -1224,7 +1226,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_else_branch_param
         "else-branch Param y must emit exactly one Started+Completed pair (else_members call site)"
     );
     assert!(
-        matches!(events[0].kind, EventKind::Started),
+        matches!(events[0].kind, EventKind::Started { .. }),
         "first journal event for y must be Started (else_members call site)"
     );
     assert!(
@@ -1310,7 +1312,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_rejected_override
         "helper rejected-no-default arm must emit exactly one Started+Completed pair"
     );
     assert!(
-        matches!(phase_b_events[0].kind, EventKind::Started),
+        matches!(phase_b_events[0].kind, EventKind::Started { .. }),
         "first phase-B journal event for y must be Started"
     );
     assert!(
@@ -1437,7 +1439,7 @@ fn eval_records_journal_pair_and_cache_entry_for_guarded_group_no_override_no_de
         "helper no-override-no-default arm must emit exactly one Started+Completed pair"
     );
     assert!(
-        matches!(events[0].kind, EventKind::Started),
+        matches!(events[0].kind, EventKind::Started { .. }),
         "first journal event for x must be Started (no-override-no-default)"
     );
     assert!(

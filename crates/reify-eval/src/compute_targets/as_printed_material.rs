@@ -42,7 +42,7 @@ use std::sync::Arc;
 use reify_core::{DimensionVector, Type};
 use reify_fdm::{
     AxisAlignedBox, BaseElastic, CouponOverride, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, InfillPattern,
-    OrthotropicConstants, TransverseIsoConstants, Zone, effective_orthotropic,
+    OrthotropicConstants, TransverseIsoConstants, Zone, ZoneProcessParams, effective_orthotropic,
     effective_transverse_isotropic, zone_solid_fraction,
 };
 use reify_ir::{FieldSourceKind, OpaqueState, StructureInstanceData, Value};
@@ -56,9 +56,10 @@ use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 /// `@optimized("fdm::as_printed_material_r_fast")` ComputeNode trampoline.
 ///
 /// Returns [`ComputeOutcome::Completed`] with a
-/// `Value::Field { source: AsPrintedZones }`. When the inputs are incomplete or
-/// the body realization is unavailable, it degrades honestly to a field whose
-/// lambda is [`Value::Undef`] (every sample returns `Undef`) rather than
+/// `Value::Field { source: AsPrintedZones }`. When the inputs are incomplete,
+/// the body realization is unavailable, or `layer_height` / `line_width` / a
+/// `build_direction` component is non-finite, it degrades honestly to a field
+/// whose lambda is [`Value::Undef`] (every sample returns `Undef`) rather than
 /// panicking — matching the Undef-for-Field convention of the stdlib surface.
 /// A present numeric field the reader refuses — a number of the wrong dimension
 /// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
@@ -87,8 +88,8 @@ pub fn as_printed_material_r_fast_trampoline(
 pub(crate) const AS_PRINTED_MATERIAL: &str = "as_printed_material";
 
 /// Build the `AsPrintedZones` material field: `Ok(None)` if any required input
-/// is missing or unresolved (caller degrades to [`degraded_field`]), `Err` if a
-/// present numeric field is refused.
+/// is missing, unresolved or non-finite (caller degrades to
+/// [`degraded_field`]), `Err` if a present numeric field is refused.
 fn build_as_printed_field(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
@@ -137,7 +138,7 @@ fn build_as_printed_field(
 
     // The build axis is the (weak) axial direction; align the material frame's
     // z-axis with it so build-Z is the weakest axis (PRD C4 invariant). A
-    // degenerate build_direction falls back to +Z.
+    // finite but zero-length build_direction falls back to +Z.
     let build_unit = unit3(build_direction).unwrap_or([0.0, 0.0, 1.0]);
     let cos_threshold = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
     let frame = material_frame(build_unit);
@@ -177,16 +178,15 @@ fn build_as_printed_field(
 
     // ── Pack the AsPrintedZones lambda payload (storage contract on
     //    reify_ir::FieldSourceKind::AsPrintedZones) ──────────────────────────────
-    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz].
-    let params_list = Value::List(vec![
-        Value::Real(walls as f64),
-        Value::Real(top_bottom_layers as f64),
-        Value::Real(layer_height),
-        Value::Real(line_width),
-        Value::Real(build_unit[0]),
-        Value::Real(build_unit[1]),
-        Value::Real(build_unit[2]),
-    ]);
+    let Some(params_list) = zone_params_value(&ZoneProcessParams {
+        walls,
+        top_bottom_layers,
+        layer_height,
+        line_width,
+        build_direction: build_unit,
+    }) else {
+        return Ok(None);
+    };
     let lambda = Value::List(vec![
         super::point3_length(aabb.min),
         super::point3_length(aabb.max),
@@ -197,6 +197,27 @@ fn build_as_printed_field(
         mat_infill,
     ]);
     Ok(Some(as_printed_field_value(lambda)))
+}
+
+/// The positional `params` slot of the `AsPrintedZones` lambda,
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`: the two
+/// band widths are typed `Length` (SI metres); the counts and the unit build
+/// direction are dimensionless `Value::Real`. A non-finite length or direction
+/// has no meaningful zone classification, so it yields `None` and the caller
+/// degrades to its Undef-lambda field.
+pub(crate) fn zone_params_value(params: &ZoneProcessParams) -> Option<Value> {
+    let [bx, by, bz] = params.build_direction;
+    params.is_finite().then(|| {
+        Value::List(vec![
+            Value::Real(f64::from(params.walls)),
+            Value::Real(f64::from(params.top_bottom_layers)),
+            super::length(params.layer_height),
+            super::length(params.line_width),
+            Value::Real(bx),
+            Value::Real(by),
+            Value::Real(bz),
+        ])
+    })
 }
 
 /// Wrap a lambda payload as the `Field<Point3<Length>, AnisotropicMaterial>`
@@ -264,15 +285,18 @@ pub(crate) fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> 
     }
 }
 
-/// Read a 3-component `Vector` / `Point` / `Direction` field.
+/// Read a 3-component `Vector` / `Point` / `Direction` field; `None` if any
+/// component is non-numeric or non-finite, so a NaN / ±Inf `build_direction`
+/// degrades the rung instead of normalising to the degenerate +Z fallback.
 pub(crate) fn field_vec3(data: &StructureInstanceData, key: &str) -> Option<[f64; 3]> {
-    match data.fields.get(key) {
+    let v = match data.fields.get(key) {
         Some(Value::Vector(c) | Value::Point(c)) if c.len() == 3 => {
-            Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
+            [c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?]
         }
-        Some(Value::Direction { x, y, z }) => Some([*x, *y, *z]),
-        _ => None,
-    }
+        Some(Value::Direction { x, y, z }) => [*x, *y, *z],
+        _ => return None,
+    };
+    v.iter().all(|c| c.is_finite()).then_some(v)
 }
 
 /// Map the FDMProcess `infill_pattern` enum to the β [`InfillPattern`].

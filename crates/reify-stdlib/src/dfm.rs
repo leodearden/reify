@@ -367,17 +367,17 @@ fn build_volume_usage_error(args: &[Value]) -> Diagnostic {
 ///
 /// - `"min_wall_thickness"` — minimum wall thickness check (problem-flag polarity:
 ///   `Bool(true)` = violation, `Bool(false)` = conforms). ζ pre-computes the Bool
-///   verdict by comparing `Engine::measure_min_wall` output against the process
-///   `min_feature_size`; a `BelowResolution`/`NoMeasurement`/`None` result maps to
+///   verdict by comparing the wall slot of `Engine::measure_thickness_pair` against
+///   the process `min_feature_size`; a `BelowResolution`/`NoMeasurement`/`None` result maps to
 ///   `Value::Undef` (Indeterminate — C1/D5). `Bool(true)` → one `{I,W,E}_DFM_MIN_WALL`
 ///   at the rule's declared [`rule_severity`] (default Warning); `Bool(false)` → nothing.
 ///   `Undef`/non-Bool → nothing (defensive, Indeterminate — never a false Violated).
 ///
 /// - `"min_feature_size_measure"` — minimum feature size check (same problem-flag
 ///   polarity as `"min_wall_thickness"`). ζ pre-computes the Bool verdict by comparing
-///   `Engine::measure_min_feature` output against `min_feature_size`; non-`Measured`
-///   outcomes map to `Value::Undef` (C1/D5). `Bool(true)` → one `{I,W,E}_DFM_MIN_FEATURE`
-///   at the rule's declared [`rule_severity`] (default Warning); `Bool(false)`/`Undef`/
+///   the feature slot of `Engine::measure_thickness_pair` against `min_feature_size`;
+///   non-`Measured` outcomes map to `Value::Undef` (C1/D5). `Bool(true)` → one
+///   `{I,W,E}_DFM_MIN_FEATURE` at the rule's declared [`rule_severity`] (default Warning); `Bool(false)`/`Undef`/
 ///   non-Bool → nothing (Indeterminate — never a false Violated).
 ///
 /// - Any other name → empty (non-DFM builtin, ignored).

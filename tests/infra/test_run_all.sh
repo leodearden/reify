@@ -2154,8 +2154,8 @@ assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member pass
     test "$t24_rc" -eq 0
 
 # -- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM (task #5147) --
-# The merge-tier envelope wraps run_all.sh in `timeout --kill-after=60 30m`
-# (verify.sh). timeout sends SIGTERM first (SIGKILL only after the kill-after
+# The merge-tier outer envelope (verify.sh's run_all.sh add_tool line) wraps
+# run_all.sh in `timeout --kill-after=...`. timeout sends SIGTERM first (SIGKILL only after the kill-after
 # grace period), so a TERM trap gets a real window to emit a reclassification
 # marker before death. Without one, a mid-run SIGTERM leaves no Summary/FAILED
 # line and dark-factory's classifier falls through to a tree_sitter_generate_error
@@ -2251,11 +2251,17 @@ if python3 -I "$VERIFY_EVENTS" wait "$T25_CHANNEL" --event member_start --where 
 # rather than assuming it from timing.
 if holder_wait_for_marker "$T25_HANG_DIR/ready"; then t25_hang_started=1; else t25_hang_started=0; fi
 kill -TERM "$t25_pid" 2>/dev/null || true
-( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
-t25_killer=$!
+# Same main-shell kill -0 backstop as T25s below, and for the same reason: a
+# `( sleep; kill ) &` helper TERMed straight after its fork still runs this
+# script's EXIT trap and wipes the fixtures before the assertions read them.
+t25_budget="$(load_tolerant_attempts 25)"
+t25_polls=0
+while kill -0 "$t25_pid" 2>/dev/null && [ "$t25_polls" -lt "$t25_budget" ]; do
+    sleep 0.2
+    t25_polls=$((t25_polls + 1))
+done
+if kill -0 "$t25_pid" 2>/dev/null; then kill -KILL "$t25_pid" 2>/dev/null || true; fi
 wait "$t25_pid" 2>/dev/null || t25_rc=$?
-kill "$t25_killer" 2>/dev/null || true
-wait "$t25_killer" 2>/dev/null || true
 
 # End the orphaned hang member now rather than leaving it to its backstop.
 t25_hang_pid="$(cat "$T25_HANG_DIR/ready" 2>/dev/null || true)"

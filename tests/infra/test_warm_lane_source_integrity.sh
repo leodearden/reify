@@ -123,7 +123,7 @@ echo "=== scripts/warm-lane-source-integrity.sh hermetic tests (task 7227) ==="
 #
 # WHICH vars is not this suite's call to make. REIFY_GIT_ENV_SCRUB_VARS is the
 # workspace's single home for that list (mirrored from
-# crates/reify-test-support/src/git_env.rs and held to it by
+# crates/reify-git-env/src/lib.rs and held to it by
 # tests/infra/test_infra_git_env_isolation.sh), so it is derived rather than
 # retyped: a private copy would drift silently on the next addition, and the
 # comment above says exactly what that costs. The lib's runner helper does not

@@ -48,3 +48,6 @@ libc = "0.2"
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 reify-test-support.workspace = true
+# Reaches reify_kernel_openvdb::test_fixtures for the CLI tests' box mesh; only
+# turns on a compile-gate feature. Mirrors reify-eval's identical dev-dep entry.
+reify-kernel-openvdb = { workspace = true, features = ["test-fixtures"] }

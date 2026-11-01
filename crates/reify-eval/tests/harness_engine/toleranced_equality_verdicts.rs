@@ -295,6 +295,9 @@ pub structure VolEq {
     assert_all_satisfied(&result, 1);
 }
 
+/// A 1% conflict is far outside the #6653 band, so it must still fail. Since
+/// task #6655 the pair is refuted before any solve (`ConstraintRefuted`, the
+/// proof); a search failure (`ConstraintUnsatisfiable`) would report it too.
 #[test]
 fn equality_conflict_beyond_tolerance_still_fails() {
     let result = check_with_production_solver(
@@ -307,14 +310,17 @@ pub structure EqConflict {
 }
 ",
     );
-    let unsatisfiable: Vec<&Diagnostic> =
-        diagnostics_with_code(&result, DiagnosticCode::ConstraintUnsatisfiable)
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
+    let failure_reported = result.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error
+            && matches!(
+                d.code,
+                Some(DiagnosticCode::ConstraintRefuted | DiagnosticCode::ConstraintUnsatisfiable)
+            )
+    });
     assert!(
-        !unsatisfiable.is_empty(),
-        "a 1% equality conflict must raise a ConstraintUnsatisfiable Error; got {:?}",
+        failure_reported,
+        "a 1% equality conflict must raise a ConstraintRefuted or ConstraintUnsatisfiable \
+         Error; got {:?}",
         result.diagnostics
     );
     for entry in &result.constraint_results {

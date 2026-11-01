@@ -11,7 +11,8 @@
 //!
 //! Volume and face-count assertions at the OCCT kernel level are covered by
 //! `kernel_wedge_volume_and_face_count_match_expected` in
-//! `crates/reify-kernel-occt/src/lib.rs`. The tests here exercise paths the
+//! `crates/reify-kernel-occt/tests/harness_occt_kernel/primitives_profiles.rs`. The tests
+//! here exercise paths the
 //! unit tests cannot: the compiler→eval→engine pipeline (mock and real kernels).
 
 use reify_compiler::{CompiledGeometryOp, PrimitiveKind};

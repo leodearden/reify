@@ -1,4 +1,4 @@
-use crate::git_env::sanitize;
+use reify_git_env::sanitize;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -89,7 +89,12 @@ impl std::fmt::Display for SkipNote {
 /// reaches for whenever a value genuinely cannot be single-sourced across a
 /// language boundary — and it is the last resort, not the default: where a
 /// value CAN be single-sourced it should be, as [`sanitize`]'s own move into
-/// `crate::git_env` did.
+/// [`reify_git_env`] did.
+///
+/// The exclusion's premise — an excluded crate's publics are reached only from
+/// test code — is kept true by the `reify-test-support-is-dev-only` crate rule
+/// in `scripts/crate-strata.json`; `exclude_crates_are_dev_only_under_a_crate_strata_rule`
+/// ties every entry here to such a rule.
 const EXCLUDE_CRATES: &[&str] = &["reify-test-support"];
 
 /// True when `scope`'s crate segment (the path component immediately after
@@ -121,9 +126,9 @@ fn scope_is_excluded_crate(scope: &str) -> bool {
 /// [`sanitize`] is supposed to establish: that the child resolves the SAME
 /// repository the caller asked it to scan. That is why the probe still has
 /// teeth despite reusing the spawn's own sanitizer: it independently catches
-/// an incomplete [`crate::git_env::REPO_REDIRECT_VARS`] list, a `.git` file
+/// an incomplete [`reify_git_env::REPO_REDIRECT_VARS`] list, a `.git` file
 /// pointing at another checkout, a symlinked or embedded checkout, or a
-/// `CARGO_MANIFEST_DIR` `.parent()` walk that lands on the wrong level — any
+/// workspace-root resolution that lands on the wrong level — any
 /// of which would make the real script silently scan a different tree than
 /// the one the caller specified.
 ///
@@ -277,11 +282,11 @@ fn run_orphan_audit_at(script: &Path, repo_root: &Path, scope: &str) -> OrphanAu
     }
 
     // Sanitize repo-redirect git env vars before spawning (via
-    // build_audit_command -> crate::git_env::sanitize): the script's first
+    // build_audit_command -> reify_git_env::sanitize): the script's first
     // action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, so an ambient
     // redirect var, not this call's `repo_root`, would decide which checkout it
     // enumerates. Why such a var beats both cwd and an explicit `-C`, and what
-    // that costs: `crate::git_env`'s module doc, where the sanitizer is
+    // that costs: `reify_git_env`'s crate doc, where the sanitizer is
     // defined.
     let output = build_audit_command(script, scope, repo_root)
         .output()
@@ -355,38 +360,46 @@ pub fn run_orphan_audit(scope: &str) -> Option<serde_json::Value> {
     }
 }
 
+/// [`run_orphan_audit`] over the wide `crates/reify-*/src` corpus, run once per
+/// test process and cached. Only that scope sees cross-crate callers.
+///
+/// `None` when the environment cannot run the audit, unless
+/// `REIFY_REQUIRE_ORPHAN_AUDIT` is set (non-empty, not `0`): then the skip is a
+/// panic.
+pub fn wide_orphan_audit() -> Option<&'static serde_json::Value> {
+    static AUDIT: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+    let audit = AUDIT.get_or_init(|| run_orphan_audit("crates/reify-*/src"));
+    let required = std::env::var("REIFY_REQUIRE_ORPHAN_AUDIT")
+        .is_ok_and(|flag| !flag.is_empty() && flag != "0");
+    assert!(
+        audit.is_some() || !required,
+        "REIFY_REQUIRE_ORPHAN_AUDIT is set but the orphan audit could not run \
+         (python3, git, or scripts/audit-orphan-producers.sh missing)."
+    );
+    audit.as_ref()
+}
+
 /// Resolve the on-disk path to `scripts/audit-orphan-producers.sh` and the
-/// repo root it lives under, via two `.parent()` walks up from
-/// `CARGO_MANIFEST_DIR` evaluated inside **this** crate
-/// (`reify-test-support`), which always sits at
-/// `<repo>/crates/reify-test-support/` regardless of which downstream crate
-/// calls the public API.
+/// repo root it lives under. The root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
+/// the public API.
 ///
 /// Single-sourced for [`run_orphan_audit_detailed`] and this module's own
 /// tests (which need the same two paths to construct decoy/mismatch
 /// scenarios), so the production and test-time resolution can never drift
 /// apart. Before the task 5698 amendment pass, the tests module carried an
-/// independent copy of this exact walk (`resolve_real_script_and_root`),
+/// independent copy of this resolution (`resolve_real_script_and_root`),
 /// which this replaces.
 fn resolve_script_and_root() -> (PathBuf, PathBuf) {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let script = Path::new(manifest_dir)
-        .parent()
-        .expect("crates/reify-test-support has a parent (crates/)")
-        .parent()
-        .expect("crates/ has a parent (repo root)")
-        .join("scripts/audit-orphan-producers.sh");
-    let repo_root = script
-        .parent()
-        .expect("scripts/ dir exists")
-        .parent()
-        .expect("repo root exists")
-        .to_path_buf();
-    (script, repo_root)
+    let repo_root = crate::workspace_root::workspace_root().to_path_buf();
+    (
+        repo_root.join("scripts/audit-orphan-producers.sh"),
+        repo_root,
+    )
 }
 
 /// The unexecuted [`Command`] [`run_orphan_audit`] spawns for `scope`:
-/// program, argv, `current_dir`, and [`crate::git_env::sanitize`] already
+/// program, argv, `current_dir`, and [`reify_git_env::sanitize`] already
 /// applied. Composes [`build_audit_command`] and [`resolve_script_and_root`]
 /// — no new resolution logic, no new argv — so it cannot fork from what
 /// production actually spawns.
@@ -401,10 +414,10 @@ fn resolve_script_and_root() -> (PathBuf, PathBuf) {
 /// # Composition contract
 ///
 /// The returned command is ALREADY sanitized. A caller that then adds
-/// `Command::env` for one of [`crate::git_env::REPO_REDIRECT_VARS`] is
+/// `Command::env` for one of [`reify_git_env::REPO_REDIRECT_VARS`] is
 /// deliberately re-poisoning a sanitized command — e.g. to demonstrate a
 /// hazard synthetically — not working around a missing sanitize. See
-/// [`crate::git_env`] for what sanitization is for and why.
+/// [`reify_git_env`] for what sanitization is for and why.
 ///
 /// # Not a substitute for [`run_orphan_audit`]
 ///
@@ -473,10 +486,9 @@ pub fn audit_command(scope: &str) -> Command {
 ///
 /// # Repo-root resolution
 ///
-/// The repo root is resolved at compile time via `env!("CARGO_MANIFEST_DIR")`
-/// evaluated inside **this** crate (`reify-test-support`), which always sits at
-/// `<repo>/crates/reify-test-support/`.  Two `.parent()` walks reach the repo
-/// root regardless of which downstream crate calls this function.
+/// The repo root is resolved at run time by
+/// [`crate::workspace_root::workspace_root`], whichever downstream crate calls
+/// this function.
 fn run_orphan_audit_detailed(scope: &str) -> OrphanAudit {
     let (script, repo_root) = resolve_script_and_root();
 
@@ -609,8 +621,7 @@ mod tests {
     /// 5656's original one-line design unreachable. Passing a real
     /// subdirectory as `repo_root` creates a genuine expected-vs-resolved
     /// disagreement with no environment manipulation at all, and models a
-    /// real bug class: a `CARGO_MANIFEST_DIR` `.parent()` walk landing on the
-    /// wrong level.
+    /// real bug class: a workspace-root resolution landing on the wrong level.
     #[test]
     fn child_repo_root_mismatch_panics() {
         if Command::new("git").arg("--version").output().is_err() {
@@ -647,11 +658,12 @@ mod tests {
     /// becoming a false positive under this project's warm-lane topology.
     ///
     /// Measured at this branch base: sanitized `git rev-parse
-    /// --show-toplevel` from the manifest-derived root returns EXACTLY that
-    /// root, even inside a linked git worktree whose `.git` is a gitdir FILE
-    /// (this project's normal topology, `worktrees/_lane-NN`) — so the probe
-    /// agrees with the `CARGO_MANIFEST_DIR` two-`.parent()` walk and this
-    /// call must NOT panic.
+    /// --show-toplevel` from the [`crate::workspace_root::workspace_root`]
+    /// root returns EXACTLY that root, even inside a linked git worktree whose
+    /// `.git` is a gitdir FILE (this project's normal topology,
+    /// `worktrees/_lane-NN`) — so git's view agrees with the filesystem-marker
+    /// resolver and this call must NOT panic. The cross-check has teeth only
+    /// because that resolver never consults git itself.
     ///
     /// Calls [`child_repo_root`] directly rather than going through
     /// [`run_orphan_audit_detailed`] (review finding #7, task 5698 amendment
@@ -665,11 +677,11 @@ mod tests {
     /// `EnvUnavailable`-shaped skip unreachable except on a genuinely
     /// git-less image (checked up front, same as every other test here).
     #[test]
-    fn child_repo_root_agrees_with_manifest_walk() {
+    fn child_repo_root_agrees_with_runtime_workspace_root() {
         if Command::new("git").arg("--version").output().is_err() {
             eprintln!(
-                "orphan_audit: skipping child_repo_root_agrees_with_manifest_walk — git \
-                 not available"
+                "orphan_audit: skipping child_repo_root_agrees_with_runtime_workspace_root \
+                 — git not available"
             );
             return;
         }
@@ -686,14 +698,14 @@ mod tests {
                 assert_eq!(
                     resolved_canon, repo_root_canon,
                     "child_repo_root({repo_root:?}) resolved {resolved:?}, which does \
-                     not canonicalize to the same path as the CARGO_MANIFEST_DIR walk \
+                     not canonicalize to the same path as workspace_root() \
                      — the mismatch probe in run_orphan_audit_at would incorrectly \
                      panic on every real invocation in this environment"
                 );
             }
             Err(ChildRepoRootFailure::NoRepository) => eprintln!(
-                "orphan_audit: skipping child_repo_root_agrees_with_manifest_walk — \
-                 repo root is not inside a git work tree"
+                "orphan_audit: skipping child_repo_root_agrees_with_runtime_workspace_root \
+                 — repo root is not inside a git work tree"
             ),
             Err(ChildRepoRootFailure::Other(detail)) => panic!(
                 "child_repo_root({repo_root:?}) failed for a reason other than \"no \
@@ -1074,6 +1086,77 @@ mod tests {
         );
     }
 
+    /// Ties [`EXCLUDE_CRATES`] to the gate that keeps its premise true: every
+    /// excluded crate must be named by a `scripts/crate-strata.json` crate rule
+    /// that forbids it from EVERY stratum, and no `exceptions[]` row may excuse
+    /// an edge into it (one row excuses every rule its edge breaks). Matched on
+    /// the rule's structure, not its name, so renaming the rule cannot silence
+    /// this.
+    #[test]
+    fn exclude_crates_are_dev_only_under_a_crate_strata_rule() {
+        use std::collections::BTreeSet;
+
+        let (_script, repo_root) = resolve_script_and_root();
+        let table_path = repo_root.join("scripts/crate-strata.json");
+        let table: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&table_path)
+                .unwrap_or_else(|e| panic!("read {table_path:?}: {e}")),
+        )
+        .unwrap_or_else(|e| panic!("parse {table_path:?}: {e}"));
+
+        let names = |value: &serde_json::Value| -> BTreeSet<String> {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str().map(str::to_string))
+                .collect()
+        };
+        let all_strata: BTreeSet<String> = table["strata"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `strata` must be an array"))
+            .iter()
+            .filter_map(|stratum| stratum["name"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !all_strata.is_empty(),
+            "{table_path:?} declares no strata — a vacuous `from` set would match"
+        );
+        let rules = table["crate_rules"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `crate_rules` must be an array"));
+        let exceptions = table["exceptions"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{table_path:?}: `exceptions` must be an array"));
+
+        for crate_name in EXCLUDE_CRATES {
+            let gated = rules.iter().any(|rule| {
+                names(&rule["never"]["packages"]).contains(*crate_name)
+                    && names(&rule["from"]["strata"]) == all_strata
+            });
+            assert!(
+                gated,
+                "an EXCLUDE_CRATES crate's publics are reached only from test code, \
+                 so no stratum may take it as a normal/build dependency — but \
+                 {table_path:?} has no crate rule with `from.strata` = every \
+                 stratum {all_strata:?} and `never.packages` naming \
+                 `{crate_name}`. Rules seen: {rules:#?}"
+            );
+
+            let excused: Vec<&serde_json::Value> = exceptions
+                .iter()
+                .filter(|row| row["to"].as_str() == Some(*crate_name))
+                .collect();
+            assert!(
+                excused.is_empty(),
+                "{table_path:?} excepts a normal/build edge into EXCLUDE_CRATES crate \
+                 `{crate_name}`, which re-opens a production path the orphan sweep \
+                 cannot see. Drop the edge, or drop `{crate_name}` from EXCLUDE_CRATES. \
+                 Offending rows: {excused:#?}"
+            );
+        }
+    }
+
     /// Table-driven coverage of [`scope_is_excluded_crate`] (review finding
     /// #1, task 5698 amendment pass) — the single predicate that decides
     /// between a graceful [`OrphanAudit::ExcludedScope`] skip and a hard
@@ -1220,23 +1303,23 @@ mod tests {
 
     /// Asserts the constructed script-spawn `Command` records a removal
     /// (`env_remove` -> `(key, None)` in `get_envs()`) for every
-    /// [`crate::git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
+    /// [`reify_git_env::REPO_REDIRECT_VARS`] entry — i.e. that this crate's
     /// script spawn sanitizes from the SHARED definition, not from a
-    /// module-local copy. Uses [`crate::git_env::removed_vars`], the same
-    /// removal-collecting helper the definition site's own tests and
-    /// `reify_audit::git_env`'s tests use, so every assertion site in the
-    /// workspace reads the `(key, None)` encoding through one place.
+    /// module-local copy. Uses [`reify_git_env::removed_vars`], the same
+    /// removal-collecting helper the definition site's own tests use, so every
+    /// assertion site in the workspace reads the `(key, None)` encoding
+    /// through one place.
     ///
     /// This covers the WIRING only — that [`build_audit_command`] applies the
     /// sanitizer. That the sanitizer actually defeats an ambient redirect var
     /// against real git is proved once, at the definition site, by
-    /// `crate::git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
+    /// `reify_git_env`'s `sanitize_makes_dash_c_authoritative_against_real_git`.
     ///
     /// Unlike the two tests above, this one never spawns the script and needs
     /// neither `git` nor `python3` on `PATH` — it only inspects `Command`
     /// metadata, so the paths passed in are deliberately nonexistent. A
     /// regression that dropped [`sanitize`] from [`build_audit_command`], or
-    /// dropped an entry from [`crate::git_env::REPO_REDIRECT_VARS`], fails
+    /// dropped an entry from [`reify_git_env::REPO_REDIRECT_VARS`], fails
     /// this test even though the smoke tests above never poison the
     /// environment to notice.
     #[test]
@@ -1246,8 +1329,8 @@ mod tests {
             "crates/reify-audit/src",
             Path::new("/nonexistent/repo-root"),
         );
-        let removed = crate::git_env::removed_vars(&cmd);
-        for var in crate::git_env::REPO_REDIRECT_VARS {
+        let removed = reify_git_env::removed_vars(&cmd);
+        for var in reify_git_env::REPO_REDIRECT_VARS {
             assert!(
                 removed.iter().any(|r| r == var),
                 "build_audit_command must REMOVE `{var}` (env_remove -> \
@@ -1267,8 +1350,8 @@ mod tests {
     /// One substantive upgrade over the assertions this replaces: those could
     /// only RECONSTRUCT this crate's root from `reify-audit`'s own walk and
     /// compare, which does not distinguish this repo from a byte-identical
-    /// vendored copy laid out the same way. Here there is only ONE walk, so
-    /// that reconstruction — and its blind spot — is gone.
+    /// vendored copy laid out the same way. Here there is only ONE resolution,
+    /// so that reconstruction — and its blind spot — is gone.
     ///
     /// The `crates/reify-audit/Cargo.toml` check is kept anyway, even though
     /// nothing about THIS crate's own resolution needs it: it is what makes
@@ -1320,6 +1403,39 @@ mod tests {
              crates/reify-audit/Cargo.toml — audit_command's only external \
              consumer's crate is not reachable from the root this seam hands \
              back (a downward reference by path, not a dependency edge)"
+        );
+    }
+
+    #[test]
+    fn audit_command_follows_the_runtime_workspace_root_child() {
+        crate::workspace_root::reexec::in_child(|root| {
+            let cmd = audit_command("crates/reify-audit/src");
+            assert_eq!(
+                cmd.get_current_dir(),
+                Some(root),
+                "audit_command's current_dir is not the fixture root {root:?}"
+            );
+            let expected_script = root.join("scripts/audit-orphan-producers.sh");
+            assert_eq!(
+                Path::new(cmd.get_program()),
+                expected_script,
+                "audit_command's program is not the fixture's script {expected_script:?}"
+            );
+        });
+    }
+
+    /// Re-execs with the runtime `CARGO_MANIFEST_DIR` inside a fixture tree:
+    /// in a normal build the compile-time and runtime trees coincide, so only
+    /// a different runtime tree can tell them apart.
+    #[test]
+    fn audit_command_follows_the_runtime_workspace_root() {
+        use crate::workspace_root::reexec::{Launch, fixture_workspace, run_child};
+
+        let fixture = fixture_workspace("orphan-audit-runtime-root-");
+        run_child(
+            "orphan_audit::tests::audit_command_follows_the_runtime_workspace_root_child",
+            fixture.path(),
+            Launch::ManifestDirEnv,
         );
     }
 }

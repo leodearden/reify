@@ -64,7 +64,7 @@ pub(crate) fn module_has_geometry(module: &reify_compiler::CompiledModule) -> bo
 ///
 /// # Not the export-refusal gate
 ///
-/// Both export-refusal sites — `cmd_build`'s `-o` arm in main.rs, and
+/// Both export-refusal sites — `cmd_build`'s `-o` arm in cmd/build.rs, and
 /// `Engine::build_outputs_with_result` in the engine — need the bound TABLE
 /// rather than a boolean, because the refusal names the unenforced bound. They
 /// therefore call
