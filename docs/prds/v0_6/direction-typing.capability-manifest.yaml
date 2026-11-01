@@ -86,8 +86,8 @@ tasks:
       - crates/reify-ir/src/direction.rs
   - name: decode-direction-single-decoder
     binding: 'delivered by this leaf (C3): `pub fn decode_direction(&Value) -> Result<UnitVec3, DecodeDirectionError>`
-      accepting only Value::Direction. Open Q1 lets α choose reify-ir or reify-core, so both paths are
-      listed. Production consumer at landing: stdlib frame_at (recommended, see notes); the rest are ε/ζ/θ
+      accepting only Value::Direction. Lives in reify-ir direction_decode.rs (Leo 2026-11-01, esc-9633-3:
+      in direction.rs it would close a direction<->value module cycle, INV-ARCH-1). Production consumer at landing: stdlib frame_at (recommended, see notes); the rest are ε/ζ/θ
       leaves'
     verdict: PASS
     delivered_check:
@@ -95,8 +95,8 @@ tasks:
       pattern: pub fn decode_direction\(
       expect: present
       paths:
+      - crates/reify-ir/src/direction_decode.rs
       - crates/reify-ir/src/direction.rs
-      - crates/reify-core/src/direction.rs
   - name: frame-basis-helper
     binding: 'delivered by this leaf (C8): `pub fn frame_basis(&Value) -> Result<[[f64;3];3], DecodeDirectionError>`;
       declared-only until η wires the FEA material reader (consumer η is downstream, so not a G6 FAIL)'
@@ -106,8 +106,8 @@ tasks:
       pattern: pub fn frame_basis\(
       expect: present
       paths:
+      - crates/reify-ir/src/direction_decode.rs
       - crates/reify-ir/src/direction.rs
-      - crates/reify-core/src/direction.rs
   - name: degeneracy-floor-constant-in-reify-core
     binding: 'delivered by this leaf (C2/D4): `pub const DIRECTION_DEGENERACY_FLOOR: f64 = 1e-12` in the
       new crates/reify-core/src/direction.rs. Numeric identity: |v| at or below 1e-12 is degenerate; matches

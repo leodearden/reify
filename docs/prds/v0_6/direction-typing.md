@@ -117,7 +117,7 @@ Every current construction site (six non-test: reify-expr `vec3_to_direction`, `
 ### C3 — The only decoder
 
 ```rust
-// crates/reify-ir/src/direction.rs
+// crates/reify-ir/src/direction_decode.rs (not direction.rs: Value::Direction(UnitVec3) already makes value depend on direction, so a decoder taking &Value there would close a module cycle, INV-ARCH-1; Leo 2026-11-01, esc-9633-3)
 pub enum DecodeDirectionError { NotADirection { got: &'static str } }
 pub fn decode_direction(v: &Value) -> Result<UnitVec3, DecodeDirectionError>;
 ```
@@ -170,7 +170,7 @@ A variant match: accepts **only** `Value::Direction`. The message names the kind
 `Type::Frame(3)` / `Value::Frame { origin: Point3<Length>, basis: Orientation }` is the only frame. Constructor: `frame_at(origin, x: Direction, z: Direction)` (existing; Gram-Schmidt, errors on parallel/degenerate). One public helper, the single home for quaternion→basis:
 
 ```rust
-// crates/reify-ir/src/direction.rs (beside decode_direction)
+// crates/reify-ir/src/direction_decode.rs (beside decode_direction)
 pub fn frame_basis(frame: &Value) -> Result<[[f64; 3]; 3], DecodeDirectionError>;   // rows are the frame's x, y, z — orthonormal by construction
 ```
 
@@ -260,7 +260,7 @@ Approach B + H. Labels are Greek; task IDs were assigned at decompose (2026-10-3
 
 **Phase 1 — foundation (the contract)**
 
-- **α #9633 — Direction value contract.** reify-core `direction.rs` (the floor constant), reify-ir `direction.rs` (`UnitVec3`, `DirectionFault`, `decode_direction`, `frame_basis`), `Value::Direction(UnitVec3)`, the six construction sites migrated, every pattern site re-shaped (14 non-test files across reify-ir, reify-expr, reify-constraints, reify-eval, reify-kernel-occt, reify-stdlib, reify-compiler incl. `has_codomain_kind`), `Display` prints `dir(x, y, z)`, `DegenerateDirection` diagnostic and the `DIRECTION_MIGRATION_HINT` constant added; both faults pinned in Rust; `from_vector` bit-idempotence and `-0.0` canonicalisation pinned (C2); stdlib `decode_direction` replaced by the shared one. **Intermediate** → unlocks β, γ, ε, η. Prereqs: none.
+- **α #9633 — Direction value contract.** reify-core `direction.rs` (the floor constant), reify-ir `direction.rs` (`UnitVec3`, `DirectionFault`) and `direction_decode.rs` (`decode_direction`, `frame_basis`), `Value::Direction(UnitVec3)`, the six construction sites migrated, every pattern site re-shaped (14 non-test files across reify-ir, reify-expr, reify-constraints, reify-eval, reify-kernel-occt, reify-stdlib, reify-compiler incl. `has_codomain_kind`), `Display` prints `dir(x, y, z)`, `DegenerateDirection` diagnostic and the `DIRECTION_MIGRATION_HINT` constant added; both faults pinned in Rust; `from_vector` bit-idempotence and `-0.0` canonicalisation pinned (C2); stdlib `decode_direction` replaced by the shared one. **Intermediate** → unlocks β, γ, ε, η. Prereqs: none.
 - **β #9634 — `dir(x, y, z)` / `dir(v)` builtin** (D11): `DATUM_CONSTRUCTOR_NAMES` row + `datum_constructor_result_type` (no `builtin_arg_slots` rows: no slot kind means `Int | Real | dimensionless Scalar`, and `DimensionedArgRejected` must win; classification is per-component at eval through the post-Undef hook), stdlib eval (port `direction.rs::eval_direction`, add the arity-3 form), `DimensionedArgRejected`, LSP completion row, `ri_literal` `dir(x, y, z)` serialiser arm, the one stdlib chunk line. Modules: reify-compiler, reify-stdlib, reify-expr, reify-lsp, reify-ir, reify-mcp. **Leaf.** Signal: B1–B3, B7. Prereqs: α.
 - **γ #9635 — Named conversion and the operator table** (D2, D3, D12): `vector(d)` math builtin; C6 static arms in `infer_binop_type` / `math_fn_result_type` / the `expr.rs` guards; eval arms in reify-expr and reify-stdlib `linalg.rs` (port the branch arms, restricted to C6; `widen_direction` is deleted); unary negation; `normalize` identity. `angle` is not γ's (D12; it moved to θ-b). Modules: reify-compiler, reify-expr, reify-stdlib. **Leaf.** Signal: B16, B18–B20. Absorbs #8587. Prereqs: α, β (the signal fixtures spell `dir(...)`).
 - **σ #9636 — `Direction` slot kind for builtins** (D8): `ExpectedArg::Direction` in `builtin_signatures.rs`, its check arm reading α's hint constant, the `frame_at` slot rows (today arity/type-blind), coverage-test entries. Modules: reify-compiler. **Leaf.** Signal: B23. Prereqs: β. Unlocks θ-a, θ-b, ι-a/b/c.
