@@ -29,3 +29,48 @@ pub fn member_type(template_name: &str, member: &str) -> Type {
         .cell_type
         .clone()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::member_type;
+    use reify_core::{DimensionVector, Type};
+
+    /// Two differently-typed members of one template: the lookup selects by member.
+    #[test]
+    fn member_type_returns_each_members_declared_type() {
+        assert_eq!(
+            member_type("Layer", "z"),
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }
+        );
+        assert_eq!(member_type("Layer", "index"), Type::Int);
+    }
+
+    #[test]
+    #[should_panic(expected = "prelude has no template NoSuchTemplate")]
+    fn member_type_panics_naming_an_unknown_template() {
+        member_type("NoSuchTemplate", "z");
+    }
+
+    /// The panic lists the template's real members, not just the missing name.
+    #[test]
+    fn member_type_panics_listing_members_for_an_unknown_member() {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            member_type("Layer", "no_such_member")
+        }));
+        let payload = match result {
+            Ok(ty) => panic!("expected member_type to panic on a missing member, got: {ty:?}"),
+            Err(payload) => payload,
+        };
+        let message = reify_core::panic_payload_to_string(payload.as_ref());
+        assert!(
+            message.contains("prelude template Layer has no member no_such_member; have:"),
+            "panic does not name the template and missing member; got: {message}"
+        );
+        assert!(
+            message.contains("\"z\"") && message.contains("\"index\""),
+            "panic does not list Layer's real members; got: {message}"
+        );
+    }
+}
