@@ -1008,16 +1008,10 @@ verify_cross_check_remote_green: false
 # should run at all when the queue re-verifies on landing.
 max_pre_merge_retries: 1
 #
-# sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
-# the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.
-# Requires the workstation sccache server to be (re)started with this backend (the running
-# server's backend is fixed at start). Correctness: sccache is input-hashed (caches
-# compilation, not verdicts); the drift detector (every 20 lands) is the standing fidelity
-# guarantee for this env change (the D6 parity was proven pre-sccache).
-sccache:
-  enabled: true
-  backend_env:
-    SCCACHE_REDIS: redis://leo-workstation.tailb08a6b.ts.net:6380
+# No `sccache:` shared-backend block: each verify host's own sccache.service serves a
+# local-disk cache, reached through verify_env's RUSTC_WRAPPER. The shared Redis
+# backend was retired (dark_factory verify-speed ruling R2, 2026-09-11); its container
+# was removed 2026-11-01 after sitting empty, since the running servers never used it.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Trailing-24h spend ceiling. Default $200 was a backstop from before the
