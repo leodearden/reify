@@ -101,7 +101,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any, Dict, FrozenSet, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -229,42 +229,102 @@ def _find_repo_root() -> str:
     return candidate  # best-effort fallback
 
 
-def _resolve_reify_bin(repo_root: Optional[str] = None) -> str:
+def _resolve_reify_bin(repo_root: str, environ: Mapping[str, str]) -> str:
     """Resolve the reify binary path.
 
     Resolution order:
-        1. REIFY_BIN environment variable (if set and non-empty)
+        1. REIFY_BIN in `environ` (if set and non-empty)
         2. <repo_root>/target/release/reify   (pre-built release)
         3. <repo_root>/target/debug/reify     (debug build)
         4. "reify"                             (from PATH)
     """
-    env_bin = os.environ.get("REIFY_BIN")
+    env_bin = environ.get("REIFY_BIN")
     if env_bin:
         return env_bin
 
-    root = repo_root or _find_repo_root()
     for rel in ("target/release/reify", "target/debug/reify"):
-        candidate = os.path.join(root, rel)
+        candidate = os.path.join(repo_root, rel)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 
     return "reify"  # fallback: expect it on PATH
 
 
-def _resolve_tree_sitter_bin() -> str:
-    """Resolve the tree-sitter binary path.
-
-    Resolution order:
-        1. TREE_SITTER_BIN environment variable (if set and non-empty)
-        2. "tree-sitter"                        (from PATH)
-    """
-    return os.environ.get("TREE_SITTER_BIN", "tree-sitter")
+def _resolve_tree_sitter_bin(environ: Mapping[str, str]) -> str:
+    """TREE_SITTER_BIN in `environ` if set and non-empty, else "tree-sitter" (PATH)."""
+    return environ.get("TREE_SITTER_BIN") or "tree-sitter"
 
 
 # Operator/debug escape hatch: pin the grammar cache dir explicitly, e.g. to
 # inspect the compiled reify.so or to share one warm cache across a manual
 # session, without having to reverse the derived hash.
 _CACHE_HOME_OVERRIDE_ENV = "REIFY_TS_CACHE_HOME"
+
+# Wall-clock bound on the substrate probe.  Generous by design: on a COLD cache
+# tree-sitter compiles the grammar with cc before it can parse, so a tight bound
+# would report a healthy substrate as unusable.  The bound exists only so that a
+# stuck ~/.cache/tree-sitter/lock/<grammar>.lock — the very resource
+# grammar_substrate_usable() interrogates — cannot hang the caller.
+_SUBSTRATE_PROBE_TIMEOUT_S = 30.0
+
+
+@dataclass(frozen=True)
+class ProbeContext:
+    """Everything a probe run reads from outside the probe, resolved once.
+
+    repo_root roots every relative fixture, the grammar directory and the
+    grammar cache key; reify_bin and tree_sitter_bin are the binaries the argv
+    names; cache_home_override is the operator's REIFY_TS_CACHE_HOME, or None;
+    substrate_timeout_s bounds grammar_substrate_usable()'s one probe.
+    main() builds one per invocation with from_environment(); a test builds
+    one directly, so no probe-running function reads os.environ itself.
+    """
+    repo_root: str
+    reify_bin: str
+    tree_sitter_bin: str
+    cache_home_override: Optional[str] = None
+    substrate_timeout_s: float = _SUBSTRATE_PROBE_TIMEOUT_S
+
+    def __post_init__(self) -> None:
+        def refuse(field_name: str, value: Any, requirement: str) -> None:
+            raise ValueError(
+                f"ProbeContext.{field_name} must be {requirement}, got {value!r}"
+            )
+
+        if not isinstance(self.repo_root, str) or not os.path.isabs(self.repo_root):
+            refuse("repo_root", self.repo_root, "an absolute path")
+        for field_name in ("reify_bin", "tree_sitter_bin"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value:
+                refuse(field_name, value, "a non-empty str")
+        override = self.cache_home_override
+        if override is not None and (not isinstance(override, str) or not override):
+            refuse("cache_home_override", override, "None or a non-empty str")
+        timeout = self.substrate_timeout_s
+        if (not _is_number(timeout) or not math.isfinite(timeout)
+                or timeout <= 0):
+            refuse("substrate_timeout_s", timeout, "a finite number of seconds > 0")
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Optional[Mapping[str, str]] = None,
+        repo_root: Optional[str] = None,
+    ) -> "ProbeContext":
+        """Build the context from an environment mapping (default os.environ).
+
+        The only reader of REIFY_BIN, TREE_SITTER_BIN and REIFY_TS_CACHE_HOME;
+        an empty value counts as unset for all three.  repo_root defaults to
+        _find_repo_root().
+        """
+        env = os.environ if environ is None else environ
+        root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())
+        return cls(
+            repo_root=root,
+            reify_bin=_resolve_reify_bin(root, env),
+            tree_sitter_bin=_resolve_tree_sitter_bin(env),
+            cache_home_override=env.get(_CACHE_HOME_OVERRIDE_ENV) or None,
+        )
 
 
 def _grammar_fingerprint(repo_root: str) -> str:
@@ -1244,10 +1304,10 @@ def build_command(probe: Probe, repo_root: Optional[str] = None) -> List[str]:
     fixture = _absolute_fixture(probe, root)
 
     if probe.probe_kind == ProbeKind.GRAMMAR:
-        ts_bin = _resolve_tree_sitter_bin()
+        ts_bin = _resolve_tree_sitter_bin(os.environ)
         return [ts_bin, "parse", "--quiet", fixture]
 
-    reify_bin = _resolve_reify_bin(repo_root=root)
+    reify_bin = _resolve_reify_bin(root, os.environ)
 
     if probe.probe_kind == ProbeKind.CHECK:
         return [reify_bin, "check", fixture]
@@ -1471,13 +1531,6 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
 # grammar, never whether this particular fixture parses.
 _SUBSTRATE_PROBE_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 
-# Wall-clock bound on the substrate probe.  Generous by design: on a COLD cache
-# tree-sitter compiles the grammar with cc before it can parse, so a tight bound
-# would report a healthy substrate as unusable.  The bound exists only so that a
-# stuck ~/.cache/tree-sitter/lock/<grammar>.lock — the very resource this
-# function interrogates — cannot hang the caller.
-_SUBSTRATE_PROBE_TIMEOUT_S = 30.0
-
 # The generated parser, relative to the repo root.  Its absence is a
 # PRECONDITION failure, not a substrate one, and the two must not be conflated:
 # with no parser.c there is no reify language to load, so `tree-sitter parse`
@@ -1571,7 +1624,7 @@ def grammar_substrate_usable() -> tuple:
             False,
             f"the tree-sitter grammar probe could not be launched "
             f"({failure.detail}); either the tree-sitter CLI "
-            f"({_resolve_tree_sitter_bin()!r}) is missing or not executable, or "
+            f"({_resolve_tree_sitter_bin(os.environ)!r}) is missing or not executable, or "
             "the grammar directory <repo_root>/tree-sitter-reify/ does not exist",
         )
 
