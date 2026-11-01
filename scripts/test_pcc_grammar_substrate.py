@@ -36,6 +36,11 @@ from _pcc_test_support import (
 )
 
 
+# Any committed fixture serves the bound/launch cases below: they probe the
+# runner, never whether this fixture parses.
+_COMMITTED_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
+
+
 # ---------------------------------------------------------------------------
 # 5894 step-13 (RED): the skip-guard must never take the suite down with it
 # ---------------------------------------------------------------------------
@@ -612,7 +617,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             pcc.Probe(
                 capability="wedged",
                 probe_kind="grammar",
-                fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+                fixture=_COMMITTED_FIXTURE,
                 expected={"observation": "present", "match": {}},
             ),
             probe_context(tree_sitter_bin=_ts_stub_hangs(self._tmpdir)),
@@ -639,7 +644,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         probe = pcc.Probe(
             capability="wedged with a grandchild",
             probe_kind="grammar",
-            fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+            fixture=_COMMITTED_FIXTURE,
             expected={"observation": "present", "match": {}},
         )
         run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub), timeout=0.6)
@@ -676,7 +681,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         probe = pcc.Probe(
             capability="unbounded",
             probe_kind="grammar",
-            fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+            fixture=_COMMITTED_FIXTURE,
             expected={"observation": "present", "match": {}},
         )
         with unittest.mock.patch.object(subprocess, "run", side_effect=fake_run):

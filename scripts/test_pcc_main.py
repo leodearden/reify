@@ -44,6 +44,12 @@ from _schema_test_support import schema_errors
 # step-13 (RED): main(argv) integration + skip-guarded real e2e
 # ---------------------------------------------------------------------------
 
+# A HARNESS_ERROR stderr flood sized far above any plausible text-renderer
+# budget, so the cap tests pin "bounded" and "--json verbatim" without reading
+# the cap's value.
+_FLOOD_FAR_ABOVE_ANY_RENDER_BUDGET = 100_000
+
+
 class _MainHarness:
     """Shared plumbing for driving main() hermetically: capture, and stub runs.
 
@@ -620,7 +626,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         path meant to clarify it.  The measured denial (253 chars) fits ~16x over.
         """
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
-        flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
+        flood = _CACHE_DENIED_STDERR + ("z" * _FLOOD_FAR_ABOVE_ANY_RENDER_BUDGET) + tail
         runner = self._make_runner({
             "grammar": self._grammar_run(flood),
         })
@@ -632,8 +638,8 @@ class TestMain(_MainHarness, unittest.TestCase):
         )
         self.assertNotIn(
             tail, out,
-            "a HARNESS_ERROR's stderr must be bounded by "
-            "_HARNESS_ERROR_STDERR_CAP, not emitted unbounded",
+            "a HARNESS_ERROR's stderr must be bounded by the text renderer's "
+            "budget, not emitted unbounded",
         )
 
     def test_json_output_keeps_full_harness_error_stderr(self):
@@ -642,7 +648,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         Pinned so moving the text cap cannot silently truncate the JSON contract.
         """
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
-        flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
+        flood = _CACHE_DENIED_STDERR + ("z" * _FLOOD_FAR_ABOVE_ANY_RENDER_BUDGET) + tail
         runner = self._make_runner({
             "grammar": self._grammar_run(flood),
         })
@@ -1038,15 +1044,14 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
                     p for p in pcc.load_probe_set(self._probe_set_text())
                     if p.probe_kind == "value"
                 ][0]
-                result = pcc.evaluate(probe, probe_context(), runner=lambda _p, _ctx, timeout=None: run)
+                result = pcc.evaluate(
+                    probe, probe_context(), runner=lambda _p, _ctx, timeout=None: run
+                )
                 obs, reading = pcc.observe_with_evidence(
                     "value", run, {"stdout_value": _DAMPING_SPEC}
                 )
                 self.assertEqual(result.value_observation, reading)
                 self.assertEqual(result.observation, obs)
-                self.assertEqual(
-                    obs, pcc._value_reading_observation(result.value_observation)
-                )
 
     def test_value_observation_records_capture_and_failed_constraint(self):
         cases = [
