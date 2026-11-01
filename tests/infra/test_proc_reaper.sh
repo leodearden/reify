@@ -1448,4 +1448,97 @@ assert "reap-orphans (non-dry-run) does not emit the spared/non-orphan diagnosti
         exit "$_rc"
     '
 
+# ===========================================================================
+# Part 10 — deps-glob gate is CWD-independent (task 9661)
+# ===========================================================================
+#
+# The reaper never cd's, so it runs from whatever CWD its cron/post-cancel
+# caller had. An unquoted split of the deps-glob list also pathname-expands
+# each pattern against that CWD: from a CWD holding */target/*/deps/* trees
+# the patterns collapse to relative decoy literals and the gate silently
+# matches nothing. Same root cause as scripts/sample-test-binary-concurrency.sh
+# defect (c) (tests/infra/test_test_binary_concurrency_sampler.sh A10a).
+#
+# 10a runs the PRODUCTION DEFAULT deps glob. The fake binary sits under
+# target/release/deps, which only the SECOND of the default's two
+# space-separated patterns matches, so the same assert also fails a "fix" that
+# stops word-splitting the list or only honours its first element.
+
+echo ""
+echo "--- Part 10: deps-glob gate is CWD-independent (task 9661) ---"
+
+_SENT_CWDGLOB=$(($$ * 10 + 2))
+_P10_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P10_DIR")
+mkdir -p "$_P10_DIR/target/release/deps"
+_CWDGLOB_BIN="$_P10_DIR/target/release/deps/reify_cwdglob_${_SENT_CWDGLOB}"
+cp "$(command -v sleep)" "$_CWDGLOB_BIN"
+chmod +x "$_CWDGLOB_BIN"
+
+_P10_CWD="$(mktemp -d)"
+_TMPDIRS+=("$_P10_CWD")
+mkdir -p "$_P10_CWD/decoy/target/debug/deps" "$_P10_CWD/decoy/target/release/deps"
+touch "$_P10_CWD/decoy/target/debug/deps/x" "$_P10_CWD/decoy/target/release/deps/x"
+
+assert "10-pre: fixture precondition — both default deps patterns pathname-expand to decoys in the scratch CWD" \
+    bash -c 'cd "$1" && set -- */target/debug/deps/* && [ "$1" = decoy/target/debug/deps/x ] \
+        && set -- */target/release/deps/* && [ "$1" = decoy/target/release/deps/x ]' _ "$_P10_CWD"
+
+# -- Test 10a: the default deps glob still matches from that CWD --
+assert "reap-orphans --dry-run with the DEFAULT deps glob reports a matching binary from a CWD where the glob expands (task 9661)" \
+    env LIB_REAPER="$LIB_REAPER" _CWDGLOB_BIN="$_CWDGLOB_BIN" _SENT_CWDGLOB="$_SENT_CWDGLOB" \
+        _P10_CWD="$_P10_CWD" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+        _abs_awk=$(command -v awk)
+        _abs_readlink=$(command -v readlink)
+
+        # Pre-clean stale instances of this fixture binary.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "reify_cwdglob_${_SENT_CWDGLOB}" \
+            | "$_abs_awk" "{print \$1}" \
+            | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
+
+        "$_CWDGLOB_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _pid=$!
+
+        # Causal gate: wait until the child is running the fixture binary,
+        # so /proc/<pid>/exe is what the deps-glob gate will read.
+        _tries=0
+        until [ "$("$_abs_readlink" "/proc/$_pid/exe" 2>/dev/null)" = "$_CWDGLOB_BIN" ]; do
+            _tries=$((_tries + 1))
+            if [ "$_tries" -gt "$_POLL_ATTEMPTS_PIDFILE" ]; then
+                echo "FAIL: fixture binary never appeared as /proc/$_pid/exe" >&2
+                "$_abs_kill" -9 "$_pid" 2>/dev/null || true
+                wait "$_pid" 2>/dev/null || true
+                exit 1
+            fi
+            load_tolerant_sleep_tick
+        done
+
+        _ppid=$("$_abs_ps" -o ppid= -p "$_pid" 2>/dev/null | tr -d " " || echo "")
+        [ -n "$_ppid" ] || { echo "FAIL: could not read PPID of fixture binary" >&2; "$_abs_kill" -9 "$_pid" 2>/dev/null || true; exit 1; }
+
+        _err=$(mktemp)
+        cd "$_P10_CWD" || exit 1
+        env -u REIFY_REAPER_DEPS_GLOB \
+            REIFY_REAPER_MIN_AGE_SECS=0 \
+            REIFY_REAPER_ORPHAN_PPIDS="$_ppid" \
+            REIFY_REAPER_COMMS="" \
+            REIFY_REAPER_UID="$(id -u)" \
+            bash "$LIB_REAPER" reap-orphans --dry-run >/dev/null 2>"$_err" || true
+
+        _rc=0
+        "$_abs_grep" -qF "reap-orphans [dry-run]: pid=$_pid " "$_err" || _rc=1
+
+        "$_abs_kill" -9 "$_pid" 2>/dev/null || true
+        wait "$_pid" 2>/dev/null || true
+        rm -f "$_err"
+        exit "$_rc"
+    '
+
 test_summary
