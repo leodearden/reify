@@ -1456,13 +1456,14 @@ fi
 echo ""
 echo "--- Test 36: run-gui.sh builds tauri with custom-protocol; run-gui-dev.sh does not ---"
 
-# tauri's custom-protocol feature, not the cargo profile, makes the window serve
-# the embedded gui/dist instead of loading devUrl (http://localhost:1420). Each
-# launcher's --features value goes to the REAL cargo's feature resolver.
+# Why custom-protocol decides what the window loads: see `embedded-frontend` in
+# gui/src-tauri/Cargo.toml. Each launcher's --features value goes to the REAL
+# cargo's feature resolver.
 
 # _t36_resolve <label> <tmpdir> — read the --features value the launcher run in
 # <tmpdir> handed cargo into _t36_features, and tauri's features under it into
-# _t36_tauri; asserts both are real.
+# _t36_tauri; asserts all three are real, so neither verdict on custom-protocol
+# can pass vacuously.
 _t36_resolve() {
     local _rc=0
     _t36_features=$(_rgs_cargo_build_features "$2/cargo-argv")
@@ -1473,6 +1474,10 @@ _t36_resolve() {
 
     assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc; on a cold registry warm it with \`cargo fetch --locked\`, or run scripts/setup-dev.sh)" \
         test "$_rc" -eq 0
+
+    # Non-empty iff tauri is in the resolve: the workspace dep always enables devtools.
+    assert "$1: tauri is in cargo's resolve under --features '$_t36_features'" \
+        test -n "$_t36_tauri"
 }
 
 # --- 36a: run-gui.sh ---
