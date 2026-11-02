@@ -1167,48 +1167,6 @@ fn pattern_value_forms_give_no_arg_type_mismatch() {
     );
 }
 
-/// The origin slots of `circular_pattern` and `mirror` name the builtin the
-/// author typed. That matches the eval layer, whose `kind_label` is
-/// `PatternKind`'s `Display`, which renders the same surface name, so the two
-/// layers agree byte-for-byte and decision D9's "byte-identical" wording holds.
-///
-/// Do not "fix" the compile layer toward a lowered kind: the name in the source
-/// is the only one the author can grep for. Only the `_centered` aliases still
-/// diverge, pinned by
-/// `centered_alias_slots_name_the_surface_builtin_not_the_lowered_kind`.
-#[test]
-fn pattern_origin_slots_name_the_surface_builtin() {
-    let compiled =
-        compile_struct_body("    let p = circular_pattern(b, 12, 0, 0, 0, 0, 1, 6, 60deg)\n");
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    for message in &messages {
-        assert!(
-            message.starts_with("circular_pattern: "),
-            "the compile slot must name the SURFACE call `circular_pattern`; \
-             got {message:?}"
-        );
-    }
-    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
-
-    // The negative half: `mirror` is NOT an alias, so no prefix divergence.
-    let compiled = compile_struct_body("    let m = mirror(b, 0, 0, 0, 1, 0, 0)\n");
-    let messages: Vec<&str> = arg_type_mismatch_errors(&compiled)
-        .iter()
-        .map(|d| d.message.as_str())
-        .collect();
-    for message in &messages {
-        assert!(
-            message.starts_with("mirror: "),
-            "`PatternKind::Mirror` displays as \"mirror\", so the compile and eval \
-             layers must agree byte-for-byte here; got {message:?}"
-        );
-    }
-    assert_eq!(messages.len(), 3, "expected the origin triple: {messages:#?}");
-}
-
 // ── Task 6862: a dimension-kinded generic param at a LENGTH slot ─────────────
 
 /// The task-6862 regression fixture: `fn beam<Q: Dimension>(l: Scalar<Q>) -> Solid`

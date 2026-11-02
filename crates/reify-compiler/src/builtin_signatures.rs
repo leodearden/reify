@@ -666,9 +666,13 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // `Display`) renders that same name, so for `circular_pattern:` and
         // `mirror:` the two layers agree byte-for-byte.
         // Only the `_centered` aliases still diverge; see
-        // `check_builtin_arg_types`' "# Message format". Pinned by
-        // `pattern_origin_slots_name_the_surface_builtin` in
-        // `tests/harness_type_checking/builtin_arg_signature_tests.rs`.
+        // `check_builtin_arg_types`' "# Message format". This layer's half is
+        // pinned by `circular_pattern_bare_origin_is_rejected_naming_the_origin_components`
+        // and `mirror_bare_origin_is_rejected_naming_the_origin_components` in
+        // `tests/harness_type_checking/builtin_arg_signature_tests.rs`; the eval
+        // half by reify-eval's `expected_length_rejection("circular_pattern", …)`
+        // assertions in `src/geometry_ops/tests.rs`, e.g.
+        // `compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms`.
         //
         // These two arms make `reify check` a REAL gate for these positions, not
         // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
