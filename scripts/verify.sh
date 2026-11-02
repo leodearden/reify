@@ -1672,6 +1672,16 @@ is_occt_crate() {
 #     cost_robustness_tradeoff_form.ri (task 5711: reify-constraints'
 #     cost_robustness_tradeoff_blend.rs and solver.rs cite it as the .ri form
 #     the in-Rust blend fixtures mirror — no read today)
+#   named by the tracked-.ri parse guard's MUST_ERROR_RI_FIXTURES table in
+#     crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs (task
+#     9343): arrow_type.ri, every cmc_*.ri catalog-membership surface,
+#     decl_passes_purpose_body_sub_swallowed.ri, the CST-faulty slc_*.ri
+#     evidence fixtures and step_import_surface.ri. That guard READS each
+#     declared file and asserts its declared fault class, so an edit that makes
+#     one parse cleanly, or changes its fault class, reds
+#     `cargo test -p reify-syntax`. Undeclared fixtures in this directory stay
+#     inert: the guard's UNSWEPT row for the directory skips them unread, and
+#     that row carries the reviewed `pg-drift-dir:allow` marker.
 # Deliberately NO file:line citations: nothing validates them and they rot on
 # the first edit to those tests. Membership's SOURCE OF TRUTH is behavioural —
 # tests/infra/test_verify_scope.sh's PG-DRIFT scenario derives the referenced
@@ -1695,7 +1705,7 @@ is_occt_crate() {
 # (mirrors select_infra_tests/select_harness_kloc_guard) — required here
 # because one name is a strict prefix of another
 # (geometry_let_selector_consumer.ri vs …_consumer_edit.ri).
-_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri s6_joint_position_display.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
+_RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri arrow_type.ri cmc_bolt_feasible.ri cmc_bolt_gap.ri cmc_bolt_two_fit.ri cmc_int_range.ri cmc_local_catalogs.ri cmc_membership_check.ri cmc_sugar_equivalence.ri cmc_unextractable.ri compiler_type_hygiene_trait_args_silent_accept.ri cost_robustness_tradeoff_form.ri curvature_rad_literal.ri damped_material_mixin_conformance.ri damped_material_preset_conformance.ri dcr_load_ctor_dimension_silent.ri dcr_material_dimension_silent.ri dcr_reader_ctor_dimension_silent.ri dcr_shaper_frequency_dimension_silent.ri dcr_solver_load_dropped_dimensioned.ri dcr_yield_stress_dimension_silent.ri decl_passes_purpose_body_sub_swallowed.ri driver_parity_auto_ctl.ri driver_parity_one_sided_auto.ri driver_parity_one_sided_auto_free.ri driver_parity_two_sided_auto.ri geometry_let_selector_consumer.ri geometry_let_selector_consumer_edit.ri indexed_sub_coll_arm_baseline.ri indexed_sub_forall_range_baseline.ri indexed_sub_inst_arm_baseline.ri indexed_sub_spec_arm_baseline.ri jacobian_column_members.ri joint_constrained_dof_compliance.ri occt_internals_centroid_translated_profile.ri occt_internals_fillet_extruded_wire.ri occt_internals_fillet_translated_disjoint_union.ri r3b_displacement_at_selector_grammar.ri s6_joint_position_display.ri shift_invert_modal_shifted.ri shift_invert_modal_unshifted.ri sketch_auto_seed_target.ri sketch_aux_let_premise.ri sketch_block_target.ri sketch_member_extrude_premise.ri slc_annotation_arg_fault.ri slc_field_analytical_fault.ri slc_field_imported_fault.ri slc_purpose_body_error.ri slc_purpose_param_missing.ri slc_root_error.ri slc_struct_header_fault.ri slc_trait_body_port.ri ssc_refuted_pair.ri stdlib_ns_buckling_mode_coexist.ri stdlib_ns_mode_member.ri stdlib_ns_qualified_expr.ri stdlib_ns_qualified_type.ri step_import_surface.ri struct_ctor_conformance_int_at_string_field.ri struct_ctor_conformance_over_arity.ri struct_ctor_conformance_pose_at_selector_field.ri struct_ctor_conformance_string_at_selector_field.ri struct_ctor_conformance_unknown_field.ri unit_curated_labels_ascii.ri unit_middot_mul.ri unit_nm_torque_immediate.ri "
 
 # GUI-COUPLED prd-gate fixtures (task 6435). Basenames PINNED in EXPECTED_CLEAN
 # in gui/src/__tests__/reifyGrammarCorpus.test.ts — the grammar drift ledger,
@@ -1738,6 +1748,10 @@ _RUST_COUPLED_RI_FIXTURES=" adt_mirror_of_arm.ri adt_relation_verbs.ri compiler_
 # Lezer-parseable yet, and extending the mirror is outside constrained-2d-sketch
 # α's scope. Nothing gates RUST_COUPLED ⊆ GUI_COUPLED (the ledger reports
 # unpinnedClean without gating it), so the exception is recorded here in prose.
+# SECOND EXCEPTION (task 9343): the tracked-.ri parse guard's must-error
+# fixtures (see the _RUST_COUPLED_RI_FIXTURES block above) are RUST-coupled but
+# never grammar-ledger EXPECTED_CLEAN pins, because pinning one clean would
+# assert the opposite of its purpose. They are not listed below.
 #
 # Deliberately unnumbered: nothing validates a count in prose (PG-DRIFT checks
 # MEMBERSHIP, PG-DRIFT-GUI checks the ledger), so a hard-coded size silently

@@ -26,39 +26,187 @@ enum MustErrorKind {
 }
 
 /// One tracked `.ri` that is declared to fail, and why.
-#[allow(dead_code)]
 struct MustErrorFixture {
     path: &'static str,
     kind: MustErrorKind,
     reason: &'static str,
 }
 
+const CATALOG_MEMBERSHIP_SURFACE: &str = "target surface of \
+    docs/prds/v0_6/catalog-membership-constraint.md: `constraint x in <catalog>` is outside the \
+    grammar on main; when that PRD's leaf makes one parse, this guard reds and that leaf \
+    removes the entry";
+
 /// Tracked `.ri` files that are declared to fail, sorted by path.
-#[allow(dead_code)]
-const MUST_ERROR_RI_FIXTURES: &[MustErrorFixture] = &[];
+const MUST_ERROR_RI_FIXTURES: &[MustErrorFixture] = &[
+    MustErrorFixture {
+        path: "crates/reify-cli/tests/fixtures/bracket_parse_error.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "reify-cli's parse-error reporting fixture (`@@@` in a structure body)",
+    },
+    MustErrorFixture {
+        path: "crates/reify-spec-conformance/fixtures/_placement-probe/placement_probe.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "deliberately unparseable placement sentinel (that tree's fixtures/README.md)",
+    },
+    MustErrorFixture {
+        path: "docs/prds/v0_6/fixtures/indexed_sub_instantiation_surface.ri",
+        kind: MustErrorKind::ErrorsOnly,
+        reason: "clean CST; lower_sub rejects the indexed `sub` instantiation (the #5482 \
+                 interim rejection)",
+    },
+    MustErrorFixture {
+        path: "gui/test/fixtures/broken_syntax.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "GUI error-recovery fixture, intentionally invalid (listed rather than \
+                 excluding gui/: syntax-lowering-contract §13 OQ-3)",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/arrow_type.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "FAIL grammar probe: the grammar has no arrow-type production",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_bolt_feasible.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_bolt_gap.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_bolt_two_fit.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_int_range.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_local_catalogs.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_membership_check.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_sugar_equivalence.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/cmc_unextractable.ri",
+        kind: MustErrorKind::CstFault,
+        reason: CATALOG_MEMBERSHIP_SURFACE,
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/decl_passes_purpose_body_sub_swallowed.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "compiler-declaration-passes B4 evidence: a `sub` in a purpose body is an \
+                 ERROR the lowering drops silently",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_annotation_arg_fault.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a faulty annotation argument \
+                 (`@foo(1 +)`)",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_field_analytical_fault.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a faulty expression in a field's \
+                 `analytical` source",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_field_imported_fault.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a missing value in a field's \
+                 `imported` source block",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_purpose_body_error.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a faulty member in a purpose body \
+                 (`param y:`)",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_purpose_param_missing.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a purpose parameter with no type \
+                 (`x: `)",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_root_error.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a token salad whose root node is \
+                 ERROR",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_struct_header_fault.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a faulty type-parameter bound in a \
+                 structure header (`S<T: >`)",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/slc_trait_body_port.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "syntax-lowering-contract §2.2 evidence: a `port` member in a trait body",
+    },
+    MustErrorFixture {
+        path: "tests/prd-gate/fixtures/step_import_surface.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "target surface of docs/prds/v0_6/step-assembly-import.md",
+    },
+];
 
 /// A tracked tree whose UNDECLARED members the guard skips unread.
-#[allow(dead_code)]
 struct UnsweptTree {
     prefix: &'static str,
     reason: &'static str,
 }
 
-/// The trees the guard does not sweep.
-#[allow(dead_code)]
-const UNSWEPT_RI_TREES: &[UnsweptTree] = &[];
+/// The trees the guard does not sweep, ratified on the D12 row of
+/// `docs/prds/v0_6/syntax-lowering-contract.md`.
+const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
+    UnsweptTree {
+        prefix: "tests/prd-gate/fixtures/", // pg-drift-dir:allow — an exclusion, not a walk: undeclared members are skipped unread, so adding a fixture stays inert
+        reason: "chartered probe inputs that need not parse (tests/prd-gate/README.md); \
+                 declared members are still checked",
+    },
+    UnsweptTree {
+        prefix: "crates/reify-spec-conformance/fixtures/",
+        reason: "chartered must-reject residents of the spec-conformance corpus (that tree's \
+                 README.md); declared members are still checked",
+    },
+];
 
 /// What the guard demands of one tracked path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 enum Expectation {
     Clean,
     MustError(MustErrorKind),
     Unswept,
 }
 
-#[allow(dead_code)]
-fn expectation(_path: &str) -> Expectation {
+/// A declared entry wins over an unswept tree, so every declared file is
+/// checked wherever it lives.
+fn expectation(path: &str) -> Expectation {
+    if let Some(fixture) = MUST_ERROR_RI_FIXTURES.iter().find(|f| f.path == path) {
+        return Expectation::MustError(fixture.kind);
+    }
+    if UNSWEPT_RI_TREES
+        .iter()
+        .any(|tree| path.starts_with(tree.prefix))
+    {
+        return Expectation::Unswept;
+    }
     Expectation::Clean
 }
 
