@@ -2305,6 +2305,57 @@ mod tests {
         );
     }
 
+    /// `gradient_at_world` on an affine field `φ = 0.48x − 0.6y + 0.64z − 1`
+    /// (5³, h = 1, bounds 0..4). Trilinear interpolation reproduces an affine
+    /// field exactly, so the true gradient is `(0.48, −0.6, 0.64)` everywhere
+    /// on the grid, including where a ½-spacing probe falls off a face (the
+    /// estimate goes one-sided there) and exactly on the bounds. Off the grid
+    /// the gradient is unknown, not zero.
+    #[test]
+    fn gradient_at_world_differentiates_up_to_the_grid_faces_and_reports_unknown_beyond_them() {
+        const TRUE_GRADIENT: [f64; 3] = [0.48, -0.6, 0.64];
+        let axis_grid: Vec<f64> = (0..5).map(f64::from).collect();
+        let mut data = Vec::with_capacity(125);
+        for &x in &axis_grid {
+            for &y in &axis_grid {
+                for &z in &axis_grid {
+                    data.push(
+                        TRUE_GRADIENT[0] * x + TRUE_GRADIENT[1] * y + TRUE_GRADIENT[2] * z - 1.0,
+                    );
+                }
+            }
+        }
+        let sdf = SampledField {
+            name: "affine-5".to_string(),
+            kind: SampledGridKind::Regular3D,
+            bounds_min: vec![0.0; 3],
+            bounds_max: vec![4.0; 3],
+            spacing: vec![1.0; 3],
+            axis_grids: vec![axis_grid; 3],
+            interpolation: InterpolationKind::Linear,
+            data,
+            oob_emitted: AtomicBool::new(false),
+        };
+
+        for p in [
+            [2.3, 1.7, 2.1], // interior: central on every axis
+            [0.2, 2.0, 2.0], // within h/2 of the min x-face
+            [3.8, 2.0, 2.0], // within h/2 of the max x-face
+            [0.1, 0.1, 3.9], // corner: one-sided on every axis
+            [0.0, 4.0, 0.0], // on the bounds
+            [4.0, 4.0, 4.0], // on the bounds
+        ] {
+            let g = gradient_at_world(&sdf, p).unwrap_or_else(|| panic!("{p:?}: gradient unknown"));
+            let err = (0..3)
+                .map(|a| (g[a] - TRUE_GRADIENT[a]).abs())
+                .fold(0.0, f64::max);
+            assert!(err <= 1e-12, "{p:?}: gradient {g:?}, max error {err}");
+        }
+        for p in [[-0.1, 2.0, 2.0], [-1.0, 2.0, 2.0]] {
+            assert_eq!(gradient_at_world(&sdf, p), None, "{p:?} is off the grid");
+        }
+    }
+
     /// RED — inverted bounds on axis 0 (`bounds_min > bounds_max`)
     /// must return `InvalidAxisGeometry`. The `world_at_index` and
     /// `sample_at_world` helpers produce geometrically nonsensical
