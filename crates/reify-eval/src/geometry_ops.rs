@@ -4404,21 +4404,20 @@ fn pattern_arbitrary(
             meta_map,
             diagnostics,
         )
-        .ok_or_else(|| "arbitrary_pattern: 'transform_list' arg is missing".to_string())?;
+        .ok_or_else(|| format!("{kind}: 'transform_list' arg is missing"))?;
         let reify_ir::Value::List(elements) = &value else {
-            diagnostics.push(Diagnostic::warning(
-                "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
-                    .to_string(),
+            diagnostics.push(Diagnostic::warning(format!(
+                "{kind} dropped: 'transform_list' arg is not a List<Transform<3>>"
+            )));
+            return Err(format!(
+                "{kind}: 'transform_list' arg is not a List<Transform<3>>"
             ));
-            return Err(
-                "arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>".into(),
-            );
         };
         if elements.is_empty() {
-            diagnostics.push(Diagnostic::warning(
-                "arbitrary_pattern dropped: 'transform_list' is empty".to_string(),
-            ));
-            return Err("arbitrary_pattern: 'transform_list' is empty".into());
+            diagnostics.push(Diagnostic::warning(format!(
+                "{kind} dropped: 'transform_list' is empty"
+            )));
+            return Err(format!("{kind}: 'transform_list' is empty"));
         }
         let mut transforms = Vec::with_capacity(elements.len());
         for element in elements {
@@ -4430,15 +4429,12 @@ fn pattern_arbitrary(
             // where widening it would turn one bad transform into a storm.
             transforms.push(accept_transform_to_arrays(
                 element,
-                "arbitrary_pattern",
+                kind,
                 &|diagnostics: &mut Vec<Diagnostic>| {
-                    diagnostics.push(Diagnostic::warning(
-                        "arbitrary_pattern dropped: 'transform_list' element is not a valid \
-                         Transform<3>"
-                            .to_string(),
-                    ));
-                    "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
-                        .to_string()
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{kind} dropped: 'transform_list' element is not a valid Transform<3>"
+                    )));
+                    format!("{kind}: 'transform_list' element is not a valid Transform<3>")
                 },
                 diagnostics,
             )?);
