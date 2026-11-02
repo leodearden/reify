@@ -723,6 +723,33 @@ _row4_await_ready() {
     done
 }
 
+# _row4_pin_coresident <task_affinities> <merge_affinities>
+#   cpu.weight only arbitrates between groups that share a per-CPU runqueue, so
+#   ROW4's split is 3:1 by construction only while EVERY pinned CPU hosts
+#   equally many task and merge workers.  Each argument is a newline-separated
+#   list of per-worker Cpus_allowed_list strings (see _row4_worker_affinities).
+#   Returns 0 iff both lists are non-empty, every entry is ONE cpu id (a range
+#   such as "30-31" is a worker the load balancer can still move, and
+#   "unavailable" is a worker that vanished), and the two lists sorted
+#   numerically are identical.
+#   awk/sort only, so its guard stays always-on.  The sorted lists are captured
+#   into variables rather than piped into an early-closing reader: this file
+#   runs under `set -o pipefail`.
+_row4_pin_coresident() {
+    local task_cpus="$1" merge_cpus="$2"
+    [ -n "$task_cpus" ] && [ -n "$merge_cpus" ] || return 1
+
+    local all_single_cpu
+    all_single_cpu="$(printf '%s\n%s\n' "$task_cpus" "$merge_cpus" \
+        | awk 'BEGIN { ok = "yes" } $0 !~ /^[0-9]+$/ { ok = "no" } END { print ok }')"
+    [ "$all_single_cpu" = "yes" ] || return 1
+
+    local task_sorted merge_sorted
+    task_sorted="$(printf '%s\n' "$task_cpus" | sort -n)"
+    merge_sorted="$(printf '%s\n' "$merge_cpus" | sort -n)"
+    [ "$task_sorted" = "$merge_sorted" ]
+}
+
 # ============================================================================
 # ROW4 per-worker pinning + readiness — always-on guards (task 9698).
 #
