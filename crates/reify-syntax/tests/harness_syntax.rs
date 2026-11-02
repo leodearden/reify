@@ -19,7 +19,7 @@
 //! before/after for both units; the guard re-derives the live numbers on demand, so they are
 //! deliberately not restated here.
 //!
-//! `common` (the shared tree-sitter CST helper module under `tests/common/`) is declared
+//! `common` (the shared test helpers under `tests/common/`) is declared
 //! exactly once here, at the crate root, rather than once per dependent submodule. Ten of
 //! the modules below previously each carried their own `#[path = "../common/mod.rs"] mod
 //! common;` (correct when each was its own standalone binary/crate root); folded together
