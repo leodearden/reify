@@ -2304,7 +2304,7 @@ This is a tooling/implementation concern, not a language semantics concern: the 
 - **Strict `auto` (default):** Resolved value must be uniquely determined or uniquely optimal. If not, resolution failure with diagnostic.
 - **Free `auto`:** Returns a feasible solution, warns about non-uniqueness.
 
-**Which commands resolve `auto`:** `reify check` (including `--strict`), `test`, `build`, `eval` / `run`, `report`, `explain` and the GUI viewport. The language server and the GUI definition preview do not resolve yet, and show the value as `undef` (`AwaitingSolve`, §9.2.9). A strict `auto` that its constraints bound on one side only is a compile-time error naming the missing bound (e.g. ``no constraint bounds `Flange.radius` above``): the solve could only return the edge of the solver's internal default domain.
+**Which commands resolve `auto`:** every CLI subcommand that evaluates a model (`reify check` with or without `--strict`, `test`, `build`, `eval` / `run`, `report` and `explain`) and the GUI viewport; the other drivers are covered in §10.2. A driver that does not resolve shows the value as `undef` (`AwaitingSolve`, §9.2.9). A strict `auto` that its constraints bound on one side only is a compile-time error naming the missing bound (e.g. ``no constraint bounds `Flange.radius` above``): the solve could only return the edge of the solver's internal default domain.
 
 **`auto` for type parameters:** Valid -- means "pick a type that satisfies the bounds." See §3.9 and `docs/auto-type-param-resolution.md` for the resolution algorithm (per-parameter BFS, cap of 10, lexicographic tiebreak by FQN).
 
@@ -2388,7 +2388,7 @@ constraint def Coincident(a : Point3<Length>, b : Point3<Length>) {
 
 These are three capabilities of one resolution, not three modes a tool chooses between: resolving a model solves its `auto` parameters (§9.3), checks every constraint against the result, and reports what is still undetermined, unbounded or in conflict.
 
-A **driver** is a tool that evaluates a model: a CLI subcommand, the language server, or the GUI. Drivers are not the sub-solvers of §10.3, which the engine dispatches to inside a single resolution. Two drivers may differ only in iteration budget and in staleness (whether they may serve a previously computed result); no driver may skip the solve (`docs/prds/v0_6/solver-driver-parity.md`, invariant I5). Today `reify check`, `test`, `build`, `eval` / `run`, `report`, `explain` and the GUI viewport resolve; the language server and the GUI definition preview do not yet.
+A **driver** is a tool that evaluates a model: a CLI subcommand, the language server, or the GUI. Drivers are not the sub-solvers of §10.3, which the engine dispatches to inside a single resolution. Two drivers may differ only in iteration budget and in staleness (whether they may serve a previously computed result); no driver may skip the solve (`docs/prds/v0_6/solver-driver-parity.md`, invariant I5). Every CLI subcommand that evaluates a model already resolves, and so does the GUI viewport. Whether the language server and the GUI definition preview do yet is recorded in one place, the `solving` chunk of the language reference (`crates/reify-mcp/src/tools/chunks/solving.md`).
 
 ### 10.3 Constraint Domains
 

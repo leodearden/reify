@@ -93,7 +93,7 @@ reify --version                          Print version
 reify --help                             Show this list; `reify <command> --help` shows one command's flags
 ```
 
-**Which commands let the solver choose `auto` values.** `check` (including `--strict`), `test`, `build`, `eval` / `run`, `report` and `explain` resolve every `auto` before they report, and so does the GUI viewport. Not yet: the editor (language-server diagnostics and hover) and the GUI's definition-preview pane, which show such a value as `undef` and a constraint over it as INDETERMINATE. How to write an `auto` and bound it so it resolves: the `solving` language-reference chunk, [`crates/reify-mcp/src/tools/chunks/solving.md`](crates/reify-mcp/src/tools/chunks/solving.md).
+**Which commands let the solver choose `auto` values.** Every command above that evaluates a design, `check` (including `--strict`), `test`, `build`, `eval` / `run`, `report` and `explain`, resolves every `auto` before it reports, and so does the GUI viewport. Whether the editor and the GUI's definition-preview pane do yet, and how to write an `auto` and bound it so it resolves: the `solving` language-reference chunk, [`crates/reify-mcp/src/tools/chunks/solving.md`](crates/reify-mcp/src/tools/chunks/solving.md).
 
 See [`docs/fea-cache.md`](docs/fea-cache.md) for the FEA cache surface (directory, env vars, distribution recipes).
 
