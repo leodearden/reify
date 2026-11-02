@@ -26,6 +26,17 @@ const MAX_TESSELLATION_CHORD_TOLERANCE: f64 = 0.0001;
 /// or below the grid's own quantisation error.
 const CHORD_TOLERANCE_PER_VOXEL: f64 = 0.5;
 
+/// Whether the caller chose `resolution`, as opposed to getting the recipe's
+/// default, [`reify_ir::VoxelResolution::HonestFloor`].
+///
+/// This is all the recipe can see of who a failure belongs to. Under a chosen
+/// resolution the request itself may be what could not be served, so the
+/// failure is worth a diagnostic; the default carries no choice to blame and
+/// fails as quietly as the environment failures it cannot be told apart from.
+fn is_request_driven(resolution: reify_ir::VoxelResolution) -> bool {
+    !matches!(resolution, reify_ir::VoxelResolution::HonestFloor)
+}
+
 /// Tessellate `brep` finely enough for the voxel grid `resolution` asks for.
 ///
 /// The first tessellation is at [`MAX_TESSELLATION_CHORD_TOLERANCE`]. The voxel
@@ -36,7 +47,9 @@ const CHORD_TOLERANCE_PER_VOXEL: f64 = 0.5;
 /// A request the kernel cannot serve has no voxel size to derive a chord from,
 /// so its mesh stays unrefined and the voxelizer remains the one place that
 /// rejects it. A refinement that fails yields `None`, never the coarse mesh:
-/// that mesh is the facet-resolving input this function exists to avoid.
+/// that mesh is the facet-resolving input this function exists to avoid. When
+/// the resolution is [request-driven](is_request_driven) the refusal is also
+/// logged, because the fine chord is the request's doing.
 fn tessellate_for_voxel_grid(
     tessellator: &dyn reify_ir::GeometryKernel,
     brep: reify_ir::GeometryHandleId,
@@ -51,7 +64,20 @@ fn tessellate_for_voxel_grid(
     };
     let chord = grid.voxel_size * CHORD_TOLERANCE_PER_VOXEL;
     if chord < MAX_TESSELLATION_CHORD_TOLERANCE {
-        tessellator.tessellate(brep, chord).ok()
+        tessellator
+            .tessellate(brep, chord)
+            .inspect_err(|e| {
+                if is_request_driven(resolution) {
+                    tracing::warn!(
+                        target: "reify_eval::realize_solid_sdf",
+                        ?resolution,
+                        chord,
+                        error = %e,
+                        "tessellation at the chord derived from the requested resolution failed"
+                    );
+                }
+            })
+            .ok()
     } else {
         Some(coarse)
     }
@@ -127,10 +153,12 @@ impl crate::Engine {
     /// `reify_eval::realize_solid_sdf`) before being dropped, keeping a rejected
     /// request distinguishable from a build with no OpenVDB in it. The two are
     /// separated by the REQUEST, which is all this layer can see: a
-    /// [`reify_ir::VoxelResolution::HonestFloor`] ingest carries no caller
+    /// [`reify_ir::VoxelResolution::HonestFloor`] failure carries no caller
     /// choice to blame, so its `Err` degrades silently like paths 1-4, while a
-    /// request-driven ingest logs the error it actually got without presuming
-    /// which of the two it was.
+    /// request-driven one logs the error it actually got without presuming
+    /// which of the two it was. That includes a refused refinement tessellation
+    /// (path 4): under a request-driven resolution its chord is the request's
+    /// doing.
     ///
     /// # Chord tolerance
     ///
@@ -211,7 +239,7 @@ impl crate::Engine {
             .get_mut(openvdb_name)?
             .ingest_mesh_at_resolution(&mesh, resolution)
             .inspect_err(|e| {
-                if !matches!(resolution, reify_ir::VoxelResolution::HonestFloor) {
+                if is_request_driven(resolution) {
                     tracing::warn!(
                         target: "reify_eval::realize_solid_sdf",
                         ?resolution,
@@ -326,30 +354,40 @@ mod tests {
         reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
     }
 
+    /// The `GeometryKernel` methods no fake in this module may be asked for:
+    /// the recipe only tessellates and ingests, so reaching `execute`, `query`
+    /// or `export` is a bug that must fail loudly. Invoke it inside the fake's
+    /// `impl GeometryKernel` block.
+    macro_rules! unreachable_kernel_stubs {
+        () => {
+            fn execute(
+                &mut self,
+                _op: &reify_ir::GeometryOp,
+            ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+                unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+            }
+            fn query(
+                &self,
+                _q: &reify_ir::GeometryQuery,
+            ) -> Result<reify_ir::Value, reify_ir::QueryError> {
+                unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+            }
+            fn export(
+                &self,
+                _handle: reify_ir::GeometryHandleId,
+                _format: reify_ir::ExportFormat,
+                _writer: &mut dyn std::io::Write,
+            ) -> Result<(), reify_ir::ExportError> {
+                unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
+            }
+        };
+    }
+
     /// Mock kernel whose `tessellate` returns the closed `box_2mm()` mesh.
     /// Other required methods are unreachable stubs.
     struct TessellatingBoxKernel;
     impl reify_ir::GeometryKernel for TessellatingBoxKernel {
-        fn execute(
-            &mut self,
-            _op: &reify_ir::GeometryOp,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn query(
-            &self,
-            _q: &reify_ir::GeometryQuery,
-        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn export(
-            &self,
-            _handle: reify_ir::GeometryHandleId,
-            _format: reify_ir::ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_ir::ExportError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
+        unreachable_kernel_stubs!();
         fn tessellate(
             &self,
             _handle: reify_ir::GeometryHandleId,
@@ -365,26 +403,7 @@ mod tests {
     /// Used under `openvdb_kernel_name()` to test the densify-Err degradation path.
     struct IngestOkDensifyFailKernel;
     impl reify_ir::GeometryKernel for IngestOkDensifyFailKernel {
-        fn execute(
-            &mut self,
-            _op: &reify_ir::GeometryOp,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn query(
-            &self,
-            _q: &reify_ir::GeometryQuery,
-        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn export(
-            &self,
-            _handle: reify_ir::GeometryHandleId,
-            _format: reify_ir::ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_ir::ExportError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
+        unreachable_kernel_stubs!();
         fn tessellate(
             &self,
             _handle: reify_ir::GeometryHandleId,
@@ -576,17 +595,28 @@ mod tests {
     // Every test below references `engine.realize_solid_sdf_at(subject, …)`,
     // which does NOT exist yet — they compile-fail (RED) until step-10 adds it.
 
-    /// Shared recorder for the `VoxelResolution` values a kernel is handed.
+    /// Shared recorder for the `(VoxelResolution, Mesh)` pairs a voxelizer is
+    /// asked to ingest, in call order.
     ///
     /// `Arc<Mutex<…>>` rather than a plain field because the kernel is moved
     /// into `engine.geometry_kernels` as a `Box<dyn GeometryKernel>` and cannot
     /// be borrowed back out afterwards. Mirrors the `Arc<Mutex<Vec<f64>>>`
     /// tessellate-tolerance recorder on `MockGeometryKernel`
     /// (`reify_test_support::mocks::MockGeometryKernel::tessellate_tolerances_ref`).
-    type ResolutionLog = std::sync::Arc<std::sync::Mutex<Vec<reify_ir::VoxelResolution>>>;
+    type IngestLog =
+        std::sync::Arc<std::sync::Mutex<Vec<(reify_ir::VoxelResolution, reify_ir::Mesh)>>>;
 
-    /// Mock openvdb-slot kernel that records every `VoxelResolution` it is
-    /// handed and (optionally) fails the ingest.
+    /// The requests a voxelizer was handed, in call order.
+    fn requests_in(log: &IngestLog) -> Vec<reify_ir::VoxelResolution> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .map(|&(request, _)| request)
+            .collect()
+    }
+
+    /// Mock openvdb-slot kernel that records every `(VoxelResolution, Mesh)` it
+    /// is asked to ingest and (optionally) fails the ingest.
     ///
     /// Every method the recipe must NOT call returns `Err` (or is
     /// `unreachable!()`), so a regression that reaches for the wrong entry
@@ -595,31 +625,12 @@ mod tests {
     /// if `realize_solid_sdf_at` ever calls the resolution-less entry point,
     /// the log stays empty and the forwarding assertions fail.
     struct RecordingVoxelizerKernel {
-        log: ResolutionLog,
+        log: IngestLog,
         fail_ingest: bool,
     }
 
     impl reify_ir::GeometryKernel for RecordingVoxelizerKernel {
-        fn execute(
-            &mut self,
-            _op: &reify_ir::GeometryOp,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn query(
-            &self,
-            _q: &reify_ir::GeometryQuery,
-        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn export(
-            &self,
-            _handle: reify_ir::GeometryHandleId,
-            _format: reify_ir::ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_ir::ExportError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
+        unreachable_kernel_stubs!();
         fn tessellate(
             &self,
             _handle: reify_ir::GeometryHandleId,
@@ -637,10 +648,10 @@ mod tests {
         }
         fn ingest_mesh_at_resolution(
             &mut self,
-            _mesh: &reify_ir::Mesh,
+            mesh: &reify_ir::Mesh,
             resolution: reify_ir::VoxelResolution,
         ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            self.log.lock().unwrap().push(resolution);
+            self.log.lock().unwrap().push((resolution, mesh.clone()));
             if self.fail_ingest {
                 return Err(reify_ir::GeometryError::OperationFailed(
                     "synthetic ingest failure".into(),
@@ -687,7 +698,7 @@ mod tests {
     /// resolution to the voxelizer verbatim, exactly once.
     #[test]
     fn realize_solid_sdf_at_forwards_the_requested_resolution() {
-        let log: ResolutionLog = Default::default();
+        let log: IngestLog = Default::default();
         let (mut engine, subject) = engine_with(
             Box::new(TessellatingBoxKernel),
             Box::new(RecordingVoxelizerKernel {
@@ -702,8 +713,8 @@ mod tests {
         let _ = engine.realize_solid_sdf_at(subject, reify_ir::VoxelResolution::MinFeature(1.0));
 
         assert_eq!(
-            log.lock().unwrap().as_slice(),
-            &[reify_ir::VoxelResolution::MinFeature(1.0)],
+            requests_in(&log),
+            [reify_ir::VoxelResolution::MinFeature(1.0)],
             "realize_solid_sdf_at must call ingest_mesh_at_resolution exactly once \
              with the requested resolution"
         );
@@ -714,7 +725,7 @@ mod tests {
     /// grid it has always got.
     #[test]
     fn realize_solid_sdf_forwards_honest_floor() {
-        let log: ResolutionLog = Default::default();
+        let log: IngestLog = Default::default();
         let (mut engine, subject) = engine_with(
             Box::new(TessellatingBoxKernel),
             Box::new(RecordingVoxelizerKernel {
@@ -727,8 +738,8 @@ mod tests {
         let _ = engine.realize_solid_sdf(subject);
 
         assert_eq!(
-            log.lock().unwrap().as_slice(),
-            &[reify_ir::VoxelResolution::HonestFloor],
+            requests_in(&log),
+            [reify_ir::VoxelResolution::HonestFloor],
             "realize_solid_sdf must delegate with VoxelResolution::HonestFloor"
         );
     }
@@ -737,7 +748,7 @@ mod tests {
     /// `GeometryHandleId::INVALID` → `None`, no panic.
     #[test]
     fn realize_solid_sdf_at_unresolvable_subject_returns_none() {
-        let log: ResolutionLog = Default::default();
+        let log: IngestLog = Default::default();
         let (mut engine, _) = engine_with(
             Box::new(TessellatingBoxKernel),
             Box::new(RecordingVoxelizerKernel {
@@ -815,7 +826,7 @@ mod tests {
     /// — the shared utility for exactly this shape, so no local clone of it.
     #[test]
     fn realize_solid_sdf_at_tessellate_err_returns_none() {
-        let log: ResolutionLog = Default::default();
+        let log: IngestLog = Default::default();
         let (mut engine, subject) = engine_with(
             Box::new(FailingMockGeometryKernel),
             Box::new(RecordingVoxelizerKernel {
@@ -841,7 +852,7 @@ mod tests {
     /// `Err` → `None`, no panic and no fabricated field.
     #[test]
     fn realize_solid_sdf_at_ingest_err_returns_none() {
-        let log: ResolutionLog = Default::default();
+        let log: IngestLog = Default::default();
         let (mut engine, subject) = engine_with(
             Box::new(TessellatingBoxKernel),
             Box::new(RecordingVoxelizerKernel {
@@ -898,9 +909,6 @@ mod tests {
 
     type ToleranceLog = std::sync::Arc<std::sync::Mutex<Vec<f64>>>;
 
-    type IngestLog =
-        std::sync::Arc<std::sync::Mutex<Vec<(reify_ir::VoxelResolution, reify_ir::Mesh)>>>;
-
     /// Half-extent (SI metres) of the 2 mm cube most of these tests tessellate.
     const HALF_EXTENT_OF_2MM_CUBE: f32 = 1e-3;
 
@@ -926,26 +934,7 @@ mod tests {
     }
 
     impl reify_ir::GeometryKernel for ChordRecordingCubeKernel {
-        fn execute(
-            &mut self,
-            _op: &reify_ir::GeometryOp,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn query(
-            &self,
-            _q: &reify_ir::GeometryQuery,
-        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn export(
-            &self,
-            _handle: reify_ir::GeometryHandleId,
-            _format: reify_ir::ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_ir::ExportError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
+        unreachable_kernel_stubs!();
         fn tessellate(
             &self,
             _handle: reify_ir::GeometryHandleId,
@@ -964,66 +953,6 @@ mod tests {
             );
             cube.normals = chord_stamp(tolerance);
             Ok(cube)
-        }
-    }
-
-    /// OpenVDB-slot kernel that records every `(resolution, mesh)` it is asked
-    /// to ingest. Like [`RecordingVoxelizerKernel`], it fails the
-    /// resolution-less `ingest_mesh`, and its `densify_grid_to_sampled` is the
-    /// inherited `Err`, so the recipe ends in `None` AFTER the recording.
-    struct MeshRecordingVoxelizerKernel {
-        ingested: IngestLog,
-    }
-
-    impl reify_ir::GeometryKernel for MeshRecordingVoxelizerKernel {
-        fn execute(
-            &mut self,
-            _op: &reify_ir::GeometryOp,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn query(
-            &self,
-            _q: &reify_ir::GeometryQuery,
-        ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn export(
-            &self,
-            _handle: reify_ir::GeometryHandleId,
-            _format: reify_ir::ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), reify_ir::ExportError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn tessellate(
-            &self,
-            _handle: reify_ir::GeometryHandleId,
-            _tolerance: f64,
-        ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
-            unreachable!() // ptodo:allow exhaustiveness/stub arm - not tracked debt
-        }
-        fn ingest_mesh(
-            &mut self,
-            _mesh: &reify_ir::Mesh,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            Err(reify_ir::GeometryError::OperationFailed(
-                "realize_solid_sdf must route through ingest_mesh_at_resolution".into(),
-            ))
-        }
-        fn ingest_mesh_at_resolution(
-            &mut self,
-            mesh: &reify_ir::Mesh,
-            resolution: reify_ir::VoxelResolution,
-        ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-            self.ingested
-                .lock()
-                .unwrap()
-                .push((resolution, mesh.clone()));
-            Ok(reify_ir::GeometryHandle {
-                id: reify_ir::GeometryHandleId(42),
-                repr: None,
-            })
         }
     }
 
@@ -1092,8 +1021,9 @@ mod tests {
                 tolerances: tolerances.clone(),
                 fail_below,
             }),
-            Box::new(MeshRecordingVoxelizerKernel {
-                ingested: ingested.clone(),
+            Box::new(RecordingVoxelizerKernel {
+                log: ingested.clone(),
+                fail_ingest: false,
             }),
             "gamma-chord-recipe",
         );
@@ -1148,17 +1078,34 @@ mod tests {
     /// at the boundary where half the voxel size equals the ceiling.
     #[test]
     fn realize_solid_sdf_at_never_tessellates_coarser_than_the_fixed_chord() {
+        use std::cmp::Ordering::{Equal, Greater};
+
         use reify_ir::VoxelResolution::{HonestFloor, TargetVoxelSize};
 
         let ceiling = super::MAX_TESSELLATION_CHORD_TOLERANCE;
         let cases = [
             // Honest-floor voxel 2/64 m: half of it is far above the ceiling.
-            (HALF_EXTENT_OF_2M_CUBE, HonestFloor),
+            (HALF_EXTENT_OF_2M_CUBE, HonestFloor, Greater),
             // Half of the 2e-4 voxel is exactly the ceiling.
-            (HALF_EXTENT_OF_2MM_CUBE, TargetVoxelSize(2e-4)),
+            (HALF_EXTENT_OF_2MM_CUBE, TargetVoxelSize(2e-4), Equal),
         ];
 
-        for (half_extent, request) in cases {
+        for (half_extent, request, half_voxel_vs_ceiling) in cases {
+            // The kernel must SERVE the request, with half a voxel where the
+            // case says: an unservable request is also voxelized at the
+            // ceiling, so without this the case could pass without ever
+            // exercising it.
+            let half_voxel = kernel_policy(half_extent, request)
+                .unwrap_or_else(|e| panic!("{request:?} must be servable here: {e}"))
+                .voxel_size
+                / 2.0;
+            assert_eq!(
+                half_voxel.partial_cmp(&ceiling),
+                Some(half_voxel_vs_ceiling),
+                "{request:?} on a cube of half-extent {half_extent}: half the voxel size \
+                 {half_voxel} must compare as {half_voxel_vs_ceiling:?} to the ceiling {ceiling}"
+            );
+
             let run = run_chord_recipe(half_extent, None, request);
 
             assert_eq!(
@@ -1178,13 +1125,25 @@ mod tests {
     /// rejects a request there is no voxel size to derive a chord from, so the
     /// recipe hands the unrefined mesh to the voxelizer, which stays the one
     /// place that rejects it.
+    ///
+    /// Only the too-fine request can fail this test through a refinement: its
+    /// half voxel size is far below the ceiling, so a recipe that took the
+    /// voxel size from the request without asking whether the kernel can serve
+    /// it would send the tessellator a runaway chord. The other two requests
+    /// derive a chord at or above the ceiling (or none at all) even then.
     #[test]
     fn realize_solid_sdf_at_unservable_request_is_voxelized_unrefined() {
         use reify_ir::VoxelResolution::{MinFeature, TargetVoxelSize};
 
         let ceiling = super::MAX_TESSELLATION_CHORD_TOLERANCE;
-        // Too coarse (four 1e-3 voxels do not fit the 2 mm extent), and malformed.
-        for request in [TargetVoxelSize(1e-3), MinFeature(f64::NAN)] {
+        for request in [
+            // Too coarse: four 1e-3 voxels do not fit the 2 mm extent.
+            TargetVoxelSize(1e-3),
+            // Malformed.
+            MinFeature(f64::NAN),
+            // Too fine: about 4000 voxels per axis is far over the dense-grid budget.
+            TargetVoxelSize(1e-6),
+        ] {
             assert!(
                 kernel_policy(HALF_EXTENT_OF_2MM_CUBE, request).is_err(),
                 "{request:?} must be unservable on a 2 mm cube for this test to mean anything"
@@ -1228,6 +1187,87 @@ mod tests {
             run.ingested.is_empty(),
             "the coarse mesh must not be voxelized as a fallback; ingested {} mesh(es)",
             run.ingested.len()
+        );
+    }
+
+    /// Run `f`, capturing the `warn` events the recipe logs while it runs.
+    fn capturing_recipe_warnings<T>(f: impl FnOnce() -> T) -> (T, reify_test_support::Capture) {
+        let (subscriber, capture) =
+            reify_test_support::CapturingSubscriberBuilder::new(tracing::Level::WARN)
+                .target_prefix("reify_eval::realize_solid_sdf")
+                .build();
+        (tracing::subscriber::with_default(subscriber, f), capture)
+    }
+
+    /// **A refused refinement is reported to the caller who asked for it.**
+    /// Under a request-driven resolution the fine chord is a consequence of
+    /// the caller's request, so its refusal is logged with that request and
+    /// chord, instead of degrading as anonymously as a build with no OpenVDB.
+    #[test]
+    fn realize_solid_sdf_at_refused_refinement_is_warned_for_a_requested_resolution() {
+        let request = reify_ir::VoxelResolution::TargetVoxelSize(1e-4);
+
+        let (run, warnings) = capturing_recipe_warnings(|| {
+            run_chord_recipe(
+                HALF_EXTENT_OF_2MM_CUBE,
+                Some(super::MAX_TESSELLATION_CHORD_TOLERANCE),
+                request,
+            )
+        });
+
+        assert_eq!(
+            run.tolerances.last(),
+            Some(&(1e-4 / 2.0)),
+            "the refinement must have been attempted, or the warning below proves nothing"
+        );
+        assert_eq!(
+            warnings.count(),
+            1,
+            "a refused refinement must be logged exactly once; got {:?}",
+            warnings.messages()
+        );
+        let events = warnings.fields_by_event();
+        let fields = &events[0];
+        assert_eq!(fields["resolution"], format!("{request:?}"));
+        assert_eq!(fields["chord"].parse::<f64>(), Ok(1e-4 / 2.0));
+        assert!(
+            fields["error"].contains("synthetic refusal"),
+            "the warning must carry the tessellator's own error; got {:?}",
+            fields["error"]
+        );
+    }
+
+    /// **A refused refinement stays silent under the default resolution.** A
+    /// part small enough for the honest-floor grid to want a finer mesh was
+    /// not asked for anything by the caller, so there is no choice to blame
+    /// and the refusal degrades like any other environment failure.
+    #[test]
+    fn realize_solid_sdf_at_refused_refinement_is_silent_under_honest_floor() {
+        let ceiling = super::MAX_TESSELLATION_CHORD_TOLERANCE;
+
+        let (run, warnings) = capturing_recipe_warnings(|| {
+            run_chord_recipe(
+                HALF_EXTENT_OF_2MM_CUBE,
+                Some(ceiling),
+                reify_ir::VoxelResolution::HonestFloor,
+            )
+        });
+
+        assert!(
+            run.tolerances.last().is_some_and(|&chord| chord < ceiling),
+            "the refinement must have been attempted, or the silence below proves nothing; \
+             tessellated at {:?}",
+            run.tolerances
+        );
+        assert!(
+            run.result.is_none(),
+            "a refused refinement must degrade to None"
+        );
+        assert_eq!(
+            warnings.count(),
+            0,
+            "HonestFloor carries no caller choice to blame; got {:?}",
+            warnings.messages()
         );
     }
 
