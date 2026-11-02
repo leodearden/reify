@@ -1,5 +1,4 @@
-# Generated tree-sitter artifacts (src/parser.c, grammar.json, node-types.json
-# and their stamp/lock/tmp metadata) are owned by the root .gitignore's
+# Generated tree-sitter artifacts are owned by the root .gitignore's
 # "Tree-sitter generated" block — add new generated artifacts there, not here.
 # This file holds only the module-local entries below.
 
