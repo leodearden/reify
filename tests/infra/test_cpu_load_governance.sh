@@ -157,10 +157,27 @@
 #                                       ~200+ load-avg host, stall_fraction=0.001).
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
-#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
-#                                       ROW4 default warmup+measure+4 if unset)
-#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
+#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4).
+#                                       ROW4 clamps it UP to the deadline-derived
+#                                       cap (ready-deadline + warmup + measure + 4),
+#                                       which is also its default when unset; ROW4
+#                                       stops its burns explicitly after the AFTER
+#                                       sample, so the cap never lengthens a run
+#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp, counted from both
+#                                       burns reporting ready, before sampling
+#                                       (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
+#   REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S  ROW4 anti-hang bound on waiting for BOTH
+#                                       burns to report ready through the fixture's
+#                                       --ready-file (default 30; task 9698).
+#                                       Technique T (docs/prds/infra-test-wallclock-
+#                                       deflake.md): it only keeps a burn that never
+#                                       reports from hanging the suite and NEVER
+#                                       discriminates pass from fail — when it
+#                                       expires ROW4-1 SKIPs, there being no window
+#                                       to measure.  Generous by an order of
+#                                       magnitude over a governed launch, and the
+#                                       base of the ROW4 burn cap above
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
 #                                       correct stub sleep seconds (default 6;
 #                                       strictly ABOVE the retired 5 s bound,
@@ -589,18 +606,24 @@ fi
 # instead bounds the whole subtree's CPU footprint for the pool while leaving
 # each child scope's cpu.max=max.
 #
-# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
-# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
-# TIME-budget throttle that never forces sibling threads onto shared per-CPU
-# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
-# runqueue.  With 2×confine-cores runnable threads spread across a large idle
-# box, weight never bites and the shared quota drains ~FCFS → ~50/50
-# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
-# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
-# per-CPU co-residency weight arbitration requires; the parent quota stays as
-# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
-# foreign load and concurrent pool runs on the same CPUs only deepen
-# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling, refined by task
+# 9698): the quota alone does NOT reproduce the weight ratio — CPUQuota is an
+# aggregate TIME-budget throttle that never forces sibling threads onto shared
+# per-CPU runqueues, and cpu.weight only arbitrates between siblings
+# CO-RESIDENT on a runqueue.  With 2×confine-cores runnable threads spread
+# across a large idle box, weight never bites and the shared quota drains ~FCFS
+# → ~50/50 (empirical false-RED, esc-4926-3).  Confining the burns to
+# confine-cores CPUs (CONFINE_CPUS below) makes co-residency POSSIBLE, but a
+# set-mask does not make it HAPPEN: with every spinner free to run on any
+# listed CPU, where the load balancer puts each one decides the split (one
+# merge and one task spinner per CPU gives 0.75, both merge spinners on one CPU
+# gives 0.50).  Co-residency therefore comes from per-WORKER pinning:
+# cpu_load_fixture.sh --pin-cpus pins worker i of a role to CPUS[i mod n],
+# identically for both roles, so every listed CPU hosts one merge and one task
+# worker whatever the balancer does (_row4_pin_coresident checks it on the live
+# workers).  The parent quota stays as the aggregate footprint bound.  Foreign
+# load on those CPUs shrinks the parent's time there, but it can no longer
+# re-place a spinner onto a CPU the other role does not share.
 #
 # _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
 # I/O beyond the fixed knob read, never nproc) so CONFINE-2's
@@ -2521,11 +2544,24 @@ fi
 #   Contention: 2×NWORKERS total workers (W merge + W task, 2W > nproc)
 #   ensures real CPU contention so cgroup weight scheduling fires.
 #
+#   Placement (task 9698): each WORKER is pinned to one CPU of the confined
+#   pin list, round-robin and identically for both roles (cpu_load_fixture.sh
+#   --pin-cpus), so every pinned CPU hosts one merge and one task worker and
+#   cpu.weight arbitrates between them on a shared runqueue — the 3:1 split no
+#   longer depends on where the load balancer puts the spinners.  ROW4-PIN-LIVE
+#   asserts that placement on the live workers, and it is re-checked at the
+#   window's close.
+#
 # §8 Row 4 assertion:
 #   merge_share = Δmerge / (Δmerge + Δtask)  ≥  W_merge/(W_merge+W_task) - tol
 #              = 0.75 − 0.10 = 0.65  (STATED proportional floor, not 0)
 #   Δ sampled over a steady-state window (warm-up + measure), not the whole
-#   burn, so the startup stagger does not bias the share (step-12 fix).
+#   burn.  The window opens WARMUP_S after BOTH burns report ready (each
+#   fixture's --ready-file), not WARMUP_S after launch: a governed launch makes
+#   several user-manager D-Bus round-trips before its fixture even starts, so a
+#   launch-anchored sleep let one role run alone, and bank uncontended CPU,
+#   while the other was still starting (step-12 fix, made structural by task
+#   9698).
 #
 # Merge-bypass smoke (Cycle ROW4-BYPASS, §8 row 9 echo):
 #   DF_VERIFY_ROLE=merge + avg10=99 PSI fixture → cpu-admit.sh admit exits 0
@@ -2547,18 +2583,31 @@ _ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.10}"
 # burn (including the asymmetric startup stagger — scope creation + worker
 # spawn for each role) let one role bank uncontended CPU before its sibling's
 # scope existed, biasing merge_share DOWN (observed 0.639 vs floor 0.65 — a
-# ~0.01 false-RED).  Fix: launch both burns, wait WARMUP_S for both to ramp,
-# THEN bracket the usage_usec delta over a MEASURE_S steady-state window while
-# both are still burning.  Mirrors the ROW2_3 warm-up design + PRD §11 Q5.
+# ~0.01 false-RED).  Fix: launch both burns, wait for BOTH to report ready,
+# let them ramp for WARMUP_S, THEN bracket the usage_usec delta over a
+# MEASURE_S steady-state window while both are still burning.  Mirrors the
+# ROW2_3 warm-up design + PRD §11 Q5.
 _ROW4_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW4_WARMUP_S:-3}"
 _ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
-# Burn must outlast warm-up + measure window + a settle margin so the AFTER
-# sample lands while BOTH roles are still contending (never during teardown).
+# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
+# wallclock-deflake.md).  Waiting for both burns to report ready is bounded
+# only so a burn that never reports cannot hang the suite; it never
+# discriminates pass from fail.  When it expires ROW4-1 SKIPs as a
+# measurement-integrity failure, like the slice-discovery SKIP below.
+_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
+# Burn must outlast readiness wait + warm-up + measure window + a settle margin
+# so the AFTER sample lands while BOTH roles are still contending (never during
+# teardown).  Derived from the readiness deadline so that holds by construction:
+# every burn starts at or after launch and the window opens no later than
+# launch + deadline, so however the two roles' start times stagger, the
+# earliest burn still ends after the window closes.  ROW4 stops its burns
+# explicitly right after the AFTER sample (_row4_stop_burns), so the larger cap
+# costs no wall time.
 # Clamp up if a shared BURN_S override (used by ROW1/ROW2_3 for speed) is too
 # small for ROW4's steady-state window — otherwise the AFTER sample would land
 # during teardown and re-introduce the stagger bias this fix removes.
-_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))}"
-_ROW4_BURN_MIN=$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+_ROW4_BURN_MIN=$(( _ROW4_READY_DEADLINE_S + _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW4_BURN_MIN}"
 [ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
 # Quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
 _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
@@ -2755,8 +2804,9 @@ assert "NAMING-3: task/merge slice names are distinct" \
 # ----------------------------------------------------------------------------
 # H5 (task 4926): confining the SHARED PARENT slice's CPUQuota (never the
 # child scope/slice itself, C-G1) makes the two ROW4 child slices split ONE
-# bounded budget, and pinning the burns to confine-cores CPUs (CONFINE_CPUS,
-# esc-4926-3 ruling) creates the per-CPU runqueue co-residency that
+# bounded budget, and pinning each burn WORKER to one of the confine-cores CPUs
+# (CONFINE_CPUS, esc-4926-3 ruling; per worker since task 9698 — see MECHANISM
+# above) creates the per-CPU runqueue co-residency that
 # cpu.weight arbitration requires — TOGETHER these make the proportional
 # ratio host-load-independent (PRD §1 G6 #3 as revised; quota alone drains
 # weight-blind ~FCFS → ~50/50 false-RED).
@@ -3246,68 +3296,120 @@ else
     #     scale. Using nproc workers here (as the pre-H5 unconfined design
     #     did) against a small confined cap over-oversubscribes by nproc/
     #     confine-cores×, which empirically degrades weight-ratio convergence.
-    #     `taskset -c` pins both roles' burns to the SAME confine-cores CPUs
-    #     (esc-4926-3): affinity inherits through cpu-governed-exec's
-    #     `systemd-run --user --scope` (the payload stays a direct child), and
-    #     the co-residency it forces is what lets cpu.weight arbitrate at all
-    #     — unpinned, the 2W threads spread across the idle box and the quota
-    #     drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is a TEST-
-    #     HARNESS mechanism only: production cpu-governed-exec stays unpinned
-    #     and work-conserving (C-G1 untouched).
+    #     Each WORKER is pinned to ONE of the confine-cores CPUs, round-robin
+    #     and identically for both roles (task 9698: _row4_launch_role_burn →
+    #     cpu_load_fixture.sh --pin-cpus; affinity still inherits through
+    #     cpu-governed-exec's `systemd-run --user --scope`, the payload staying
+    #     a direct child).  Every pinned CPU then hosts one merge and one task
+    #     worker, and that shared per-CPU runqueue is what lets cpu.weight
+    #     arbitrate at all.  A set-mask over all the workers (esc-4926-3's
+    #     first form) only made it possible: the load balancer then decided the
+    #     split.  Unpinned altogether, the 2W threads spread across the idle box
+    #     and the quota drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is
+    #     a TEST-HARNESS mechanism only: production cpu-governed-exec stays
+    #     unpinned and work-conserving (C-G1 untouched).
     _ROW4_W="$_ROW4_CONFINE_W"  # W per role; 2W = 2*confine-cores → 2× oversubscription
+    _ROW4_READY_TASK="$WORK/row4-ready-task"
+    _ROW4_READY_MERGE="$WORK/row4-ready-merge"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" task "$_ROW4_CONFINE_CPUS" "$_ROW4_W" \
+        "$_ROW4_BURN_S" "$_ROW4_READY_TASK"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_W" \
+        "$_ROW4_BURN_S" "$_ROW4_READY_MERGE"
 
-    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role task -- \
-        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW4_TASK_BG=$!
+    # Everything the window fills in starts as the "unavailable" sentinel, so a
+    # window that never opens leaves the bracket below with nothing to judge
+    # (the ROW4-1 chain SKIPs it) rather than with a coerced number.
+    _ROW4_TASK_BEFORE="unavailable"
+    _ROW4_MERGE_BEFORE="unavailable"
+    _ROW4_TASK_AFTER="unavailable"
+    _ROW4_MERGE_AFTER="unavailable"
+    _ROW4_HOST_AVG10="unavailable"
+    _ROW4_READY=0
+    _ROW4_PIN_LIVE_RC=1
+    _ROW4_PIN_HELD=0
+    _ROW4_PIN_TASK_CPUS=""
+    _ROW4_PIN_MERGE_CPUS=""
+    _ROW4_PIN_TASK_CPUS_END=""
+    _ROW4_PIN_MERGE_CPUS_END=""
 
-    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role merge -- \
-        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW4_MERGE_BG=$!
+    # (d) Open the window on READINESS, not on launch.  Each governed launch
+    #     makes several user-manager D-Bus round-trips before its fixture even
+    #     starts, so a launch-anchored sleep let one role run alone — banking
+    #     uncontended CPU — while the other was still starting.  A role reports
+    #     ready (its --ready-file) once all its workers are up and pinned; the
+    #     deadline is an anti-hang bound only (technique T), never what
+    #     discriminates, and when it expires ROW4-1 SKIPs below.
+    if _row4_await_ready "$_ROW4_READY_DEADLINE_S" "$_ROW4_READY_TASK" "$_ROW4_READY_MERGE"; then
+        _ROW4_READY=1
 
-    # (d) Warm-up: let BOTH burns ramp to full contention before sampling, so
-    #     the startup stagger (scope creation + worker spawn) is OUTSIDE the
-    #     measured window and cannot bank uncontended CPU into either delta.
-    sleep "$_ROW4_WARMUP_S"
+        # (d1) Co-residency, ASSERTED on the live workers: every pinned CPU
+        #      hosts one task and one merge worker, the property the 3:1 split
+        #      is only guaranteed under.  A violation here is a harness
+        #      regression (the pinning did not take), not load, so it is a FAIL
+        #      — and ROW4-1 then SKIPs below rather than double-report it.
+        _ROW4_PIN_TASK_CPUS="$(_row4_worker_affinities "$_ROW4_READY_TASK" 2>/dev/null || true)"
+        _ROW4_PIN_MERGE_CPUS="$(_row4_worker_affinities "$_ROW4_READY_MERGE" 2>/dev/null || true)"
+        _ROW4_PIN_LIVE_RC=0
+        _row4_pin_coresident "$_ROW4_PIN_TASK_CPUS" "$_ROW4_PIN_MERGE_CPUS" \
+            || _ROW4_PIN_LIVE_RC=$?
+        assert "ROW4-PIN-LIVE: each pinned CPU hosts one task and one merge worker (task=${_ROW4_PIN_TASK_CPUS//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS//$'\n'/,})" \
+            test "$_ROW4_PIN_LIVE_RC" -eq 0
 
-    # (e) Sample usage_usec at the START of the steady-state window.
-    #     Slices are persistent; usage_usec accumulates — must use before/after delta.
-    _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
+        # (d2) Warm-up: let BOTH burns ramp to full contention before sampling,
+        #      so the residual startup stagger is OUTSIDE the measured window
+        #      and cannot bank uncontended CPU into either delta.
+        sleep "$_ROW4_WARMUP_S"
 
-    # (f) Hold the steady-state measurement window (both still burning).
-    sleep "$_ROW4_MEASURE_S"
+        # (e) Sample usage_usec at the START of the steady-state window.
+        #     Slices are persistent; usage_usec accumulates — must use before/after delta.
+        _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+        _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
 
-    # (g) Sample usage_usec at the END of the steady-state window — taken WHILE
-    #     both roles are still contending (burn outlasts warmup+measure+margin),
-    #     so the delta reflects pure steady-state weight scheduling, not teardown.
-    _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
+        # (f) Hold the steady-state measurement window (both still burning).
+        sleep "$_ROW4_MEASURE_S"
 
-    # (g2) Sample HOST-WIDE PSI at the same instant the window closes, before
-    #      the reap below — as close to the bracketed interval as possible, so
-    #      the sample describes the interval that was actually measured rather
-    #      than teardown.  Host-wide (not slice-relative) is deliberate: the
-    #      ROW4 parent is quota-capped, and a cgroup's `some` pressure counts
-    #      runnable-but-not-running time, which INCLUDES quota throttling — so
-    #      a quota-capped slice always shows high stall and slice-relative PSI
-    #      is useless as a foreign-load discriminator here.  What actually
-    #      breaks this measurement is other work contending for the pinned
-    #      CPUs, which is exactly what host-wide PSI measures.
-    _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+        # (g) Sample usage_usec at the END of the steady-state window — taken
+        #     WHILE both roles are still contending (the burn cap outlasts
+        #     ready-deadline+warmup+measure+margin), so the delta reflects pure
+        #     steady-state weight scheduling, not teardown.
+        _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+        _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
 
-    # (h) Reap both burns (natural completion or timeout) before cleanup.
-    wait "$_ROW4_TASK_BG" 2>/dev/null || true
-    wait "$_ROW4_MERGE_BG" 2>/dev/null || true
+        # (g2) Sample HOST-WIDE PSI at the same instant the window closes,
+        #      before the stop below — as close to the bracketed interval as
+        #      possible, so the sample describes the interval that was actually
+        #      measured rather than teardown.  Host-wide (not slice-relative) is
+        #      deliberate: the ROW4 parent is quota-capped, and a cgroup's
+        #      `some` pressure counts runnable-but-not-running time, which
+        #      INCLUDES quota throttling — so a quota-capped slice always shows
+        #      high stall and slice-relative PSI is useless as a foreign-load
+        #      discriminator here.  What actually breaks this measurement is
+        #      other work contending for the pinned CPUs, which is exactly what
+        #      host-wide PSI measures.
+        _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+
+        # (g3) Re-check co-residency at the window's close, while both burns are
+        #      still alive: the same predicate on the same workers, as the
+        #      invariant's second enforcement point.  A worker that vanished
+        #      inside the window reads "unavailable", which can never be
+        #      co-resident — a loss of measurement integrity (the ROW4-1 chain
+        #      SKIPs it), not a governance verdict.
+        _ROW4_PIN_TASK_CPUS_END="$(_row4_worker_affinities "$_ROW4_READY_TASK" 2>/dev/null || true)"
+        _ROW4_PIN_MERGE_CPUS_END="$(_row4_worker_affinities "$_ROW4_READY_MERGE" 2>/dev/null || true)"
+        if _row4_pin_coresident "$_ROW4_PIN_TASK_CPUS_END" "$_ROW4_PIN_MERGE_CPUS_END"; then
+            _ROW4_PIN_HELD=1
+        fi
+    fi
+
+    # (h) Stop both burns now that the AFTER sample is taken (or the window never
+    #     opened).  Explicit, rather than waiting out the burn cap — which is
+    #     sized to outlive even a slow-to-ready window, so a typical run ends
+    #     well before it.
+    _row4_stop_burns
 
     # An unreadable endpoint stays OUT of the numeric coercion (task 5998
     # amendment).  Initializing the deltas to 0 instead made a FAILED cpu.stat
@@ -3335,8 +3437,9 @@ else
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
     # Asserts the C-G2 proportional cpu.weight enforcement under contention,
-    # measured INSIDE the confined parent-slice budget with the burns pinned
-    # to the confined CPUs (H5 + esc-4926-3).
+    # measured INSIDE the confined parent-slice budget with every burn worker
+    # pinned to one of the confined CPUs (H5 + esc-4926-3; per worker since
+    # task 9698).
     #
     # SCOPE OF THE CONFINEMENT (task 5998 — corrects the earlier claim that
     # pinning makes this bound host-load-independent, and the "foreign load
@@ -3357,12 +3460,21 @@ else
     # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL. INHERITED VERBATIM (G6) --
     # no new number, tol untouched (re-tightening reopens the #4656 flake class).
     #
+    # Skip when no window was measured at all (task 9698): the burns never
+    # reported ready within the anti-hang bound, or ROW4-PIN-LIVE already failed
+    # — that FAIL reds the suite on its own, so the share of a mis-placed burn is
+    # not reported a second time.
+    #
     # Skip if slice discovery failed (empty rel-path — probe timed out/errored) or
     # both deltas are zero (measurement inconclusive).  Without this guard an empty
     # rel-path causes cgroup-usage to read the root cgroup, both roles get the same
     # usage_usec, merge_share ≈ 0.5 which is below the 0.65 floor — a false-RED.
     # These are measurement-integrity guards (not load-based) and are retained.
-    if [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
+    if [ "$_ROW4_READY" -eq 0 ]; then
+        echo "  SKIP ROW4-1: burns did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no window to measure"
+    elif [ "$_ROW4_PIN_LIVE_RC" -ne 0 ]; then
+        echo "  SKIP ROW4-1: ROW4-PIN-LIVE failed (task=${_ROW4_PIN_TASK_CPUS//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS//$'\n'/,}) — that FAIL already reds the suite; the share of a mis-placed burn is not a governance verdict"
+    elif [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
     elif [ "$_ROW4_TASK_DELTA" = "unavailable" ] || \
          [ "$_ROW4_MERGE_DELTA" = "unavailable" ]; then
@@ -3374,6 +3486,13 @@ else
         echo "  SKIP ROW4-1: cpu.stat read failed (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA}) — no measurement to judge"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
+    elif [ "$_ROW4_PIN_HELD" -eq 0 ]; then
+        # Co-residency held when the window opened (ROW4-PIN-LIVE) but not when
+        # it closed: a worker exited inside the window — the burn ended early or
+        # was reaped — so part of it ran with one role short and the split is
+        # not the steady-state one this row judges.  Measurement integrity, like
+        # the arms above, and deliberately NOT load-based.
+        echo "  SKIP ROW4-1: a pinned worker exited inside the measured window (co-residency not held at window close: task=${_ROW4_PIN_TASK_CPUS_END//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS_END//$'\n'/,}) — teardown contaminates the split"
     elif _row4_share_inconclusive "$_ROW4_MERGE_DELTA" "$_ROW4_TASK_DELTA" \
             "$_ROW4_W_MERGE" "$_ROW4_W_TASK" "$_ROW4_TOL" \
             "$_ROW4_HOST_AVG10" "$_ROW4_QUIET_CEILING"; then
@@ -3393,7 +3512,7 @@ else
         # REIFY_CPU_GOV_TEST_QUIET_CEILING.
         echo "  SKIP ROW4-1: inconclusive — sub-floor merge_share (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},tol=${_ROW4_TOL}) measured on a NON-QUIET box (host avg10=${_ROW4_HOST_AVG10} >= ceiling=${_ROW4_QUIET_CEILING}) — foreign load on the pinned CPUs dilutes cpu.weight proportionality, not a governance failure"
     else
-        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},host avg10=${_ROW4_HOST_AVG10})" \
             python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')
