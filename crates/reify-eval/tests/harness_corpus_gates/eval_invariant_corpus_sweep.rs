@@ -811,6 +811,15 @@ const GATES: &[InvariantGate] = &[
     },
 ];
 
+/// The gate declared for `id`. An undeclared `id` panics naming it, so a test
+/// reading a gate's declaration cannot silently read nothing.
+fn gate_for(id: InvariantId) -> &'static InvariantGate {
+    GATES
+        .iter()
+        .find(|g| g.id == id)
+        .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
+}
+
 /// INV-EVAL-5's adapter: ONE `Engine` wrapper call, mapped to [`Finding`].
 ///
 /// Deliberately a separate named function from its sibling below: one adapter
@@ -956,12 +965,15 @@ fn one_corpus_evaluation_feeds_both_invariant_checkers() {
 /// Every invariant checks the whole corpus, so INV-EVAL-4 also checks the
 /// reify-eval fixtures, not just `examples/`.
 ///
-/// Non-vacuous: `fea_body_cantilever.ri` really diverges, so INV-EVAL-4 must
-/// REPORT it here, and the same single evaluation is also checked, clean, for
-/// INV-EVAL-5.
+/// Coverage is structural: [`check_file`] evaluates every gate for every file,
+/// so a non-`examples/` file's outcome must carry an entry for each of them.
+/// This rests on no live divergence, so fixing the tracked compute-dispatch
+/// defect behind every INV-EVAL-4 residual cannot void it. That the INV-EVAL-4
+/// checker fires at all is
+/// `harness_cache::snapshot_cache_divergence_gate::seeded_divergence_is_reported`.
 #[test]
 fn snapshot_cache_divergence_checks_the_reify_eval_fixtures() {
-    let rel = "crates/reify-eval/tests/fixtures/fea_body_cantilever.ri";
+    let rel = "crates/reify-eval/tests/fixtures/realization_read_box.ri";
     let corpus = corpus_files();
     let file = corpus
         .iter()
@@ -972,29 +984,14 @@ fn snapshot_cache_divergence_checks_the_reify_eval_fixtures() {
         panic!("{rel} must be EVALUATED, not skipped for a compile error");
     };
 
-    let divergent: Vec<reify_core::ValueCellId> = outcome
-        .findings(InvariantId::SnapshotCacheDivergence)
-        .iter()
-        .map(|f| f.cell.clone())
-        .collect();
+    let checked: Vec<InvariantId> = outcome.per_invariant.iter().map(|(id, _)| *id).collect();
     assert_eq!(
-        divergent,
-        vec![reify_core::ValueCellId::new("FeaBodyCantilever", "result")],
-        "INV-EVAL-4 must check {rel} and report its divergent cell"
-    );
-
-    let divergence = GATES
-        .iter()
-        .find(|g| g.id == InvariantId::SnapshotCacheDivergence)
-        .expect("INV-EVAL-4 gate declared");
-    assert!(
-        divergence.residual_reason(rel).is_some(),
-        "{rel}'s divergence must be a declared INV-EVAL-4 residual, or its shard reds"
-    );
-
-    assert!(
-        outcome.findings(InvariantId::StaleUndef).is_empty(),
-        "{rel} must also be checked, clean, for INV-EVAL-5"
+        checked,
+        vec![
+            InvariantId::StaleUndef,
+            InvariantId::SnapshotCacheDivergence
+        ],
+        "{rel} must be checked for every invariant, INV-EVAL-4 included"
     );
 }
 
@@ -1007,14 +1004,8 @@ fn snapshot_cache_divergence_checks_the_reify_eval_fixtures() {
 /// declared it.
 #[test]
 fn residual_lists_and_bypass_keys_stay_per_invariant() {
-    let gate = |id: InvariantId| {
-        GATES
-            .iter()
-            .find(|g| g.id == id)
-            .unwrap_or_else(|| panic!("no gate declared for {id:?}"))
-    };
-    let stale = gate(InvariantId::StaleUndef);
-    let divergence = gate(InvariantId::SnapshotCacheDivergence);
+    let stale = gate_for(InvariantId::StaleUndef);
+    let divergence = gate_for(InvariantId::SnapshotCacheDivergence);
 
     // (a) The two residual lists are SEPARATE. Each of these files is exempt
     //     from ONE invariant and must still be CHECKED for the other — a single
@@ -1090,8 +1081,9 @@ fn residual_lists_and_bypass_keys_stay_per_invariant() {
 /// coverage.
 ///
 /// Driven through [`GateTally::record`] for each real gate in [`GATES`], with
-/// two controls per gate: a residual that still fires is a printed skip, and an
-/// undeclared file with findings is an offender.
+/// three controls per gate: a residual that still fires is a printed skip, an
+/// undeclared file with findings is an offender, and a clean undeclared file
+/// leaves the tally empty.
 #[test]
 fn a_declared_residual_without_findings_fails_every_gate() {
     let finding = || Finding {
@@ -1143,6 +1135,19 @@ fn a_declared_residual_without_findings_fails_every_gate() {
         assert!(
             matches!(sections.as_slice(), [FailureSection::Offenders(_)]),
             "{}: an undeclared file with findings must be an offender: {sections:#?}",
+            gate.label
+        );
+
+        // (iv) Control: a clean undeclared file — every clean corpus file's
+        //      path — records nothing at all.
+        let mut clean = GateTally::default();
+        clean.record(gate, undeclared, &[]);
+        assert!(
+            clean.failure_sections().is_empty()
+                && clean.residual_skips.is_empty()
+                && clean.offenders.is_empty()
+                && clean.stale_residuals.is_empty(),
+            "{}: a clean undeclared file must leave the tally empty",
             gate.label
         );
     }
@@ -1713,10 +1718,7 @@ fn selector_consumer_premise_fixture_is_swept_by_exactly_one_shard() {
 
     // (b) That shard genuinely evaluates it: no compile-error skip, no residual
     //     exemption, zero stale-Undef findings.
-    let stale = GATES
-        .iter()
-        .find(|g| g.id == InvariantId::StaleUndef)
-        .expect("INV-EVAL-5 gate declared");
+    let stale = gate_for(InvariantId::StaleUndef);
     assert!(
         stale.residual_reason(rel).is_none(),
         "{rel} must NOT be residual-exempt — the premise is that it is genuinely clean"

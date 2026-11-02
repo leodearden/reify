@@ -250,9 +250,10 @@ meet it:**
   `REIFY_SNAPSHOT_CACHE_AUDIT_BYPASS` break-glass and its stale-residual FAIL;
   INV-EVAL-5 keeps neither. Harmonising either direction is a semantic change.
 
-  Provenance: both bullets above were reversed by task #7560. INV-EVAL-4 now
-  sweeps the full union, a stale residual fails either invariant, and INV-EVAL-5
-  still has no bypass knob.
+  Provenance: task #7560 widened INV-EVAL-4 to the full union and made a stale
+  residual fatal for both invariants, so the code no longer names those two
+  non-actions; the bypass asymmetry (INV-EVAL-4 only) was kept, and
+  `InvariantGate::bypass_env` still names it.
 - `NON_PRISMATIC_MULTI_CASE_BODY_SOURCE` is built by two different tests in
   `solve_elastic_static_body_e2e.rs`. Merging them would undo the deliberate
   #4152 split AND serialise two OCCT+gmsh builds into one longer straggler — a
