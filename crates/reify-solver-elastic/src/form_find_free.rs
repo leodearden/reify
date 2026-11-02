@@ -1761,99 +1761,6 @@ mod tests {
 
     // ── δ combined golden: triplex + isotropic membrane on top+bottom faces ──
 
-    /// Independent (faer-free) reassembly of the combined force-density matrix
-    /// D = CᵀQC (lines) + Σ_T σ_T·L_T (surface cotangent-Laplacians) at the
-    /// given geometry, as a dense n×n array indexed as [row][col].
-    /// Inlines the cotangent-Laplacian formula to avoid depending on the
-    /// private `form_find::triangle_cotangent_laplacian` — this is an
-    /// independent verification path (the honest signal), not a reuse test.
-    #[allow(clippy::needless_range_loop)]
-    fn reassemble_d_free(
-        n: usize,
-        members: &[(usize, usize)],
-        q: &[f64],
-        surfaces: &[(usize, usize, usize)],
-        sigmas: &[f64],
-        nodes: &[[f64; 3]],
-    ) -> Vec<Vec<f64>> {
-        let mut d = vec![vec![0.0_f64; n]; n];
-        // Line members (CᵀQC rank-1 per member).
-        for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-            d[j][j] += qi;
-            d[k][k] += qi;
-            d[j][k] -= qi;
-            d[k][j] -= qi;
-        }
-        // Surface cotangent-Laplacian contributions (inlined formula).
-        // For triangle (i,j,k), edge weight opposite vertex v is (σ/2)·cot(θ_v)
-        // where cot(θ_v) = (e_a · e_b) / (2·Area), e_a/e_b the two edges from v.
-        let vsub = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
-            [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-        };
-        let vdot =
-            |a: [f64; 3], b: [f64; 3]| -> f64 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] };
-        let vcross = |a: [f64; 3], b: [f64; 3]| -> [f64; 3] {
-            [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ]
-        };
-        for (&(gi, gj, gk), &s) in surfaces.iter().zip(sigmas.iter()) {
-            let pi = nodes[gi];
-            let pj = nodes[gj];
-            let pk = nodes[gk];
-            let eij = vsub(pj, pi);
-            let eik = vsub(pk, pi);
-            let ejk = vsub(pk, pj);
-            let cross = vcross(eij, eik);
-            let two_area = vdot(cross, cross).sqrt();
-            let cot_i = vdot(eij, eik) / two_area;
-            let cot_j = vdot(vsub(pi, pj), ejk) / two_area;
-            let cot_k = vdot(vsub(pi, pk), vsub(pj, pk)) / two_area;
-            let half_s = 0.5 * s;
-            let w_ij = half_s * cot_k;
-            let w_jk = half_s * cot_i;
-            let w_ki = half_s * cot_j;
-            // Scatter each edge weight into the global D.
-            let mut add_edge = |a: usize, b: usize, w: f64| {
-                d[a][a] += w;
-                d[b][b] += w;
-                d[a][b] -= w;
-                d[b][a] -= w;
-            };
-            add_edge(gi, gj, w_ij);
-            add_edge(gj, gk, w_jk);
-            add_edge(gk, gi, w_ki);
-        }
-        d
-    }
-
-    /// Max-norm of the ALL-node equilibrium residual ‖D·x‖∞ / (1+scale).
-    /// For the free-standing case every node is free, so this checks the full
-    /// combined-D null-space condition x∈null(D(x)) at the fixed point.
-    #[allow(clippy::needless_range_loop)]
-    fn free_equilibrium_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]]) -> f64 {
-        let n = nodes.len();
-        let mut resid = 0.0_f64;
-        let mut scale = 0.0_f64;
-        for i in 0..n {
-            for axis in 0..3 {
-                let mut net = 0.0;
-                for j in 0..n {
-                    net += d[i][j] * nodes[j][axis];
-                }
-                resid = resid.max(net.abs());
-            }
-        }
-        for p in nodes {
-            for c in p {
-                scale = scale.max(c.abs());
-            }
-        }
-        resid / (1.0 + scale)
-    }
-
     /// Combined golden: triplex (3 struts + 9 cables) + isotropic membrane σ=0.2
     /// on the top {0,1,2} and bottom {3,4,5} triangles. These are exactly
     /// equilateral at the canonical prism, so the cotangent-Laplacian adds a
@@ -1958,140 +1865,10 @@ mod tests {
         );
     }
 
-    // ── gauge lock (task 6413): all_node_equilibrium_residual_relative must be
-    // GAUGE-independent — the free-standing twin of task 6119's anchored-path
-    // fix. D_combined = CᵀQC + Σ_T σ_T·L_T is exactly linear in q and σ, so an
-    // absolute stop test on the raw residual makes convergence depend on the
-    // overall force-density/stress scale, not just the physical equilibrium.
-
-    /// `D_combined = CᵀQC + Σ_T σ_T·L_T` at the canonical (symmetric) prism
-    /// geometry, for the closed-form line q and the top+bottom membrane
-    /// triangles at `sigma`, both scaled by `lambda` — the uniform gauge
-    /// change this task locks convergence against.
-    fn combined_d_at_canonical_prism(sigma: f64, lambda: f64) -> Mat<f64> {
-        let (members, _kinds) = triplex_topology();
-        let q: Vec<f64> = closed_form_q().iter().map(|v| v * lambda).collect();
-        let surfaces = prism_surfaces();
-        let sigmas = vec![sigma * lambda; surfaces.len()];
-        let nodes = canonical_prism();
-        let s = assemble_surface_matrix(6, &surfaces, &sigmas, &nodes)
-            .expect("canonical prism triangles are non-degenerate");
-        combined_force_density_matrix(&members, &q, &s)
-    }
-
-    #[test]
-    fn all_node_equilibrium_residual_is_gauge_invariant_under_uniform_scaling() {
-        // D_combined is exactly linear in q and σ, so a uniform gauge change
-        // q → λ·q, σ → λ·σ at fixed geometry scales D_combined by λ entrywise.
-        // λ = 2^20 / 2^-20 are powers of two, so the scaling is exact in
-        // IEEE-754 (an exponent-field shift, no mantissa rounding) and every
-        // downstream sum/max/divide commutes with it exactly — checked with
-        // assert_eq! on the raw f64, not a tolerance (mirrors task 6119's
-        // `free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling`
-        // in `form_find.rs` on the unmerged `task/6119` branch).
-        //
-        // MEASURED RED on pristine, this exact fixture: the un-normalised
-        // residual scales BY λ instead of staying fixed —
-        // 8.660254037844406e-2 vs 9.080934537986736e4 (ratio exactly 2^20).
-        const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
-        const LAMBDA_DOWN: f64 = 1.0 / 1_048_576.0; // 2^-20
-        let nodes = canonical_prism();
-        let d1 = combined_d_at_canonical_prism(0.2, 1.0);
-        let d_up = combined_d_at_canonical_prism(0.2, LAMBDA_UP);
-        let d_down = combined_d_at_canonical_prism(0.2, LAMBDA_DOWN);
-
-        let r1 = all_node_equilibrium_residual_relative(&d1, &nodes);
-        let r_up = all_node_equilibrium_residual_relative(&d_up, &nodes);
-        let r_down = all_node_equilibrium_residual_relative(&d_down, &nodes);
-
-        assert_eq!(
-            r1, r_up,
-            "residual must be exactly gauge-invariant: base={r1:e} λ=2^20-scaled={r_up:e}",
-        );
-        assert_eq!(
-            r1, r_down,
-            "residual must be exactly gauge-invariant: base={r1:e} λ=2^-20-scaled={r_down:e}",
-        );
-    }
-
-    #[test]
-    fn all_node_equilibrium_residual_of_all_zero_d_is_infinity_not_vacuous_zero() {
-        // A node block touched by neither a member nor a triangle makes D
-        // identically zero, so the raw numerator ‖D·x‖∞ is vacuously 0 — not
-        // because equilibrium was reached, but because nothing acts on the
-        // node at all. Returning 0.0 (the pristine behaviour) would break the
-        // outer fixed-point loop out at iteration 0 and echo the caller's
-        // unsolved guess back as "converged" — the same hole task 6119 closed
-        // on the anchored path. Must return f64::INFINITY instead.
-        //
-        // MEASURED RED on pristine: returns 0.0.
-        let nodes = canonical_prism();
-        let d = Mat::<f64>::zeros(6, 6);
-        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
-        assert_eq!(
-            resid,
-            f64::INFINITY,
-            "all-zero D must report INFINITY (vacuous, not converged), got {resid}",
-        );
-    }
-
-    // ── per-row criterion (task 7801): each node's net force is judged against
-    // its OWN row of D, so a healthy row can neither mask a degenerate one nor
-    // lend its stiffness to a soft one.
-
-    #[test]
-    fn all_node_equilibrium_residual_rejects_a_zero_row_beside_healthy_rows() {
-        let d = with_isolated_node(&combined_d_at_canonical_prism(0.2, 1.0));
-        let mut nodes = canonical_prism();
-        nodes.push([0.3, 0.2, 0.4]);
-
-        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
-        assert_eq!(
-            resid,
-            f64::INFINITY,
-            "an isolated node's zero row must reject, got {resid}",
-        );
-    }
-
-    #[test]
-    fn all_node_equilibrium_residual_rejects_a_nan_row_beside_healthy_rows() {
-        // Every other row is healthy, so only the NaN branch can reject.
-        let nodes = vec![[1.0, 1.0, 1.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let mut d = Mat::<f64>::zeros(3, 3);
-        d[(0, 1)] = 8.5;
-        d[(1, 0)] = 8.5;
-        d[(2, 0)] = f64::NAN;
-
-        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
-        assert_eq!(
-            resid,
-            f64::INFINITY,
-            "a NaN-carrying row must reject beside healthy rows, got {resid}",
-        );
-    }
-
-    #[test]
-    fn all_node_equilibrium_residual_judges_each_row_against_its_own_stiffness() {
-        // Chain 0 —soft (q = 1)— 1 —stiff (q = 2^20)— 2. The stiff member is
-        // balanced (nodes 1 and 2 coincide); the soft one is 2^-20 off, which
-        // its own row norm (2) sees but the stiff row norm (2 + 2^21) hides.
-        const SOFT: f64 = 1.0;
-        const STIFF: f64 = 1_048_576.0; // 2^20
-        const OFFSET: f64 = 1.0 / 1_048_576.0; // 2^-20
-        let d = assemble_d(3, &[(0, 1), (1, 2)], &[SOFT, STIFF]);
-        let nodes = vec![[1.0 + OFFSET, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, 1.0]];
-
-        let resid = all_node_equilibrium_residual_relative(&d, &nodes);
-        assert!(
-            resid > FREE_SURFACE_EQUILIBRIUM_REL_TOL,
-            "the soft row's imbalance must not read as converged: residual {resid:e} \
-             vs tolerance {FREE_SURFACE_EQUILIBRIUM_REL_TOL:e}",
-        );
-    }
-
-    // ── gauge lock (task 6413), continued — defect D2: the eigenvalue-gap
-    // DESCENT STEP. Step-2 (above) fixes only the outer stop test; it does
-    // NOT touch `combined_eig_gap_objective` / `combined_geometry_descent_step`,
+    // ── gauge lock (task 6413) — defect D2: the eigenvalue-gap DESCENT STEP.
+    // Task 6413's outer stop test is the all-node `StiffnessScale` criterion,
+    // whose gauge invariance `fd_criteria`'s own tests pin; that fix does NOT
+    // touch `combined_eig_gap_objective` / `combined_geometry_descent_step`,
     // which is why this task is not a straight port of task 6119's diff. Unit
     // altitude only: MEASURED, there is no e2e fixture that both converges
     // AND exercises the descent step under a gauge change (the
@@ -2197,7 +1974,7 @@ mod tests {
     #[test]
     fn combined_eig_gap_objective_of_all_zero_d_is_zero_not_infinity() {
         // The sibling guard on the residual
-        // (all_node_equilibrium_residual_of_all_zero_d_is_infinity_not_vacuous_zero)
+        // (`fd_criteria::tests::an_all_zero_judged_row_is_not_at_equilibrium`)
         // returns INFINITY because the residual IS the outer loop's
         // convergence gate. This objective is NOT a convergence gate — only
         // the descent step's line-search score — so an identically-zero D
