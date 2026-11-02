@@ -438,7 +438,7 @@
 //! assert_eq!(dim_err.unwrap_err(), StabilityError::DimensionMismatch);
 //!
 //! // Task 4416: Tensegrity-membrane ε — anisotropic warp/weft NFDM — crate-root
-//! // surface pin. Behaviour is covered by `form_find::tests` (in-crate unit tests)
+//! // surface pin. Entry behaviour is covered by `tests/form_find_anchored_entries.rs`
 //! // and the integration golden `tests/tensegrity_epsilon_anisotropic_membrane.rs`;
 //! // this block only pins that the ε public surface is reachable and callable.
 //! use reify_solver_elastic::{
