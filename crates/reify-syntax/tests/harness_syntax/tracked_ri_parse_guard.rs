@@ -7,12 +7,14 @@
 //! declared fault. When this guard reds, fix the file in the same diff, or
 //! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use reify_core::ModulePath;
 use tree_sitter::Node;
 
 use crate::common::make_ts_parser;
+use crate::common::tracked_corpus::{tracked_ri_paths, workspace_root};
 
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,5 +256,137 @@ fn declared_errors_only_needs_a_clean_cst_and_errors() {
     assert!(
         faulty.contains("CstFault"),
         "{faulty} must say to reclassify"
+    );
+}
+
+// ── the tracked corpus ──────────────────────────────────────────────────────
+
+#[test]
+fn expectation_declared_entry_wins_over_an_unswept_tree() {
+    assert_eq!(
+        expectation("crates/reify-spec-conformance/fixtures/_placement-probe/placement_probe.ri"),
+        Expectation::MustError(MustErrorKind::CstFault),
+        "a declared entry is checked wherever it lives"
+    );
+    assert_eq!(
+        expectation("crates/reify-spec-conformance/fixtures/zz_section/zz_synthetic.ri"),
+        Expectation::Unswept,
+        "an undeclared member of an unswept tree is skipped"
+    );
+    assert_eq!(
+        expectation("examples/zz_synthetic.ri"),
+        Expectation::Clean,
+        "a file outside every table must parse cleanly"
+    );
+}
+
+/// THE GUARD: every tracked `.ri` meets its expectation, and every declared
+/// entry names a tracked `.ri` the sweep actually checked.
+#[test]
+fn every_tracked_ri_parses_cleanly_unless_declared_must_error() {
+    let root = workspace_root();
+    let files = tracked_ri_paths(&root);
+    assert!(
+        files.len() > 100,
+        "sweep found only {} tracked .ri files under {} — the listing is broken, \
+         not the repo",
+        files.len(),
+        root.display()
+    );
+
+    let mut violations: Vec<String> = Vec::new();
+    let mut visited_declared: BTreeSet<&str> = BTreeSet::new();
+    let mut swept = 0usize;
+    for rel in &files {
+        let expected = expectation(rel);
+        if expected == Expectation::Unswept {
+            continue;
+        }
+        if matches!(expected, Expectation::MustError(_)) {
+            visited_declared.insert(rel);
+        }
+        swept += 1;
+        match std::fs::read_to_string(root.join(rel)) {
+            Ok(source) => violations.extend(violation(rel, expected, &observe(&source))),
+            Err(e) => violations.push(format!("{rel}: tracked but unreadable: {e}")),
+        }
+    }
+    violations.extend(
+        MUST_ERROR_RI_FIXTURES
+            .iter()
+            .filter(|fixture| !visited_declared.contains(fixture.path))
+            .map(|fixture| {
+                format!(
+                    "{}: declared in MUST_ERROR_RI_FIXTURES but not a tracked .ri; fix or \
+                     remove the entry",
+                    fixture.path
+                )
+            }),
+    );
+
+    assert!(
+        violations.is_empty(),
+        "{} tracked-.ri parse guard violation(s) (swept {swept} of {} tracked files):\n{}",
+        violations.len(),
+        files.len(),
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn must_error_and_unswept_tables_are_well_formed() {
+    let paths: Vec<&str> = MUST_ERROR_RI_FIXTURES.iter().map(|f| f.path).collect();
+    let mut seen = BTreeSet::new();
+    let duplicates: Vec<&str> = paths.iter().copied().filter(|p| !seen.insert(*p)).collect();
+    assert!(
+        duplicates.is_empty(),
+        "MUST_ERROR_RI_FIXTURES lists these paths more than once: {duplicates:?}"
+    );
+    let unsorted: Vec<[&str; 2]> = paths
+        .windows(2)
+        .filter(|pair| pair[0] > pair[1])
+        .map(|pair| [pair[0], pair[1]])
+        .collect();
+    assert!(
+        unsorted.is_empty(),
+        "MUST_ERROR_RI_FIXTURES must be sorted by path; out of order: {unsorted:?}"
+    );
+
+    let reasonless: Vec<&str> = MUST_ERROR_RI_FIXTURES
+        .iter()
+        .filter(|f| f.reason.trim().is_empty())
+        .map(|f| f.path)
+        .chain(
+            UNSWEPT_RI_TREES
+                .iter()
+                .filter(|t| t.reason.trim().is_empty())
+                .map(|t| t.prefix),
+        )
+        .collect();
+    assert!(
+        reasonless.is_empty(),
+        "these MUST_ERROR_RI_FIXTURES / UNSWEPT_RI_TREES rows carry no reason: {reasonless:?}"
+    );
+
+    let unterminated: Vec<&str> = UNSWEPT_RI_TREES
+        .iter()
+        .map(|t| t.prefix)
+        .filter(|prefix| !prefix.ends_with('/'))
+        .collect();
+    assert!(
+        unterminated.is_empty(),
+        "UNSWEPT_RI_TREES prefixes must end with '/' so they cannot match a sibling \
+         tree: {unterminated:?}"
+    );
+
+    let tracked = tracked_ri_paths(&workspace_root());
+    let dead: Vec<&str> = UNSWEPT_RI_TREES
+        .iter()
+        .map(|t| t.prefix)
+        .filter(|prefix| !tracked.iter().any(|rel| rel.starts_with(prefix)))
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "these UNSWEPT_RI_TREES rows cover no tracked .ri; delete them: {dead:?}"
     );
 }
