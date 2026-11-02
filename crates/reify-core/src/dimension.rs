@@ -85,10 +85,10 @@ impl Rational {
     /// `num/den` (with `den > 0`) in lowest terms, if that fits `i16/i16`.
     fn narrowed(num: i32, den: i32) -> Option<Rational> {
         let g = gcd(num.unsigned_abs(), den.unsigned_abs()) as i32;
-        Some(Rational::new(
-            i16::try_from(num / g).ok()?,
-            i16::try_from(den / g).ok()?,
-        ))
+        Some(Rational {
+            num: i16::try_from(num / g).ok()?,
+            den: i16::try_from(den / g).ok()?,
+        })
     }
 }
 
