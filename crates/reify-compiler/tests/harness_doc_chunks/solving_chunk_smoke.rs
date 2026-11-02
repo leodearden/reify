@@ -135,21 +135,39 @@ fn the_sub_instance_caveat_the_solving_chunk_documents_still_holds() {
     );
 }
 
-/// What a solving engine does with a strict `auto` under a bound-seeking objective.
+/// What a solving engine does with an `auto` under an objective.
 #[derive(Debug, Clone, Copy)]
 enum ObjectiveOutcome {
-    Resolves { metres: f64 },
+    /// Resolves to `metres` with no error and, unless `warns`, no warning at all.
+    /// `warns` is the free-mode "not uniquely determined" warning, which carries no code.
+    Resolves {
+        metres: f64,
+        warns: bool,
+    },
     FailsNonUnique,
 }
 
+const fn resolves_silently(metres: f64) -> ObjectiveOutcome {
+    ObjectiveOutcome::Resolves {
+        metres,
+        warns: false,
+    }
+}
+
+/// The chunk cites resolved values to the micron; the solver promises agreement to 1e-9
+/// but not bit parity, so the digits below that are not the chunk's claim.
+const CITED_PRECISION_METRES: f64 = 1e-6;
+
 const OBJECTIVE_STRUCTURE: &str = "Shim";
+const STRICT_AUTO: &str = "auto";
+const FREE_AUTO: &str = "auto(free)";
 const TWO_SIDED_BOUNDS: &str = "thickness >= 2mm && thickness <= 6mm";
 const ONE_SIDED_BOUND: &str = "thickness >= 2mm";
 
-fn shim_source(bounds: &str, objective: &str) -> String {
+fn shim_source(auto: &str, bounds: &str, objective: &str) -> String {
     format!(
-        "structure def {OBJECTIVE_STRUCTURE} {{\n    param thickness : Length = auto\n    \
-         constraint {bounds}\n    {objective}\n}}\n"
+        "structure def {OBJECTIVE_STRUCTURE} {{\n    param limit : Length = 5mm\n    \
+         param thickness : Length = {auto}\n    constraint {bounds}\n    {objective}\n}}\n"
     )
 }
 
@@ -158,17 +176,22 @@ fn objective_outcome_mismatch(source: &str, expected: ObjectiveOutcome) -> Optio
     let compiled = parse_and_compile_with_stdlib(source);
     let result = solving_engine().eval(&compiled);
     let thickness = cell_value(&result, OBJECTIVE_STRUCTURE, "thickness");
-    let errors: Vec<_> = result
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    let at_least = |severity: Severity| -> Vec<_> {
+        result
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity >= severity)
+            .collect()
+    };
+    let errors = at_least(Severity::Error);
+    let warnings_or_errors = at_least(Severity::Warning);
     let holds = match expected {
-        ObjectiveOutcome::Resolves { metres } => {
+        ObjectiveOutcome::Resolves { metres, warns } => {
             errors.is_empty()
+                && warnings_or_errors.is_empty() != warns
                 && thickness
                     .as_f64()
-                    .is_some_and(|value| (value - metres).abs() < 1e-9)
+                    .is_some_and(|value| (value - metres).abs() < CITED_PRECISION_METRES)
         }
         ObjectiveOutcome::FailsNonUnique => {
             thickness.is_undef()
@@ -177,34 +200,80 @@ fn objective_outcome_mismatch(source: &str, expected: ObjectiveOutcome) -> Optio
                     .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique))
         }
     };
-    (!holds).then(|| format!("thickness = {thickness:?}, error diagnostics = {errors:?}"))
+    (!holds).then(|| format!("thickness = {thickness:?}, diagnostics = {warnings_or_errors:?}"))
 }
 
-/// Characterization pin for the chunk's objective caveats: a `minimize` or `maximize`
-/// that pushes a strict `auto` toward a bound neither reaches that bound nor stands in
-/// for a missing one. What happens splits on the direction of the push.
+/// Characterization pin for the chunk's objective claims. An objective whose optimum
+/// lies inside the bracket reaches it. One that pushes the `auto` toward a bound neither
+/// reaches that bound nor stands in for a missing one, and what happens splits on the
+/// direction of the push. Free mode does not reach the bound either, and an objective's
+/// `where` guard is ignored.
 #[test]
 fn the_objective_caveats_the_solving_chunk_documents_still_hold() {
     let cases = [
         (
+            "two-sided [2mm, 6mm], minimize (thickness - 3mm)^2",
+            shim_source(
+                STRICT_AUTO,
+                TWO_SIDED_BOUNDS,
+                "minimize (thickness - 3mm) * (thickness - 3mm)",
+            ),
+            resolves_silently(0.003),
+        ),
+        (
             "two-sided [2mm, 6mm], minimize thickness",
-            shim_source(TWO_SIDED_BOUNDS, "minimize thickness"),
-            ObjectiveOutcome::Resolves { metres: 0.004 },
+            shim_source(STRICT_AUTO, TWO_SIDED_BOUNDS, "minimize thickness"),
+            resolves_silently(0.004),
+        ),
+        (
+            "two-sided [2mm, 6mm], maximize -thickness",
+            shim_source(STRICT_AUTO, TWO_SIDED_BOUNDS, "maximize -thickness"),
+            resolves_silently(0.004),
         ),
         (
             "two-sided [2mm, 6mm], maximize thickness",
-            shim_source(TWO_SIDED_BOUNDS, "maximize thickness"),
+            shim_source(STRICT_AUTO, TWO_SIDED_BOUNDS, "maximize thickness"),
             ObjectiveOutcome::FailsNonUnique,
         ),
         (
+            "two-sided [2mm, 6mm], minimize -thickness",
+            shim_source(STRICT_AUTO, TWO_SIDED_BOUNDS, "minimize -thickness"),
+            ObjectiveOutcome::FailsNonUnique,
+        ),
+        (
+            "auto(free), two-sided [2mm, 6mm], minimize thickness",
+            shim_source(FREE_AUTO, TWO_SIDED_BOUNDS, "minimize thickness"),
+            ObjectiveOutcome::Resolves {
+                metres: 0.004,
+                warns: true,
+            },
+        ),
+        (
+            "auto(free), two-sided [2mm, 6mm], maximize thickness",
+            shim_source(FREE_AUTO, TWO_SIDED_BOUNDS, "maximize thickness"),
+            ObjectiveOutcome::Resolves {
+                metres: 0.004,
+                warns: true,
+            },
+        ),
+        (
+            "two-sided [2mm, 6mm], minimize thickness where thickness > limit (limit 5mm)",
+            shim_source(
+                STRICT_AUTO,
+                TWO_SIDED_BOUNDS,
+                "minimize thickness where thickness > limit",
+            ),
+            resolves_silently(0.004),
+        ),
+        (
             "one-sided >= 2mm, minimize thickness",
-            shim_source(ONE_SIDED_BOUND, "minimize thickness"),
+            shim_source(STRICT_AUTO, ONE_SIDED_BOUND, "minimize thickness"),
             ObjectiveOutcome::FailsNonUnique,
         ),
         (
             "one-sided >= 2mm, maximize thickness",
-            shim_source(ONE_SIDED_BOUND, "maximize thickness"),
-            ObjectiveOutcome::Resolves { metres: 10.0 },
+            shim_source(STRICT_AUTO, ONE_SIDED_BOUND, "maximize thickness"),
+            resolves_silently(10.0),
         ),
     ];
     let failures: Vec<String> = cases
@@ -216,10 +285,10 @@ fn the_objective_caveats_the_solving_chunk_documents_still_hold() {
         .collect();
     assert!(
         failures.is_empty(),
-        "the objective behaviour the `solving` chunk and docs/getting-started.md §3 \
-         ('Let the solver choose a value') describe has changed. Re-measure, update the \
-         bound-seeking-objective paragraph of {} and that getting-started sentence, then \
-         update this pin:\n{}",
+        "the objective behaviour the `solving` chunk, the `constraints` chunk's where-guard \
+         paragraph and docs/getting-started.md §3 ('Let the solver choose a value') describe \
+         has changed. Re-measure, update the objective paragraphs of {} and those other \
+         two, then update this pin:\n{}",
         chunk_label(TOPIC),
         failures.join("\n")
     );

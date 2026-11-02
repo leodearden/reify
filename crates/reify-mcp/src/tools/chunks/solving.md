@@ -9,7 +9,7 @@ structure def Plate {
 }
 ```
 
-`reify check` and `reify eval` on that structure print:
+`reify check` and `reify eval` on that structure print (excerpt):
 
 ```text
   OK Plate#constraint[0]
@@ -66,7 +66,7 @@ error: strict auto parameter resolution is not uniquely determined: no constrain
 
 Of the remedies that message lists, add the missing bound. An objective does not stand in for it today. With only `constraint thickness >= 2mm`, `minimize thickness` still makes `reify check` exit 1, with the shorter `error: strict auto parameter resolution is not uniquely determined`, and `maximize thickness` returns `Plate.thickness = 10 m`, the edge of the solver's internal domain, with exit 0 and no warning.
 
-Add the other bound and the value resolves to the bracket centre. An objective whose optimum lies strictly inside the bracket moves the value to that optimum; this one resolves `thickness` to about 3mm, and `reify eval` prints `Shim.thickness = 0.003000000000000555 m`:
+Add the other bound and the value resolves to the bracket centre. An objective whose optimum lies strictly inside the bracket moves the value to that optimum; this one resolves `thickness` to 3mm (`reify eval` may show solver rounding in the trailing digits):
 
 ```reify
 structure def Shim {
