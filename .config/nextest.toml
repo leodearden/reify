@@ -287,6 +287,11 @@ test-group = 'occt'
 # secondary tier (priority = 50) — still schedule early but yield the first
 #   slot to the straggler.
 #
+# Deliberately in NEITHER tier: reify-eval's harness_corpus_gates corpus sweep.
+# In the recorded gate runs its straggler finished hundreds of seconds before
+# the makespan, so an earlier start cannot shorten the run — see
+# docs/notes/eval-slow-tail-profile-2026-09.md §5.
+#
 # Drift guard: tests/infra/test_nextest_slow_priority.sh asserts that each
 # filter resolves to a real crates/<pkg>/tests/<bin>.rs on disk so a typo or
 # file rename becomes a CI failure rather than a silent no-op.
