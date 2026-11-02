@@ -4,7 +4,7 @@
 
 //! Integration tests for the shell FEA pipeline (PRD v0.4 task #21).
 //!
-//! # Scope: smoke tests, NOT validated benchmarks
+//! # Scope: mostly smoke tests, with a few reference-anchored bands
 //!
 //! This file exercises the end-to-end shell assembly pipeline
 //! (`shell_element_stiffness` → `assemble_global_stiffness` →
@@ -12,19 +12,21 @@
 //! shell-formulation geometries: the pinched cylinder, Scordelis-Lo roof,
 //! hemisphere-with-point-loads, and twisted cantilever beam.
 //!
-//! These geometries are **drawn from** MacNeal & Harder (1985), but the
-//! present tests are **smoke tests**, not validated benchmarks. The
-//! tip-displacement assertions check only:
+//! These geometries are **drawn from** MacNeal & Harder (1985). Except for the
+//! twisted-cantilever ±10% reference band (below) and the regression pins
+//! documented at their own tests, the tests are **smoke tests**, not validated
+//! benchmarks: their tip-displacement assertions check only:
 //!   - **sign** (response is in the loaded direction),
 //!   - **finiteness** (not NaN, not infinite),
 //!   - **order of magnitude** (within a wide physically-plausible band).
 //!
-//! The four **curved** smoke tests do **not** assert against the published
-//! MacNeal-Harder reference values: flat-facet MITC3 on curved geometry still
-//! under-predicts at coarse mesh resolution, from ~1.4× on the Scordelis-Lo roof
-//! to ~80× on the hemisphere. Tightening those bands needs an ANS-membrane
-//! correction on a curved substrate (task 4065) — flat-facet enrichment cannot
-//! cure *membrane* locking, which is a curvature phenomenon.
+//! The pinched-cylinder, Scordelis-Lo and hemisphere smoke tests do **not**
+//! assert against the published MacNeal-Harder reference values: flat-facet
+//! MITC3 on that curved geometry still under-predicts at coarse mesh
+//! resolution, from ~1.4× on the Scordelis-Lo roof to ~80× on the hemisphere.
+//! Tightening those bands needs an ANS-membrane correction on a curved
+//! substrate (task 4065) — flat-facet enrichment cannot cure *membrane*
+//! locking, which is a curvature phenomenon.
 //!
 //! The **twisted cantilever** additionally carries an absolute band:
 //! `twisted_beam_flat_shell_tip_deflection_within_10_percent_of_reference`

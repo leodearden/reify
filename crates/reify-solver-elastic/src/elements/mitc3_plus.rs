@@ -20,11 +20,11 @@
 //! - **MITC3+** (Lee, Lee & Bathe 2014) — [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`]
 //!   re-interpolates covariant shears sampled at the six *interior* tying points
 //!   A–F (Eq. 9). Consumed by [`crate::shell_element_stiffness_mitc3_plus`]; it is
-//!   the genuine flat-facet shear-locking cure (a softer field than bare Eq. 5).
+//!   MITC3+'s assumed-shear field, distinct from bare Eq. 5.
 //!
 //! The "+" rotation bubble `f_b(ξ,η) = ξ·η·(1−ξ−η)` enriches the **bending**
 //! field. On a flat, constant-Jacobian facet it is inert in transverse shear
-//! (`K_NB^shear ≡ 0`; esc-3392, DD#2 retracted) — so the flat-facet shear cure
+//! (`K_NB^shear ≡ 0`; esc-3392, DD#2 retracted) — so MITC3+'s flat-facet shear
 //! is the nodal interior-tying assumed field above, not the bubble, which
 //! becomes live only on the curved director substrate (task 4068).
 
@@ -120,8 +120,8 @@ const TYING_OFFSET_D: f64 = 1.0 / 10000.0;
 /// ([`crate::shell_kinematics::ShellKinematics::covariant_shear_b`]) is
 /// **sampled** at these six points and re-interpolated via the assumed-strain field
 /// [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Eq. 9). This nodal
-/// assumed field — distinct from bare-MITC3's edge-midpoint Eq. 5 — is the
-/// MITC3+ shear-locking cure on a flat facet.
+/// assumed field is MITC3+'s assumed shear on a flat facet, distinct from bare
+/// MITC3's edge-midpoint Eq. 5.
 ///
 /// Two distinct symmetric orbits:
 /// - **A, B, C** — the `(1/6, 1/6, 2/3)` barycentric orbit (`f₄ = 1/2`).
@@ -307,12 +307,11 @@ impl Mitc3Plus {
     /// The return type is `&'static [TyingPoint]` — the slice points to a
     /// compile-time constant, so no allocation occurs.
     ///
-    /// These differ fundamentally from [`Mitc3Plus::tying_points`] (the three
-    /// edge midpoints A/B/C of the bare-MITC3 baseline): the bare DISP3 covariant
-    /// shear is sampled at these six interior points and re-interpolated via
-    /// Eq. 9, giving a softer nodal assumed field than bare MITC3's Eq. 5 — the
-    /// flat-facet shear-locking cure. (The cubic bubble is inert in shear on a
-    /// flat facet; see [`INTERIOR_TYING_POINTS`].)
+    /// These differ from [`Mitc3Plus::tying_points`] (the three edge midpoints
+    /// A/B/C of bare MITC3): the DISP3 covariant shear is sampled at these six
+    /// interior points and re-interpolated via Eq. 9 into MITC3+'s assumed-shear
+    /// field, distinct from bare MITC3's Eq. 5. (The cubic bubble is inert in
+    /// shear on a flat facet; see [`INTERIOR_TYING_POINTS`].)
     pub fn interior_tying_points(&self) -> &'static [TyingPoint] {
         INTERIOR_TYING_POINTS
     }
