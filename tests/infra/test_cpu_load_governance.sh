@@ -332,6 +332,9 @@ WORK="$(mktemp -d)"
 # nothing to record.  See govtest_slice_teardown in govtest_slice_reaper_lib.sh
 # for why the flags were removed rather than repaired.
 _ALL_MIX_PIDS=""
+# Wrapper pids of ROW4 burns not yet stopped (task 9698); see
+# _row4_launch_role_burn / _row4_stop_burns.
+_ROW4_BURN_PIDS=""
 
 # ---------------------------------------------------------------------------
 # Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
@@ -355,6 +358,15 @@ _cleanup_all() {
     # Kill any lingering ROW2_3 mix background processes (crash-path reap).
     if [ -n "${_ALL_MIX_PIDS:-}" ]; then
         for _cpid in ${_ALL_MIX_PIDS}; do
+            kill "$_cpid" 2>/dev/null || true
+        done
+    fi
+    # Likewise any ROW4 burn this run was cut short before it could stop
+    # (task 9698).  The hermetic-guard burns run in this script's own cgroup,
+    # outside the govtest slices, so govtest_slice_teardown below cannot reach
+    # them.
+    if [ -n "${_ROW4_BURN_PIDS:-}" ]; then
+        for _cpid in ${_ROW4_BURN_PIDS}; do
             kill "$_cpid" 2>/dev/null || true
         done
     fi
@@ -765,6 +777,49 @@ _row4_worker_affinities() {
         mask="$(awk '/^Cpus_allowed_list:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null || true)"
         printf '%s\n' "${mask:-unavailable}"
     done < "$ready_file"
+}
+
+# _row4_launch_role_burn <gov_exec> <role> <cpus_csv> <workers> <burn_s> <ready_file>
+#   Backgrounds ONE role's burn and appends its wrapper pid to the global
+#   _ROW4_BURN_PIDS, for _row4_stop_burns (and _cleanup_all) to end.  The burn
+#   is the fixture run through <gov_exec> with per-WORKER pinning: both roles
+#   get the same worker count and the same <cpus_csv>, so every listed CPU
+#   hosts one worker of each role and cpu.weight arbitrates between them on a
+#   shared runqueue wherever the load balancer would have put them.  The
+#   launcher itself is also confined to <cpus_csv>, keeping the governed-exec
+#   subtree (its D-Bus clients included) off every other CPU.
+#   Both slice variables are set on every launch: cpu-governed-exec.sh picks
+#   one by --role, so there is no role branch here.  <gov_exec> is a parameter
+#   so the hermetic ROW4-LAUNCH-VACUITY block can pass a pass-through stub.
+#   The outer timeout is only a backstop for a burn that never ends; ROW4 stops
+#   its burns explicitly, long before it.
+#   Appends to a global, so call it in the CURRENT shell, never inside $(...).
+_row4_launch_role_burn() {
+    local gov_exec="$1" role="$2" cpus_csv="$3" workers="$4" burn_s="$5" ready_file="$6"
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+    timeout $(( burn_s + 15 )) taskset -c "$cpus_csv" \
+        bash "$gov_exec" --role "$role" -- \
+        bash "$FIXTURE" "$workers" "$burn_s" --pin-cpus "$cpus_csv" --ready-file "$ready_file" \
+        >/dev/null 2>&1 &
+    _ROW4_BURN_PIDS="${_ROW4_BURN_PIDS}${_ROW4_BURN_PIDS:+ }$!"
+}
+
+# _row4_stop_burns
+#   SIGTERMs every recorded burn wrapper, waits for each, and clears the list.
+#   TERM rather than KILL: the fixture's EXIT trap reaps its workers on TERM,
+#   whereas killing a bare payload orphans its spinners into the next window.
+#   Every error is ignored (a burn may already have ended), so the call is total
+#   and safe to run bare under `set -e`.
+_row4_stop_burns() {
+    local pid
+    for pid in ${_ROW4_BURN_PIDS:-}; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for pid in ${_ROW4_BURN_PIDS:-}; do
+        wait "$pid" 2>/dev/null || true
+    done
+    _ROW4_BURN_PIDS=""
 }
 
 # ============================================================================
