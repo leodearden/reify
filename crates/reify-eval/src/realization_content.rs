@@ -49,7 +49,8 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 ///
 /// Keyed by `RealizationNodeId → ContentHash → RealizedContent` (two-level map)
 /// so that two dispatches over the same realization identity but *different*
-/// content hashes are never conflated (e.g. after a parameter edit).
+/// content hashes are never conflated.  A parameter VALUE edit does not move
+/// the content hash; see "Eviction" below for how that case is handled.
 ///
 /// The two-level structure lets [`get`](RealizationProjectionStore::get) borrow
 /// `node_id` directly (no clone) for the outer lookup.
@@ -70,17 +71,20 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 /// `(node_id, content_hash)` key really is re-looked-up verbatim after an
 /// `edit_param`, and an un-evicted entry is served as if fresh.
 ///
-/// This note previously claimed the opposite — that a stale entry "is simply
-/// never looked up again — it is unreachable, not incorrect".  That was false
-/// on its own terms; it merely stayed latent while nothing re-projected a
-/// realization within one engine lifetime.  #7332 removed that accident, so the
-/// invariant is now upheld where it belongs, in the caller:
-/// `engine_edit::invalidate_realization_dirty_cone` [`evict`](Self::evict)s
+/// On the edit surfaces (`edit_param`, `edit_source`) the invariant is upheld
+/// by the caller: `engine_edit::invalidate_realization_dirty_cone`
+/// [`evict`](Self::evict)s
 /// the edit's stale set, `realization_staleness::stale_realizations`: every
 /// realization whose EVALUATED input cone moved, plus the `GeomRef::Sub`
 /// consumers downstream of them.  "Moved" is keyed on
 /// `RealizationNodeData::input_cone_hash` precisely because `content_hash`
 /// cannot see a value-driven change.
+///
+/// KNOWN GAP: nothing evicts on a `param_overrides` change that does not go
+/// through an edit surface (`set_param_and_invalidate`, or `edit_param`'s
+/// solver branch writing resolved auto-params) followed by `build()`, which
+/// keeps this store and re-projects under the new overrides with an unchanged
+/// `content_hash`.
 #[allow(dead_code)] // consumed by project_realization_read_handle / step-4
 pub(crate) struct RealizationProjectionStore {
     memo: HashMap<RealizationNodeId, HashMap<ContentHash, RealizedContent>>,
@@ -497,6 +501,31 @@ mod tests {
         assert!(
             store.get(&r1, h).is_none(),
             "different RealizationNodeId must be a miss"
+        );
+    }
+
+    #[test]
+    fn evict_drops_every_content_hash_of_one_node_only() {
+        let mut store = RealizationProjectionStore::new();
+        let a = RealizationNodeId::new("E", 0);
+        let b = RealizationNodeId::new("E", 1);
+        let never_inserted = RealizationNodeId::new("E", 2);
+        let h1 = ContentHash::of_str("hash-1");
+        let h2 = ContentHash::of_str("hash-2");
+        store.insert(a.clone(), h1, RealizedContent::SurfaceMesh(make_mesh()));
+        store.insert(a.clone(), h2, RealizedContent::SurfaceMesh(make_mesh()));
+        store.insert(b.clone(), h1, RealizedContent::SurfaceMesh(make_mesh()));
+
+        store.evict(&a);
+        assert!(store.get(&a, h1).is_none(), "evict must drop (a, h1)");
+        assert!(store.get(&a, h2).is_none(), "evict must drop (a, h2)");
+        assert!(store.get(&b, h1).is_some(), "evict(a) must keep b's entry");
+
+        store.evict(&a);
+        store.evict(&never_inserted);
+        assert!(
+            store.get(&b, h1).is_some(),
+            "repeat and never-inserted evicts must be no-ops"
         );
     }
 

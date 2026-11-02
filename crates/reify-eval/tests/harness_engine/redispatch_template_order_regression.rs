@@ -213,7 +213,8 @@ const MIXED_PROBE_TARGET: &str = "test::redispatch-mixed-arg-probe";
 /// shape `redispatch_geometry_consuming_compute_nodes`'s Phase-1 scan matches
 /// (its `// ── Phase 1: collect candidates` block in `engine_build.rs`, whose
 /// `for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter()` walk
-/// skips any node whose `realization_inputs` are already non-empty). A
+/// skips any node this build has already redispatched, per
+/// `RedispatchPassState::redispatched`). A
 /// Geometry-typed consumer would lower to a separate realization and be
 /// invisible to that scan.
 const CONSUMER_STRUCTURE: &str = r#"
@@ -954,8 +955,9 @@ fn latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content() {
         vec![0],
         "the probe's compute node must still have EMPTY `realization_inputs` \
          after a build that could not project any content, so it remains a \
-         redispatch candidate. A non-empty value here is the latch trip: the \
-         Phase-1 gate skips this node from now on, forever."
+         redispatch candidate. A non-empty value here means the contentless \
+         write went through: the Phase-1 gate skips this node for the rest of \
+         the build."
     );
 }
 
@@ -1196,13 +1198,13 @@ fn a_permanently_stranded_node_is_reported_once_at_end_of_build() {
 /// `e2e_non_structural_tick_morphs_and_preserves_connectivity`, which pins the
 /// same contract on the real OCCT+gmsh VolumeMesh path.
 ///
-/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 candidate gate reads
-/// `realization_inputs.is_empty()`. But `realization_inputs` is a DEPENDENCY
-/// RECORD with GRAPH lifetime — `deps.rs` builds the Realization→Compute
-/// reverse edge from it and `compute_cache_key` folds it into the key — so
-/// reading its emptiness as the BUILD-lifetime question "has this build
-/// hydrated me yet?" conflates two unrelated facts and makes the gate a
-/// CROSS-BUILD latch.
+/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 candidate gate used
+/// to read `realization_inputs.is_empty()`. But `realization_inputs` is a
+/// DEPENDENCY RECORD with GRAPH lifetime — `deps.rs` builds the
+/// Realization→Compute reverse edge from it and `compute_cache_key` folds it
+/// into the key — so reading its emptiness as the BUILD-lifetime question "has
+/// this build hydrated me yet?" conflated two unrelated facts and made the gate
+/// a CROSS-BUILD latch. The gate now reads `RedispatchPassState::redispatched`.
 ///
 /// `build()` is accidentally immune: `eval()` installs a fresh snapshot and
 /// `EvaluationGraph::from_templates` creates no compute nodes, so its

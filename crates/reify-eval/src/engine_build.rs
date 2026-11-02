@@ -9983,16 +9983,17 @@ impl Engine {
     ///
     /// Called immediately AFTER `post_process_geometry_handle_cells` in both
     /// `build()` and `build_snapshot()`. Finds ComputeNodes in the snapshot
-    /// graph with EMPTY `realization_inputs` (because the body arg was `Undef`
-    /// at the original dispatch — geometry lets have no value cell until
-    /// `post_process_geometry_handle_cells` hydrates them) and whose re-evaluated
-    /// args now include at least one `Value::GeometryHandle`. For each such
-    /// node it:
+    /// graph not yet redispatched in this build
+    /// (`RedispatchPassState::redispatched`) whose re-evaluated args include at
+    /// least one kernel-backed `Value::GeometryHandle` (on a cold build the
+    /// body arg was `Undef` at the original dispatch — geometry lets have no
+    /// value cell until `post_process_geometry_handle_cells` hydrates them).
+    /// For each such node it:
     ///
     ///   1. Re-evaluates the arg_values from the cell's `default_expr`.
     ///   2. Re-builds `realization_inputs` via `build_compute_realization_inputs`.
-    ///   3. Updates the existing `ComputeNodeData.realization_inputs` in the
-    ///      snapshot graph (step-1 assertion: non-empty after build).
+    ///   3. Unions them into the existing `ComputeNodeData.realization_inputs`
+    ///      in the snapshot graph (step-1 assertion: non-empty after build).
     ///   4. Re-runs `run_compute_dispatch` and overwrites the cell value in both
     ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
     ///
@@ -10171,9 +10172,10 @@ impl Engine {
             // for a body that has not realized yet — which is exactly what this
             // per-template pass sees for a consumer declared AFTER the template
             // currently being built. Treating it as hydrated wrote a
-            // content-free `realization_inputs` and latched the Phase-1
-            // candidate gate, stranding the node forever. `continue`ing leaves
-            // that gate untripped so a later pass can do the real work.
+            // content-free `realization_inputs` and marked the node
+            // redispatched, stranding it for the rest of the build.
+            // `continue`ing leaves it unmarked so a later pass can do the real
+            // work.
             //
             // This narrowing is DEFENCE IN DEPTH, not the load-bearing half of
             // the fix — see the fn doc for the measurement. It is kept because

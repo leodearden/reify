@@ -315,7 +315,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     engine.build_snapshot(&compiled, ExportFormat::Step);
     let fires_across_tick = MORPH_PROBE_INVOCATIONS.with(|n| n.get()) - fires_after_cold;
 
-    // ── The #7332 latch pin ────────────────────────────────────────────────
+    // ── The #7332 count pin ────────────────────────────────────────────────
     //
     // Premise first: the cold build MUST have dispatched the probe, or the
     // delta below is trivially 0 and pins nothing. Two fires — the original
@@ -324,7 +324,7 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
         fires_after_cold, 2,
         "premise: the cold build() must dispatch the probe twice (original \
          Undef-bodied dispatch + post-hydration redispatch), else the \
-         zero-refire pin below is vacuous"
+         `fires_across_tick == 1` count pin below is vacuous"
     );
 
     // #7332 LANDED. MEASURED (release, real OCCT + gmsh): EXACTLY ONE, where
