@@ -189,10 +189,12 @@ fn bracket_fixture_reaches_the_10k_and_100k_tet_calibration_scales() {
     }
 }
 
-/// The tet -> boundary-surface extractor that feeds the gmsh arm must emit
-/// exactly the once-occurring tet faces, wound outward, compacted onto only
-/// the vertices it actually references — at every resolution the harness
-/// itself uses, not merely at the cheap one.
+/// The surface [`bracket_with_boundary`] returns — the
+/// `reify_solver_elastic::boundary_surface_mesh` extraction of the source
+/// bracket, i.e. exactly what the gmsh arm is fed — must be the
+/// once-occurring tet faces, wound outward, compacted onto only the vertices
+/// it actually references — at every resolution the harness itself uses, not
+/// merely at the cheap one.
 ///
 /// The primary assertion target is `Mesh::validate` (in
 /// `crates/reify-ir/src/geometry.rs`; cited by symbol rather than by line,
@@ -226,14 +228,13 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
     use std::collections::{HashMap, HashSet};
 
     for n in [1, 2, 3, 4, N_10K, N_100K] {
-        let (mesh, _surface_indices) = fixtures::bracket(ARM_LENGTH, THICKNESS, FILLET_BASE, n);
-        let surface = boundary::boundary_surface(&mesh);
+        let (mesh, surface) = bracket_with_boundary(n);
 
         // (1) The full mesh contract. Naming the Err variant means a contract
         // violation reports which obligation failed rather than "assert failed".
         if let Err(violation) = surface.validate(1e-6) {
             panic!(
-                "boundary_surface(bracket(n={n})) violates the mesh contract, so \
+                "boundary_surface_mesh(bracket(n={n})) violates the mesh contract, so \
                  gmsh's preflight would reject it: {violation:?}"
             );
         }
@@ -241,7 +242,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert_eq!(
             surface.indices.len() % 3,
             0,
-            "boundary_surface(n={n}) must emit whole triangles; got {} indices",
+            "boundary_surface_mesh(n={n}) must emit whole triangles; got {} indices",
             surface.indices.len()
         );
 
@@ -274,7 +275,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         let irregular = edge_degree.values().filter(|&&d| d != 2).count();
         assert_eq!(
             irregular, 0,
-            "boundary_surface(n={n}) emitted {irregular} edges of degree != 2 out \
+            "boundary_surface_mesh(n={n}) emitted {irregular} edges of degree != 2 out \
              of {}; the surface is not a closed manifold, and gmsh's HXT backend \
              fails on an open input in a way that poisons every later rung",
             edge_degree.len()
@@ -283,7 +284,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert_eq!(
             verts as i64 - edges as i64 + tris as i64,
             2,
-            "boundary_surface(n={n}) has V-E+F = {}-{}+{} != 2; a closed genus-0 \
+            "boundary_surface_mesh(n={n}) has V-E+F = {}-{}+{} != 2; a closed genus-0 \
              surface is what the bracket's three aligned blocks are supposed to \
              bound",
             verts,
@@ -292,15 +293,18 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         );
 
         // (2b) At n=4 the three counts are pinned to the figures recorded
-        // independently in `fixtures::bracket`'s "## Conformity" paragraph, so
-        // the docstring and the extractor cannot drift apart unnoticed.
+        // under #6638 by the harness-local extractor this one replaced. The
+        // two emit the same oriented triangle set in a different order, and
+        // V, E and F are properties of the set, so this pin is also the
+        // standing evidence that the collapse onto the library extractor
+        // preserved the surface.
         if n == 4 {
             assert_eq!(
                 (verts, edges, tris),
                 (248, 738, 492),
-                "boundary_surface(bracket(n=4)) must reproduce the surface recorded \
-                 in `fixtures::bracket`'s conformity paragraph (248 vertices / 738 \
-                 edges / 492 triangles); got {verts} / {edges} / {tris}"
+                "boundary_surface_mesh(bracket(n=4)) must reproduce the surface \
+                 recorded under #6638 (248 vertices / 738 edges / 492 triangles); \
+                 got {verts} / {edges} / {tris}"
             );
         }
 
@@ -310,7 +314,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert_eq!(
             used.len(),
             verts,
-            "boundary_surface(n={n}) must carry only referenced vertices; {verts} \
+            "boundary_surface_mesh(n={n}) must carry only referenced vertices; {verts} \
              emitted but only {} referenced (interior nodes would be handed to \
              gmsh for nothing)",
             used.len()
@@ -319,7 +323,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         // (4) Compaction is a strict narrowing of the volume mesh's vertex table.
         assert!(
             verts <= mesh.vertices.len() / 3,
-            "boundary_surface(n={n}) emitted {verts} vertices from a {}-vertex \
+            "boundary_surface_mesh(n={n}) emitted {verts} vertices from a {}-vertex \
              volume mesh",
             mesh.vertices.len() / 3
         );
@@ -330,37 +334,27 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         // exactly once: that is orientABILITY, and a globally INVERTED closed
         // surface satisfies it just as happily as an outward one. Nothing
         // downstream catches the difference either — gmsh meshes the inverted
-        // surface without complaint — so `orient_outward` could silently flip
-        // and every other assertion in this file would stay green.
+        // surface without complaint — so the winding `boundary_surface_mesh`
+        // emits could silently flip and every other assertion in this file
+        // would stay green.
         //
-        // The divergence theorem pins the sign in O(tris) with no new
-        // dependency: summing the signed volume of the tetrahedron each triangle
-        // spans with the origin, `dot(v0, cross(v1, v2)) / 6`, totals +V for an
-        // outward-wound closed surface and -V for an inward-wound one.
-        let vertex = |i: u32| -> [f64; 3] {
-            let base = i as usize * 3;
-            [
-                surface.vertices[base] as f64,
-                surface.vertices[base + 1] as f64,
-                surface.vertices[base + 2] as f64,
-            ]
-        };
-        let mut signed_volume = 0.0_f64;
-        for tri in surface.indices.chunks_exact(3) {
-            let (a, b, c) = (vertex(tri[0]), vertex(tri[1]), vertex(tri[2]));
-            let cross = [
-                b[1] * c[2] - b[2] * c[1],
-                b[2] * c[0] - b[0] * c[2],
-                b[0] * c[1] - b[1] * c[0],
-            ];
-            signed_volume += (a[0] * cross[0] + a[1] * cross[1] + a[2] * cross[2]) / 6.0;
-        }
+        // The divergence theorem pins the sign in O(tris):
+        // `enclosed_volume_of_surface` sums the signed volume of the
+        // tetrahedron each triangle spans with the origin, which totals +V for
+        // an outward-wound closed surface and -V for an inward-wound one.
+        let signed_volume = reify_kernel_gmsh::fill_metrics::enclosed_volume_of_surface(&surface)
+            .unwrap_or_else(|| {
+                panic!(
+                    "boundary_surface_mesh(n={n}) is not measurable as a triangle soup \
+                     (partial triangle, partial vertex or out-of-range index)"
+                )
+            });
         assert!(
             signed_volume > 0.0,
-            "boundary_surface(n={n}) emitted an INWARD-wound surface (signed volume \
-             {signed_volume}); `Mesh::validate` cannot see this, so this assertion \
-             is the only thing standing between a sign flip in `orient_outward` \
-             and a silently inverted gmsh input"
+            "boundary_surface_mesh(n={n}) emitted an INWARD-wound surface (signed \
+             volume {signed_volume}); `Mesh::validate` cannot see this, so this \
+             assertion is the only thing standing between a sign flip in \
+             `boundary_surface_mesh`'s winding and a silently inverted gmsh input"
         );
 
         // ...and loosely, the right magnitude. The bracket's analytic volume is
@@ -377,7 +371,7 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         const ANALYTIC_VOLUME: f64 = 0.071_893;
         assert!(
             (0.85 * ANALYTIC_VOLUME..=1.15 * ANALYTIC_VOLUME).contains(&signed_volume),
-            "boundary_surface(n={n}) enclosed {signed_volume}, outside +/-15% of \
+            "boundary_surface_mesh(n={n}) enclosed {signed_volume}, outside +/-15% of \
              the bracket's analytic volume {ANALYTIC_VOLUME} — the surface is \
              closed and outward-wound but does not bound the solid it came from"
         );
