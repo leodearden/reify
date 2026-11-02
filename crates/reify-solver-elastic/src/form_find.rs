@@ -1493,16 +1493,17 @@ mod tests {
         }
 
         // Primary honest signal: the free-node equilibrium residual (net force)
-        // at the SOLVED geometry is ~0.
-        let mut is_anchor = vec![false; nodes.len()];
-        for &a in &anchors {
-            is_anchor[a] = true;
-        }
-        let d = reassemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &solve.nodes);
-        let resid = equilibrium_residual_scaled(&d, &solve.nodes, &is_anchor);
+        // at the SOLVED geometry is ~0, judged by the one criterion on the one
+        // assembled `D`.
+        let free: Vec<usize> = (0..nodes.len()).filter(|i| !anchors.contains(i)).collect();
+        let mut d = assemble_d(nodes.len(), &members, &q);
+        scatter_surface_stencils::<IsotropicStencil>(&mut d, &surfaces, &sigmas, &solve.nodes)
+            .expect("the solved tent's triangles are non-degenerate");
+        let resid = StiffnessScale::of(&d, RowSet::Free(&free)).relative_residual(&solve.nodes);
         assert!(
             resid < SURFACE_EQUIL_TOL,
-            "equilibrium residual ‖(D x)_free‖/scale = {resid:e}, expected < {SURFACE_EQUIL_TOL:e}",
+            "per-row relative free-node residual max|(D x)_i|/Σ_j|D_ij| over 1 + scale \
+             = {resid:e}, expected < {SURFACE_EQUIL_TOL:e}",
         );
 
         // The boundary is planar (all anchors at z=0), so the equilibrium
