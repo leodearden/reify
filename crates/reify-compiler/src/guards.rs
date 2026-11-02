@@ -1,4 +1,26 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+
+use reify_core::{
+    ConstraintNodeId, Diagnostic, DiagnosticCode, DiagnosticLabel, Type, ValueCellId,
+};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFunction};
+
+use crate::annotations::{
+    extract_solver_hints, lower_annotations, validate_annotations, validate_solver_hint_collections,
+};
+use crate::expr::{compile_expr, compile_expr_guarded, extract_auto_free};
+use crate::geometry::{is_geometry_let, is_selector_expr};
+use crate::ice::{UnresolvedKind, emit_ice_unresolved};
+use crate::member_cell_decls::{
+    build_auto_let_value_cell_decl, build_param_value_cell_decl, fixup_option_none_for_let,
+    fixup_option_none_for_param, priv_flag_to_visibility, resolve_auto_let_cell_type,
+};
+use crate::scope::CompilationScope;
+use crate::type_resolution::{TypeAliasRegistry, resolve_type_expr_with_aliases};
+use crate::types::{
+    CompiledConstraint, CompiledGuardedGroup, GuardedDeclArm, ValueCellDecl, ValueCellKind,
+    Visibility,
+};
 
 pub(crate) fn collect_body_refs(expr: &CompiledExpr) -> Vec<ValueCellId> {
     let mut refs = Vec::new();
@@ -471,7 +493,7 @@ pub(crate) fn compile_guarded_members(
                         // Intentionally no `check_param_default_type` call in this
                         // closure: guarded params have never run that cross-check
                         // (see `build_param_value_cell_decl`'s doc comment in
-                        // entity.rs). Task #5058's dedup preserves that byte-for-byte
+                        // member_cell_decls.rs). Task #5058's dedup preserves that byte-for-byte
                         // — adding the call here would introduce a new diagnostic
                         // path for guarded params, not merely refactor an existing one.
                         param.default.as_ref().map(|expr| {
@@ -987,6 +1009,9 @@ mod narrow_arms_under_guard_tests {
 #[cfg(test)]
 mod guarded_param_default_tests {
     use super::*;
+    use reify_core::Severity;
+
+    use crate::types::CompiledModule;
 
     /// Parse + compile `source` using this crate's own (in-build) `compile`,
     /// never `reify_test_support::compile_source`: that helper links against
@@ -1007,7 +1032,7 @@ mod guarded_param_default_tests {
             "parse errors: {:?}",
             parsed.errors
         );
-        super::compile(&parsed)
+        crate::compile(&parsed)
     }
 
     /// A guarded-block param with a typed, dimensionally-correct default must

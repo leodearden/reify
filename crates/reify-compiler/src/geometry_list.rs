@@ -12,8 +12,13 @@
 //! list of geometry needs N such nodes with N known at compile time. That is
 //! precisely what this module computes.
 
-use super::*;
 use std::collections::HashSet;
+
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, Type};
+use reify_ir::CompiledFunction;
+
+use crate::entity::substitute_free_idents;
+use crate::scope::CompilationScope;
 
 /// The statically-known shape of a geometry-list let's initializer.
 ///
@@ -679,6 +684,7 @@ mod tests {
 mod expand_tests {
     use super::tests::let_init;
     use super::*;
+    use reify_core::Severity;
     use std::collections::HashSet;
 
     /// Classify + expand `src`, returning `(elements, diagnostics)`.
