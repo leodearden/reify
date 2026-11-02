@@ -9,6 +9,11 @@
 
 use std::fmt;
 
+use reify_core::ModulePath;
+use tree_sitter::Node;
+
+use crate::common::make_ts_parser;
+
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MustErrorKind {
@@ -19,6 +24,7 @@ enum MustErrorKind {
 }
 
 /// One tracked `.ri` that is declared to fail, and why.
+#[allow(dead_code)]
 struct MustErrorFixture {
     path: &'static str,
     kind: MustErrorKind,
@@ -26,25 +32,30 @@ struct MustErrorFixture {
 }
 
 /// Tracked `.ri` files that are declared to fail, sorted by path.
+#[allow(dead_code)]
 const MUST_ERROR_RI_FIXTURES: &[MustErrorFixture] = &[];
 
 /// A tracked tree whose UNDECLARED members the guard skips unread.
+#[allow(dead_code)]
 struct UnsweptTree {
     prefix: &'static str,
     reason: &'static str,
 }
 
 /// The trees the guard does not sweep.
+#[allow(dead_code)]
 const UNSWEPT_RI_TREES: &[UnsweptTree] = &[];
 
 /// What the guard demands of one tracked path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 enum Expectation {
     Clean,
     MustError(MustErrorKind),
     Unswept,
 }
 
+#[allow(dead_code)]
 fn expectation(_path: &str) -> Expectation {
     Expectation::Clean
 }
@@ -71,17 +82,72 @@ struct Observed {
     errors: Vec<String>,
 }
 
-fn observe(_source: &str) -> Observed {
+fn observe(source: &str) -> Observed {
+    let tree = make_ts_parser()
+        .parse(source, None)
+        .expect("tree-sitter returns a tree for any source");
+    let parsed = reify_syntax::parse(source, ModulePath::single("tracked_corpus"));
     Observed {
-        cst_fault: None,
-        errors: vec![],
+        cst_fault: first_cst_fault(tree.root_node()),
+        errors: parsed.render_errors(source),
     }
 }
 
+/// The first `ERROR` or `MISSING` node in pre-order. `has_error()` only
+/// prunes the descent; the fault itself is the node that IS one.
+fn first_cst_fault(node: Node<'_>) -> Option<CstFaultSite> {
+    if node.is_error() || node.is_missing() {
+        let start = node.start_position();
+        let label = if node.is_missing() {
+            format!("MISSING {}", node.kind())
+        } else {
+            "ERROR".to_owned()
+        };
+        return Some(CstFaultSite {
+            line: start.row + 1,
+            column: start.column + 1,
+            node: label,
+        });
+    }
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|child| child.has_error())
+        .find_map(first_cst_fault)
+}
+
+const REMEDY: &str =
+    "fix the file in this diff, or declare it in MUST_ERROR_RI_FIXTURES with a reason";
+
 /// The guard's verdict on one file: `None` when it meets its expectation,
 /// otherwise a message naming the file and the remedy.
-fn violation(_path: &str, _expected: Expectation, _observed: &Observed) -> Option<String> {
-    None
+fn violation(path: &str, expected: Expectation, observed: &Observed) -> Option<String> {
+    match (expected, &observed.cst_fault, observed.errors.first()) {
+        (Expectation::Clean, Some(site), _) => Some(format!(
+            "{path}: undeclared, but the Rust CST has a fault ({site}); {REMEDY}"
+        )),
+        (Expectation::Clean, None, Some(first)) => Some(format!(
+            "{path}: undeclared, but the lowering reports {} parse error(s), first `{first}`; \
+             {REMEDY}",
+            observed.errors.len()
+        )),
+        (Expectation::Clean, None, None) => None,
+        (Expectation::MustError(MustErrorKind::CstFault), None, _) => Some(format!(
+            "{path}: declared CstFault, but the Rust CST is clean; remove its \
+             MUST_ERROR_RI_FIXTURES entry (or reclassify it ErrorsOnly if the lowering \
+             still reports)"
+        )),
+        (Expectation::MustError(MustErrorKind::CstFault), Some(_), _) => None,
+        (Expectation::MustError(MustErrorKind::ErrorsOnly), Some(site), _) => Some(format!(
+            "{path}: declared ErrorsOnly, but the Rust CST has a fault ({site}); reclassify \
+             its MUST_ERROR_RI_FIXTURES entry as CstFault"
+        )),
+        (Expectation::MustError(MustErrorKind::ErrorsOnly), None, None) => Some(format!(
+            "{path}: declared ErrorsOnly, but the lowering reports no parse error; remove \
+             its MUST_ERROR_RI_FIXTURES entry"
+        )),
+        (Expectation::MustError(MustErrorKind::ErrorsOnly), None, Some(_)) => None,
+        (Expectation::Unswept, _, _) => None,
+    }
 }
 
 // ── verdict unit tests, over inline sources ─────────────────────────────────
@@ -108,7 +174,10 @@ fn observe_reports_a_cst_fault_with_its_location() {
 #[test]
 fn observe_reports_lowering_errors_on_a_clean_cst() {
     let observed = observe(ERRORS_ONLY);
-    assert_eq!(observed.cst_fault, None, "{ERRORS_ONLY:?} must have a clean CST");
+    assert_eq!(
+        observed.cst_fault, None,
+        "{ERRORS_ONLY:?} must have a clean CST"
+    );
     assert!(
         !observed.errors.is_empty(),
         "{ERRORS_ONLY:?} must report a lowering error"
@@ -182,5 +251,8 @@ fn declared_errors_only_needs_a_clean_cst_and_errors() {
     let faulty = violation(PROBE_PATH, declared, &observe(FAULTY))
         .expect("a declared ErrorsOnly with a CST fault must be a violation");
     assert!(faulty.contains(PROBE_PATH), "{faulty}");
-    assert!(faulty.contains("CstFault"), "{faulty} must say to reclassify");
+    assert!(
+        faulty.contains("CstFault"),
+        "{faulty} must say to reclassify"
+    );
 }
