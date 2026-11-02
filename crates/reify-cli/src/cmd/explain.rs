@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
-use crate::args::{EXPLAIN_USAGE, parse_single_file_arg};
+use crate::args::parse_single_file_arg;
+use crate::help::EXPLAIN_USAGE;
 use crate::{configured_eval_engine, parse_and_compile};
 
 /// Print per-cell objective provenance for every auto parameter resolved by eval.

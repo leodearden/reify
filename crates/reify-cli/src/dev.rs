@@ -81,11 +81,14 @@ pub fn render_inspection(node_id: &NodeId) -> String {
     )
 }
 
+/// Usage line for `reify dev`, also shown by `reify dev --help`.
+pub(crate) const DEV_USAGE: &str = "Usage: reify dev inspect-node <node-id>";
+
 /// Print the `inspect-node` usage, naming every accepted `<node-id>` form.
 fn print_inspect_node_usage() {
     let indexed_forms =
         IndexedNodeKind::ALL.map(|kind| format!("<entity>#{}[<index>]", kind.marker()));
-    eprintln!("Usage: reify dev inspect-node <node-id>");
+    eprintln!("{DEV_USAGE}");
     eprintln!(
         "  <node-id>: <entity>.<member> | {}",
         indexed_forms.join(" | ")

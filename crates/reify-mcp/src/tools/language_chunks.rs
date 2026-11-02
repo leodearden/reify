@@ -16,6 +16,7 @@ pub const CHUNKS: &[(&str, &str)] = &[
     ("occurrences", include_str!("chunks/occurrences.md")),
     ("parameters", include_str!("chunks/parameters.md")),
     ("purposes", include_str!("chunks/purposes.md")),
+    ("solving", include_str!("chunks/solving.md")),
     ("stdlib", include_str!("chunks/stdlib.md")),
     ("structures", include_str!("chunks/structures.md")),
     ("syntax", include_str!("chunks/syntax.md")),
