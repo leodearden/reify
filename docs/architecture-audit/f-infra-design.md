@@ -34,7 +34,7 @@ Three triggers, escalating in confidence:
 1. **Pre-done gate via fused-memory MCP** (primary). All `set_task_status(done)` calls route through fused-memory (per CLAUDE.md task-routing policy). A pre-write validator hook calls F's fast subset before the state transition. **The hook does not exist yet** — see §11 dependency D-1: implement session queues a dark-factory task to add it.
    - F's pre-done check runs **only P5** in-line (cheap: bounded SQL query + a `git log` + a `metadata.files` diff). P5 is the only pattern whose evidence is local to the just-closing task and whose false-positive rate is low enough to gate state transition.
    - On P5 detection: hook returns Err, set_task_status raises, the orchestrator workflow's done-transition aborts. F emits an `mcp__escalation__escalate_info` ticket with evidence and the offending task id.
-2. **Periodic sweep via `/audit`** (secondary). The `/audit` skill (§3) runs the full P1+P2+P5 pass over a configurable window (default: last 14 days of `done` task flips + workspace symbol delta). Cadence is human-driven (weekly or per-release), not cron-automated in slice 1 — Reify is solo OSS; a cron daemon adds infra without commensurate value. Cron-isation is a v2 follow-up.
+2. **Periodic sweep via `/audit`** (secondary). The `/audit` skill (§3) runs the full P1+P2+P5 pass over the whole task corpus. (2026-11-01) The original configurable window (default: last 14 days of `done` task flips) was deleted by #8807 with `--since`: whole-corpus sweeps are the contract. Cadence is human-driven (weekly or per-release), not cron-automated in slice 1 — Reify is solo OSS; a cron daemon adds infra without commensurate value. Cron-isation is a v2 follow-up.
 3. **`/review`-invoked** (tertiary). The existing `/review` skill's Phase 2 (architectural coherence) calls `/audit` as one of its passes (Q-F-4 answer). F's findings become Phase-2 evidence; `/review`'s Phase 3 triage routes them per F's severity ladder.
 
 Pre-done is the only state-blocking trigger. The other two are advisory and produce follow-up tasks / log entries.
@@ -121,11 +121,10 @@ Graph-walk invariant (Q-F-6) is **not** an explicit dependency-DAG walk in slice
   SELECT t.task_id, t.done_provenance, t.metadata
   FROM task_results t
   WHERE t.status='done'
-    AND t.updated_at > <window_start>
     AND t.task_id IN (<candidate-ids>);
   ```
 - Per row, run the corroboration checks above.
-- For pre-done invocations: candidate-ids = `[<incoming task id>]`; for periodic: candidate-ids = all done-flips in window.
+- For pre-done invocations: candidate-ids = `[<incoming task id>]`; for periodic: candidate-ids = every done task in the corpus (the window was deleted by #8807).
 
 **False-positive guards:**
 - Convergent fast-forward (sibling-absorbed): if metadata.files diff is empty on main BUT `git log main --grep <id> OR --grep <prd-slug>` returns a sibling-task commit covering the same files, downgrade to low (matches `project_unblock_convergent_ff_worktree_reap.md` pattern).
@@ -178,7 +177,7 @@ Dedupe key for medium follow-ups: `(parent_task_id, audit_cluster, symbol_or_pat
 
 | Artifact | Path | Lifecycle |
 |---|---|---|
-| Per-run JSON | `data/audit-runs/<iso-timestamp>.json` | Append per `/audit` invocation. Contains: timestamp, scope (window/task-id/pattern filter), findings list (each with severity, pattern, evidence refs, action taken, task-id-filed-if-any). Gitignored (under `data/`). |
+| Per-run JSON | `data/audit-runs/<iso-timestamp>.json` | Append per `/audit` invocation. Contains: timestamp, scope (task-id/pattern filter), findings list (each with severity, pattern, evidence refs, action taken, task-id-filed-if-any). Gitignored (under `data/`). |
 | Findings markdown index | `docs/architecture-audit/audit-findings/<run>/` | Per-run, human-readable; one `<finding-id>.md` per medium-or-high finding for browsability. Slice-1 v1: omit; slice-2 add if `data/audit-runs/*.json` proves unbrowsable. **Slice 1 keeps only the JSON time-series; markdown is on-demand via `/audit --format markdown`.** |
 | `gap-register.md` | `docs/architecture-audit/gap-register.md` | Phase-3 manual curation only. F-infra does **not** auto-promote findings into GR-IDs. Leo or a synthesis session reviews `data/audit-runs/*.json`, promotes the load-bearing ones to GR-IDs. |
 | Dedupe index | `data/audit-runs/index.json` | `(parent_task_id, audit_cluster, symbol_or_path) → finding_id` map. Append-only; rewrite on each run. |
@@ -196,9 +195,9 @@ F does **not** rewrite `/prd`-written metadata; it only reads.
 
 ### 8.2 `/review` (peer)
 
-`/review`'s Phase 2 ("Architectural Coherence") historically does its own stub-pattern scanning ad-hoc. After F lands, `/review` Phase 2 invokes `/audit --pattern P1,P2,P5 --since <last-review>` and folds findings into Phase 2's report. `/review` Phase 3 triage continues to do task creation; F's medium-severity finder also creates tasks, so dedupe via the index in §7 prevents double-filing.
+`/review`'s Phase 2 ("Architectural Coherence") historically does its own stub-pattern scanning ad-hoc. After F lands, `/review` Phase 2 invokes `/audit --pattern P1,P2,P5` (whole task corpus) and folds findings into Phase 2's report. `/review` Phase 3 triage continues to do task creation; F's medium-severity finder also creates tasks, so dedupe via the index in §7 prevents double-filing.
 
-`/review`'s briefing.yaml gains an optional `audit.window_days` field; default 14.
+(2026-11-01) The planned optional `audit.window_days` field in `/review`'s briefing.yaml was dropped with `--since` by #8807: an audit sweep has no window to configure.
 
 ### 8.3 Orchestrator (downstream)
 
