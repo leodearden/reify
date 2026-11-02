@@ -11,8 +11,9 @@
 //! # Performance
 //!
 //! This is a v0.4-T1 *shippable skeleton*: per-voxel work in the inner
-//! loop performs two `gradient_at_world` calls (12 trilinear samples
-//! each) plus a bidirectional walk of up to `4 × max_thickness_voxels`
+//! loop performs two `gradient_at_world` calls (a centre sample plus a
+//! ±½-spacing probe pair per axis: 7 trilinear samples each) plus a
+//! bidirectional walk of up to `4 × max_thickness_voxels`
 //! trilinear samples. At PRD-realistic 256³ grids (~16 M voxels) the
 //! cost is on the order of `O(N³ · max_thickness_voxels)` trilinear
 //! interpolations. The current narrow-band-filtered slab/sphere
@@ -746,15 +747,16 @@ pub fn compute_medial_mask(
                             };
 
                             // (d) gradient at each surface hit; reject if
-                            // either is degenerate (we cannot make a
+                            // either is unknown (the hit point is off the
+                            // grid) or degenerate (we cannot make a
                             // distinctness call without two well-defined
                             // normals).
-                            let gp_raw = gradient_at_world(sdf, hit_plus);
-                            let gm_raw = gradient_at_world(sdf, hit_minus);
-                            let Some(gp) = normalize3(gp_raw) else {
+                            let Some(gp) = gradient_at_world(sdf, hit_plus).and_then(normalize3)
+                            else {
                                 continue;
                             };
-                            let Some(gm) = normalize3(gm_raw) else {
+                            let Some(gm) = gradient_at_world(sdf, hit_minus).and_then(normalize3)
+                            else {
                                 continue;
                             };
 
@@ -1110,50 +1112,52 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
     grid
 }
 
-/// Gradient at a world coordinate via central finite differences over
-/// `sample_at_world`. Returns `[0, 0, 0]` (caller treats as degenerate)
-/// if either side falls outside the grid.
-///
-/// **Per-axis stencil offsets.** Each component uses
-/// `h_axis = 0.5 · spacing[axis]` for its own central-difference
-/// stencil, rather than a single global `h = 0.5 · min(spacing)`. The
-/// per-axis form is numerically defensible on anisotropic grids: the
-/// stencil offset along each axis matches the local voxel size, so
-/// the gradient estimate reflects underlying sampled values rather
-/// than trilinear-interpolation artifacts at sub-voxel offsets along
-/// the coarse axis. (No anisotropic test fixture currently exercises
-/// this — every fixture in the in-crate test suite uses unit spacing
-/// on all three axes; full anisotropic-grid coverage is deferred to
-/// integration tests against real `.vdb` files once the OpenVDB FFI
-/// lands. The per-axis form here at least removes one numerical
-/// pitfall in advance.)
-pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> [f64; 3] {
-    let hx = 0.5 * sdf.spacing[0];
-    let hy = 0.5 * sdf.spacing[1];
-    let hz = 0.5 * sdf.spacing[2];
+/// One gradient component from the samples `step` either side of `centre`.
+fn finite_difference(
+    centre: f64,
+    forward: Option<f64>,
+    backward: Option<f64>,
+    step: f64,
+) -> Option<f64> {
+    match (forward, backward) {
+        (Some(f), Some(b)) => Some((f - b) / (2.0 * step)),
+        (Some(f), None) => Some((f - centre) / step),
+        (None, Some(b)) => Some((centre - b) / step),
+        (None, None) => None,
+    }
+}
 
-    let gx = match (
-        sample_at_world(sdf, [world[0] + hx, world[1], world[2]]),
-        sample_at_world(sdf, [world[0] - hx, world[1], world[2]]),
-    ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * hx),
-        _ => 0.0,
+/// Gradient at a world coordinate via finite differences over
+/// `sample_at_world`, probing `±½·spacing[axis]` along each axis.
+///
+/// - Where both probes land on the grid, the component is the central
+///   difference.
+/// - Where only one does, it is the one-sided difference against the
+///   sample at `world` itself, which is the rule [`gradient_at_index`]
+///   applies at a grid face.
+/// - A single-sample axis is flat by convention (component `0.0`).
+/// - Returns `None` when `world` itself is off the grid.
+///
+/// **Per-axis stencil offsets.** Each component's offset is half that axis's
+/// own spacing rather than a global `0.5 · min(spacing)`, so on an
+/// anisotropic grid the estimate reflects sampled values rather than
+/// trilinear-interpolation artifacts at sub-voxel offsets along the coarse
+/// axis.
+pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<[f64; 3]> {
+    let centre = sample_at_world(sdf, world)?;
+    let component = |axis: usize| -> Option<f64> {
+        if sdf.axis_grids[axis].len() == 1 {
+            return Some(0.0);
+        }
+        let half = 0.5 * sdf.spacing[axis];
+        let probe = |delta: f64| {
+            let mut at = world;
+            at[axis] += delta;
+            sample_at_world(sdf, at)
+        };
+        finite_difference(centre, probe(half), probe(-half), half)
     };
-    let gy = match (
-        sample_at_world(sdf, [world[0], world[1] + hy, world[2]]),
-        sample_at_world(sdf, [world[0], world[1] - hy, world[2]]),
-    ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * hy),
-        _ => 0.0,
-    };
-    let gz = match (
-        sample_at_world(sdf, [world[0], world[1], world[2] + hz]),
-        sample_at_world(sdf, [world[0], world[1], world[2] - hz]),
-    ) {
-        (Some(p), Some(m)) => (p - m) / (2.0 * hz),
-        _ => 0.0,
-    };
-    [gx, gy, gz]
+    Some([component(0)?, component(1)?, component(2)?])
 }
 
 /// Walk the SDF along `+gradient_unit` and `-gradient_unit` from
