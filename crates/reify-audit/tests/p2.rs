@@ -542,9 +542,11 @@ mod tests {
         );
     }
 
-    /// A sweep passes the whole task corpus (PRD D6): `check()` over more than
-    /// fifty tasks with no target returns normally rather than refusing the
-    /// corpus size. `files: vec![]` keeps it hermetic — no diff calls fire.
+    /// A sweep passes the whole task corpus
+    /// (`docs/prds/v0_6/reify-audit-typed-findings-and-registry-lanes.md` D6):
+    /// `check()` over more than fifty tasks with no target returns normally
+    /// rather than refusing the corpus size. `files: vec![]` keeps it
+    /// hermetic — no diff calls fire.
     #[test]
     fn sweep_over_more_than_fifty_tasks_does_not_panic() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -568,30 +570,56 @@ mod tests {
         );
     }
 
-    /// A targeted check over a large corpus examines only the target: 51
-    /// benign tasks with `files: vec![]`, targeting one of them, report nothing.
+    /// A targeted check over a large corpus examines only the target. Of 51
+    /// tasks, only 600050 adds a stub marker: targeting the benign 600000
+    /// reports nothing, and targeting 600050 reports exactly its one marker.
     #[test]
-    fn targeted_check_over_a_large_corpus_reports_nothing_for_benign_tasks() {
+    fn targeting_narrows_the_check_to_the_target_task() {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
-        let git = MockGitOps::new();
+        let marked_id = "600050";
+        let marked_path = "crates/x/marked.rs";
+
+        let mut git = MockGitOps::new();
+        git.set_diff_added_lines(
+            "main",
+            &format!("task/{marked_id}"),
+            marked_path,
+            vec![(1, "    unimplemented!()".to_string())],
+        );
         let jc = MockJCodemunchOps::new();
 
         let mut task_metadata = HashMap::new();
         for i in 0..51usize {
             let id = format!("6000{i:02}");
-            task_metadata.insert(id.clone(), benign_meta(&id, vec![]));
+            let files = if id == marked_id {
+                vec![marked_path.to_string()]
+            } else {
+                vec![]
+            };
+            task_metadata.insert(id.clone(), benign_meta(&id, files));
         }
 
-        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
-            .with_tasks(task_metadata)
+        let benign_target = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata.clone())
             .targeting("600000");
-
-        let findings = p2_consumer_stub::check(&ctx);
+        let findings = p2_consumer_stub::check(&benign_target);
         assert!(
             findings.is_empty(),
-            "51 benign tasks with files=vec![] targeting 600000 should produce no findings; got {:?}",
+            "targeting benign 600000 must not report 600050's marker; got {:?}",
             findings
         );
+
+        let marked_target = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .targeting(marked_id);
+        let findings = p2_consumer_stub::check(&marked_target);
+        assert_eq!(
+            findings.len(),
+            1,
+            "targeting 600050 must report its one marker; got {:?}",
+            findings
+        );
+        assert_eq!(findings[0].task_id, marked_id);
     }
 
     /// Verify that a stub marker appearing in two tasks' diffs at the same location

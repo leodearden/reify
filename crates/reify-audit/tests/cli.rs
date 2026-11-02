@@ -1136,8 +1136,9 @@ mod cli {
 
     /// A default sweep — no `--pattern` or `--task` — over more than fifty
     /// tasks runs to completion. The whole corpus is the sweep contract
-    /// (PRD D6), so no corpus size is refused: there is no panic in a debug
-    /// build and no "unbounded backlog" breadcrumb in either profile.
+    /// (`docs/prds/v0_6/reify-audit-typed-findings-and-registry-lanes.md` D6),
+    /// so no corpus size is refused: there is no panic in a debug build and no
+    /// "unbounded backlog" breadcrumb in either profile.
     #[test]
     fn default_sweep_over_more_than_fifty_tasks_does_not_panic() {
         let tmp = tempfile::tempdir().expect("create tempdir");

@@ -390,6 +390,9 @@ impl<'g> MainlineLines<'g> {
     }
 }
 
+/// Key: `(task_id, path)` → `Vec<(line_no, content, label)>`
+type GroupMap = std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>>;
+
 /// Scan all tasks in `ctx.task_metadata()` for canonical stub markers in their
 /// added-line diff and return [`Pattern::P2ConsumerStub`] findings.
 ///
@@ -401,14 +404,11 @@ impl<'g> MainlineLines<'g> {
 /// omits a `status != "done"` filter (see the `NOTE` comment inside the body).
 ///
 /// **Sweep**: no target; pass the whole task corpus
-/// (PRD D6). P2 has no status filter, so a non-done task's added
-/// `TODO(... pending)` markers are reported too.
+/// (`docs/prds/v0_6/reify-audit-typed-findings-and-registry-lanes.md` D6).
+/// P2 has no status filter, so a non-done task's added `TODO(... pending)`
+/// markers are reported too.
 ///
 /// Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
-///
-/// Key: `(task_id, path)` → `Vec<(line_no, content, label)>`
-type GroupMap = std::collections::HashMap<(String, String), Vec<(usize, String, &'static str)>>;
-
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     // Phase 1 — collect all surviving (path, line_no, content, label) per task.
     //
@@ -419,8 +419,9 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     //   would suppress every finding on the primary call path (`check_pre_done`-style
     //   single-task narrowing via `target_task_id`).
     //
-    //   A sweep passes the whole task corpus (PRD D6), so a non-done task's added
-    //   `TODO(... pending)` markers are reported too.
+    //   A sweep passes the whole task corpus (D6 of the PRD cited in this fn's
+    //   rustdoc), so a non-done task's added `TODO(... pending)` markers are
+    //   reported too.
     //
     //   Reference: `docs/architecture-audit/f-infra-design.md` §5 P2 and §10.
 
