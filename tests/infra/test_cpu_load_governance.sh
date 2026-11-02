@@ -1019,6 +1019,77 @@ else
         test "$_fixture_pin6_rc" -eq 69
 fi
 
+# ----------------------------------------------------------------------------
+# ROW4-LAUNCH-VACUITY: the launch/stop seam ROW4 starts and ends its burns
+# through.  `_row4_launch_role_burn` takes the governed-exec wrapper as a
+# parameter, so this block hands it a pass-through stub: the REAL fixture and
+# its pinning run, with no cgroup governance at all — which is what keeps the
+# block always-on, including under the deflake meta-test's
+# REIFY_CPU_GOVERN_DISABLE=1.  Same preconditions as FIXTURE-PIN.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-LAUNCH-VACUITY: launch/stop seam (always-on) ---"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP ROW4-LAUNCH-VACUITY: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW4-LAUNCH-VACUITY: own Cpus_allowed_list unreadable — no confined pin list to pass"
+else
+    # Stand-in for cpu-governed-exec.sh: drop `--role <r> --` and run the
+    # payload directly.  The seam picks the role's slice by env var and role,
+    # neither of which matters without governance.
+    _row4_launch_stub="$WORK/row4-launch-stub-gov-exec.sh"
+    cat > "$_row4_launch_stub" << 'EOF_LAUNCH_STUB'
+#!/usr/bin/env bash
+shift 2
+[ "${1:-}" = "--" ] && shift
+exec "$@"
+EOF_LAUNCH_STUB
+
+    _row4_launch_ready_task="$WORK/row4-launch-ready-task"
+    _row4_launch_ready_merge="$WORK/row4-launch-ready-merge"
+    _row4_launch_rc=0
+    _row4_launch_role_burn "$_row4_launch_stub" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" 5 \
+        "$_row4_launch_ready_task" || _row4_launch_rc=$?
+    _row4_launch_role_burn "$_row4_launch_stub" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" 5 \
+        "$_row4_launch_ready_merge" || _row4_launch_rc=$?
+
+    # (1) Both roles, launched through the seam, report ready.
+    _row4_launch1_rc=0
+    _row4_await_ready 30 "$_row4_launch_ready_task" "$_row4_launch_ready_merge" \
+        || _row4_launch1_rc=$?
+    assert "ROW4-LAUNCH-VACUITY-1: task and merge burns launched through the seam both report ready (rc ${_row4_launch1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_row4_launch1_rc" -eq 0
+
+    # (2) The property the live ROW4-1 depends on: each pinned CPU hosts one
+    # task and one merge worker.
+    _row4_launch_task_cpus="$(_row4_worker_affinities "$_row4_launch_ready_task" 2>/dev/null || true)"
+    _row4_launch_merge_cpus="$(_row4_worker_affinities "$_row4_launch_ready_merge" 2>/dev/null || true)"
+    assert "ROW4-LAUNCH-VACUITY-2: each pinned CPU hosts one task and one merge worker (task=${_row4_launch_task_cpus//$'\n'/,}, merge=${_row4_launch_merge_cpus//$'\n'/,})" \
+        _row4_pin_coresident "$_row4_launch_task_cpus" "$_row4_launch_merge_cpus"
+
+    # (3) One recorded wrapper pid per launched role.
+    _row4_launch_pid_count="$(awk '{ print NF }' <<< "${_ROW4_BURN_PIDS:-}")"
+    assert "ROW4-LAUNCH-VACUITY-3: _ROW4_BURN_PIDS holds exactly 2 wrapper pids, one per role (got ${_row4_launch_pid_count}: '${_ROW4_BURN_PIDS:-}')" \
+        test "$_row4_launch_pid_count" -eq 2
+
+    # (4) NON-VACUITY CRUX for the stop: -2 proved the workers were alive and
+    # pinned, so "unavailable" afterwards can only mean the stop reaped them.
+    # An orphaned spinner is what contaminated the next window when the burns
+    # were ended by killing a bare payload instead.
+    _row4_stop_rc=0
+    _row4_stop_burns || _row4_stop_rc=$?
+    _row4_launch_after="$({ _row4_worker_affinities "$_row4_launch_ready_task"
+                            _row4_worker_affinities "$_row4_launch_ready_merge"; } 2>/dev/null | sort -u || true)"
+    assert "ROW4-LAUNCH-VACUITY-4: after _row4_stop_burns every worker listed in both ready files reads 'unavailable' (got '${_row4_launch_after//$'\n'/,}'); stop reaps the pinned spinners, never orphans them" \
+        test "$_row4_launch_after" = "unavailable"
+    assert "ROW4-LAUNCH-VACUITY-4b: _ROW4_BURN_PIDS is empty after the stop (got '${_ROW4_BURN_PIDS:-}')" \
+        test -z "${_ROW4_BURN_PIDS:-}"
+    # ROW4 calls the stop bare, under `set -e`: a non-zero rc would abort the suite.
+    assert "ROW4-LAUNCH-VACUITY-4c: _row4_stop_burns returns 0 (got ${_row4_stop_rc}); it runs bare under set -e" \
+        test "$_row4_stop_rc" -eq 0
+fi
+
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
