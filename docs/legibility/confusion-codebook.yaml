@@ -2415,6 +2415,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Partial match: watcher-rearm.sh CEILING (exit 124) timeout is retried repeatedly. Here the retries are verbatim rather than cosmetic, and the session ends by clean digest rather than user interrupt.'
+  - date: '2026-11-01'
+    project: reify
+    session: 38b5268f-d5d9-462c-84f9-12d7642e03a9
+    origin_phase: unknown
+    manifested_phase: ops
+    note: watcher-rearm.sh CEILING timeout retried repeatedly with only the timeout argument changed (3600 to 3300). The session shows no user interrupt, so the ending differs from the matched entry's description.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260720-5
@@ -4146,6 +4152,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The bounded-wait watcher reached its exit-124 ceiling, which the digest records as a designed outcome. The digest's tool_error is a separate get_pending_escalations timeout, so this match is partial.
+  - date: '2026-11-01'
+    project: reify
+    session: 38b5268f-d5d9-462c-84f9-12d7642e03a9
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bounded-wait watcher timeout (exit 124 / WATCHER_REARM_OUTCOME CEILING) recurred across four Bash calls in the session.
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4664,6 +4676,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: 'Bash watcher-rearm command with --timeout 3600 was re-issued three times with identical arguments after the bounded wait hit its own ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING).'
+  - date: '2026-11-01'
+    project: reify
+    session: 38b5268f-d5d9-462c-84f9-12d7642e03a9
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bounded rearm wait was re-issued with the same command and timeout (3600) after hitting its own ceiling (exit 124, CEILING), and then re-issued again with only the timeout lowered to 3300.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -9639,6 +9657,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: A fused-memory MCP call (resolve_ticket) returned only 'The operation timed out.' with no diagnostic detail. The entry describes a timeout with no diagnostic detail on a fused-memory call. The digest shows a single occurrence, not repeated retries, and the entry concerns get_task rather than resolve_ticket, so this is a partial match.
+  - date: '2026-11-01'
+    project: reify
+    session: abc5c87f-5084-4d2e-9f03-707e124621dc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: fused-memory submit_task timed out at turns 636 and 644 with no diagnostic detail, and the same escalation-id payload was re-issued. The matched entry is about get_task, so this is a partial match on the same timeout-without-diagnostics pattern for a different tool.
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -9734,6 +9758,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: At turn 73 the Read tool was called on a large transcript .jsonl and rejected for exceeding the token cap (110400 tokens vs 25000). The agent then had to fall back to sed/grep-style line extraction.
+  - date: '2026-11-01'
+    project: reify
+    session: abc5c87f-5084-4d2e-9f03-707e124621dc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Read of docs/prds/v0_6/geometry-algebra-solver-unification.md (turn 46) exceeded the 25000-token cap even with offset/limit, and the error suggests allow_large. This matches the file-size-cap entry; the file is a PRD, not generated source.
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -10125,6 +10155,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Weak fit. The digest lists two slash-command invocations (/team, /prd) with session-brief text under User Corrections, the same kind of digest mislabeling this entry describes. The digest shows no agent confusion, and the not_found items lack the context needed to support a candidate.
+  - date: '2026-11-01'
+    project: reify
+    session: 483bed29-24ee-4756-ac39-d496c904bb5e
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'The digest''s User Corrections section lists a system-injected block notice (Task ID, Worktree, ''Block reason: Post-merge verification failed'') as a user correction. This is the same digest miscategorization pattern as the codebook entry, though the source here is a block notice rather than an async background-agent failure. Partial fit; origin phase is not evidenced in the digest.'
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -12324,6 +12360,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Weak match. The error-neighborhood command chains `test -f .task/plan.json && python3 ...` after an ls of the .task-meta/_lane-30/ directory, which lists no plan or iterations artifact. The exit 1 is consistent with plan.json being absent at bootstrap, but the digest never shows the test result directly.
+  - date: '2026-11-01'
+    project: reify
+    session: 99764cba-5b96-4a04-a5a6-71976042e3a8
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: At turn 27 the agent in a warm-lane worktree cwd (_lane-40) reads .task/plan.json and .task/iterations.jsonl, and both return 'No such file or directory' (not_found x2, tool_error 1). This matches the codebook's plan.json / task-meta iteration artifact missing at bootstrap. Phase is not supported by the digest, so both phases are unknown.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -31627,6 +31669,45 @@ candidates:
   finding_tags:
   - tests
   - kind:confusion
+- id: cand-20261101-1
+  title: Agent retries a permission-denied Bash diagnostic with reworded git-based variants instead of stopping
+  cause: After Bash was denied in don't-ask mode, the agent issued three reformulated git commands (git -C grep, git log -S) to reach the same blocked information, rather than treating the denial as a stop signal and reporting it.
+  area: agent-tooling
+  first_seen: '2026-11-01'
+  disposition: pending
+  sightings:
+  - date: '2026-11-01'
+    project: reify
+    session: e38738df-de4e-40ff-bf53-80d397034132
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: Permission to use Bash has been denied because Claude Code is running in don't ask mode.
+- id: cand-20261101-2
+  title: Rust-coupled .ri fixture registration is a hand-maintained list in verify.sh with no discoverable link to the fixture
+  cause: A test fixture read by a compiled test target must be listed in verify.sh's _RUST_COUPLED_RI_FIXTURES array. Nothing at the fixture or test site signals this, so adding the fixture without updating the list passes review and only fails at verify time. The agent then had to search HEAD and main to find where the list is defined.
+  area: test-infrastructure
+  first_seen: '2026-11-01'
+  disposition: pending
+  sightings:
+  - date: '2026-11-01'
+    project: reify
+    session: e38738df-de4e-40ff-bf53-80d397034132
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: tests/prd-gate/fixtures/ssc_refuted_pair.ri -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh's _RUST_COUPLED_RI_FIXTURES)
+- id: cand-20261101-3
+  title: Code comment asserts a false cache-configuration fact, so follow-up work would be planned on a false premise
+  cause: A new code comment stated that nothing outside tests configures a persistent cache. The CLI's configured_eval_engine attaches one by default for reify eval, explain and report. A future change relying on the comment would misjudge the hardcoded ContentHash(0) cache key's reach and could serve stale solver results.
+  area: code comments / documentation accuracy
+  first_seen: '2026-11-01'
+  disposition: pending
+  sightings:
+  - date: '2026-11-01'
+    project: reify
+    session: 3ced990f-a62a-4212-a4a7-74529fed1365
+    origin_phase: implement
+    manifested_phase: unknown
+    evidence_quote: The new cost note on `RedispatchPassState` says nothing outside tests configures a persistent cache. That's wrong
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
