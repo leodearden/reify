@@ -791,6 +791,76 @@ wait "$_row4_ready_writer_pid" 2>/dev/null || true
 assert "ROW4-READY-VACUITY-4: file written by a background subshell AFTER the poll started => rc 0 (got ${_row4_ready_vacuity4_rc}); the helper polls, a single-shot check at t=0 would return 1" \
     test "$_row4_ready_vacuity4_rc" -eq 0
 
+# ----------------------------------------------------------------------------
+# ROW4-PIN-VACUITY: the per-CPU co-residency predicate.  Each argument is a
+# newline-separated list of per-worker Cpus_allowed_list strings; the predicate
+# holds iff both lists are non-empty, every entry is ONE cpu id, and the two
+# lists name the same multiset of CPUs (every pinned CPU hosts equally many task
+# and merge workers).
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-PIN-VACUITY: per-CPU co-residency predicate (always-on) ---"
+
+# (1) Each pinned CPU hosts one task and one merge worker; list order is
+# irrelevant (workers are listed in fork order, which differs per role).
+_row4_pin_vacuity1_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 31)" "$(printf '%s\n%s' 31 30)" \
+    || _row4_pin_vacuity1_rc=$?
+assert "ROW4-PIN-VACUITY-1: task {30,31} vs merge {31,30} => rc 0 (got ${_row4_pin_vacuity1_rc}); order-insensitive" \
+    test "$_row4_pin_vacuity1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: today's set-pinned shape.  Every worker of both roles
+# reports the whole mask "30-31": the two lists are identical, yet nothing is
+# pinned, so the load balancer is free to stack both merge workers on one CPU
+# (field merge shares 0.51-0.65).  Identical lists alone must NOT satisfy the
+# predicate, or it would bless exactly the placement it exists to forbid.
+_row4_pin_vacuity2_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30-31 30-31)" "$(printf '%s\n%s' 30-31 30-31)" \
+    || _row4_pin_vacuity2_rc=$?
+assert "ROW4-PIN-VACUITY-2: NON-VACUITY CRUX -- both roles report the whole mask 30-31 (today's set-pinned shape) => rc EXACTLY 1 (got ${_row4_pin_vacuity2_rc}); identical lists of un-pinned workers are not co-residency" \
+    test "$_row4_pin_vacuity2_rc" -eq 1
+
+# (3) Unbalanced: CPU 31 hosts a merge worker and no task worker, so that
+# merge worker runs uncontended and inflates the share.
+_row4_pin_vacuity3_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 30)" "$(printf '%s\n%s' 30 31)" \
+    || _row4_pin_vacuity3_rc=$?
+assert "ROW4-PIN-VACUITY-3: task {30,30} vs merge {30,31} => rc EXACTLY 1 (got ${_row4_pin_vacuity3_rc}); CPU 31 has a merge worker but no task worker" \
+    test "$_row4_pin_vacuity3_rc" -eq 1
+
+# (4) FAIL-SAFE: a worker whose /proc entry could not be read is reported as
+# "unavailable", and a vanished worker is never co-resident.
+_row4_pin_vacuity4_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 unavailable)" "$(printf '%s\n%s' 30 31)" \
+    || _row4_pin_vacuity4_rc=$?
+assert "ROW4-PIN-VACUITY-4: task {30,unavailable} vs merge {30,31} => rc EXACTLY 1 (got ${_row4_pin_vacuity4_rc}); a vanished worker is never co-resident" \
+    test "$_row4_pin_vacuity4_rc" -eq 1
+
+# (4b) The same fail-safe where the two lists are IDENTICAL: case (4) alone
+# would pass for a predicate that only compares the lists, since there they
+# differ anyway.  When every worker of both roles has vanished (the burns ended
+# early), both lists read "unavailable" and compare equal — only the per-entry
+# validation keeps that from being reported as co-residency.
+_row4_pin_vacuity4b_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' unavailable unavailable)" "$(printf '%s\n%s' unavailable unavailable)" \
+    || _row4_pin_vacuity4b_rc=$?
+assert "ROW4-PIN-VACUITY-4b: every worker of both roles unavailable (identical lists) => rc EXACTLY 1 (got ${_row4_pin_vacuity4b_rc}); equal lists of vanished workers are not co-residency" \
+    test "$_row4_pin_vacuity4b_rc" -eq 1
+
+# (5) Nothing was listed at all (e.g. an unreadable ready file).
+_row4_pin_vacuity5_rc=0
+_row4_pin_coresident "" "" || _row4_pin_vacuity5_rc=$?
+assert "ROW4-PIN-VACUITY-5: both lists empty => rc EXACTLY 1 (got ${_row4_pin_vacuity5_rc}); an empty observation is not co-residency" \
+    test "$_row4_pin_vacuity5_rc" -eq 1
+
+# (6) A one-CPU affinity mask with round-robin pinning puts every worker of
+# both roles on that one CPU: still co-resident, and the 3:1 split still holds.
+_row4_pin_vacuity6_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 5 5)" "$(printf '%s\n%s' 5 5)" \
+    || _row4_pin_vacuity6_rc=$?
+assert "ROW4-PIN-VACUITY-6: task {5,5} vs merge {5,5} => rc 0 (got ${_row4_pin_vacuity6_rc}); a one-CPU mask is still co-resident" \
+    test "$_row4_pin_vacuity6_rc" -eq 0
+
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
