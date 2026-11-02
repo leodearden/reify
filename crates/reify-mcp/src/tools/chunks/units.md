@@ -188,12 +188,11 @@ of `docs/prds/v0_6/check-diagnostic-truthfulness.md`.
     units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer
   `reify check` EXITS 1 on a bare `mirror` pivot — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build
-  `reify check` EXITS 1 with no verdict line on a bare box, translate, fillet or rotate_around
-    argument, and 0 on its migration — PINNED at the CLI seam by
+  `reify check` EXITS 1 with no verdict line on a bare argument to the compiler-checked
+    constructors above, and 0 on its migration — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs::check_exits_1_before_its_verdict_on_a_bare_compiler_checked_length
-  `reify check` EXITS 1 after printing All constraints satisfied. on a bare helix, polygon, arc,
-    line_segment, interp, bezier or nurbs argument, and 0 on its migration — PINNED at the CLI
-    seam by
+  `reify check` EXITS 1 after its verdict line on a bare argument to the eval-checked
+    constructors above, and 0 on its migration — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs::check_exits_1_after_its_verdict_on_a_bare_eval_checked_length
   a unit in a DIMENSIONLESS slot is not reported — UNPINNED, prose only. Measured 2026-08-30:
     scale(g, 2mm) accepted, dimensioned axis direction in mirror and linear_pattern accepted.
