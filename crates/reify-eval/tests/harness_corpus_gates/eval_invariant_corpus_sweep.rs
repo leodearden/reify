@@ -1671,7 +1671,18 @@ fn diag_per_file_timing() {
     timings.sort();
     timings.reverse();
     for (d, f) in timings.iter().take(40) {
-        eprintln!("DIAG {d:?} {f}");
+        eprintln!("DIAG {d:?} shard {:02} {f}", shard_of(f));
+    }
+    let mut shard_cost = vec![std::time::Duration::ZERO; CORPUS_SHARD_COUNT];
+    for (d, f) in &timings {
+        shard_cost[shard_of(f)] += *d;
+    }
+    let total: std::time::Duration = shard_cost.iter().sum();
+    eprintln!("DIAG-TOTAL {} file(s) evaluated, {total:?}", timings.len());
+    let mut ranked: Vec<_> = shard_cost.into_iter().enumerate().collect();
+    ranked.sort_by(|(_, a), (_, b)| b.cmp(a));
+    for (shard, sum) in ranked {
+        eprintln!("DIAG-SHARD {shard:02} {sum:?}");
     }
 }
 
