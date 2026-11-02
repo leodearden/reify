@@ -132,6 +132,8 @@ mod sub_decl_specialization_body_parser_tests;
 mod sub_decl_specialization_tests;
 #[path = "harness_syntax/sub_placement_spec_example_parses.rs"]
 mod sub_placement_spec_example_parses;
+#[path = "harness_syntax/tracked_ri_parse_guard.rs"]
+mod tracked_ri_parse_guard;
 #[path = "harness_syntax/trait_tests.rs"]
 mod trait_tests;
 #[path = "harness_syntax/type_alias_tests.rs"]
