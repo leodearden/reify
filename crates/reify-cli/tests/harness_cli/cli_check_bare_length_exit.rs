@@ -86,9 +86,15 @@ structure def BareLengthProbe {{
     common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")])
 }
 
+/// `Err(message())` unless `holds`.
+fn ensure(holds: bool, message: impl FnOnce() -> String) -> Result<(), String> {
+    if holds { Ok(()) } else { Err(message()) }
+}
+
 /// The bare form exits 1, blames every LENGTH slot, and stops in `row.layer`;
 /// its dimensioned twin, in the identical wrapper, exits 0 with a clean stderr.
-fn assert_layer_rejects(row: &Row) {
+/// `Err` carries the first of these that does not hold.
+fn confirm_layer_rejects(row: &Row) -> Result<(), String> {
     let bare = row.bare;
     if row.layer == Layer::Eval && !reify_kernel_occt::OCCT_AVAILABLE {
         // The eval-layer rejection comes from the kernel-backed realize pass,
@@ -97,68 +103,86 @@ fn assert_layer_rejects(row: &Row) {
             "skipping eval-layer bare-length exit assertions for {bare}: OCCT \
              unavailable (cfg(has_occt) not set — stub-mode build)"
         );
-        return;
+        return Ok(());
     }
 
     let (status, stdout, stderr) = check_form(bare);
-    assert_eq!(
-        status.code(),
-        Some(1),
-        "a bare number in a LENGTH slot must make `reify check` exit exactly 1 \
-         for {bare}.\nstdout: {stdout}\nstderr: {stderr}"
-    );
+    ensure(status.code() == Some(1), || {
+        format!(
+            "a bare number in a LENGTH slot must make `reify check` exit exactly 1 \
+             for {bare}, got {:?}.\nstdout: {stdout}\nstderr: {stderr}",
+            status.code()
+        )
+    })?;
     let op = bare.split_once('(').map_or(bare, |(op, _)| op);
     for slot in row.blamed {
         let needle = format!("{op}: {slot}{LENGTH_SLOT_DIAGNOSTIC_MARKER}");
-        assert!(
-            stderr.contains(&needle),
-            "every bare LENGTH slot of {bare} must be blamed; `{needle}` is \
-             missing.\nstdout: {stdout}\nstderr: {stderr}"
-        );
+        ensure(stderr.contains(&needle), || {
+            format!(
+                "every bare LENGTH slot of {bare} must be blamed; `{needle}` is \
+                 missing.\nstdout: {stdout}\nstderr: {stderr}"
+            )
+        })?;
     }
     match row.layer {
-        Layer::Compiler => assert!(
-            !stdout.contains(CLEAN_SUMMARY),
-            "{bare} must be stopped by the compiler, before evaluation prints a \
-             verdict.\nstdout: {stdout}\nstderr: {stderr}"
-        ),
-        Layer::Eval => assert!(
-            stdout.contains(CLEAN_SUMMARY),
-            "{bare} must evaluate to a clean verdict, so that only the post-verdict \
-             Severity::Error gate can produce exit 1.\nstdout: {stdout}\nstderr: {stderr}"
-        ),
+        Layer::Compiler => ensure(!stdout.contains(CLEAN_SUMMARY), || {
+            format!(
+                "{bare} must be stopped by the compiler, before evaluation prints a \
+                 verdict.\nstdout: {stdout}\nstderr: {stderr}"
+            )
+        })?,
+        Layer::Eval => ensure(stdout.contains(CLEAN_SUMMARY), || {
+            format!(
+                "{bare} must evaluate to a clean verdict, so that only the post-verdict \
+                 Severity::Error gate can produce exit 1.\nstdout: {stdout}\nstderr: {stderr}"
+            )
+        })?,
     }
 
     let dimensioned = row.dimensioned;
     let (status, stdout, stderr) = check_form(dimensioned);
-    assert_eq!(
-        status.code(),
-        Some(0),
-        "the dimensioned twin of {bare}, {dimensioned}, must pass `reify check`, \
-         or the bare form's exit 1 is not attributable to its units.\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        stdout.contains(CLEAN_SUMMARY),
-        "the dimensioned twin of {bare}, {dimensioned}, must reach a clean \
-         verdict.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        !stderr.lines().any(|line| line.starts_with("error:")),
-        "the dimensioned twin of {bare}, {dimensioned}, must report no error.\n\
-         stdout: {stdout}\nstderr: {stderr}"
-    );
+    ensure(status.code() == Some(0), || {
+        format!(
+            "the dimensioned twin of {bare}, {dimensioned}, must pass `reify check`, \
+             or the bare form's exit 1 is not attributable to its units; got {:?}.\n\
+             stdout: {stdout}\nstderr: {stderr}",
+            status.code()
+        )
+    })?;
+    ensure(stdout.contains(CLEAN_SUMMARY), || {
+        format!(
+            "the dimensioned twin of {bare}, {dimensioned}, must reach a clean \
+             verdict.\nstdout: {stdout}\nstderr: {stderr}"
+        )
+    })?;
+    let reports_an_error = stderr.lines().any(|line| line.starts_with("error:"));
+    ensure(!reports_an_error, || {
+        format!(
+            "the dimensioned twin of {bare}, {dimensioned}, must report no error.\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        )
+    })
 }
 
+/// Runs EVERY row of `layer` before failing, so a change that moves several
+/// constructors at once (a shared slot table, say) names all of them in one run.
 fn assert_every_row_of(layer: Layer) {
     let rows: Vec<&Row> = ROWS.iter().filter(|row| row.layer == layer).collect();
     assert!(
         !rows.is_empty(),
         "no {layer:?}-layer row: this test would pass vacuously"
     );
-    for row in rows {
-        assert_layer_rejects(row);
-    }
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|row| confirm_layer_rejects(row).err())
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} of the {} {layer:?}-layer rows failed:\n\n{}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n\n")
+    );
 }
 
 #[test]
