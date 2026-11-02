@@ -209,10 +209,16 @@
 #                                       anti-#4901); bounds the ROW4 parent-slice quota,
 #                                       the confined per-role worker count, and the
 #                                       confined pin-list size (CONFINE_CPUS below)
-#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit taskset -c pin list override for the
-#                                       ROW4 confined burns (default: derived at runtime
-#                                       as the LAST confine-cores CPUs of this process's
-#                                       own Cpus_allowed_list; esc-4926-3 ruling)
+#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit pin list override for the ROW4
+#                                       confined burns: CPU ids and ascending N-M
+#                                       ranges, comma-separated ("30,31" or "30-31").
+#                                       Expanded to single ids, since each worker is
+#                                       pinned to ONE CPU (cpu_load_fixture.sh
+#                                       --pin-cpus); anything else (a stride, a
+#                                       typo) exits 64 at startup.  (default: derived
+#                                       at runtime as the LAST confine-cores CPUs of
+#                                       this process's own Cpus_allowed_list;
+#                                       esc-4926-3 ruling)
 #   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the two seams below (task
 #                                       5930). Both are refused unless this is 1.
 #                                       Nothing in the repo sets it except
@@ -648,9 +654,32 @@ _row4_confine_workers() {
     # oversubscription idiom, scaled down to the confined budget).
     _row4_confine_cores
 }
+# _row4_expand_cpu_list <list>
+#   Expands a CPU list of ids and N-M ranges ("0-3,7,9-10") into one decimal id
+#   per line.  Returns 1 for anything else — an empty or non-numeric entry, a
+#   descending range, a stride — with whatever it had expanded so far on stdout,
+#   so a caller must discard the output when it fails.
+_row4_expand_cpu_list() {
+    awk -v list="$1" 'BEGIN {
+        n = split(list, entry, ",")
+        for (i = 1; i <= n; i++) {
+            if (entry[i] ~ /^[0-9]+$/) { print entry[i] + 0; continue }
+            if (split(entry[i], bound, "-") == 2 &&
+                    bound[1] ~ /^[0-9]+$/ && bound[2] ~ /^[0-9]+$/ &&
+                    bound[1] + 0 <= bound[2] + 0) {
+                for (cpu = bound[1] + 0; cpu <= bound[2] + 0; cpu++) print cpu
+                continue
+            }
+            malformed = 1
+        }
+        exit malformed
+    }'
+}
 _row4_confine_cpus() {
     # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
-    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # of this process's OWN allowed set, comma-joined as SINGLE ids — every
+    # worker is pinned to one of them (cpu_load_fixture.sh --pin-cpus takes ids
+    # and commas only), and the same list serves `taskset -c` for the launcher.
     # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
     # list — cross-run contention on the pair deepens per-CPU co-residency
     # and empirically improves ratio convergence (0.74 shared vs 0.69
@@ -661,17 +690,25 @@ _row4_confine_cpus() {
     # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
     # cpu0-adjacent housekeeping/IRQ bias.
     if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
-        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        # The override is an operator's value, so it is expanded to single ids
+        # here and refused if it is not a CPU list at all: handed on as it
+        # stands, a range or a typo only surfaces as a fixture that never
+        # reports ready.  Exit 64 aborts the suite (set -e) at the hoisted
+        # _ROW4_CONFINE_CPUS assignment, before any guard that uses the list.
+        local override_ids
+        if ! override_ids="$(_row4_expand_cpu_list "$REIFY_CPU_GOV_TEST_CONFINE_CPUS")"; then
+            echo "ERROR: REIFY_CPU_GOV_TEST_CONFINE_CPUS must list CPU ids and ascending N-M ranges, e.g. 30,31 or 30-31 (got '${REIFY_CPU_GOV_TEST_CONFINE_CPUS}')" >&2
+            return 64
+        fi
+        echo "${override_ids//$'\n'/,}"
         return 0
     fi
     local want mask
     want="$(_row4_confine_cores)"
     mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
     [ -z "$mask" ] && return 0
-    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
-    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
-        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
-    done | tail -n "$want" | paste -sd, -
+    # Keep the last $want ids of the expanded mask; comma-join.
+    _row4_expand_cpu_list "$mask" | tail -n "$want" | paste -sd, -
 }
 # _row4_confine_apply_quota <parent_slice> <quota>
 #   Best-effort: vivify the parent slice (systemctl --user start) then set
@@ -2887,6 +2924,38 @@ _confine_pin_nproc_hi="$(
 )"
 assert "CONFINE-PIN-2: pin list is byte-identical under faked nproc=4 vs nproc=64 ('${_confine_pin_nproc_lo}' == '${_confine_pin_nproc_hi}')" \
     test "$_confine_pin_nproc_lo" = "$_confine_pin_nproc_hi"
+
+# CONFINE-PIN-3: the REIFY_CPU_GOV_TEST_CONFINE_CPUS override reaches
+# cpu_load_fixture.sh --pin-cpus, which takes single CPU ids and commas only, so
+# _row4_confine_cpus must hand over single ids.  A range passed through verbatim
+# made every guard that runs the fixture wait out its readiness deadline and then
+# blame a missing ready file, and a malformed value did the same.
+_confine_pin_override_range="$(
+    REIFY_CPU_GOV_TEST_CONFINE_CPUS='5-7,30' _row4_confine_cpus 2>/dev/null || echo "rejected"
+)"
+assert "CONFINE-PIN-3a: a range override '5-7,30' is expanded to single ids (got '${_confine_pin_override_range}', want '5,6,7,30')" \
+    test "$_confine_pin_override_range" = "5,6,7,30"
+
+# The identity case: an override that is already single ids is handed over
+# untouched, so nobody who sets it today sees a change.
+_confine_pin_override_plain="$(
+    REIFY_CPU_GOV_TEST_CONFINE_CPUS='30,31' _row4_confine_cpus 2>/dev/null || echo "rejected"
+)"
+assert "CONFINE-PIN-3b: an override of single ids passes through unchanged (got '${_confine_pin_override_plain}', want '30,31')" \
+    test "$_confine_pin_override_plain" = "30,31"
+
+# NON-VACUITY CRUX: a value that is not a CPU list is refused up front with the
+# usage exit code and nothing on stdout, rather than handed to the fixture to
+# fail there.  Descending ranges are in the set: they expand to no CPU at all.
+for _confine_pin_override_bad in "a,b" "30-" "30,,31" "0-8:2" "31-30"; do
+    _confine_pin_override_bad_rc=0
+    _confine_pin_override_bad_out="$(
+        REIFY_CPU_GOV_TEST_CONFINE_CPUS="$_confine_pin_override_bad" _row4_confine_cpus 2>/dev/null
+    )" || _confine_pin_override_bad_rc=$?
+    _confine_pin_override_bad_got="rc ${_confine_pin_override_bad_rc}, stdout '${_confine_pin_override_bad_out}'"
+    assert "CONFINE-PIN-3c: malformed override '${_confine_pin_override_bad}' => rc EXACTLY 64 and empty stdout (got ${_confine_pin_override_bad_got})" \
+        test "$_confine_pin_override_bad_got" = "rc 64, stdout ''"
+done
 
 # CONFINE-VACUITY: pin non-vacuity of share_ge_proportional at ROW4-1's exact
 # weights (w_merge=300, w_task=100) + tol — an equal-usage (broken)
