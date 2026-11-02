@@ -1,0 +1,211 @@
+prd: docs/prds/alpha-spine.md
+schema_version: 1
+signal_leaves: [Ω1, Ω]
+tasks:
+- label: α1
+  task_id: 9727
+  title: 'alpha-spine α1: issue #1 — tree-sitter-generate.sh always emits ABI 14; setup-dev records the tested CLI'
+  note: 'Zizi issue #1 (LanguageError version 15); runtime pins tree-sitter 0.24; polarity: pattern absent at f8e47e232c'
+  capabilities:
+  - name: generate-pins-abi-14
+    binding: 'producer-self — tree-sitter 0.26.8 `generate --abi` exists (G3 PASS); script carries no --abi at pin'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '--abi 14'
+      expect: present
+      paths:
+      - scripts/tree-sitter-generate.sh
+- label: α2
+  task_id: 9728
+  title: 'alpha-spine α2: issue #2 — setup-dev.sh installs gui/sidecar; build-sidecar.sh refuses loudly without node_modules'
+  note: 'Zizi issue #2; gui/package.json workspaces exclude sidecar (read at pin)'
+  capabilities:
+  - name: setup-installs-sidecar-deps
+    binding: 'producer-self — setup-dev.sh mentions no gui/sidecar at f8e47e232c'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: gui/sidecar
+      expect: present
+      paths:
+      - scripts/setup-dev.sh
+- label: α4
+  task_id: 9729
+  title: 'alpha-spine α4: issue #4 — sidecar bundle carries its runtime deps (@modelcontextprotocol/sdk and the rest)'
+  note: 'Zizi issue #4 (ERR_MODULE_NOT_FOUND); tsup noExternal lists only @reify/shared-utils at pin'
+  capabilities:
+  - name: sidecar-bundles-sdk
+    binding: 'producer-self — pattern absent in tsup.sidecar.ts at f8e47e232c'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '@modelcontextprotocol/sdk'
+      expect: present
+      paths:
+      - gui/sidecar/tsup.sidecar.ts
+- label: β
+  task_id: 9730
+  title: 'alpha-spine β: launcher Start view — Open/New/Recent + mode Design/Assistant/Debug (debug listener on demand)'
+  note: 'Zizi ask 1; contract §5.1; substrate: resolve_initial_file_path("")==None, tauri-plugin-dialog wired, store_state tool exists'
+  capabilities:
+  - name: create-new-file-command
+    binding: 'producer-self — no fn create_new_file in main.rs at f8e47e232c; dialog plugin + open_file_engine wired (PASS)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn create_new_file
+      expect: present
+      paths:
+      - gui/src-tauri/src/main.rs
+  - name: start-view-component
+    binding: 'producer-self — no StartView under gui/src at f8e47e232c'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: StartView
+      expect: present
+      paths:
+      - gui/src
+- label: γ
+  task_id: 9731
+  title: 'alpha-spine γ: edges-in-black viewport toggle (black EdgesGeometry overlay over every mesh, persisted, in store_state)'
+  note: 'Zizi ask 2; selection.ts::addWireframeFor is the existing overlay mechanism (PASS, wired)'
+  capabilities:
+  - name: edges-overlay-in-mesh-manager
+    binding: 'producer-self — edgesOverlay absent in meshManager.ts at f8e47e232c'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: edgesOverlay
+      expect: present
+      paths:
+      - gui/src/viewport/meshManager.ts
+- label: δ
+  task_id: 9732
+  title: 'alpha-spine δ: installer — build-bundle.sh (deb + AppImage, CLI + runtime .so closure), release-alpha.sh, clean ubuntu:24.04 proof'
+  note: 'D6/§5.2; tauri-cli 2.10.1 + bundle config present; ldd shows /opt/reify-deps closure; docker 29; heavy off-gate infra test'
+  capabilities:
+  - name: bundle-script-runs-tauri-build
+    binding: 'producer-self — scripts/build-bundle.sh absent at f8e47e232c; tauri.conf.json targets deb+appimage (PASS)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: tauri build
+      expect: present
+      paths:
+      - scripts/build-bundle.sh
+  - name: clean-container-proof
+    binding: 'manual — B7 passes on the host for deb and AppImage; cannot be a merge-gate grep'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a docker install run, not a pattern
+- label: ε
+  task_id: 9733
+  title: 'alpha-spine ε: README + getting-started — binary install first, source build for contributors, launcher documented'
+  note: 'README says "No installer, no binary releases" at pin'
+  capabilities:
+  - name: readme-names-release-asset
+    binding: 'producer-self — AppImage absent in README.md at f8e47e232c'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: AppImage
+      expect: present
+      paths:
+      - README.md
+- label: ζ
+  task_id: 9734
+  title: 'alpha-spine ζ: migration note v0.2-alpha (docs/releases/v0.2-alpha.md) with tested before/after fixtures'
+  note: 'D8; rejections delivered upstream by #5646/#5762/#5763, #5312, #5404 and already-landed breaks'
+  capabilities:
+  - name: migration-note-v0-2
+    binding: 'producer-self — docs/releases absent at f8e47e232c; rejection producers are upstream deps'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: v0\.1-alpha
+      expect: present
+      paths:
+      - docs/releases/v0.2-alpha.md
+- label: ρ1
+  task_id: 9735
+  title: 'alpha-spine ρ1: release v0.2-alpha (human gate — run scripts/release-alpha.sh v0.2-alpha; closes issues #1–#4)'
+  note: 'D7 pure gate'
+  capabilities:
+  - name: release-published
+    binding: 'manual — the resolving escalation'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: human act recorded by the escalation
+- label: Ω1
+  task_id: 9736
+  title: 'alpha-spine Ω1: Alpha-1 running (human gate — a named tester installed v0.2-alpha from the binary, launched, built, used edges)'
+  note: 'the completion definition of §1'
+  capabilities:
+  - name: tester-confirmed
+    binding: 'manual — the resolving escalation names the tester'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: human confirmation
+- label: ζ2
+  task_id: 9737
+  title: 'alpha-spine ζ2: migration note v0.3-alpha (direction typing + stdlib namespace) with tested fixtures'
+  note: 'D8; producers #9652, #5503, #5504 upstream'
+  capabilities:
+  - name: migration-note-v0-3
+    binding: 'producer-self — file absent at f8e47e232c'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: direction
+      expect: present
+      paths:
+      - docs/releases/v0.3-alpha.md
+- label: ρ2
+  task_id: 9738
+  title: 'alpha-spine ρ2: release v0.3-alpha (human gate — run scripts/release-alpha.sh v0.3-alpha)'
+  note: 'D7 pure gate'
+  capabilities:
+  - name: release-published
+    binding: 'manual — the resolving escalation'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: human act recorded by the escalation
+- label: Ω
+  task_id: 9739
+  title: 'alpha-spine Ω: alpha spine complete (human gate; the parking holder every non-spine pending task depends on)'
+  note: 'D2; closing it releases the backlog'
+  capabilities:
+  - name: spine-complete
+    binding: 'manual — Leo closes'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: human ruling
+- label: ω
+  task_id: 9740
+  title: 'alpha-spine ω: PRD close — SHIPPED header with landed ids, AS-AUTHORED freeze, LIVE map, same on the manifest'
+  note: 'overlay decompose-close obligation 2'
+  capabilities:
+  - name: shipped-header
+    binding: 'manual — the committed header'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: docs header
+- label: κ
+  external_task_id: dark_factory:8275
+  title: 'alpha-spine κ: resume reify scheduler (dark-factory deterministic deploy via scripts/resume_project_scheduler.py)'
+  note: 'D3; filed deferred first, committed to pending after parking is verified'
+  capabilities:
+  - name: scheduler-resumed
+    binding: 'manual — scheduler_resumed event in reify runs.db; df task done_provenance'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: observed in another project's registry and event store
