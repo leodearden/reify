@@ -8,7 +8,10 @@
 #      any expensive step. Bypass with REIFY_GUI_SKIP_PREFLIGHT=1.
 #   2. Build the sidecar (idempotent; ~20ms tsup bundle).
 #   3. Install gui/ npm deps + build the frontend (produces gui/dist).
-#   4. Build the reify-gui cargo binary in release mode (with feature `gui`).
+#   4. Build the reify-gui cargo binary in release mode with features `gui` +
+#      `embedded-frontend`. The latter enables tauri's custom-protocol, so the
+#      window serves the gui/dist built in step 3 and never loads devUrl
+#      (http://localhost:1420), whatever holds that port.
 #   5. Export LD_LIBRARY_PATH (OCCT's bundled libs + the tbb pin) and the
 #      WebKit renderer default.
 #   6. exec target/release/reify-gui <file.ri>.
@@ -90,8 +93,9 @@ echo "==> Installing gui dependencies + building frontend..."
 (cd gui && npm install --no-audit --no-fund --silent && npm run build)
 
 # -- 4. Build reify-gui in release mode ----------------------------------------
+# §3's gui/dist is a compile-time input: `embedded-frontend` embeds it.
 echo "==> Building reify-gui (release)..."
-cargo build -p reify-gui --bin reify-gui --features gui --release
+cargo build -p reify-gui --bin reify-gui --features gui,embedded-frontend --release
 
 # -- 5. Launch environment -----------------------------------------------------
 # The whole launch loader path and the WebKit renderer default, shared with
