@@ -343,10 +343,9 @@ if [ "$VITE_READY" -ne 1 ]; then
 fi
 
 # -- 6. Build reify-gui in DEBUG profile -------------------------------------
-# Only `gui`, not `embedded-frontend`, so the window loads devUrl (vite),
-# retargeted to REIFY_VITE_PORT by gui/src-tauri/src/dev_url.rs. tauri's
-# custom-protocol feature, not the cargo profile, picks devUrl over
-# frontendDist; the debug profile is for build time.
+# Only `gui`, not `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the
+# window loads devUrl, retargeted by gui/src-tauri/src/dev_url.rs; the debug
+# profile is for build time.
 echo "==> Building reify-gui (debug)..."
 cargo build -p reify-gui --bin reify-gui --features gui
 
