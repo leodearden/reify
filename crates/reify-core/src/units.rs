@@ -1075,6 +1075,7 @@ mod tests {
     /// emitter again.
     #[test]
     fn every_named_dimension_has_a_compound_spelling() {
+        let mut checked = 0;
         for &(dim, name) in crate::NAMED_DIMENSIONS {
             if dim.is_dimensionless() {
                 continue;
@@ -1083,7 +1084,14 @@ mod tests {
                 ri_compound_unit_expr(&dim).is_some(),
                 "named dimension {name} ({dim}) has no `.ri` compound spelling"
             );
+            checked += 1;
         }
+        const DIMENSIONED_ROWS_FLOOR: usize = 52;
+        assert!(
+            checked >= DIMENSIONED_ROWS_FLOOR,
+            "expected to check at least {DIMENSIONED_ROWS_FLOOR} dimensioned \
+             NAMED_DIMENSIONS rows, saw {checked} — did the table lose entries?"
+        );
     }
 
     /// The one bound on a unit-expression exponent: numerator and denominator
