@@ -56,6 +56,9 @@ function buildBundle(outDir: string): BuiltBundle {
   const build = spawnSync(tsup, ['--config', 'tsup.sidecar.ts', '--out-dir', outDir, '--metafile', '--silent'], {
     cwd: SIDECAR_ROOT,
     encoding: 'utf8',
+    // The synchronous spawn blocks the event loop, so the beforeAll timeout cannot interrupt a hung build.
+    timeout: BUILD_TIMEOUT_MS,
+    killSignal: 'SIGKILL',
   });
   if (build.status !== 0) {
     throw new Error(
@@ -176,13 +179,19 @@ class SidecarProcess {
   }
 
   /** Closes stdin, the shutdown signal the host relies on, and resolves once the process has exited. */
-  endInput(): Promise<ProcessExit> {
+  async endInput(): Promise<ProcessExit> {
     this.child.stdin.end();
+    await this.drainOutbound();
     return this.closed;
   }
 
   kill(): void {
     this.child.kill('SIGKILL');
+  }
+
+  /** The child's 'close' only fires once its stdout has been read to the end, so read whatever it still prints. */
+  private async drainOutbound(): Promise<void> {
+    for await (const message of this.outbound) this.received.push(message);
   }
 
   private async exitedEarly(): Promise<Error> {
