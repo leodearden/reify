@@ -861,13 +861,9 @@ fn detached_unit_hint_needs_a_number_directly_before_the_word_on_the_same_line()
 
 // ── Rational unit exponents (task #9236) ─────────────────────────────────────
 //
-// The grammar's `unit_exponent` token is `-?\d+(\/\d+)?`, lexed only after the
-// unit-pow `^`, so a contiguous `^p/q` is ONE rational exponent. Before #9236
-// `50MPa*m^1/2` ended its unit at `^1` and the `/2` became a value division:
-// 25 MPa·m with no diagnostic, the INV-SF-7 well-typed-WRONG-value shape.
-//
-// Every contiguous `^…/…` spelling must now be the correct rational exponent
-// or a LOCATED parse error, with the binding still recovered as a member.
+// Rules: PRD docs/prds/unit-expressions.md §3.2. Every contiguous `^…/…`
+// spelling must be the correct rational exponent or a LOCATED parse error,
+// with the binding still recovered as a member (INV-SF-7).
 
 #[test]
 fn rational_exponents_lower_to_rational_pow() {

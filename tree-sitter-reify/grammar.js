@@ -1972,10 +1972,8 @@ module.exports = grammar({
     // Exponent for the unit_expr pow arm: an integer (^2, ^-1) or a rational
     // (^1/2, ^-1/2). token.immediate enforces contiguity with the preceding ^.
     // The token is only valid after the unit-pow ^, so its greedy match makes a
-    // contiguous ^p/q ONE rational exponent (task #9236). Lowering enforces
-    // canonical form (lowest terms, denominator >= 2) and refuses a value-level
-    // / touching an exponent (`1m^1/ 2`), so no ^…/… spelling is silently a
-    // division. `25USD/1kg`-style value division after a unit NAME is unchanged.
+    // contiguous ^p/q ONE rational exponent. The spelling rules this token does
+    // not express are PRD docs/prds/unit-expressions.md §3.2.
     unit_exponent: $ => token.immediate(/-?\d+(\/\d+)?/),
 
     // An identifier that must immediately follow the previous token (no whitespace)

@@ -1,16 +1,13 @@
 //! Grammar integration tests for rational unit exponents (`m^1/2`).
 //!
-//! Task #9236. The unit-pow exponent token is `unit_exponent`,
+//! The unit-pow exponent token is `unit_exponent`,
 //! `token.immediate(/-?\d+(\/\d+)?/)`. It is lexed only after the unit-pow
 //! `^`, so its greedy match makes a contiguous `^p/q` one rational exponent
-//! inside the `unit_expr`. Before #9236 the token was integral, so
-//! `50MPa*m^1/2` ended its unit expression at `^1` and the trailing `/2`
-//! became a value-level division: a silent 25 MPa·m where 50 MPa·√m was
-//! written.
+//! inside the `unit_expr`.
 //!
-//! Canonical form (lowest terms, denominator ≥ 2) and the refusal of a `/`
-//! touching an exponent are LOWERING checks (`reify-syntax`), pinned there;
-//! this file pins only the CST shape.
+//! The spelling rules the token does not express (PRD
+//! docs/prds/unit-expressions.md §3.2) are LOWERING checks (`reify-syntax`),
+//! pinned there; this file pins only the CST shape.
 //!
 //! House restraint as in the sibling `*_grammar_tests.rs`: error PRESENCE via
 //! `has_error()`, shape via node lookup and field access, never s-expressions.
