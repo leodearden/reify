@@ -839,6 +839,49 @@ _row4_worker_affinities() {
     done < "$ready_file"
 }
 
+# _row4_collect_spinners <deadline_s> <ready_file> <out_file>
+#   Records in <out_file>, one pid per line, the busy-spin child of every worker
+#   listed in a fixture --ready-file.  A ready file names the worker HANDLES
+#   (taskset execs into timeout(1)); the spinner is timeout's child, forked
+#   after that report, so this polls until every worker has one.  Returns 0
+#   then, and 1 when <deadline_s> passes first (anti-hang only, technique T) or
+#   a worker's /proc entry is gone or has no children file (kernel without
+#   CONFIG_PROC_CHILDREN).  <out_file> always exists afterwards and holds
+#   whatever was found, so a caller can read it whatever the rc.
+#   Children are read from /proc/<pid>/task/<pid>/children with the `read`
+#   builtin, not pgrep(1): pgrep scans all of /proc, which cost 0.3-1.6 s a call
+#   on a loaded host.  Take the census BEFORE stopping the burn: a handle killed
+#   with SIGKILL cannot forward the signal, so its spinner is re-parented and is
+#   no longer found from the handle.
+_row4_collect_spinners() {
+    local deadline=$(( SECONDS + $1 )) ready_file="$2" out_file="$3"
+    local worker children_file children child found all_forked
+    : > "$out_file"
+    while true; do
+        found=""
+        all_forked=1
+        while IFS= read -r worker; do
+            [ -n "$worker" ] || continue
+            children_file="/proc/${worker}/task/${worker}/children"
+            [ -r "$children_file" ] || return 1
+            children=""
+            IFS= read -r children 2>/dev/null < "$children_file" || true
+            [ -n "$children" ] || all_forked=0
+            for child in $children; do
+                found+="${child}"$'\n'
+            done
+        done < "$ready_file"
+        printf '%s' "$found" > "$out_file"
+        if [ "$all_forked" -eq 1 ] && [ -n "$found" ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
 # _row4_launch_role_burn <gov_exec> <role> <cpus_csv> <workers> <burn_s> <ready_file>
 #   Backgrounds ONE role's burn and appends its wrapper pid to the global
 #   _ROW4_BURN_PIDS, for _row4_stop_burns (and _cleanup_all) to end.  The burn
@@ -1140,7 +1183,10 @@ fi
 # parameter, so this block hands it a pass-through stub: the REAL fixture and
 # its pinning run, with no cgroup governance at all — which is what keeps the
 # block always-on, including under the deflake meta-test's
-# REIFY_CPU_GOVERN_DISABLE=1.  Same preconditions as FIXTURE-PIN.
+# REIFY_CPU_GOVERN_DISABLE=1.  Same preconditions as FIXTURE-PIN, plus a kernel
+# with /proc/<pid>/task/<tid>/children for the spinner census (-3b, -3c, -4d):
+# the stop is only proven to reap spinners by watching the spinners, so without
+# the census those cases FAIL rather than skip.
 # ----------------------------------------------------------------------------
 echo ""
 echo "--- ROW4-LAUNCH-VACUITY: launch/stop seam (always-on) ---"
@@ -1161,13 +1207,16 @@ shift 2
 exec "$@"
 EOF_LAUNCH_STUB
 
+    # The burns only have to outlast the work between launch and stop, which
+    # the stop ends early: a generous bound costs a normal run nothing.
+    _row4_launch_burn_s=20
     _row4_launch_ready_task="$WORK/row4-launch-ready-task"
     _row4_launch_ready_merge="$WORK/row4-launch-ready-merge"
     _row4_launch_rc=0
-    _row4_launch_role_burn "$_row4_launch_stub" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" 5 \
-        "$_row4_launch_ready_task" || _row4_launch_rc=$?
-    _row4_launch_role_burn "$_row4_launch_stub" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" 5 \
-        "$_row4_launch_ready_merge" || _row4_launch_rc=$?
+    _row4_launch_role_burn "$_row4_launch_stub" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_row4_launch_burn_s" "$_row4_launch_ready_task" || _row4_launch_rc=$?
+    _row4_launch_role_burn "$_row4_launch_stub" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_row4_launch_burn_s" "$_row4_launch_ready_merge" || _row4_launch_rc=$?
 
     # (1) Both roles, launched through the seam, report ready.
     _row4_launch1_rc=0
@@ -1188,21 +1237,65 @@ EOF_LAUNCH_STUB
     assert "ROW4-LAUNCH-VACUITY-3: _ROW4_BURN_PIDS holds exactly 2 wrapper pids, one per role (got ${_row4_launch_pid_count}: '${_ROW4_BURN_PIDS:-}')" \
         test "$_row4_launch_pid_count" -eq 2
 
+    # (3b) Census the SPINNERS before the stop.  The ready files above list the
+    # fixture's worker HANDLES, and a handle is not what burns: it is a
+    # timeout(1), and the busy-spin `sh` is its child.  A stop that SIGKILLed a
+    # handle would leave the handle reading 'unavailable' while the spinner,
+    # re-parented, kept burning its pinned CPU — so -4d watches the spinners,
+    # and they can only be found from their handles while the handles live.
+    # (The deadline is an anti-hang guard only, and so is not asserted on.)
+    _row4_launch_spinners_task="$WORK/row4-launch-spinners-task"
+    _row4_launch_spinners_merge="$WORK/row4-launch-spinners-merge"
+    _row4_launch3b_rc=0
+    _row4_collect_spinners 30 "$_row4_launch_ready_task" "$_row4_launch_spinners_task" \
+        || _row4_launch3b_rc=$?
+    _row4_collect_spinners 30 "$_row4_launch_ready_merge" "$_row4_launch_spinners_merge" \
+        || _row4_launch3b_rc=$?
+    assert "ROW4-LAUNCH-VACUITY-3b: every worker of both roles has forked its busy-spin child (rc ${_row4_launch3b_rc}; read from /proc/<pid>/task/<pid>/children, which needs CONFIG_PROC_CHILDREN; the 30 s deadline is an anti-hang guard only)" \
+        test "$_row4_launch3b_rc" -eq 0
+
+    # (3c) Those spinners are live and pinned, one task and one merge per CPU.
+    # That is the precondition that makes -4d's 'unavailable' mean REAPED, and
+    # it checks the claim ROW4-PIN-LIVE and FIXTURE-PIN-3 lean on: they read a
+    # handle's mask, which stands for its spinner's only because the spinner
+    # inherits it.
+    _row4_launch_spinner_task_cpus="$(_row4_worker_affinities "$_row4_launch_spinners_task" 2>/dev/null || true)"
+    _row4_launch_spinner_merge_cpus="$(_row4_worker_affinities "$_row4_launch_spinners_merge" 2>/dev/null || true)"
+    assert "ROW4-LAUNCH-VACUITY-3c: the spinners themselves are pinned, one task and one merge per CPU (task=${_row4_launch_spinner_task_cpus//$'\n'/,}, merge=${_row4_launch_spinner_merge_cpus//$'\n'/,})" \
+        _row4_pin_coresident "$_row4_launch_spinner_task_cpus" "$_row4_launch_spinner_merge_cpus"
+
     # (4) NON-VACUITY CRUX for the stop: -2 proved the workers were alive and
-    # pinned, so "unavailable" afterwards can only mean the stop reaped them.
-    # An orphaned spinner is what contaminated the next window when the burns
-    # were ended by killing a bare payload instead.
+    # pinned, so "unavailable" afterwards can only mean the stop ended them.
+    # This covers the HANDLES; -4d covers what they spawned.
     _row4_stop_rc=0
     _row4_stop_burns || _row4_stop_rc=$?
     _row4_launch_after="$({ _row4_worker_affinities "$_row4_launch_ready_task"
                             _row4_worker_affinities "$_row4_launch_ready_merge"; } 2>/dev/null | sort -u || true)"
-    assert "ROW4-LAUNCH-VACUITY-4: after _row4_stop_burns every worker listed in both ready files reads 'unavailable' (got '${_row4_launch_after//$'\n'/,}'); stop reaps the pinned spinners, never orphans them" \
+    assert "ROW4-LAUNCH-VACUITY-4: after _row4_stop_burns every worker handle listed in both ready files reads 'unavailable' (got '${_row4_launch_after//$'\n'/,}'); the stop ends the workers" \
         test "$_row4_launch_after" = "unavailable"
     assert "ROW4-LAUNCH-VACUITY-4b: _ROW4_BURN_PIDS is empty after the stop (got '${_ROW4_BURN_PIDS:-}')" \
         test -z "${_ROW4_BURN_PIDS:-}"
     # ROW4 calls the stop bare, under `set -e`: a non-zero rc would abort the suite.
     assert "ROW4-LAUNCH-VACUITY-4c: _row4_stop_burns returns 0 (got ${_row4_stop_rc}); it runs bare under set -e" \
         test "$_row4_stop_rc" -eq 0
+
+    # (4d) NON-VACUITY CRUX for the stop, on the spinners: -3c proved each was
+    # live and pinned, so 'unavailable' afterwards can only mean the stop reaped
+    # it.  An orphaned spinner is what contaminated the next window when the
+    # burns were ended by killing a bare payload instead, and a handle that is
+    # gone says nothing about it: only the spinner's own entry does.
+    _row4_launch_spinners_after="$({ _row4_worker_affinities "$_row4_launch_spinners_task"
+                                     _row4_worker_affinities "$_row4_launch_spinners_merge"; } 2>/dev/null | sort -u || true)"
+    assert "ROW4-LAUNCH-VACUITY-4d: after _row4_stop_burns every busy-spin child of those workers reads 'unavailable' too (got '${_row4_launch_spinners_after//$'\n'/,}'); the stop reaps the spinners, never orphans them" \
+        test "$_row4_launch_spinners_after" = "unavailable"
+    # A spinner that outlived its stop has no timeout left behind it and would
+    # burn its pinned CPU through every later window, so a regression ends here
+    # rather than contaminating the rest of the run.
+    for _row4_launch_census in "$_row4_launch_spinners_task" "$_row4_launch_spinners_merge"; do
+        while IFS= read -r _row4_launch_leaked; do
+            [ ! -d "/proc/${_row4_launch_leaked}" ] || kill "$_row4_launch_leaked" 2>/dev/null || true
+        done < "$_row4_launch_census"
+    done
 fi
 
 # ============================================================================
