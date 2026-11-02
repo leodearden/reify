@@ -113,16 +113,17 @@ this manifest preserves: most signals are stated as *a seeded mutant is observed
 **G6 (premise validity).** Three branch-3 cases were resolved by **scoping the signal to its own dependency set**
 rather than by relaxing it — λ, σ, χ (see the sidecar bindings). One branch-1 case, α's "exactly one `13.1`
 heading remaining", was checked by counting: there are exactly two today, so the assertion is achievable. Two
-count-shaped premises (κ's ~700 uncoded sites — *retired with κ's 2026-08-28 rescope; PDIAG #5405 baselines the population* — and ο's ~773 consuming files) were recorded as
-**expectations, not asserted bounds** — the gen binary's output is the seed, and neither leaf may red on a
-differing count. Branch-2 (closed-form exactness) is handled structurally by the mandatory `regime:` directive:
+count-shaped premises were explicitly recorded as **expectations, not asserted bounds**: ο's ~773 consuming files,
+where the gen binary's output is the seed and the leaf may not red on a differing count; and κ's ~700 uncoded
+sites *(retired with κ's 2026-08-28 rescope — no gen binary or seed was built; PDIAG #5405 baselines the
+population per file)*. Branch-2 (closed-form exactness) is handled structurally by the mandatory `regime:` directive:
 `regime: iterative` forbids byte/exact assertions at the harness level, so the esc-5618-9 error cannot be
 written by accident.
 
 **G7 (design invariants).** No hit, no waiver. The suite *enforces* INV-SF-6 (via the PDIAG ratchet #5405, which κ consumes), INV-SF-2
 (λ's #5403/#5404 alignment), INV-SF-4 (every `UNPROVABLE` carries an attributable reason — applied to the suite's
 own tooling) and INV-SF-5 (ο's loud-named rungs). Single-derivation discipline — γ's generated manifest, ι's
-reconciler, ε/κ/ο's one-gen-binary rule, and ζ/ε sharing ONE liveness determination — is applied against the
+reconciler, ε/ο's one-gen-binary rule *(κ's retired with its 2026-08-28 rescope: it builds no gen binary)*, and ζ/ε sharing ONE liveness determination — is applied against the
 no-lockstep-duplication invariant at four separate places.
 
 ## Bindings
@@ -220,12 +221,12 @@ no-lockstep-duplication invariant at four separate places.
 
 ### κ — #6768 · spec-conformance κ: consume the PDIAG ratchet (INV-SF-6)
 
-> **Rescoped 2026-08-28 (Leo ruling, seam-integrity finding F1).** This section is the decompose-time record, annotated in place. κ no longer BUILDS an uncoded-diagnostics ratchet: that ratchet is delivered by landed **#5405** (PDIAG — the reify-audit pattern module, per-file baseline `crates/reify-audit/pdiag-baseline.txt`, `pdiag:allow` escapes, own infra gate), and the fingerprint-row / sole-gen-binary design recorded below was **retired unbuilt**. κ only CONSUMES PDIAG and pins the wave-migration contract (`crates/reify-audit/tests/pdiag_wave_protocol.rs`). Live scope: `spec-conformance-suite.md` D8 and the κ leaf bullet. Do not rebuild the retired ratchet from the two superseded bindings.
+> **Rescoped 2026-08-28 (Leo ruling, seam-integrity finding F1).** What follows is the decompose-time record, annotated in place: verdicts are the gate's decompose-time verdicts and are left as recorded; supersession is marked in each binding's text. κ no longer BUILDS an uncoded-diagnostics ratchet: that ratchet is delivered by landed **#5405** (PDIAG — the reify-audit pattern module, per-file baseline `crates/reify-audit/pdiag-baseline.txt`, `pdiag:allow` escapes, own infra gate), and the fingerprint-row / sole-gen-binary design recorded below was **retired unbuilt**. κ only CONSUMES PDIAG and pins the wave-migration contract (`crates/reify-audit/tests/pdiag_wave_protocol.rs`). Live scope: `spec-conformance-suite.md` D8 and the κ leaf bullet. Do not rebuild the retired ratchet from the two superseded bindings.
 
-- **`the-uncoded-population-is-real-and-roughly-sized`** — *(superseded — retired design; the ~700 seed-row expectation belonged to the unbuilt fingerprint-row gen binary. PDIAG baselines per-file counts of the same population.)* Originally: G6 branch 1, ~1,139 `Diagnostic::error/warning/info` construction sites vs ~441 `.with_code` calls, roughly 700 uncoded (~60%).
-  - verdict **SUPERSEDED** · check: `manual` — Retired unbuilt; no leaf asserts or seeds this count.
-- **`shrink-only-gate-follows-the-landed-PTODO-model`** — *(superseded — κ builds no gate; PDIAG's shrink-only gate (#5405) is already landed.)* Originally: fingerprint rows, sole gen binary, shrink-only check on the PTODO model. Migration remains per-section as rejection-surface waves reach each area (leaf ρ), under PDIAG.
-  - verdict **SUPERSEDED** · check: `manual` — The gate is #5405's own; its seeded-fire test lives with PDIAG, not with κ.
+- **`the-uncoded-population-is-real-and-roughly-sized`** — *(superseded by #5405 — retired design; the ~700 seed-row expectation belonged to the unbuilt fingerprint-row gen binary. PDIAG baselines per-file counts of the same population.)* Originally: G6 branch 1, ~1,139 `Diagnostic::error/warning/info` construction sites vs ~441 `.with_code` calls, roughly 700 uncoded (~60%).
+  - verdict **PASS** · check: `manual` — Retired unbuilt; no leaf asserts or seeds this count.
+- **`shrink-only-gate-follows-the-landed-PTODO-model`** — *(superseded by #5405 — κ builds no gate; PDIAG's shrink-only gate is already landed.)* Originally: fingerprint rows, sole gen binary, shrink-only check on the PTODO model. Migration remains per-section as rejection-surface waves reach each area (leaf ρ), under PDIAG.
+  - verdict **PASS** · check: `manual` — The gate is #5405's own; its seeded-fire test lives with PDIAG, not with κ.
 - **`this-ratchet-ENFORCES-INV-SF-6-rather-than-violating-it`** — G7 walk: docs/legibility/design-invariants.md INV-SF-6 `diagnostics-carry-codes` is the invariant the PDIAG ratchet mechanizes and κ consumes. No waiver required; the suite is not a second enforcement arm.
   - verdict **PASS** · check: `grep -E 'INV-SF-6'` in `docs/legibility/design-invariants.md` → **present**
 
@@ -356,6 +357,8 @@ no-lockstep-duplication invariant at four separate places.
 *Every binding resolves to PASS. No binding resolved to `declared-only`, `test-only`, `producer-downstream`,
 `producer-absent`, `producer-extent-short`, `fixture-ERROR`, `bound≤floor` or `rejection-absent`, so no leaf was
 re-scoped, re-homed or relaxed to clear the gate.*
+*(As decomposed 2026-08-26. κ was rescoped afterwards, by the 2026-08-28 ruling and not by this gate; its two
+retired-design bindings are marked superseded in place — see κ.)*
 
 ## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
 

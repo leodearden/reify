@@ -433,32 +433,36 @@ tasks:
 - label: κ
   task_id: 6768
   title: 'spec-conformance κ: consume the PDIAG ratchet (INV-SF-6)'
-  rescoped: 'Rescoped 2026-08-28 (Leo ruling, seam-integrity finding F1), annotated
-    in place. κ no longer builds an uncoded-diagnostics ratchet: it is delivered by
-    landed #5405 (PDIAG, crates/reify-audit/pdiag-baseline.txt) and the fingerprint-row
-    design recorded below was retired unbuilt. κ only consumes PDIAG. Live scope: spec-conformance-suite.md
-    D8 and the κ leaf bullet. Do not rebuild the retired ratchet from the superseded
-    bindings.'
+  note: 'Rescoped 2026-08-28 (Leo ruling, seam-integrity finding F1). What follows
+    is the decompose-time record, annotated in place: verdicts are the gate''s decompose-time
+    verdicts and are left as recorded; supersession is marked in each binding''s text.
+    κ no longer BUILDS an uncoded-diagnostics ratchet: that ratchet is delivered by
+    landed #5405 (PDIAG — the reify-audit pattern module, per-file baseline `crates/reify-audit/pdiag-baseline.txt`,
+    `pdiag:allow` escapes, own infra gate), and the fingerprint-row / sole-gen-binary
+    design recorded below was retired unbuilt. κ only CONSUMES PDIAG and pins the
+    wave-migration contract (`crates/reify-audit/tests/pdiag_wave_protocol.rs`). Live
+    scope: `spec-conformance-suite.md` D8 and the κ leaf bullet. Do not rebuild the
+    retired ratchet from the two superseded bindings.'
   capabilities:
   - name: the-uncoded-population-is-real-and-roughly-sized
-    binding: '(superseded — retired design; the ~700 seed-row expectation belonged
-      to the unbuilt fingerprint-row gen binary. PDIAG baselines per-file counts of
-      the same population.) Originally: G6 branch 1, ~1,139 `Diagnostic::error/warning/info`
+    binding: '(superseded by #5405 — retired design; the ~700 seed-row expectation
+      belonged to the unbuilt fingerprint-row gen binary. PDIAG baselines per-file
+      counts of the same population.) Originally: G6 branch 1, ~1,139 `Diagnostic::error/warning/info`
       construction sites vs ~441 `.with_code` calls, roughly 700 uncoded (~60%).'
-    verdict: SUPERSEDED
+    verdict: PASS
     delivered_check:
       kind: manual
       reason: Retired unbuilt; no leaf asserts or seeds this count.
   - name: shrink-only-gate-follows-the-landed-PTODO-model
-    binding: '(superseded — κ builds no gate; PDIAG''s shrink-only gate (#5405) is
+    binding: '(superseded by #5405 — κ builds no gate; PDIAG''s shrink-only gate is
       already landed.) Originally: fingerprint rows, sole gen binary, shrink-only
       check on the PTODO model. Migration remains per-section as rejection-surface
       waves reach each area (leaf ρ), under PDIAG.'
-    verdict: SUPERSEDED
+    verdict: PASS
     delivered_check:
       kind: manual
-      reason: The gate belongs to PDIAG (#5405); its seeded-fire test lives with
-        PDIAG, not with κ.
+      reason: 'The gate is #5405''s own; its seeded-fire test lives with PDIAG, not
+        with κ.'
   - name: this-ratchet-ENFORCES-INV-SF-6-rather-than-violating-it
     binding: 'G7 walk: docs/legibility/design-invariants.md INV-SF-6 `diagnostics-carry-codes`
       is the invariant the PDIAG ratchet mechanizes and κ consumes. No waiver required;
@@ -696,9 +700,8 @@ tasks:
   - name: typed-code-reject-fixtures-need-the-bridge-and-the-ratchet
     binding: 'G6 branch 3 (producible from the dependency set): asserting a rejection
       by MNEMONIC requires ι''s E_*-to-DiagnosticCode bridge, and migrating a clause''s
-      emission from uncoded to coded rides the PDIAG ratchet (#5405) under κ''s
-      pinned wave-migration contract. Both are hard intra-batch
-      edges, never prose ordering.'
+      emission from uncoded to coded rides the PDIAG ratchet (#5405) under κ''s pinned
+      wave-migration contract. Both are hard intra-batch edges, never prose ordering.'
     verdict: PASS
     delivered_check:
       kind: manual
