@@ -1647,26 +1647,16 @@ mod tests {
     fn recovers_metric_prism_from_perturbed_guess() {
         let (members, kinds) = triplex_topology();
         let q = closed_form_q();
-        // One dense EVD, shared between the nullity check and recovery.
-        let prism = canonical_prism();
-        let problem = ForceDensityProblem::new(
-            &prism,
+        // A mildly perturbed symmetric-prism guess (recovery should gauge-fix
+        // to it). The explicit `D` does not depend on the guess.
+        let x = form_find_free(
+            &perturbed_prism_guess(),
             &members,
             &kinds,
-            FreeSpec::Explicit(&q),
-            &[],
-            &[],
-            &[],
+            &ForceDensitySpec::Explicit(q.clone()),
         )
-        .expect("closed-form prism q is valid input");
-        let form = explicit_form(&problem).expect("closed-form prism q is a form");
-
-        // A mildly perturbed symmetric-prism guess (recovery should gauge-fix
-        // to it).
-        let guess = perturbed_prism_guess();
-
-        let x = recover_coordinates(&guess, form.null_basis())
-            .expect("perturbed symmetric-prism guess must recover a 3-D realisation");
+        .expect("perturbed symmetric-prism guess must recover a 3-D realisation")
+        .nodes;
 
         // (1) Equilibrium: X lies in null(D), so the per-axis residual ‖D·X‖∞
         // must vanish to machine precision — the rock-solid correctness signal.
@@ -1873,11 +1863,9 @@ mod tests {
     /// fixed point converges with combined-D equilibrium residual ~machine-zero.
     #[test]
     fn surfaces_free_combined_prism_membrane_golden() {
-        let (members, kinds) = triplex_topology();
-        let guess = perturbed_prism_guess();
-        let surfaces = prism_surfaces();
         let sigma = 0.2_f64;
-        let sigmas = vec![sigma; 2];
+        let membrane = PrismMembrane::with_sigma(sigma);
+        let guess = perturbed_prism_guess();
 
         let spec = ForceDensitySpec::GroupRatios {
             group_ids: triplex_group_ids(),
@@ -1885,7 +1873,8 @@ mod tests {
             reference_group: 1,
         };
 
-        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+        let result = membrane
+            .form_find(&guess, &spec)
             .expect("combined prism+membrane must form-find");
 
         // Basic convergence + spectrum.
@@ -1906,7 +1895,12 @@ mod tests {
         }
 
         // Force signs: struts compressive, cables tensile.
-        for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
+        for (idx, (&kind, &n_i)) in membrane
+            .kinds
+            .iter()
+            .zip(result.member_forces.iter())
+            .enumerate()
+        {
             match kind {
                 MemberKind::Strut => assert!(
                     n_i < 0.0,
@@ -1919,66 +1913,48 @@ mod tests {
             }
         }
 
-        // Primary honest signal: combined free-node equilibrium residual at the
-        // SOLVED geometry, assembled INDEPENDENTLY (faer-free, via reassemble_d_free).
-        let d_combined = reassemble_d_free(
-            6,
-            &members,
-            &result.force_densities,
-            &surfaces,
-            &sigmas,
-            &result.nodes,
-        );
-        let resid = free_equilibrium_residual_scaled(&d_combined, &result.nodes);
+        // Primary honest signal: the combined all-node equilibrium residual at
+        // the SOLVED geometry and densities.
+        let resid = membrane.residual_of(&result);
         assert!(
             resid < 1e-9,
-            "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < 1e-9",
+            "combined per-row relative residual max|(D(x)·x)_i|/Σ_j|D_ij| over 1 + scale \
+             = {resid:.3e}, expected < 1e-9",
         );
     }
 
     /// Unit-level companion to the integration file's `Explicit` combined
     /// coverage (task 6537): `Explicit` combined free-standing form-finding,
     /// from the perturbed guess, must converge to the closed-form combined
-    /// self-stress. Verified through the module's own faer-free helpers
-    /// (`reassemble_d_free` / `free_equilibrium_residual_scaled`) — an
-    /// independently-coded assembly path distinct from the integration
-    /// file's `reassemble_d_combined` / `free_residual_scaled`, so a scatter
-    /// bug shared between the kernel and one verification path still
-    /// surfaces here even though the integration file's regression table
+    /// self-stress, judged by the fixed point's own [`CombinedIterate`]
+    /// residual. The independent faer-free verification path
+    /// (`reassemble_d_combined` / `free_residual_scaled`) lives in
+    /// tests/tensegrity_delta_combined_form_find.rs, whose regression table
     /// (`combined_explicit_analytic_q_converges_across_sigma_and_perturbation`)
-    /// now also covers σ=1.0. Shape (equilateral-triangle) and
+    /// also covers σ=1.0. Shape (equilateral-triangle) and
     /// `surface_stresses`-echo assertions live only in that table, to avoid
     /// a third near-verbatim copy of the same assertion block.
     #[test]
     fn surfaces_free_explicit_combined_q_converges_from_perturbed_guess() {
-        let (members, kinds) = triplex_topology();
-        let guess = perturbed_prism_guess();
-        let surfaces = prism_surfaces();
         let sigma = 1.0_f64;
-        let sigmas = vec![sigma; 2];
-        let q = closed_form_combined_q(sigma);
-        let spec = ForceDensitySpec::Explicit(q);
+        let membrane = PrismMembrane::with_sigma(sigma);
+        let guess = perturbed_prism_guess();
+        let spec = ForceDensitySpec::Explicit(closed_form_combined_q(sigma));
 
-        let result = form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec)
+        let result = membrane
+            .form_find(&guess, &spec)
             .expect("combined explicit q from perturbed guess must form-find");
 
         assert!(result.converged, "combined solve must converge");
         assert_eq!(result.nullity, 4, "combined D must have nullity 4");
 
-        // Primary honest signal: combined free-node equilibrium residual at
-        // the SOLVED geometry, assembled INDEPENDENTLY (faer-free).
-        let d_combined = reassemble_d_free(
-            6,
-            &members,
-            &result.force_densities,
-            &surfaces,
-            &sigmas,
-            &result.nodes,
-        );
-        let resid = free_equilibrium_residual_scaled(&d_combined, &result.nodes);
+        // Primary honest signal: the combined all-node equilibrium residual at
+        // the SOLVED geometry and densities.
+        let resid = membrane.residual_of(&result);
         assert!(
             resid < 1e-9,
-            "combined equilibrium residual ‖D(x)·x‖∞/(1+scale) = {resid:.3e}, expected < 1e-9",
+            "combined per-row relative residual max|(D(x)·x)_i|/Σ_j|D_ij| over 1 + scale \
+             = {resid:.3e}, expected < 1e-9",
         );
     }
 
@@ -2253,8 +2229,9 @@ mod tests {
 
     // ── χ-ff (task 9274): the combined fixed point's units ────────────────────
 
-    /// The triplex with its two prism membrane triangles at σ = 0.2, held so a
-    /// test can borrow the validated problem `form_find_free_surfaces` builds.
+    /// The triplex with its two prism membrane triangles at one σ (0.2 unless
+    /// given), held so a test can borrow the validated problem
+    /// `form_find_free_surfaces` builds.
     struct PrismMembrane {
         members: Vec<(usize, usize)>,
         kinds: Vec<MemberKind>,
@@ -2266,9 +2243,13 @@ mod tests {
         const SIGMA: f64 = 0.2;
 
         fn new() -> Self {
+            Self::with_sigma(Self::SIGMA)
+        }
+
+        fn with_sigma(sigma: f64) -> Self {
             let (members, kinds) = triplex_topology();
             let surfaces = prism_surfaces();
-            let sigmas = vec![Self::SIGMA; surfaces.len()];
+            let sigmas = vec![sigma; surfaces.len()];
             PrismMembrane {
                 members,
                 kinds,
@@ -2280,13 +2261,13 @@ mod tests {
         fn problem<'a>(
             &'a self,
             nodes: &'a [[f64; 3]],
-            spec: &'a ForceDensitySpec,
+            spec: FreeSpec<'a>,
         ) -> ForceDensityProblem<'a> {
             ForceDensityProblem::new(
                 nodes,
                 &self.members,
                 &self.kinds,
-                free_spec(spec, self.members.len()).expect("the spec is well-formed"),
+                spec,
                 &[],
                 &self.surfaces,
                 &self.sigmas,
@@ -2295,8 +2276,45 @@ mod tests {
         }
 
         fn surface_matrix(&self, nodes: &[[f64; 3]]) -> Mat<f64> {
-            assemble_surface_matrix(nodes.len(), &self.surfaces, &self.sigmas, nodes)
-                .expect("the prism triangles are non-degenerate at these nodes")
+            let mut s = Mat::<f64>::zeros(nodes.len(), nodes.len());
+            scatter_surface_stencils::<IsotropicStencil>(
+                &mut s,
+                &self.surfaces,
+                &self.sigmas,
+                nodes,
+            )
+            .expect("the prism triangles are non-degenerate at these nodes");
+            s
+        }
+
+        /// The combined free-standing solve of this membrane from `guess`.
+        fn form_find(
+            &self,
+            guess: &[[f64; 3]],
+            spec: &ForceDensitySpec,
+        ) -> Result<FreeFormResult, FreeFormError> {
+            form_find_free_surfaces(
+                guess,
+                &self.members,
+                &self.kinds,
+                &self.surfaces,
+                &self.sigmas,
+                spec,
+            )
+        }
+
+        /// `result`'s all-node equilibrium residual at its own densities and
+        /// geometry, as the fixed point's [`CombinedIterate`] judges a trial.
+        fn residual_of(&self, result: &FreeFormResult) -> f64 {
+            let problem = self.problem(&result.nodes, FreeSpec::Explicit(&result.force_densities));
+            let surface = self.surface_matrix(&result.nodes);
+            CombinedIterate::new(
+                &problem,
+                result.force_densities.clone(),
+                result.nodes.clone(),
+                surface.clone(),
+            )
+            .residual_at(&problem, &result.nodes, &surface)
         }
     }
 
@@ -2312,13 +2330,19 @@ mod tests {
         }
     }
 
+    /// [`triplex_group_ratios`] as the validated group spec a problem holds.
+    fn triplex_group_spec() -> GroupSpec {
+        let group_ids = triplex_group_ids();
+        GroupSpec::new(&group_ids, &TRIPLEX_SEED_RATIOS, 1, group_ids.len())
+            .expect("the triplex group spec seeds the search")
+    }
+
     #[test]
     fn combined_iterate_is_an_equilibrium_at_the_closed_form_prism_only() {
         let membrane = PrismMembrane::new();
         let (golden, guess) = (canonical_prism(), perturbed_prism_guess());
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
-        let spec = ForceDensitySpec::Explicit(q.clone());
-        let problem = membrane.problem(&guess, &spec);
+        let problem = membrane.problem(&guess, FreeSpec::Explicit(&q));
         let iterate_at = |nodes: &[[f64; 3]]| {
             CombinedIterate::new(
                 &problem,
@@ -2344,8 +2368,7 @@ mod tests {
         let membrane = PrismMembrane::new();
         let guess = perturbed_prism_guess();
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
-        let spec = ForceDensitySpec::Explicit(q.clone());
-        let problem = membrane.problem(&guess, &spec);
+        let problem = membrane.problem(&guess, FreeSpec::Explicit(&q));
         let mut source = QSource::new(&problem, None);
 
         for nodes in [perturbed_prism_guess(), canonical_prism()] {
@@ -2361,22 +2384,26 @@ mod tests {
     fn only_a_fixed_q_source_admits_the_projection_trial() {
         let membrane = PrismMembrane::new();
         let guess = perturbed_prism_guess();
-        let fixed = ForceDensitySpec::Explicit(closed_form_combined_q(PrismMembrane::SIGMA));
-        let searched = triplex_group_ratios();
+        let q = closed_form_combined_q(PrismMembrane::SIGMA);
+        let fixed = membrane.problem(&guess, FreeSpec::Explicit(&q));
+        let searched = membrane.problem(&guess, FreeSpec::GroupRatios(triplex_group_spec()));
 
-        assert!(QSource::new(&membrane.problem(&guess, &fixed), None).admits_projection_trial());
-        assert!(
-            !QSource::new(&membrane.problem(&guess, &searched), None).admits_projection_trial()
-        );
+        assert!(QSource::new(&fixed, None).admits_projection_trial());
+        assert!(!QSource::new(&searched, None).admits_projection_trial());
     }
 
     #[test]
     fn searched_q_source_keeps_each_group_seed_sign() {
         let membrane = PrismMembrane::new();
         let guess = perturbed_prism_guess();
-        let spec = triplex_group_ratios();
-        let problem = membrane.problem(&guess, &spec);
-        let boot = form_find_line_only(&problem).expect("the line-only triplex form-finds");
+        let problem = membrane.problem(&guess, FreeSpec::GroupRatios(triplex_group_spec()));
+        let boot = form_find_free(
+            &guess,
+            &membrane.members,
+            &membrane.kinds,
+            &triplex_group_ratios(),
+        )
+        .expect("the line-only triplex form-finds");
         let mut source = QSource::new(&problem, Some(&boot));
 
         let q = source
@@ -2398,8 +2425,7 @@ mod tests {
         let membrane = PrismMembrane::new();
         let guess = perturbed_prism_guess();
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
-        let spec = ForceDensitySpec::Explicit(q.clone());
-        let problem = membrane.problem(&guess, &spec);
+        let problem = membrane.problem(&guess, FreeSpec::Explicit(&q));
         let eig_gap = |nodes: &[[f64; 3]]| {
             combined_eig_gap_objective(
                 6,
@@ -2444,8 +2470,7 @@ mod tests {
             .map(|[x, y, _]| [x, y, 0.0])
             .collect();
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
-        let spec = ForceDensitySpec::Explicit(q.clone());
-        let problem = membrane.problem(&planar, &spec);
+        let problem = membrane.problem(&planar, FreeSpec::Explicit(&q));
         let surface_mat = membrane.surface_matrix(&planar);
         let iterate =
             CombinedIterate::new(&problem, q.clone(), planar.clone(), surface_mat.clone());
