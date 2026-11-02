@@ -886,6 +886,9 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Result<Value, Field
     })))
 }
 
+/// A profile's per-joint TOTS spec and its time domain `[first.t, last.t]`.
+type ProfileJointWaypoints = (Vec<JointWaypoints>, RangeInclusive<f64>);
+
 /// Marshal a `PiecewisePolynomialProfile`'s waypoints into the per-joint TOTS
 /// point-to-point spec ([`JointWaypoints`]) plus the profile's time domain
 /// `[first.t, last.t]`. Its span is the un-optimised `t_initial` seed; its
@@ -904,7 +907,7 @@ pub fn input_shape_value(profile: &Value, shaper: &Value) -> Result<Value, Field
 fn profile_to_joint_waypoints(
     profile_data: &StructureInstanceData,
     shaper: &TotsShaperParams,
-) -> Result<Option<(Vec<JointWaypoints>, RangeInclusive<f64>)>, FieldRejection> {
+) -> Result<Option<ProfileJointWaypoints>, FieldRejection> {
     let Some(Value::List(wps)) = profile_data.fields.get("waypoints") else {
         return Ok(None);
     };
@@ -919,7 +922,7 @@ fn joint_waypoints(
     wps: &[Value],
     ts: &[f64],
     shaper: &TotsShaperParams,
-) -> Option<(Vec<JointWaypoints>, RangeInclusive<f64>)> {
+) -> Option<ProfileJointWaypoints> {
     if wps.len() < 2 {
         return None;
     }
