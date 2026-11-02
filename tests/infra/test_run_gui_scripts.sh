@@ -478,9 +478,66 @@ CURL_STUB
 }
 
 # _rgs_stub_cargo <dir> [rc] — a cargo that short-circuits the real build.
+#
+# Opt-in: with "$_RGS_CARGO_ARGV" set, every call first appends its argv there
+# (one line per call), so a test can see what the launcher asked cargo for.
 _rgs_stub_cargo() {
-    printf '#!/usr/bin/env bash\nexit %s\n' "${2:-0}" > "$1/bin/cargo"
+    {
+        cat <<'CARGO_STUB'
+#!/usr/bin/env bash
+[ -z "${_RGS_CARGO_ARGV:-}" ] || printf '%s\n' "$*" >> "$_RGS_CARGO_ARGV"
+CARGO_STUB
+        printf 'exit %s\n' "${2:-0}"
+    } > "$1/bin/cargo"
     chmod +x "$1/bin/cargo"
+}
+
+# _rgs_cargo_build_features <argv-file> — the comma-joined --features/-F values
+# of the first recorded `build` of `-p reify-gui`, or "" if there is none.
+_rgs_cargo_build_features() {
+    local _line _i _is_gui _feats
+    local -a _a
+    [ -f "$1" ] || return 0
+    while IFS= read -r _line; do
+        read -r -a _a <<< "$_line"
+        [ "${_a[0]-}" = build ] || continue
+        _is_gui="" _feats=""
+        for ((_i = 1; _i < ${#_a[@]}; _i++)); do
+            case "${_a[_i]}" in
+                -p | --package)
+                    if [ "${_a[_i + 1]-}" = reify-gui ]; then _is_gui=1; fi ;;
+                --package=reify-gui) _is_gui=1 ;;
+                --features | -F) _feats+="${_feats:+,}${_a[_i + 1]-}" ;;
+                --features=*) _feats+="${_feats:+,}${_a[_i]#--features=}" ;;
+            esac
+        done
+        if [ -n "$_is_gui" ]; then
+            printf '%s\n' "$_feats"
+            return 0
+        fi
+    done < "$1"
+}
+
+# _rgs_tauri_features_under <scratch-dir> <features> — tauri's features, one per
+# line, as the REAL cargo resolves reify-gui under --features <features>.
+# <scratch-dir> must already be registered with _rgs_mktemp: this runs inside
+# $(...), where a registration would be lost. Silent and non-zero if cargo
+# cannot resolve (e.g. a cold registry).
+_rgs_tauri_features_under() {
+    local _json="$1/cargo-metadata.json" _rc=0
+    ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline \
+        --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml" \
+        --features "$2" ) > "$_json" 2>/dev/null || _rc=$?
+    [ "$_rc" -eq 0 ] || return 1
+    python3 -I -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    meta = json.load(f)
+names = {p["id"]: p["name"] for p in meta["packages"]}
+for node in meta["resolve"]["nodes"]:
+    if names[node["id"]] == "tauri":
+        print("\n".join(node["features"]))
+' "$_json"
 }
 
 # _rgs_stub_npm_serving <dir> — an npm whose `run dev` stays alive so the
@@ -1394,6 +1451,69 @@ printf "%s\n%s" "$first" "$LD_LIBRARY_PATH"'
 else
     echo "  SKIP: /opt/reify-deps/tbb-pin absent on this host — Test 35"
 fi
+
+# -- Test 36: behavioral — release embeds gui/dist, dev loads vite ------------
+echo ""
+echo "--- Test 36: run-gui.sh builds tauri with custom-protocol; run-gui-dev.sh does not ---"
+
+# tauri's custom-protocol feature, not the cargo profile, makes the window serve
+# the embedded gui/dist instead of loading devUrl (http://localhost:1420). Each
+# launcher's --features value goes to the REAL cargo's feature resolver.
+
+# _t36_resolve <label> <tmpdir> — read the --features value the launcher run in
+# <tmpdir> handed cargo into _t36_features, and tauri's features under it into
+# _t36_tauri; asserts both are real.
+_t36_resolve() {
+    local _rc=0
+    _t36_features=$(_rgs_cargo_build_features "$2/cargo-argv")
+    _t36_tauri=$(_rgs_tauri_features_under "$2" "$_t36_features") || _rc=$?
+
+    assert "$1: its cargo build of reify-gui passes a --features value" \
+        test -n "$_t36_features"
+
+    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc; on a cold registry warm it with \`cargo fetch --locked\`, or run scripts/setup-dev.sh)" \
+        test "$_rc" -eq 0
+}
+
+# --- 36a: run-gui.sh ---
+_rgs_mktemp _t36rel_tmpdir
+_mk_rungui_fixture "$_t36rel_tmpdir"
+_rgs_stub_npm_serving "$_t36rel_tmpdir"
+_rgs_stub_cargo "$_t36rel_tmpdir"
+_rgs_stub_gui_binary "$_t36rel_tmpdir" target/release/reify-gui
+
+env DISPLAY=:99 \
+    _RGS_ENV_DUMP="$_t36rel_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t36rel_tmpdir/cargo-argv" \
+    PATH="$_t36rel_tmpdir/bin:$PATH" \
+    bash "$_t36rel_tmpdir/scripts/run-gui.sh" "$_t36rel_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+_t36_resolve run-gui.sh "$_t36rel_tmpdir"
+
+assert "run-gui.sh: tauri resolves WITH custom-protocol under --features '$_t36_features', so the window serves gui/dist (tauri features: ${_t36_tauri//$'\n'/,})" \
+    bash -c 'grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
+
+# --- 36b: run-gui-dev.sh ---
+_rgs_mktemp _t36dev_tmpdir
+_t36dev_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t36dev_tmpdir"
+_rgs_stub_npm_serving "$_t36dev_tmpdir"
+_rgs_stub_curl_stateful "$_t36dev_tmpdir"
+_rgs_stub_cargo "$_t36dev_tmpdir"
+_rgs_stub_gui_binary "$_t36dev_tmpdir" target/debug/reify-gui
+
+env DISPLAY=:99 \
+    REIFY_VITE_PORT="$_t36dev_port" \
+    _RGS_CURL_COUNTER="$_t36dev_tmpdir/curl-count" \
+    _RGS_ENV_DUMP="$_t36dev_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t36dev_tmpdir/cargo-argv" \
+    PATH="$_t36dev_tmpdir/bin:$PATH" \
+    bash "$_t36dev_tmpdir/scripts/run-gui-dev.sh" "$_t36dev_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+_t36_resolve run-gui-dev.sh "$_t36dev_tmpdir"
+
+assert "run-gui-dev.sh: tauri resolves WITHOUT custom-protocol under --features '$_t36_features', so the window keeps loading vite's devUrl (tauri features: ${_t36_tauri//$'\n'/,})" \
+    bash -c '! grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
