@@ -290,3 +290,158 @@ Reading:
 
 As everywhere in this note: quote the sign and the order of magnitude, and
 re-measure the multiplier.
+
+## After the extractor collapse (#7596, 2026-11-02)
+
+The gmsh arm's input surface now comes from
+`reify_solver_elastic::boundary_surface_mesh` instead of the harness-local
+extractor (`tests/calibration/boundary.rs::boundary_surface`, deleted by #7596).
+The two emit the same oriented triangle set. A throwaway check, run before the
+deletion, compared both surfaces in position space, with each triangle rotated
+(never reflected) to a canonical start vertex. The sets were equal at n = 4, 8
+and 18, and both the index order and the vertex order differed at every n. The
+library extractor emits triangles in element order rather than sorted, and
+vertices in ascending original index rather than in first-sighting order.
+Nothing else changed: harness, fixture, mesh sizes, CG options and modes are as
+before.
+
+Recorded 2026-11-02 on the same AMD Ryzen 9 3950X (16 cores / 32 threads), gmsh
+4.15.2 from `/opt/reify-deps`, **release profile**, `--test-threads=1`, with the
+same command as the previous section:
+
+```text
+cargo test -p reify-mesh-morph --test morph_scale_characterisation --release -- --ignored --nocapture --test-threads=1
+```
+
+Main had moved since 2026-09-24. A same-day baseline was therefore taken at the
+unmodified base, commit `62df8a0d34`, so that any change in a gmsh count can be
+attributed to the extractor swap alone. The post-collapse runs are at
+`3c189a00a8`, the task/7596 commit "refactor(7596): collapse the harness-local
+boundary extractor onto boundary_surface_mesh". The later #7596 commits touch
+only documentation and a `#[cfg(test)]` test in `reify-solver-elastic`, nothing
+the driver executes. The host was shared and quiesced for no run.
+Load averages (1 / 5 / 15 min, on 32 hardware threads), in the order taken:
+
+- baseline: 157.81 / 126.71 / 129.29 before the invocation, which included a
+  7m19s release build; 97.38 / 112.95 / 125.86 after the run;
+- post-collapse, with the release build done beforehand by a separate
+  `--no-run`: 117.06 / 201.91 / 214.06 before run 1, 118.96 / 199.50 / 213.15
+  after run 1 (also before run 2, which began immediately), and
+  122.68 / 196.36 / 211.90 after run 2.
+
+All three runs are shown in the order taken; none was selected. The output is
+verbatim, `[task-6638]` lines only, formatted as in the previous section.
+
+Baseline (pre-collapse, `62df8a0d34`):
+
+```text
+surface n=8   volume_tets=9936    surface_tris=1884    surface_verts=944
+surface n=18  volume_tets=108756  surface_tris=9284    surface_verts=4644
+gmsh ladder input: the n=18 surface (9284 tris) for every rung
+gmsh  mesh_size=0.060 tets=2786     nodes=2590     wall=816.080106ms Ok
+gmsh  mesh_size=0.045 tets=5009     nodes=3732     wall=1.116731343s Ok
+gmsh  mesh_size=0.035 tets=9079     nodes=5481     wall=717.028515ms Ok
+gmsh  mesh_size=0.028 tets=15633    nodes=7922     wall=1.725377217s Ok
+gmsh  mesh_size=0.022 tets=30922    nodes=13201    wall=1.336099373s Ok
+gmsh  mesh_size=0.017 tets=63121    nodes=22297    wall=1.292885929s Ok
+gmsh  mesh_size=0.014 tets=109078   nodes=34748    wall= 2.10633102s Ok
+morph n=8   tets=9936     nodes=2169     dof=6507     wall=260.392382ms Ok
+morph n=18  tets=108756   nodes=20539    dof=61617    wall=6.620130145s Ok
+PAIR  n=8   morph_tets=9936     gmsh_tets=9079     mismatch=-8.6%
+            morph_wall=260.392382ms gmsh_wall=717.028515ms gmsh/morph=2.75x (gmsh mesh_size=0.035)
+PAIR  n=18  morph_tets=108756   gmsh_tets=109078   mismatch=+0.3%
+            morph_wall=6.620130145s gmsh_wall= 2.10633102s gmsh/morph=0.32x (gmsh mesh_size=0.014)
+```
+
+Post-collapse run 1 (`3c189a00a8`):
+
+```text
+surface n=8   volume_tets=9936    surface_tris=1884    surface_verts=944
+surface n=18  volume_tets=108756  surface_tris=9284    surface_verts=4644
+gmsh ladder input: the n=18 surface (9284 tris) for every rung
+gmsh  mesh_size=0.060 tets=2683     nodes=2439     wall= 526.97401ms Ok
+gmsh  mesh_size=0.045 tets=4900     nodes=3570     wall=603.682761ms Ok
+gmsh  mesh_size=0.035 tets=8969     nodes=5296     wall=911.225895ms Ok
+gmsh  mesh_size=0.028 tets=15509    nodes=7759     wall=882.170482ms Ok
+gmsh  mesh_size=0.022 tets=30779    nodes=12983    wall=870.236468ms Ok
+gmsh  mesh_size=0.017 tets=62731    nodes=21988    wall=1.489727978s Ok
+gmsh  mesh_size=0.014 tets=109079   nodes=34547    wall=1.757206045s Ok
+morph n=8   tets=9936     nodes=2169     dof=6507     wall=152.684786ms Ok
+morph n=18  tets=108756   nodes=20539    dof=61617    wall=4.677706814s Ok
+PAIR  n=8   morph_tets=9936     gmsh_tets=8969     mismatch=-9.7%
+            morph_wall=152.684786ms gmsh_wall=911.225895ms gmsh/morph=5.97x (gmsh mesh_size=0.035)
+PAIR  n=18  morph_tets=108756   gmsh_tets=109079   mismatch=+0.3%
+            morph_wall=4.677706814s gmsh_wall=1.757206045s gmsh/morph=0.38x (gmsh mesh_size=0.014)
+```
+
+Post-collapse run 2, taken immediately after:
+
+```text
+surface n=8   volume_tets=9936    surface_tris=1884    surface_verts=944
+surface n=18  volume_tets=108756  surface_tris=9284    surface_verts=4644
+gmsh ladder input: the n=18 surface (9284 tris) for every rung
+gmsh  mesh_size=0.060 tets=2683     nodes=2439     wall=534.143885ms Ok
+gmsh  mesh_size=0.045 tets=4900     nodes=3570     wall=677.577092ms Ok
+gmsh  mesh_size=0.035 tets=8969     nodes=5296     wall=980.527376ms Ok
+gmsh  mesh_size=0.028 tets=15509    nodes=7759     wall=884.453667ms Ok
+gmsh  mesh_size=0.022 tets=30779    nodes=12983    wall=1.174304177s Ok
+gmsh  mesh_size=0.017 tets=62731    nodes=21988    wall=1.415823294s Ok
+gmsh  mesh_size=0.014 tets=109079   nodes=34547    wall=2.390678639s Ok
+morph n=8   tets=9936     nodes=2169     dof=6507     wall=235.106085ms Ok
+morph n=18  tets=108756   nodes=20539    dof=61617    wall=3.681855423s Ok
+PAIR  n=8   morph_tets=9936     gmsh_tets=8969     mismatch=-9.7%
+            morph_wall=235.106085ms gmsh_wall=980.527376ms gmsh/morph=4.17x (gmsh mesh_size=0.035)
+PAIR  n=18  morph_tets=108756   gmsh_tets=109079   mismatch=+0.3%
+            morph_wall=3.681855423s gmsh_wall=2.390678639s gmsh/morph=0.65x (gmsh mesh_size=0.014)
+```
+
+Reading:
+
+- **The surface counts reproduced exactly**: 1884 tris / 944 verts at n=8 and
+  9284 / 4644 at n=18, in all three runs. That agrees with the set-equality
+  check above.
+- **The gmsh ladder did NOT reproduce, so triangle and vertex order alone moved
+  HXT's output.** The baseline matches the 2026-09-24 ladder exactly, so main
+  had not moved the input. The two post-collapse runs match each other exactly,
+  so the new counts are deterministic and not noise. Every rung moved. Per rung,
+  baseline to post-collapse:
+
+  | mesh_size | tets before | tets after | Δ tets | Δ % | nodes before | nodes after | Δ nodes |
+  |---|---|---|---|---|---|---|---|
+  | 0.060 | 2786 | 2683 | -103 | -3.70% | 2590 | 2439 | -151 |
+  | 0.045 | 5009 | 4900 | -109 | -2.18% | 3732 | 3570 | -162 |
+  | 0.035 | 9079 | 8969 | -110 | -1.21% | 5481 | 5296 | -185 |
+  | 0.028 | 15633 | 15509 | -124 | -0.79% | 7922 | 7759 | -163 |
+  | 0.022 | 30922 | 30779 | -143 | -0.46% | 13201 | 12983 | -218 |
+  | 0.017 | 63121 | 62731 | -390 | -0.62% | 22297 | 21988 | -309 |
+  | 0.014 | 109078 | 109079 | +1 | +0.001% | 34748 | 34547 | -201 |
+
+  The tet counts fell by 0.5-3.7% on the six coarser rungs. On the finest rung
+  they rose by a single tet, and the node count still fell by 201. This is the
+  converse of the [Reproducibility](#reproducibility-and-what-to-quote)
+  section's check: there, an identical ladder showed that what gmsh was handed
+  did not change. Here the triangle set is identical and the ladder is not, so
+  the ORDER of the surface is part of what gmsh is handed.
+- **The morph legs' counts are unchanged** (9936 tets / 6507 dof and 108756 /
+  61617), as they must be: the morph never sees the extracted surface, because
+  it builds its Dirichlet data from `fixtures::bracket`'s own surface-node
+  indices. Their wall-clocks still moved. At 100K the leg took 6.62 s in the
+  baseline and 4.68 s and 3.68 s after the collapse, with nothing it computes
+  changed. That spread is host noise, and it is the scale to read the ratios
+  against.
+- **The pairings.** The 10K pairing still joins the 0.035 rung, now 8,969 gmsh
+  tets against 9,936 morph tets (mismatch -9.7%, was -8.6%). The 100K pairing
+  joins 109,079 against 108,756 (+0.3%, unchanged to one decimal).
+  `gmsh/morph` at 100K is 0.38x and 0.65x after the collapse, against 0.32x in
+  the same-day baseline (0.29x on 2026-09-24). At 10K it is 5.97x and 4.17x,
+  against 2.75x. The spread across the three same-day runs is mostly the morph
+  leg's noise described above, not the swap.
+- **#2953's sign at 100K holds.** The morph is slower than the remesh in all
+  three runs (ratio below 1x), within the same order of magnitude, so the
+  >=10x-faster premise is still unmet. **The 10K winner holds**: the morph wins
+  in all three runs. As before, the paired gmsh rung sits in the fixed-setup
+  regime of [Reading the ladder honestly](#reading-the-ladder-honestly), so
+  read it as "the morph wins at 10K", not as a multiplier.
+
+As everywhere in this note: quote the sign and the order of magnitude, and
+re-measure the multiplier.

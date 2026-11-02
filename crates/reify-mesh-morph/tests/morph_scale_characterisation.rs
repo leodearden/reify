@@ -32,9 +32,9 @@
 //! #2953's premise is unmet rather than inverted; at 10K the morph wins under
 //! the release profile. Before that fix the morph was more than an order of
 //! magnitude slower at 100K. Every figure behind these sentences is in the
-//! note — its "After the Dirichlet fix" section is the current measurement —
-//! and deliberately nowhere else: a number repeated here is a number that can
-//! go stale here.
+//! note — its "After the extractor collapse" section is the current
+//! measurement — and deliberately nowhere else: a number repeated here is a
+//! number that can go stale here.
 //!
 //! ## How to run
 //!
