@@ -3,8 +3,8 @@
 
 use std::process::{Command, Output, Stdio};
 
-/// Every subcommand name `main.rs`'s dispatcher accepts. Owned here, not read from the
-/// binary, so a subcommand that drops out of the help table is caught.
+/// Every subcommand name the CLI must accept. Owned here, not read from the binary, so a
+/// subcommand that drops out of the help table, and with it out of dispatch, is caught.
 const DISPATCHED_SUBCOMMANDS: &[&str] = &[
     "check",
     "test",
@@ -34,12 +34,21 @@ fn run_reify(args: &[&str]) -> Output {
         .expect("failed to execute reify binary")
 }
 
-/// The whitespace/punctuation-delimited words of `text`, keeping `-` inside a word so
-/// `gui-debug` is one word and `gui` matches only where it stands alone.
-fn words(text: &str) -> Vec<&str> {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
-        .filter(|w| !w.is_empty())
+/// The first word of every indented row of `reify --help`'s command list: the commands it
+/// lists, as opposed to words that only appear in another row's summary.
+fn listed_commands(overview: &str) -> Vec<&str> {
+    overview
+        .lines()
+        .filter_map(|line| line.strip_prefix("  "))
+        .filter_map(|row| row.split_whitespace().next())
         .collect()
+}
+
+/// The `Flags:` row of `help` that documents `flag`: the line that starts with it.
+fn flag_row<'a>(help: &'a str, flag: &str) -> Option<&'a str> {
+    help.lines()
+        .map(str::trim_start)
+        .find(|line| line.starts_with(flag))
 }
 
 #[test]
@@ -78,18 +87,20 @@ fn check_help_documents_every_flag_check_accepts() {
         "`reify check --help` must exit 0, got {:?}; stderr: {stderr}",
         output.status.code()
     );
-    let missing: Vec<&str> = CHECK_FLAGS
+    let undocumented: Vec<&str> = CHECK_FLAGS
         .iter()
         .copied()
-        .filter(|flag| !stdout.contains(flag))
+        .filter(|flag| flag_row(&stdout, flag).is_none())
         .collect();
     assert!(
-        missing.is_empty(),
-        "`reify check --help` must document {missing:?}, got: {stdout}"
+        undocumented.is_empty(),
+        "`reify check --help` must give {undocumented:?} a row of their own, got: {stdout}"
     );
+    let strict_row = flag_row(&stdout, "--strict").unwrap_or_default();
     assert!(
-        stdout.to_lowercase().contains("indeterminate"),
-        "`reify check --help` must say `--strict` fails on an indeterminate constraint, got: {stdout}"
+        strict_row.to_lowercase().contains("indeterminate"),
+        "`reify check --help`'s `--strict` row must say it fails on an indeterminate \
+         constraint, got: {strict_row:?}"
     );
 }
 
@@ -98,7 +109,7 @@ fn top_level_help_lists_every_dispatched_subcommand() {
     let output = run_reify(&["--help"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "`reify --help` must exit 0");
-    let listed = words(&stdout);
+    let listed = listed_commands(&stdout);
     let missing: Vec<&str> = DISPATCHED_SUBCOMMANDS
         .iter()
         .copied()
@@ -106,7 +117,7 @@ fn top_level_help_lists_every_dispatched_subcommand() {
         .collect();
     assert!(
         missing.is_empty(),
-        "`reify --help` must list {missing:?} as whole words, got: {stdout}"
+        "`reify --help` must give {missing:?} a row of their own, got: {stdout}"
     );
     assert!(
         stdout.contains("reify <command> --help"),

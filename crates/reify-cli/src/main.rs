@@ -38,6 +38,7 @@ mod dev;
 mod help;
 mod module_capabilities;
 mod sigpipe;
+use help::Command;
 use reify_core::ModulePath;
 
 fn main() -> ExitCode {
@@ -49,8 +50,8 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // (a) Early-exit arms: --help / --version and `reify <cmd> --help` short-circuit
-    // before the sweep.
+    // (a) Early-exit arms: --help / --version, an unknown command, and
+    // `reify <cmd> --help` short-circuit before the sweep.
     match args[1].as_str() {
         "--help" | "-h" | "help" => {
             help::write_overview(&mut std::io::stdout());
@@ -62,8 +63,14 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
-    if let Some(entry) = help::requested_subcommand_help(&args[1..]) {
-        help::write_subcommand_help(entry, &mut std::io::stdout());
+    let Some(subcommand) = help::lookup(&args[1]) else {
+        eprintln!("Unknown command: {}", args[1]);
+        help::write_overview(&mut std::io::stderr());
+        return ExitCode::FAILURE;
+    };
+    let subcommand_args = &args[2..];
+    if help::requests_help(subcommand_args) {
+        help::write_subcommand_help(subcommand, &mut std::io::stdout());
         return ExitCode::SUCCESS;
     }
 
@@ -74,32 +81,27 @@ fn main() -> ExitCode {
     cache::run_startup_sweep();
 
     // (c) Command dispatcher.
-    match args[1].as_str() {
-        "check" => cmd::check::cmd_check(&args[2..]),
-        "test" => cmd::test::cmd_test(&args[2..]),
-        "build" => cmd::build::cmd_build(&args[2..]),
-        "run" | "eval" => cmd::eval::cmd_eval(&args[2..]),
-        "report" => cmd::report::cmd_report(&args[2..]),
-        "doc" => cmd::doc::cmd_doc(&args[2..]),
-        "lsp" => cmd::lsp::cmd_lsp(),
-        "gui" => cmd::gui::cmd_gui(&args[2..]),
-        "gui-debug" => {
+    match subcommand.command {
+        Command::Check => cmd::check::cmd_check(subcommand_args),
+        Command::Test => cmd::test::cmd_test(subcommand_args),
+        Command::Build => cmd::build::cmd_build(subcommand_args),
+        Command::Eval => cmd::eval::cmd_eval(subcommand_args),
+        Command::Report => cmd::report::cmd_report(subcommand_args),
+        Command::Doc => cmd::doc::cmd_doc(subcommand_args),
+        Command::Lsp => cmd::lsp::cmd_lsp(),
+        Command::Gui => cmd::gui::cmd_gui(subcommand_args),
+        Command::GuiDebug => {
             // `gui-debug` is sugar for `gui --debug`: prepend the flag and
             // route through the same code path as `cmd_gui` so the two entry
             // points share argument parsing and binary-launch logic.
-            let mut forwarded: Vec<String> = Vec::with_capacity(args.len() - 1);
+            let mut forwarded: Vec<String> = Vec::with_capacity(subcommand_args.len() + 1);
             forwarded.push("--debug".to_string());
-            forwarded.extend(args[2..].iter().cloned());
+            forwarded.extend(subcommand_args.iter().cloned());
             cmd::gui::cmd_gui(&forwarded)
         }
-        "explain" => cmd::explain::cmd_explain(&args[2..]),
-        "dev" => dev::cmd_dev(&args[2..]),
-        "cache" => cache::cmd_cache(&args[2..]),
-        other => {
-            eprintln!("Unknown command: {}", other);
-            help::write_overview(&mut std::io::stderr());
-            ExitCode::FAILURE
-        }
+        Command::Explain => cmd::explain::cmd_explain(subcommand_args),
+        Command::Dev => dev::cmd_dev(subcommand_args),
+        Command::Cache => cache::cmd_cache(subcommand_args),
     }
 }
 

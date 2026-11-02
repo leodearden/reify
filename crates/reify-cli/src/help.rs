@@ -1,9 +1,10 @@
-//! The CLI's help surface: one entry per subcommand, rendered as the top-level list, as
-//! `reify <cmd> --help`, and as the banner a command prints on a usage error.
+//! The CLI's subcommand table: one entry per subcommand, naming the [`Command`] `main`
+//! dispatches it to and rendering its help as the top-level list, as `reify <cmd> --help`,
+//! and as the banner a command prints on a usage error.
 
 use std::io::Write;
 
-use crate::cache::CACHE_USAGE;
+use crate::cache::{CACHE_SUBCOMMANDS, CACHE_USAGE, CacheSubcommand};
 use crate::dev::DEV_USAGE;
 
 pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
@@ -29,23 +30,51 @@ pub(crate) const GUI_USAGE: &str = "Usage: reify gui [--debug] <file>";
 
 pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
 
+/// What `main` runs for a subcommand. Only a [`SUBCOMMANDS`] entry constructs one, so a
+/// command with no help entry is a never-constructed variant rather than a silent gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Command {
+    Check,
+    Test,
+    Build,
+    Eval,
+    Report,
+    Doc,
+    Lsp,
+    Gui,
+    GuiDebug,
+    Explain,
+    Dev,
+    Cache,
+}
+
+/// What `reify <cmd> --help` prints after the summary.
+enum Details {
+    None,
+    Text(&'static str),
+    CacheSubcommands(&'static [CacheSubcommand]),
+}
+
 pub(crate) struct SubcommandHelp {
     name: &'static str,
+    pub(crate) command: Command,
     /// The short form `reify --help` lists; `usage` is the full banner.
     synopsis: &'static str,
     usage: &'static str,
     summary: &'static str,
-    details: &'static str,
+    details: Details,
 }
 
 /// Listed in the order `reify --help` prints them.
 const SUBCOMMANDS: &[SubcommandHelp] = &[
     SubcommandHelp {
         name: "check",
+        command: Command::Check,
         synopsis: "check [--strict] <file>",
         usage: CHECK_USAGE,
         summary: "Resolve `auto` parameters and check every constraint",
-        details: "Prints one OK / VIOLATED / INDETERMINATE line per constraint.\n\
+        details: Details::Text(
+            "Prints one OK / VIOLATED / INDETERMINATE line per constraint.\n\
             \n\
             Flags:\n  \
             --strict                    Also fail on any INDETERMINATE constraint\n  \
@@ -54,133 +83,151 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
             <param>:<entity>,...) and check its constraints; repeatable\n  \
             --cfg <key=value|flag>      Set a cfg key or flag (`target=<v>` overrides\n                              \
             the host target); repeatable",
+        ),
     },
     SubcommandHelp {
         name: "test",
+        command: Command::Test,
         synopsis: "test <file>",
         usage: TEST_USAGE,
         summary: "Run @test-annotated structures, resolving their `auto` parameters",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "build",
+        command: Command::Build,
         synopsis: "build <file> [-o <output>]",
         usage: BUILD_USAGE,
         summary: "Resolve `auto` parameters, build geometry and export it",
-        details: "Flags:\n  \
+        details: Details::Text(
+            "Flags:\n  \
             --verbose  Print per-realization kernel provenance",
+        ),
     },
     SubcommandHelp {
         name: "run",
+        command: Command::Eval,
         synopsis: "run <file>",
         usage: EVAL_USAGE,
         summary: "Alias for eval",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "eval",
+        command: Command::Eval,
         synopsis: "eval <file>",
         usage: EVAL_USAGE,
         summary: "Evaluate and print every top-level value cell",
-        details: "Flags:\n  \
+        details: Details::Text(
+            "Flags:\n  \
             --explain-undef     Explain every undef cell, not only the printed ones\n  \
             --verbose           Print a persistent-cache hit/miss summary\n  \
             --cache-dir <path>  Use <path> as the persistent cache directory",
+        ),
     },
     SubcommandHelp {
         name: "report",
+        command: Command::Report,
         synopsis: "report --bom <file>",
         usage: REPORT_USAGE,
         summary: "Roll up a BOM / cost / waste / provenance report",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "lsp",
+        command: Command::Lsp,
         synopsis: "lsp",
         usage: LSP_USAGE,
         summary: "Start language server (stdin/stdout)",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "gui",
+        command: Command::Gui,
         synopsis: "gui [--debug] <file>",
         usage: GUI_USAGE,
         summary: "Open file in GUI",
-        details: "Flags:\n  \
+        details: Details::Text(
+            "Flags:\n  \
             --debug, --mcp  Enable the MCP debug listener",
+        ),
     },
     SubcommandHelp {
         name: "gui-debug",
+        command: Command::GuiDebug,
         synopsis: "gui-debug <file>",
         usage: GUI_USAGE,
         summary: "Alias for `gui --debug`",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "doc",
+        command: Command::Doc,
         synopsis: "doc <file> [-o <path>]",
         usage: DOC_USAGE,
         summary: "Generate documentation",
-        details: "Flags:\n  \
+        details: Details::Text(
+            "Flags:\n  \
             -o, --out <path>                Output file, or directory with --split / --stdlib\n  \
             --format html|markdown|json     Output format (default html)\n  \
             --split                         One file per item (markdown only; needs -o)\n  \
             --compact                       Compact output (json only)\n  \
             --stdlib                        Document the standard library (html; needs --out)",
+        ),
     },
     SubcommandHelp {
         name: "explain",
+        command: Command::Explain,
         synopsis: "explain <file>",
         usage: EXPLAIN_USAGE,
         summary: "Print per-cell objective provenance: which objective chose each `auto` value",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "dev",
+        command: Command::Dev,
         synopsis: "dev inspect-node <node-id>",
         usage: DEV_USAGE,
         summary: "Print a node's kind, traits, priority, policy, and overrides",
-        details: "",
+        details: Details::None,
     },
     SubcommandHelp {
         name: "cache",
+        command: Command::Cache,
         synopsis: "cache export|import|stats|clear|gc",
         usage: CACHE_USAGE,
         summary: "Manage the persistent result cache",
-        details: "Subcommands:\n  \
-            export <hash>  Write a single cache entry to stdout as a tarball\n  \
-            import         Read a cache tarball from stdin into the local cache\n  \
-            stats          Print cache directory, entry count, total size, and top-N largest entries\n  \
-            clear [--engine-version <hash>] --yes\n                 \
-            Empty the cache (or one engine-version subdir); --yes required\n  \
-            gc             Force LRU eviction down to the configured cache cap (live engine version only)",
+        details: Details::CacheSubcommands(CACHE_SUBCOMMANDS),
     },
 ];
 
-fn lookup(name: &str) -> Option<&'static SubcommandHelp> {
+pub(crate) fn lookup(name: &str) -> Option<&'static SubcommandHelp> {
     SUBCOMMANDS.iter().find(|entry| entry.name == name)
 }
 
-/// The entry whose help `command_args` (argv without the program name) asks for:
-/// a subcommand name followed, anywhere later, by `--help` or `-h`.
-pub(crate) fn requested_subcommand_help(
-    command_args: &[String],
-) -> Option<&'static SubcommandHelp> {
-    let (name, rest) = command_args.split_first()?;
-    let entry = lookup(name)?;
-    rest.iter()
+/// Whether the arguments after a subcommand's name ask for its help: `--help` or `-h`
+/// anywhere among them.
+pub(crate) fn requests_help(subcommand_args: &[String]) -> bool {
+    subcommand_args
+        .iter()
         .any(|arg| arg == "--help" || arg == "-h")
-        .then_some(entry)
 }
 
 pub(crate) fn write_overview(out: &mut dyn Write) {
     let _ = writeln!(out, "Usage: reify <command> [options]");
     let _ = writeln!(out, "Commands:");
-    for entry in SUBCOMMANDS {
-        let _ = writeln!(out, "  {:<34} {}", entry.synopsis, entry.summary);
+    let rows = SUBCOMMANDS
+        .iter()
+        .map(|entry| (entry.synopsis, entry.summary))
+        .chain([("--version", "Print version"), ("--help", "Show this list")]);
+    let width = rows
+        .clone()
+        .map(|(synopsis, _)| synopsis.len())
+        .max()
+        .unwrap_or(0);
+    for (synopsis, summary) in rows {
+        let _ = writeln!(out, "  {synopsis:<width$}  {summary}");
     }
-    let _ = writeln!(out, "  {:<34} Print version", "--version");
-    let _ = writeln!(out, "  {:<34} Show this list", "--help");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
@@ -192,9 +239,20 @@ pub(crate) fn write_subcommand_help(entry: &SubcommandHelp, out: &mut dyn Write)
     let _ = writeln!(out, "{}", entry.usage);
     let _ = writeln!(out);
     let _ = writeln!(out, "{}", entry.summary);
-    if !entry.details.is_empty() {
-        let _ = writeln!(out);
-        let _ = writeln!(out, "{}", entry.details);
+    match entry.details {
+        Details::None => {}
+        Details::Text(text) => {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{text}");
+        }
+        Details::CacheSubcommands(subcommands) => {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "Subcommands:");
+            for subcommand in subcommands {
+                let _ = writeln!(out, "  {}", subcommand.synopsis);
+                let _ = writeln!(out, "      {}", subcommand.summary);
+            }
+        }
     }
 }
 
@@ -216,14 +274,19 @@ mod tests {
     }
 
     #[test]
-    fn help_is_requested_only_by_a_known_subcommand_followed_by_a_help_flag() {
+    fn only_a_listed_subcommand_is_looked_up() {
+        assert_eq!(lookup("check").map(|e| e.command), Some(Command::Check));
+        assert_eq!(lookup("run").map(|e| e.command), Some(Command::Eval));
+        assert!(lookup("nope").is_none());
+        assert!(lookup("--help").is_none());
+    }
+
+    #[test]
+    fn help_is_requested_by_a_help_flag_anywhere_among_the_subcommand_arguments() {
         let argv = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
-        assert_eq!(
-            requested_subcommand_help(&argv(&["check", "file.ri", "-h"])).map(|e| e.name),
-            Some("check")
-        );
-        assert!(requested_subcommand_help(&argv(&["check", "file.ri"])).is_none());
-        assert!(requested_subcommand_help(&argv(&["nope", "--help"])).is_none());
-        assert!(requested_subcommand_help(&argv(&["--help", "check"])).is_none());
+        assert!(requests_help(&argv(&["file.ri", "-h"])));
+        assert!(requests_help(&argv(&["--help"])));
+        assert!(!requests_help(&argv(&["file.ri"])));
+        assert!(!requests_help(&argv(&["--helpful"])));
     }
 }
