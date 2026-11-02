@@ -9,7 +9,8 @@
 //!   constant-shear stress recovery on non-unit triangles, for bare MITC3
 //!   (`shell_element_stiffness`) and MITC3+ (`shell_element_stiffness_mitc3_plus`).
 //! - System section: a structured cantilever plate built from the public
-//!   element seams, mirroring the `solve_flat_plate_shell` recipe. A locking-free
+//!   element seams, mirroring the `solve_flat_plate_shell` recipe (the driver
+//!   returns no displacement), solved with each flat kernel. A locking-free
 //!   element follows Euler-Bernoulli (`u ∝ 1/t³`, cubic profile); a
 //!   shear-locked one collapses as `u ∝ 1/t` with a linear profile.
 
@@ -62,10 +63,6 @@ fn element_material() -> IsotropicElastic {
         youngs_modulus: 200e9,
         poisson_ratio: 0.3,
     }
-}
-
-fn shear_modulus(mat: &IsotropicElastic) -> f64 {
-    mat.youngs_modulus / (2.0 * (1.0 + mat.poisson_ratio))
 }
 
 fn matvec(k: &ElementStiffness, u: &[f64; NDOF]) -> [f64; NDOF] {
@@ -139,7 +136,7 @@ fn flat_shell_elements_annihilate_rigid_body_modes_on_non_unit_triangles() {
 #[test]
 fn flat_shell_elements_reproduce_constant_transverse_shear_energy_on_non_unit_triangles() {
     let mat = element_material();
-    let kappa_g = KAPPA * shear_modulus(&mat);
+    let kappa_g = KAPPA * mat.shear_modulus();
     let theta = 0.003_f64;
     for tri in &NON_UNIT_TRIANGLES {
         for (kernel_name, kernel) in FLAT_KERNELS {
@@ -167,7 +164,7 @@ fn flat_shell_elements_reproduce_constant_transverse_shear_energy_on_non_unit_tr
 #[test]
 fn shell_element_stress_recovers_constant_transverse_shear_on_non_unit_triangle() {
     let mat = element_material();
-    let kappa_g = KAPPA * shear_modulus(&mat);
+    let kappa_g = KAPPA * mat.shear_modulus();
     let theta = 0.003_f64;
     let scale = kappa_g * theta;
     // (θ_x, θ_y) → physical shear (γ_xz, γ_yz) = (θ_y, −θ_x).
@@ -248,8 +245,8 @@ impl Cantilever {
 
     /// Structured CCW grid, root `x = 0` clamped, θ_z pinned elsewhere, and the
     /// `−Z` tip force as a consistent traction over the last element column —
-    /// the `solve_flat_plate_shell` recipe, solved with flat MITC3+.
-    fn solve(&self, mat: &IsotropicElastic) -> CantileverDeflection {
+    /// the `solve_flat_plate_shell` recipe, solved with the flat `kernel`.
+    fn solve(&self, mat: &IsotropicElastic, kernel: FlatKernel) -> CantileverDeflection {
         let nx = CANTILEVER_NX;
         let ny = ((nx as f64 * self.width / self.length).round() as usize).max(2);
         let nx1 = nx + 1;
@@ -280,7 +277,7 @@ impl Cantilever {
             .iter()
             .map(|c| {
                 let tri = [nodes[c[0]], nodes[c[1]], nodes[c[2]]];
-                shell_element_stiffness_mitc3_plus(&tri, self.thickness, mat)
+                kernel(&tri, self.thickness, mat)
             })
             .collect();
         let elements: Vec<AssemblyElement<'_>> = connectivity
@@ -332,46 +329,66 @@ impl Cantilever {
 }
 
 #[test]
-fn flat_mitc3_plus_cantilever_panel_deflection_is_thickness_invariant() {
+fn flat_shell_cantilever_panel_deflection_is_thickness_invariant() {
     let mat = cantilever_material();
-    let thicknesses = [0.066, 0.033, 0.0165, 0.00825];
-    let mut tip_ratios = Vec::with_capacity(thicknesses.len());
-    for thickness in thicknesses {
-        let panel = Cantilever {
-            length: 1.1,
-            width: 0.9,
-            thickness,
-            tip_force: 1000.0,
-        };
-        let solved = panel.solve(&mat);
-        let tip = solved.mid_width(solved.nx);
-        let tip_ratio = tip / panel.euler_bernoulli_tip(&mat);
-        let profile = solved.mid_width(solved.nx / 2) / tip;
-        println!("t = {thickness}: tip/δ_EB = {tip_ratio:.4}, u(L/2)/u(L) = {profile:.4}");
-        assert!(
-            (0.85..=1.15).contains(&tip_ratio),
-            "t = {thickness}: mid-width tip deflection / δ_EB = {tip_ratio:.4}, outside \
-             [0.85, 1.15] (a shear-locked element collapses it as ~1/t)"
-        );
-        assert!(
-            (0.28..=0.36).contains(&profile),
-            "t = {thickness}: u_z(L/2)/u_z(L) = {profile:.4}, outside [0.28, 0.36] \
-             (Euler-Bernoulli 5/16; a locked, shear-dominated profile is ~linear, ~0.5)"
-        );
-        tip_ratios.push(tip_ratio);
+    let thicknesses = [0.132, 0.066, 0.033, 0.0165, 0.00825];
+    let mut tip_ratios_by_kernel = Vec::with_capacity(FLAT_KERNELS.len());
+    for (kernel_name, kernel) in FLAT_KERNELS {
+        let mut tip_ratios = Vec::with_capacity(thicknesses.len());
+        for thickness in thicknesses {
+            let panel = Cantilever {
+                length: 1.1,
+                width: 0.9,
+                thickness,
+                tip_force: 1000.0,
+            };
+            let solved = panel.solve(&mat, kernel);
+            let tip = solved.mid_width(solved.nx);
+            let tip_ratio = tip / panel.euler_bernoulli_tip(&mat);
+            let profile = solved.mid_width(solved.nx / 2) / tip;
+            println!(
+                "{kernel_name}, t = {thickness}: tip/δ_EB = {tip_ratio:.4}, \
+                 u(L/2)/u(L) = {profile:.4}"
+            );
+            assert!(
+                (0.85..=1.15).contains(&tip_ratio),
+                "{kernel_name}, t = {thickness}: mid-width tip deflection / δ_EB = \
+                 {tip_ratio:.4}, outside [0.85, 1.15] (a shear-locked element collapses it \
+                 as ~1/t)"
+            );
+            assert!(
+                (0.28..=0.36).contains(&profile),
+                "{kernel_name}, t = {thickness}: u_z(L/2)/u_z(L) = {profile:.4}, outside \
+                 [0.28, 0.36] (Euler-Bernoulli 5/16; a locked, shear-dominated profile is \
+                 ~linear, ~0.5)"
+            );
+            tip_ratios.push(tip_ratio);
+        }
+        for pair in tip_ratios.windows(2) {
+            let successive = pair[1] / pair[0];
+            assert!(
+                (0.95..=1.05).contains(&successive),
+                "{kernel_name}: halving t moved tip/δ_EB by ×{successive:.4} (ratios \
+                 {tip_ratios:?}); a locking-free element keeps it thickness-invariant, a \
+                 locked one gives ×0.25"
+            );
+        }
+        tip_ratios_by_kernel.push(tip_ratios);
     }
-    for pair in tip_ratios.windows(2) {
-        let successive = pair[1] / pair[0];
+    let [bare, plus] = tip_ratios_by_kernel.as_slice() else {
+        unreachable!("FLAT_KERNELS is bare MITC3 then MITC3+")
+    };
+    for ((thickness, bare), plus) in thicknesses.iter().zip(bare).zip(plus) {
         assert!(
-            (0.95..=1.05).contains(&successive),
-            "halving t moved tip/δ_EB by ×{successive:.4} (ratios {tip_ratios:?}); a \
-             locking-free element keeps it thickness-invariant, a locked one gives ×0.25"
+            (bare / plus - 1.0).abs() <= 0.01,
+            "t = {thickness}: bare MITC3 tip/δ_EB = {bare:.4} and MITC3+ {plus:.4} differ \
+             by more than 1%"
         );
     }
 }
 
 #[test]
-fn flat_mitc3_plus_flexure_tip_row_moves_without_corner_flap() {
+fn flat_shell_flexure_tip_row_moves_without_corner_flap() {
     let mat = cantilever_material();
     let flexure = Cantilever {
         length: 0.05,
@@ -379,19 +396,24 @@ fn flat_mitc3_plus_flexure_tip_row_moves_without_corner_flap() {
         thickness: 0.001,
         tip_force: 10.0,
     };
-    let solved = flexure.solve(&mat);
-    let tip_ratio = solved.mid_width(solved.nx) / flexure.euler_bernoulli_tip(&mat);
-    let tip_row = solved.tip_row();
-    let flatness = tip_row.iter().fold(0.0_f64, |m, u| m.max(u.abs()))
-        / tip_row.iter().fold(f64::INFINITY, |m, u| m.min(u.abs()));
-    println!("flexure: tip/δ_EB = {tip_ratio:.4}, tip-row max/min = {flatness:.4}");
-    assert!(
-        (0.85..=1.15).contains(&tip_ratio),
-        "flexure mid-width tip deflection / δ_EB = {tip_ratio:.4}, outside [0.85, 1.15]"
-    );
-    assert!(
-        flatness <= 1.05,
-        "flexure tip row max|u_z|/min|u_z| = {flatness:.4} > 1.05: the free corners \
-         flap relative to mid-width (tip row {tip_row:?})"
-    );
+    for (kernel_name, kernel) in FLAT_KERNELS {
+        let solved = flexure.solve(&mat, kernel);
+        let tip_ratio = solved.mid_width(solved.nx) / flexure.euler_bernoulli_tip(&mat);
+        let tip_row = solved.tip_row();
+        let flatness = tip_row.iter().fold(0.0_f64, |m, u| m.max(u.abs()))
+            / tip_row.iter().fold(f64::INFINITY, |m, u| m.min(u.abs()));
+        println!(
+            "{kernel_name} flexure: tip/δ_EB = {tip_ratio:.4}, tip-row max/min = {flatness:.4}"
+        );
+        assert!(
+            (0.85..=1.15).contains(&tip_ratio),
+            "{kernel_name} flexure mid-width tip deflection / δ_EB = {tip_ratio:.4}, outside \
+             [0.85, 1.15]"
+        );
+        assert!(
+            flatness <= 1.05,
+            "{kernel_name} flexure tip row max|u_z|/min|u_z| = {flatness:.4} > 1.05: the \
+             free corners flap relative to mid-width (tip row {tip_row:?})"
+        );
+    }
 }

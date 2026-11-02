@@ -35,12 +35,9 @@ pub struct ShellKinematics {
     pub det2: f64,
 }
 
-/// Compute shared MITC3 shell kinematics from physical node positions and the
-/// pre-built local mid-surface frame.
-///
-/// Both `shell_element_stiffness` and `shell_element_stress` call this after
-/// `build_shell_frame` and read the fields directly — no behaviour change,
-/// identical floating-point output.
+/// The [`ShellKinematics`] of the flat triangle `nodes` in its local `frame`,
+/// read by the flat shell stiffness kernels, `shell_element_stress`, and the
+/// membrane and degenerate-shell kernels.
 ///
 /// # Arguments
 ///
@@ -354,96 +351,24 @@ mod tests {
         );
     }
 
-    /// The covariant shear B-matrix only activates the out-of-plane and rotation
-    /// DOFs of each node (6n+2, 6n+3, 6n+4). All other DOF columns are identically
-    /// zero. Furthermore:
-    ///   - γ_ξζ (comp 0) contributes to u_z (6n+2) and θ_y (6n+4) only
-    ///   - γ_ηζ (comp 1) contributes to u_z (6n+2) and θ_x (6n+3) only,
-    ///     with the θ_x contribution having a negative sign (−N_i at tying point).
+    /// In-plane translations and drilling rotations carry no transverse shear.
     #[test]
-    fn shell_kinematics_b_cov_at_tying_points_only_writes_into_uz_tx_ty_dofs() {
-        let frame = build_shell_frame(&UNIT_TRI);
-        let kin = shell_kinematics(&UNIT_TRI, &frame);
-
-        for tp in 0..3 {
-            let tp_coord = Mitc3Plus.tying_points()[tp].coord;
-            let n_at_tp = Mitc3Plus.shape_at(tp_coord);
-            let dn_ref_tp = Mitc3Plus.shape_grad_at(tp_coord);
-            for dof in 0..18 {
-                let local_dof = dof % 6;
-                let node = dof / 6;
-
-                // DOFs outside {2,3,4} per node must be zero in both components
-                if local_dof != 2 && local_dof != 3 && local_dof != 4 {
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        0.0,
-                        "b_cov[{tp}][xi_zeta][{dof}] (local={local_dof}) must be 0"
-                    );
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        0.0,
-                        "b_cov[{tp}][eta_zeta][{dof}] (local={local_dof}) must be 0"
-                    );
-                }
-
-                // u_z dofs (6n+2): γ_ξζ gets dn_ref[node][0], γ_ηζ gets dn_ref[node][1]
-                if local_dof == 2 {
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][0][dof] - dn_ref_tp[node][0]).abs()
-                            < 1e-12,
-                        "b_cov[{tp}][xi_zeta][{dof}] (uz@node{node}) = {}, expected dn_ref[{node}][0]={}",
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        dn_ref_tp[node][0]
-                    );
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][1][dof] - dn_ref_tp[node][1]).abs()
-                            < 1e-12,
-                        "b_cov[{tp}][eta_zeta][{dof}] (uz@node{node}) = {}, expected dn_ref[{node}][1]={}",
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        dn_ref_tp[node][1]
-                    );
-                }
-
-                // γ_ξζ (comp 0): θ_x dofs (6n+3) must be zero
-                if local_dof == 3 {
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        0.0,
-                        "b_cov[{tp}][xi_zeta][{dof}] (theta_x@node{node}) must be 0"
-                    );
-                }
-
-                // γ_ηζ (comp 1): θ_y dofs (6n+4) must be zero
-                if local_dof == 4 {
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        0.0,
-                        "b_cov[{tp}][eta_zeta][{dof}] (theta_y@node{node}) must be 0"
-                    );
-                }
-
-                // γ_ξζ (comp 0): θ_y dofs (6n+4) must equal +N_i(tp)
-                if local_dof == 4 {
-                    let expected = n_at_tp[node];
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][0][dof] - expected).abs() < 1e-12,
-                        "b_cov[{tp}][xi_zeta][{dof}] (theta_y@node{node}) = {}, expected +N_i={}",
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        expected
-                    );
-                }
-
-                // γ_ηζ (comp 1): θ_x dofs (6n+3) must equal −N_i(tp) (negative sign)
-                if local_dof == 3 {
-                    let expected = -n_at_tp[node];
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][1][dof] - expected).abs() < 1e-12,
-                        "b_cov[{tp}][eta_zeta][{dof}] (theta_x@node{node}) = {}, expected {}",
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        expected
-                    );
-                }
+    fn covariant_shear_b_ignores_membrane_and_drilling_dofs_on_non_unit_triangles() {
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let mut u = [0.0_f64; 18];
+            for node in 0..3 {
+                u[6 * node] = 0.3 + node as f64;
+                u[6 * node + 1] = -0.5 * node as f64 + 0.2;
+                u[6 * node + 5] = 0.7 - 0.4 * node as f64;
+            }
+            for coord in shear_probe_coords() {
+                let gamma = covariant_shear_of(&kin, coord, &u);
+                assert_eq!(
+                    gamma,
+                    [0.0, 0.0],
+                    "membrane/drilling DOFs {u:?} on {nodes:?} strain the shear at {coord:?}"
+                );
             }
         }
     }

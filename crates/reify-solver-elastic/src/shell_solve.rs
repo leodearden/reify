@@ -18,10 +18,11 @@
 //!
 //! The tip deflection is 0.92–0.94·δ_EB across L/t ≈ 8–133, and it does not
 //! change with thickness. The max top-layer von Mises is 0.92–0.93·σ, with
-//! σ = 6PL/(bh²). Held by `tests/flat_shell_shear_locking.rs` and by this
-//! module's two driver tests, each at ±15%. The reify-eval e2e
-//! (`reify-eval/tests/shell_solve_e2e.rs`) keeps its wider one-order-of-magnitude
-//! band.
+//! σ = 6PL/(bh²). The deflection is held at ±15%, for bare MITC3 and MITC3+, by
+//! `tests/flat_shell_shear_locking.rs`, which mirrors this recipe because the
+//! driver returns no displacement. The stress is held at ±15% by this module's
+//! two driver tests. The e2e (`crates/reify-eval-fea-tests/tests/shell_solve_e2e.rs`)
+//! keeps its wider one-order-of-magnitude band.
 
 use crate::assembly::{AssemblyElement, AssemblyMode, ElementStiffness, assemble_global_stiffness};
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination};
