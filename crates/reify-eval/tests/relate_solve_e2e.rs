@@ -2188,4 +2188,8 @@ fn a_side_drilled_hole_seats_the_bolt() {
     assert_eq!(solution.failure, None, "{solution:?}");
     assert!(errors(&solution).is_empty(), "{:?}", solution.diagnostics);
     assert!(solution.poses.contains_key("bolt"), "{solution:?}");
+    // The seed puts the lone `concentric` at its crest, where the seed partition
+    // under-reads its rank; the reported count must be the solved placement's.
+    assert_eq!(solution.free as usize, solution.free_twists.len(), "{solution:?}");
+    assert_eq!(solution.spent + solution.free, 6, "{solution:?}");
 }

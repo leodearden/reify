@@ -511,10 +511,13 @@ pub struct RelateSolution {
     /// (e.g. `"bolt"`). Empty when the scope has no auto subs, or when the driving
     /// set was infeasible (no placement — see [`diagnostics`](Self::diagnostics)).
     pub poses: HashMap<String, Value>,
-    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension).
+    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension),
+    /// measured at the SOLVED placement when the solve converged and at the seed
+    /// witness otherwise.
     pub spent: u32,
     /// Residual DOF left free = `6 − spent` (the Frame freedoms the relations leave
-    /// open, e.g. spin about a shared axis).
+    /// open, e.g. spin about a shared axis). On a converged solve this equals
+    /// `free_twists.len()`: both come from the one factorization at the solution.
     pub free: u32,
     /// Number of relations in the driving set (the maximal independent subset that
     /// was handed to the solver).
@@ -533,8 +536,9 @@ pub struct RelateSolution {
     /// never parse its text.
     pub failure: Option<SolveFailureCause>,
     /// The Frame freedoms the relations leave open at the SOLVED placement, one
-    /// [`Twist`] per free DOF (the null space of the solve's Jacobian there) —
-    /// the data #4388's DOF ledger names geometrically. Empty when unsolved.
+    /// [`Twist`] per [`free`](Self::free) DOF (the null space of the solve's
+    /// Jacobian there) — the data #4388's DOF ledger names geometrically. Empty
+    /// when unsolved.
     pub free_twists: Vec<Twist>,
     /// The per-relation consumption ledger of a ZERO-AUTO scope's static
     /// verification (DIC α, task 5415), or `None` when this solution came from the
@@ -877,6 +881,11 @@ pub fn solve_relate_scope_within(
             solution
                 .poses
                 .insert(frame_unknown.sub.clone(), frame_value(&frame.pose));
+            // The DOF count has ONE home on a converged solve: the factorization at
+            // the solution that also yields the null space. The seed partition can
+            // read a relation at its crest as rank-deficient there.
+            solution.spent = frame.rank as u32;
+            solution.free = frame.null_space.len() as u32;
             solution.free_twists = frame.null_space;
             Some(frame.pose)
         }
