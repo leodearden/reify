@@ -1868,49 +1868,50 @@ mod tests {
     // ── gauge lock (task 6413) — defect D2: the eigenvalue-gap DESCENT STEP.
     // Task 6413's outer stop test is the all-node `StiffnessScale` criterion,
     // whose gauge invariance `fd_criteria`'s own tests pin; that fix does NOT
-    // touch `combined_eig_gap_objective` / `combined_geometry_descent_step`,
-    // which is why this task is not a straight port of task 6119's diff. Unit
-    // altitude only: MEASURED, there is no e2e fixture that both converges
-    // AND exercises the descent step under a gauge change (the
+    // touch the relax step's descent objective (`RelaxStep::eig_gap`) or its
+    // descent move, which is why this task is not a straight port of task
+    // 6119's diff. Unit altitude only: MEASURED, there is no e2e fixture that
+    // both converges AND exercises the descent step under a gauge change (the
     // `ForceDensitySpec::Explicit` combined mode never converges from any
     // meaningful geometry perturbation), so claiming an e2e RED here would be
     // a doomed test — see `tensegrity_free_surface_gauge_covariance.rs` for
     // the e2e coverage this task DOES carry (the stop test only).
 
+    /// The triplex membrane at the canonical prism with the closed-form line
+    /// `q` and σ = 0.2, both scaled by `lambda`: the descent objective at those
+    /// densities and geometry, as the relax step scores a trial.
+    fn eig_gap_at_canonical_prism(lambda: f64) -> f64 {
+        let membrane = PrismMembrane::with_sigma(PrismMembrane::SIGMA * lambda);
+        let q: Vec<f64> = closed_form_q().iter().map(|v| v * lambda).collect();
+        let x = canonical_prism();
+        let problem = membrane.problem(&x, FreeSpec::Explicit(&q));
+        RelaxStep::eig_gap(&problem, &q, &x)
+    }
+
     #[test]
-    fn combined_eig_gap_objective_is_gauge_invariant_under_uniform_scaling() {
+    fn relax_step_eig_gap_is_gauge_invariant_under_uniform_scaling() {
         // The objective is a pure scalar SCORE (sum of squares of the 4
         // smallest-|λ| eigenvalues of D_combined), so its gauge factor must
         // cancel — this is the right contract for a score, distinct from the
         // descent step below (which maps geometry to geometry, and geometry
         // carries no gauge weight, so ITS contract is bit-identical output,
         // not a cancelled scale factor). D_combined scales bit-exactly by λ
-        // under q → λ·q, σ → λ·σ (established by the D1 tests above), so
-        // every eigenvalue of D scales by λ and the sum-of-4-smallest-squares
-        // scales by λ². The pristine (un-normalised) objective is therefore
-        // NOT gauge-invariant — checked with assert_eq! (bit-exact, λ a power
-        // of two) rather than a tolerance.
+        // under q → λ·q, σ → λ·σ (λ a power of two), so every eigenvalue of D
+        // scales by λ and the sum-of-4-smallest-squares scales by λ². The
+        // pristine (un-normalised) objective is therefore NOT gauge-invariant
+        // — checked with assert_eq! (bit-exact, λ a power of two) rather than
+        // a tolerance.
         //
-        // MEASURED RED after step-2, this exact fixture (step-2 does not
-        // touch this function): 6.000000000000011e-2 vs 6.597069766656012e10
-        // — ratio ≈ 1.0995e12 ≈ 2^40 = λ², not the expected 1.
+        // MEASURED RED after task 6413's step-2, this exact fixture (step-2
+        // did not touch the objective): 6.000000000000011e-2 vs
+        // 6.597069766656012e10 — ratio ≈ 1.0995e12 ≈ 2^40 = λ², not the
+        // expected 1.
         const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
         const LAMBDA_DOWN: f64 = 1.0 / 1_048_576.0; // 2^-20
-        let (members, _kinds) = triplex_topology();
-        let surfaces = prism_surfaces();
-        let x = canonical_prism();
-        let q = closed_form_q();
-        const SIGMA: f64 = 0.2;
 
-        let obj_at = |lambda: f64| -> f64 {
-            let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
-            let sigmas_scaled = vec![SIGMA * lambda; surfaces.len()];
-            combined_eig_gap_objective(6, &members, &q_scaled, &surfaces, &sigmas_scaled, &x)
-        };
-
-        let o1 = obj_at(1.0);
-        let o_up = obj_at(LAMBDA_UP);
-        let o_down = obj_at(LAMBDA_DOWN);
+        let o1 = eig_gap_at_canonical_prism(1.0);
+        let o_up = eig_gap_at_canonical_prism(LAMBDA_UP);
+        let o_down = eig_gap_at_canonical_prism(LAMBDA_DOWN);
 
         assert_eq!(
             o1, o_up,
@@ -1923,56 +1924,49 @@ mod tests {
     }
 
     #[test]
-    fn combined_geometry_descent_step_output_is_gauge_invariant_under_uniform_scaling() {
-        // The descent step maps GEOMETRY to GEOMETRY (plus a next step
-        // size), and geometry carries no gauge weight (only q/σ do) — so,
-        // unlike the scalar objective above, the right contract here is that
-        // the OUTPUT is bit-identical across a gauge change, not scaled by
-        // any power of λ. This currently fails because the finite-difference
-        // gradient is taken of the un-normalised (gauge-covariant, scaling as
-        // λ²) objective, so a fixed backtracking `step` accepts/rejects
-        // different trial geometries depending on λ.
+    fn relax_step_output_is_gauge_invariant_under_uniform_scaling() {
+        // The relax step maps GEOMETRY to GEOMETRY (plus the step size it
+        // carries to the next call), and geometry carries no gauge weight
+        // (only q/σ do) — so, unlike the scalar objective above, the right
+        // contract here is that the OUTPUT is bit-identical across a gauge
+        // change, not scaled by any power of λ. It failed before task 6413
+        // because the finite-difference gradient was taken of the
+        // un-normalised (gauge-covariant, scaling as λ²) objective, so a fixed
+        // backtracking step accepted/rejected different trial geometries
+        // depending on λ.
         //
-        // MEASURED RED after step-2 (step-2 does not touch this function):
-        // both the returned geometry and the returned next step size differ
+        // MEASURED RED after task 6413's step-2 (step-2 did not touch the
+        // descent): both the returned geometry and the next step size differed
         // across λ.
         const LAMBDA_UP: f64 = 1_048_576.0; // 2^20
-        let (members, _kinds) = triplex_topology();
-        let surfaces = prism_surfaces();
-        let x = canonical_prism();
-        let q = closed_form_q();
-        const SIGMA: f64 = 0.2;
-        const STEP_IN: f64 = 1e-2; // matches RelaxStep::INITIAL_DESCENT_STEP
 
-        let step_at = |lambda: f64| -> (Vec<[f64; 3]>, f64) {
-            let q_scaled: Vec<f64> = q.iter().map(|v| v * lambda).collect();
-            let sigmas_scaled = vec![SIGMA * lambda; surfaces.len()];
-            combined_geometry_descent_step(
-                6,
-                &members,
-                &q_scaled,
-                &surfaces,
-                &sigmas_scaled,
-                &x,
-                STEP_IN,
-            )
+        let relax_at = |lambda: f64| -> (Vec<[f64; 3]>, f64) {
+            let membrane = PrismMembrane::with_sigma(PrismMembrane::SIGMA * lambda);
+            let q: Vec<f64> = closed_form_q().iter().map(|v| v * lambda).collect();
+            let x = canonical_prism();
+            let problem = membrane.problem(&x, FreeSpec::Explicit(&q));
+            let iterate =
+                CombinedIterate::new(&problem, q.clone(), x.clone(), membrane.surface_matrix(&x));
+            let mut relax = RelaxStep::new();
+            let next = relax.relax(&problem, &iterate, false);
+            (next, relax.descent_step)
         };
 
-        let (next1, nstep1) = step_at(1.0);
-        let (next_up, nstep_up) = step_at(LAMBDA_UP);
+        let (next1, nstep1) = relax_at(1.0);
+        let (next_up, nstep_up) = relax_at(LAMBDA_UP);
 
         assert_eq!(
             next1, next_up,
-            "descent-step geometry must be exactly gauge-invariant (no gauge weight on geometry)",
+            "relax-step geometry must be exactly gauge-invariant (no gauge weight on geometry)",
         );
         assert_eq!(
             nstep1, nstep_up,
-            "descent-step next step size must be exactly gauge-invariant: step(1)={nstep1:e} step(λ)={nstep_up:e}",
+            "relax-step next step size must be exactly gauge-invariant: step(1)={nstep1:e} step(λ)={nstep_up:e}",
         );
     }
 
     #[test]
-    fn combined_eig_gap_objective_of_all_zero_d_is_zero_not_infinity() {
+    fn relax_step_eig_gap_of_an_all_zero_d_is_zero_not_infinity() {
         // The sibling guard on the residual
         // (`fd_criteria::tests::an_all_zero_judged_row_is_not_at_equilibrium`)
         // returns INFINITY because the residual IS the outer loop's
@@ -1981,26 +1975,30 @@ mod tests {
         // (no spectral gap left to close) is honestly a perfect score, and
         // the guarded branch must return 0.0: returning INFINITY here would
         // instead make the line search reject every trial.
-        let (members, _kinds) = triplex_topology();
-        let surfaces = prism_surfaces();
+        let (members, kinds) = triplex_topology();
         let x = canonical_prism();
+        let q = closed_form_q();
+        // No surfaces, so at zero densities the combined D is identically zero
+        // at every geometry.
+        let problem =
+            ForceDensityProblem::new(&x, &members, &kinds, FreeSpec::Explicit(&q), &[], &[], &[])
+                .expect("closed-form prism q is valid input");
         let zero_q = vec![0.0; members.len()];
-        let zero_sigmas = vec![0.0; surfaces.len()];
 
-        let obj = combined_eig_gap_objective(6, &members, &zero_q, &surfaces, &zero_sigmas, &x);
+        let obj = RelaxStep::eig_gap(&problem, &zero_q, &x);
         assert_eq!(obj, 0.0, "all-zero D must score a perfect 0.0, got {obj}");
 
         // With g0 == 0.0 the finite-difference gradient is also all-zero (D
         // stays identically zero at every FD-perturbed geometry too, since
-        // both q and sigma are zero regardless of x), so the backtracking
-        // search can find no strictly-downhill trial and must return the
-        // geometry unchanged — pinning the claim that a premature "perfect"
-        // score cannot masquerade as progress.
-        let (next, _next_step) =
-            combined_geometry_descent_step(6, &members, &zero_q, &surfaces, &zero_sigmas, &x, 1e-2);
+        // the densities are zero and no surface acts, regardless of x), so the
+        // backtracking search can find no strictly-downhill trial and must
+        // return the geometry unchanged — pinning the claim that a premature
+        // "perfect" score cannot masquerade as progress.
+        let iterate = CombinedIterate::new(&problem, zero_q.clone(), x.clone(), Mat::zeros(6, 6));
         assert_eq!(
-            next, x,
-            "descent step must leave geometry unchanged when the objective is already 0.0",
+            RelaxStep::new().relax(&problem, &iterate, false),
+            x,
+            "the relax step must leave geometry unchanged when the objective is already 0.0",
         );
     }
 
@@ -2203,16 +2201,7 @@ mod tests {
         let guess = perturbed_prism_guess();
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let problem = membrane.problem(&guess, FreeSpec::Explicit(&q));
-        let eig_gap = |nodes: &[[f64; 3]]| {
-            combined_eig_gap_objective(
-                6,
-                &membrane.members,
-                &q,
-                &membrane.surfaces,
-                &membrane.sigmas,
-                nodes,
-            )
-        };
+        let eig_gap = |nodes: &[[f64; 3]]| RelaxStep::eig_gap(&problem, &q, nodes);
         let first = CombinedIterate::new(
             &problem,
             q.clone(),
@@ -2233,7 +2222,7 @@ mod tests {
             "the adapted step must carry to the next call",
         );
         assert!(
-            projection_trial(&problem, &first).is_some(),
+            RelaxStep::projection_trial(&problem, &first).is_some(),
             "the guess must admit a projection trial for withholding it to show",
         );
         assert_ne!(next, RelaxStep::new().relax(&problem, &first, true));
@@ -2249,14 +2238,8 @@ mod tests {
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let problem = membrane.problem(&planar, FreeSpec::Explicit(&q));
         let surface_mat = membrane.surface_matrix(&planar);
-        let iterate =
-            CombinedIterate::new(&problem, q.clone(), planar.clone(), surface_mat.clone());
-        assert_eq!(
-            form_find_explicit_combined_relaxed(&membrane.members, &q, &planar, &surface_mat),
-            Err(FreeFormError::SingularRecovery),
-            "the planar fixture must exercise the trial's error branch",
-        );
-        assert_eq!(projection_trial(&problem, &iterate), None);
+        let iterate = CombinedIterate::new(&problem, q.clone(), planar.clone(), surface_mat);
+        assert_eq!(RelaxStep::projection_trial(&problem, &iterate), None);
 
         let next = RelaxStep::new().relax(&problem, &iterate, true);
 
