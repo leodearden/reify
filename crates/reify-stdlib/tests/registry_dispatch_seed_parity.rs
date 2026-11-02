@@ -65,45 +65,14 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::__registry_dispatch_for_test as dispatch;
 use reify_stdlib::__try_dispatch_for_test as try_dispatch;
 use reify_stdlib::{compute_eigenvalues_3x3, compute_max_shear_3x3, eval_builtin};
+use reify_test_support::values::{UNIAXIAL_STRESS_PA, uniaxial_stress_tensor};
 
 /// The `StructureTypeId` sentinel `analysis::stress_invariants` mints for
 /// registry-free instances (`crates/reify-stdlib/src/analysis.rs:20`).
 const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
-/// Uniaxial 100 MPa stress magnitude. Chosen because `1e8` and `(1e8)² = 1e16`
-/// are both exact doubles, so the von Mises and safety-factor expectations
-/// below need no tolerance.
-const SIGMA: f64 = 100e6;
-
 /// Row-major 3×3 window of the uniaxial tensor, as the kernels see it.
-const UNIAXIAL_WINDOW: [f64; 9] = [SIGMA, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-
-/// Build a 3×3 `Value::Tensor` whose elements all carry `dim`.
-fn dimensioned_matrix(rows_f64: &[[f64; 3]; 3], dim: DimensionVector) -> Value {
-    Value::Tensor(
-        rows_f64
-            .iter()
-            .map(|row| {
-                Value::Tensor(
-                    row.iter()
-                        .map(|&v| Value::Scalar {
-                            si_value: v,
-                            dimension: dim,
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
-/// The uniaxial 100 MPa stress tensor every analysis probe is fed.
-fn uniaxial_stress() -> Value {
-    dimensioned_matrix(
-        &[[SIGMA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-        DimensionVector::PRESSURE,
-    )
-}
+const UNIAXIAL_WINDOW: [f64; 9] = [UNIAXIAL_STRESS_PA, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
 
 fn pressure(si_value: f64) -> Value {
     Value::Scalar {
@@ -129,7 +98,7 @@ struct Probe {
 
 /// Every seed probe: both `parse_*` dispositions, all five analysis kernels.
 fn probes() -> Vec<Probe> {
-    let stress = uniaxial_stress();
+    let stress = uniaxial_stress_tensor();
 
     // `unit_symbol_to_si("mm")` is the exact literal 0.001, and
     // `parse_length_value` computes `num * factor` — so `12.0 * 0.001`
@@ -150,7 +119,7 @@ fn probes() -> Vec<Probe> {
         (
             "i1".to_string(),
             Value::Scalar {
-                si_value: SIGMA,
+                si_value: UNIAXIAL_STRESS_PA,
                 dimension: dim,
             },
         ),
@@ -217,7 +186,7 @@ fn probes() -> Vec<Probe> {
             name: "von_mises",
             args: vec![stress.clone()],
             // √(0.5·((σ−0)² + 0 + (0−σ)²)) = √(σ²) = σ, exactly.
-            expected: pressure(SIGMA),
+            expected: pressure(UNIAXIAL_STRESS_PA),
             what: "von_mises of a uniaxial window",
         },
         Probe {

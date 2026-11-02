@@ -468,6 +468,40 @@ pub fn matrix3x3(
     ])
 }
 
+/// Uniaxial 100 MPa stress magnitude, in SI pascals. Chosen because `1e8` and
+/// `(1e8)² = 1e16` are both exact doubles, so analysis expectations built from
+/// it (von Mises, safety factor) need no tolerance.
+pub const UNIAXIAL_STRESS_PA: f64 = 100e6;
+
+/// Create a 3×3 `Value::Tensor` of `Value::Tensor` rows of `Value::Scalar`s,
+/// every element carrying `dimension` — the nested shape the analysis kernels
+/// read. Contrast [`matrix3x3`], which builds a `Value::Matrix` of bare `Real`s.
+pub fn dimensioned_tensor3x3(rows: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
+    Value::Tensor(
+        rows.iter()
+            .map(|row| {
+                Value::Tensor(
+                    row.iter()
+                        .map(|&si_value| Value::Scalar {
+                            si_value,
+                            dimension,
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// The uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`] at `[0][0]`, zero
+/// elsewhere, in PRESSURE.
+pub fn uniaxial_stress_tensor() -> Value {
+    dimensioned_tensor3x3(
+        &[[UNIAXIAL_STRESS_PA, 0.0, 0.0], [0.0; 3], [0.0; 3]],
+        DimensionVector::PRESSURE,
+    )
+}
+
 // --- Complex value constructors ---
 
 /// Create a Value::Int.
