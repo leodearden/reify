@@ -522,10 +522,15 @@ _rgs_cargo_build_features() {
 # line, as the REAL cargo resolves reify-gui under --features <features>.
 # <scratch-dir> must already be registered with _rgs_mktemp: this runs inside
 # $(...), where a registration would be lost. Silent and non-zero if cargo
-# cannot resolve (e.g. a cold registry).
+# cannot resolve (e.g. a cold registry). --filter-platform keeps --offline from
+# needing other targets' crates (macOS-only block2 etc.), which a Linux host
+# never downloads.
 _rgs_tauri_features_under() {
-    local _json="$1/cargo-metadata.json" _rc=0
+    local _json="$1/cargo-metadata.json" _rc=0 _host
+    _host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+    [ -n "$_host" ] || return 1
     ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline \
+        --filter-platform "$_host" \
         --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml" \
         --features "$2" ) > "$_json" 2>/dev/null || _rc=$?
     [ "$_rc" -eq 0 ] || return 1
