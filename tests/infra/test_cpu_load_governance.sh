@@ -750,6 +750,23 @@ _row4_pin_coresident() {
     [ "$task_sorted" = "$merge_sorted" ]
 }
 
+# _row4_worker_affinities <ready_file>
+#   Prints one Cpus_allowed_list per pid line of a cpu_load_fixture.sh
+#   --ready-file, in file order, or the literal "unavailable" for a pid whose
+#   /proc/<pid>/status cannot be read (the worker is gone).  "unavailable" is
+#   not a cpu id, so _row4_pin_coresident rejects it: a vanished worker is never
+#   co-resident.  Callers capture it as `$(... || true)`: an unreadable ready
+#   file makes this return non-zero, and the empty capture then fails the
+#   predicate on its own.
+_row4_worker_affinities() {
+    local ready_file="$1" pid mask
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        mask="$(awk '/^Cpus_allowed_list:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null || true)"
+        printf '%s\n' "${mask:-unavailable}"
+    done < "$ready_file"
+}
+
 # ============================================================================
 # ROW4 per-worker pinning + readiness — always-on guards (task 9698).
 #
