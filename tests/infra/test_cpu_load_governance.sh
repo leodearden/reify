@@ -3244,10 +3244,11 @@ elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
 else
     # ── ROW4 ORCHESTRATION (step-10, confined H5/task 4926) ──────────────────
     # Confine the shared parent slice's CPUQuota BEFORE any measurement, and
-    # pin the burns to the confined CPU list (esc-4926-3): the quota bounds
-    # the subtree's aggregate footprint while the pinning creates the per-CPU
-    # runqueue co-residency cpu.weight arbitration requires — together they
-    # make the ratio host-load-independent (PRD §1 G6 #3 as revised), so the
+    # pin every burn WORKER to one CPU of the confined list (esc-4926-3; per
+    # worker since task 9698): the quota bounds the subtree's aggregate
+    # footprint while the pinning creates the per-CPU runqueue co-residency
+    # cpu.weight arbitration requires — together they make the ratio
+    # host-load-independent (PRD §1 G6 #3 as revised), so the
     # PRIMARY quiet-box pre/post gate that used to wrap this block is DROPPED
     # on this delegated path -- the row now runs unconditionally once
     # host_supports_governance is true (checked above) and can go RED under
