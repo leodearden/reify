@@ -913,7 +913,7 @@ mod tests {
     /// This test passes today (before/after the refactor) because both call sites
     /// already implement equivalent logic; it future-proofs against drift if one
     /// site grows a new pass that the other forgets. It also fills a real coverage
-    /// gap: no existing test exercises `target_task_id: Some(...)`.
+    /// gap: no existing test exercises a context built with `.targeting(..)`.
     #[test]
     fn check_pre_done_equivalent_to_scoped_check() {
         let conn = seed_db();

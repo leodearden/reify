@@ -69,8 +69,8 @@ mod tests {
     ///   short-circuits before per-symbol iteration (symbol mock
     ///   seeded so the guard is demonstrably load-bearing).
     /// - task 2358 → P1 guard B4: `prd` + paired pending consumer (task 2358_c,
-    ///   `consumer_ref` matching 2358's `prd`) → `has_pending_consumer`
-    ///   returns true → P1 short-circuits.
+    ///   `consumer_ref` matching 2358's `prd`) → `pending_consumer_prds`
+    ///   contains that `prd` → P1 short-circuits.
     /// - task 2658 → P1 guard B2: `done_provenance=None` (legacy_meta) →
     ///   P1 skips the task at commit-resolution before per-symbol iteration.
     /// - task 2699 → P1 guard B7: `g_allow_marker=Some("non-blank")` →
@@ -234,7 +234,7 @@ mod tests {
         );
 
         // Fixture 4 — task 2358, guard B4 (P1 pending-consumer-ref):
-        // has_pending_consumer matches task 2358_c's consumer_ref against this
+        // pending_consumer_prds holds task 2358_c's consumer_ref, which is this
         // prd → P1 short-circuits before iterating changed_symbols.
         // done_provenance=None → P5 early-returns (guard A1).
         task_metadata.insert(

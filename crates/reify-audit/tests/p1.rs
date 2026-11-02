@@ -735,13 +735,14 @@ mod tests {
         }
     }
 
-    /// Step 3 (RED→GREEN via step 4) — when `target_task_id` is set, P1
-    /// restricts scanning to that single task only (mirroring p2's guard).
+    /// Step 3 (RED→GREEN via step 4) — when the context targets a task, P1
+    /// restricts scanning to that single task only (mirroring P2's target
+    /// narrowing).
     ///
     /// Two done orphan-candidate tasks (both 15 days past grace, zero refs),
     /// each introducing their own symbol. AuditContext built with
-    /// `target_task_id: Some("task_A")`. Expected: exactly one finding, for
-    /// task_A only; task_B's symbol is not reported.
+    /// `.targeting("task_A")`. Expected: exactly one finding, for task_A
+    /// only; task_B's symbol is not reported.
     ///
     /// RED: current `check()` ignores target_task_id and scans both tasks,
     /// producing two findings.
@@ -1077,8 +1078,8 @@ mod tests {
     /// one `review`-status consumer task with `consumer_ref="docs/x.md"`.
     /// Expected: zero P1 findings.
     ///
-    /// RED: current `has_pending_consumer` only matches `"pending"` |
-    /// `"in-progress"`, so the `review` consumer is invisible and a finding fires.
+    /// RED: P1's pending-consumer check then matched only `"pending"` |
+    /// `"in-progress"`, so the `review` consumer was invisible and a finding fired.
     #[test]
     fn review_status_consumer_suppresses_finding() {
         let done_at = NOW - 15 * DAY;
@@ -1201,26 +1202,26 @@ mod tests {
     }
 
     /// Amendment (reviewer_comprehensive) — pins the subtle interaction
-    /// between `target_task_id` scoping and `has_pending_consumer` suppression.
+    /// between `target_task_id` scoping and `pending_consumer_prds` suppression.
     ///
     /// The `target_task_id` guard skips non-target entries in the *producer*
-    /// loop; `has_pending_consumer` independently scans the *full*
+    /// loop; `pending_consumer_prds` independently scans the *full*
     /// `task_metadata` map. These are two different traversals: the first
     /// decides which producer tasks to audit; the second decides whether any
     /// consumer task (regardless of its own task_id) is already in-flight.
     ///
     /// A future refactor that moves the scoping filter earlier — e.g.
     /// pre-filtering `task_metadata` to `{ target }` before running check —
-    /// would hide the consumer task from `has_pending_consumer` and silently
+    /// would hide the consumer task from `pending_consumer_prds` and silently
     /// break suppression. Neither `target_task_id_scopes_p1_to_one_task` (no
     /// consumer tasks) nor `review_status_consumer_suppresses_finding` (no
     /// target) exercises this cross-product; this test does.
     ///
     /// Setup: producer `"prod_1"` (done, 15 days past grace, prd="docs/p.md",
     /// zero refs) + `"review"`-status consumer `"cons_1"` (consumer_ref=
-    /// "docs/p.md"). AuditContext has `target_task_id: Some("prod_1")`.
+    /// "docs/p.md"). AuditContext built with `.targeting("prod_1")`.
     /// Expected: zero findings — the scoped sweep still suppresses because
-    /// `has_pending_consumer` scans the unfiltered metadata map.
+    /// `pending_consumer_prds` scans the unfiltered metadata map.
     #[test]
     fn target_task_id_does_not_hide_consumer_from_suppression() {
         let done_at = NOW - 15 * DAY;
@@ -1245,7 +1246,7 @@ mod tests {
             done_meta("prod_1", done_at, Some("docs/p.md")),
         );
         // A consumer whose task_id != target_task_id. The producer loop skips
-        // it (it is not a candidate producer), but has_pending_consumer must
+        // it (it is not a candidate producer), but pending_consumer_prds must
         // still discover it via ctx.task_metadata().values().
         task_metadata.insert(
             "cons_1".to_string(),
