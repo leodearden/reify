@@ -550,18 +550,15 @@ fn bare_zero_is_not_special_cased() {
 /// The EXACT live counts, not round numbers under them — the reasoning
 /// `geometry_chunk_smoke.rs::MINIMUM_FN_CITES` spells out: at a floor below the
 /// live count one whole cite can be deleted while the check stays green, which
-/// is precisely the regression the floor claims to catch. Seven `<path>::<fn>`
-/// cites across three `.rs` files (this module's own self-cites, plus the
-/// primitive-profile and modify-sweep eval pins), and one `.ri` exemplar
-/// (`angle_crossings.ri`, which predates this task).
+/// is precisely the regression the floor claims to catch.
 ///
 /// Raise these WITH the chunk when a cite is added. Never lower one to go green:
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything. How
 /// to re-measure one — and why a batched sweep under-reports — is stated once,
 /// next to `geometry_chunk_smoke.rs::MINIMUM_FN_CITES`, not repeated here.
-const MINIMUM_FN_CITES: usize = 7;
-const MINIMUM_RS_FILES: usize = 3;
-const MINIMUM_RI_FILES: usize = 1;
+const MINIMUM_FN_CITES: usize = 10;
+const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_RI_FILES: usize = 2;
 
 /// Every test units.md cites as PINNING a claim must still exist.
 ///
@@ -570,10 +567,7 @@ const MINIMUM_RI_FILES: usize = 1;
 /// Without this test a PINNED row survives the deletion or rename of the test it
 /// names, and the chunk — served verbatim to the in-GUI assistant — goes on
 /// asserting a guarantee that no longer exists. A dangling cite is not a broken
-/// link; it is a false claim. The three `.rs` files behind the floor are this
-/// module's own guard plus the two eval-layer pins the note relies on, and the
-/// one `.ri` is `examples/best_practices/angle_crossings.ri`, the compile-gated
-/// exemplar this chunk defers to for the angle-crossing diagnostics.
+/// link; it is a false claim.
 ///
 /// Twin of `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve`, and
 /// SHARES ITS BODY: the loop was extracted to
