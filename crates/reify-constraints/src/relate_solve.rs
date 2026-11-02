@@ -1509,7 +1509,7 @@ impl LeastSquaresProblem for FrameProblem<'_> {
 
     fn normalize(&self, x: &mut [f64]) {
         let wrapped = self.pose(x).with_wrapped_rotation();
-        x[3..].copy_from_slice(&wrapped.rotation);
+        x.copy_from_slice(&self.scaled(&wrapped));
     }
 
     fn row_source(&self, row: usize) -> ResidualSource {
