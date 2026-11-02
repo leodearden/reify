@@ -42,7 +42,17 @@
 # warm_lane_pool.task_pool_size_source derives the lane pool from this value at startup
 # (N = max_concurrent_tasks + git.spare_warm_lanes), so a cut here SHRINKS the pool unless
 # spare_warm_lanes absorbs it — see the pool-size invariant at git.spare_warm_lanes.
-max_concurrent_tasks: 24
+# 24 -> 16 (Leo, 2026-11-02, ruling after the 2026-11-01 portfolio review, seat Q3): the
+# per-project task-verify slot is saturated (a waiter is present in 92-99% of heartbeat
+# samples, W43-W44). A closed-loop queue model fitted to W44 keeps the slot >= 99.4% busy
+# at 16 while cutting modelled verify wait from 9.9 h to 4.6 h; reify landed no fewer at
+# 24 than at 48 (15.6 vs 14.3 a day), so the cap is not what limits landings. The warm-lane
+# pool is unchanged: git.spare_warm_lanes goes 32 -> 40 in the same edit, so
+# N = 16 + 40 = 56 = highest resident _lane-K + 1 (POOL-SIZE INVARIANT at
+# git.spare_warm_lanes). Tripwire: if the weekly waiter-present share falls below 0.90 or
+# landings/day fall below the W44 rate, revert at the next redeploy; raise again when task
+# 7977's remote task legs reach this project. Red tier: takes effect at the next redeploy.
+max_concurrent_tasks: 16
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
 # depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
@@ -1400,7 +1410,9 @@ git:
   # the pool as infra-owned and never re-pins it, so its task's branch stays checked out
   # there and every re-dispatch faults rc=128 — #7532's 48 -> 24 cut stranded 24 tasks
   # this way. Hence 24 + 32 = 56; lower it only after draining the high lanes.
-  spare_warm_lanes: 32
+  # 2026-11-02 (Leo, portfolio review Q3): 32 -> 40 to absorb the max_concurrent_tasks cut
+  # 24 -> 16 above; 16 + 40 = 56 keeps N at the invariant floor.
+  spare_warm_lanes: 40
   # DF-1933 reclaim-on-exhaustion safety valve: on pool exhaustion, steals the
   # oldest non-dispatched non-terminal lane (with WIP-commit preservation) instead
   # of hard-faulting to the inv.6 cold-fallback. Enabled after the 2026-07-22
