@@ -528,6 +528,8 @@ pub mod qoi;
 pub(crate) mod fd_matrix;
 // Task 9271 (solver-crates-layering η₂): the validated GroupRatios spec, below form_find.
 pub(crate) mod group_spec;
+// Task 9272 (solver-crates-layering η₃): the scale-free equilibrium criterion, below form_find and form_find_free.
+pub(crate) mod fd_criteria;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.

@@ -326,16 +326,18 @@ fn free_standing_member_forces_are_strictly_force_dimensioned() {
     assert_bridge_holds(&solve_free(), "free-standing");
 }
 
-/// The gauge-rescale factor, shared by both covariance tests. Positive, so the
+/// The gauge-rescale factor, shared by every covariance test. Positive, so the
 /// strut-q<0 / cable-q>0 sign contract survives it; not a power of two, so an exact
 /// binary rescale cannot mask a real dependence.
 const GAUGE_LAMBDA: f64 = 7.0;
 
-/// THE COVARIANCE ASSERTION, shared by both rescale tests: scaling the WHOLE gauge by λ
+/// THE COVARIANCE ASSERTION, shared by every rescale test: scaling the WHOLE gauge by λ
 /// must leave the solved GEOMETRY exactly where it was while scaling every member force
-/// by exactly λ. Tolerances are caller-supplied because the two emission paths reach the
-/// property by DIFFERENT mechanisms (see each caller), and pretending otherwise would
-/// either over-tighten the free path or silently slacken the anchored one.
+/// by exactly λ. Tolerances are caller-supplied because the emission paths reach the
+/// property by DIFFERENT mechanisms (see each caller): the anchored-surfaces path's
+/// cotangent fixed point needs a looser force tolerance than the anchored line-only and
+/// free-standing paths, whose residual is f64 round-off alone, and one shared pair would
+/// either over-tighten the surfaces path or silently slacken the other two.
 fn assert_gauge_covariance(
     base: &PersistentMap<String, Value>,
     scaled: &PersistentMap<String, Value>,
@@ -416,10 +418,10 @@ fn rescale_q_leaves_geometry_fixed_and_scales_forces() {
 ///
 /// MECHANISM — distinct from both other emitters, which is why it needs its own case.
 /// The anchored line-only path is an exact ALGEBRAIC identity (λ cancels in
-/// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on the homogeneity of
-/// the GroupRatios SEARCH. Here the geometry comes from a cotangent fixed point, so
+/// `D_ff x_f = −D_fa x_a` by inspection) and the free path rests on a GroupRatios SEARCH
+/// that runs in reference-group units. Here the geometry comes from a cotangent fixed point, so
 /// covariance is a property of its STOPPING RULE: `form_find.rs` judges
-/// `free_equilibrium_residual_relative` — each free row's `|(D·x)_i|` divided by that
+/// `StiffnessScale::relative_residual` — each free row's `|(D·x)_i|` divided by that
 /// row's own `Σ_j |D_ij|` — against `SURFACE_EQUILIBRIUM_REL_TOL`.
 /// Numerator and denominator each pick up exactly one factor of λ, so the ratio is
 /// gauge-free and both gauges stop at the same iterate. Until task **#6119** that stop
@@ -505,24 +507,16 @@ fn rescale_q_and_sigma_leaves_geometry_fixed_and_scales_forces_on_the_surfaces_p
 /// for an entirely different reason and so needs its own case. Anchored covariance is an
 /// identity (above). Here the gauge is fixed by `reference_group`, whose magnitude is
 /// HELD at its seed while every other group's magnitude is SEARCHED — coordinate descent
-/// over a Σλ² eigenvalue objective, on log-spaced brackets seeded from `|seed_ratios|`
-/// (`form_find_free.rs`). So "scale every seed ratio by λ ⇒ same geometry, λ-scaled
-/// forces" is a property of that search's HOMOGENEITY, not algebra: the brackets and the
-/// log grid scale with λ and the objective ordering is λ²-invariant, but a regression in
-/// the bracketing or the warm start could break it with nothing else noticing.
+/// over a Σλ² eigenvalue objective on log-spaced brackets (`form_find_free.rs`). The
+/// whole search (brackets, log grid, objective, stopping rules and magnitude floors) runs
+/// in units of the reference group's seed magnitude (task #9272), so "scale every seed
+/// ratio by λ ⇒ same geometry, λ-scaled forces" is a change of unit the search never
+/// sees: both runs take the same search path. A regression that puts an absolute
+/// threshold, bracket or floor back into the search lands here.
 ///
-/// The homogeneity is not EXACT, which is why the relative tolerance is looser than the
-/// anchored case's 1e-12: the search's two stopping rules (`OBJ_TOL = 1e-20` and the
-/// stall guard's `1e-18·max(before, 1)`) are ABSOLUTE thresholds on an objective that
-/// scales as λ², so the two runs stop at slightly different depths and the recovered
-/// ratios differ in the last digits. Both still land far below the nullity classifier's
-/// threshold, so this is the same solution — search noise, not gauge dependence.
-///
-/// TOLERANCES ARE MEASURED, not guessed (λ = 7, this fixture): node residual 1.8e-12 m,
-/// q and N relative residuals both 1.1e-10 — so 1e-9 m and 1e-8 leave ~2.5 and ~2 orders
-/// of margin. A failure at these numbers is a real homogeneity regression; do not slacken
-/// them without re-measuring, and do not tighten them to the anchored path's 1e-12, which
-/// this path cannot meet by construction.
+/// What is left at λ = 7 is f64 rounding in converting the ×λ seeds to reference units and
+/// the recovered magnitudes back, so the tolerances are the anchored line-only path's
+/// (1e-9 m, 1e-12 relative), sized on round-off rather than on search noise.
 #[test]
 fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
     let base = solve_free_at(&TRIPLEX_SEEDS);
@@ -550,11 +544,11 @@ fn free_standing_rescaled_seed_ratios_leave_geometry_fixed_and_scale_forces() {
              a derived density to zero (task #6095)"
         );
         assert!(
-            (sq - expected).abs() <= 1e-8 * expected.abs(),
+            (sq - expected).abs() <= 1e-12 * expected.abs(),
             "free-standing: force_densities[{i}] must scale by {GAUGE_LAMBDA} under a \
              whole-gauge seed rescale: {bq} · {GAUGE_LAMBDA} = {expected}, got {sq}"
         );
     }
 
-    assert_gauge_covariance(&base, &scaled, 1e-9, 1e-8, "free-standing");
+    assert_gauge_covariance(&base, &scaled, 1e-9, 1e-12, "free-standing");
 }
