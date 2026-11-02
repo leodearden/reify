@@ -57,11 +57,12 @@
 //!   argument's `result_type`, so an unknown call NAME is not itself an error —
 //!   which is why property 2 above exists as a separate registry assertion
 //!   rather than being folded into the fence compile.
-//! - **The `check`-vs-`eval` EXIT-CODE asymmetry the chunk documents is NOT
-//!   pinned here.** It is a CLI-level property; this harness compiles in-process
-//!   and never runs the binary. The chunk marks those rows UNPINNED for exactly
-//!   that reason, and `cited_test_paths_in_the_units_chunk_resolve` only checks
-//!   that the eval-side cites it DOES make resolve to real tests.
+//! - **Where `reify check` stops on these forms is NOT pinned here.** It is a
+//!   CLI-level property; this harness compiles in-process and never runs the
+//!   binary. It is pinned at the CLI seam by
+//!   crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs, which the
+//!   chunk cites, and `cited_test_paths_in_the_units_chunk_resolve` checks that
+//!   those cites resolve.
 
 use std::path::Path;
 
@@ -629,7 +630,8 @@ fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
 /// `builtin_signatures.rs`'s own
 /// `polygon_stays_slot_free_because_its_positions_are_arity_open` — so a bare
 /// number in one of them compiles CLEAN and is rejected later, which is why
-/// `reify check` prints `error:` for these and still exits 0.
+/// `reify check` evaluates them to a verdict before its Severity::Error gate
+/// exits 1.
 ///
 /// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
 /// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
@@ -640,17 +642,17 @@ fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
 /// ```` ```reify-rejected ```` block in the commit that recorded the move — the
 /// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.
 ///
-/// WHY PIN THE NEGATIVE. The chunk tells an author to gate on `reify eval`
-/// rather than `reify check`, and that advice is only worth following while the
-/// gap is real. If a compile-layer slot is later added for one of these, this
-/// test goes RED and the row must move to the ```` ```reify-rejected ```` block
-/// — so the doc is corrected by the same commit that closes the gap, instead of
-/// warning about a hazard that no longer exists.
+/// WHY PIN THE NEGATIVE. The chunk tells an author that `reify check` prints a
+/// clean verdict beside these rejections. If a compile-layer slot is later added
+/// for one of these, this test goes RED, the row moves to the
+/// ```` ```reify-rejected ```` block, and its CLI-seam row in
+/// cli_check_bare_length_exit.rs flips `Layer` in the same commit — so the doc
+/// is corrected by the commit that closes the gap.
 ///
 /// SCOPE — this pins the COMPILE-layer half only. That these forms are rejected
-/// at eval time is pinned on the eval side by the tests the chunk cites; that
-/// `reify check` EXITS 0 on them is a CLI-level property this harness never
-/// observes, and the chunk marks it UNPINNED for exactly that reason.
+/// at eval time is pinned on the eval side by the tests the chunk cites; where
+/// `reify check` stops on them is a CLI-level property this harness never
+/// observes, and the chunk cites its CLI-seam pin.
 #[test]
 fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
@@ -690,8 +692,9 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
             "{UNITS_CHUNK_PATH} lists `{rejected}` as caught only at build/eval time, but the \
              COMPILE layer now rejects it: {messages:?}. That is good news — a slot was added — \
              but the chunk is now wrong twice over: the form belongs in the ```{REJECTED_TAG} \
-             block, and the check-visibility note must stop naming this constructor as one \
-             `reify check` does not gate. Move the row and update the note in the same commit."
+             block, the check-visibility note must move the constructor to the compiler-checked \
+             list, and its cli_check_bare_length_exit.rs row must move to `Layer::Compiler`. \
+             Move all three in the same commit."
         );
 
         assert_module_compiles(
