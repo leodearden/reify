@@ -1773,6 +1773,73 @@ mod tests {
         }
     }
 
+    // --- dimensioned 3×3 tensor / uniaxial stress fixture tests ---
+
+    /// The `(si_value, dimension)` of each component of a 3×3 `Value::Tensor`
+    /// of `Value::Tensor` rows of `Value::Scalar`s, panicking on any other
+    /// shape.
+    fn tensor3x3_components(v: &Value) -> [[(f64, DimensionVector); 3]; 3] {
+        let Value::Tensor(rows) = v else {
+            panic!("expected an outer Value::Tensor, got {v:?}");
+        };
+        assert_eq!(rows.len(), 3, "three rows");
+        std::array::from_fn(|r| {
+            let Value::Tensor(cols) = &rows[r] else {
+                panic!("row {r}: expected a Value::Tensor, got {:?}", rows[r]);
+            };
+            assert_eq!(cols.len(), 3, "row {r} has three columns");
+            std::array::from_fn(|c| match &cols[c] {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => (*si_value, *dimension),
+                other => panic!("[{r}][{c}]: expected a Value::Scalar, got {other:?}"),
+            })
+        })
+    }
+
+    #[test]
+    fn dimensioned_tensor3x3_nests_three_rows_of_dimensioned_scalars() {
+        let input = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
+        let v = dimensioned_tensor3x3(&input, DimensionVector::LENGTH);
+        assert!(
+            !matches!(v, Value::Matrix(_)),
+            "a nested Value::Tensor, not matrix3x3's Value::Matrix"
+        );
+        for (r, row) in tensor3x3_components(&v).iter().enumerate() {
+            for (c, &(si_value, dimension)) in row.iter().enumerate() {
+                assert_eq!(si_value, input[r][c], "[{r}][{c}]");
+                assert_eq!(dimension, DimensionVector::LENGTH, "[{r}][{c}]");
+            }
+        }
+    }
+
+    #[test]
+    fn uniaxial_stress_tensor_loads_only_the_00_component_in_pressure() {
+        for (r, row) in tensor3x3_components(&uniaxial_stress_tensor())
+            .iter()
+            .enumerate()
+        {
+            for (c, &(si_value, dimension)) in row.iter().enumerate() {
+                let expected = if (r, c) == (0, 0) {
+                    UNIAXIAL_STRESS_PA
+                } else {
+                    0.0
+                };
+                assert_eq!(si_value, expected, "[{r}][{c}]");
+                assert_eq!(dimension, DimensionVector::PRESSURE, "[{r}][{c}]");
+            }
+        }
+    }
+
+    #[test]
+    fn uniaxial_stress_pa_round_trips_through_its_square_exactly() {
+        assert_eq!(
+            (UNIAXIAL_STRESS_PA * UNIAXIAL_STRESS_PA).sqrt(),
+            UNIAXIAL_STRESS_PA
+        );
+    }
+
     // step-N: tests for multi_case_result_value
 
     #[test]
