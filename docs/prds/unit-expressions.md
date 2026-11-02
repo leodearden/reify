@@ -340,3 +340,6 @@ resolution end to end. It is a pure *producer* unblocking downstream consumers:
    (i16/i16). The range a unit expression may carry is the policy bound
    `reify_core::unit_exponent_in_range` (numerator and denominator each within `i8`),
    which both the resolver and the `.ri` emitter call. (Task β originally chose `i32`.)
+   That bound covers WRITTEN exponents. A fold whose resulting dimension does not fit
+   `Rational` (`m^127^127^127`, `m^1/127*m^1/126*m^1/125`) is the resolve error
+   `UnitResolveError::DimensionOverflow`, never a panic or a wrapped dimension.
