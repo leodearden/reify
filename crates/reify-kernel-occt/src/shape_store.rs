@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn insert_refuses_a_shape_it_cannot_name_a_kind_for() {
         const UNKNOWN_SOURCE: GeometryHandleId = GeometryHandleId(999_999);
-        type ExpectedError = fn(&GeometryError) -> bool;
+        type ErrorMatcher = fn(&GeometryError) -> bool;
         fn names_null_shape(err: &GeometryError) -> bool {
             matches!(err, GeometryError::OperationFailed(msg) if msg.contains("null shape"))
         }
@@ -395,7 +395,7 @@ mod tests {
             matches!(err, GeometryError::InvalidReference(id) if *id == UNKNOWN_SOURCE)
         }
         let mut store = ShapeStore::new();
-        let cases: [(&str, _, _, ExpectedError); 2] = [
+        let cases: [(&str, _, _, ErrorMatcher); 2] = [
             (
                 "null shape under Classify",
                 ffi::ffi::make_null_shape_for_test(),
@@ -409,22 +409,25 @@ mod tests {
                 is_unknown_source,
             ),
         ];
-        for (case, shape, policy, expected_error) in cases {
+        for (case, shape, policy, matches_expected) in cases {
             match store.insert(shape, policy) {
-                Err(err) => assert!(expected_error(&err), "{case}: unexpected error {err:?}"),
+                Err(err) => assert!(matches_expected(&err), "{case}: unexpected error {err:?}"),
                 Ok(handle) => panic!("{case}: expected an error, got {handle:?}"),
             }
             assert_eq!(store.len(), 0, "{case}: nothing may be stored");
         }
     }
 
+    /// The source box is stored as `Shell`, a kind no box classifies as, so an
+    /// `Inherit` that classifies instead of copying, or a `repr_of` that
+    /// returns `Solid` without reading the entry, fails here.
     #[test]
     fn repr_of_reads_the_kind_stored_with_the_shape() {
         let mut store = ShapeStore::new();
         let first_id = store
             .insert(
                 ffi::ffi::make_box(0.01, 0.02, 0.03).expect("make_box"),
-                ReprPolicy::Fixed(BRepKind::Solid),
+                ReprPolicy::Fixed(BRepKind::Shell),
             )
             .expect("a Fixed insert names its kind")
             .id;
@@ -435,11 +438,11 @@ mod tests {
             )
             .expect("a resident source names its kind")
             .id;
-        for (case, id) in [("Fixed(Solid)", first_id), ("Inherit(first)", inherited_id)] {
+        for (case, id) in [("Fixed(Shell)", first_id), ("Inherit(first)", inherited_id)] {
             let got = store.repr_of(id);
             assert!(
-                matches!(got, Ok(BRepKind::Solid)),
-                "{case}: expected Ok(Solid), got {got:?}"
+                matches!(got, Ok(BRepKind::Shell)),
+                "{case}: expected Ok(Shell), got {got:?}"
             );
         }
 

@@ -1451,12 +1451,6 @@ pub mod ffi {
         /// errs on a null shape.
         fn body_shape_kind(shape: &OcctShape) -> Result<FfiShapeKind>;
 
-        /// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum`
-        /// ordinal: the only way to reach its `TopAbs_SHAPE` arm, since no
-        /// shape carries the abstract type (same argument as
-        /// `make_null_shape_for_test`).
-        fn shape_kind_of_topabs_for_test(topabs: u8) -> Result<FfiShapeKind>;
-
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         /// Materialize the unique faces of `shape` into an OcctShapeVec
@@ -1585,6 +1579,12 @@ pub mod ffi {
         /// (already caught by `get_shape`). Default construction cannot throw,
         /// so this returns a plain `UniquePtr` (no `Result`).
         fn make_null_shape_for_test() -> UniquePtr<OcctShape>;
+
+        /// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum`
+        /// ordinal: the only way to reach its `TopAbs_SHAPE` arm, since no
+        /// shape carries the abstract type (same argument as
+        /// `make_null_shape_for_test`).
+        fn shape_kind_of_topabs_for_test(topabs: u8) -> Result<FfiShapeKind>;
 
         /// Apply rotation+translation using `BRepBuilderAPI_Transform(..., Copy=false)`,
         /// encoding the transform into `TopLoc_Location` rather than baking it into

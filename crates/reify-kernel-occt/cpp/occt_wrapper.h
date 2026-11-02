@@ -216,10 +216,6 @@ uint64_t parallel_bop_build_count();
 /// 1-solid COMPOUND wrappers are Solid; throws on a null shape.
 FfiShapeKind body_shape_kind(const OcctShape& shape);
 
-/// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum` ordinal, the
-/// only way to reach its `TopAbs_SHAPE` arm; throws on any non-TopAbs value.
-FfiShapeKind shape_kind_of_topabs_for_test(uint8_t topabs);
-
 // --- Boolean operations ---
 
 /// Fuse / cut / intersect two shapes.
@@ -1625,6 +1621,10 @@ std::unique_ptr<OcctShape> make_compsolid_for_test();
 /// inertia_tensor); such a shape cannot be constructed from Rust because
 /// `OcctShape` is opaque. Default construction cannot throw.
 std::unique_ptr<OcctShape> make_null_shape_for_test();
+
+/// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum` ordinal, the
+/// only way to reach its `TopAbs_SHAPE` arm; throws on any non-TopAbs value.
+FfiShapeKind shape_kind_of_topabs_for_test(uint8_t topabs);
 
 /// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
 /// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`

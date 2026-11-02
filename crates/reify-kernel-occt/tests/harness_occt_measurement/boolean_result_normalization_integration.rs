@@ -53,9 +53,10 @@
 //!
 //! # Observability note
 //!
-//! `ffi::ffi::body_shape_kind` is crate-private (`mod ffi;` at lib.rs:46), so an
-//! integration test cannot read the raw `FfiShapeKind`. The reachable
-//! equivalents, via `OcctKernel::repr_of` and `GeometryQuery::IsWatertight`:
+//! `ffi::ffi::body_shape_kind` is crate-private (the `ffi` module is not
+//! `pub`), so an integration test cannot read the raw `FfiShapeKind`. The
+//! reachable equivalents, via `OcctKernel::repr_of` and
+//! `GeometryQuery::IsWatertight`:
 //!
 //!   * `FfiShapeKind::Solid`    ⇔ `BRepKind::Solid` (only `Solid` maps to it —
 //!     `brep_kind_of_shape` collapses `CompSolid`/`Compound`
