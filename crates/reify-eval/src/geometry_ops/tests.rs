@@ -4349,43 +4349,9 @@
     /// `expect_err` rather than on the whole `Result`, because
     /// `reify_ir::GeometryOp` does not implement `PartialEq` — the wording is
     /// still pinned byte-for-byte, which is the point.
-    ///
-    /// RED until step-2 flips the two `Display` arms. Measured on the
-    /// pre-change tree (task 5755 pre-1): `Err("argument 'spacing' for linear
-    /// is unresolved (Undef)")` and `Err("argument 'spacing1' for linear_2d is
-    /// unresolved (Undef)")`, both with EMPTY diagnostics.
     #[test]
     fn pattern_kind_label_in_diagnostics_is_the_dsl_builtin_name() {
-        let step_handles = vec![GeometryHandleId(42)];
-        let values = ValueMap::new();
-
-        // (a) 1D `linear_pattern`.
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &linear_pattern_with_spacing(literal_undef()),
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        let err = result.expect_err("an Undef spacing must drop the op");
-        assert_eq!(
-            err, "argument 'spacing' for linear_pattern is unresolved (Undef)",
-            "the label must be the DSL builtin name `linear_pattern`, not the \
-             `PatternKind::Linear` variant nickname `linear`"
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "an Undef spacing stays QUIET at the value layer (D10 / INV-SF-1); \
-             got: {diagnostics:?}"
-        );
-
-        // (b) The 2D twin. This is the SAME defect as (a), reached through the
-        // same `required_length_arg` Unresolved arm — found by the adversary
-        // probe on the live tree, not a speculative extra.
-        let op_2d = CompiledGeometryOp::Pattern {
+        let linear_2d_with_undef_spacing1 = CompiledGeometryOp::Pattern {
             kind: PatternKind::Linear2D,
             target: GeomRef::Step(0),
             args: vec![
@@ -4401,81 +4367,56 @@
                 ("spacing2".into(), literal_length(0.03)),
             ],
         };
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &op_2d,
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        let err = result.expect_err("an Undef spacing1 must drop the op");
-        assert_eq!(
-            err, "argument 'spacing1' for linear_pattern_2d is unresolved (Undef)",
-            "the label must be the DSL builtin name `linear_pattern_2d`, not the \
-             `PatternKind::Linear2D` variant nickname `linear_2d`"
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "an Undef spacing1 stays QUIET at the value layer (D10 / INV-SF-1); \
-             got: {diagnostics:?}"
-        );
-
-        // (c) `circular_pattern`, scalar form: an Undef origin component.
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &circular_pattern_with_origin(
-                literal_undef(),
-                literal_length(0.0),
-                literal_length(0.0),
+        let cases: [(CompiledGeometryOp, &str); 4] = [
+            (
+                linear_pattern_with_spacing(literal_undef()),
+                "argument 'spacing' for linear_pattern is unresolved (Undef)",
             ),
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        let err = result.expect_err("an Undef ox must drop the op");
-        assert_eq!(
-            err, "argument 'ox' for circular_pattern is unresolved (Undef)",
-            "the label must be the DSL builtin name `circular_pattern`, not the \
-             `PatternKind::Circular` variant nickname `circular`"
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "an Undef ox stays QUIET at the value layer (D10 / INV-SF-1); \
-             got: {diagnostics:?}"
-        );
+            (
+                linear_2d_with_undef_spacing1,
+                "argument 'spacing1' for linear_pattern_2d is unresolved (Undef)",
+            ),
+            (
+                circular_pattern_with_origin(
+                    literal_undef(),
+                    literal_length(0.0),
+                    literal_length(0.0),
+                ),
+                "argument 'ox' for circular_pattern is unresolved (Undef)",
+            ),
+            (
+                gamma_arbitrary_pattern(vec![
+                    ("t0_dx", literal_undef()),
+                    ("t0_dy", literal_length(0.0)),
+                    ("t0_dz", literal_length(0.0)),
+                ]),
+                "argument 't0_dx' for arbitrary_pattern is unresolved (Undef)",
+            ),
+        ];
 
-        // (d) `arbitrary_pattern`, scalar-triple form: an Undef offset component.
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-        let result = compile_geometry_op(
-            &gamma_arbitrary_pattern(vec![
-                ("t0_dx", literal_undef()),
-                ("t0_dy", literal_length(0.0)),
-                ("t0_dz", literal_length(0.0)),
-            ]),
-            &values,
-            &step_handles,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-            &mut diagnostics,
-        );
-        let err = result.expect_err("an Undef t0_dx must drop the op");
-        assert_eq!(
-            err, "argument 't0_dx' for arbitrary_pattern is unresolved (Undef)",
-            "the label must be the DSL builtin name `arbitrary_pattern`, not the \
-             `PatternKind::Arbitrary` variant nickname `arbitrary`"
-        );
-        assert!(
-            diagnostics.is_empty(),
-            "an Undef t0_dx stays QUIET at the value layer (D10 / INV-SF-1); \
-             got: {diagnostics:?}"
-        );
+        for (op, expected_err) in cases {
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
+            let err = compile_geometry_op(
+                &op,
+                &ValueMap::new(),
+                &[GeometryHandleId(42)],
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+                &mut diagnostics,
+            )
+            .expect_err("an Undef LENGTH argument must drop the op");
+            assert_eq!(
+                err, expected_err,
+                "the label must be the DSL builtin name the author typed, not the \
+                 `PatternKind` variant nickname"
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "an Undef argument stays QUIET at the value layer (D10 / INV-SF-1); \
+                 case {expected_err:?} got: {diagnostics:?}"
+            );
+        }
     }
 
     // ---- units-length β (task 5743 step-7): the R7 chokepoint at the box slots ----
