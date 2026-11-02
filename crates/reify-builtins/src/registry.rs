@@ -33,6 +33,7 @@ use reify_core::Type;
 use crate::resolvers::{
     dimensionless_ratio, tensor_scalar_reduction, tensor_scalar_reduction_list,
 };
+use crate::row::{BindingKind, BuiltinRow};
 
 crate::macros::registry! {
     EvalBuiltin => EvalBuiltinId, as_eval_builtin {
@@ -319,6 +320,12 @@ pub fn artifact_basis_rows() -> Vec<&'static str> {
         .filter(|r| r.basis.is_artifact())
         .map(|r| r.name)
         .collect()
+}
+
+/// Every row whose binding is `kind`, in declaration order — the one
+/// derivation of a binding-kind group's membership.
+pub fn rows_bound_by(kind: BindingKind) -> impl Iterator<Item = &'static BuiltinRow<BuiltinId>> {
+    rows().iter().filter(move |row| row.binding == kind)
 }
 
 #[cfg(test)]

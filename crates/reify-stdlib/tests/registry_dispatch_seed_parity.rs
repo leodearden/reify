@@ -59,7 +59,7 @@
 //! wraps its result identically". No tolerance is used anywhere — every
 //! comparison is `Value`'s bit-exact `PartialEq`.
 
-use reify_builtins::{BindingKind, BuiltinId, EvalBuiltinId, lookup, rows};
+use reify_builtins::{BindingKind, BuiltinId, EvalBuiltinId, lookup, rows, rows_bound_by};
 use reify_core::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::__registry_dispatch_for_test as dispatch;
@@ -258,16 +258,6 @@ fn probes() -> Vec<Probe> {
     ]
 }
 
-/// Every `BindingKind::EvalBuiltin` row, derived from the registry rather than
-/// restated — mirroring `units.rs`'s disjointness list, so a τ row added later
-/// is covered here automatically instead of silently escaping the sweep.
-fn eval_rows() -> Vec<&'static reify_builtins::BuiltinRow<BuiltinId>> {
-    rows()
-        .iter()
-        .filter(|r| r.binding == BindingKind::EvalBuiltin)
-        .collect()
-}
-
 // ── (a) value-for-value parity through the EvalBuiltinId path ───────────────
 
 #[test]
@@ -286,7 +276,7 @@ fn registry_dispatch_reproduces_the_legacy_string_path_values() {
 
 #[test]
 fn every_eval_row_resolves_exactly_at_its_declared_arity() {
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         for argc in 0..=3usize {
             let resolved = lookup(row.name, argc).and_then(BuiltinId::as_eval_builtin);
             if row.arity.matches(argc) {
@@ -315,7 +305,7 @@ fn every_eval_row_is_reachable_from_a_probe() {
     // Guards the probe table against silently going stale: a seed row with no
     // probe would let a dispatch regression through unobserved.
     let probed: Vec<EvalBuiltinId> = probes().into_iter().map(|p| p.id).collect();
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         let id = row
             .id
             .as_eval_builtin()
@@ -360,7 +350,7 @@ fn eval_builtin_yields_undef_at_a_non_declared_arity() {
     // also pins that no OTHER member of the 26-arm chain claims a seed name —
     // if one did, it would answer here with something other than `Undef`.
     let filler = Value::Real(1.0);
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         for argc in 0..=3usize {
             if row.arity.matches(argc) {
                 continue;
@@ -404,7 +394,7 @@ fn eval_builtin_yields_undef_at_a_non_declared_arity() {
 #[test]
 fn try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities() {
     let filler = Value::Real(1.0);
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         for argc in 0..=3usize {
             let args = vec![filler.clone(); argc];
             // Arg TYPES are irrelevant here — a kernel handed a filler may

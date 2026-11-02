@@ -189,7 +189,7 @@
 
 use std::collections::HashSet;
 
-use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows};
+use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows_bound_by};
 use reify_core::{DimensionVector, Type};
 use reify_ir::Value;
 use strum::{EnumCount, IntoEnumIterator};
@@ -313,28 +313,10 @@ fn classify(value: &Value, declared: &Type) -> ParityVerdict {
 /// The `EvalBuiltinId` half of the pair is what [`representative_probes`] keys
 /// on, so the same derivation feeds both the membership and the argument side.
 ///
-/// Shape reuse, not a shared import: `crates/reify-stdlib/tests/
-/// registry_dispatch_seed_parity.rs`'s `eval_rows()` performs the identical
-/// `BindingKind::EvalBuiltin` filter, and its own doc-comment gives the same
-/// reason ("derived from the registry rather than restated … so a τ row added
-/// later is covered here automatically instead of silently escaping the
-/// sweep"). It cannot be imported as it stands — that is a `reify-stdlib`
-/// integration-test target, this is a `reify-eval` lib unit-test module, and
-/// test targets are separate compilation units with no path between them.
-///
-/// **The duplication is a scope deferral, not a design conclusion** (recorded
-/// at task 6013's amendment pass, correcting an earlier claim here that a
-/// shared home would drag a test helper into a production dependency — it would
-/// not). The right home is `reify_builtins` itself: a
-/// `rows_bound_by(BindingKind)` accessor beside `rows()` is ordinary production
-/// code over the row table, involves no test helper at all, and would give both
-/// callers ONE derivation. That accessor lives in
-/// `crates/reify-builtins/src/lib.rs`, outside this task's lock set, so it is
-/// filed as follow-up work rather than reached for here.
+/// Membership itself comes from `reify_builtins::rows_bound_by`, the single
+/// derivation shared with reify-stdlib's `registry_dispatch_seed_parity` test.
 fn eval_builtin_rows() -> Vec<(EvalBuiltinId, &'static BuiltinRow<BuiltinId>)> {
-    rows()
-        .iter()
-        .filter(|row| row.binding == BindingKind::EvalBuiltin)
+    rows_bound_by(BindingKind::EvalBuiltin)
         .map(|row| {
             let id = row.id.as_eval_builtin().unwrap_or_else(|| {
                 panic!(
