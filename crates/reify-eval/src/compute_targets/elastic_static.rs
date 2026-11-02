@@ -2292,14 +2292,9 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
 /// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
-/// `rotation` is intentionally ABSENT from this table: it is not extracted and
-/// not persisted. Ruling #6164 derives it from the `curl` slab at wrap time
-/// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
-/// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
-/// byte-exact golden test). So this direction needs no `rotation` arm, and
-/// existing persisted entries gain a correct `.rotation` for free. The same
-/// holds for `shear_angles` (task #6183), derived from the persisted `gradient`
-/// slab: no extract arm, no wire change.
+/// `rotation` and `shear_angles` have no row: they are derived from the `curl`
+/// and `gradient` slabs at wrap time, so this direction needs no arm for them
+/// (see `rotation_sf_from_curl`).
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
@@ -2575,18 +2570,8 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         }
         None => (Value::Undef, Value::Undef),
     };
-    // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
-    // never persisted — the compute-contract wire header is frozen (`curl_len`
-    // at a fixed byte offset, byte-exact golden test), and rotation is a pure
-    // ×½ of a slab already on the wire. Deriving here means every EXISTING
-    // persisted cache entry gains a correct `.rotation` for free, with no
-    // format version bump and no new `elastic_result_from_value` extract arm.
-    //
-    // ONE `build_sf` feeds BOTH channels, mirroring the live tet path's single
-    // `curl_sf`. Splitting them into two independent `match` arms would both
-    // rebuild the slab twice on the cache-HIT path (the cheap one) and let a
-    // future edit to curl's reconstruction land on one arm only, silently
-    // desynchronising the two channels.
+    // Rotation is derived from the same reconstructed curl slab (see
+    // `rotation_sf_from_curl`); one `build_sf` feeds both channels.
     let (curl_field, rotation_field) = match build_sf(er.curl.clone(), "curl") {
         Some(sf) => {
             let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&sf));
@@ -10634,11 +10619,10 @@ mod tests {
             //
             // NOTE this makes the round trip a second, stronger guard on the
             // derive: `elastic_result_from_value` deliberately does NOT extract
-            // rotation (no rotation slab is persisted — the wire header is
-            // frozen), so hash identity holds ONLY IF `value_from_elastic_result`
-            // re-derives byte-for-byte the same field from the curl slab. If the
-            // derive ever drifted between the live and cache paths, this test
-            // would red.
+            // rotation (rotation is never persisted), so hash identity holds
+            // ONLY IF `value_from_elastic_result` re-derives byte-for-byte the
+            // same field from the curl slab. If the derive ever drifted between
+            // the live and cache paths, this test would red.
             (
                 "rotation".to_string(),
                 super::super::sampled_rotation_field(super::super::rotation_sf_from_curl(
@@ -14824,13 +14808,13 @@ mod tests {
 
     // ── ruling #6164: the `rotation` derivative channel ───────────────────────
     //
-    // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
-    // radian enters the elastic-result algebra. It is DERIVED from the `curl`
-    // SampledField at wrap time in every production path and STORED IN NONE —
-    // see `rotation_sf_from_curl`'s doc comment for the wire-format reason.
+    // `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the radian enters
+    // the elastic-result algebra. It is DERIVED from the `curl` SampledField at
+    // wrap time in every production path and STORED IN NONE — see
+    // `rotation_sf_from_curl`.
     //
-    // These three tests pin all three production paths, plus the negative
-    // no-wire-change guarantee.
+    // These three tests pin all three production paths; the cache test also
+    // pins that a record carrying only a curl slab still reconstructs rotation.
 
     /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
     /// asserting the source kind on the way through.
@@ -14869,8 +14853,6 @@ mod tests {
     /// path is live here. Bumping `resample_multi_nodal_to_grid` to a 6th entry
     /// to resample rotation independently would trip that assert and red this
     /// test — which is exactly the intent (rotation costs no extra BVH pass).
-    ///
-    /// RED: nothing writes a `"rotation"` key yet.
     #[test]
     fn rotation_channel_tet_path_is_curl_halved() {
         let value_inputs = [
@@ -14928,9 +14910,6 @@ mod tests {
     /// (b) SHELL path — derivative channels are out of scope for the shell
     /// solver (PRD §7), so `rotation` joins divergence/gradient/curl in the
     /// honest-absence `Value::Undef` convention.
-    ///
-    /// RED: the shell fields map has no `"rotation"` key at all, so the
-    /// `.expect` fires.
     #[test]
     fn rotation_channel_shell_path_is_undef() {
         // Same 50mm × 10mm × 1mm steel-flexure fixture as
@@ -14979,15 +14958,13 @@ mod tests {
     ///
     /// `value_from_elastic_result` rebuilds an `ElasticResult` `Value` from the
     /// persisted compute-contract record. That record carries a `curl` slab and
-    /// NO rotation slab — and it never will, because the binary wire header is
-    /// frozen (`curl_len` at a fixed byte offset, byte-exact golden test).
+    /// no rotation slab (rotation is never persisted; see
+    /// `rotation_sf_from_curl`).
     ///
     /// This test proves that deriving rotation at wrap time means EXISTING
     /// persisted cache entries gain a correct `.rotation` for free: an `er` with
     /// only a curl slab must reconstruct to a rotation field bit-identical to
     /// what the live tet path produces from the same data.
-    ///
-    /// RED: the cache fields map has no `"rotation"` key yet.
     #[test]
     fn rotation_channel_cache_reconstruction_derives_from_curl_slab() {
         use reify_compute_contract::ElasticResult as ContractElasticResult;
