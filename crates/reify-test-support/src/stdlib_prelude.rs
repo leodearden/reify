@@ -1,20 +1,26 @@
 //! Read-only introspection of the compiled stdlib prelude.
 
+use reify_compiler::TopologyTemplate;
 use reify_core::Type;
 
+/// The compiled prelude template named `template_name`.
+///
+/// Panics naming the template when the prelude has none by that name.
+pub fn template(template_name: &str) -> &'static TopologyTemplate {
+    reify_compiler::stdlib_loader::load_stdlib()
+        .iter()
+        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
+        .unwrap_or_else(|| panic!("prelude has no template {template_name}"))
+}
+
 /// The DECLARED type of `<template>.<member>`, read straight off the compiled
-/// prelude (`load_stdlib` -> `find_template` -> `value_cells`), so a test can
-/// assert an exact `Type` equality rather than guess how a diagnostic renderer
-/// spells a type.
+/// prelude's `value_cells`, so a test can assert an exact `Type` equality
+/// rather than guess how a diagnostic renderer spells a type.
 ///
 /// Panics, naming the template (and, for a missing member, the members it
 /// does have), when either lookup fails.
 pub fn member_type(template_name: &str, member: &str) -> Type {
-    let prelude = reify_compiler::stdlib_loader::load_stdlib();
-    let tmpl = prelude
-        .iter()
-        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
-        .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
+    let tmpl = template(template_name);
     tmpl.value_cells
         .iter()
         .find(|c| c.id.member == member)
@@ -32,8 +38,14 @@ pub fn member_type(template_name: &str, member: &str) -> Type {
 
 #[cfg(test)]
 mod tests {
-    use super::member_type;
+    use super::{member_type, template};
     use reify_core::{DimensionVector, Type};
+
+    #[test]
+    fn template_returns_the_named_prelude_template() {
+        assert_eq!(template("Layer").name, "Layer");
+        assert_eq!(template("Bead").name, "Bead");
+    }
 
     /// Two differently-typed members of one template: the lookup selects by member.
     #[test]

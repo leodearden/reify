@@ -39,6 +39,7 @@ use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
 use reify_eval::compute_targets::fdm_slice::toolpath_to_value;
 use reify_eval::compute_targets::register_compute_fns;
 use reify_ir::{ExportFormat, Value};
+use reify_test_support::stdlib_prelude;
 
 /// Inline FDM box: a `Solid` body fed to `fdm_slice` with a default `FDMProcess`.
 /// Mirrors the `as_printed_body_realization_e2e.rs` / `fdm_bracket_e2e.rs` body
@@ -320,14 +321,14 @@ fn assert_dimension_mismatch(src: &str, what: &str) {
 /// assertion. (That laxness is recorded below but deliberately not asserted; a
 /// test that reds when the checker gets STRICTER is a reverse ratchet, not
 /// coverage.) It is instead pinned DIRECTLY, by reading the declared cell type
-/// off the compiled prelude via [`reify_test_support::prelude::member_type`] and asserting an exact
-/// `Type` equality against `List<Point3<Length>>`. That closes the blind spot:
-/// the equality is a property of the DECLARATION, so it is immune both to how
-/// the diagnostic renderer spells a dimension and to how strict the binding
-/// check happens to be. The scalar fields get the same exact-type treatment
-/// alongside their binding assertions, so every dimensional field is pinned
-/// twice over — once through what a design author's code actually sees, once
-/// against the declaration itself.
+/// off the compiled prelude via [`stdlib_prelude::member_type`] and asserting
+/// an exact `Type` equality against `List<Point3<Length>>`. That closes the
+/// blind spot: the equality is a property of the DECLARATION, so it is immune
+/// both to how the diagnostic renderer spells a dimension and to how strict the
+/// binding check happens to be. The scalar fields get the same exact-type
+/// treatment alongside their binding assertions, so every dimensional field is
+/// pinned twice over — once through what a design author's code actually sees,
+/// once against the declaration itself.
 ///
 /// MEASURED RED for the equality (temporarily reverting the `.ri` declaration
 /// to `List<Point3<Real>>`): `left: List(Point { n: 3, quantity: Scalar {
@@ -450,7 +451,7 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
     // an exact `Type` equality against the declared cell type, which a revert to
     // `List<Point3<Real>>` fails outright.
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "centerline"),
+        stdlib_prelude::member_type("Bead", "centerline"),
         Type::List(Box::new(Type::Point {
             n: 3,
             quantity: Box::new(scalar_ty(DimensionVector::LENGTH)),
@@ -472,32 +473,32 @@ fn stdlib_bead_and_layer_fields_declare_the_si_dimensioned_regime() {
     // author's code actually sees) and by exact declared type (which cannot be
     // satisfied by an implicit conversion or a laxer checker).
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "width"),
+        stdlib_prelude::member_type("Bead", "width"),
         scalar_ty(DimensionVector::LENGTH),
         "Bead.width must be declared `Length`"
     );
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "height"),
+        stdlib_prelude::member_type("Bead", "height"),
         scalar_ty(DimensionVector::LENGTH),
         "Bead.height must be declared `Length`"
     );
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "layer_z"),
+        stdlib_prelude::member_type("Bead", "layer_z"),
         scalar_ty(DimensionVector::LENGTH),
         "Bead.layer_z must be declared `Length`"
     );
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "speed"),
+        stdlib_prelude::member_type("Bead", "speed"),
         scalar_ty(DimensionVector::VELOCITY),
         "Bead.speed must be declared `Velocity`"
     );
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "nominal_temp"),
+        stdlib_prelude::member_type("Bead", "nominal_temp"),
         scalar_ty(DimensionVector::TEMPERATURE),
         "Bead.nominal_temp must be declared `Temperature` (absolute kelvin)"
     );
     assert_eq!(
-        reify_test_support::prelude::member_type("Layer", "z"),
+        stdlib_prelude::member_type("Layer", "z"),
         scalar_ty(DimensionVector::LENGTH),
         "Layer.z must be declared `Length`"
     );
@@ -653,7 +654,7 @@ structure def TempSentinelProbe {
 #[test]
 fn stdlib_bead_declares_nominal_temp_observed_as_bool() {
     assert_eq!(
-        reify_test_support::prelude::member_type("Bead", "nominal_temp_observed"),
+        stdlib_prelude::member_type("Bead", "nominal_temp_observed"),
         Type::Bool,
         "Bead.nominal_temp_observed must be declared `Bool`"
     );
