@@ -232,24 +232,13 @@ fn shard_files(shard_index: usize) -> Vec<CorpusFile> {
 /// reporting its own PASS/SLOW line, so the worst-case silent gap is bounded by
 /// one shard's share of the corpus rather than the whole corpus.
 ///
-/// Unification leaves that rationale intact but does NOT lower a shard's wall
-/// time, and this task's own measurement refutes the claim that it would
-/// (`docs/notes/eval-slow-tail-profile-2026-09.md` §1, "Correction: shard size
-/// does NOT predict shard wall time"). What unification bought is CPU: 702.9s
-/// over 48 test processes became 352.1s over 24, a 50% cut. What it COST is the
-/// straggler, which rose from 160.2s to 184.9s and re-ran at 238.4s and 158.2s —
-/// treat 158-240s as the observed band, never a single run as a point value.
-///
-/// The reason is that per-file cost is strongly non-uniform: a handful of
-/// FEA/OCCT-bearing examples dominate, so a shard's wall time is set by WHICH
-/// expensive files it drew, not by how many it holds. `corpus_sweep_shard_02`
-/// holds the LARGEST slice at 23 files and finishes in ~62s.
-///
-/// 24 is nonetheless retained, because nothing measured forces a change: 240s
-/// clears the inherited `[profile.default]` slow-timeout in `.config/nextest.toml`
-/// (period 120s x terminate-after 10 = 1200s) five times over, so the regression
-/// is makespan, not a hard-kill risk. Re-tuning stays a separate change — one
-/// that should now be driven by the numbers above rather than by a projection.
+/// The SIZE follows one rule. Per-file cost is heavy-tailed, so a shard's wall
+/// time is set by the costliest file it drew, not by how many files it holds,
+/// and no count can push the straggler below that single costliest file. The
+/// count therefore only has to keep the heavy files in separate shards. Changing
+/// it reassigns every file's shard (see [`shard_of`]) and so invalidates every
+/// recorded shard reproduction: re-measure before re-sizing. Re-derived in task
+/// #7564; measurement and recipe in `docs/notes/eval-slow-tail-profile-2026-09.md` §5.
 const CORPUS_SHARD_COUNT: usize = 24;
 
 /// Which shard owns `rel_path` — keyed on a hash of the repo-relative path, NOT
@@ -450,7 +439,7 @@ fn shard_key_is_worktree_independent() {
 
 /// Hash keying is a sound REPLACEMENT for index keying, not merely a different
 /// one: it must still partition the corpus exhaustively, leave no shard idle,
-/// and stay balanced enough that no shard becomes the binary's straggler.
+/// and keep every shard's file COUNT within a bounded spread.
 ///
 /// # Why these bounds, and not a guess
 ///
@@ -463,9 +452,9 @@ fn shard_key_is_worktree_independent() {
 /// live 299-path corpus it partitions to min 6, max 23, mean 12.46: the very
 /// histogram this test prints below, recorded in full in
 /// `docs/notes/eval-slow-tail-profile-2026-09.md` §1 "Shard partition". That is
-/// a 3.8x spread where index keying gave a flat 12-13 per shard, and it is the
-/// mechanism behind the straggler regression [`CORPUS_SHARD_COUNT`] records —
-/// the price hash keying charges for insert-stability, stated rather than hidden.
+/// a 3.8x COUNT spread where index keying gave a flat 12-13 per shard — the
+/// price hash keying charges for insert-stability. Wall time is not set by count
+/// but by the costliest file a shard drew (see [`CORPUS_SHARD_COUNT`]).
 ///
 /// Whether a max of 23 is ordinary variance or a degenerate key is the question
 /// the bound has to separate, and that is what the reference distributions are
