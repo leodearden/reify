@@ -965,44 +965,21 @@ pub(crate) fn sample_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<f64
 
 /// Central-difference gradient at integer voxel indices, falling
 /// back to forward/backward differences at boundaries. Returns the
-/// raw gradient (not normalized).
+/// raw gradient (not normalized). A single-sample axis is flat
+/// (component `0.0`).
 pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3] {
-    let [i, j, k] = idx;
-    let nx = sdf.axis_grids[0].len();
-    let ny = sdf.axis_grids[1].len();
-    let nz = sdf.axis_grids[2].len();
-    let dx = sdf.spacing[0];
-    let dy = sdf.spacing[1];
-    let dz = sdf.spacing[2];
-
-    let gx = if nx == 1 {
-        0.0
-    } else if i == 0 {
-        (sample_at_index(sdf, [1, j, k]) - sample_at_index(sdf, [0, j, k])) / dx
-    } else if i == nx - 1 {
-        (sample_at_index(sdf, [nx - 1, j, k]) - sample_at_index(sdf, [nx - 2, j, k])) / dx
-    } else {
-        (sample_at_index(sdf, [i + 1, j, k]) - sample_at_index(sdf, [i - 1, j, k])) / (2.0 * dx)
+    let centre = sample_at_index(sdf, idx);
+    let component = |axis: usize| {
+        let len = sdf.axis_grids[axis].len();
+        let neighbour = |step: isize| {
+            let n = idx[axis].checked_add_signed(step).filter(|&n| n < len)?;
+            let mut at = idx;
+            at[axis] = n;
+            Some(sample_at_index(sdf, at))
+        };
+        finite_difference(centre, neighbour(1), neighbour(-1), sdf.spacing[axis]).unwrap_or(0.0)
     };
-    let gy = if ny == 1 {
-        0.0
-    } else if j == 0 {
-        (sample_at_index(sdf, [i, 1, k]) - sample_at_index(sdf, [i, 0, k])) / dy
-    } else if j == ny - 1 {
-        (sample_at_index(sdf, [i, ny - 1, k]) - sample_at_index(sdf, [i, ny - 2, k])) / dy
-    } else {
-        (sample_at_index(sdf, [i, j + 1, k]) - sample_at_index(sdf, [i, j - 1, k])) / (2.0 * dy)
-    };
-    let gz = if nz == 1 {
-        0.0
-    } else if k == 0 {
-        (sample_at_index(sdf, [i, j, 1]) - sample_at_index(sdf, [i, j, 0])) / dz
-    } else if k == nz - 1 {
-        (sample_at_index(sdf, [i, j, nz - 1]) - sample_at_index(sdf, [i, j, nz - 2])) / dz
-    } else {
-        (sample_at_index(sdf, [i, j, k + 1]) - sample_at_index(sdf, [i, j, k - 1])) / (2.0 * dz)
-    };
-    [gx, gy, gz]
+    [component(0), component(1), component(2)]
 }
 
 /// Pre-compute a dense gradient grid: one `[f64; 3]` entry per voxel,
