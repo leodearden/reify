@@ -73,6 +73,19 @@ structure def LaterShadow {
 }
 "#;
 
+/// A trait-STATIC fn wrapping a stdlib `.ri` fn, called by its `Trait::method`
+/// symbol.
+const TRAIT_STATIC_SRC: &str = r#"
+trait Stock {
+    fn bolts() -> List<Length> { standard_bolt_lengths() }
+}
+
+structure def TraitRoute {
+    let via_trait = Stock::bolts()
+    let direct = standard_bolt_lengths()
+}
+"#;
+
 fn cell<'a>(values: &'a ValueMap, structure: &str, member: &str) -> &'a Value {
     values
         .get(&ValueCellId::new(structure, member))
@@ -210,4 +223,13 @@ fn later_declared_user_shadow_wins_at_runtime() {
     let result = engine.eval(&compiled);
 
     assert_wrapped_equals_direct(&result.values, "LaterShadow", "top", "via_wrapper");
+}
+
+#[test]
+fn trait_static_fn_wrapping_a_stdlib_fn_equals_the_direct_call() {
+    let compiled = parse_and_compile_with_stdlib(TRAIT_STATIC_SRC);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    assert_wrapped_equals_direct(&result.values, "TraitRoute", "direct", "via_trait");
 }

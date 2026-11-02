@@ -155,3 +155,19 @@ fn earlier_declared_user_fn_shadows_stdlib_fn_in_a_later_body() {
         Type::length()
     );
 }
+
+/// A trait-STATIC fn body is compiled eagerly at trait declaration, under its
+/// registered `Trait::method` symbol, and resolves stdlib calls the same way.
+#[test]
+fn trait_static_fn_body_stdlib_call_is_typed_from_its_signature() {
+    let module = compile_source_with_stdlib(
+        r#"
+        trait Stock { fn bolts() -> List<Length> { standard_bolt_lengths() } }
+    "#,
+    );
+    assert_eq!(errors(&module), Vec::<&str>::new());
+    assert_eq!(
+        fn_body_result_expr(&module, "Stock::bolts").result_type,
+        list_of_length()
+    );
+}
