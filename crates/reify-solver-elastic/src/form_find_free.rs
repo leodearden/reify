@@ -622,8 +622,9 @@ impl<'p> QSource<'p> {
 }
 
 /// The geometry move of one outer iteration at the iterate's fixed `q`: an
-/// optional [`projection_trial`], then one descent step on the eigenvalue-gap
-/// objective from wherever the trial left the geometry. Projection moves `x`
+/// optional [`RelaxStep::projection_trial`], then one [`RelaxStep::descend`]
+/// step on the eigenvalue-gap objective [`RelaxStep::eig_gap`] from wherever
+/// the trial left the geometry. Projection moves `x`
 /// into null₄(D); descent drives `D` toward nullity 4 without moving `x` into
 /// null(D); the fixed point needs `x ∈ null(D(x))`. The densities alone cannot
 /// get there: only the symmetric realisation lets the geometry-dependent
@@ -652,52 +653,130 @@ impl RelaxStep {
         try_projection: bool,
     ) -> Vec<[f64; 3]> {
         let projected = if try_projection {
-            projection_trial(problem, iterate)
+            Self::projection_trial(problem, iterate)
         } else {
             None
         };
         let start = projected.as_deref().unwrap_or(iterate.nodes.as_slice());
-        let (next, step) = combined_geometry_descent_step(
-            iterate.nodes.len(),
+        self.descend(problem, &iterate.q, start)
+    }
+
+    /// The iterate projected onto the [`FREE_FORM_NULLITY`] smallest-|λ|
+    /// eigenvectors of its `D`, kept only if it recovers a 3-D geometry whose
+    /// surface term assembles and whose residual at the iterate's `q` does not
+    /// exceed the iterate's own. A failed trial is `None`, never an error: an
+    /// intermediate iterate's [`FreeFormError::SingularRecovery`] or
+    /// [`FreeFormError::DegenerateTriangle`] must not replace the contractual
+    /// [`FreeFormError::SearchDidNotConverge`]. The residual guard keeps a
+    /// regressing trial from becoming the descent's start.
+    fn projection_trial(
+        problem: &ForceDensityProblem<'_>,
+        iterate: &CombinedIterate,
+    ) -> Option<Vec<[f64; 3]>> {
+        let trial = form_find_explicit_combined_relaxed(
             problem.members(),
             &iterate.q,
+            &iterate.nodes,
+            &iterate.surface_mat,
+        )
+        .ok()?;
+        let trial_surface_mat = assemble_surface_matrix(
+            trial.len(),
             problem.surfaces(),
             problem.surface_stresses(),
-            start,
-            self.descent_step,
-        );
-        self.descent_step = step;
-        next
+            &trial,
+        )
+        .ok()?;
+        (iterate.residual_at(problem, &trial, &trial_surface_mat) <= iterate.residual)
+            .then_some(trial)
     }
-}
 
-/// The iterate projected onto the [`FREE_FORM_NULLITY`] smallest-|λ|
-/// eigenvectors of its `D`, kept only if it recovers a 3-D geometry whose
-/// surface term assembles and whose residual at the iterate's `q` does not
-/// exceed the iterate's own. A failed trial is `None`, never an error: an
-/// intermediate iterate's [`FreeFormError::SingularRecovery`] or
-/// [`FreeFormError::DegenerateTriangle`] must not replace the contractual
-/// [`FreeFormError::SearchDidNotConverge`]. The residual guard keeps a
-/// regressing trial from becoming the descent's start.
-fn projection_trial(
-    problem: &ForceDensityProblem<'_>,
-    iterate: &CombinedIterate,
-) -> Option<Vec<[f64; 3]>> {
-    let trial = form_find_explicit_combined_relaxed(
-        problem.members(),
-        &iterate.q,
-        &iterate.nodes,
-        &iterate.surface_mat,
-    )
-    .ok()?;
-    let trial_surface_mat = assemble_surface_matrix(
-        trial.len(),
-        problem.surfaces(),
-        problem.surface_stresses(),
-        &trial,
-    )
-    .ok()?;
-    (iterate.residual_at(problem, &trial, &trial_surface_mat) <= iterate.residual).then_some(trial)
+    /// One backtracking gradient-descent step on [`RelaxStep::eig_gap`] over
+    /// the node geometry at fixed force densities `q`, from `start`. Returns
+    /// the stepped geometry; the descent step grows on the accepted step and
+    /// shrinks on each rejection, and carries to the next call. If no
+    /// downhill step is found within the backtracking budget the geometry is
+    /// returned unchanged (the outer loop then either has already converged
+    /// or stops).
+    ///
+    /// The gradient is a central finite difference over the `3n` coordinates.
+    fn descend(
+        &mut self,
+        problem: &ForceDensityProblem<'_>,
+        q: &[f64],
+        start: &[[f64; 3]],
+    ) -> Vec<[f64; 3]> {
+        let n = start.len();
+        let obj = |x: &[[f64; 3]]| Self::eig_gap(problem, q, x);
+        let g0 = obj(start);
+
+        // Central finite-difference gradient over the 3n coordinates.
+        const FD_H: f64 = 1e-6;
+        let mut grad = vec![[0.0_f64; 3]; n];
+        for r in 0..n {
+            for a in 0..3 {
+                let mut xp = start.to_vec();
+                xp[r][a] += FD_H;
+                let mut xm = start.to_vec();
+                xm[r][a] -= FD_H;
+                grad[r][a] = (obj(&xp) - obj(&xm)) / (2.0 * FD_H);
+            }
+        }
+
+        // Backtracking line search: accept the first step that strictly
+        // decreases the objective, growing the step on success and halving it
+        // on each rejection.
+        const STEP_GROW: f64 = 1.3;
+        const STEP_SHRINK: f64 = 0.5;
+        const MAX_BACKTRACK: usize = 40;
+        for _ in 0..MAX_BACKTRACK {
+            let mut trial = start.to_vec();
+            for r in 0..n {
+                for a in 0..3 {
+                    trial[r][a] -= self.descent_step * grad[r][a];
+                }
+            }
+            if obj(&trial) < g0 {
+                self.descent_step *= STEP_GROW;
+                return trial;
+            }
+            self.descent_step *= STEP_SHRINK;
+        }
+        start.to_vec()
+    }
+
+    /// The descent objective: the sum of squares of the `FREE_FORM_NULLITY`
+    /// smallest-|λ| eigenvalues of `D_combined = CᵀQC + Σ_T σ_T·L_T` at force
+    /// densities `q` and geometry `nodes`, normalised via
+    /// [`normalised_eig_gap`] so the objective is GAUGE-invariant: under a
+    /// uniform `q → λ·q`, `σ → λ·σ` rescaling every eigenvalue of `D` scales
+    /// by `λ`, so an un-normalised sum-of-squares would scale by `λ²` and drive
+    /// [`RelaxStep::descend`]'s finite-difference gradient — and therefore its
+    /// backtracking line search — to different accept/reject decisions
+    /// depending on the force-density/stress scale.
+    ///
+    /// The line-only `D` is geometry-independent and rank-deficient by 4 for a
+    /// whole *affine family* of realisations. The membrane cotangent weights DO
+    /// depend on geometry, so the combined `D` only reaches nullity 4 at the
+    /// specific symmetric realisation. Driving this objective to zero over the
+    /// node coordinates selects that realisation. A degenerate trial geometry
+    /// (zero-area triangle), or a combined `D` with no spectrum, returns `+∞`
+    /// so the line search rejects it.
+    fn eig_gap(problem: &ForceDensityProblem<'_>, q: &[f64], nodes: &[[f64; 3]]) -> f64 {
+        match assemble_surface_matrix(
+            nodes.len(),
+            problem.surfaces(),
+            problem.surface_stresses(),
+            nodes,
+        ) {
+            Ok(surface_mat) => {
+                let d = combined_force_density_matrix(problem.members(), q, &surface_mat);
+                SymmetricSpectrum::of(&d)
+                    .map_or(f64::INFINITY, |spectrum| normalised_eig_gap(&spectrum))
+            }
+            Err(_) => f64::INFINITY,
+        }
+    }
 }
 
 /// Combined-D geometry recovery, returning the recovered nodes: it **forces
@@ -763,7 +842,7 @@ fn form_find_group_ratios_combined(
 
     // Objective: Σ λ² over the FREE_FORM_NULLITY smallest eigenvalues of the
     // COMBINED D = line_D(unit_densities) + unit_surface, where unit_surface is
-    // a fixed additive term. Un-normalised, unlike combined_eig_gap_objective's
+    // a fixed additive term. Un-normalised, unlike RelaxStep::eig_gap's
     // normalised_eig_gap: the search runs in units of the reference group's
     // seed magnitude (both terms of D divided by it), so its objective,
     // OBJ_TOL, stall guard, log grid and floors are dimensionless, and its
@@ -856,43 +935,9 @@ fn form_find_group_ratios_combined(
     Ok(q)
 }
 
-/// Eigenvalue-gap objective for the free-standing combined fixed point: the
-/// sum of squares of the `FREE_FORM_NULLITY` smallest-|λ| eigenvalues of
-/// `D_combined = CᵀQC + Σ_T σ_T·L_T` at force densities `q` and geometry `x`,
-/// normalised via [`normalised_eig_gap`] so the objective is GAUGE-invariant:
-/// under a uniform `q → λ·q`, `σ → λ·σ` rescaling every eigenvalue of `D`
-/// scales by `λ`, so an un-normalised sum-of-squares would scale by `λ²` and
-/// drive [`combined_geometry_descent_step`]'s finite-difference gradient —
-/// and therefore its backtracking line search — to different accept/reject
-/// decisions depending on the force-density/stress scale.
-///
-/// The line-only `D` is geometry-independent and rank-deficient by 4 for a whole
-/// *affine family* of realisations. The membrane cotangent weights DO depend on
-/// geometry, so the combined `D` only reaches nullity 4 at the specific symmetric
-/// realisation. Driving this objective to zero over the node coordinates selects
-/// that realisation. A degenerate trial geometry (zero-area triangle), or a
-/// combined `D` with no spectrum, returns `+∞` so the line search rejects it.
-fn combined_eig_gap_objective(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
-    surfaces: &[(usize, usize, usize)],
-    surface_stresses: &[f64],
-    x: &[[f64; 3]],
-) -> f64 {
-    match assemble_surface_matrix(n, surfaces, surface_stresses, x) {
-        Ok(surface_mat) => {
-            let d = combined_force_density_matrix(members, q, &surface_mat);
-            SymmetricSpectrum::of(&d)
-                .map_or(f64::INFINITY, |spectrum| normalised_eig_gap(&spectrum))
-        }
-        Err(_) => f64::INFINITY,
-    }
-}
-
 /// Sum of `(λ/max_mag)²` over the `FREE_FORM_NULLITY` smallest-|λ|
 /// eigenvalues of `spectrum` — the gauge-invariant score
-/// [`combined_eig_gap_objective`] reports. Dividing by its `max_mag` (which
+/// [`RelaxStep::eig_gap`] reports. Dividing by its `max_mag` (which
 /// scales by `λ` exactly as every other eigenvalue does under a uniform
 /// gauge change) cancels the `λ²` scaling a raw sum-of-squares would carry,
 /// so the finite-difference gradient taken of this score is gauge-invariant
@@ -920,60 +965,6 @@ fn normalised_eig_gap(spectrum: &SymmetricSpectrum) -> f64 {
         .take(FREE_FORM_NULLITY)
         .map(|v| (v / max_mag) * (v / max_mag))
         .sum()
-}
-
-/// One backtracking gradient-descent step on [`combined_eig_gap_objective`] over
-/// the node geometry at fixed force densities `q`. Returns the stepped geometry
-/// and the (adaptively grown/shrunk) step size for the next call. If no downhill
-/// step is found within the backtracking budget the geometry is returned
-/// unchanged (the outer loop then either has already converged or stops).
-///
-/// The gradient is a central finite difference over the `3n` coordinates.
-fn combined_geometry_descent_step(
-    n: usize,
-    members: &[(usize, usize)],
-    q: &[f64],
-    surfaces: &[(usize, usize, usize)],
-    surface_stresses: &[f64],
-    current: &[[f64; 3]],
-    step: f64,
-) -> (Vec<[f64; 3]>, f64) {
-    let obj =
-        |x: &[[f64; 3]]| combined_eig_gap_objective(n, members, q, surfaces, surface_stresses, x);
-    let g0 = obj(current);
-
-    // Central finite-difference gradient over the 3n coordinates.
-    const FD_H: f64 = 1e-6;
-    let mut grad = vec![[0.0_f64; 3]; n];
-    for r in 0..n {
-        for a in 0..3 {
-            let mut xp = current.to_vec();
-            xp[r][a] += FD_H;
-            let mut xm = current.to_vec();
-            xm[r][a] -= FD_H;
-            grad[r][a] = (obj(&xp) - obj(&xm)) / (2.0 * FD_H);
-        }
-    }
-
-    // Backtracking line search: accept the first step that strictly decreases the
-    // objective, growing the step on success and halving it on each rejection.
-    const STEP_GROW: f64 = 1.3;
-    const STEP_SHRINK: f64 = 0.5;
-    const MAX_BACKTRACK: usize = 40;
-    let mut step = step;
-    for _ in 0..MAX_BACKTRACK {
-        let mut trial = current.to_vec();
-        for r in 0..n {
-            for a in 0..3 {
-                trial[r][a] -= step * grad[r][a];
-            }
-        }
-        if obj(&trial) < g0 {
-            return (trial, step * STEP_GROW);
-        }
-        step *= STEP_SHRINK;
-    }
-    (current.to_vec(), step)
 }
 
 /// Explicit-mode pipeline: certify the form, recover the gauge-fixed
@@ -1570,7 +1561,7 @@ mod tests {
         );
     }
 
-    // ---- Null-space coordinate recovery (recover_coordinates) ----
+    // ---- Null-space coordinate recovery (through the explicit entry) ----
 
     fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
