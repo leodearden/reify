@@ -687,6 +687,42 @@ _ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
 # independently-derived path (CONFINE-1).
 _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
+# ----------------------------------------------------------------------------
+# Per-worker pinning + readiness machinery (task 9698), REUSED by the always-on
+# guards below and by Cycle ROW4.  ROW4-1's 3:1 split is only as good as the
+# placement of its spinners and the moment its window opens, so ROW4 pins each
+# WORKER to one CPU, opens the window on a readiness report from both burns
+# rather than on a launch-anchored sleep, and checks both on the live workers.
+# ----------------------------------------------------------------------------
+
+# _row4_await_ready <deadline_s> <file>...
+#   Returns 0 as soon as EVERY named file exists AND is non-empty; 1 when the
+#   deadline passes first.  Technique T (docs/prds/infra-test-wallclock-
+#   deflake.md): <deadline_s> only keeps a burn that never reports from hanging
+#   the suite — it never discriminates pass from fail, so callers size it
+#   generously and never assert on how long the poll took.  A file must be
+#   non-empty because a ready file is "PIDs, then an atomic rename": an empty
+#   one can only be a writer caught mid-flight.  Readiness is checked BEFORE the
+#   deadline, so files already present at a 0-second deadline still count.
+_row4_await_ready() {
+    local deadline=$(( SECONDS + $1 ))
+    shift
+    local f all_reported
+    while true; do
+        all_reported=1
+        for f in "$@"; do
+            [ -s "$f" ] || { all_reported=0; break; }
+        done
+        if [ "$all_reported" -eq 1 ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
 # ============================================================================
 # ROW4 per-worker pinning + readiness — always-on guards (task 9698).
 #
