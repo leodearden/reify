@@ -888,6 +888,120 @@ _row4_pin_coresident "$(printf '%s\n%s' 5 5)" "$(printf '%s\n%s' 5 5)" \
 assert "ROW4-PIN-VACUITY-6: task {5,5} vs merge {5,5} => rc 0 (got ${_row4_pin_vacuity6_rc}); a one-CPU mask is still co-resident" \
     test "$_row4_pin_vacuity6_rc" -eq 0
 
+# ----------------------------------------------------------------------------
+# FIXTURE-PIN: the cpu_load_fixture.sh `--pin-cpus` / `--ready-file` contract
+# and the `_row4_worker_affinities` reader that observes it.  Needs taskset and
+# a confined pin list (the same preconditions ROW4 itself has), not cgroup
+# governance: the fixture is driven directly, outside any governed scope.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- FIXTURE-PIN: --pin-cpus / --ready-file contract ---"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-PIN: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP FIXTURE-PIN: own Cpus_allowed_list unreadable — no confined pin list to pass"
+else
+    # The placement the fixture must produce: the pin list repeated
+    # round-robin to one entry per worker, the same way ROW4 hands it to both
+    # roles.  Derived from the file's own _ROW4_CONFINE_* values, never nproc.
+    _fixture_pin_expected="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" \
+        | tr ',' '\n' \
+        | awk -v w="$_ROW4_CONFINE_W" '{ cpu[n++] = $0 } END { for (i = 0; i < w; i++) print cpu[i % n] }')"
+
+    # ── reader: a live pid reads its Cpus_allowed_list, a vanished one reads
+    # the literal "unavailable" (the sentinel _row4_pin_coresident rejects).
+    ( : ) &
+    _fixture_pin_dead_pid=$!
+    wait "$_fixture_pin_dead_pid" 2>/dev/null || true
+    printf '%s\n%s\n' "$$" "$_fixture_pin_dead_pid" > "$WORK/fixture-pin-reader-pids"
+    _fixture_pin_self_mask="$(awk '/^Cpus_allowed_list:/{print $2}' "/proc/$$/status")"
+    _fixture_pin_reader_expected="${_fixture_pin_self_mask}"$'\n'"unavailable"
+    _fixture_pin_reader_got="$(_row4_worker_affinities "$WORK/fixture-pin-reader-pids" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-READER-1: ready file listing a live pid and a reaped one => its Cpus_allowed_list, then 'unavailable' (got '${_fixture_pin_reader_got//$'\n'/,}')" \
+        test "$_fixture_pin_reader_got" = "$_fixture_pin_reader_expected"
+
+    # ── (1)-(3) pinned launch: reports ready, lists one pid per worker, and
+    # every worker is pinned to its round-robin CPU.
+    _fixture_pin_ready="$WORK/fixture-pin-ready"
+    bash "$FIXTURE" "$_ROW4_CONFINE_W" 5 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+        --ready-file "$_fixture_pin_ready" >/dev/null 2>&1 &
+    _fixture_pin_pid=$!
+
+    _fixture_pin1_rc=0
+    _row4_await_ready 30 "$_fixture_pin_ready" || _fixture_pin1_rc=$?
+    assert "FIXTURE-PIN-1: --pin-cpus ${_ROW4_CONFINE_CPUS} --ready-file => the ready file appears (rc ${_fixture_pin1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_pin1_rc" -eq 0
+
+    _fixture_pin_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_fixture_pin_ready" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-2: ready file is exactly ${_ROW4_CONFINE_W} pid lines and nothing else (got 'numeric-lines total-lines' = '${_fixture_pin_lines}')" \
+        test "$_fixture_pin_lines" = "${_ROW4_CONFINE_W} ${_ROW4_CONFINE_W}"
+
+    _fixture_pin_actual="$(_row4_worker_affinities "$_fixture_pin_ready" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-3: every worker pinned to its round-robin CPU (workers=${_fixture_pin_actual//$'\n'/,}, expected=${_fixture_pin_expected//$'\n'/,})" \
+        _row4_pin_coresident "$_fixture_pin_actual" "$_fixture_pin_expected"
+
+    kill -TERM "$_fixture_pin_pid" 2>/dev/null || true
+    wait "$_fixture_pin_pid" 2>/dev/null || true
+
+    # ── (4) NON-VACUITY CRUX: today's ROW4 shape — the SAME fixture, no
+    # --pin-cpus, the whole role set-pinned from outside with taskset.  Its
+    # workers inherit the multi-CPU mask, so the predicate must reject them:
+    # the single-CPU affinity of (3) comes from the OPTION, not from inheriting
+    # the launcher's mask.  Needs a pin list of >=2 CPUs: with one CPU the
+    # inherited mask is already a single CPU and the two shapes coincide.
+    _fixture_pin_ncpus="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" | tr ',' '\n' | awk 'END { print NR }')"
+    if [ "$_fixture_pin_ncpus" -lt 2 ]; then
+        echo "  SKIP FIXTURE-PIN-4: pin list '${_ROW4_CONFINE_CPUS}' is a single CPU — set-pinning and per-worker pinning coincide"
+    else
+        _fixture_pin_ready_inherited="$WORK/fixture-pin-ready-inherited"
+        taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 5 \
+            --ready-file "$_fixture_pin_ready_inherited" >/dev/null 2>&1 &
+        _fixture_pin_inherited_pid=$!
+
+        # (4a) The fixture reported, so (4b)'s rc cannot be the vacuous rc 1 of
+        # an empty observation.
+        _fixture_pin4a_rc=0
+        _row4_await_ready 30 "$_fixture_pin_ready_inherited" || _fixture_pin4a_rc=$?
+        assert "FIXTURE-PIN-4a: unpinned fixture under 'taskset -c ${_ROW4_CONFINE_CPUS}' still reports ready (rc ${_fixture_pin4a_rc}); precondition of -4b" \
+            test "$_fixture_pin4a_rc" -eq 0
+
+        _fixture_pin_inherited="$(_row4_worker_affinities "$_fixture_pin_ready_inherited" 2>/dev/null || true)"
+        _fixture_pin4b_rc=0
+        _row4_pin_coresident "$_fixture_pin_inherited" "$_fixture_pin_expected" || _fixture_pin4b_rc=$?
+        assert "FIXTURE-PIN-4b: NON-VACUITY CRUX -- same fixture WITHOUT --pin-cpus (workers=${_fixture_pin_inherited//$'\n'/,}) => predicate rc EXACTLY 1 (got ${_fixture_pin4b_rc}); the single-CPU affinity of -3 comes from the option, not from inheritance" \
+            test "$_fixture_pin4b_rc" -eq 1
+
+        kill -TERM "$_fixture_pin_inherited_pid" 2>/dev/null || true
+        wait "$_fixture_pin_inherited_pid" 2>/dev/null || true
+    fi
+
+    # ── (5) Malformed lists are rejected with the usage exit code before any
+    # worker exists: a ranged, non-numeric, empty-entry or trailing-comma list
+    # must never be half-honoured.  Each runs in the foreground — the fixture
+    # exits at once — and none may leave a ready file behind.
+    _fixture_pin_bad_ready="$WORK/fixture-pin-ready-bad"
+    for _fixture_pin_bad in "30-31" "a,b" "30,,31" "30,"; do
+        _fixture_pin5_rc=0
+        bash "$FIXTURE" 2 5 --pin-cpus "$_fixture_pin_bad" \
+            --ready-file "$_fixture_pin_bad_ready" >/dev/null 2>&1 || _fixture_pin5_rc=$?
+        assert "FIXTURE-PIN-5: malformed --pin-cpus '${_fixture_pin_bad}' => exit EXACTLY 64 (got ${_fixture_pin5_rc})" \
+            test "$_fixture_pin5_rc" -eq 64
+    done
+    assert "FIXTURE-PIN-5: no malformed --pin-cpus run wrote a ready file (no workers were forked)" \
+        test ! -e "$_fixture_pin_bad_ready"
+
+    # ── (6) Pinning is never silently dropped: with taskset absent from PATH
+    # the option is refused (EX_UNAVAILABLE) instead of running unpinned, which
+    # would be a ~50/50-prone measurement presented as a pinned one.
+    _fixture_pin_empty_path="$(mktemp -d -p "$WORK" fixture-pin-nopath.XXXXXX)"
+    _fixture_pin6_rc=0
+    PATH="$_fixture_pin_empty_path" "$BASH" "$FIXTURE" 1 1 --pin-cpus 0 >/dev/null 2>&1 \
+        || _fixture_pin6_rc=$?
+    assert "FIXTURE-PIN-6: --pin-cpus with taskset absent from PATH => exit EXACTLY 69 (got ${_fixture_pin6_rc}); pinning is refused, never silently dropped" \
+        test "$_fixture_pin6_rc" -eq 69
+fi
+
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
