@@ -160,8 +160,8 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// # Why the fallback needs it
     ///
-    /// `phase_functions` compiles each `fn` body against the user-only
-    /// `functions` table it is still growing in source order, so a call to a
+    /// `phase_functions` compiles each `fn` body against the user fns so far plus
+    /// the prelude (σ #8393), a table still grown in source order, so a call to a
     /// later-declared sibling — or either half of a mutually-referential pair,
     /// which no reordering can fix — reaches the fallback with a name the module
     /// plainly declares. Entity bodies do not have that problem: they compile
