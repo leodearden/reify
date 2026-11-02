@@ -96,6 +96,7 @@ Consequences, stated plainly:
   of host contention — scheduling order matters at least as much.
 - This materially weakens the plan's stated basis for leaving
   `.config/nextest.toml` alone — see §4.
+  (Settled by task #7564 with later measurement — see §5.)
 
 ### This is ONE run, not Trial E10
 
@@ -230,7 +231,8 @@ in the plan does **not** survive measurement and should not be relied on:
   It is worth noting that at the 8× contention of esc-5097-3 a 238s nominal
   would reach ~1900s and breach that ceiling, so this is not unlimited margin.
 
-These are recorded as follow-ups, not acted on here — editing that file is
+These are recorded as follow-ups, not acted on here (settled by task #7564 —
+see §5) — editing that file is
 outside the task's scope and would additionally trip
 `test_nextest_slow_priority.sh` / `test_occt_gated_scope.sh` expectations that
 were verified untouched.
@@ -261,3 +263,199 @@ meet it:**
 - The one two-build FEA test, `non_prismatic_two_case_build_realizes_body_exactly_once`,
   is irreducible: its second build IS the assertion (the one-case control the
   two-case delta is compared against), which is the shape-robust half of PRD B9.
+
+---
+
+## 5. Settlement of the nextest re-tune (task #7564, 2026-11)
+
+§4 left two levers open: an LPT `priority` entry for `harness_corpus_gates`,
+and re-tuning `CORPUS_SHARD_COUNT` from measurement. **Both settle as NO
+behaviour change.** There is no priority entry, and the count stays 24, now
+re-derived from measured per-file cost rather than inherited. §1–§4 above are
+#7431's dated record and are left as written. Where they disagree with this
+section, this section is the later measurement.
+
+### 5.1 Gate-run evidence
+
+Two real verify-gate runs, read from nextest's JUnit report. Per-test start =
+the testcase `timestamp` minus the testsuites `timestamp`; end = start + `time`.
+Slack = makespan − straggler end, computed from the unrounded figures.
+
+| run | role / scope | tests | exec | sweep start window | straggler: duration, end | makespan-setter: start, duration, end | slack |
+|---|---|---|---|---|---|---|---|
+| 2026-10-20T03:14:36+01:00, `_mainsweep-cdbb14ff` | background, full scope | 26716 | 1240.3s | 500.7–501.7s | `corpus_sweep_shard_05`: 123.2s, ends 624.0s | `solve_elastic_static_body_e2e::non_prismatic_two_case_build_realizes_body_exactly_once`: 653.4s, 586.9s, ends 1240.3s | **616.3s** |
+| 2026-11-02T10:05:57Z, `_lane-12` | task, branch scope | 7480 | 609.3s | 175.6–177.6s | `corpus_sweep_shard_05`: 136.7s, ends 312.6s | the same test: 336.8s, 272.5s, ends 609.3s | **296.6s** |
+
+Both reports live at
+`/home/leo/src/warm-lanes/worktrees/<lane>/target/nextest/default/reify-confirm.xml`.
+
+The other heavy shards in the same two runs (full / branch): `shard_02` 55.6s /
+66.0s, `shard_09` 44.9s / 49.2s, `shard_14` 25.8s / 34.4s, `shard_03` 10.5s /
+16.3s. Every other shard took ≤ 8.7s. #7431's straggler `shard_20` took 1.6s /
+2.2s.
+
+### 5.2 Per-file cost
+
+`diag_per_file_timing` evaluates every corpus file once, sequentially, in one
+process. It ran twice over the same 293 evaluated files:
+
+- **Run A** (planning): `_lane-19` at b31c164e63, with a throwaway patch
+  that printed each file's shard (since reverted). Host loadavg ~130–216 on 32
+  cores.
+- **Run B**: `_lane-19` at 16942dd986, 2026-11-02T16:11Z, using the
+  diagnostic that now prints shards itself. Loadavg 87.2 at start, 60.8 at end.
+
+Heavy files (≥ 5s in either run):
+
+| file | shard | run A | run B |
+|---|---|---|---|
+| `examples/buckling_multi_case_smoke.ri` | 05 | 120.86s | 69.11s |
+| `examples/buckling_column_smoke.ri` | 02 | 51.76s | 38.19s |
+| `examples/modal/cantilever_beam_modes.ri` | 14 | 38.17s | 12.90s |
+| `examples/modal/simply_supported_beam_modes.ri` | 09 | 32.92s | 12.94s |
+| `examples/trajectory/tots_optimal_ptp.ri` | 09 | 10.83s | 6.03s |
+| `examples/buckling_column_p2.ri` | 03 | 5.38s | 6.74s |
+| **total, all 293 files** | | **281.9s** | **160.5s** |
+
+The next file in run B is `examples/anisotropic_bar.ri` at 2.49s (shard 21).
+
+Shard sums at N = 24:
+
+| | run A | run B |
+|---|---|---|
+| straggler | shard 05: 121.27s over 6 files | shard 05: 69.33s |
+| floor = costliest single file | 120.86s | 69.11s |
+| straggler − floor | 0.41s | 0.23s |
+| next shards | not recorded | 02: 38.53s; 09: 19.44s; 14: 13.10s; 03: 8.29s; the rest ≤ 2.65s |
+| shard 20 | 0.43s over 13 files | 0.18s |
+
+What differs between the runs: absolute cost was ~43% lower in run B, which
+ran at lower load, and not uniformly. The two modal files fell ~3× while `buckling_multi_case_smoke.ri`
+fell 1.75×, so the order inside the modal pair flipped, and
+`buckling_column_p2.ri` overtook `tots_optimal_ptp.ri`. What does not differ:
+the same six files form the heavy set, shard 05 is the straggler, and that
+straggler is bound by one file. Both runs are recorded; neither replaces the
+other.
+
+Max shard sum by N. This was computed during PLANNING, from run A's per-file
+figures and each file's printed xxh3-128 key, so it uses the same key the sweep
+ships. The step-1 diagnostic reproduces only the N = 24 column.
+
+| N | 4 | 6 | 8 | 12 | 16 | 20 | 24 | 32 | 48 |
+|---|---|---|---|---|---|---|---|---|---|
+| max shard sum (run A) | 170.2s | 123.6s | 124.1s | 121.8s | 121.2s | 132.1s | 121.3s | 121.1s | 120.9s |
+
+The gate-run walls (§5.1) and run B agree on WHICH shards are heavy, in the
+order 05 > 02 > 09 > 14 > 03. Run A's per-file figures imply the same order. A
+standalone `cargo nextest run -p reify-eval --test harness_corpus_gates` at
+16942dd986 (46 tests; loadavg 295.5 shortly before it started) finished in a
+70.2s Summary wall, set by `corpus_sweep_shard_05` at 70.199s.
+
+### 5.3 Part 1 — no LPT `priority` entry for `harness_corpus_gates`
+
+An LPT `priority` changes only when a test STARTS. It can shorten a run only
+for a test whose end sets, or nearly sets, the makespan. In both gate runs the
+sweep's straggler ended long before the makespan: 616.3s early in the
+full-scope run and 296.6s early in the branch-scope run. Starting it earlier
+cannot move the end of the run.
+
+This holds even at #7431's worst isolated straggler of 240s. Taking the latest
+shard start in each run, the straggler would end at 177.6 + 240 = 417.6s <
+609.3s (branch) and 501.7 + 240 = 741.7s < 1240.3s (full scope).
+
+Both candidate entries are worse than none:
+
+- **Whole-binary priority** would start all 24 shards, plus the binary's other
+  tests, ahead of other `occt`-group work. Twenty of the shards take ≤ 8.7s, so
+  for most of what it moves this is anti-LPT, and it buys no makespan.
+- **A priority on the straggler shard alone** is brittle. The straggler moved
+  from `shard_20` to `shard_05` within six weeks without any file changing shard
+  (§5.5), so a pinned shard index goes stale without any signal.
+
+§4 asked for this lever to be "settled by a real Summary-wall measurement
+rather than ruled out a priori". The two gate reports in §5.1 are that
+measurement, taken under real gate contention. They are stronger evidence than
+a synthetic A/B run of a 20–40 minute suite would be, given the run-to-run
+spread §1 documents. `.config/nextest.toml`'s LPT comment block points here.
+
+### 5.4 Part 2 — `CORPUS_SHARD_COUNT` stays 24
+
+**The rule.** Per-file cost is heavy-tailed: in both diagnostic runs six files
+carry most of the cost. A shard's wall time is therefore set by the costliest
+file it drew, and no shard count can push the straggler below the single
+costliest file. The count only has to keep the heavy files in separate shards.
+
+At N = 24 the straggler sits within 0.41s (run A) and 0.23s (run B) of that
+floor. In the N table only N ≥ 32 is lower, by ≤ 0.4s, and N = 20 is worse
+(132.1s).
+
+Why not change it anyway:
+
+- **Lowering N** saves only per-shard fixed cost: process spawn plus native
+  dynamic link. §2 measured a bare `reify` spawn at 0.194s, dominated by
+  OCCT/OpenVDB linking. In exchange it raises the chance (1/N per new file) that
+  a future heavy file lands beside an existing one.
+- **Any change to N** reassigns every file's shard. That invalidates every
+  recorded "shard NN" reproduction, which is the insert-stability #7431
+  shipped, and buys nothing measurable.
+- **Raising N** buys ≤ 0.4s on a test that ends 297–616s ahead of the makespan.
+- **The hard-kill margin is not a constraint.** The measured stragglers of
+  121–137s sit against the inherited `[profile.default]` slow-timeout of 1200s
+  (period 120s × terminate-after 10), about 8.8× headroom.
+
+**Revisit when** a gate JUnit report shows the sweep's straggler ending near the
+makespan, or when a shard's sum exceeds the single-file floor because a second
+heavy file landed in it. The §5.7 diagnostic shows the second case directly:
+compare the top `DIAG-SHARD` sum with the costliest `DIAG` line.
+
+### 5.5 Observation: the straggler moved
+
+#7431 measured `corpus_sweep_shard_20` as the straggler at 158–240s (§1). Now
+`shard_20` takes 1.6s / 2.2s in the gate runs and sums to 0.43s / 0.18s in the
+diagnostic runs, and `shard_05` is the straggler.
+
+Hash keying never moves an unchanged file between shards
+(`shard_of_is_independent_of_corpus_membership`). No `.ri` file under the
+corpus roots was deleted or renamed between #7431's first commit (a756bd32f8,
+2026-09-17) and run B (`git log --diff-filter=DR`), and
+`buckling_multi_case_smoke.ri` has existed since 2026-06-16. So no heavy file
+left `shard_20`: the shift is a change in per-file COST, not a repartition.
+
+Which file got cheaper in `shard_20`, and whether `buckling_multi_case_smoke.ri`
+also got dearer, is **undetermined**.
+
+### 5.6 Out of scope, observed
+
+`tensegrity_t0a` is LPT tier 1 on the premise that it is a ">180s straggler".
+Its 13 tests all started at t = 0.16–0.17s in the full-scope run, and the
+longest took 1.96s. The makespan-setter in both gate runs is
+`solve_elastic_static_body_e2e::non_prismatic_two_case_build_realizes_body_exactly_once`,
+which carries no priority. Re-deriving the LPT tiers means re-pointing
+`tests/infra/test_nextest_slow_priority.sh` Assertions A/C/D/D2/E/I, which is
+outside #7564's file set. It was filed as a follow-up from task #7564 (ticket
+`tkt_0RWH2BTJTPKJ6JK84C00MHN0NR`). No task number is cited here because the
+curator assigns it asynchronously.
+
+### 5.7 Re-measure recipe
+
+Per-file and per-shard cost, sequential in one process (160–282s of test time
+in the two §5.2 runs, on top of the build; redirect to a file and read it,
+never pipe):
+
+```
+cargo test -p reify-eval --test harness_corpus_gates -- --ignored --exact \
+  eval_invariant_corpus_sweep::diag_per_file_timing --nocapture > /tmp/diag.log 2>&1
+```
+
+It prints the 40 costliest files as `DIAG <duration> shard <NN> <file>`, then a
+`DIAG-TOTAL` line, then every shard ranked by summed cost as
+`DIAG-SHARD <NN> <sum>`. Record `/proc/loadavg` alongside: absolute figures
+differed ~1.8× between the two §5.2 runs, which ran at different host load, so
+compare rankings and the straggler − floor gap, not raw seconds.
+
+Gate-run walls come from nextest's JUnit report at
+`<lane>/target/nextest/default/reify-confirm.xml`, which
+`scripts/gen-nextest-config.sh` configures. A run's last nextest step (usually
+the GUI pass) overwrites that file, so workspace-scope reports survive mostly in
+the `_mainsweep-*` lanes. Derive each test's start as the testcase `timestamp`
+minus the testsuites `timestamp`, as in §5.1.
