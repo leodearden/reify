@@ -688,6 +688,74 @@ _ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
 _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
 
 # ============================================================================
+# ROW4 per-worker pinning + readiness — always-on guards (task 9698).
+#
+# The helpers above these blocks are the machinery ROW4-1 stands on; each block
+# drives one of them with synthetic input, so none needs cgroup governance and
+# none can be vacuously green: every block carries a NON-VACUITY CRUX case that
+# a degenerate implementation (one that always says "ready" / "co-resident")
+# would fail.  Conventions shared by all of them:
+#   - rc capture is `_rc=0; helper ... || _rc=$?`, never a bare top-level call
+#     (`set -e` would abort the suite on the helper's meaningful rc 1, and an
+#     undefined helper would read as 127 — which the cases below assert as
+#     EXACT rcs, never `-ne 0`, so 127 is a FAIL and not a vacuous pass);
+#   - no assertion here bounds an elapsed time; a deadline passed to a helper
+#     is an anti-hang guard only (technique T, docs/prds/infra-test-wallclock-
+#     deflake.md), never what discriminates pass from fail.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# ROW4-READY-VACUITY: the readiness condition-poll that opens ROW4's window.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-READY-VACUITY: readiness condition-poll (always-on) ---"
+
+_row4_ready_dir="$(mktemp -d -p "$WORK" row4-ready.XXXXXX)"
+
+# (1) Every named file present and non-empty => ready.
+printf '1111\n' > "$_row4_ready_dir/reported-a"
+printf '2222\n' > "$_row4_ready_dir/reported-b"
+_row4_ready_vacuity1_rc=0
+_row4_await_ready 5 "$_row4_ready_dir/reported-a" "$_row4_ready_dir/reported-b" \
+    || _row4_ready_vacuity1_rc=$?
+assert "ROW4-READY-VACUITY-1: both ready files present and non-empty => rc 0 (got ${_row4_ready_vacuity1_rc})" \
+    test "$_row4_ready_vacuity1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: one burn has reported, the other never does.  The poll
+# must never declare ready a burn that has not reported — otherwise ROW4 would
+# open its window with one role still launching, which is the defect this
+# readiness gate exists to remove.  Asserts the EXACT rc 1 (deadline expired).
+_row4_ready_vacuity2_rc=0
+_row4_await_ready 1 "$_row4_ready_dir/reported-a" "$_row4_ready_dir/never-created" \
+    || _row4_ready_vacuity2_rc=$?
+assert "ROW4-READY-VACUITY-2: NON-VACUITY CRUX -- one file reported, the other never created => rc EXACTLY 1 (got ${_row4_ready_vacuity2_rc}); the poll never declares ready a burn that has not reported" \
+    test "$_row4_ready_vacuity2_rc" -eq 1
+
+# (3) A zero-byte file is not a report: the writer's contract is "PIDs, then an
+# atomic rename", so an empty file can only be a writer caught mid-flight.
+: > "$_row4_ready_dir/empty"
+_row4_ready_vacuity3_rc=0
+_row4_await_ready 1 "$_row4_ready_dir/empty" || _row4_ready_vacuity3_rc=$?
+assert "ROW4-READY-VACUITY-3: a zero-byte file => rc EXACTLY 1 (got ${_row4_ready_vacuity3_rc}); an empty file is not a report" \
+    test "$_row4_ready_vacuity3_rc" -eq 1
+
+# (4) The helper POLLS rather than checking once: the file appears 0.5 s AFTER
+# the poll starts, so a single-shot check at t=0 returns 1.  The generous
+# deadline is an anti-hang guard only and is deliberately not asserted on.
+_row4_ready_late="$_row4_ready_dir/appears-late"
+(
+    sleep 0.5
+    printf '3333\n' > "${_row4_ready_late}.tmp"
+    mv -f "${_row4_ready_late}.tmp" "$_row4_ready_late"
+) &
+_row4_ready_writer_pid=$!
+_row4_ready_vacuity4_rc=0
+_row4_await_ready 30 "$_row4_ready_late" || _row4_ready_vacuity4_rc=$?
+wait "$_row4_ready_writer_pid" 2>/dev/null || true
+assert "ROW4-READY-VACUITY-4: file written by a background subshell AFTER the poll started => rc 0 (got ${_row4_ready_vacuity4_rc}); the helper polls, a single-shot check at t=0 would return 1" \
+    test "$_row4_ready_vacuity4_rc" -eq 0
+
+# ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
 # HOST-GATED (host_supports_governance + PSI + python3).
 # QUIET-BOX: pre-check avg10 < QUIET_CEILING; SKIP if box already hot.
