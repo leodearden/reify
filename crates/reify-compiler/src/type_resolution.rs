@@ -1,6 +1,18 @@
-use super::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+use reify_core::{
+    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type,
+};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value};
+
+use crate::entity::satisfies_trait_bound;
+use crate::types::{
+    CompiledTrait, CompiledTypeAlias, DefaultKind, RequirementKind, TopologyTemplate,
+};
+use crate::units::{
+    UnitEntry, UnitRegistry, resolve_unit_expr, unit_resolve_error_to_diagnostic, unit_to_scalar,
+};
 
 thread_local! {
     /// Ambient map from each in-scope enum's name to its declared type params
