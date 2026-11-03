@@ -57,6 +57,8 @@ export interface ShortcutDef {
   disabled?: boolean;
   /** Structured binding for event matching. Absent when there is no keyboard shortcut. */
   bind?: KeyBinding;
+  /** When true, the action flips a state on and off, so a held key fires it once, not on every auto-repeat. */
+  toggle?: boolean;
 }
 
 // Private definition uses `as const satisfies` to validate shape against ShortcutDef
@@ -77,9 +79,9 @@ const _SHORTCUTS_DEF = [
   { id: 'redo',       key: 'Ctrl+Shift+Z', description: 'Redo',                 disabled: true, bind: { key: 'z', ctrl: true, shift: true } },
   { id: 'reEvaluate', key: 'F5',           description: 'Re-evaluate',          bind: { key: 'F5' } },
   { id: 'fitToView',  key: '',             description: 'Fit to view' },
-  { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false } },
+  { id: 'toggleChat', key: 'Ctrl+J',       description: 'Toggle chat panel',    bind: { key: 'j', ctrl: true, shift: false }, toggle: true },
   { id: 'reload',     key: 'Ctrl+Shift+R', description: 'Reload changed files', bind: { key: 'r', ctrl: true, shift: true } },
-  { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false } },
+  { id: 'help',       key: '?',            description: 'Toggle this help',     bind: { key: '?', ctrl: false, alt: false }, toggle: true },
   // Display-only entry for the 1–9 view-switch shortcut.  No `bind` field: the "1-9" key
   // is a descriptive range shown in the help dialog, not a literal binding matched by
   // matchesEvent.  Actual dispatch is a special-case block in useKeyboardShortcuts
@@ -115,8 +117,8 @@ const _SHORTCUTS_DEF = [
   // guard in useKeyboardShortcuts so they open from any focus state (including the CM editor).
   { id: 'commandPalette',     key: 'Ctrl+Shift+P', description: 'Command palette',         category: 'View', bind: { key: 'p', ctrl: true, shift: true } },
   { id: 'symbolJump',         key: 'Ctrl+Shift+O', description: 'Go to symbol',             category: 'View', bind: { key: 'o', ctrl: true, shift: true } },
-  { id: 'toggleDiagnostics',  key: 'Ctrl+Shift+M', description: 'Toggle diagnostics panel', category: 'View', bind: { key: 'm', ctrl: true, shift: true } },
-  { id: 'toggleEdges',        key: 'E',            description: 'Toggle edges-in-black view', category: 'View', bind: { key: 'e', ctrl: false, shift: false, alt: false, meta: false } },
+  { id: 'toggleDiagnostics',  key: 'Ctrl+Shift+M', description: 'Toggle diagnostics panel', category: 'View', bind: { key: 'm', ctrl: true, shift: true }, toggle: true },
+  { id: 'toggleEdges',        key: 'E',            description: 'Toggle edges-in-black view', category: 'View', bind: { key: 'e', ctrl: false, shift: false, alt: false, meta: false }, toggle: true },
 ] as const satisfies readonly ShortcutDef[];
 
 /**

@@ -54,8 +54,8 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
 
 /**
  * Shortcut ids that are exempt from the typing-context guard (input/textarea/
- * contentEditable). These are global palette-open actions that must fire from
- * any focus state, including while the CodeMirror editor is focused.
+ * select/contentEditable). These are global palette-open actions that must fire
+ * from any focus state, including while the CodeMirror editor is focused.
  */
 const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
 
@@ -99,9 +99,11 @@ export function runCommand(id: ShortcutId, callbacks: KeyboardShortcutCallbacks)
 
 /**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
- * Skips when the event target is an input, textarea, or contenteditable element,
- * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
- * exempt from the typing-context guard.
+ * Skips when the event target is an input, textarea, select, or contenteditable
+ * element (a select's type-ahead consumes bare letters), EXCEPT for
+ * palette-global shortcuts (commandPalette, symbolJump) which are exempt from
+ * the typing-context guard. A `toggle` shortcut swallows its key's auto-repeat
+ * keydowns, so holding the key flips the state once.
  */
 export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void {
   function handleKeyDown(e: KeyboardEvent) {
@@ -110,6 +112,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     const inTypingContext =
       tagName === 'input' ||
       tagName === 'textarea' ||
+      tagName === 'select' ||
       target.isContentEditable;
 
     // Registry-driven matching.
@@ -126,6 +129,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       if (inTypingContext && !PALETTE_GLOBAL_IDS.has(shortcut.id)) continue;
 
       e.preventDefault();
+      if (e.repeat && shortcut.toggle) return;
       // All entries in ID_TO_CALLBACK map to zero-argument callbacks.
       // Cast to silence TypeScript's union-type inference for the parameterised
       // onSwitchViewByIndex callback (which is handled via its own special-case
