@@ -303,19 +303,14 @@ ts_mtime() {
 
 # ts_watched_files <ts_dir>
 #
-# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c +
-# src/tree_sitter/*.h — i.e. what build.rs declares via rerun-if-changed.
-# src/parser.c is deliberately excluded, and stays excluded after `#6992` made
-# build.rs WATCH it: this models what `ensure` may force-TOUCH, which is a
-# narrower set than what cargo watches (see ts_watched_inputs in
-# scripts/tree-sitter-freshness.sh for why a build-script output must not enter
-# a force set).
+# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c.
+# The generate outputs (src/parser.c, src/tree_sitter/*.h) are deliberately
+# excluded although build.rs WATCHES them: this models what `ensure` may
+# force-TOUCH, which is a narrower set than what cargo watches (see
+# ts_watched_inputs in scripts/tree-sitter-freshness.sh for why a build-script
+# output must not enter a force set).
 ts_watched_files() {
-    local ts="$1" h
-    printf '%s\n' "$ts/grammar.js" "$ts/src/scanner.c"
-    for h in "$ts"/src/tree_sitter/*.h; do
-        [ -f "$h" ] && printf '%s\n' "$h"
-    done
+    printf '%s\n' "$1/grammar.js" "$1/src/scanner.c"
 }
 
 # ts_witness_value <ts_dir>
