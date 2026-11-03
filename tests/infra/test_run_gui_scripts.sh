@@ -25,9 +25,9 @@ BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
 
 # _rgs_code_lines <file> — <file> without its full-line comments, so an
 # assertion that a launcher RUNS a step cannot be satisfied by a comment that
-# names the step. Capture it once and grep the capture inside `bash -c` (Test
-# 4): `_rgs_code_lines f | grep -q ...` as an assert command runs under the
-# suite's pipefail, where grep -q's early exit can SIGPIPE the producer (141).
+# names the step. Capture it once and grep the capture inside `bash -c`: as an
+# assert command, `_rgs_code_lines f | grep -q ...` runs under the suite's
+# pipefail, where grep -q's early exit can SIGPIPE the producer (141).
 _rgs_code_lines() { grep -Ev '^[[:space:]]*#' "$1"; }
 # The fallback keeps a missing launcher from aborting the suite under `set -e`
 # before Test 1 can report it.
@@ -82,18 +82,18 @@ assert "scripts/run-gui.sh contains 'set -euo pipefail'" \
 echo ""
 echo "--- Test 3: build-sidecar.sh runs BEFORE cargo build ---"
 
-assert "scripts/run-gui.sh invokes 'gui/sidecar/build-sidecar.sh'" \
-    grep -q 'gui/sidecar/build-sidecar.sh' "$RUN_GUI"
+assert "scripts/run-gui.sh invokes 'gui/sidecar/build-sidecar.sh' on an uncommented line" \
+    bash -c 'grep -q "gui/sidecar/build-sidecar.sh" <<<"$1"' _ "$RUN_GUI_CODE"
 
-assert "scripts/run-gui.sh invokes 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUN_GUI"
+assert "scripts/run-gui.sh invokes 'cargo build -p reify-gui' on an uncommented line" \
+    bash -c 'grep -q "cargo build -p reify-gui" <<<"$1"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh: build-sidecar line precedes cargo build line" \
-    bash -c "
-        sidecar_line=\$(grep -n 'gui/sidecar/build-sidecar.sh' '$RUN_GUI' | head -1 | cut -d: -f1)
-        cargo_line=\$(grep -n 'cargo build -p reify-gui' '$RUN_GUI' | head -1 | cut -d: -f1)
-        [ -n \"\$sidecar_line\" ] && [ -n \"\$cargo_line\" ] && [ \"\$sidecar_line\" -lt \"\$cargo_line\" ]
-    "
+    bash -c '
+        sidecar_line=$(grep -n "gui/sidecar/build-sidecar.sh" <<<"$1" | head -1 | cut -d: -f1)
+        cargo_line=$(grep -n "cargo build -p reify-gui" <<<"$1" | head -1 | cut -d: -f1)
+        [ -n "$sidecar_line" ] && [ -n "$cargo_line" ] && [ "$sidecar_line" -lt "$cargo_line" ]
+    ' _ "$RUN_GUI_CODE"
 
 # -- Test 4: npm install + npm run build for the gui frontend ----------------
 echo ""
@@ -110,13 +110,13 @@ echo ""
 echo "--- Test 5: cargo build flags ---"
 
 assert "scripts/run-gui.sh cargo build line includes '--features gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--features gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--features gui"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh cargo build line includes '--release'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--release'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--release"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh cargo build line includes '--bin reify-gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--bin reify-gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--bin reify-gui"' _ "$RUN_GUI_CODE"
 
 # -- Test 7: launches target/release/reify-gui --------------------------------
 echo ""
@@ -184,6 +184,7 @@ assert "run-gui.sh non-existent .ri error message mentions 'not found'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$miss_out"
 
 RUN_GUI_DEV="$REPO_ROOT/scripts/run-gui-dev.sh"
+RUN_GUI_DEV_CODE=$(_rgs_code_lines "$RUN_GUI_DEV") || RUN_GUI_DEV_CODE=""
 
 echo ""
 echo "=== run-gui-dev.sh launcher tests ==="
@@ -212,8 +213,8 @@ assert "scripts/run-gui-dev.sh contains 'set -euo pipefail'" \
 echo ""
 echo "--- Test 13: dev script invokes gui/sidecar/build-sidecar.sh ---"
 
-assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh'" \
-    grep -q 'gui/sidecar/build-sidecar.sh' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh' on an uncommented line" \
+    bash -c 'grep -q "gui/sidecar/build-sidecar.sh" <<<"$1"' _ "$RUN_GUI_DEV_CODE"
 
 # -- Test 14: starts vite as a background process ----------------------------
 echo ""
@@ -255,14 +256,14 @@ assert "scripts/run-gui-dev.sh trap references the vite PID variable" \
 echo ""
 echo "--- Test 17: cargo build line uses DEBUG profile (no --release) ---"
 
-assert "scripts/run-gui-dev.sh invokes 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh invokes 'cargo build -p reify-gui' on an uncommented line" \
+    bash -c 'grep -q "cargo build -p reify-gui" <<<"$1"' _ "$RUN_GUI_DEV_CODE"
 
 assert "scripts/run-gui-dev.sh cargo build line includes '--features gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI_DEV' | grep -q -- '--features gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--features gui"' _ "$RUN_GUI_DEV_CODE"
 
 assert "scripts/run-gui-dev.sh cargo build line does NOT include '--release'" \
-    bash -c "! grep 'cargo build -p reify-gui' '$RUN_GUI_DEV' | grep -q -- '--release'"
+    bash -c '! grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--release"' _ "$RUN_GUI_DEV_CODE"
 
 # -- Test 18: REIFY_DEBUG=1 is set ------------------------------------------
 echo ""
@@ -1654,7 +1655,7 @@ echo "--- Test 39: setup-dev.sh installs gui/sidecar's node_modules (the precond
 # checks its UNCOMMENTED lines: a comment naming the step must not satisfy it.
 SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
 assert "setup-dev.sh: an uncommented line runs 'cd gui/sidecar && npm ci'" \
-    bash -c "grep -Ev '^[[:space:]]*#' \"$SETUP_DEV\" | grep -qF 'cd gui/sidecar && npm ci'"
+    bash -c 'grep -qF "cd gui/sidecar && npm ci" <<<"$1"' _ "$(_rgs_code_lines "$SETUP_DEV")"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
