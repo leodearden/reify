@@ -82,13 +82,15 @@ fn read_self_source() -> String {
     std::fs::read_to_string(THIS_FILE).expect("should be able to read this test file via THIS_FILE")
 }
 
-/// Creates base/src/, writes placeholder files for all EXPECTED_OUTPUTS,
-/// and returns the src_dir path. Deduplicates setup across stamp/output tests.
+/// Creates base/src/ holding placeholders for every file a COMPLETED generate
+/// leaves behind — all EXPECTED_OUTPUTS and all GENERATED_HEADERS — and returns
+/// the src_dir path. Deduplicates setup across stamp/output tests.
 fn make_populated_src_dir(base: &Path) -> std::path::PathBuf {
     let src_dir = base.join("src");
-    std::fs::create_dir_all(&src_dir).unwrap();
-    for name in EXPECTED_OUTPUTS {
-        std::fs::write(src_dir.join(name), b"placeholder").unwrap();
+    for name in EXPECTED_OUTPUTS.iter().chain(GENERATED_HEADERS) {
+        let path = src_dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"placeholder").unwrap();
     }
     src_dir
 }
@@ -201,6 +203,39 @@ fn test_needs_generate_true_when_output_missing() {
 }
 
 #[test]
+fn test_needs_generate_true_when_a_generated_header_is_missing() {
+    // The transition state `#9741` creates: git deletes the formerly tracked
+    // headers on update while parser.c and every stamp survive and still attest.
+    if !hasher_available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let grammar = dir.path().join("grammar.js");
+    std::fs::write(&grammar, b"module.exports = grammar({});").unwrap();
+    let stamp = dir.path().join("stamp.hash");
+    let hash = content_hash(&grammar);
+    std::fs::write(&stamp, &hash).unwrap();
+    let src_dir = make_attested_src_dir(dir.path());
+    let output_paths: Vec<_> = EXPECTED_OUTPUTS.iter().map(|n| src_dir.join(n)).collect();
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        !needs_generate(&hash, &stamp, &output_refs, &src_dir),
+        "control: the fully consistent state must take the fast path"
+    );
+    for header in GENERATED_HEADERS {
+        let path = src_dir.join(header);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            needs_generate(&hash, &stamp, &output_refs, &src_dir),
+            "must regenerate when the generated header {header} is missing, \
+             or scanner.c/parser.c fail to compile against it"
+        );
+        std::fs::write(&path, b"placeholder").unwrap();
+    }
+}
+
+#[test]
 fn test_all_three_outputs_verified() {
     let dir = tempfile::tempdir().unwrap();
     let src_dir = make_populated_src_dir(dir.path());
@@ -244,6 +279,35 @@ fn test_all_three_outputs_verified() {
             name,
             err
         );
+    }
+}
+
+#[test]
+fn test_verify_outputs_names_a_missing_generated_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = make_populated_src_dir(dir.path());
+    assert_eq!(
+        verify_outputs(&src_dir),
+        Ok(()),
+        "control: a completed generate must verify"
+    );
+
+    for header in GENERATED_HEADERS {
+        let path = src_dir.join(header);
+        std::fs::remove_file(&path).unwrap();
+        let err = verify_outputs(&src_dir)
+            .expect_err("a generate that left a header missing must not verify");
+        assert!(
+            err.contains(header),
+            "error should name the missing header '{header}', got: {err}"
+        );
+        for present in EXPECTED_OUTPUTS {
+            assert!(
+                !err.contains(present),
+                "error must not name '{present}', which is still present, got: {err}"
+            );
+        }
+        std::fs::write(&path, b"placeholder").unwrap();
     }
 }
 
@@ -2286,4 +2350,31 @@ fn test_shell_stamp_not_current_without_an_outputs_manifest() {
         !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
         "an absent .generated_outputs.stamp must force regeneration"
     );
+}
+
+#[test]
+fn test_shell_stamp_not_current_when_a_generated_header_is_missing() {
+    // Both shell stamps describe grammar.js and the grammar-derived outputs, so
+    // they survive git deleting the formerly tracked headers (`#9741`). They
+    // must not vouch for a `src/` tree that cannot compile.
+    let Some((_dir, grammar, src_dir)) = make_shell_stamp_fixture(true) else {
+        return;
+    };
+    let output_paths = output_paths_of(&src_dir);
+    let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
+
+    assert!(
+        shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+        "control: the attested state must read as current"
+    );
+    for header in GENERATED_HEADERS {
+        let path = src_dir.join(header);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !shell_stamp_is_current(&grammar, &output_refs, &src_dir),
+            "the shell stamps must not read as current while the generated \
+             header {header} is missing"
+        );
+        std::fs::write(&path, b"placeholder").unwrap();
+    }
 }
