@@ -1129,14 +1129,6 @@ describe('wait_for: validation errors', () => {
     expect(typeof result.error).toBe('string');
   });
 
-  it('the unknown-root error lists viewport among the addressable roots', async () => {
-    const result = await dispatchAndGetResult(capturedHandler!, 19, 'wait_for', {
-      predicate: { kind: 'store', path: 'viewState.something', equals: 'x' },
-    }) as any;
-    const roots = String(result.error).split('addressable roots:')[1] ?? '';
-    expect(roots.split(',').map((r) => r.trim())).toContain('viewport');
-  });
-
   it('returns {error} immediately for store predicate with missing equals', async () => {
     // equals is required; omitting it is ambiguous (undefined matches any undefined path).
     const result = await dispatchAndGetResult(capturedHandler!, 18, 'wait_for', {

@@ -771,8 +771,9 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
           currentMessageId: claude.state.currentMessageId,
         },
         viewports,
-        // Singular: the global display state (PRD B6); plural above: per-viewport mesh counts.
-        viewport: { edges: viewportDisplay.state.edges },
+        // Singular: the global display state (PRD B6), every field of its store, as
+        // wait_for's `viewport` root addresses it; plural above: per-viewport mesh counts.
+        viewport: { ...viewportDisplay.state },
       };
     },
 
