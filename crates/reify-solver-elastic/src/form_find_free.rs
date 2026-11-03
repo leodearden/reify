@@ -1811,8 +1811,10 @@ mod tests {
             }
         }
 
-        // Primary honest signal: the combined all-node equilibrium residual at
-        // the SOLVED geometry and densities.
+        // The returned result is the iterate the fixed point's stop test
+        // accepted: its combined all-node residual at the SOLVED geometry and
+        // densities. The independent faer-free reassembly check lives in
+        // tests/tensegrity_delta_combined_form_find.rs.
         let resid = membrane.residual_of(&result);
         assert!(
             resid < 1e-9,
@@ -1846,8 +1848,9 @@ mod tests {
         assert!(result.converged, "combined solve must converge");
         assert_eq!(result.nullity, 4, "combined D must have nullity 4");
 
-        // Primary honest signal: the combined all-node equilibrium residual at
-        // the SOLVED geometry and densities.
+        // The returned result is the iterate the fixed point's stop test
+        // accepted: its combined all-node residual at the SOLVED geometry and
+        // densities.
         let resid = membrane.residual_of(&result);
         assert!(
             resid < 1e-9,
@@ -2070,17 +2073,17 @@ mod tests {
         }
 
         /// `result`'s all-node equilibrium residual at its own densities and
-        /// geometry, as the fixed point's [`CombinedIterate`] judges a trial.
+        /// geometry: the residual the fixed point's stop test reads off a
+        /// [`CombinedIterate`].
         fn residual_of(&self, result: &FreeFormResult) -> f64 {
             let problem = self.problem(&result.nodes, FreeSpec::Explicit(&result.force_densities));
-            let surface = self.surface_matrix(&result.nodes);
             CombinedIterate::new(
                 &problem,
                 result.force_densities.clone(),
                 result.nodes.clone(),
-                surface.clone(),
+                self.surface_matrix(&result.nodes),
             )
-            .residual_at(&problem, &result.nodes, &surface)
+            .residual
         }
     }
 
@@ -2226,6 +2229,19 @@ mod tests {
             .into_iter()
             .map(|[x, y, _]| [x, y, 0.0])
             .collect();
+        // Projecting a guess onto any null block keeps its all-zero z column
+        // zero, so the trial's recovery fails as the line-only recovery does.
+        assert_eq!(
+            form_find_free(
+                &planar,
+                &membrane.members,
+                &membrane.kinds,
+                &ForceDensitySpec::Explicit(closed_form_combined_q(0.0)),
+            )
+            .unwrap_err(),
+            FreeFormError::SingularRecovery,
+            "the planar fixture must recover no 3-D realisation",
+        );
         let q = closed_form_combined_q(PrismMembrane::SIGMA);
         let problem = membrane.problem(&planar, FreeSpec::Explicit(&q));
         let surface_mat = membrane.surface_matrix(&planar);

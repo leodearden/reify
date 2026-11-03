@@ -1431,9 +1431,10 @@ mod tests {
             );
         }
 
-        // Primary honest signal: the free-node equilibrium residual (net force)
-        // at the SOLVED geometry is ~0, judged by the one criterion on the one
-        // assembled `D`.
+        // The returned geometry is the iterate the fixed point's stop test
+        // accepted: its free-node residual (net force) on the one assembled `D`,
+        // judged by the one criterion. The independent faer-free reassembly
+        // check lives in tests/tensegrity_gamma_membrane_form_find.rs.
         let free: Vec<usize> = (0..nodes.len()).filter(|i| !anchors.contains(i)).collect();
         let mut d = assemble_d(nodes.len(), &members, &q);
         scatter_surface_stencils::<IsotropicStencil>(&mut d, &surfaces, &sigmas, &solve.nodes)
