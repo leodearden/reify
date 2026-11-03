@@ -54,6 +54,7 @@ review/reports/summary-*.md
 tree-sitter-reify/src/parser.c
 tree-sitter-reify/src/grammar.json
 tree-sitter-reify/src/node-types.json
+tree-sitter-reify/src/tree_sitter/
 tree-sitter-reify/src/.grammar_hash.stamp
 tree-sitter-reify/src/.generated_outputs.stamp
 tree-sitter-reify/src/.tmp-*
