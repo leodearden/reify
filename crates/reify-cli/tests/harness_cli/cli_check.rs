@@ -1211,9 +1211,9 @@ structure def MirrorBareScalarOrigin {
     let (status, stdout, stderr) =
         common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")]);
 
-    assert!(
-        !status.success(),
-        "a compile-layer ArgTypeMismatch must make `reify check` exit non-zero — \
+    assert_eq!(
+        status.code(), Some(1),
+        "a compile-layer ArgTypeMismatch must make `reify check` exit exactly 1 — \
          this is the short-circuit that forced the decoded-value retarget of \
          `mirror_bare_origin.ri`.\nstdout: {stdout}\nstderr: {stderr}"
     );
