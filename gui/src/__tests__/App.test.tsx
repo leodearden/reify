@@ -206,6 +206,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
 import App, { NEW_FILE_TEMPLATE, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
+import { VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
 import * as sidecarPersistence from '../stores/sidecarPersistence';
 import * as viewPersistence from '../stores/viewPersistence';
 import { SELECTIVE_DEMAND_SYNC_DEBOUNCE_MS } from '../stores/engineStore';
@@ -351,6 +352,37 @@ describe('App layout wiring', () => {
     // Toolbar should come before StatusBar in document order
     const comparison = toolbar.compareDocumentPosition(statusBar);
     expect(comparison & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('edges-in-black toggle wiring', () => {
+  const edgesButton = () => screen.getByTestId('toolbar-edges-toggle');
+  const storedEdges = () => JSON.parse(localStorage.getItem(VIEWPORT_DISPLAY_STORAGE_KEY) ?? 'null');
+
+  it('the E key and the toolbar button both toggle edges, persist them, and reach the viewport', async () => {
+    await renderAndWaitForReady();
+    expect(edgesButton().getAttribute('aria-pressed')).toBe('false');
+    expect(capturedDualViewportProps.showEdges).toBe(false);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+
+    expect(edgesButton().getAttribute('aria-pressed')).toBe('true');
+    expect(storedEdges()).toEqual({ edges: true });
+    expect(capturedDualViewportProps.showEdges).toBe(true);
+
+    fireEvent.click(edgesButton());
+
+    expect(edgesButton().getAttribute('aria-pressed')).toBe('false');
+    expect(storedEdges()).toEqual({ edges: false });
+    expect(capturedDualViewportProps.showEdges).toBe(false);
+  });
+
+  it('starts pressed when edges were left on in a previous session', async () => {
+    localStorage.setItem(VIEWPORT_DISPLAY_STORAGE_KEY, JSON.stringify({ edges: true }));
+
+    await renderAndWaitForReady();
+
+    expect(edgesButton().getAttribute('aria-pressed')).toBe('true');
   });
 });
 
