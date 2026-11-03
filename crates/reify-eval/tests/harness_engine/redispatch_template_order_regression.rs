@@ -37,14 +37,10 @@
 //! `project_realization_read_handle` is identity-only by design (PRD §4 D1) and
 //! emits nothing.
 //!
-//! HOW LONG "skipped" LASTS changed under #7332, and nothing else here did.
-//! When #5951 measured this the gate read the node's own
-//! `realization_inputs`, a field the graph carries across edits, so a tripped
-//! gate stranded the node for the ENGINE's lifetime. The signal now lives in
-//! `RedispatchPassState::redispatched`, which cannot outlive one build, so the
-//! next build re-admits the node whatever this one wrote. That narrows the
-//! blast radius; it does not make a content-free write acceptable, which is
-//! what the content pair below pins.
+//! The gate is build-scoped (see `RedispatchPassState::redispatched`), so a
+//! tripped gate strands the node for the rest of ONE build, not forever. A
+//! content-free write is still wrong, which is what the content pair below
+//! pins.
 //!
 //! ## Why this file is mock-kernel, not OCCT/gmsh
 //!
@@ -78,6 +74,9 @@
 //!    content guard ALONE, so neither pair distinguishes fix (A). This case
 //!    does: the write legitimately happens, and the contract is about its
 //!    MEMBERSHIP — the symbolic sibling's `realization_ref` must not be in it.
+//! 4. **Warm surface** (#7332) — the same contracts across a cold `build()`,
+//!    an `edit_param` and a warm `build_snapshot`, which reuses the graph
+//!    without calling `eval()`.
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -281,7 +280,8 @@ structure WarmConsumer {
 /// gets a kernel-backed handle.
 ///
 /// `solid` realizes normally; `ghost` is a `sphere(..)`, which
-/// [`SphereRefusingKernel`] refuses to execute, so its realization fails and its
+/// [`KernelSwitches::start_refusing_spheres`] makes [`SwitchableKernel`] refuse
+/// to execute, so its realization fails and its
 /// value cell keeps the SYMBOLIC
 /// `Value::GeometryHandle { kernel_handle: None, .. }` placeholder minted by
 /// `mint_symbolic_geometry_handles_into_values`.
@@ -307,222 +307,49 @@ structure MixedConsumer {
 }
 "#;
 
-/// A geometry kernel that REALIZES but cannot TESSELLATE.
-///
-/// A **decorator** over `MockGeometryKernel`, not a re-implementation:
-/// `execute`/`query`/`export` forward to `inner` verbatim, so `let body =
-/// box(..)` realizes exactly as it does under the plain mock — same
-/// `GeometryHandleId` minting, same Wire/Solid repr classification, same
-/// op recording — and its value cell hydrates to
-/// `Value::GeometryHandle { kernel_handle: Some(_), .. }`. Only `tessellate`
-/// is overridden, and it always fails, so Part A's pre-tessellation in
-/// `redispatch_geometry_consuming_compute_nodes` cannot populate the
-/// projection store, the realization stays at its `ReprKind::BRep` default,
-/// and `project_realization_read_handle` takes the identity-only BRep arm:
-/// a `RealizationReadHandle` whose `content()` is `None`.
-///
-/// That is the second half of the #5951 defect, isolated from template
-/// ordering: a handle that IS kernel-backed but carries nothing real.
-///
-/// Delegating rather than copying matters: an op added to the mock's Wire arm
-/// would otherwise diverge here silently, surfacing as a confusing repr
-/// mismatch instead of a compile error.
-///
-/// Defined locally rather than added to `reify-test-support` because it exists
-/// only to pin this contract — neither `FailingMockGeometryKernel` (whose
-/// `execute` fails, so no handle is ever minted) nor `CountingMockKernel`
-/// covers realizes-but-cannot-tessellate.
-#[derive(Default)]
-struct NonTessellatingKernel {
-    inner: reify_test_support::MockGeometryKernel,
-}
-
-impl GeometryKernel for NonTessellatingKernel {
-    fn execute(
-        &mut self,
-        op: &reify_ir::GeometryOp,
-    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-        self.inner.execute(op)
-    }
-
-    fn query(
-        &self,
-        query: &reify_ir::GeometryQuery,
-    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-        self.inner.query(query)
-    }
-
-    fn export(
-        &self,
-        handle: reify_ir::GeometryHandleId,
-        format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_ir::ExportError> {
-        self.inner.export(handle, format, writer)
-    }
-
-    fn tessellate(
-        &self,
-        _handle: reify_ir::GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
-        Err(reify_ir::TessError::TessellationFailed(
-            "NonTessellatingKernel never tessellates — the projection store \
-             stays empty so the realization projects to content: None"
-                .into(),
-        ))
-    }
-}
-
-/// [`NonTessellatingKernel`] with a shared `tessellate` call counter.
-///
-/// The counter is the observation point for the amendment's negative cache:
-/// keeping a non-projectable node a redispatch candidate means the pass — and
-/// with it Part A's pre-tessellation — is re-entered on every trailing
-/// template, so without the cache the count grows with the number of templates
-/// declared after the consumer.
-#[derive(Clone)]
-struct CountingNonTessellatingKernel {
-    inner: std::sync::Arc<std::sync::Mutex<reify_test_support::MockGeometryKernel>>,
-    tessellate_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl CountingNonTessellatingKernel {
-    fn new() -> Self {
-        Self {
-            inner: std::sync::Arc::new(std::sync::Mutex::new(
-                reify_test_support::MockGeometryKernel::new(),
-            )),
-            tessellate_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        }
-    }
-
-    fn tessellate_calls(&self) -> usize {
-        self.tessellate_calls
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-}
-
-impl GeometryKernel for CountingNonTessellatingKernel {
-    fn execute(
-        &mut self,
-        op: &reify_ir::GeometryOp,
-    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-        self.inner.lock().unwrap().execute(op)
-    }
-
-    fn query(
-        &self,
-        query: &reify_ir::GeometryQuery,
-    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-        self.inner.lock().unwrap().query(query)
-    }
-
-    fn export(
-        &self,
-        handle: reify_ir::GeometryHandleId,
-        format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_ir::ExportError> {
-        self.inner.lock().unwrap().export(handle, format, writer)
-    }
-
-    fn tessellate(
-        &self,
-        _handle: reify_ir::GeometryHandleId,
-        _tolerance: f64,
-    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
-        self.tessellate_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(reify_ir::TessError::TessellationFailed(
-            "CountingNonTessellatingKernel never tessellates".into(),
-        ))
-    }
-}
-
-/// A geometry kernel that realizes everything EXCEPT `sphere(..)`.
-///
-/// Same decorator shape as [`NonTessellatingKernel`]: every trait method
-/// forwards to `inner`, and the single overridden behaviour is one `execute`
-/// arm. A refused `execute` mints no handle, so the refused body's realization
-/// fails and `post_process_geometry_handle_cells` never hydrates its value
-/// cell — it keeps the symbolic `kernel_handle: None` placeholder. That is the
-/// only way to hold ONE arg of a multi-geometry `@optimized` node symbolic
-/// while a sibling arg is fully hydrated, within a single template.
-#[derive(Default)]
-struct SphereRefusingKernel {
-    inner: reify_test_support::MockGeometryKernel,
-}
-
-impl GeometryKernel for SphereRefusingKernel {
-    fn execute(
-        &mut self,
-        op: &reify_ir::GeometryOp,
-    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
-        if matches!(op, reify_ir::GeometryOp::Sphere { .. }) {
-            return Err(reify_ir::GeometryError::OperationFailed(
-                "SphereRefusingKernel refuses sphere(): the body stays symbolic \
-                 so the consuming @optimized node has one hydrated and one \
-                 unhydrated geometry arg"
-                    .into(),
-            ));
-        }
-        self.inner.execute(op)
-    }
-
-    fn query(
-        &self,
-        query: &reify_ir::GeometryQuery,
-    ) -> Result<reify_ir::Value, reify_ir::QueryError> {
-        self.inner.query(query)
-    }
-
-    fn export(
-        &self,
-        handle: reify_ir::GeometryHandleId,
-        format: ExportFormat,
-        writer: &mut dyn std::io::Write,
-    ) -> Result<(), reify_ir::ExportError> {
-        self.inner.export(handle, format, writer)
-    }
-
-    fn tessellate(
-        &self,
-        handle: reify_ir::GeometryHandleId,
-        tolerance: f64,
-    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
-        self.inner.tessellate(handle, tolerance)
-    }
-}
-
 /// Shared, flippable control surface for [`SwitchableKernel`].
 ///
 /// Cloned into the kernel the engine takes ownership of, so a test that no
-/// longer holds the kernel can still change its behaviour BETWEEN BUILDS. That
-/// lifetime is the whole point: [`NonTessellatingKernel`] and
-/// [`SphereRefusingKernel`] answer the same way on every call, which is all a
-/// single cold `build()` can observe — but every contract the warm
-/// `build_snapshot` surface introduces has the shape "build 1 saw X, build 2
-/// sees Y", and only a between-build flip can hold that shape.
+/// longer holds the kernel can still read its counter and change its behaviour.
+/// A cold-only test flips a switch before its one build. Every contract the
+/// warm `build_snapshot` surface introduces has the shape "build 1 saw X,
+/// build 2 sees Y", and only a flip BETWEEN builds can hold that shape.
 #[derive(Clone, Default)]
 struct KernelSwitches {
     refuse_spheres: Arc<AtomicBool>,
     refuse_tessellation: Arc<AtomicBool>,
-    tessellations: Arc<AtomicUsize>,
+    tessellate_calls: Arc<AtomicUsize>,
 }
 
 impl KernelSwitches {
-    /// From the next `execute` on, refuse `sphere(..)`: a body that realized on
-    /// an earlier build stops realizing, holding ONE arg of a mixed-arg
-    /// `@optimized` node symbolic while its sibling stays hydrated.
+    /// From the next `execute` on, refuse `sphere(..)`.
+    ///
+    /// A refused `execute` mints no handle, so the body's realization fails and
+    /// `post_process_geometry_handle_cells` never hydrates its value cell: it
+    /// keeps the symbolic `kernel_handle: None` placeholder. That is the only
+    /// way to hold ONE arg of a multi-geometry `@optimized` node symbolic while
+    /// a sibling arg is fully hydrated, within a single template.
     fn start_refusing_spheres(&self) {
         self.refuse_spheres.store(true, Ordering::SeqCst);
     }
 
-    /// From the next `tessellate` on, fail: a body that projected real content
-    /// on an earlier build projects `None` on this one.
+    /// From the next `tessellate` on, fail.
+    ///
+    /// The body still REALIZES: its value cell hydrates to
+    /// `kernel_handle: Some(_)`. But Part A's pre-tessellation in
+    /// `redispatch_geometry_consuming_compute_nodes` cannot populate the
+    /// projection store, so the realization stays at its `ReprKind::BRep`
+    /// default and `project_realization_read_handle` takes the identity-only
+    /// BRep arm: a `RealizationReadHandle` whose `content()` is `None`. A
+    /// handle that IS kernel-backed but carries nothing real is the content
+    /// half of the #5951 defect, isolated from template ordering.
     fn start_refusing_tessellation(&self) {
         self.refuse_tessellation.store(true, Ordering::SeqCst);
+    }
+
+    /// Every `tessellate` call so far, refused or not.
+    fn tessellate_calls(&self) -> usize {
+        self.tessellate_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -531,22 +358,25 @@ impl KernelSwitches {
 /// body near the origin.
 const TESSELLATION_STAMP_STEP: f32 = 0.5;
 
-/// A `MockGeometryKernel` decorator with BETWEEN-BUILD switches and a MOVING
-/// tessellation.
+/// The geometry kernel every non-default test here uses: a `MockGeometryKernel`
+/// decorator with [`KernelSwitches`] refusals, a `tessellate` call counter, and
+/// a MOVING tessellation.
 ///
-/// Same decorator shape as [`NonTessellatingKernel`] and
-/// [`SphereRefusingKernel`] — every trait method forwards to `inner` — with two
-/// differences, each load-bearing for one warm-surface contract:
+/// A decorator, not a re-implementation: every trait method forwards to
+/// `inner`, so `let body = box(..)` realizes exactly as it does under the plain
+/// mock (same `GeometryHandleId` minting, same Wire/Solid repr classification,
+/// same op recording), and an op added to the mock cannot diverge here
+/// silently. Defined locally rather than in `reify-test-support` because
+/// neither `FailingMockGeometryKernel` (whose `execute` fails, so no handle is
+/// ever minted) nor `CountingMockKernel` covers realizes-but-cannot-tessellate.
 ///
-/// 1. The refusals live in a shared [`KernelSwitches`], so they can be flipped
-///    between the cold `build()` and the warm `build_snapshot`.
-/// 2. `tessellate` TRANSLATES the mock's canned mesh by a per-call offset.
-///    `MockGeometryKernel::tessellate` returns a CONSTANT `minimal_valid_mesh`
-///    independent of handle and geometry, so two projections of the same body
-///    are byte-identical — which makes a stale `RealizationProjectionStore`
-///    memo invisible to any assertion a mock-kernel test could otherwise
-///    write. A rigid translation leaves the mesh valid (same topology, same
-///    normals, same welding) while making every call's output unique.
+/// `tessellate` TRANSLATES the mock's canned mesh by a per-call offset.
+/// `MockGeometryKernel::tessellate` returns a CONSTANT `minimal_valid_mesh`
+/// independent of handle and geometry, so two projections of the same body are
+/// byte-identical, which would make a stale `RealizationProjectionStore` memo
+/// invisible to any assertion a mock-kernel test could write. A rigid
+/// translation leaves the mesh valid (same topology, same normals, same
+/// welding) while making every call's output unique.
 struct SwitchableKernel {
     inner: reify_test_support::MockGeometryKernel,
     switches: KernelSwitches,
@@ -604,15 +434,18 @@ impl GeometryKernel for SwitchableKernel {
         handle: reify_ir::GeometryHandleId,
         tolerance: f64,
     ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+        let serial = self
+            .switches
+            .tessellate_calls
+            .fetch_add(1, Ordering::SeqCst);
         if self.switches.refuse_tessellation.load(Ordering::SeqCst) {
             return Err(reify_ir::TessError::TessellationFailed(
-                "SwitchableKernel refuses tessellation on this build: the projection \
-                 store stays empty so the realization projects to content: None"
+                "SwitchableKernel refuses tessellation: the projection store \
+                 stays empty so the realization projects to content: None"
                     .into(),
             ));
         }
         let mut mesh = self.inner.tessellate(handle, tolerance)?;
-        let serial = self.switches.tessellations.fetch_add(1, Ordering::SeqCst);
         let offset = serial as f32 * TESSELLATION_STAMP_STEP;
         for v in &mut mesh.vertices {
             *v += offset;
@@ -680,12 +513,9 @@ fn build_with_probe(source: &str) -> Vec<reify_core::Diagnostic> {
 /// The `realization_inputs` recorded on the probe's compute node in the
 /// post-build snapshot graph.
 ///
-/// This is the DEPENDENCY RECORD the redispatch pass writes, not the gate it
-/// reads — since #7332 the gate keys on the build-scoped
-/// `RedispatchPassState::redispatched`. So EMPTY means the pass has never
-/// written this node (within this build: still a candidate; across builds:
-/// still nothing recorded), and non-empty means some build's pass did write
-/// it — which stops nothing in a LATER build.
+/// This is the dependency record the redispatch pass writes, not the gate it
+/// reads (see `RedispatchPassState::redispatched`). EMPTY means no pass has
+/// written this node yet; non-empty means some build's pass did.
 fn probe_node_realization_inputs(engine: &reify_eval::Engine) -> Vec<usize> {
     probe_node_realization_input_refs(engine, ORDER_PROBE_TARGET)
         .iter()
@@ -761,9 +591,9 @@ fn assert_probe_saw_kernel_backed_body(case: &str, records: &[ProbeRecord]) {
     // handed non-empty `realization_inputs` carrying nothing real. Each such
     // invocation corresponds to a write that tripped the Phase-1 gate while
     // delivering no content — the signature of the #5951 strand.
-    // `assert_no_contentless_latch` turns this into a first-class assertion;
+    // `assert_no_contentless_write` turns this into a first-class assertion;
     // here it just makes the failure legible.
-    let empty_content_latches = records
+    let contentless_writes = records
         .iter()
         .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
         .count();
@@ -777,7 +607,7 @@ fn assert_probe_saw_kernel_backed_body(case: &str, records: &[ProbeRecord]) {
          per-template redispatch consumed the SYMBOLIC \
          (`kernel_handle: None`) handle and tripped the Phase-1 candidate \
          gate, so the correct later pass in this build was skipped. \
-         {empty_content_latches} of \
+         {contentless_writes} of \
          {} invocation(s) were handed non-empty realization_inputs carrying no \
          realized content. Records: {records:?}",
         records.len(),
@@ -792,7 +622,7 @@ fn assert_probe_saw_kernel_backed_body(case: &str, records: &[ProbeRecord]) {
 /// contract has to land. Asserted from the cold `build()` case and — since
 /// #7332 made the warm `build_snapshot` surface reachable — from its warm twin
 /// too.
-fn assert_no_contentless_latch(case: &str, records: &[ProbeRecord]) {
+fn assert_no_contentless_write(case: &str, records: &[ProbeRecord]) {
     let contentless: Vec<_> = records
         .iter()
         .filter(|r| r.realization_inputs_len > 0 && !r.any_realized_content)
@@ -920,10 +750,9 @@ fn redispatch_reaches_kernel_backed_body_when_the_consumer_is_the_first_template
 #[test]
 fn latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content() {
     reset_records();
-    let (engine, diagnostics) = build_with_probe_using(
-        CONSUMER_STRUCTURE,
-        Box::new(NonTessellatingKernel::default()),
-    );
+    let (kernel, switches) = SwitchableKernel::boxed_with_switches();
+    switches.start_refusing_tessellation();
+    let (engine, diagnostics) = build_with_probe_using(CONSUMER_STRUCTURE, kernel);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -945,7 +774,7 @@ fn latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content() {
     // (a) Observable at the trampoline: the same `realization_inputs` that get
     //     written onto the node are the ones handed to `run_compute_dispatch`,
     //     so a content-free write is visible here.
-    assert_no_contentless_latch("cold build, non-tessellating kernel", &records);
+    assert_no_contentless_write("cold build, non-tessellating kernel", &records);
 
     // (b) Observable in the post-build graph: the candidate gate is untripped,
     //     so a later pass — a later template's iteration, a later build tick —
@@ -1024,10 +853,9 @@ fn latch_is_tripped_normally_when_the_rebuilt_inputs_carry_realized_content() {
 #[test]
 fn a_symbolic_sibling_arg_is_kept_out_of_realization_inputs() {
     reset_records();
-    let (engine, diagnostics) = build_with_probe_using(
-        MIXED_ARG_STRUCTURE,
-        Box::new(SphereRefusingKernel::default()),
-    );
+    let (kernel, switches) = SwitchableKernel::boxed_with_switches();
+    switches.start_refusing_spheres();
+    let (engine, diagnostics) = build_with_probe_using(MIXED_ARG_STRUCTURE, kernel);
 
     let solid_ref = geometry_cell_realization(&engine, "MixedConsumer", "solid");
     let ghost_ref = geometry_cell_realization(&engine, "MixedConsumer", "ghost");
@@ -1045,7 +873,7 @@ fn a_symbolic_sibling_arg_is_kept_out_of_realization_inputs() {
         diagnostics
             .iter()
             .any(|d| d.severity == reify_core::Severity::Error
-                && d.message.contains("SphereRefusingKernel refuses sphere()")),
+                && d.message.contains("SwitchableKernel refuses sphere()")),
         "`ghost`'s realization must be REFUSED by the kernel — that refusal is \
          what keeps its handle symbolic while its sibling hydrates. \
          Diagnostics: {diagnostics:?}"
@@ -1127,10 +955,11 @@ fn a_failed_pre_tessellation_is_not_retried_once_per_trailing_template() {
     let mut counts = Vec::new();
     for trailing in [0usize, 1, 3] {
         reset_records();
-        let kernel = CountingNonTessellatingKernel::new();
+        let (kernel, switches) = SwitchableKernel::boxed_with_switches();
+        switches.start_refusing_tessellation();
         let source = format!("{CONSUMER_STRUCTURE}{}", trailing_structures(trailing));
-        let (_engine, _diagnostics) = build_with_probe_using(&source, Box::new(kernel.clone()));
-        counts.push((trailing, kernel.tessellate_calls()));
+        let (_engine, _diagnostics) = build_with_probe_using(&source, kernel);
+        counts.push((trailing, switches.tessellate_calls()));
     }
 
     let baseline = counts[0].1;
@@ -1172,8 +1001,9 @@ fn a_permanently_stranded_node_is_reported_once_at_end_of_build() {
     for trailing in [0usize, 3] {
         reset_records();
         let source = format!("{CONSUMER_STRUCTURE}{}", trailing_structures(trailing));
-        let (engine, diagnostics) =
-            build_with_probe_using(&source, Box::new(NonTessellatingKernel::default()));
+        let (kernel, switches) = SwitchableKernel::boxed_with_switches();
+        switches.start_refusing_tessellation();
+        let (engine, diagnostics) = build_with_probe_using(&source, kernel);
 
         // Still a candidate — i.e. genuinely the stranded shape this warns about.
         assert_eq!(
@@ -1191,42 +1021,67 @@ fn a_permanently_stranded_node_is_reported_once_at_end_of_build() {
 
 // ── task #7332: the WARM (`build_snapshot`) surface ────────────────────────
 
-/// Task #7332 (RED before the fix): a warm `build_snapshot` following an
-/// `edit_param` must re-dispatch the geometry-consuming `@optimized` node.
+/// Task #7332: a warm `build_snapshot` following an `edit_param` must
+/// re-dispatch the geometry-consuming `@optimized` node exactly once, and hand
+/// it freshly projected content.
 ///
 /// The mock-kernel, always-runs twin of `morph_arm_e2e.rs`'s gmsh-gated
 /// `e2e_non_structural_tick_morphs_and_preserves_connectivity`, which pins the
 /// same contract on the real OCCT+gmsh VolumeMesh path.
 ///
-/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 candidate gate used
-/// to read `realization_inputs.is_empty()`. But `realization_inputs` is a
-/// DEPENDENCY RECORD with GRAPH lifetime — `deps.rs` builds the
-/// Realization→Compute reverse edge from it and `compute_cache_key` folds it
-/// into the key — so reading its emptiness as the BUILD-lifetime question "has
-/// this build hydrated me yet?" conflated two unrelated facts and made the gate
-/// a CROSS-BUILD latch. The gate now reads `RedispatchPassState::redispatched`.
-///
-/// `build()` is accidentally immune: `eval()` installs a fresh snapshot and
-/// `EvaluationGraph::from_templates` creates no compute nodes, so its
-/// `compute_nodes` map starts empty on every call. `build_snapshot` never calls
-/// `eval()` and reuses `eval_state.snapshot.graph` verbatim, so the COLD
-/// build's write closes the only dispatch surface the warm path has.
+/// `build()` reaches the pass on a fresh graph every time, because `eval()`
+/// installs one. `build_snapshot` never calls `eval()` and reuses
+/// `eval_state.snapshot.graph`, so only a build-scoped redispatch signal (see
+/// `RedispatchPassState::redispatched`) keeps the cold build's redispatch from
+/// closing the warm one.
 ///
 /// That the warm surface really re-executes realizations against the edited
 /// param is pinned independently by
 /// `interactive_edit_loop.rs::edit_param_then_build_snapshot_updates_geometry`
-/// on this same `MockGeometryKernel`; premise (b) below re-asserts it locally
-/// so a failure of the pin cannot be blamed on a dead geometry path.
+/// on this same `MockGeometryKernel`; premise (b) in the shared body
+/// re-asserts it locally so a failure of the pin cannot be blamed on a dead
+/// geometry path.
 #[test]
 fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_node() {
+    assert_warm_build_snapshot_re_dispatches_with_fresh_content(
+        "consumer first, 3 trailing templates",
+        &format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3)),
+    );
+}
+
+/// The warm twin of
+/// `redispatch_reaches_kernel_backed_body_when_a_template_precedes_the_consumer`:
+/// #5951's original shape, a template declared AHEAD of the consumer, on the
+/// warm `build_snapshot` surface.
+///
+/// The leading template's pass runs while the consumer's body is still
+/// symbolic. It must leave no build-scoped residue that outlives the body's
+/// hydration: neither a negative-cached pre-tessellation that would refuse the
+/// consumer's own pass, nor a contentless skip that would report a strand that
+/// never happened.
+#[test]
+fn a_warm_build_snapshot_re_dispatches_when_a_template_precedes_the_consumer() {
+    assert_warm_build_snapshot_re_dispatches_with_fresh_content(
+        "leading template, 3 trailing templates",
+        &format!(
+            "{LEADING_STRUCTURE}{WARM_CONSUMER_STRUCTURE}{}",
+            trailing_structures(3)
+        ),
+    );
+}
+
+/// The shared body of the two warm re-dispatch tests above: a cold `build()`,
+/// `edit_param(WarmConsumer.width)`, then a warm `build_snapshot`, against the
+/// stamping [`SwitchableKernel`]. `source` must declare
+/// [`WARM_CONSUMER_STRUCTURE`] and three trailing templates.
+fn assert_warm_build_snapshot_re_dispatches_with_fresh_content(case: &str, source: &str) {
     reset_records();
-    let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
     // The STAMPING kernel, not the plain mock: the eviction pin at the bottom
     // needs two projections of the same body to be distinguishable, and the
     // plain mock's `tessellate` returns a constant mesh. Every assertion above
     // that pin reads identically under either kernel.
     let (kernel, _switches) = SwitchableKernel::boxed_with_switches();
-    let (mut engine, compiled, diagnostics) = build_with_probe_capturing_module(&source, kernel);
+    let (mut engine, compiled, diagnostics) = build_with_probe_capturing_module(source, kernel);
 
     let errors: Vec<_> = diagnostics
         .iter()
@@ -1234,7 +1089,7 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
         .collect();
     assert!(
         errors.is_empty(),
-        "premise: the cold build must succeed, or nothing below is about the \
+        "{case}: premise: the cold build must succeed, or nothing below is about the \
          warm surface: {errors:?}"
     );
 
@@ -1251,7 +1106,7 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
     assert_eq!(
         cold.len(),
         2,
-        "premise: the cold build() must dispatch the probe EXACTLY twice — the \
+        "{case}: premise: the cold build() must dispatch the probe EXACTLY twice — the \
          original `Value::Undef`-bodied dispatch, then ONE post-hydration \
          redispatch that the candidate gate then stops repeating for the three \
          trailing templates. A count of 5 means the gate was removed rather \
@@ -1260,7 +1115,7 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
     let last = cold.last().expect("cold.len() == 2 was just asserted");
     assert!(
         last.kernel_backed_arg && last.any_realized_content && last.realization_inputs_len == 1,
-        "premise: the cold build's LAST probe invocation must be the \
+        "{case}: premise: the cold build's LAST probe invocation must be the \
          post-hydration redispatch — a KERNEL-BACKED geometry arg, exactly one \
          `realization_inputs` entry, and real projected content. Without that \
          this node is not a geometry-consuming redispatch candidate at all and \
@@ -1285,10 +1140,10 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
 
     // ── Premise (b): the warm surface really re-executed the realization and
     //    re-stamped a kernel-backed handle. Without this, a zero warm dispatch
-    //    count below could mean "geometry path is dead", not "gate is latched".
+    //    count below could mean "geometry path is dead", not "gate is shut".
     assert!(
         build.geometry_output.is_some(),
-        "premise: the warm build_snapshot must produce geometry output — it is \
+        "{case}: premise: the warm build_snapshot must produce geometry output — it is \
          what proves the body was re-realized and re-exported against the edited \
          param, so the pin below is about the CANDIDATE GATE and not about a \
          dead geometry path"
@@ -1298,23 +1153,20 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
     let warm = recorded();
     assert!(
         !warm.is_empty(),
-        "#7332: the warm `build_snapshot` must dispatch the geometry-consuming \
-         `@optimized` node at least once, and dispatched it ZERO times. That is \
-         the defect: `redispatch_geometry_consuming_compute_nodes`' Phase-1 \
-         candidate gate is still reading `realization_inputs.is_empty()`, which \
-         is a GRAPH-lifetime dependency record, as if it were a BUILD-lifetime \
-         \"already hydrated\" flag — so the write the COLD build made latches \
-         the node out of every LATER build. `build_snapshot` reuses \
-         `eval_state.snapshot.graph` verbatim and never calls `eval()`, so that \
-         is the only dispatch surface it has. The redispatch-once signal belongs \
-         in the build-scoped `RedispatchPassState`, not in `realization_inputs`."
+        "{case}: #7332: the warm `build_snapshot` must dispatch the \
+         geometry-consuming `@optimized` node at least once, and dispatched it \
+         ZERO times: the cold build's redispatch closed the warm one. \
+         `build_snapshot` reuses the graph and never calls `eval()`, so a \
+         redispatch-once signal that is not build-scoped (see \
+         `RedispatchPassState::redispatched`) shuts the node out of every later \
+         build."
     );
     let warm_dispatch = warm
         .iter()
         .find(|r| r.kernel_backed_arg && r.any_realized_content && r.realization_inputs_len == 1);
     assert!(
         warm_dispatch.is_some(),
-        "#7332: the warm `build_snapshot`'s redispatch must deliver the SAME \
+        "{case}: #7332: the warm `build_snapshot`'s redispatch must deliver the SAME \
          shape the cold one did — a KERNEL-BACKED `Value::GeometryHandle`, \
          exactly one `realization_inputs` entry, and real projected content — \
          otherwise the node was re-admitted as a candidate but handed nothing \
@@ -1349,14 +1201,14 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
             .filter(|r| r.content_fingerprint.is_some())
             .count(),
         1,
-        "premise: exactly one warm invocation may carry content, or \
+        "{case}: premise: exactly one warm invocation may carry content, or \
          `warm_dispatch` below is not the one this pin is about. Warm records: \
          {warm:?}"
     );
     assert_ne!(
         warm_dispatch.content_fingerprint,
         Some(cold_fingerprint),
-        "#7332: the warm redispatch must be handed FRESHLY PROJECTED content, \
+        "{case}: #7332: the warm redispatch must be handed FRESHLY PROJECTED content, \
          and was handed byte-identical content to the cold build's. The \
          `RealizationProjectionStore` memo for this realization survived \
          `edit_param`: its second key is the STATIC `content_hash`, which does \
@@ -1364,6 +1216,26 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
          the pre-edit entry. `invalidate_realization_dirty_cone` must \
          `RealizationProjectionStore::evict` every realization whose evaluated \
          input cone moved. Cold: {cold_fingerprint:?}, warm: {warm_dispatch:?}"
+    );
+
+    // ── No phantom strand ──────────────────────────────────────────────────
+    //
+    // A pass that ran while the body was still symbolic (the leading-template
+    // case) must not have recorded a contentless skip that the consumer's own
+    // pass then failed to clear. The node was rescued, so it is not stranded.
+    let strand_warnings: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == reify_core::Severity::Warning
+                && d.message.contains("projected no content")
+        })
+        .collect();
+    assert!(
+        strand_warnings.is_empty(),
+        "{case}: the warm build_snapshot re-dispatched the node with real \
+         content, so it must not also report it as stranded: \
+         {strand_warnings:?}"
     );
 }
 
@@ -1373,24 +1245,22 @@ fn a_warm_build_snapshot_after_edit_param_re_dispatches_the_geometry_consuming_n
 /// the cold one.
 ///
 /// `latch_is_not_tripped_when_the_rebuilt_inputs_carry_no_realized_content`
-/// above proves the guard on a single cold `build()`. Before #7332 that was the
-/// only path that could reach the guard at all, because the candidate gate
-/// latched the node out of every later build. Now a warm rebuild re-admits it,
-/// so the guard is re-evaluated against a freshly re-realized body on every
-/// tick — and a kernel that realizes but cannot tessellate keeps projecting to
-/// `content: None` forever.
+/// above proves the guard on a single cold `build()`. A warm rebuild re-admits
+/// the node, so the guard is re-evaluated against a freshly re-realized body on
+/// every tick — and a kernel that realizes but cannot tessellate keeps
+/// projecting to `content: None` forever.
 ///
 /// The three assertions are the cold twin's two, restated across both builds,
-/// plus the one that is genuinely new: the end-of-build report must fire on the
-/// warm surface too. `emit_contentless_redispatch_warnings` is called from
-/// `build_snapshot`'s own template loop, but until #7332 no node ever reached
-/// it there — the pass had no candidates to skip.
+/// plus the end-of-build report, which `build_snapshot`'s own template loop
+/// must emit too.
 #[test]
-fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
+fn a_warm_rebuild_still_refuses_contentless_inputs() {
     reset_records();
     let source = format!("{WARM_CONSUMER_STRUCTURE}{}", trailing_structures(3));
+    let (kernel, switches) = SwitchableKernel::boxed_with_switches();
+    switches.start_refusing_tessellation();
     let (mut engine, compiled, _cold_diagnostics) =
-        build_with_probe_capturing_module(&source, Box::new(NonTessellatingKernel::default()));
+        build_with_probe_capturing_module(&source, kernel);
 
     engine
         .edit_param(
@@ -1405,7 +1275,7 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
 
     // (a) #5951's door, over records from BOTH builds — same predicate as the
     //     cold twin.
-    assert_no_contentless_latch(
+    assert_no_contentless_write(
         "cold build + warm build_snapshot, non-tessellating kernel",
         &recorded(),
     );
@@ -1433,7 +1303,7 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
 /// Task #7332 (amendment): a node that tessellated on an EARLIER build and can
 /// project nothing on THIS one must still be reported as stranded.
 ///
-/// `a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs` above cannot
+/// `a_warm_rebuild_still_refuses_contentless_inputs` above cannot
 /// reach this: it uses a kernel that never tessellates, on either build, so the
 /// probe's `realization_inputs` never become non-empty and
 /// `emit_contentless_redispatch_warnings`' filter is never exercised in its
@@ -1441,14 +1311,10 @@ fn a_warm_rebuild_still_refuses_to_latch_on_contentless_inputs() {
 /// it — build 1 tessellates and writes the dependency record, build 2 cannot,
 /// so the content guard strands the node while build 1's record still stands.
 ///
-/// The filter therefore cannot ask `realization_inputs.is_empty()`: that is a
-/// GRAPH-lifetime record answering a BUILD-lifetime question, the same
-/// conflation #7332 removed from the Phase-1 candidate gate, and it was sound
-/// only while a cold `build()` was the one way into the pass. It must be
-/// `contentless_skips` MINUS `redispatched`, both build-scoped. Restore the old
-/// predicate and this test reds at ZERO warnings — the node stranded on a
-/// degraded result for a whole build with no diagnostic, which is #5951's root
-/// complaint reproduced on the surface #7332 opened.
+/// So the filter cannot ask `realization_inputs.is_empty()` (see
+/// `RedispatchPassState::redispatched`). A filter that does reds this test at
+/// ZERO warnings: the node stranded on a degraded result for a whole build with
+/// no diagnostic, which is #5951's root complaint on the warm surface.
 #[test]
 fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
     reset_records();
@@ -1493,7 +1359,7 @@ fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
         .expect("build_snapshot must return a BuildResult after edit_param");
 
     // The strand itself: re-admitted as a candidate, handed nothing.
-    assert_no_contentless_latch("warm build_snapshot after losing tessellation", &recorded());
+    assert_no_contentless_write("warm build_snapshot after losing tessellation", &recorded());
 
     // ── THE PIN ────────────────────────────────────────────────────────────
     assert_one_strand_warning(
@@ -1517,20 +1383,13 @@ fn a_warm_rebuild_that_loses_tessellation_still_reports_the_strand() {
 /// Task #7332 (amendment): a warm redispatch must not NARROW the node's
 /// `realization_inputs`.
 ///
-/// While the Phase-1 gate read that field, the pass's write was a once-per-graph
-/// FIRST write — the gate guaranteed the pass only ever reached a node whose
-/// record was empty. Build-scoping the gate makes it a repeated write across
-/// builds, and the incoming set comes from `realization_probe_args`, which
-/// DROPS any arg whose handle is symbolic. So a REPLACING write narrows a
-/// mixed-arg node's record from [solid, ghost] to [solid] the first time
-/// `ghost` fails to realize.
-///
-/// That is not cosmetic: `deps.rs` builds the Realization→Compute reverse edge
-/// (#10) by iterating this field, so a later `edit_param` moving `ghost` would
-/// compute a realization cone that no longer reaches this compute node — the
-/// UNDER-eviction direction `compute_changed_realizations`' own doc calls
-/// unsafe, and the same hazard `invalidate_realization_dirty_cone` explicitly
-/// refuses to create by clearing the field. The write unions instead.
+/// The pass writes the record on every build, and the incoming set comes from
+/// `realization_probe_args`, which DROPS any arg whose handle is symbolic. So a
+/// REPLACING write would narrow a mixed-arg node's record from [solid, ghost]
+/// to [solid] the first time `ghost` fails to realize. `deps.rs` builds reverse
+/// edge #10 from this field, so a later `edit_param` moving `ghost` would then
+/// under-evict this compute node. The write unions instead (see
+/// `RedispatchPassState::redispatched`).
 ///
 /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` is the cold twin
 /// and cannot see this: there `ghost` is refused on the ONLY build, so the

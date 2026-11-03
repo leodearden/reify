@@ -202,24 +202,13 @@ fn captured_max_vertex_x(stage: &str) -> f32 {
 /// and a capture taken after a tick that re-dispatched zero times is the COLD
 /// capture read a second time.
 ///
-/// MEASURED post-#7332 (release, real OCCT + gmsh, confirmed not to take the
-/// `OCCT_AVAILABLE` soft-skip): two probe fires inside the cold `build()` (the
-/// original `Undef`-bodied dispatch plus its redispatch), ONE during the warm
-/// `build_snapshot()`, `morphed == 1`, identical `tet_indices` either side of
-/// the tick, and max vertex x moving 0.005 m → 0.00525 m. The pre-fix
-/// measurement was ZERO warm fires and a byte-identical, still-10mm capture.
-///
-/// #7332 has two halves and this test needs both.
-/// `redispatch_geometry_consuming_compute_nodes`' Phase-1 candidate filter used
-/// to read the node's `realization_inputs` — a graph-lifetime DEPENDENCY
-/// record, not a lifecycle flag — so the cold build's write latched the node
-/// out of every later build; the redispatch-once signal now lives in the
-/// build-scoped `RedispatchPassState::redispatched`. That alone still delivered
-/// the PRE-tick mesh, because `RealizationProjectionStore` is keyed on the
-/// static `content_hash`, which cannot see a value-driven change;
-/// `engine_edit::invalidate_realization_dirty_cone` now evicts that memo over
-/// the edit's dirty cone. Reverting the first half reddens the count pin;
-/// reverting the second reddens the x-extent assertion.
+/// Two mechanisms carry it, and this test needs both. The redispatch-once
+/// signal is build-scoped (`RedispatchPassState::redispatched`), so the cold
+/// build's redispatch does not close the warm one. And
+/// `engine_edit::invalidate_realization_dirty_cone` evicts the
+/// `RealizationProjectionStore` memo over the edit's dirty cone, because its
+/// static `content_hash` key cannot see a value-driven change. Without the
+/// first the count pin reds; without the second the x-extent assertion does.
 #[cfg(has_gmsh)]
 #[test]
 fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
@@ -312,7 +301,9 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
         .expect("edit_param must succeed against the MorphBox.width Length param");
 
     // (3) Warm rebuild → the morph arm fires.
-    engine.build_snapshot(&compiled, ExportFormat::Step);
+    engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("build_snapshot must return a BuildResult after edit_param");
     let fires_across_tick = MORPH_PROBE_INVOCATIONS.with(|n| n.get()) - fires_after_cold;
 
     // ── The #7332 count pin ────────────────────────────────────────────────
@@ -327,14 +318,8 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
          `fires_across_tick == 1` count pin below is vacuous"
     );
 
-    // #7332 LANDED. MEASURED (release, real OCCT + gmsh): EXACTLY ONE, where
-    // the pre-fix measurement was zero.
-    //
-    // Why one and not another number. The redispatch-once signal is now
-    // build-scoped (`RedispatchPassState::redispatched`) instead of being read
-    // off the node's graph-lifetime `realization_inputs`, so the cold build's
-    // write no longer latches the node out of this one. `morph_box.ri` declares
-    // a SINGLE template, so `build_snapshot`'s per-template loop calls
+    // Why exactly one. `morph_box.ri` declares a SINGLE template, so
+    // `build_snapshot`'s per-template loop calls
     // `redispatch_geometry_consuming_compute_nodes` once — and unlike the cold
     // `build()` (2: the original `Value::Undef`-bodied dispatch plus its
     // redispatch) the warm surface never calls `eval()`, so it has no
@@ -353,10 +338,10 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     assert_eq!(
         fires_across_tick, 1,
         "#7332: the warm build_snapshot() must re-invoke the geometry-consuming \
-         @optimized consumer EXACTLY once. 0 means the candidate gate went back \
-         to reading the node's `realization_inputs` — a graph-lifetime \
-         dependency record — so the cold build's write re-latched the node out \
-         of every later build. >1 means the within-build idempotence in \
+         @optimized consumer EXACTLY once. 0 means the cold build's redispatch \
+         closed the warm one: the redispatch-once signal stopped being \
+         build-scoped (see `RedispatchPassState::redispatched`). >1 means the \
+         within-build idempotence in \
          `RedispatchPassState` broke and the pass is re-doing a node's work once \
          per template."
     );
