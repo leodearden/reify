@@ -3,10 +3,13 @@
 #
 # Usage: scripts/run-gui.sh <file.ri>
 #
-# Performs every build step needed to launch reify-gui from a clean checkout:
+# Performs every build step needed to launch reify-gui from a checkout that
+# scripts/setup-dev.sh has provisioned:
 #   1. Validate args, then PREFLIGHT: refuse a launch with no display BEFORE
 #      any expensive step. Bypass with REIFY_GUI_SKIP_PREFLIGHT=1.
-#   2. Build the sidecar (idempotent; ~20ms tsup bundle).
+#   2. Build the sidecar (idempotent; ~20ms tsup bundle). Without gui/sidecar's
+#      npm deps, build-sidecar.sh exits 1 and prints the remedy, so this script
+#      stops before any npm or cargo step.
 #   3. Install gui/ npm deps + build the frontend (produces gui/dist).
 #   4. Build the reify-gui cargo binary in release mode with features `gui` +
 #      `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the window serves
@@ -48,7 +51,7 @@ if [ "$#" -lt 1 ]; then
     echo "" >&2
     echo "  <file>  path to a .ri source file" >&2
     echo "" >&2
-    echo "Launches reify-gui in release mode after building all dependencies." >&2
+    echo "Builds and launches reify-gui in release mode (run scripts/setup-dev.sh first)." >&2
     echo "For dev mode (vite, devtools, MCP debug listener), use run-gui-dev.sh." >&2
     exit 1
 fi
