@@ -652,6 +652,53 @@ describe('useKeyboardShortcuts — command palette shortcuts', () => {
   });
 });
 
+describe('useKeyboardShortcuts — toggleEdges shortcut', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  function wire() {
+    const onToggleEdges = vi.fn();
+    const onExportDialog = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleEdges, onExportDialog });
+      return d;
+    });
+    return { onToggleEdges, onExportDialog };
+  }
+
+  it('a bare e calls onToggleEdges once', () => {
+    const { onToggleEdges } = wire();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+    expect(onToggleEdges).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+E stays Export and does not toggle edges', () => {
+    const { onToggleEdges, onExportDialog } = wire();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true }));
+    expect(onExportDialog).toHaveBeenCalledTimes(1);
+    expect(onToggleEdges).not.toHaveBeenCalled();
+  });
+
+  it('an e typed into an <input> does not toggle edges', () => {
+    const { onToggleEdges } = wire();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+      expect(onToggleEdges).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('is offered in the command palette', () => {
+    expect(paletteCommands().some((c) => c.id === 'toggleEdges')).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // paletteCommands() and runCommand() (task-4208)
 // ---------------------------------------------------------------------------

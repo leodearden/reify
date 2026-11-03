@@ -108,6 +108,25 @@ describe('shortcuts', () => {
   });
 });
 
+describe('toggleEdges shortcut', () => {
+  const press = (init: KeyboardEventInit) => new KeyboardEvent('keydown', init);
+
+  it('is a bare E in the View category', () => {
+    const entry = getShortcut('toggleEdges');
+    expect(entry).toBeDefined();
+    expect(entry?.key).toBe('E');
+    expect(entry?.category).toBe('View');
+  });
+
+  it('matches a bare e or E, but not Ctrl+E (Export) or Shift+E', () => {
+    const bind = getShortcut('toggleEdges')!.bind!;
+    expect(matchesEvent(bind, press({ key: 'e' }))).toBe(true);
+    expect(matchesEvent(bind, press({ key: 'E' }))).toBe(true);
+    expect(matchesEvent(bind, press({ key: 'e', ctrlKey: true }))).toBe(false);
+    expect(matchesEvent(bind, press({ key: 'E', shiftKey: true }))).toBe(false);
+  });
+});
+
 describe('matchesEvent', () => {
   function makeEvent(init: KeyboardEventInit): KeyboardEvent {
     return new KeyboardEvent('keydown', init);
