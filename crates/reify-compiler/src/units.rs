@@ -1856,7 +1856,7 @@ pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagno
                 .with_label(DiagnosticLabel::new(*span, "exponent out of range"))
         }
 
-        UnitResolveError::DimensionOverflow { span } => Diagnostic::error(
+        UnitResolveError::DimensionOverflow { span } => Diagnostic::error( // pdiag:allow — #9755 mints codes for all four UnitResolveError arms together
             "the unit expression's combined dimension has an exponent out of range",
         )
         .with_label(DiagnosticLabel::new(
