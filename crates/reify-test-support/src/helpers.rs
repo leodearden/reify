@@ -2857,6 +2857,16 @@ mod tests {
         let _ = super::try_get_value_cell_in_template(&ambiguous_x_template(), "x");
     }
 
+    /// Pins that the ambiguity panic is actionable: it lists the colliding
+    /// `id.entity` values, in `value_cells` order. A maintainer who hits it
+    /// then learns which entities collided, not just that a collision
+    /// happened, and need not reproduce it by hand to disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_try_get_value_cell_in_template_ambiguity_panic_names_colliding_entities() {
+        let _ = super::try_get_value_cell_in_template(&ambiguous_x_template(), "x");
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
     // The not-found and has-no-default panics are not re-pinned here:
     // get_let_expr_in_template and get_let_expr_in raise them from the same
@@ -2920,18 +2930,6 @@ mod tests {
                 Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
             )
             .build()
-    }
-
-    /// Pins that the ambiguity panic is actionable: it enumerates the
-    /// colliding `id.entity` values, in `value_cells` order, in its message.
-    /// Without this, a maintainer hitting the panic from
-    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
-    /// that a collision occurred, not which entities collided — forcing them
-    /// to reproduce it by hand before they can disambiguate.
-    #[test]
-    #[should_panic(expected = "[\"First\", \"Second\"]")]
-    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
-        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
     /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
