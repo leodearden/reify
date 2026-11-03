@@ -23,6 +23,16 @@ source "$REPO_ROOT/scripts/lib_portable.sh"
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
 BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
 
+# _rgs_code_lines <file> — <file> without its full-line comments, so an
+# assertion that a launcher RUNS a step cannot be satisfied by a comment that
+# names the step. Capture it once and grep the capture inside `bash -c` (Test
+# 4): `_rgs_code_lines f | grep -q ...` as an assert command runs under the
+# suite's pipefail, where grep -q's early exit can SIGPIPE the producer (141).
+_rgs_code_lines() { grep -Ev '^[[:space:]]*#' "$1"; }
+# The fallback keeps a missing launcher from aborting the suite under `set -e`
+# before Test 1 can report it.
+RUN_GUI_CODE=$(_rgs_code_lines "$RUN_GUI") || RUN_GUI_CODE=""
+
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
 # The loader-path helper lib_gui_launch.sh sources from its own dir (#8654).
@@ -89,11 +99,11 @@ assert "scripts/run-gui.sh: build-sidecar line precedes cargo build line" \
 echo ""
 echo "--- Test 4: gui frontend dependency install + build ---"
 
-assert "scripts/run-gui.sh runs 'npm install' (or 'npm ci')" \
-    bash -c "grep -qE 'npm (install|ci)' '$RUN_GUI'"
+assert "scripts/run-gui.sh runs 'npm install' (or 'npm ci') on an uncommented line" \
+    bash -c 'grep -qE "npm (install|ci)" <<<"$1"' _ "$RUN_GUI_CODE"
 
-assert "scripts/run-gui.sh runs 'npm run build' to produce gui/dist" \
-    grep -q 'npm run build' "$RUN_GUI"
+assert "scripts/run-gui.sh runs 'npm run build' on an uncommented line, to produce gui/dist" \
+    bash -c 'grep -q "npm run build" <<<"$1"' _ "$RUN_GUI_CODE"
 
 # -- Test 5: cargo build uses --release + --features gui ----------------------
 echo ""
