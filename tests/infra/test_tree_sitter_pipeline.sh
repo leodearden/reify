@@ -2093,6 +2093,66 @@ test_freshness_ensure_forces_and_is_idempotent() {
     fi
 }
 
+test_freshness_ensure_never_touches_generate_outputs() {
+    # A force set must hold no build-script output (ts_watched_inputs): touching
+    # one risks a touch/regenerate loop and moves the ledger's mtime witness on
+    # every regeneration. src/parser.c and, since #9741, src/tree_sitter/*.h are
+    # outputs of the generate the build script runs.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+
+    local ts="$tmp/ts"
+    mkdir -p "$ts/src" || return 1
+    cp "$TS_DIR/grammar.js"    "$ts/grammar.js" || return 1
+    cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c" || return 1
+    provision_fixture_parser_c "$ts/src/parser.c" || return 1
+    provision_fixture_headers "$ts/src/tree_sitter" || return 1
+
+    local OLD='2020-01-01T00:00:00' f
+    find "$ts" -type f -exec touch -d "$OLD" {} + || return 1
+    local old_epoch
+    old_epoch=$(ts_mtime "$ts/grammar.js")
+
+    local fp altered
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    if [ "${fp:0:1}" = "0" ]; then altered="1${fp:1}"; else altered="0${fp:1}"; fi
+    mk_ts_fixture "$tmp/target" "tree-sitter-reify-deadbeef09" "$altered"
+
+    run_ts_freshness ensure "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ] || [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure on a STALE fixture must force (rc=$TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [ $(( $(date +%s) - $(ts_mtime "$ts/grammar.js") )) -gt 300 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: grammar.js was not touched, so no force happened and the"
+        echo "  check below would be vacuous."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    local -a touched=()
+    for f in "$ts"/src/parser.c "$ts"/src/tree_sitter/*.h; do
+        [ "$(ts_mtime "$f")" = "$old_epoch" ] || touched+=("${f#"$ts"/}")
+    done
+    if [ "${#touched[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure force-touched generate outputs: ${touched[*]}"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+}
+
 test_freshness_target_dir_override_is_a_clean_noop() {
     # REIFY_TS_FRESHNESS_TARGET_DIR pointed at an EMPTY tree must make BOTH modes
     # clean no-ops (exit 0) that leave the real worktree untouched.
