@@ -21,7 +21,7 @@ SIDECAR_NAME="reify-sidecar-${TARGET}"
 DEST_DIR="../src-tauri/sidecar"
 DEST="${DEST_DIR}/${SIDECAR_NAME}"
 
-# Bundle cli.ts as single ESM file (workspace deps inlined, node builtins external)
+# Bundle cli.ts; tsup.sidecar.ts alone decides what the bundle contains (npm run build uses it too)
 "$TSUP" --config tsup.sidecar.ts
 
 # Create executable: shebang + bundled JS
