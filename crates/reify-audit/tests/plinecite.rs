@@ -18,7 +18,7 @@ use reify_audit::{
     Severity,
 };
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,17 +55,7 @@ impl Harness {
     }
 
     fn ctx(&self, root: &Path) -> AuditContext<'_> {
-        AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &self.conn,
-            git: &self.git,
-            jcodemunch: &self.jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        }
+        AuditContext::new(root.to_path_buf(), &self.conn, &self.git, &self.jc)
     }
 }
 
@@ -643,17 +633,7 @@ fn real_repo_plinecite_smoke() {
     let git = RealGitOps::new(root.clone());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root,
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root, &conn, &git, &jc);
     let findings = reify_audit::plinecite::check(&ctx);
     let keys: Vec<(&str, &str, &str)> = findings
         .iter()

@@ -1,6 +1,6 @@
 # Audit Modes
 
-Five invocation modes. All modes write a per-run JSON artifact; `--format markdown` adds a fenced markdown report on top.
+Four invocation modes; the section numbers are kept, so there is no §3. All modes write a per-run JSON artifact; `--format markdown` adds a fenced markdown report on top.
 
 > All argv paths use `$REPO_ROOT/` — see `references/cli-invocation.md` §1 for the pre-flight that resolves it.
 >
@@ -11,25 +11,22 @@ Five invocation modes. All modes write a per-run JSON artifact; `--format markdo
 
 ---
 
-## §1 Default mode (14-day window sweep)
+## §1 Default mode (whole-corpus sweep)
 
-**When to use:** Routine periodic sweep — no specific task or date in mind.
+**When to use:** Routine periodic sweep — no specific task in mind.
 
 **Argv produced** (stderr captured per `cli-invocation.md` §2):
 
 ```bash
 reify-audit \
-  --since <14d-ago-iso> \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
 
-**Pre-flight:** Compute `<14d-ago-iso>` as the ISO-8601 date exactly 14 days before `now` (UTC). Example: if today is `2026-05-16`, use `--since 2026-05-02`. The CLI accepts `YYYY-MM-DD` or full ISO-8601 for `--since`.
-
 **Scope object in per-run JSON:**
 
 ```json
-{ "window": "14d" }
+{ "corpus": "all" }
 ```
 
 **Detectors run:** every default-sweep detector (`references/severity-routing.md` §0), no `--pattern` restriction.
@@ -63,31 +60,6 @@ reify-audit \
 
 ---
 
-## §3 Window sweep mode (`--since <iso-date>`)
-
-**When to use:** User wants to sweep a custom date range, e.g. `/audit --since 2026-04-01`.
-
-**Argv produced** (stderr captured per `cli-invocation.md` §2):
-
-```bash
-reify-audit \
-  --since <iso-date> \
-  --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
-  --project-root "$REPO_ROOT"
-```
-
-**Pre-flight:** Validate that `<iso-date>` parses as a date (YYYY-MM-DD or full ISO-8601) and is in the past. If not, surface an error to the user and stop.
-
-**Scope object in per-run JSON:**
-
-```json
-{ "window": "<iso-date>..now" }
-```
-
-**Detectors run:** every default-sweep detector (`references/severity-routing.md` §0), unless `--pattern` also supplied — see §6.
-
----
-
 ## §4 Pattern-restricted mode (`--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE`)
 
 **When to use:** User wants to run only one detector, e.g. `/audit --pattern P5`, `/audit --pattern PTODO`, `/audit --pattern PDEAD`, or `/audit --pattern PDOCCOVER`.
@@ -96,13 +68,12 @@ reify-audit \
 
 ```bash
 reify-audit \
-  --since <14d-ago-iso> \
   --pattern <P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE> \
   --runs-db    "$REPO_ROOT/data/orchestrator/runs.db" \
   --project-root "$REPO_ROOT"
 ```
 
-(If `--since` or `--task` is also given, use that instead of the default 14d window.)
+(`--task <id>` composes with `--pattern` — see §6.)
 
 **Scope object in per-run JSON:**
 
@@ -167,7 +138,7 @@ PPRDSTATUS (`--pattern PPRDSTATUS`) detects PRD status-prose drift: a PRD's own 
 - `stale-status-header:` — every decomposition leaf whose `metadata.prd`, else `metadata.prd_path` (the key the current `/prd` decompose writes), names the PRD is terminal (`done` / `cancelled`), yet the PRD's Status header is live or absent. A leaf tagged with neither key is invisible to the lane, so its PRD's verdict rests on the tagged leaves only. The summary names the stamp to apply: SHIPPED, or WITHDRAWN when every leaf was cancelled.
 - `cite-status-contradiction:` — in a PRD whose header is not terminal, a canonical `#NNNN` cite is immediately followed by a status parenthetical (`` #4876 (`deferred`, high) ``) whose class (live, done or cancelled) contradicts the cited task. Dated parentheticals (an ISO date, `as of`, `at freeze`), unknown ids and live-vs-live differences are silent.
 
-- **Scope:** tracked `docs/prds/**.md`, minus `*.capability-manifest.md`. `task_id` is the PRD's repo path, so the lane ignores `--task` and `--since`.
+- **Scope:** tracked `docs/prds/**.md`, minus `*.capability-manifest.md`. `task_id` is the PRD's repo path, so the lane ignores `--task`.
 - **Task source:** the task corpus the fused-memory live loader returns, never `tasks.db`. An unreachable fused-memory therefore exits 125 like every sweep. An empty corpus leaves nothing to check: `--pattern PPRDSTATUS` alone refuses it with exit 125 and no JSON array, while a mixed run prints `reify-audit: PPRDSTATUS skipped — the task corpus is empty; this is NOT a clean bill of health`, and its zero PPRDSTATUS findings mean "not checked" (`references/cli-invocation.md` §4.1).
 - **Vocabulary authority:** `.claude/skills/prd/project.md` → "PRD terminal status — closed vocabulary + decompose-close stamp". The detector consumes that list and does not define it. Under its case-insensitive first-token rule, six PRDs were already terminal when the detector landed (2026-09-30), and it is silent on all of them: `v0_6/data-carrying-enums.md`, `v0_6/generic-data-carrying-enums.md`, `v0_6/result-and-fallback.md`, `kernel-seam-contracts.md`, `v0_6/process-dfm-geometry-metrology.md`, and the Title-Case `auto-type-param-resolution.md`.
 - **Routing:** one batched escalation per run through `scripts/pprdstatus-escalate.py`, never per finding and never follow-up tasks (`references/severity-routing.md` §2).
@@ -199,18 +170,17 @@ Slice-2 deeper rendering (per-finding evidence expansion, links to task URLs) is
 
 ## §6 Mode composition
 
-`--task`, `--since`, and `--pattern` **compose**:
+`--task` and `--pattern` **compose**:
 
 | Combination | Effect |
 |---|---|
 | `--task <id> --pattern P5` | Spot-check task `<id>`, P5 only; dials jcodemunch for H2, which examines cross-crate tasks only (`--no-jcodemunch` stays offline) |
-| `--since <date> --pattern P1` | Window sweep from `<date>`, P1 only |
-| `--since <date> --pattern PTODO` | PTODO only, over the whole tree — `<date>` does not narrow it (Medium; deterministic, no jcodemunch) |
-| `--since <date> --pattern PDEAD` | Window sweep from `<date>`, PDEAD advisory only (Low/log) |
-| `--task <id> --pattern PDCHECK` | PDCHECK only, checking just task `<id>`'s `delivered_checks` rows (needs `tasks.db`); `--since` does not narrow PDCHECK |
-| `--task` or `--since` with PTODO, PDSSENTINEL, PDIAG or PDOCCOVER | No narrowing: these structural lanes ignore both flags and always sweep the whole tracked tree |
-| `--task` or `--since` with PPRDSTATUS | No narrowing: findings are keyed by PRD path, so every tracked PRD is checked against the whole loaded task corpus |
-| `--task <id> --since <date>` | Both flags accepted; `AuditContext` receives both `target_task_id` and `window` (CLI source: `reify-audit.rs` lines 333–342). Whether detectors treat this as a strict scope intersection depends on the detector implementation — verify against the detector source or CLI `--help` if exact semantics matter. |
+| `--pattern P1` | Whole-corpus sweep, P1 only |
+| `--pattern PTODO` | PTODO only, over the whole tree (Medium; deterministic, no jcodemunch) |
+| `--pattern PDEAD` | Whole-corpus sweep, PDEAD advisory only (Low/log) |
+| `--task <id> --pattern PDCHECK` | PDCHECK only, checking just task `<id>`'s `delivered_checks` rows (needs `tasks.db`) |
+| `--task` with PTODO, PDSSENTINEL, PDIAG or PDOCCOVER | No narrowing: these structural lanes ignore the flag and always sweep the whole tracked tree |
+| `--task` with PPRDSTATUS | No narrowing: findings are keyed by PRD path, so every tracked PRD is checked against the whole loaded task corpus |
 | `--format markdown` | Adds markdown output to **any** of the above |
 
 **`--pre-done` is NOT composable from the skill.** It is reserved exclusively for the dark-factory D-1 pre-done hook (`REIFY_AUDIT_PREDONE_CMD`). The skill never passes `--pre-done` to the CLI. If a user asks to simulate a pre-done check, use `--task <id> --pattern P5 --no-jcodemunch` instead, which runs P5 in periodic-sweep (not blocking) mode and, like the hook, never connects. Without `--no-jcodemunch` the run dials jcodemunch for P5's H2 pass, and a port that accepts but never replies costs the client's HTTP timeout (`HTTP_TIMEOUT_SECS` in `jcodemunch_client.rs`, 60 s) before H2 is skipped.

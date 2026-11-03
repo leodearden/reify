@@ -104,17 +104,7 @@ fn main() {
     let conn = rusqlite::Connection::open_in_memory()
         .expect("in-memory sqlite connection for AuditContext placeholder");
     let jc = NoopJCodemunchOps;
-    let ctx = AuditContext {
-        project_root: root,
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: std::collections::HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root, &conn, &git, &jc);
 
     let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
 

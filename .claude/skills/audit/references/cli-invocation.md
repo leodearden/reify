@@ -56,7 +56,6 @@ trap 'rm -f "$TMPFILE"' EXIT
 
 $REIFY_AUDIT_BIN \
   [--task <id>] \
-  [--since <iso-date>] \
   [--pattern P1|P2|P5|PTODO|PDSSENTINEL|PDEAD|PUNTESTED|PLAYER|PDIAG|PDOCCOVER|PDCHECK|PCITE|PPRDSTATUS|PLINECITE] \
   [--fused-memory-url <url>] \  # default: $FUSED_MEMORY_URL or http://localhost:8002/mcp (no trailing slash)
   [--jcodemunch-url <url>]   \  # default: $JCODEMUNCH_URL or http://127.0.0.1:8901/mcp
@@ -214,7 +213,7 @@ jcodemunch is still not listed in reify's `.mcp.json`, so it must be brought up 
 ### Clean run (0 findings)
 
 ```
-$ reify-audit --since 2026-05-02 2>/tmp/out.json; echo "exit=$?"
+$ reify-audit --project-root "$REPO_ROOT" 2>/tmp/out.json; echo "exit=$?"
 reify-audit: 0 findings.
 exit=0
 
@@ -400,7 +399,7 @@ The two modes diverge on purpose.
 ### 125 legitimate High findings (boundary collision)
 
 ```
-$ reify-audit --since 2026-05-02 2>/tmp/out.json; echo "exit=$?"
+$ reify-audit --project-root "$REPO_ROOT" 2>/tmp/out.json; echo "exit=$?"
 reify-audit: 125 finding(s):
   [High] P1OrphanExport task=3100: exported symbol has no downstream consumer
   … (124 more High findings)
@@ -415,7 +414,7 @@ Skill behaviour: `exit_code == 125` triggers the disambiguator (§3.1): skill pa
 ### Infrastructure error (exit 125)
 
 ```
-$ reify-audit --since 2026-05-02 2>/tmp/out.json; echo "exit=$?"
+$ reify-audit --project-root "$REPO_ROOT" 2>/tmp/out.json; echo "exit=$?"
 reify-audit: error connecting to fused-memory at 'http://localhost:8002/mcp': MCP HTTP error: POST http://localhost:8002/mcp: … Connection refused (os error 111)
 exit=125
 ```
