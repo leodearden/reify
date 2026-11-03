@@ -384,6 +384,29 @@ describe('edges-in-black toggle wiring', () => {
 
     expect(edgesButton().getAttribute('aria-pressed')).toBe('true');
   });
+
+  it('reaches every pane of a display_panes layout', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published({ fea_convergence: null,
+      meshes: [makeMesh('A#realization[0]'), makeMesh('B#realization[0]')],
+      values: [], constraints: [], files: [],
+      tessellation_diagnostics: [], compile_diagnostics: [],
+      tensegrity_wires: [], tensegrity_surfaces: [],
+      display_panes: [
+        { subject: 'A#realization[0]', pane: 0 },
+        { subject: 'B#realization[0]', pane: 1 },
+      ],
+      display_appearance: [],
+      fea_diagnostics: [],
+    }));
+    await renderAndWaitForReady();
+    const panes = () => capturedMultiViewportProps.panes as Array<{ showEdges?: boolean }>;
+    expect(panes()).toHaveLength(2);
+    expect(panes().map((p) => p.showEdges)).toEqual([false, false]);
+
+    fireEvent.click(edgesButton());
+
+    expect(panes().map((p) => p.showEdges)).toEqual([true, true]);
+  });
 });
 
 describe('App resizable splitters', () => {
