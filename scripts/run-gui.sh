@@ -51,7 +51,7 @@ if [ "$#" -lt 1 ]; then
     echo "" >&2
     echo "  <file>  path to a .ri source file" >&2
     echo "" >&2
-    echo "Launches reify-gui in release mode after building all dependencies." >&2
+    echo "Builds and launches reify-gui in release mode (run scripts/setup-dev.sh first)." >&2
     echo "For dev mode (vite, devtools, MCP debug listener), use run-gui-dev.sh." >&2
     exit 1
 fi
