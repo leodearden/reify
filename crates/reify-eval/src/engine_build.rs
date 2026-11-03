@@ -3257,16 +3257,9 @@ fn resolve_instance_color(
 /// (`build_with_geometry_output` and `build_snapshot`) and threaded through
 /// every call that loop makes.
 ///
-/// Task #7332: the redispatch-once signal itself now lives here, for exactly
-/// that reason. It used to be read off the node's own `realization_inputs`
-/// ("non-empty ⇒ already hydrated"), but that field is a DEPENDENCY RECORD with
-/// GRAPH lifetime — `deps::…` builds the Realization→Compute reverse edge from
-/// it and `compute_cache_key` folds it into the key — so a build-lifetime
-/// question answered from it silently became a CROSS-BUILD latch on every
-/// surface that reuses the graph. `build_snapshot` is exactly that surface: it
-/// never calls `eval()`, so the cold build's write closed the only dispatch
-/// surface it had. A flag scoped to this state cannot outlive the build by
-/// construction.
+/// The redispatch-once signal lives here too, for the same reason: see
+/// [`RedispatchPassState::redispatched`], whose doc is the one statement of
+/// how it differs from the node's `realization_inputs`.
 ///
 /// COST OF THAT SCOPE, stated as plainly as `failed_pretessellations`' cost is
 /// above. Build-scoping makes the redispatch UNCONDITIONAL PER BUILD: every
@@ -3291,11 +3284,12 @@ fn resolve_instance_color(
 /// callers today, and the shared key's cold-path hazard predates this scope.
 /// Before `build_snapshot` acquires a production caller, two things must
 /// happen, in order. First, the shared key is fixed, owned by #7052. Second,
-/// the per-build cost is paid down by a FRESHNESS gate (skip when the output
-/// cell's cache freshness is `Final` and no realization in the node's
-/// `realization_inputs` moved on this tick), NOT by re-widening this flag's
-/// lifetime — re-latching across builds is exactly the defect this scope
-/// exists to fix.
+/// the per-build cost is paid down by a FRESHNESS gate, owned by #7576: skip
+/// when the output cell's cache freshness is `Final` and no realization in the
+/// node's `realization_inputs` moved on this tick. That record is a superset of
+/// what the node reads (see `redispatched`), so such a gate errs toward
+/// re-dispatching. It must NOT be built by widening `redispatched`'s lifetime:
+/// a signal that outlives the build closes later builds to the node.
 ///
 /// COVERAGE, stated honestly. `failed_pretessellations` and
 /// `contentless_skips` are each pinned by a counterfactual test in
@@ -3321,9 +3315,29 @@ struct RedispatchPassState {
     /// each dispatches to. Deduplicated by node id — a node skipped by three
     /// trailing templates is recorded once.
     contentless_skips: HashMap<reify_core::ComputeNodeId, String>,
-    /// Compute nodes this BUILD has already redispatched. The gate that stops
-    /// the per-template loop re-doing a node's work — build-scoped, so the next
-    /// build re-admits it (#7332).
+    /// Compute nodes this BUILD has already redispatched: the Phase-1 candidate
+    /// gate of [`Engine::redispatch_geometry_consuming_compute_nodes`], and the
+    /// only "already done" signal that pass reads. Build-lifetime by
+    /// construction, so the next build re-admits every node.
+    ///
+    /// The same write also extends the node's
+    /// `ComputeNodeData::realization_inputs`, which answers a different
+    /// question on a different lifetime. That field is the GRAPH-lifetime
+    /// DEPENDENCY RECORD: `deps.rs` builds reverse edge #10 (Realization →
+    /// Compute) from it, and `compute_cache_key` folds it into the key. Nothing
+    /// may read it as an "already done" flag. The graph outlives the build:
+    /// `edit_param` carries it forward, and `build_snapshot` reuses it without
+    /// calling `eval()`. Such a read would therefore close every later build to
+    /// the node.
+    ///
+    /// The record is a SUPERSET of what the node currently reads, not an exact
+    /// copy. The write unions rather than replaces, because a replacing write
+    /// would drop the edge of an arg that went symbolic on this build and
+    /// under-evict on a later edit. A realization that a value-selected arg
+    /// stopped reading therefore stays recorded: for example
+    /// `order_probe(if flag then a else b)` after `edit_param(flag)` keeps `a`.
+    /// That errs toward over-eviction, the safe direction. A reader that needs
+    /// exact consumption must not take it from that field.
     redispatched: HashSet<reify_core::ComputeNodeId>,
 }
 
@@ -10002,12 +10016,8 @@ impl Engine {
     /// evaluating to a KERNEL-BACKED
     /// `Value::GeometryHandle { kernel_handle: Some(_), .. }` are re-dispatched.
     /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
-    ///
-    /// The first half of that gate is BUILD-scoped, not graph-scoped (#7332).
-    /// It used to read the node's own `realization_inputs.is_empty()`, which is
-    /// a dependency record living as long as the graph — so on a surface that
-    /// reuses the graph (`build_snapshot`) the cold build's write latched the
-    /// node out of every later build. See [`RedispatchPassState`].
+    /// The first half of that gate is build-scoped; see
+    /// [`RedispatchPassState::redispatched`].
     ///
     /// The `kernel_handle: Some(_)` requirement states the intent of task
     /// #5951's fix (A) at the gate. MEASURED, it is a REDUNDANT narrowing:
@@ -10018,7 +10028,8 @@ impl Engine {
     /// and caught by the `realization_inputs.is_empty()` bail, and a
     /// kernel-backed-but-contentless node is caught by the content guard. Keep
     /// it as the cheap early-out that names the invariant; do NOT rely on it as
-    /// the only thing standing between a symbolic handle and the latch. The
+    /// the only thing standing between a symbolic handle and a content-free
+    /// write. The
     /// half of fix (A) that IS independently load-bearing is the downgrade —
     /// see the `realization_probe_args` call below, pinned by
     /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs`.
@@ -10029,13 +10040,14 @@ impl Engine {
     /// a geometry-consuming one, this runs while that consumer's body is still
     /// a SYMBOLIC `kernel_handle: None` placeholder (minted by
     /// `mint_symbolic_geometry_handles_into_values`). Accepting such a
-    /// placeholder as "hydrated" wrote a content-free `realization_inputs`,
-    /// which — while the candidate gate still read that field — tripped it and
-    /// stranded the node on its degraded first-dispatch result, silently,
-    /// because the `ReprKind::BRep` arm of `project_realization_read_handle` is
-    /// identity-only by design (PRD §4 D1) and emits no diagnostic. Skipping
-    /// the candidate instead leaves the node un-redispatched, so the later
-    /// post-hydration pass for the consumer's own template still fires.
+    /// placeholder as "hydrated" would write a content-free
+    /// `realization_inputs` and mark the node redispatched, stranding it on its
+    /// degraded first-dispatch result for the rest of the build. The strand
+    /// would be silent, because the `ReprKind::BRep` arm of
+    /// `project_realization_read_handle` is identity-only by design (PRD §4 D1)
+    /// and emits no diagnostic. Skipping the candidate instead leaves the node
+    /// un-redispatched, so the later post-hydration pass for the consumer's own
+    /// template still fires.
     ///
     /// `pass_state` is the BUILD-scoped [`RedispatchPassState`] — created once
     /// before the per-template loop and threaded through every call it makes.
@@ -10081,26 +10093,7 @@ impl Engine {
 
             let mut cands: Vec<Candidate> = Vec::new();
             for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter() {
-                // Redispatch each node at most once per BUILD (#7332).
-                //
-                // This used to read `!node_data.realization_inputs.is_empty()`.
-                // That field is a DEPENDENCY RECORD, not a lifecycle flag:
-                // `deps::…` builds the Realization→Compute reverse edge by
-                // iterating it and `compute_cache_key` folds it into the
-                // compute cache key, so it lives as long as the GRAPH does.
-                // Reading its emptiness here conflated "already hydrated by
-                // THIS build" with "carries a dependency record at all", and
-                // since `build_snapshot` reuses `eval_state.snapshot.graph`
-                // verbatim — it never calls `eval()`, and
-                // `reset_per_build_state` lists `eval_state` as must-survive —
-                // that conflation was a CROSS-BUILD latch: the cold build's
-                // write excluded the node from every later build.
-                //
-                // `build()` was never affected, which is why the defect hid for
-                // so long: `eval()` installs a fresh snapshot and
-                // `EvaluationGraph::from_templates` creates no compute nodes,
-                // so its `compute_nodes` map starts EMPTY on every call and the
-                // two gates agree there.
+                // At most once per BUILD; see `RedispatchPassState::redispatched`.
                 if pass_state.redispatched.contains(c_id) {
                     continue;
                 }
@@ -10171,8 +10164,8 @@ impl Engine {
             // placeholder minted by `mint_symbolic_geometry_handles_into_values`
             // for a body that has not realized yet — which is exactly what this
             // per-template pass sees for a consumer declared AFTER the template
-            // currently being built. Treating it as hydrated wrote a
-            // content-free `realization_inputs` and marked the node
+            // currently being built. Treating it as hydrated would write a
+            // content-free `realization_inputs` and mark the node
             // redispatched, stranding it for the rest of the build.
             // `continue`ing leaves it unmarked so a later pass can do the real
             // work.
@@ -10314,39 +10307,27 @@ impl Engine {
             // durable invariant behind it.
             //
             // Phase 1's candidate gate is tripped by the write below and by
-            // nothing else, so that write is what ends this node's redispatch
-            // for the rest of the build: every later per-template call skips
-            // it. The invariant is therefore that the gate is ONLY EVER TRIPPED
-            // BY A WRITE THAT ACTUALLY CARRIED REALIZED CONTENT, and that the
-            // trip is SCOPED TO THIS BUILD (#7332 — the signal lives in
-            // `pass_state.redispatched`, which cannot outlive the build).
+            // nothing else, so that write ends this node's redispatch for the
+            // rest of the build. The invariant is therefore that the gate is
+            // ONLY EVER TRIPPED BY A WRITE THAT ACTUALLY CARRIED REALIZED
+            // CONTENT.
             //
             // If every rebuilt handle projects to `None`, this pass has nothing
             // to deliver — Part A's pre-tessellation above could not populate
             // the projection store, so the trampoline would run on an empty
             // body exactly as it did at first dispatch. Writing anyway buys
             // nothing and costs everything: the node is stranded on its
-            // degraded first-dispatch result (for the stdlib inline-fallback
-            // shape, a silently empty result) with NO diagnostic — the
-            // `ReprKind::BRep` arm of `project_realization_read_handle` is
-            // identity-only by design (PRD §4 D1) and `degrade_projection`'s
-            // Warning is never reached.
+            // degraded first-dispatch result for the rest of the build (for
+            // the stdlib inline-fallback shape, a silently empty result) with
+            // NO diagnostic — the `ReprKind::BRep` arm of
+            // `project_realization_read_handle` is identity-only by design
+            // (PRD §4 D1) and `degrade_projection`'s Warning is never reached.
             //
             // `continue`ing instead leaves the node a redispatch candidate, so
             // a later per-template call — or a later build tick — can still do
             // the real work. That converts a silent strand into a retried one,
             // and it holds for ANY future path into this pass, not just the
             // symbolic-handle door the gate above closes.
-            //
-            // #7332 NARROWS the door #5951 named rather than reopening it. The
-            // failure mode #5951 describes is "permanently stranded …
-            // silently"; with the redispatch-once signal build-scoped,
-            // PERMANENCE IS STRUCTURALLY IMPOSSIBLE — the next build re-admits
-            // the node as a candidate whatever this one wrote. The blast radius
-            // of a bad write shrinks from engine-lifetime to one build. Every
-            // other guard on this path (the `kernel_handle: Some(_)` Phase-2
-            // gate, the `realization_probe_args` symbolic downgrade, and this
-            // content guard) is unchanged.
             //
             // `proj_diags` are extended above and deliberately left alone: this
             // guard suppresses a WRITE, never a diagnostic the projection
@@ -10384,46 +10365,26 @@ impl Engine {
                 continue;
             }
 
-            // Record the dispatch, in one statement, on two different
-            // lifetimes — which is the whole of #7332's fix.
+            // Record the dispatch on both lifetimes: the node's graph-lifetime
+            // dependency record, and this build's `redispatched` set (see
+            // `RedispatchPassState::redispatched` for why they are separate
+            // and why the record is a superset). Both sit AFTER the content
+            // guard above, so a contentless node stays a candidate for trailing
+            // templates. Both sit BEFORE `run_compute_dispatch` below, so a
+            // dispatch that fails in its `Err(_)` arm is not retried by a
+            // trailing template.
             //
-            // `node.realization_inputs` is the GRAPH-lifetime DEPENDENCY RECORD:
-            // the Realization→Compute reverse edge and a term in the compute
-            // cache key. `pass_state.redispatched` is the BUILD-lifetime
-            // "already done here" flag Phase 1 gates on.
+            // The record is UNIONED, never replaced. The incoming set comes
+            // from `realization_probe_args`, which drops any arg whose handle
+            // is symbolic, so a replacing write would narrow a mixed-arg node's
+            // record from [A, B] to [A] on a build where B failed to realize.
+            // `deps.rs` builds reverse edge #10 from this field, so a later
+            // `edit_param` moving B would then under-evict this node.
             //
-            // Keeping the two together is what makes within-build behaviour
-            // bit-identical to before the split — including the `Err(_)` arm of
-            // `run_compute_dispatch` below, where the already-recorded state is
-            // what stops a trailing template retrying a dispatch that failed.
-            // The insert deliberately sits AFTER the content guard above: a
-            // contentless node must stay a candidate for trailing templates,
-            // which is #5951's whole point.
-            //
-            // The dependency record is UNIONED, never replaced (#7332
-            // amendment). While Phase 1 gated on `realization_inputs` this was
-            // a once-per-graph FIRST write — the gate guaranteed the pass only
-            // ever reached a node whose record was empty. Build scoping makes
-            // it a repeated write across builds, and the incoming set comes
-            // from `realization_probe_args`, which DROPS any arg whose handle
-            // is symbolic. A replacing write would therefore NARROW a MIXED-arg
-            // node's record from [A, B] to [A] on a warm tick where B failed to
-            // realize; `deps.rs` builds the Realization→Compute reverse edge by
-            // iterating this field, so a later `edit_param` moving B would
-            // compute a realization cone that no longer reaches this node. That
-            // is UNDER-eviction — the direction `compute_changed_realizations`'
-            // own doc calls unsafe — and the same hazard
-            // `invalidate_realization_dirty_cone` explicitly refuses to create
-            // by clearing the field.
-            //
-            // Union cannot over-grow past the structural truth: an `@optimized`
-            // node's consumed realizations are fixed by its arg list, and a
-            // structural change routes through `eval()`, which installs a fresh
-            // graph whose `compute_nodes` map is empty. Nor can it introduce an
-            // id `compute_cache_key` would panic on — every id it PRESERVES was
-            // already written into this same field against this same graph. The
-            // `contains` check keeps the list duplicate-free, which that
-            // function's `debug_assert!` requires.
+            // The union keeps no id the field did not already hold, so it adds
+            // no `compute_cache_key` lookup a write-once record would not have
+            // made. The `contains` check keeps the list duplicate-free, which
+            // that function's `debug_assert!` requires.
             if let Some(state) = self.eval_state.as_mut()
                 && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
             {
@@ -10489,19 +10450,11 @@ impl Engine {
     /// `redispatched`: skipped in this build and never rescued in this build.
     /// One `Severity::Warning` per node, never per template call.
     ///
-    /// Both terms are BUILD-scoped, which is the whole of the predicate's
-    /// correctness (#7332 amendment). This used to ask the node's own
-    /// `realization_inputs` whether it was still empty — the same
-    /// graph-lifetime-record-read-as-build-lifetime-flag conflation the Phase-1
-    /// candidate gate carried, and sound for exactly as long as only a cold
-    /// `build()` could reach the pass (its `compute_nodes` map starts empty, so
-    /// empty really did mean "this build never wrote it"). On the warm
-    /// `build_snapshot` surface #7332 opened, `realization_inputs` may be
-    /// non-empty from an EARLIER build: a node that tessellated in build 1 and
-    /// projects to nothing in build 2 is genuinely stranded for the whole of
-    /// build 2, and the old filter dropped it — silently, which is #5951's root
-    /// complaint reproduced on the newly reachable surface. Pinned by
-    /// `a_warm_rebuild_that_loses_tessellation_still_reports_the_strand`.
+    /// Both terms are build-scoped. The node's `realization_inputs` must not
+    /// stand in for either (see [`RedispatchPassState::redispatched`]): a node
+    /// that tessellated in an earlier build and projects nothing in this one
+    /// still carries the earlier record, yet is stranded for this whole build.
+    /// Pinned by `a_warm_rebuild_that_loses_tessellation_still_reports_the_strand`.
     ///
     /// Why this exists: the guard's stated intent is that the strand becomes
     /// *retried* rather than permanent. For a body that can never project

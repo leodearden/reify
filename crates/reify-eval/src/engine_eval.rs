@@ -339,14 +339,11 @@ pub(crate) fn build_compute_value_inputs(
 /// (e.g. `as_printed_material(body, ..)`) sees the symbolic handle at its
 /// FIRST dispatch, and `build_compute_realization_inputs` (which matches
 /// `Value::GeometryHandle{..}` regardless of `kernel_handle`) records a
-/// NON-EMPTY `realization_inputs` from a placeholder with no real content —
-/// which then defeats `Engine::redispatch_geometry_consuming_compute_nodes`'s
-/// (task #4726) candidate gate, stranding the node on its degraded
-/// (`lambda=Undef`) first-dispatch result. Since #7332 that gate reads the
-/// build-scoped `RedispatchPassState::redispatched` rather than the node's
-/// `realization_inputs`, so the strand is bounded by the build rather than by
-/// the engine's lifetime — shorter, but still the whole build, and still
-/// silent. This downgrade is what stops it arising at all.
+/// NON-EMPTY `realization_inputs` from a placeholder with no real content: a
+/// dependency edge and a cache-key term for a realization that has delivered
+/// nothing. That record is not the redispatch gate (see
+/// `RedispatchPassState::redispatched` in `engine_build.rs`), so it does not
+/// strand the node, but it is still a record of something the node never read.
 ///
 /// Call site 3 is pinned by
 /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs` in
@@ -356,19 +353,16 @@ pub(crate) fn build_compute_value_inputs(
 /// `realization_ref` out of `realization_inputs`. Reverting this downgrade at
 /// that call site reddens exactly that test.
 ///
-/// Task #5951 measured exactly that stranding through call site 3. The
-/// redispatch runs once per template (`engine_build.rs`, inside `build()`'s
-/// `for (t_idx, template)` loop) and scans ALL compute nodes on every call, so
-/// any template declared AHEAD of a geometry-consuming one triggers a pass
-/// while that consumer's body is still symbolic. Passing raw `arg_values` there
-/// wrote a content-free `realization_inputs`, tripped the candidate gate, and
-/// the later — correct, post-hydration — pass for the consumer's own template
-/// was skipped. That gate was `realization_inputs.is_empty()` when #5951
-/// measured it, over a field the graph carries across edits, so "skipped" meant
-/// forever; #7332 build-scoped the signal, so it now means "for the rest of
-/// this build". The silence is unchanged: the `ReprKind::BRep`
-/// arm of `project_realization_read_handle` is identity-only by design (PRD
-/// §4 D1) and emits no diagnostic.
+/// Call site 3 is where a content-free write DOES strand the node (task #5951
+/// measured it). The redispatch runs once per template (`engine_build.rs`,
+/// inside `build()`'s `for (t_idx, template)` loop) and scans ALL compute
+/// nodes on every call, so any template declared AHEAD of a geometry-consuming
+/// one triggers a pass while that consumer's body is still symbolic. Passing
+/// raw `arg_values` there would write a content-free `realization_inputs` and
+/// mark the node redispatched, so the later — correct, post-hydration — pass
+/// for the consumer's own template would be skipped for the rest of the build.
+/// Silently: the `ReprKind::BRep` arm of `project_realization_read_handle` is
+/// identity-only by design (PRD §4 D1) and emits no diagnostic.
 ///
 /// Only the probe fed to `build_compute_realization_inputs` is downgraded;
 /// the raw `arg_values` passed to `run_compute_dispatch`/`persistent_cache_key`

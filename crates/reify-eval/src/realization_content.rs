@@ -80,11 +80,11 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 /// `RealizationNodeData::input_cone_hash` precisely because `content_hash`
 /// cannot see a value-driven change.
 ///
-/// KNOWN GAP: nothing evicts on a `param_overrides` change that does not go
-/// through an edit surface (`set_param_and_invalidate`, or `edit_param`'s
-/// solver branch writing resolved auto-params) followed by `build()`, which
-/// keeps this store and re-projects under the new overrides with an unchanged
-/// `content_hash`.
+/// KNOWN GAP, owned by #5953: nothing evicts on a `param_overrides` change
+/// that does not go through an edit surface (`set_param_and_invalidate`, or
+/// `edit_param`'s solver branch writing resolved auto-params) followed by
+/// `build()`, which keeps this store and re-projects under the new overrides
+/// with an unchanged `content_hash`.
 #[allow(dead_code)] // consumed by project_realization_read_handle / step-4
 pub(crate) struct RealizationProjectionStore {
     memo: HashMap<RealizationNodeId, HashMap<ContentHash, RealizedContent>>,

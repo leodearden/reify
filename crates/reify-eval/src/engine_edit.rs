@@ -2874,14 +2874,12 @@ impl Engine {
         //
         // `edit_param` does not rebuild the graph, so the persisting graph
         // is BOTH the prior and the new side of the comparison — the
-        // helper's `edit_param` contract. That the persisting graph also
-        // carries each ComputeNode's `realization_inputs` forward is
-        // DELIBERATE and is not a staleness bug to fix here: the field is a
-        // dependency record (`deps.rs` builds reverse edge #10 from it, and
-        // `compute_cache_key` folds it into the key), and since #7332 it is
-        // not what gates redispatch — that signal is build-scoped in
-        // `RedispatchPassState::redispatched`. Clearing it over the dirty cone
-        // would drop edge #10 and under-evict.
+        // helper's `edit_param` contract. The persisting graph also carries
+        // each ComputeNode's `realization_inputs` forward, deliberately: it
+        // is a dependency record, not a redispatch flag (see
+        // `RedispatchPassState::redispatched` in `engine_build.rs`), and
+        // clearing it over the dirty cone would drop edge #10 and
+        // under-evict.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
