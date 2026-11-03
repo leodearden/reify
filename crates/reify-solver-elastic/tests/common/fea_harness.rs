@@ -1,18 +1,18 @@
-//! Shared P1 structured-box FEA harness for the `reify-solver-elastic` test
-//! binaries `analytical_validation`, `aposteriori_validation` and
-//! `dwr_boundary_tests`: the Kuhn-split box mesh generator, the cantilever
-//! boundary-condition / load builders, and the P1 assemble-and-CG-solve
-//! pipeline.
+//! The FEA harness shared by this crate's FEA integration-test binaries: a
+//! structured box mesh generator and its Kuhn hex-to-tet split, Dirichlet-BC
+//! and point-load builders, P1 stiffness assembly and the assemble-and-CG-solve
+//! pipeline built on it, and the element-level post-processing
+//! (`gather_u_p1`, `von_mises_of_tensor`) that consumes a solve's output.
 //!
-//! Not a test binary: it is pulled into each consumer with
-//! `#[path = "common/p1_box.rs"] mod p1_box;` (and is deliberately NOT
-//! declared from `common/mod.rs`, so the tensegrity binaries that import
-//! `common` do not compile it). Each consumer uses a subset of the helpers,
+//! Not a test binary. A consumer includes it with
+//! `#[path = "common/fea_harness.rs"] mod fea_harness;` rather than through
+//! `common/mod.rs`, so the binaries that import `common` for its tensegrity
+//! fixtures do not compile it. Each consumer uses a subset of the helpers,
 //! hence the `dead_code` allowance.
 
 #![allow(dead_code)]
 
-use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
+use faer::sparse::SparseRowMat;
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, CgResult, CgSolverOptions, DirichletBc, ElementOrder,
     ElementStiffness, IsotropicElastic, SolverMode, apply_dirichlet_row_elimination,
@@ -194,24 +194,13 @@ pub fn dedup_bcs(bcs: &mut Vec<DirichletBc>) {
     bcs.dedup_by_key(|bc| bc.dof);
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system.
-///
-/// Uses `SolverMode::Deterministic` for bit-stable, CI-safe results.
-///
-/// # Returns
-///
-/// Displacement vector `u` of length `3 * nodes.len()`:
-/// `u[3*n + α]` is displacement of node `n` in axis `α ∈ {0=x, 1=y, 2=z}`.
-pub fn solve_p1_pipeline(
+/// Assemble the global stiffness matrix of a P1 tetrahedral mesh, in
+/// `AssemblyMode::Deterministic` for bit-stable, CI-safe results.
+pub fn assemble_p1_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 4]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -231,9 +220,27 @@ pub fn solve_p1_pipeline(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
+/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system.
+///
+/// Uses `SolverMode::Deterministic` for bit-stable, CI-safe results.
+///
+/// # Returns
+///
+/// Displacement vector `u` of length `3 * nodes.len()`:
+/// `u[3*n + α]` is displacement of node `n` in axis `α ∈ {0=x, 1=y, 2=z}`.
+pub fn solve_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let mut k = assemble_p1_stiffness(nodes, conns, mat);
+
+    let mut f = vec![0.0_f64; 3 * nodes.len()];
     for &(dof, val) in point_loads {
         f[dof] += val;
     }
@@ -270,99 +277,4 @@ pub fn von_mises_of_tensor(s: &[[f64; 3]; 3]) -> f64 {
     let v = 0.5 * ((s11 - s22).powi(2) + (s22 - s33).powi(2) + (s33 - s11).powi(2))
         + 3.0 * (s12.powi(2) + s23.powi(2) + s13.powi(2));
     v.sqrt()
-}
-
-/// Pack `(nodes, conns)` (the procedural [`box_p1_mesh`] output format) into
-/// a [`VolumeMesh`] (`f32` flat vertices + `u32` flat tet indices, `P1`
-/// order).
-///
-/// Bridges the solve pipeline's native `(nodes, conns)` shape to the
-/// [`VolumeMesh`] shape `FeaAdaptiveProblem` stores internally — needed by
-/// both `compute_zz_indicator` (reads `mesh.vertices.len()`) and `refine`
-/// (calls `refine_marked_elements`, starting step-6).
-pub fn volume_mesh_from_nodes_conns(nodes: &[[f64; 3]], conns: &[[usize; 4]]) -> VolumeMesh {
-    let mut vertices = Vec::with_capacity(nodes.len() * 3);
-    for n in nodes {
-        vertices.push(n[0] as f32);
-        vertices.push(n[1] as f32);
-        vertices.push(n[2] as f32);
-    }
-    let mut tet_indices = Vec::with_capacity(conns.len() * 4);
-    for c in conns {
-        tet_indices.extend(c.iter().map(|&idx| idx as u32));
-    }
-    VolumeMesh {
-        vertices,
-        connectivity: VolumeConnectivity::Tet {
-            indices: tet_indices,
-            order: ElementOrderTag::P1,
-        },
-        normals: None,
-        boundary: None,
-    }
-}
-
-/// Unpack a `P1` [`VolumeMesh`] into `(nodes, conns)` — the inverse of
-/// [`volume_mesh_from_nodes_conns`]. `nodes` widen the mesh's `f32`
-/// coordinates to `f64` (the solve pipeline's native precision).
-///
-/// Compacts away vertices NOT referenced by any tet element before
-/// returning (and remaps `conns` to the compacted indices). A real Gmsh
-/// remesh can emit boundary vertices that survive `classify_surfaces` but
-/// are not incident to any volume tet — the same orphaned-vertex artifact
-/// `reify_kernel_gmsh::BackgroundSizeField::from_tet_mesh` already tolerates
-/// (there, by reading sizes only at vertices a tet references; here, by
-/// dropping the vertex outright). Left in `nodes`, an orphaned vertex gets no
-/// stiffness-matrix contribution at all, silently inflating `n_dofs` and — if
-/// any Dirichlet BC or point load ever targets it — panicking downstream in
-/// `apply_dirichlet_row_elimination` ("no explicit diagonal entry"). The
-/// procedural [`box_p1_mesh`] fixtures have no orphans (every vertex is a
-/// hex-grid corner referenced by 6 tets), so this compaction is a no-op for
-/// them — it only does real work on Gmsh-produced meshes (starting step-5).
-///
-/// # Panics
-///
-/// If `volume_mesh.element_order != ElementOrderTag::P1` — this suite (and
-/// `compute_zz_indicator`) supports P1 tets only.
-pub fn nodes_conns_from_volume_mesh(volume_mesh: &VolumeMesh) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
-    assert_eq!(
-        volume_mesh.element_order(),
-        Some(ElementOrderTag::P1),
-        "FeaAdaptiveProblem supports P1 tets only",
-    );
-    let n_verts = volume_mesh.vertices.len() / 3;
-    let raw_conns: Vec<[usize; 4]> = volume_mesh
-        .tet_indices()
-        .expect("checked P1 above")
-        .chunks_exact(4)
-        .map(|c| [c[0] as usize, c[1] as usize, c[2] as usize, c[3] as usize])
-        .collect();
-
-    let mut referenced = vec![false; n_verts];
-    for conn in &raw_conns {
-        for &v in conn {
-            referenced[v] = true;
-        }
-    }
-
-    // old index -> compacted index; only populated for referenced vertices.
-    let mut remap = vec![usize::MAX; n_verts];
-    let mut nodes = Vec::with_capacity(n_verts);
-    for (old, &is_ref) in referenced.iter().enumerate() {
-        if is_ref {
-            remap[old] = nodes.len();
-            nodes.push([
-                volume_mesh.vertices[old * 3] as f64,
-                volume_mesh.vertices[old * 3 + 1] as f64,
-                volume_mesh.vertices[old * 3 + 2] as f64,
-            ]);
-        }
-    }
-
-    let conns: Vec<[usize; 4]> = raw_conns
-        .iter()
-        .map(|c| [remap[c[0]], remap[c[1]], remap[c[2]], remap[c[3]]])
-        .collect();
-
-    (nodes, conns)
 }

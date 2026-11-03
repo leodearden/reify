@@ -17,12 +17,13 @@
 //!
 //! # Shared FEA harness
 //!
-//! The box-mesh / BC / load helpers come from the shared `common/p1_box.rs`
-//! module, the same one `analytical_validation.rs` and
-//! `aposteriori_validation.rs` use, so the mesh and BC shape is identical to
-//! the rest of the FEA validation suite.
+//! The box-mesh / BC / load helpers and the P1 stiffness assembly come from
+//! the shared `common/fea_harness.rs` module, the same one
+//! `analytical_validation.rs` and `aposteriori_validation.rs` use, so the
+//! mesh, BC and assembly shape is identical to the rest of the FEA validation
+//! suite.
 //!
-//! One deliberate difference from `p1_box::solve_p1_pipeline`:
+//! One deliberate difference from `fea_harness::solve_p1_pipeline`:
 //! [`assemble_eliminate_and_solve`] RETAINS the assembled `K`, the eliminated
 //! RHS and the deduplicated BC list, all three of which `solve_p1_pipeline`
 //! drops. The dual solve (§5.3) reuses exactly those three, so retaining them
@@ -32,11 +33,10 @@
 use faer::sparse::SparseRowMat;
 
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, CgResult, CgSolverOptions, DirichletBc, ElementOrder,
-    ElementStiffness, IsotropicElastic, LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef,
-    QuantityOfInterest, SolverMode, StressElement, ZzIndicator, apply_dirichlet_row_elimination,
-    assemble_global_stiffness, compute_dual_weighted_indicator, compute_zz_indicator,
-    element_stiffness, element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
+    CgResult, CgSolverOptions, DirichletBc, IsotropicElastic, LocalDisplacementQoi,
+    LocalNormalStressQoi, P1TetMeshRef, QuantityOfInterest, SolverMode, StressElement, ZzIndicator,
+    apply_dirichlet_row_elimination, compute_dual_weighted_indicator, compute_zz_indicator,
+    element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
 };
 
 use reify_solver_elastic::{
@@ -45,11 +45,11 @@ use reify_solver_elastic::{
 };
 use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
-#[path = "common/p1_box.rs"]
-mod p1_box;
-use p1_box::{
-    box_p1_mesh, dedup_bcs, dirichlet_fix_face, dirichlet_prescribe_boundary_field,
-    distributed_tip_load, end_face_nodes, gather_u_p1,
+#[path = "common/fea_harness.rs"]
+mod fea_harness;
+use fea_harness::{
+    assemble_p1_stiffness, box_p1_mesh, dedup_bcs, dirichlet_fix_face,
+    dirichlet_prescribe_boundary_field, distributed_tip_load, end_face_nodes, gather_u_p1,
 };
 
 // ─── dual-solve fixtures ────────────────────────────────────────────────────
@@ -71,9 +71,9 @@ fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec<f64
 /// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, RETAINING
 /// everything the dual solve needs.
 ///
-/// Same pipeline shape as `p1_box::solve_p1_pipeline`
-/// (`element_stiffness` → `assemble_global_stiffness` →
-/// `apply_dirichlet_row_elimination` → `solve_cg`), with one difference: it
+/// Same pipeline shape as `fea_harness::solve_p1_pipeline`
+/// ([`assemble_p1_stiffness`] → `apply_dirichlet_row_elimination` →
+/// `solve_cg`), with one difference: it
 /// returns `K`, the ELIMINATED RHS and the deduplicated BC list alongside
 /// the `CgResult`, all three of which `solve_p1_pipeline` drops.
 ///
@@ -115,26 +115,7 @@ fn assemble_eliminate_and_solve(
         3 * n_nodes,
     );
 
-    let ke_list: Vec<ElementStiffness> = conns
-        .iter()
-        .map(|conn| {
-            let elem_nodes: Vec<[f64; 3]> = conn.iter().map(|&i| nodes[i]).collect();
-            element_stiffness(ElementOrder::P1, &elem_nodes, mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = conns
-        .iter()
-        .zip(ke_list.iter())
-        .enumerate()
-        .map(|(i, (conn, ke))| AssemblyElement {
-            id: i,
-            connectivity: conn.as_slice(),
-            k_e: ke,
-        })
-        .collect();
-
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    let mut k = assemble_p1_stiffness(nodes, conns, mat);
 
     let mut f = raw_f.to_vec();
     let mut bcs = bcs;

@@ -110,9 +110,9 @@ use reify_solver_elastic::{
     solve_cg, CgSolverOptions, SolverMode, CgResult,
 };
 
-#[path = "common/p1_box.rs"]
-mod p1_box;
-use p1_box::{
+#[path = "common/fea_harness.rs"]
+mod fea_harness;
+use fea_harness::{
     box_p1_mesh, dedup_bcs, dirichlet_fix_face, dirichlet_prescribe_boundary_field,
     distributed_tip_load, end_face_nodes, gather_u_p1, kuhn_split_hex_to_six_tets,
     solve_p1_pipeline, von_mises_of_tensor,
