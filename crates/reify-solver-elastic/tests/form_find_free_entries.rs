@@ -15,29 +15,13 @@ use reify_solver_elastic::{
 mod common;
 
 use common::{prism_surfaces, triplex_group_ids, triplex_topology};
+use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
-/// The symmetric triplex prism consistent with [`closed_form_prism_q`]
-/// (derived from the per-node FD equilibrium): equal top/bottom circumradius
-/// R = 1, unit height, twist α = 30°. Node order matches `triplex_topology`:
-/// 0,1,2 top (z = 1) at azimuth 120°·i; 3,4,5 bottom (z = 0) at 120°·i + 30°.
-/// Not `common::canonical_prism`, which is a different realisation (z = ±1).
-fn twisted_prism() -> Vec<[f64; 3]> {
-    let deg = std::f64::consts::PI / 180.0;
-    let top = |i: usize| {
-        let a = 120.0 * (i as f64) * deg;
-        [a.cos(), a.sin(), 1.0]
-    };
-    let bot = |i: usize| {
-        let a = (120.0 * (i as f64) + 30.0) * deg;
-        [a.cos(), a.sin(), 0.0]
-    };
-    vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
-}
-
-/// A mildly perturbed (≈1e-3 per coordinate, deterministic) [`twisted_prism`]
-/// guess: the prism plus fixed small offsets. The form-finding convention
-/// refines a guess, so recovery should gauge-fix to it; fixed offsets (no RNG)
-/// keep the dependent tests bit-stable.
+/// A mildly perturbed (≈1e-3 per coordinate, deterministic) guess: the shared
+/// canonical triplex (circumradius 1, unit height, 30° twist, node order
+/// matching `triplex_topology`) plus fixed small offsets. The form-finding
+/// convention refines a guess, so recovery should gauge-fix to it; fixed
+/// offsets (no RNG) keep the dependent tests bit-stable.
 fn perturbed_twisted_prism() -> Vec<[f64; 3]> {
     const PERTURB: [[f64; 3]; 6] = [
         [0.0009, -0.0011, 0.0007],
@@ -47,16 +31,16 @@ fn perturbed_twisted_prism() -> Vec<[f64; 3]> {
         [0.0010, -0.0008, -0.0013],
         [-0.0011, 0.0013, 0.0006],
     ];
-    twisted_prism()
+    triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z)
         .iter()
         .zip(PERTURB.iter())
         .map(|(p, d)| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
         .collect()
 }
 
-/// Closed-form force densities for the symmetric prism, struts-then-cables
-/// order: struts −√3, the six horizontals +1, verticals +√3. These make `D`
-/// rank-deficient by exactly 4 (D eigenvalues 0,0,0,0,6,6).
+/// Closed-form force densities for the shared canonical triplex,
+/// struts-then-cables order: struts −√3, the six horizontals +1, verticals +√3.
+/// These make `D` rank-deficient by exactly 4 (D eigenvalues 0,0,0,0,6,6).
 fn closed_form_prism_q() -> Vec<f64> {
     let s = 3.0_f64.sqrt();
     vec![
@@ -209,7 +193,10 @@ fn explicit_coplanar_guess_is_singular_recovery() {
     // guard must reject it as SingularRecovery rather than return a flat
     // "3-D" form. (Exercises the det branch; a regression that inverts the
     // condition or mis-scales SINGULAR_REL_TOL would let it through.)
-    let coplanar_guess: Vec<[f64; 3]> = twisted_prism().iter().map(|p| [p[0], p[1], 0.0]).collect();
+    let coplanar_guess: Vec<[f64; 3]> = triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z)
+        .iter()
+        .map(|p| [p[0], p[1], 0.0])
+        .collect();
 
     assert_eq!(
         form_find_free(
