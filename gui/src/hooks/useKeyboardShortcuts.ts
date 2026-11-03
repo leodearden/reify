@@ -15,6 +15,7 @@ export interface KeyboardShortcutCallbacks {
   onCommandPalette?: () => void;
   onSymbolJump?: () => void;
   onToggleDiagnostics?: () => void;
+  onToggleEdges?: () => void;
   /**
    * Called when the user presses a bare digit key 1–9 (no modifiers, not in a
    * text input context). The `index` argument is 0-based: key "1" → 0, "9" → 8.
@@ -48,6 +49,7 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
   commandPalette:    'onCommandPalette',
   symbolJump:        'onSymbolJump',
   toggleDiagnostics: 'onToggleDiagnostics',
+  toggleEdges:       'onToggleEdges',
 };
 
 /**
