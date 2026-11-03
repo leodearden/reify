@@ -15,24 +15,21 @@ use reify_shell_extract::{
     MedialOptions, MinWallThickness, compute_medial_mask, min_wall_thickness,
 };
 
-/// Assert the medial mask of `sdf` is non-empty and lies wholly on the
-/// x-index plane `mid_plane_i`.
+/// Assert the medial mask of `sdf` is exactly the whole x-index plane
+/// `mid_plane_i`: every `[mid_plane_i, j, k]` on the grid, edges and corners
+/// included, and nothing else.
 fn assert_mask_is_the_mid_plane(sdf: &SampledField, mid_plane_i: i32) {
     let mask = compute_medial_mask(sdf, &MedialOptions::default()).expect("Ok mask");
-    assert!(
-        !mask.voxels.is_empty(),
-        "{}: medial mask is empty",
-        sdf.name
-    );
-    let off_plane: Vec<[i32; 3]> = mask
-        .voxels
-        .iter()
-        .copied()
-        .filter(|v| v[0] != mid_plane_i)
+    let mut voxels = mask.voxels;
+    voxels.sort_unstable();
+    let [ny, nz] = [1, 2]
+        .map(|axis| i32::try_from(sdf.axis_grids[axis].len()).expect("axis length fits in i32"));
+    let mid_plane: Vec<[i32; 3]> = (0..ny)
+        .flat_map(|j| (0..nz).map(move |k| [mid_plane_i, j, k]))
         .collect();
-    assert!(
-        off_plane.is_empty(),
-        "{}: medial voxels off the i = {mid_plane_i} mid-plane: {off_plane:?}",
+    assert_eq!(
+        voxels, mid_plane,
+        "{}: medial mask is not the whole i = {mid_plane_i} mid-plane",
         sdf.name
     );
 }
@@ -57,7 +54,9 @@ fn assert_wall_measured(sdf: &SampledField, expected: f64) {
 /// degenerated to (0, ~0, ~0), every candidate was rejected, and the mask
 /// came back EMPTY (measured: 0 voxels, `NoMeasurement`). The field fully
 /// determines the normal there; a one-sided difference against the hit
-/// sample recovers it exactly.
+/// sample recovers it exactly. The mask must be the whole mid-plane: at its
+/// edge and corner voxels the hit point also sits on a y and/or z face, so
+/// the stencil goes one-sided along two or three axes at once.
 #[test]
 fn a_wall_whose_faces_lie_within_half_a_voxel_of_the_grid_bounds_is_still_measured() {
     let sdf = regular3d_field("near-bounds-wall", 1.0, 5, -2.0, |x, _y, _z| x.abs() - 1.8);
