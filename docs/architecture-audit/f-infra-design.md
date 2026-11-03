@@ -197,7 +197,7 @@ F does **not** rewrite `/prd`-written metadata; it only reads.
 
 `/review`'s Phase 2 ("Architectural Coherence") historically does its own stub-pattern scanning ad-hoc. After F lands, `/review` Phase 2 invokes `/audit --pattern P1,P2,P5` (whole task corpus) and folds findings into Phase 2's report. `/review` Phase 3 triage continues to do task creation; F's medium-severity finder also creates tasks, so dedupe via the index in §7 prevents double-filing.
 
-(2026-11-01) `review/briefing.yaml`'s `audit.window_days` (default 14) is still live: dark-factory `/review` Phase 2 Step 1 derives a full review's `--since` from it. Since #8807 the `/audit` skill drops that `--since` before invoking the CLI, so the knob is inert. Retiring both the knob and the `--since` it feeds is owned by dark-factory follow-up tkt_0RWFJ0Z5EKQ18KH7E9G392WP3Z.
+(2026-11-01) `review/briefing.yaml`'s `audit.window_days` (default 14) is still live: dark-factory `/review` Phase 2 Step 1 derives a full review's `--since` from it. Since #8807 the `/audit` skill drops that `--since` before invoking the CLI, so the knob is inert. Dark-factory follow-up tkt_0RWFJ0Z5EKQ18KH7E9G392WP3Z owns ending that derivation and retiring the knob from dark-factory's briefing schema; it edits no reify file, so deleting the key from `review/briefing.yaml` afterwards is owned by reify follow-up #9767.
 
 ### 8.3 Orchestrator (downstream)
 
