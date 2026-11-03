@@ -307,11 +307,13 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         );
 
         // (2b) At n=4 the three counts are pinned to the figures recorded
-        // under #6638 by the harness-local extractor this one replaced. The
-        // two emit the same oriented triangle set in a different order, and
-        // V, E and F are properties of the set, so this pin is also the
-        // standing evidence that the collapse onto the library extractor
-        // preserved the surface.
+        // under #6638 by the harness-local extractor this one replaced. V, E
+        // and F are properties of the triangle set, so the pin is consistent
+        // with the collapse onto the library extractor preserving the
+        // surface — matching counts are necessary for that, not sufficient.
+        // The set-equality evidence is the position-space comparison recorded
+        // in the "After the extractor collapse" section of
+        // docs/notes/morph-vs-remesh-scale-characterisation.md.
         if n == 4 {
             assert_eq!(
                 (verts, edges, tris),
@@ -348,9 +350,13 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         // exactly once: that is orientABILITY, and a globally INVERTED closed
         // surface satisfies it just as happily as an outward one. Nothing
         // downstream catches the difference either — gmsh meshes the inverted
-        // surface without complaint — so the winding `boundary_surface_mesh`
-        // emits could silently flip and every other assertion in this file
-        // would stay green.
+        // surface without complaint — so every other assertion in this file
+        // would stay green on an inverted surface.
+        //
+        // This is the harness-scale check that the surface the bracket yields
+        // is outward. The extractor's own winding is pinned by the
+        // `boundary_surface_mesh` tests in reify-solver-elastic's
+        // volume_refine.rs.
         //
         // The divergence theorem pins the sign in O(tris):
         // `enclosed_volume_of_surface` sums the signed volume of the
@@ -366,9 +372,8 @@ fn bracket_boundary_surface_is_closed_outward_wound_and_fully_referenced() {
         assert!(
             signed_volume > 0.0,
             "boundary_surface_mesh(n={n}) emitted an INWARD-wound surface (signed \
-             volume {signed_volume}); `Mesh::validate` cannot see this, so this \
-             assertion is the only thing standing between a sign flip in \
-             `boundary_surface_mesh`'s winding and a silently inverted gmsh input"
+             volume {signed_volume}); `Mesh::validate` cannot see this, and gmsh \
+             would mesh the inverted surface without complaint"
         );
 
         // ...and loosely, the right magnitude. The bracket's analytic volume is

@@ -1094,8 +1094,10 @@ mod tests {
     /// Checked with the divergence theorem rather than the per-face centroid
     /// test the single-tet pins use. The enclosed volume is a global property
     /// of the emitted closed surface, it stays valid for non-convex bodies, and
-    /// its exact value pins the winding sign and the completeness of the face
-    /// set at once.
+    /// its exact value pins the winding sign and catches a dropped face or a
+    /// same-winding duplicate. A face emitted twice in OPPOSITE windings
+    /// cancels exactly and is invisible here; that is left to the face-count
+    /// pin in `boundary_surface_mesh_drops_shared_faces_and_compacts_interior_vertices`.
     #[test]
     fn boundary_surface_mesh_of_a_multi_element_mesh_encloses_its_volume_outward() {
         let vm = cube_fan_with_interior_node();
@@ -1117,7 +1119,7 @@ mod tests {
             "the cube fan's free faces must enclose the unit cube wound outward: \
              +1.0 is outward, -1.0 is globally inverted (invisible to \
              `Mesh::validate`, which checks orientability only), and any other \
-             magnitude means a dropped or duplicated face",
+             magnitude means a dropped face or a same-winding duplicate",
         );
     }
 
