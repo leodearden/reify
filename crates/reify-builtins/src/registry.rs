@@ -314,6 +314,7 @@ crate::macros::registry! {
 /// trailing-radius 3|4 arity. The per-row and group comments say why each was
 /// left unresolved; every other row cites a Ruling, a Physics derivation or a
 /// design doc.
+// G-allow: intentional registry-table accessor — the I-REG-7 Artifact-basis ledger (PRD §7.3(7)), consumed by this module's artifact_basis_ledger_matches_the_reviewed_set lint test and by review, never by production code
 pub fn artifact_basis_rows() -> Vec<&'static str> {
     rows()
         .iter()
@@ -324,6 +325,7 @@ pub fn artifact_basis_rows() -> Vec<&'static str> {
 
 /// Every row whose binding is `kind`, in declaration order — the one
 /// derivation of a binding-kind group's membership.
+// G-allow: intentional registry-table accessor, test-consumed by design — the one binding-group membership filter shared by cross-crate registry parity tests (reify-eval registry_parity_tests::eval_builtin_rows, reify-stdlib registry_dispatch_seed_parity)
 pub fn rows_bound_by(kind: BindingKind) -> impl Iterator<Item = &'static BuiltinRow<BuiltinId>> {
     rows().iter().filter(move |row| row.binding == kind)
 }
