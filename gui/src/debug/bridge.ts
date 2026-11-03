@@ -719,7 +719,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     // --- Read commands (frontend-mediated) ---
 
     store_state: () => {
-      const { engine, editor, selection, claude } = ctx.stores;
+      const { engine, editor, selection, claude, viewportDisplay } = ctx.stores;
 
       // Build the viewports map from ctx.viewports (the DebugViewport map populated by
       // each <Viewport> on mount, keyed by viewportId — same map pickViewport reads).
@@ -771,6 +771,8 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
           currentMessageId: claude.state.currentMessageId,
         },
         viewports,
+        // Singular: the global display state (PRD B6); plural above: per-viewport mesh counts.
+        viewport: { edges: viewportDisplay.state.edges },
       };
     },
 
@@ -1658,17 +1660,25 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         if (equals === undefined) {
           return { error: 'predicate.equals is required for store kind' };
         }
+        // The snapshot is the single source of the addressable roots, re-read on
+        // each poll tick. viewState has no .state, so it is not addressable.
+        const storeSnapshot = (): Record<string, unknown> => ({
+          engine: ctx.stores.engine.state,
+          editor: ctx.stores.editor.state,
+          selection: ctx.stores.selection.state,
+          claude: ctx.stores.claude.state,
+          layout: ctx.stores.layout.state,
+          viewport: ctx.stores.viewportDisplay.state,
+        });
         // Guard against unknown roots so a typo'd path surfaces a clear error
-        // instead of silently timing out. layout.state is included; viewState has no .state.
-        const knownStoreRoots = new Set(['engine', 'editor', 'selection', 'claude', 'layout']);
+        // instead of silently timing out.
+        const knownStoreRoots = Object.keys(storeSnapshot());
         const rootKey = path.split('.')[0];
-        if (!knownStoreRoots.has(rootKey)) {
+        if (!knownStoreRoots.includes(rootKey)) {
           return {
-            error: `unknown store root '${rootKey}'; addressable roots: engine, editor, selection, claude, layout`,
+            error: `unknown store root '${rootKey}'; addressable roots: ${knownStoreRoots.join(', ')}`,
           };
         }
-        // Build a snapshot object and walk a dotted path against it.
-        // Snapshot is re-evaluated each poll tick via closure.
         const getByPath = (root: Record<string, unknown>, dotted: string): unknown => {
           return dotted.split('.').reduce<unknown>((acc, key) => {
             if (acc !== null && typeof acc === 'object') {
@@ -1677,16 +1687,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
             return undefined;
           }, root);
         };
-        return pollUntil(() => {
-          const snapshot: Record<string, unknown> = {
-            engine: ctx.stores.engine.state,
-            editor: ctx.stores.editor.state,
-            selection: ctx.stores.selection.state,
-            claude: ctx.stores.claude.state,
-            layout: ctx.stores.layout.state,
-          };
-          return Object.is(getByPath(snapshot, path), equals);
-        }, timeoutMs);
+        return pollUntil(() => Object.is(getByPath(storeSnapshot(), path), equals), timeoutMs);
       }
 
       return { error: `unknown predicate kind: ${String(kind)}` };
@@ -2072,7 +2073,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     reset_app_state: () => {
-      const { engine, editor, selection, viewState, layout } = ctx.stores;
+      const { engine, editor, selection, viewState, layout, viewportDisplay } = ctx.stores;
 
       // Snapshot open file paths BEFORE closing (closeFile mutates openFiles).
       const paths = editor.state.openFiles.map((f) => f.path);
@@ -2086,6 +2087,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
       engine.setTessellationDiagnostics([]);
 
       layout.reset();
+      viewportDisplay.reset();
 
       return { ok: true };
     },

@@ -142,7 +142,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "store_state",
-            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count)",
+            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle)",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {

@@ -120,7 +120,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, …) |
+| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, `claude`, `viewports` per-viewport `meshCount`, `viewport.edges` the edges-in-black toggle) |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
 | `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
