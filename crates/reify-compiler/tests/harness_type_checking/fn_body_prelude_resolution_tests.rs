@@ -12,21 +12,7 @@
 
 use reify_core::{DiagnosticCode, Type};
 use reify_ir::CompiledExprKind;
-use reify_test_support::{compile_source_with_stdlib, errors_only};
-
-/// The compiled body expression of the fn registered as `fn_name`.
-fn fn_body_result_expr<'m>(
-    module: &'m reify_compiler::CompiledModule,
-    fn_name: &str,
-) -> &'m reify_ir::CompiledExpr {
-    &module
-        .functions
-        .iter()
-        .find(|f| f.name == fn_name)
-        .unwrap_or_else(|| panic!("no compiled fn named '{fn_name}'"))
-        .body
-        .result_expr
-}
+use reify_test_support::{compile_source_with_stdlib, errors_only, get_function_in};
 
 /// Every Error-severity diagnostic message in `module`, in source order.
 fn errors(module: &reify_compiler::CompiledModule) -> Vec<&str> {
@@ -64,7 +50,10 @@ fn fn_body_zero_arg_stdlib_fn_is_typed_from_its_signature() {
     );
     assert_eq!(errors(&module), Vec::<&str>::new());
     assert_eq!(
-        fn_body_result_expr(&module, "wrap_bolts").result_type,
+        get_function_in(&module, "wrap_bolts")
+            .body
+            .result_expr
+            .result_type,
         list_of_length()
     );
 }
@@ -78,7 +67,10 @@ fn fn_body_generic_field_stdlib_fn_is_typed_from_its_signature() {
     );
     assert_eq!(errors(&module), Vec::<&str>::new());
     assert_eq!(
-        fn_body_result_expr(&module, "above").result_type,
+        get_function_in(&module, "above")
+            .body
+            .result_expr
+            .result_type,
         Type::Field {
             domain: Box::new(Type::dimensionless_scalar()),
             codomain: Box::new(Type::Bool),
@@ -99,7 +91,7 @@ fn fn_body_pointwise_min_lowers_to_a_stdlib_fn_call() {
     "#,
     );
     assert_eq!(errors(&module), Vec::<&str>::new());
-    let body = fn_body_result_expr(&module, "lower");
+    let body = &get_function_in(&module, "lower").body.result_expr;
     assert!(
         matches!(
             &body.kind,
@@ -109,6 +101,21 @@ fn fn_body_pointwise_min_lowers_to_a_stdlib_fn_call() {
         "expected a UserFunctionCall of pointwise_min, got {:?}",
         body.kind
     );
+}
+
+/// A user fn's PARAM DEFAULT resolves a stdlib call the same way its body does.
+#[test]
+fn fn_param_default_stdlib_call_is_typed_from_its_signature() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn pick(xs: List<Length> = standard_bolt_lengths()) -> Length { xs[0] }
+    "#,
+    );
+    assert_eq!(errors(&module), Vec::<&str>::new());
+    let default = get_function_in(&module, "pick").param_defaults[0]
+        .as_ref()
+        .expect("pick's param `xs` declares a default");
+    assert_eq!(default.result_type, list_of_length());
 }
 
 #[test]
@@ -151,8 +158,35 @@ fn earlier_declared_user_fn_shadows_stdlib_fn_in_a_later_body() {
     );
     assert_eq!(errors(&module), Vec::<&str>::new());
     assert_eq!(
-        fn_body_result_expr(&module, "wrap").result_type,
+        get_function_in(&module, "wrap")
+            .body
+            .result_expr
+            .result_type,
         Type::length()
+    );
+}
+
+/// PINS today's outcome, not a design: a body calling a LATER-declared user
+/// overload of a stdlib name sees only the stdlib candidate, so a call that
+/// only the later overload accepts is NoMatchingOverload. Forward references
+/// stay unresolved (`functions_phase`'s contract and #6014's business).
+#[test]
+fn fn_body_call_to_a_later_declared_overload_of_a_stdlib_name_is_no_matching_overload() {
+    let module = compile_source_with_stdlib(
+        r#"
+        pub fn early(x: Real) -> Real { standard_bolt_lengths(x) }
+        pub fn standard_bolt_lengths(x: Real) -> Real { x * 2.0 }
+    "#,
+    );
+    let errors = errors_only(&module);
+    assert!(
+        matches!(
+            errors.as_slice(),
+            [only] if only.code == Some(DiagnosticCode::NoMatchingOverload)
+                && only.message.contains("standard_bolt_lengths")
+        ),
+        "expected exactly one NoMatchingOverload error naming standard_bolt_lengths; got {:?}",
+        module.diagnostics
     );
 }
 
@@ -167,7 +201,10 @@ fn trait_static_fn_body_stdlib_call_is_typed_from_its_signature() {
     );
     assert_eq!(errors(&module), Vec::<&str>::new());
     assert_eq!(
-        fn_body_result_expr(&module, "Stock::bolts").result_type,
+        get_function_in(&module, "Stock::bolts")
+            .body
+            .result_expr
+            .result_type,
         list_of_length()
     );
 }

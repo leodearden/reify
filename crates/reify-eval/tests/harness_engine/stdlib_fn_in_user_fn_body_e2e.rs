@@ -11,8 +11,9 @@
 //! `dimensioned_ctor_migration_si_values.rs`.
 
 use reify_core::ValueCellId;
-use reify_ir::{Satisfaction, UndefCause, Value, ValueMap};
-use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+use reify_eval::EvalResult;
+use reify_ir::{Satisfaction, UndefCause, Value};
+use reify_test_support::{cell_value, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Three wrappers of stdlib `.ri` fns: a generic field combinator, a zero-arg
 /// list constant, and an expression over one that `sqrt` can fail.
@@ -73,6 +74,18 @@ structure def LaterShadow {
 }
 "#;
 
+/// LATER_SHADOW_SRC, but the shadow's return type differs from the stdlib fn's.
+const LATER_RETYPED_SHADOW_SRC: &str = r#"
+fn wrap_sheets() -> List<Length> { standard_sheet_thicknesses() }
+fn standard_sheet_thicknesses() -> Length { 7mm }
+
+structure def LaterRetypedShadow {
+    let via_wrapper = wrap_sheets()
+    let top = standard_sheet_thicknesses()
+    let indexed = wrap_sheets()[0]
+}
+"#;
+
 /// A trait-STATIC fn wrapping a stdlib `.ri` fn, called by its `Trait::method`
 /// symbol.
 const TRAIT_STATIC_SRC: &str = r#"
@@ -86,22 +99,17 @@ structure def TraitRoute {
 }
 "#;
 
-fn cell<'a>(values: &'a ValueMap, structure: &str, member: &str) -> &'a Value {
-    values
-        .get(&ValueCellId::new(structure, member))
-        .unwrap_or_else(|| panic!("{structure}.{member} cell missing from eval result"))
-}
-
 /// Asserts `structure.wrapped` evaluates to the same Value as
 /// `structure.direct`, after guarding that the direct call is not Undef.
-fn assert_wrapped_equals_direct(values: &ValueMap, structure: &str, direct: &str, wrapped: &str) {
-    let direct_value = cell(values, structure, direct);
+#[track_caller]
+fn assert_wrapped_equals_direct(result: &EvalResult, structure: &str, direct: &str, wrapped: &str) {
+    let direct_value = cell_value(result, structure, direct);
     assert!(
         !direct_value.is_undef(),
         "premise: {structure}.{direct} (the direct stdlib call) must not be Undef"
     );
     assert_eq!(
-        cell(values, structure, wrapped),
+        cell_value(result, structure, wrapped),
         direct_value,
         "{structure}.{wrapped} must equal {structure}.{direct}"
     );
@@ -118,12 +126,12 @@ fn wrapped_stdlib_fns_equal_direct_calls_in_value_position() {
         ("direct_bolts", "wrapped_bolts"),
         ("direct_scaled", "wrapped_scaled"),
     ] {
-        assert_wrapped_equals_direct(&result.values, "ValuePosition", direct, wrapped);
+        assert_wrapped_equals_direct(&result, "ValuePosition", direct, wrapped);
     }
     // min(f_double(3.0), g_plus1(3.0)) = min(6.0, 4.0), exact in f64.
     assert_eq!(
-        cell(&result.values, "ValuePosition", "wrapped_min"),
-        &Value::Real(4.0)
+        cell_value(&result, "ValuePosition", "wrapped_min"),
+        Value::Real(4.0)
     );
 }
 
@@ -165,16 +173,11 @@ fn remaining_undef_in_a_stdlib_wrapper_carries_provenance() {
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&compiled);
 
-    assert_wrapped_equals_direct(
-        &result.values,
-        "Provenance",
-        "direct_scaled",
-        "wrapped_scaled",
-    );
+    assert_wrapped_equals_direct(&result, "Provenance", "direct_scaled", "wrapped_scaled");
 
     let failing_id = ValueCellId::new("Provenance", "wrapped_failing");
     assert!(
-        cell(&result.values, "Provenance", "wrapped_failing").is_undef(),
+        cell_value(&result, "Provenance", "wrapped_failing").is_undef(),
         "scaled_first_bolt(-1.0) takes sqrt of a negative and must be Undef"
     );
     let causes = engine.undef_causes();
@@ -206,23 +209,42 @@ fn fn_body_ctor_of_same_module_structure_resolves_its_stdlib_default() {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    assert_wrapped_equals_direct(
-        &result.values,
-        "SkeletonRoute",
-        "direct_first",
-        "via_fn_first",
-    );
+    assert_wrapped_equals_direct(&result, "SkeletonRoute", "direct_first", "via_fn_first");
 }
 
-/// A stdlib name shadowed by a LATER-declared user fn still dispatches to the
-/// user fn at runtime, from inside the earlier wrapper too.
+/// KNOWN LIMITATION, owned by #9363 (eval runs the overload the compiler
+/// chose), which flips this test and the next: the earlier wrapper's call
+/// binds the stdlib fn at compile time, but eval re-resolves it user-first, so
+/// a stdlib name shadowed by a LATER-declared user fn dispatches to the user fn
+/// at runtime, from inside the earlier wrapper too.
 #[test]
 fn later_declared_user_shadow_wins_at_runtime() {
     let compiled = parse_and_compile_with_stdlib(LATER_SHADOW_SRC);
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    assert_wrapped_equals_direct(&result.values, "LaterShadow", "top", "via_wrapper");
+    assert_wrapped_equals_direct(&result, "LaterShadow", "top", "via_wrapper");
+}
+
+/// The same #9363 limitation when the shadow's return type differs: the
+/// `List<Length>`-typed wrapper evaluates to the shadow's bare Length, and
+/// indexing it is Undef.
+#[test]
+fn later_declared_retyped_shadow_wins_at_runtime_despite_the_wrapper_type() {
+    let compiled = parse_and_compile_with_stdlib(LATER_RETYPED_SHADOW_SRC);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+
+    let top = cell_value(&result, "LaterRetypedShadow", "top");
+    assert!(
+        !matches!(top, Value::List(_)),
+        "premise: the user shadow returns a bare Length; got {top:?}"
+    );
+    assert_wrapped_equals_direct(&result, "LaterRetypedShadow", "top", "via_wrapper");
+    assert!(
+        cell_value(&result, "LaterRetypedShadow", "indexed").is_undef(),
+        "indexing the wrapper's bare-Length value must be Undef"
+    );
 }
 
 #[test]
@@ -231,5 +253,5 @@ fn trait_static_fn_wrapping_a_stdlib_fn_equals_the_direct_call() {
     let mut engine = make_simple_engine();
     let result = engine.eval(&compiled);
 
-    assert_wrapped_equals_direct(&result.values, "TraitRoute", "direct", "via_trait");
+    assert_wrapped_equals_direct(&result, "TraitRoute", "direct", "via_trait");
 }
