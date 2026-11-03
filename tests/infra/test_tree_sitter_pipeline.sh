@@ -3410,6 +3410,61 @@ test_generate_regenerates_when_parser_c_is_corrupt() {
     fi
 }
 
+test_generate_regenerates_when_a_header_is_missing() {
+    # The transition state #9741 creates: git deletes the formerly tracked
+    # src/tree_sitter/*.h on update while parser.c and both stamps survive and
+    # still attest. A run WITHOUT --force must regenerate, or scanner.c and
+    # parser.c fail to compile against the missing headers.
+    #
+    # The header set comes from what the real CLI wrote, not from the script's
+    # own list, so a CLI that adds a header the script does not know turns this red.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "baseline generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local hdr_dir="$fix/tree-sitter-reify/src/tree_sitter"
+    local -a headers=()
+    local h
+    for h in "$hdr_dir"/*.h; do
+        [ -f "$h" ] && headers+=("${h##*/}")
+    done
+    if [ "${#headers[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the baseline generate wrote no src/tree_sitter/*.h"
+        return 1
+    fi
+
+    local victim out
+    for victim in "${headers[@]/#/$hdr_dir/}" "$hdr_dir"; do
+        rm -rf "$victim"
+        out=$(bash "$fix/scripts/tree-sitter-generate.sh" 2>&1) || {
+            echo ""
+            echo "  ASSERTION FAILED: re-run after removing ${victim#"$fix"/} exited non-zero"
+            echo "$out"
+            return 1
+        }
+        if grep -q "up to date" <<< "$out" || ! grep -q "generated parser files" <<< "$out"; then
+            echo ""
+            echo "  ASSERTION FAILED: script did not regenerate with ${victim#"$fix"/} missing"
+            echo "  Both stamps still attest grammar.js and the grammar outputs, so only an"
+            echo "  existence check on the generated headers can see this."
+            echo "$out"
+            return 1
+        fi
+        for h in "${headers[@]}"; do
+            if [ ! -f "$hdr_dir/$h" ]; then
+                echo ""
+                echo "  ASSERTION FAILED: src/tree_sitter/$h absent after the regeneration that"
+                echo "  followed removing ${victim#"$fix"/}"
+                return 1
+            fi
+        done
+    done
+}
+
 test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
     # (d) A generate that fails must leave NEITHER stamp. _cleanup_partial_outputs
     # already deletes the three outputs on both error branches; a stamp surviving
