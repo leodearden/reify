@@ -131,15 +131,15 @@ tasks:
       - docs/releases/v0.2-alpha.md
 - label: ρ1
   task_id: 9735
-  title: 'alpha-spine ρ1: release v0.2-alpha (human gate — run scripts/release-alpha.sh v0.2-alpha; closes issues #1–#4)'
-  note: 'D7 pure gate'
+  title: 'alpha-spine ρ1: release v0.2-alpha automatically (deterministic deploy: scripts/release-alpha.sh v0.2-alpha; closes issues #1–#4)'
+  note: 'D7 as amended 2026-11-03: auto-deploy via before_done, escalates only on failure'
   capabilities:
   - name: release-published
-    binding: 'manual — the resolving escalation'
+    binding: 'manual — the GitHub release page and the task done_provenance (deterministic-deploy)'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: human act recorded by the escalation
+      reason: observed on GitHub, not a pattern in the tree
 - label: Ω1
   task_id: 9736
   title: 'alpha-spine Ω1: Alpha-1 running (human gate — a named tester installed v0.2-alpha from the binary, launched, built, used edges)'
@@ -167,15 +167,15 @@ tasks:
       - docs/releases/v0.3-alpha.md
 - label: ρ2
   task_id: 9738
-  title: 'alpha-spine ρ2: release v0.3-alpha (human gate — run scripts/release-alpha.sh v0.3-alpha)'
-  note: 'D7 pure gate'
+  title: 'alpha-spine ρ2: release v0.3-alpha automatically (deterministic deploy: scripts/release-alpha.sh v0.3-alpha)'
+  note: 'D7 as amended 2026-11-03: auto-deploy via before_done, escalates only on failure'
   capabilities:
   - name: release-published
-    binding: 'manual — the resolving escalation'
+    binding: 'manual — the GitHub release page and the task done_provenance (deterministic-deploy)'
     verdict: PASS
     delivered_check:
       kind: manual
-      reason: human act recorded by the escalation
+      reason: observed on GitHub, not a pattern in the tree
 - label: Ω
   task_id: 9739
   title: 'alpha-spine Ω: alpha spine complete (human gate; the parking holder every non-spine pending task depends on)'
