@@ -79,9 +79,6 @@ structure S {
 /// emission (expr.rs, `is_fallback_combinator`) is reachable for a Result
 /// subject once B1+B2 land.
 ///
-/// The subject is a concretely typed STRUCTURE param, so `unify` can bind
-/// `T=Length` from it.
-///
 /// RED (after B1, before B2): `unwrap_or(r, "y")` wildcard-matches both
 /// overloads → `Ambiguous` → poison; the call never reaches the
 /// single-winner `Resolved` arm, so `FallbackType` never fires.

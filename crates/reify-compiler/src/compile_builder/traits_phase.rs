@@ -138,7 +138,8 @@ pub(crate) fn phase_traits(
     // Performance note: `ctx.resolution_functions` is only rebuilt when at least one
     // static fn is actually registered. For modules that declare no traits or no
     // body-carrying static assoc fns, resolution_functions is already correct from
-    // phase_functions and the O(prelude) clone+merge is skipped entirely.
+    // phase_functions and the O(prelude) clone+merge is skipped entirely. Each
+    // registered static fn's body does pay one such clone+merge (`body_table`, below).
     // The module's declared callable vocabulary, merged ONCE for the phase and
     // borrowed by every static-fn body scope below (task #5371). Rationale:
     // `CompilationScope::declared_callable_names`.
