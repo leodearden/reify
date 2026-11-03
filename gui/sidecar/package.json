@@ -4,9 +4,8 @@
   "private": true,
   "packageManager": "npm@10.9.7",
   "type": "module",
-  "main": "dist/index.js",
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm --dts --noExternal @reify/shared-utils",
+    "build": "tsup --config tsup.sidecar.ts",
     "build:sidecar": "bash build-sidecar.sh",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import { isBuiltin } from 'node:module';
 import * as os from 'node:os';
@@ -12,9 +13,13 @@ import type { InboundMessage, OutboundMessage } from '../types.js';
 // Guards leodearden/reify#4. The sidecar ships as a Tauri externalBin (build-sidecar.sh copies it
 // to src-tauri/sidecar/), so no node_modules is reachable from where it runs and tsup.sidecar.ts
 // must bundle every dependency that src/ imports. This builds the real config and checks the
-// result statically, then runs it installed the way Tauri deploys it.
+// result statically, then runs it installed the way Tauri deploys it; the package's
+// `npm run build` must yield this same bundle, so tsup.sidecar.ts alone decides what it contains.
 
 const SIDECAR_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const TSUP_SIDECAR_CONFIG = [path.join(SIDECAR_ROOT, 'node_modules', '.bin', 'tsup'), '--config', 'tsup.sidecar.ts'] as const;
+// The trailing '--' makes npm forward buildBundle's out-dir and metafile flags to the build script.
+const NPM_RUN_BUILD = ['npm', 'run', 'build', '--'] as const;
 const SIDECAR_EXECUTABLE = 'reify-sidecar';
 const BUILD_TIMEOUT_MS = 60_000;
 const RUN_TIMEOUT_MS = 30_000;
@@ -49,11 +54,11 @@ function makeScratchDir(prefix: string): string {
   return dir;
 }
 
-function buildBundle(outDir: string): BuiltBundle {
+function buildBundle(command: readonly [string, ...string[]], outDir: string): BuiltBundle {
   // tsup externalizes the dependencies declared in the package.json of its cwd, so the cwd must
   // be the sidecar package or a broken config could pass.
-  const tsup = path.join(SIDECAR_ROOT, 'node_modules', '.bin', 'tsup');
-  const build = spawnSync(tsup, ['--config', 'tsup.sidecar.ts', '--out-dir', outDir, '--metafile', '--silent'], {
+  const [executable, ...args] = command;
+  const build = spawnSync(executable, [...args, '--out-dir', outDir, '--metafile', '--silent'], {
     cwd: SIDECAR_ROOT,
     encoding: 'utf8',
     // The synchronous spawn blocks the event loop, so the beforeAll timeout cannot interrupt a hung build.
@@ -62,13 +67,17 @@ function buildBundle(outDir: string): BuiltBundle {
   });
   if (build.status !== 0) {
     throw new Error(
-      `tsup build failed (status ${build.status}, signal ${build.signal}): ${build.error ?? ''}\n${build.stdout}${build.stderr}`,
+      `${command.join(' ')} failed (status ${build.status}, signal ${build.signal}): ${build.error ?? ''}\n${build.stdout}${build.stderr}`,
     );
   }
   return {
     bundlePath: path.join(outDir, 'cli.js'),
     metafile: JSON.parse(fs.readFileSync(path.join(outDir, 'metafile-esm.json'), 'utf8')) as BundleMetafile,
   };
+}
+
+function sha256Of(filePath: string): string {
+  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
 function externalImports(metafile: BundleMetafile): string[] {
@@ -219,7 +228,7 @@ describe('the sidecar bundle built from tsup.sidecar.ts', () => {
   let bundle: BuiltBundle;
 
   beforeAll(() => {
-    bundle = buildBundle(makeScratchDir('reify-sidecar-bundle-'));
+    bundle = buildBundle(TSUP_SIDECAR_CONFIG, makeScratchDir('reify-sidecar-bundle-'));
   }, BUILD_TIMEOUT_MS);
 
   afterEach(() => {
@@ -236,6 +245,14 @@ describe('the sidecar bundle built from tsup.sidecar.ts', () => {
     expect(externals, 'no external imports at all means the metafile shape changed').not.toEqual([]);
     expect(externals.filter((specifier) => !isBuiltin(specifier))).toEqual([]);
   });
+
+  it('npm run build produces this same bundle', () => {
+    const npmBuilt = buildBundle(NPM_RUN_BUILD, makeScratchDir('reify-sidecar-npm-build-'));
+
+    expect(sha256Of(npmBuilt.bundlePath), 'npm run build must build from tsup.sidecar.ts').toBe(
+      sha256Of(bundle.bundlePath),
+    );
+  }, BUILD_TIMEOUT_MS);
 
   it('the installed sidecar completes the ready handshake from a directory with no node_modules above it', async () => {
     const sidecar = launchSidecar(installIntoBareDirectory(bundle.bundlePath));
