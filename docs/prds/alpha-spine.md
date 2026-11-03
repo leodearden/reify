@@ -98,7 +98,8 @@ if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
 else
     git tag -a "$TAG" -m "$TAG" "$HEAD_SHA"
 fi
-git push "$REMOTE" "refs/tags/$TAG"
+# https remote with no stored git credential: borrow gh's token for this one push.
+git -c credential.helper= -c "credential.helper=!gh auth git-credential" push "$REMOTE" "refs/tags/$TAG"
 
 # ---- 4. release -------------------------------------------------------------------
 if gh release view "$TAG" >/dev/null 2>&1; then
