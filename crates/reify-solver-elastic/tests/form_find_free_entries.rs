@@ -14,7 +14,7 @@ use reify_solver_elastic::{
 #[allow(dead_code)] // each test binary uses a subset of the shared fixtures
 mod common;
 
-use common::{prism_surfaces, triplex_group_ids, triplex_topology};
+use common::{analytic_combined_q, prism_surfaces, triplex_group_ids, triplex_topology};
 use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
 /// A mildly perturbed (≈1e-3 per coordinate, deterministic) guess: the shared
@@ -22,6 +22,11 @@ use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triple
 /// matching `triplex_topology`) plus fixed small offsets. The form-finding
 /// convention refines a guess, so recovery should gauge-fix to it; fixed
 /// offsets (no RNG) keep the dependent tests bit-stable.
+///
+/// The same body as `perturbed_prism_guess` in `tensegrity_t1b_form_find_free.rs`
+/// under another name, so the `duplicated-test-helpers` ratchet, which matches
+/// by name, does not count this copy; hoisting the guess table into one home is
+/// owned by #8152.
 fn perturbed_twisted_prism() -> Vec<[f64; 3]> {
     const PERTURB: [[f64; 3]; 6] = [
         [0.0009, -0.0011, 0.0007],
@@ -36,19 +41,6 @@ fn perturbed_twisted_prism() -> Vec<[f64; 3]> {
         .zip(PERTURB.iter())
         .map(|(p, d)| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])
         .collect()
-}
-
-/// Closed-form force densities for the shared canonical triplex,
-/// struts-then-cables order: struts −√3, the six horizontals +1, verticals +√3.
-/// These make `D` rank-deficient by exactly 4 (D eigenvalues 0,0,0,0,6,6).
-fn closed_form_prism_q() -> Vec<f64> {
-    let s = 3.0_f64.sqrt();
-    vec![
-        -s, -s, -s, // struts
-        1.0, 1.0, 1.0, // top horizontals
-        1.0, 1.0, 1.0, // bottom horizontals
-        s, s, s, // verticals
-    ]
 }
 
 /// A *generic* admissible q: distinct per-member magnitudes (struts
@@ -76,7 +68,7 @@ fn generic_admissible_q(kinds: &[MemberKind]) -> Vec<f64> {
 #[test]
 fn explicit_cable_with_nonpositive_q_is_sign_violation() {
     let (members, kinds) = triplex_topology();
-    let mut q = closed_form_prism_q();
+    let mut q = analytic_combined_q(0.0);
     // Force a top cable (member 3) to a non-positive density: a cable must
     // carry tension (q > 0), so this is infeasible input.
     q[3] = -1.0;
@@ -95,7 +87,7 @@ fn explicit_cable_with_nonpositive_q_is_sign_violation() {
 #[test]
 fn explicit_strut_with_nonnegative_q_is_sign_violation() {
     let (members, kinds) = triplex_topology();
-    let mut q = closed_form_prism_q();
+    let mut q = analytic_combined_q(0.0);
     // Force a strut (member 0) to a non-negative density: a strut must carry
     // compression (q < 0), so this is infeasible input.
     q[0] = 1.0;
@@ -154,7 +146,7 @@ fn explicit_length_mismatch_is_dimension_mismatch() {
 #[test]
 fn explicit_out_of_range_member_index_is_index_out_of_range() {
     let (mut members, kinds) = triplex_topology();
-    let q = closed_form_prism_q();
+    let q = analytic_combined_q(0.0);
     // Point a member at node 6 — out of range for the 6-node (0..=5) problem.
     // `D` is 6×6, so without the bounds guard this panics on the `d[(j, j)]`
     // index in `assemble_d`; the guard turns it into a
@@ -183,7 +175,7 @@ fn explicit_coplanar_guess_is_singular_recovery() {
     // explicit tests' input, so *only* the guess is degenerate here, isolating
     // the SingularRecovery guard. The explicit `D` does not depend on the
     // guess; the guess only gauge-fixes the recovery.
-    let q = closed_form_prism_q();
+    let q = analytic_combined_q(0.0);
 
     // A *coplanar* (degenerate) guess: the prism's x/y arrangement
     // flattened into the z = 0 plane. Per-axis projection onto null(D) leaves
@@ -215,7 +207,7 @@ fn explicit_coplanar_guess_is_singular_recovery() {
 #[test]
 fn form_find_free_explicit_populates_result_with_correct_force_signs() {
     let (members, kinds) = triplex_topology();
-    let q = closed_form_prism_q();
+    let q = analytic_combined_q(0.0);
     let guess = perturbed_twisted_prism();
 
     let result = form_find_free(
