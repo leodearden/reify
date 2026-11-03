@@ -2812,6 +2812,33 @@ mod tests {
         );
     }
 
+    /// The shared ambiguity fixture: two value cells share member "x", under
+    /// entities "First" and "Second" of one "Bracket" template. Neither entity
+    /// is the template's own, so the own-cell tie-break cannot resolve "x" and
+    /// the lookup must abort rather than silently return one of the two.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build()
+    }
+
     /// Pins that the not-found panic enumerates the template's actual cells
     /// as `entity.member`, rather than an empty or truncated list — that
     /// `; has: [...]` suffix is what makes a missing-cell failure diagnosable
@@ -2904,33 +2931,6 @@ mod tests {
             let area = 2mm
         }
     "#;
-
-    /// Two value cells sharing member name "x" under different entities on
-    /// one "Bracket" template — the ambiguity fixture shared by the two
-    /// tests below. Both cells carry a default so a resolution failure can
-    /// only be the collision, never a missing default.
-    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
-        use reify_core::Type;
-        use reify_ir::{CompiledExpr, Value};
-
-        crate::builders::TopologyTemplateBuilder::new("Bracket")
-            .param(
-                "First",
-                "x",
-                Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(
-                    Value::Real(1.5),
-                    Type::dimensionless_scalar(),
-                )),
-            )
-            .param(
-                "Second",
-                "x",
-                Type::Int,
-                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
-            )
-            .build()
-    }
 
     /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
     /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
