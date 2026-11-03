@@ -190,7 +190,8 @@ of `docs/prds/v0_6/check-diagnostic-truthfulness.md`.
     crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build
   `reify check` EXITS 1 with no verdict line on a bare argument to the compiler-checked
     constructors above, and 0 on its migration, for each of them except `mirror`, whose bare
-    pivot is the row above — PINNED at the CLI seam by
+    pivot has its own `mirror` row and whose migration is only checked to compile clean, at the
+    compile layer — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs::check_exits_1_before_its_verdict_on_a_bare_compiler_checked_length
   `reify check` EXITS 1 after its verdict line on a bare argument to the eval-checked
     constructors above, and 0 on its migration — PINNED at the CLI seam by
