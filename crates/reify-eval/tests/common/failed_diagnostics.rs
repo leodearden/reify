@@ -43,3 +43,26 @@ pub fn assert_mentions(joined: &str, must: &[&str], must_not: &[&str]) {
         );
     }
 }
+
+#[test]
+fn joined_messages_joins_each_message_with_a_pipe_separator() {
+    assert_eq!(
+        joined_messages(&[Diagnostic::error("a"), Diagnostic::error("b")]),
+        "a | b"
+    );
+}
+
+#[test]
+fn joined_failure_messages_flattens_a_failed_outcome() {
+    let failed = ComputeOutcome::Failed {
+        diagnostics: vec![Diagnostic::error("a"), Diagnostic::error("b")],
+        structured_detail: Vec::new(),
+    };
+    assert_eq!(joined_failure_messages(failed), "a | b");
+}
+
+#[test]
+#[should_panic(expected = "expected ComputeOutcome::Failed, got Cancelled")]
+fn joined_failure_messages_panics_on_a_non_failed_outcome() {
+    joined_failure_messages(ComputeOutcome::Cancelled);
+}
