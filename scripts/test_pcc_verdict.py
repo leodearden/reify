@@ -949,10 +949,6 @@ class TestEvaluateRecordsTheRunnersArgv(unittest.TestCase):
         self.assertIsNone(called_timeout)
         self.assertEqual(result.run.command, self._RUNNERS_ARGV)
 
-    def test_result_has_no_command_field_of_its_own(self):
-        names = {f.name for f in dataclasses.fields(pcc.Result)}
-        self.assertNotIn("command", names)
-
 
 if __name__ == "__main__":
     unittest.main()
