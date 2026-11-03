@@ -3909,5 +3909,62 @@ test_build_rs_restores_a_deleted_parser_c() {
     fi
 }
 
+test_build_rs_restores_deleted_generated_headers() {
+    # The fresh-clone shape since #9741: src/tree_sitter/*.h are untracked
+    # generate outputs, so the fixture ships none and the first build's real
+    # generate creates them. Deleting them afterwards — what git does to a
+    # checkout updating past the untracking commit — must re-run the build
+    # script, which must regenerate them.
+    require_tree_sitter_cli || return 0
+
+    local va
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+
+    local fix
+    fix=$(mk_ts_build_fixture "$va") || return 1
+
+    local cargo_out guard_rc=0
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local -a headers=()
+    local h
+    for h in "$fix"/src/tree_sitter/*.h; do
+        [ -f "$h" ] && headers+=("${h##*/}")
+    done
+    if [ "${#headers[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a successful build left no src/tree_sitter/*.h —"
+        echo "  the generate it ran must have written the headers parser.c includes."
+        return 1
+    fi
+
+    # grammar.js and parser.c untouched and stamped 2020; only the headers go.
+    ts_normalize_lane_mtimes "$fix"
+    rm -rf "$fix/src/tree_sitter"
+
+    guard_rc=0
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local -a gone=()
+    for h in "${headers[@]}"; do
+        [ -f "$fix/src/tree_sitter/$h" ] || gone+=("$h")
+    done
+    if [ "${#gone[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: cargo reported success while the headers the archive"
+        echo "  compiles against are gone: ${gone[*]}"
+        echo "  The deletion re-ran nothing, so the previously-built archive stayed linked."
+        return 1
+    fi
+}
+
 # --- Main ---
 run_tests
