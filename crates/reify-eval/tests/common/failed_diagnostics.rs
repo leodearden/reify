@@ -66,3 +66,20 @@ fn joined_failure_messages_flattens_a_failed_outcome() {
 fn joined_failure_messages_panics_on_a_non_failed_outcome() {
     joined_failure_messages(ComputeOutcome::Cancelled);
 }
+
+#[test]
+fn assert_mentions_accepts_present_must_and_absent_must_not_needles() {
+    assert_mentions("a | b", &["a", "b"], &["c"]);
+}
+
+#[test]
+#[should_panic(expected = "NOT to mention \"b\"")]
+fn assert_mentions_rejects_a_present_must_not_needle() {
+    assert_mentions("a | b", &["a"], &["b"]);
+}
+
+#[test]
+#[should_panic(expected = "diagnostic to mention \"zzz\"")]
+fn assert_mentions_rejects_a_missing_must_needle() {
+    assert_mentions("a | b", &["zzz"], &[]);
+}
