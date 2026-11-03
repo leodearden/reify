@@ -2254,6 +2254,55 @@ mod tests {
         assert_eq!(decoded, original, "v3 round-trip must preserve all new fields losslessly");
     }
 
+    /// Populates both the v3 grid/derivative slabs and a `Some(ShellChannels)`
+    /// tail. The tail is decoded after those slabs, so a misaligned slab read
+    /// would shift it.
+    #[test]
+    fn elastic_result_with_shell_channels_and_grid_round_trips_and_reserializes_identically() {
+        fn scrambled(len: u64, mul: u64, xor: u64) -> Vec<f64> {
+            (0..len)
+                .map(|i| f64::from_bits(i.wrapping_mul(mul) ^ xor))
+                .collect()
+        }
+        // 1×1×1 element-count grid → 8 nodes.
+        let n_nodes: usize = 8;
+        let original = ElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| i as f64 * 1e6).collect(),
+            max_von_mises: 250e6,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 4321,
+            shell_channels: Some(ShellChannels {
+                top: scrambled(9, 0x9E37_79B9_7F4A_7C15, 0xABAD_1DEA_0BAD_F00D),
+                bottom: scrambled(9, 0x6C62_272E_07BB_0142, 0xC0DE_FACE_DEAD_C0DE),
+                frame: scrambled(9, 0xD737_E5B5_2727_2727, 0x1234_5678_9ABC_DEF0),
+            }),
+            grid_bounds_min: [0.0, -1.0, 0.0],
+            grid_bounds_max: [1.0, 0.3, 0.1],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64 * 1e-5).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 1e-3).collect(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 2e-4).collect(),
+            aposteriori: None,
+        };
+
+        let mut bytes_a: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut bytes_a).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &bytes_a[..]).unwrap();
+        assert_eq!(
+            decoded, original,
+            "shell + grid round-trip must preserve every field"
+        );
+
+        let mut bytes_b: Vec<u8> = Vec::new();
+        decoded.serialize_to_writer(&mut bytes_b).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "re-serializing a decoded value must be byte-identical"
+        );
+    }
+
     #[test]
     fn elastic_result_format_version_is_3_after_v3_bump() {
         assert_eq!(<ElasticResult as PersistentlyCacheable>::FORMAT_VERSION, 3);
