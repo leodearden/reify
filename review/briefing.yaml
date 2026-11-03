@@ -11,9 +11,12 @@
 
 project: reify
 
-# /audit integration knob. /review Phase 2 invokes the project's /audit
-# skill (.claude/skills/audit/) as Step 1; this controls how far back it
-# looks. See dark-factory: skills/review-briefing/references/briefing-schema.md.
+# /audit integration knob. Inert since #8807: /review Phase 2 Step 1 derives a
+# full review's --since from window_days and passes it to the project's /audit
+# skill (.claude/skills/audit/), which drops --since and always sweeps the
+# whole task corpus. Retiring the knob is owned by dark-factory follow-up
+# tkt_0RWFJ0Z5EKQ18KH7E9G392WP3Z; the key stays until then.
+# See dark-factory: skills/review-briefing/references/briefing-schema.md.
 audit:
   window_days: 14   # default
 
