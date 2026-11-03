@@ -8,7 +8,7 @@
 #   npm --prefix gui run test:smoke:edges-toggle
 #
 # Fixture: examples/m5_geometry.ri (the driver opens REIFY_EDGES_SMOKE_FIXTURE
-#          instead when set; REIFY_EDGES_SMOKE_SHOTS_DIR keeps the two PNGs)
+#          instead when set; REIFY_EDGES_SMOKE_SHOTS_DIR keeps the three PNGs)
 # Driver:  gui/test/visual/smoke_edges_toggle_e2e.mjs
 #
 # The launch/readiness/teardown lifecycle lives in gui/test/visual/lib_e2e_smoke.sh,

@@ -14,13 +14,15 @@
  *
  * Environment:
  *   REIFY_EDGES_SMOKE_FIXTURE    repo-relative .ri to open (default examples/m5_geometry.ri)
- *   REIFY_EDGES_SMOKE_SHOTS_DIR  where the two PNGs are written (default: a fresh temp dir)
+ *   REIFY_EDGES_SMOKE_SHOTS_DIR  where the three PNGs are written (default: a fresh temp dir)
  *
  * Flow: open the fixture → wait_for_idle → normalise edges to off → screenshot
  * design-main (edges-off.png) → click the toolbar Edges toggle → wait for
  * viewport.edges true → read store_state → screenshot (edges-on.png) → click
- * again → wait for viewport.edges false → read store_state → grade. Both PNGs
- * are kept and their paths always printed, so a failing run can be inspected.
+ * again → wait for viewport.edges false → read store_state → screenshot
+ * (edges-off-again.png) → grade. The third shot must match the first, so the
+ * on/off difference is the overlay's and not drift between the shots. Every
+ * PNG is kept and its path always printed, so a failing run can be inspected.
  *
  * Exit 0 on pass, 1 on any graded failure, 2 on an unexpected error.
  */
@@ -32,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
 import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
-import { formatFailures, gradeEdgesToggle } from './edgesToggleGate.mjs';
+import { countChangedPixels, formatFailures, gradeEdgesToggle } from './edgesToggleGate.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
@@ -154,6 +156,7 @@ async function main() {
   fs.mkdirSync(shotsDir, { recursive: true });
   const offPath = path.join(shotsDir, 'edges-off.png');
   const onPath = path.join(shotsDir, 'edges-on.png');
+  const restoredPath = path.join(shotsDir, 'edges-off-again.png');
 
   log(`Screenshot with edges off → ${offPath}`);
   const offShot = await screenshotTo(offPath);
@@ -169,12 +172,17 @@ async function main() {
   await clickToggleAndWait(false);
   const edgesAfterOff = await readEdges('store_state (after toggling off)');
 
-  console.log(`\nedges-off screenshot: ${offPath}`);
-  console.log(`edges-on screenshot:  ${onPath}`);
+  log(`Screenshot with edges off again → ${restoredPath}`);
+  const restoredShot = await screenshotTo(restoredPath);
 
-  const failures = gradeEdgesToggle({ edgesAfterOn, edgesAfterOff, offShot, onShot });
+  console.log(`\nedges-off screenshot:       ${offPath}`);
+  console.log(`edges-on screenshot:        ${onPath}`);
+  console.log(`edges-off-again screenshot: ${restoredPath}`);
+  console.log(`pixels changed off→on: ${countChangedPixels(offShot, onShot)}; off→off-again: ${countChangedPixels(offShot, restoredShot)}`);
+
+  const failures = gradeEdgesToggle({ edgesAfterOn, edgesAfterOff, offShot, onShot, restoredShot });
   if (failures.length > 0) fail(`edges toggle gate:\n${formatFailures(failures)}`);
-  console.log('\nPASS: edges toggle flips store_state and visibly changes the design viewport');
+  console.log('\nPASS: edges toggle flips store_state, visibly changes the design viewport, and restores it');
 }
 
 main().catch((err) => {
