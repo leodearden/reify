@@ -12,7 +12,7 @@
 //!
 //! This is a v0.4-T1 *shippable skeleton*: per-voxel work in the inner
 //! loop performs two `gradient_at_world` calls (a centre sample plus a
-//! ±½-spacing probe pair per axis: 7 trilinear samples each) plus a
+//! ±½-spacing probe pair per axis, each a trilinear sample) plus a
 //! bidirectional walk of up to `4 × max_thickness_voxels`
 //! trilinear samples. At PRD-realistic 256³ grids (~16 M voxels) the
 //! cost is on the order of `O(N³ · max_thickness_voxels)` trilinear
@@ -648,8 +648,8 @@ pub fn compute_medial_mask(
     let (max_steps, walk_step, max_walk_dist) = walk_params(min_spacing, options);
 
     // Pre-compute the per-voxel gradient once before the main loop.
-    // Avoids repeating the 6-sample central-difference stencil inside
-    // the hot path; the lookup is O(1) via i*ny*nz + j*nz + k.
+    // Avoids repeating the finite-difference stencil inside the hot
+    // path; the lookup is O(1) via i*ny*nz + j*nz + k.
     let gradient_grid = precompute_gradient_grid(sdf, band_width);
 
     // Parallel outer (i-axis) loop.
@@ -963,21 +963,21 @@ pub(crate) fn sample_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<f64
     Some(c0 * (1.0 - tz) + c1 * tz)
 }
 
-/// Central-difference gradient at integer voxel indices, falling
-/// back to forward/backward differences at boundaries. Returns the
-/// raw gradient (not normalized). A single-sample axis is flat
-/// (component `0.0`).
+/// Gradient at integer voxel indices from each axis's grid neighbours, by
+/// the boundary rule [`finite_difference`] states: central in the interior,
+/// one-sided at a grid face, flat along a single-sample axis. Returns the raw
+/// gradient (not normalized).
 pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3] {
     let centre = sample_at_index(sdf, idx);
     let component = |axis: usize| {
         let len = sdf.axis_grids[axis].len();
-        let neighbour = |step: isize| {
-            let n = idx[axis].checked_add_signed(step).filter(|&n| n < len)?;
+        finite_difference(len, centre, sdf.spacing[axis], |steps| {
+            let n = idx[axis].checked_add_signed(steps).filter(|&n| n < len)?;
             let mut at = idx;
             at[axis] = n;
             Some(sample_at_index(sdf, at))
-        };
-        finite_difference(centre, neighbour(1), neighbour(-1), sdf.spacing[axis]).unwrap_or(0.0)
+        })
+        .expect("an index on a multi-sample axis has a grid neighbour on at least one side")
     };
     [component(0), component(1), component(2)]
 }
@@ -998,8 +998,8 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
 ///   is never read by downstream logic.
 ///
 /// **Cost rationale.** Each out-of-band voxel costs one extra
-/// `sample_at_index` call (a single array index) and skips the 6-sample
-/// central-difference stencil (`gradient_at_index`). In typical fixtures
+/// `sample_at_index` call (a single array index) and skips the
+/// finite-difference stencil (`gradient_at_index`). In typical fixtures
 /// ~95% of voxels are out-of-band, so the gate yields a substantial
 /// saving.
 ///
@@ -1089,14 +1089,26 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
     grid
 }
 
-/// One gradient component from the samples `step` either side of `centre`.
+/// One gradient component along an axis of `axis_len` samples: the boundary
+/// rule both [`gradient_at_index`] and [`gradient_at_world`] follow.
+/// `neighbour(1)` and `neighbour(-1)` are the samples one `step` forward and
+/// backward of `centre` along the axis, `None` where that lands off the grid.
+///
+/// - A single-sample axis is flat by convention: `Some(0.0)`, and no
+///   neighbour is sampled.
+/// - Where both neighbours land on the grid, the central difference.
+/// - Where only one does, the one-sided difference against `centre`.
+/// - Where neither does, `None`.
 fn finite_difference(
+    axis_len: usize,
     centre: f64,
-    forward: Option<f64>,
-    backward: Option<f64>,
     step: f64,
+    neighbour: impl Fn(isize) -> Option<f64>,
 ) -> Option<f64> {
-    match (forward, backward) {
+    if axis_len == 1 {
+        return Some(0.0);
+    }
+    match (neighbour(1), neighbour(-1)) {
         (Some(f), Some(b)) => Some((f - b) / (2.0 * step)),
         (Some(f), None) => Some((f - centre) / step),
         (None, Some(b)) => Some((centre - b) / step),
@@ -1105,15 +1117,11 @@ fn finite_difference(
 }
 
 /// Gradient at a world coordinate via finite differences over
-/// `sample_at_world`, probing `±½·spacing[axis]` along each axis.
-///
-/// - Where both probes land on the grid, the component is the central
-///   difference.
-/// - Where only one does, it is the one-sided difference against the
-///   sample at `world` itself, which is the rule [`gradient_at_index`]
-///   applies at a grid face.
-/// - A single-sample axis is flat by convention (component `0.0`).
-/// - Returns `None` when `world` itself is off the grid.
+/// `sample_at_world`, probing `±½·spacing[axis]` along each axis, by the
+/// boundary rule [`finite_difference`] states: central where both probes
+/// land on the grid, one-sided against the sample at `world` itself where
+/// only one does, flat along a single-sample axis. Returns `None` when
+/// `world` itself is off the grid.
 ///
 /// **Per-axis stencil offsets.** Each component's offset is half that axis's
 /// own spacing rather than a global `0.5 · min(spacing)`, so on an
@@ -1122,17 +1130,13 @@ fn finite_difference(
 /// axis.
 pub(crate) fn gradient_at_world(sdf: &SampledField, world: [f64; 3]) -> Option<[f64; 3]> {
     let centre = sample_at_world(sdf, world)?;
-    let component = |axis: usize| -> Option<f64> {
-        if sdf.axis_grids[axis].len() == 1 {
-            return Some(0.0);
-        }
+    let component = |axis: usize| {
         let half = 0.5 * sdf.spacing[axis];
-        let probe = |delta: f64| {
+        finite_difference(sdf.axis_grids[axis].len(), centre, half, |steps| {
             let mut at = world;
-            at[axis] += delta;
+            at[axis] += steps as f64 * half;
             sample_at_world(sdf, at)
-        };
-        finite_difference(centre, probe(half), probe(-half), half)
+        })
     };
     Some([component(0)?, component(1)?, component(2)?])
 }
@@ -2223,7 +2227,7 @@ mod tests {
     /// *Out-of-band sentinel:* the consumer rejects out-of-band voxels at
     /// line 470 *before* indexing into the cache (line 475), so the `[0.0; 3]`
     /// sentinel is structurally unreachable from downstream logic.  Pinning
-    /// the sentinel confirms that skipping the 6-sample stencil for out-of-band
+    /// the sentinel confirms that skipping the stencil for out-of-band
     /// voxels is safe.
     ///
     /// The fixture uses `slab_sdf_3d(3.0, 16)` (z ∈ −7.5..7.5, φ = |z| − 3)
@@ -2286,45 +2290,62 @@ mod tests {
         );
     }
 
-    /// `gradient_at_world` on an affine field `φ = 0.48x − 0.6y + 0.64z − 1`
-    /// (5³, h = 1, bounds 0..4). Trilinear interpolation reproduces an affine
-    /// field exactly, so the true gradient is `(0.48, −0.6, 0.64)` everywhere
-    /// on the grid, including where a ½-spacing probe falls off a face (the
-    /// estimate goes one-sided there) and exactly on the bounds. Off the grid
-    /// the gradient is unknown, not zero.
-    #[test]
-    fn gradient_at_world_differentiates_up_to_the_grid_faces_and_reports_unknown_beyond_them() {
-        const TRUE_GRADIENT: [f64; 3] = [0.48, -0.6, 0.64];
-        let axis_grid: Vec<f64> = (0..5).map(f64::from).collect();
+    /// Per-axis spacing of the `gradient_at_world` fixtures: no two axes
+    /// share a spacing, so a stencil that used one axis's spacing for
+    /// another's is visible. Over 5 samples per axis it spans x ∈ [0, 4],
+    /// y ∈ [0, 2] and z ∈ [0, 8].
+    const ANISOTROPIC_SPACING: [f64; 3] = [1.0, 0.5, 2.0];
+
+    /// A `Regular3D` field of 5 samples per axis from the origin, axis `a`
+    /// spaced `ANISOTROPIC_SPACING[a]` apart, holding `phi` at every node.
+    fn anisotropic_five_sample_field(name: &str, phi: impl Fn([f64; 3]) -> f64) -> SampledField {
+        let axis_grids: Vec<Vec<f64>> = ANISOTROPIC_SPACING
+            .iter()
+            .map(|&h| (0..5).map(|i| f64::from(i) * h).collect())
+            .collect();
         let mut data = Vec::with_capacity(125);
-        for &x in &axis_grid {
-            for &y in &axis_grid {
-                for &z in &axis_grid {
-                    data.push(
-                        TRUE_GRADIENT[0] * x + TRUE_GRADIENT[1] * y + TRUE_GRADIENT[2] * z - 1.0,
-                    );
+        for &x in &axis_grids[0] {
+            for &y in &axis_grids[1] {
+                for &z in &axis_grids[2] {
+                    data.push(phi([x, y, z]));
                 }
             }
         }
-        let sdf = SampledField {
-            name: "affine-5".to_string(),
+        SampledField {
+            name: name.to_string(),
             kind: SampledGridKind::Regular3D,
             bounds_min: vec![0.0; 3],
-            bounds_max: vec![4.0; 3],
-            spacing: vec![1.0; 3],
-            axis_grids: vec![axis_grid; 3],
+            bounds_max: axis_grids.iter().map(|grid| grid[4]).collect(),
+            spacing: ANISOTROPIC_SPACING.to_vec(),
+            axis_grids,
             interpolation: InterpolationKind::Linear,
             data,
             oob_emitted: AtomicBool::new(false),
-        };
+        }
+    }
+
+    /// `gradient_at_world` on an affine field `φ = 0.48x − 0.6y + 0.64z − 1`
+    /// over the anisotropic grid. Trilinear interpolation reproduces an affine
+    /// field exactly, so the true gradient is `(0.48, −0.6, 0.64)` everywhere
+    /// on the grid, including where a ½-spacing probe falls off a face (the
+    /// estimate goes one-sided there) and exactly on the bounds. A component
+    /// whose divisor disagreed with its probe offset, in a central or a
+    /// one-sided arm, would miss it. Off the grid along any axis the gradient
+    /// is unknown, not zero.
+    #[test]
+    fn gradient_at_world_differentiates_up_to_the_grid_faces_and_reports_unknown_beyond_them() {
+        const TRUE_GRADIENT: [f64; 3] = [0.48, -0.6, 0.64];
+        let sdf = anisotropic_five_sample_field("affine", |p| {
+            TRUE_GRADIENT[0] * p[0] + TRUE_GRADIENT[1] * p[1] + TRUE_GRADIENT[2] * p[2] - 1.0
+        });
 
         for p in [
-            [2.3, 1.7, 2.1], // interior: central on every axis
-            [0.2, 2.0, 2.0], // within h/2 of the min x-face
-            [3.8, 2.0, 2.0], // within h/2 of the max x-face
-            [0.1, 0.1, 3.9], // corner: one-sided on every axis
-            [0.0, 4.0, 0.0], // on the bounds
-            [4.0, 4.0, 4.0], // on the bounds
+            [2.3, 0.85, 4.2], // interior: central on every axis
+            [0.2, 1.0, 4.0],  // within ½·spacing of the min x-face
+            [3.8, 1.0, 4.0],  // within ½·spacing of the max x-face
+            [0.1, 0.05, 7.8], // corner: one-sided on every axis
+            [0.0, 2.0, 0.0],  // on the bounds
+            [4.0, 2.0, 8.0],  // on the bounds
         ] {
             let g = gradient_at_world(&sdf, p).unwrap_or_else(|| panic!("{p:?}: gradient unknown"));
             let err = (0..3)
@@ -2332,8 +2353,39 @@ mod tests {
                 .fold(0.0, f64::max);
             assert!(err <= 1e-12, "{p:?}: gradient {g:?}, max error {err}");
         }
-        for p in [[-0.1, 2.0, 2.0], [-1.0, 2.0, 2.0]] {
+        for p in [
+            [-0.1, 1.0, 4.0],
+            [-1.0, 1.0, 4.0],
+            [2.0, 2.1, 4.0],
+            [2.0, 1.0, 8.5],
+        ] {
             assert_eq!(gradient_at_world(&sdf, p), None, "{p:?} is off the grid");
+        }
+    }
+
+    /// From a point midway between two nodes along every axis, each
+    /// component's probes, half that axis's own spacing either side, land on
+    /// the two bracketing nodes, so the component is the secant of their
+    /// samples. `φ = x³ + y³ + z³` curves along every axis, so a probe pair
+    /// reaching past the bracketing nodes (a fine axis probed at a coarser
+    /// axis's offset) reads interpolated values from the neighbouring cells
+    /// and misses that secant.
+    #[test]
+    fn gradient_at_world_from_mid_cell_is_the_secant_of_the_bracketing_nodes_on_every_axis() {
+        let cube = |t: f64| t * t * t;
+        let sdf = anisotropic_five_sample_field("cubic", |p| p.iter().copied().map(cube).sum());
+        let mid_cell = [1.5, 0.75, 3.0];
+
+        let g = gradient_at_world(&sdf, mid_cell).expect("the mid-cell point is on the grid");
+        for a in 0..3 {
+            let half = 0.5 * ANISOTROPIC_SPACING[a];
+            let secant =
+                (cube(mid_cell[a] + half) - cube(mid_cell[a] - half)) / ANISOTROPIC_SPACING[a];
+            assert!(
+                (g[a] - secant).abs() <= 1e-12,
+                "axis {a}: component {}, bracketing-node secant {secant}",
+                g[a]
+            );
         }
     }
 
