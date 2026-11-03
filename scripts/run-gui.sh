@@ -18,9 +18,6 @@
 #      WebKit renderer default.
 #   6. exec target/release/reify-gui <file.ri>.
 #
-# Prerequisite: scripts/setup-dev.sh (installs gui/sidecar's npm deps, which
-# this script does not; step 2 refuses without them).
-#
 # Environment contract (full version in scripts/run-gui-dev.sh's header; the
 # mechanism for all three is scripts/lib_gui_launch.sh, sourced by BOTH
 # launchers so they cannot drift apart on it):
