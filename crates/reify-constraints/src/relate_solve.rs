@@ -345,14 +345,15 @@ pub struct FrameSolution {
     pub pose: Pose,
     /// How many of the 6 Frame DOF the relations pin at the solution.
     pub rank: usize,
-    /// The `6 − rank` directions the relations leave free at the solution,
-    /// orthonormal in the solve's SCALED metric (each DOF over its
-    /// [`SolveScaling::unknown_scale`]).
+    /// A basis of the `6 − rank` rigid motions the relations leave free at the
+    /// solution, as geometric [`Twist`]s (world angular velocity, not exp-map
+    /// chart increments). The basis is not orthonormal in any stated metric.
     pub null_space: Vec<Twist>,
 }
 
 /// An infinitesimal rigid motion of a Frame: per unit of motion, `translation`
-/// metres of the frame origin and `rotation` radians (exponential-map vector).
+/// metres of the frame origin and `rotation` radians about the world axis through
+/// that origin (an angular velocity, so its direction IS the rotation axis).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Twist {
     /// Metres per unit.
@@ -427,14 +428,18 @@ pub fn solve_frame_outcome(
         budget,
         rank_tolerance(scaling),
     );
-    let result = run.outcome.map(|converged| FrameSolution {
-        pose: problem.pose(&run.x),
-        rank: converged.rank,
-        null_space: converged
+    let result = run.outcome.map(|converged| {
+        let pose = problem.pose(&run.x);
+        let null_space = converged
             .null_space
             .iter()
-            .map(|z| problem.twist(z))
-            .collect(),
+            .map(|z| problem.twist(z, &pose))
+            .collect();
+        FrameSolution {
+            pose,
+            rank: converged.rank,
+            null_space,
+        }
     });
     FrameSolveOutcome {
         iterations: run.iterations,
@@ -1361,6 +1366,21 @@ fn transform_point(p: [f64; 3], x: &Pose) -> [f64; 3] {
     add3(rotate(x.rotation, p), x.translation)
 }
 
+/// `J_l(θ)·v`, the left Jacobian of the exponential map: how a chart increment
+/// `v` of `θ` moves the rotation, as a world angular velocity —
+/// `J_l = I + (1−cos φ)/φ²·[θ]× + (φ−sin φ)/φ³·[θ]×²` with `φ = |θ|`.
+fn exp_map_left_jacobian(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    let angle = norm3(theta);
+    let (a, b) = if angle < 1e-6 {
+        (0.5, 1.0 / 6.0)
+    } else {
+        let sq = angle * angle;
+        ((1.0 - angle.cos()) / sq, (angle - angle.sin()) / (sq * angle))
+    };
+    let once = cross3(theta, v);
+    add3(add3(v, scale3(once, a)), scale3(cross3(theta, once), b))
+}
+
 /// Rotate a 3-vector by the exponential-map vector `theta` (Rodrigues' formula).
 fn rotate(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     let angle = norm3(theta);
@@ -1469,11 +1489,14 @@ impl<'a> FrameProblem<'a> {
         }
     }
 
-    fn twist(&self, z: &[f64]) -> Twist {
+    /// The rigid motion of the scaled chart increment `z` at `at`: the
+    /// translation increment already moves the frame origin, while the exp-map
+    /// increment `δθ` becomes the world angular velocity `J_l(θ)·δθ`.
+    fn twist(&self, z: &[f64], at: &Pose) -> Twist {
         let [tx, ty, tz, rx, ry, rz] = self.unscaled(z);
         Twist {
             translation: [tx, ty, tz],
-            rotation: [rx, ry, rz],
+            rotation: exp_map_left_jacobian(at.rotation, [rx, ry, rz]),
         }
     }
 }

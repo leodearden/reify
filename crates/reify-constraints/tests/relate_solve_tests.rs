@@ -2280,6 +2280,61 @@ fn concentric_alone_publishes_slide_and_spin_as_its_null_space() {
     );
 }
 
+/// The twists are geometric, not exp-map chart increments: with the anchor axis
+/// tilted 40° about x the solve lands on a non-zero rotation, and every twist
+/// still slides along / spins about the TILTED axis (a chart increment would sit
+/// θ/2 = 20° off it).
+#[test]
+fn a_rotated_solution_publishes_twists_about_the_anchor_axis() {
+    let tilt = 40f64.to_radians();
+    let anchor = (0.0, -tilt.sin(), tilt.cos());
+    let relations = vec![relation(
+        "concentric",
+        vec![
+            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            datum("plate", axis((0.0, 0.0, 0.0), anchor)),
+        ],
+        4,
+    )];
+    let unknown = bolt_unknown();
+    let seed = Pose::identity();
+    let scaling = scaling_for(&relations, &unknown, &seed);
+    let outcome = solve_frame_outcome(
+        &relations,
+        &unknown,
+        &seed,
+        &scaling,
+        SolveBudget::default(),
+    );
+    let solution = outcome.result.expect("a lone concentric is feasible");
+    assert!(
+        solution.pose.rotation[0].abs() > 0.5,
+        "the fixture must solve to a non-trivial rotation: {solution:?}"
+    );
+    assert_eq!(solution.null_space.len(), 2);
+    let axis = [anchor.0, anchor.1, anchor.2];
+    let off_axis = |v: [f64; 3]| {
+        let along = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+        let rest = [v[0] - along * axis[0], v[1] - along * axis[1], v[2] - along * axis[2]];
+        (rest[0] * rest[0] + rest[1] * rest[1] + rest[2] * rest[2]).sqrt()
+    };
+    let length = scaling.characteristic_length();
+    for twist in &solution.null_space {
+        assert!(off_axis(twist.rotation) <= 1e-6, "{twist:?}");
+        assert!(off_axis(twist.translation) <= 1e-6 * length, "{twist:?}");
+    }
+    let spin = solution
+        .null_space
+        .iter()
+        .map(|t| norm(t.rotation))
+        .fold(0.0, f64::max);
+    assert!(spin > 0.1, "the twists span a spin: {solution:?}");
+}
+
+fn norm(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
 #[test]
 fn fully_determined_set_has_rank_six_and_no_null_space() {
     let relations = fully_determined_relations();
