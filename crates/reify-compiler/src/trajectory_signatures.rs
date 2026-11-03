@@ -6,13 +6,16 @@
 //! their first argument — the `Profile` / `EndEffectorTrack` — so the
 //! `std.trajectory` wrappers `profile_duration -> Time` and
 //! `peak_deviation -> Length` would have bodies contradicting their returns.
-//! The runtime kernels already return scalars (`profile_duration_value` a
-//! `Value::Scalar` of dimension TIME, `peak_deviation_at` an SI-metre
-//! `Value::Real`), both of which kind-match a `Type::Scalar` cell.
+//! The runtime kernels already return scalars, both of which kind-match a
+//! `Type::Scalar` cell: `profile_duration_value` a `Value::Scalar` of dimension
+//! TIME, and `peak_deviation_at` a bare `Value::Real` whose `Length` dimension
+//! is carried statically only, until #9283 dimensions it at runtime.
 //!
 //! The list-valued trajectory intrinsics stay in `EVAL_DEFERRED_BUILTIN_NAMES`
-//! under #6007. That registry migration moves these two into `reify-builtins`
-//! rows and deletes this module; it must not leave both.
+//! under #6007. Should a `reify-builtins` row ever type either name here, the
+//! name leaves this family in the same diff:
+//! `registry_rows_and_shared_verbs_are_disjoint_from_every_family` reds while
+//! both claim it.
 
 use reify_core::{DimensionVector, Type};
 
@@ -22,6 +25,12 @@ pub(crate) const TRAJECTORY_SCALAR_INTRINSIC_NAMES: &[&str] =
 /// The result type of a scalar-valued trajectory intrinsic, by exact name;
 /// `None` for any other name.
 pub(crate) fn trajectory_scalar_intrinsic_result_type(name: &str) -> Option<Type> {
+    // The slice, not this `match`, decides membership: it is what every
+    // `BUILTIN_NAME_FAMILIES` guard sees, so an arm without a slice entry
+    // fails closed instead of typing a name outside those guards.
+    if !TRAJECTORY_SCALAR_INTRINSIC_NAMES.contains(&name) {
+        return None;
+    }
     let dimension = match name {
         "profile_duration_at" => DimensionVector::TIME,
         "peak_deviation_at" => DimensionVector::LENGTH,
