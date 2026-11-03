@@ -4,12 +4,9 @@
 //! non-OCCT evaluation engines (e.g. `reify-eval-fea`, task B) can depend on the
 //! compute-node contract's value types without pulling in OCCT.
 //!
-//! `reify-eval` still re-exports the compute-dispatch types (`ComputeFn`,
-//! `ComputeOutcome`, `DispatchError`, `RealizationReadHandle`,
-//! `RealizedContent`, `StructuredComputeDetail`) at its crate root. The
-//! FEA-result cluster (`ElasticResult`, `ShellChannels`,
-//! `AposterioriEstimate`, `max_deflection_magnitude`) is consumed from this
-//! crate directly.
+//! `reify-eval` re-exports some of these types at its own paths; its `pub use`
+//! lines are the authority on which. The FEA-result cluster is consumed from
+//! this crate directly.
 //!
 //! See `docs/prds/v0_3/compute-node-contract.md` for the compute-node contract
 //! spec and the task A plan (`.task/plan.json`) for the extraction rationale

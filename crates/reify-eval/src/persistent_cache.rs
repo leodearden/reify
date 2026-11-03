@@ -11,14 +11,6 @@
 //! [`reify_core::persistent_cache`] (#3834), and the FEA solver output
 //! [`reify_compute_contract::ElasticResult`] with its impl lives in
 //! `reify_compute_contract` (#4934).
-//!
-//! # Encoding strategy
-//!
-//! [`PersistentlyCacheable`] is intentionally NOT object-safe:
-//! `serialize_to_writer` and `deserialize_from_reader` use `impl Write` /
-//! `impl Read` generics so the cache layer can monomorphise the zstd
-//! Encoder/Decoder paths for each concrete writer/reader. The cache keys on
-//! concrete types per entry, so static dispatch is sufficient.
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -335,9 +327,8 @@ impl CacheEntryHeader {
 /// When any contributor changes, `build.rs` recomputes this hash; all existing
 /// cache entries miss and are recomputed from scratch (invalidate-by-miss per
 /// PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
-/// version"). Cross-reference:
-/// [`crate::engine_hash_algo::compose_engine_version_hash`] is the library
-/// function that documents and pins the hashing algorithm.
+/// version"). Cross-reference: `engine_hash_algo::compose_engine_version_hash`
+/// is the library function that documents and pins the hashing algorithm.
 pub const ENGINE_VERSION_HASH: &str = env!("REIFY_ENGINE_VERSION_HASH");
 
 // Compile-time sentinel: `bincode::ErrorKind` is part of the public bincode
