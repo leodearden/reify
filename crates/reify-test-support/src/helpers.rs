@@ -2602,7 +2602,9 @@ mod tests {
     // Cell resolution is shared by every value-cell entry point; see
     // try_get_value_cell_in_template's rustdoc. The not-found panic's
     // available-cells list and the defaultless-cell pass-through are pinned
-    // once, on get_value_cell_in_template, which owns them.
+    // once, on get_value_cell_in_template, which owns them. The ambiguity
+    // abort is pinned once too, on try_get_value_cell_in_template, which
+    // raises it.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
@@ -2694,19 +2696,6 @@ mod tests {
         crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build()
-    }
-
-    /// Pins that two value cells sharing a member name under different
-    /// entities panic, rather than silently resolving to the first declared.
-    #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_get_value_cell_in_panics_on_ambiguous_member() {
-        use reify_core::ModulePath;
-
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(ambiguous_x_template())
-            .build();
-        super::get_value_cell_in(&module, "Bracket", "x");
     }
 
     /// The module route to the same resolution as
@@ -2869,6 +2858,12 @@ mod tests {
     }
 
     // ── get_let_expr_in_template ────────────────────────────────────────────
+    // The not-found and has-no-default panics are not re-pinned here:
+    // get_let_expr_in_template and get_let_expr_in raise them from the same
+    // primitives (get_value_cell_in_template, require_default_expr), and
+    // they are pinned on get_value_cell_in_template and get_let_expr_in. A
+    // copy at this layer would cover the entry point, not new behavior
+    // (task #5831 review).
 
     /// get_let_expr_in_template should return the default_expr of the named
     /// cell directly from a template the caller already holds (no module or
@@ -2925,26 +2920,6 @@ mod tests {
                 Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
             )
             .build()
-    }
-
-    /// The two panic branches of `get_let_expr_in_template` ("no value cell
-    /// named" / "has no default expr") are intentionally NOT re-tested here.
-    /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
-    /// the shared `try_get_value_cell_in_template` / `require_default_expr` primitives, and
-    /// `test_get_let_expr_in_panics_on_missing_cell` /
-    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
-    /// exercise both branches through those primitives — duplicating them at
-    /// this layer would add coverage of the new entry point only, not of new
-    /// behavior (task #5831 review).
-    ///
-    /// What IS specific to this layer: the ambiguity abort. This fixture's
-    /// colliding entities ("First", "Second") are neither the template's own
-    /// ("Bracket"), so the lookup must abort rather than silently return one
-    /// of the two.
-    #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
-        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
     /// Pins that the ambiguity panic is actionable: it enumerates the
