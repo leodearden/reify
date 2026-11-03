@@ -19,6 +19,7 @@ import {
   Box3,
   Vector3,
   type BufferGeometry,
+  type Group,
   type LineBasicMaterial,
   type LineSegments,
   type Object3D,
@@ -87,6 +88,11 @@ function fold(entityPath: string, foldDeg: number): MeshData {
 // Scene-graph probes
 // ---------------------------------------------------------------------------
 
+/** The edges overlay's own Group, present in the scene only while edges are on. */
+function edgesGroupIn(scene: Scene): Object3D | undefined {
+  return scene.getObjectByName('edgesOverlayGroup');
+}
+
 function edgesObjectsIn(scene: Scene): Object3D[] {
   const found: Object3D[] = [];
   scene.traverse((obj) => {
@@ -145,6 +151,7 @@ describe('meshManager edges-in-black overlay', () => {
 
     expect(mm.getEdgesOverlays().size).toBe(0);
     expect(edgesObjectsIn(scene)).toEqual([]);
+    expect(edgesGroupIn(scene)).toBeUndefined();
   });
 
   it('setEdges(true) draws exactly one black LineSegments per mesh on the edges tier, outside the mesh', () => {
@@ -159,6 +166,13 @@ describe('meshManager edges-in-black overlay', () => {
       expect(isInScene(line, scene)).toBe(true);
       expect((line.material as LineBasicMaterial).color.equals(new Color(EDGES_COLOR))).toBe(true);
       expect(line.renderOrder).toBe(EDGES_OVERLAY_RENDER_ORDER);
+      // three sorts a Group's renderOrder (as its children's groupOrder) ahead of
+      // their own renderOrder, so a tiered Group would draw every edge over the
+      // selection outline, which is added straight to the scene at groupOrder 0.
+      const group = line.parent as Group;
+      expect(group.isGroup).toBe(true);
+      expect(group.renderOrder).toBe(0);
+      expect(group.parent).toBe(scene);
 
       // Raycast safety: the three pick sites intersect the meshes recursively,
       // so an overlay parented under its mesh would be hit as that mesh.
@@ -215,7 +229,7 @@ describe('meshManager edges-in-black overlay', () => {
     expect(second.get('B')).toBe(first.get('B'));
   });
 
-  it('setEdges(false) removes every overlay and disposes the shared material', () => {
+  it('setEdges(false) removes every overlay and its group, and disposes the shared material', () => {
     mm.sync({ A: cube('A'), B: cube('B', 2) });
     mm.setEdges(true);
     const materialDisposed = onDispose(mm.getEdgesOverlays().get('A')!.material as LineBasicMaterial);
@@ -224,7 +238,52 @@ describe('meshManager edges-in-black overlay', () => {
 
     expect(mm.getEdgesOverlays().size).toBe(0);
     expect(edgesObjectsIn(scene)).toEqual([]);
+    expect(edgesGroupIn(scene)).toBeUndefined();
     expect(materialDisposed()).toBe(true);
+  });
+
+  it('keeps an overlay while a sync hands back the same geometry arrays, even in a new MeshData', () => {
+    const a = cube('A');
+    mm.sync({ A: a, B: cube('B', 2) });
+    mm.setEdges(true);
+    const before = mm.getEdgesOverlays();
+
+    // An eval that touched only B: A's arrays are unchanged, B's are new.
+    mm.sync({ A: { ...a }, B: cube('B', 3) });
+
+    const after = mm.getEdgesOverlays();
+    expect(after.get('A')).toBe(before.get('A'));
+    expect(after.get('B')).not.toBe(before.get('B'));
+  });
+
+  it('rebuilds when new arrays arrive on the same MeshData object', () => {
+    // The engine store merges an incremental mesh update into the entity's
+    // existing MeshData, so changed geometry arrives on the same object.
+    const a = cube('A');
+    mm.sync({ A: a });
+    mm.setEdges(true);
+    const before = mm.getEdgesOverlays().get('A')!;
+
+    Object.assign(a, cubeSoup('A', 2));
+    mm.sync({ A: a });
+
+    const after = mm.getEdgesOverlays().get('A')!;
+    expect(after).not.toBe(before);
+    expect(boxOf(after.geometry as BufferGeometry).equals(boxOfPositions(a.vertices))).toBe(true);
+  });
+
+  it('follows new displaced positions on the same vertices while deformed', () => {
+    const base = cube('A');
+    const shifted = (dz: number) => base.vertices.map((v, i) => (i % 3 === 2 ? v + dz : v));
+    mm.sync({ A: { ...base, displaced_positions: shifted(1) } });
+    mm.setEdges(true);
+    mm.setDeformation({ warpFactor: 1 });
+
+    const moved = shifted(5);
+    mm.sync({ A: { ...base, displaced_positions: moved } });
+
+    const line = mm.getEdgesOverlays().get('A')!;
+    expect(boxOf(line.geometry as BufferGeometry).equals(boxOfPositions(moved))).toBe(true);
   });
 
   it('draws no overlay for a hidden or ghosted mesh, and restores it when shown again', () => {
@@ -261,6 +320,22 @@ describe('meshManager edges-in-black overlay', () => {
     expect(boxOf(restored.geometry as BufferGeometry).equals(boxOfPositions(base.vertices))).toBe(true);
   });
 
+  it('toggling deformation leaves the overlay of a mesh without displaced positions alone', () => {
+    const base = cube('A');
+    const displaced = base.vertices.map((v) => v * 2);
+    mm.sync({ A: { ...base, displaced_positions: displaced }, B: cube('B', 2) });
+    mm.setEdges(true);
+    const lineB = mm.getEdgesOverlays().get('B');
+
+    mm.setDeformation({ warpFactor: 1 });
+    const deformedA = mm.getEdgesOverlays().get('A');
+    expect(mm.getEdgesOverlays().get('B')).toBe(lineB);
+
+    mm.setDeformation(null);
+    expect(mm.getEdgesOverlays().get('B')).toBe(lineB);
+    expect(mm.getEdgesOverlays().get('A')).not.toBe(deformedA);
+  });
+
   it('draws a crease only where the faces fold by at least the threshold angle', () => {
     const steep = createMeshManager(new Scene());
     steep.sync({ F: fold('F', EDGES_THRESHOLD_ANGLE_DEG + 5) });
@@ -288,5 +363,6 @@ describe('meshManager edges-in-black overlay', () => {
     mm.dispose();
 
     expect(edgesObjectsIn(scene)).toEqual([]);
+    expect(edgesGroupIn(scene)).toBeUndefined();
   });
 });

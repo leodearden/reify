@@ -212,6 +212,22 @@ function validateMeshData(data: MeshData): boolean {
   return true;
 }
 
+/** The MeshData arrays a mesh's geometry is built from: its index, and its vertices warped by displaced_positions. */
+type GeometrySource = Pick<MeshData, 'vertices' | 'indices' | 'displaced_positions'>;
+
+function geometrySourceOf(data: MeshData): GeometrySource {
+  return { vertices: data.vertices, indices: data.indices, displaced_positions: data.displaced_positions };
+}
+
+function isSameGeometrySource(source: GeometrySource | undefined, data: MeshData): boolean {
+  return (
+    source !== undefined &&
+    source.vertices === data.vertices &&
+    source.indices === data.indices &&
+    source.displaced_positions === data.displaced_positions
+  );
+}
+
 /**
  * Assign `newArray` into `geometry`'s `name` attribute.
  *
@@ -297,6 +313,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   // These are COPIES so in-place writes to the position buffer never corrupt the originals.
   const meshOriginalVertices = new Map<string, Float32Array>();
   const meshDisplacedPositions = new Map<string, Float32Array>();
+
+  // Side-table: the MeshData arrays each entity's geometry was last built from.
+  // The engine store merges a mesh update into the entity's existing MeshData, but
+  // replaces its typed arrays rather than mutating them, so identical arrays mean
+  // a sync would rebuild the very geometry the mesh already holds.
+  const meshGeometrySources = new Map<string, GeometrySource>();
 
   const meshMap = new Map<string, Mesh>();
   const visibilityMap = new Map<string, VisibilityState>();
@@ -489,6 +511,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     if (data.displaced_positions) {
       meshDisplacedPositions.set(entityPath, data.displaced_positions.slice());
     }
+    meshGeometrySources.set(entityPath, geometrySourceOf(data));
 
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
@@ -594,6 +617,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     } else {
       meshDisplacedPositions.delete(mesh.name);
     }
+    meshGeometrySources.set(mesh.name, geometrySourceOf(data));
 
     // If colorize is active and this mesh already has a colour attribute, re-bake
     // the colours with the new scalars.  Mirrors the setColorize mutation
@@ -800,7 +824,8 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       for (const [entityPath, mesh] of meshMap) {
         restoreOriginalToMesh(mesh, entityPath);
         removeUndeformedOverlay(entityPath);
-        syncEdgesOverlay(entityPath, mesh);
+        // Only a displaced mesh was warped, so only its positions just moved back.
+        if (meshDisplacedPositions.has(entityPath)) syncEdgesOverlay(entityPath, mesh);
       }
       currentDeformation = null;
       return;
@@ -872,6 +897,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     meshVectorChannels.delete(entityPath);
     meshOriginalVertices.delete(entityPath);
     meshDisplacedPositions.delete(entityPath);
+    meshGeometrySources.delete(entityPath);
     visibilityMap.delete(entityPath);
   }
 
@@ -994,10 +1020,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     for (const [entityPath, data] of Object.entries(meshes)) {
       if (!validateMeshData(data)) continue;
       if (meshMap.has(entityPath)) {
+        const geometryUnchanged = isSameGeometrySource(meshGeometrySources.get(entityPath), data);
         updateMeshGeometry(meshMap.get(entityPath)!, data);
         // updateMeshGeometry removes the mesh when its BVH rebuild fails.
         const updated = meshMap.get(entityPath);
-        if (updated) syncEdgesOverlay(entityPath, updated);
+        if (updated && !geometryUnchanged) syncEdgesOverlay(entityPath, updated);
       } else {
         const mesh = createMeshFromData(entityPath, data);
         if (mesh) {
