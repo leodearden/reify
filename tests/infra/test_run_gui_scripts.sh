@@ -4,6 +4,8 @@
 # Validates the contents and behavior of:
 #   - scripts/run-gui.sh       (release-mode wrapper, no debug)
 #   - scripts/run-gui-dev.sh   (debug-mode wrapper, REIFY_DEBUG=1 + vite)
+#   - gui/sidecar/build-sidecar.sh (node_modules preflight)
+#   - scripts/setup-dev.sh     (gui/sidecar install, structural)
 
 set -euo pipefail
 
@@ -19,6 +21,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 source "$REPO_ROOT/scripts/lib_portable.sh"
 
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
+BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
 
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
@@ -449,6 +452,19 @@ _rgs_stub_npm_marker() {
 exit 0
 NPM_STUB
     chmod +x "$1/bin/npm"
+}
+
+# _rgs_stub_npx_marker <dir> — an npx that drops "$_RGS_NPX_MARKER" and fails,
+# standing in for a registry fetch: hermetic when reached, provably unreached
+# when the marker stays absent.
+_rgs_stub_npx_marker() {
+    cat > "$1/bin/npx" <<'NPX_STUB'
+#!/usr/bin/env bash
+: > "${_RGS_NPX_MARKER:?_RGS_NPX_MARKER must be set by the test}"
+echo "stub npx: would fetch from the registry" >&2
+exit 1
+NPX_STUB
+    chmod +x "$1/bin/npx"
 }
 
 # _rgs_stub_curl_stateful <dir> — a curl whose FIRST call reports the port FREE
@@ -1524,6 +1540,111 @@ _t36_resolve run-gui-dev.sh "$_t36dev_tmpdir"
 
 assert "run-gui-dev.sh: tauri resolves WITHOUT custom-protocol under --features '$_t36_features', so the window keeps loading vite's devUrl (tauri features: ${_t36_tauri//$'\n'/,})" \
     bash -c '! grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
+
+# -- Test 37: behavioral — build-sidecar.sh refuses without its node_modules --
+echo ""
+echo "--- Test 37: build-sidecar.sh refuses without gui/sidecar/node_modules (#9728) ---"
+
+_rgs_mktemp _t37_tmpdir
+mkdir -p "$_t37_tmpdir/gui/sidecar" "$_t37_tmpdir/bin"
+cp "$BUILD_SIDECAR" "$_t37_tmpdir/gui/sidecar/build-sidecar.sh"
+_rgs_stub_npx_marker "$_t37_tmpdir"
+
+# _t37_run — reset the npx marker, run the real script; sets _t37_err (stderr
+# only) and _t37_rc.
+_t37_run() {
+    rm -f "$_t37_tmpdir/npx-invoked"
+    _t37_rc=0
+    _t37_err=$(env _RGS_NPX_MARKER="$_t37_tmpdir/npx-invoked" \
+        PATH="$_t37_tmpdir/bin:$PATH" \
+        bash "$_t37_tmpdir/gui/sidecar/build-sidecar.sh" 2>&1 >/dev/null) || _t37_rc=$?
+}
+
+# _t37_assert_refused <label> — rc 1, one stderr line naming the remedy, no npx.
+_t37_assert_refused() {
+    assert "$1: exits 1 (rc $_t37_rc)" \
+        test "$_t37_rc" -eq 1
+    assert "$1: stderr is exactly one line" \
+        bash -c '[ "$(printf "%s\n" "$1" | wc -l)" -eq 1 ]' _ "$_t37_err"
+    assert "$1: stderr names the remedy 'cd gui/sidecar && npm ci' (got: $_t37_err)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "cd gui/sidecar && npm ci"' _ "$_t37_err"
+    assert "$1: npx is never reached" \
+        bash -c '! [ -e "$1" ]' _ "$_t37_tmpdir/npx-invoked"
+}
+
+# --- 37a: no node_modules ---
+_t37_run
+_t37_assert_refused "build-sidecar.sh, no node_modules"
+assert "build-sidecar.sh, no node_modules: writes no sidecar binary" \
+    bash -c 'shopt -s nullglob; f=("$1"/gui/src-tauri/sidecar/reify-sidecar-*); [ "${#f[@]}" -eq 0 ]' _ "$_t37_tmpdir"
+
+# --- 37b: a partial install (node_modules without .bin/tsup) ---
+mkdir "$_t37_tmpdir/gui/sidecar/node_modules"
+_t37_run
+_t37_assert_refused "build-sidecar.sh, node_modules without .bin/tsup"
+
+# --- 37c: sensitivity pair — the same fixture builds once tsup is installed ---
+mkdir -p "$_t37_tmpdir/gui/sidecar/node_modules/.bin"
+cat > "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup" <<'TSUP_STUB'
+#!/usr/bin/env bash
+mkdir -p dist && printf '// t37 stub bundle argv: %s\n' "$*" > dist/cli.js
+TSUP_STUB
+chmod +x "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup"
+_t37_run
+
+assert "build-sidecar.sh, tsup installed: exits 0 (rc $_t37_rc; stderr: $_t37_err)" \
+    test "$_t37_rc" -eq 0
+assert "build-sidecar.sh, tsup installed: npx is never reached" \
+    bash -c '! [ -e "$1" ]' _ "$_t37_tmpdir/npx-invoked"
+assert "build-sidecar.sh, tsup installed: writes exactly one reify-sidecar-* whose line 1 is the node shebang, bundling tsup's output for --config tsup.sidecar.ts" \
+    bash -c '
+        shopt -s nullglob
+        f=("$1"/gui/src-tauri/sidecar/reify-sidecar-*)
+        [ "${#f[@]}" -eq 1 ] || exit 1
+        [ "$(head -n1 "${f[0]}")" = "#!/usr/bin/env node" ] &&
+            grep -qF "t37 stub bundle" "${f[0]}" &&
+            grep -qF -- "--config tsup.sidecar.ts" "${f[0]}"
+    ' _ "$_t37_tmpdir"
+
+# -- Test 38: behavioral — run-gui.sh surfaces the sidecar refusal first -------
+echo ""
+echo "--- Test 38: run-gui.sh surfaces the sidecar refusal before any npm/cargo step ---"
+
+_rgs_mktemp _t38_tmpdir
+_mk_rungui_fixture "$_t38_tmpdir"
+cp "$BUILD_SIDECAR" "$_t38_tmpdir/gui/sidecar/build-sidecar.sh"
+_rgs_stub_npm_marker "$_t38_tmpdir"
+_rgs_stub_cargo "$_t38_tmpdir"
+_rgs_stub_npx_marker "$_t38_tmpdir"
+
+_t38_rc=0
+_t38_out=$(env DISPLAY=:99 \
+    _RGS_NPM_MARKER="$_t38_tmpdir/npm-invoked" \
+    _RGS_NPX_MARKER="$_t38_tmpdir/npx-invoked" \
+    _RGS_CARGO_ARGV="$_t38_tmpdir/cargo-argv" \
+    PATH="$_t38_tmpdir/bin:$PATH" \
+    bash "$_t38_tmpdir/scripts/run-gui.sh" "$_t38_tmpdir/test.ri" 2>&1) || _t38_rc=$?
+
+assert "run-gui.sh, no sidecar deps: exits non-zero" \
+    test "$_t38_rc" -ne 0
+assert "run-gui.sh, no sidecar deps: output names the remedy 'cd gui/sidecar && npm ci'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "cd gui/sidecar && npm ci"' _ "$_t38_out"
+assert "run-gui.sh, no sidecar deps: refusal precedes npm install and the frontend build" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npm-invoked"
+assert "run-gui.sh, no sidecar deps: refusal precedes every cargo call" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/cargo-argv"
+assert "run-gui.sh, no sidecar deps: npx is never reached" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npx-invoked"
+
+# -- Test 39: structural — setup-dev.sh provisions gui/sidecar ----------------
+echo ""
+echo "--- Test 39: setup-dev.sh installs gui/sidecar's node_modules (the precondition Tests 37/38 refuse without) ---"
+
+# setup-dev.sh cannot run hermetically (apt, sudo, systemd, .git hooks), so this
+# checks its UNCOMMENTED lines: a comment naming the step must not satisfy it.
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+assert "setup-dev.sh: an uncommented line runs 'cd gui/sidecar && npm ci'" \
+    bash -c "grep -Ev '^[[:space:]]*#' \"$SETUP_DEV\" | grep -qF 'cd gui/sidecar && npm ci'"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
