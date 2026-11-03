@@ -434,8 +434,18 @@ Reading:
   joins 109,079 against 108,756 (+0.3%, unchanged to one decimal).
   `gmsh/morph` at 100K is 0.38x and 0.65x after the collapse, against 0.32x in
   the same-day baseline (0.29x on 2026-09-24). At 10K it is 5.97x and 4.17x,
-  against 2.75x. The spread across the three same-day runs is mostly the morph
-  leg's noise described above, not the swap.
+  against 2.75x. The spread across the three same-day runs is host noise in
+  BOTH legs, not the swap; the gmsh walls are no more trustworthy than the
+  morph's. From the baseline to run 2, the 10K ratio rose from 2.75x to 4.17x
+  mainly on the gmsh side: the paired 0.035 rung went 717 -> 981 ms (+37%)
+  while the morph went 260 -> 235 ms (-10%). Between the two post-collapse
+  runs, which handed gmsh identical input and got identical counts back, the
+  gmsh walls still moved by up to +36% per rung (0.022: 870 -> 1174 ms; 0.014:
+  1.76 -> 2.39 s). The baseline's own gmsh walls are not even monotone in
+  rung (0.045 took 1.12 s, 0.035 took 0.72 s). At the recorded load averages
+  of 97-214 on 32 hardware threads, roughly 3-7x oversubscribed, these ratios
+  say nothing about the swap beyond sign and order of magnitude. The swap's
+  real, deterministic signal is the tet/node count table above.
 - **#2953's sign at 100K holds.** The morph is slower than the remesh in all
   three runs (ratio below 1x), within the same order of magnitude, so the
   >=10x-faster premise is still unmet. **The 10K winner holds**: the morph wins
