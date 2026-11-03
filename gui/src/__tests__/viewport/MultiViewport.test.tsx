@@ -274,6 +274,18 @@ describe('MultiViewport', () => {
     expect(otherPane.feaConvergence).toBeUndefined();
   });
 
+  it('(edges) a pane config with showEdges forwards it to that pane\'s Viewport', async () => {
+    const { MultiViewport } = await importMultiViewport();
+    const viewportStore = makeViewportStore();
+
+    const panes = [makePaneConfig('design-main', ['design/A'], { showEdges: true }), makePaneConfig('pane-1')];
+
+    render(() => <MultiViewport panes={panes} viewportStore={viewportStore} />);
+
+    expect(capturedViewportPropsByid['design-main'].showEdges).toBe(true);
+    expect(capturedViewportPropsByid['pane-1'].showEdges).toBeUndefined();
+  });
+
   it('(size-fr) column tracks are weighted by per-pane sizeWeight from the store', async () => {
     const { MultiViewport } = await importMultiViewport();
 
