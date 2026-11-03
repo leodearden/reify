@@ -1636,6 +1636,16 @@ assert "run-gui.sh, no sidecar deps: refusal precedes every cargo call" \
 assert "run-gui.sh, no sidecar deps: npx is never reached" \
     bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npx-invoked"
 
+# -- Test 39: structural — setup-dev.sh provisions gui/sidecar ----------------
+echo ""
+echo "--- Test 39: setup-dev.sh installs gui/sidecar's node_modules (the precondition Tests 37/38 refuse without) ---"
+
+# setup-dev.sh cannot run hermetically (apt, sudo, systemd, .git hooks), so this
+# checks its UNCOMMENTED lines: a comment naming the step must not satisfy it.
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+assert "setup-dev.sh: an uncommented line runs 'cd gui/sidecar && npm ci'" \
+    bash -c "grep -Ev '^[[:space:]]*#' \"$SETUP_DEV\" | grep -qF 'cd gui/sidecar && npm ci'"
+
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""
 echo "--- Test 32: suite-level DISPLAY=:99 pin still holds at end of suite ---"
