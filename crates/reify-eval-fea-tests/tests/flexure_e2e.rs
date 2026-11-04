@@ -1100,6 +1100,8 @@ module steel_yield_floors
 structure def SteelYieldFloors {
     let with_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
     let no_yield = prb_cantilever_beam(20mm, 5mm, 0.5mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let yield_binds = prb_cantilever_beam(5mm, 5mm, 1mm, Steel_AISI_1045(), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
+    let yield_binds_without_yield = prb_cantilever_beam(5mm, 5mm, 1mm, Steel_AISI_1045(yield_stress: none), point3(0mm, 0mm, 0mm), vec3(0.0, 1.0, 0.0))
 }
 "#;
 
@@ -1153,12 +1155,23 @@ structure def SteelYieldFloors {
             .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
             .collect();
         assert!(loud.is_empty(), "no Error/Warning diagnostic: {loud:#?}");
-        for cell in ["with_yield", "no_yield"] {
+        let upper = |cell: &str| {
             let joint = result
                 .values
                 .get(&ValueCellId::new("SteelYieldFloors", cell))
                 .unwrap_or_else(|| panic!("cell {cell}"));
-            assert_eq!(validity_upper_si(joint), 0.08726646259971647, "{cell}");
+            validity_upper_si(joint)
+        };
+        for cell in ["with_yield", "no_yield", "yield_binds_without_yield"] {
+            assert_eq!(upper(cell), 0.08726646259971647, "{cell}: the 5° PRB cap");
         }
+        // L = 5 mm, t = 1 mm: θ_yield = yield·L/(E·t/2) ≈ 0.0151 rad binds below
+        // the 5° cap, so this half-width is the yield_stress read, not the cap.
+        let theta_yield = 310e6 * 5e-3 / (205e9 * 1e-3 / 2.0);
+        let yield_binds = upper("yield_binds");
+        assert!(
+            (yield_binds - theta_yield).abs() <= 1e-15,
+            "yield_binds: {yield_binds} vs θ_yield {theta_yield}"
+        );
     }
 }
