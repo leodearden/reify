@@ -3861,9 +3861,16 @@ fn compile_expr_guarded_with_expected_inner(
                         // 3), so arg TYPES cross the boundary, not
                         // `CompiledExpr`s.
                         //
-                        // `None` means "not a registry row", so unseeded names
-                        // fall through to the arms below exactly as before —
-                        // I-REG-3's pre-ω carve-out. The call stays a
+                        // The fall-through is the `registry_owns` miss: an
+                        // unregistered name, an arity-overload group or a
+                        // Relation row reaches the arms below exactly as
+                        // before — I-REG-3's pre-ω carve-out. Past the guard,
+                        // `None` would mean an `ArgAware` resolver declined;
+                        // none does today, pinned by `harness_builtin_registry`'s
+                        // `registry_result_type_is_total_over_every_name_registry_owns`.
+                        // That failed `let Some` is where τ-numeric wires
+                        // `E_BuiltinArgShape` (PRD §3 decision 5) instead of
+                        // falling through silently. The call stays a
                         // `FunctionCall`: eval is untouched.
                         t
                     } else if is_fea_envelope_query(name) {

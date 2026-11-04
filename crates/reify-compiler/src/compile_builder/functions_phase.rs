@@ -21,8 +21,11 @@ use crate::types::TopologyTemplate;
 ///    module's own `structure_def`s (task 3895 — same-module construction
 ///    support); then iterate `fn_refs` in source order calling
 ///    [`compile_function`] with the registry, `ctx.resolution_enums`,
-///    accumulated `ctx.functions`, and `ctx.alias_registry`.  When `fn_refs`
-///    is empty this block is skipped — skeleton compilation would be wasted.
+///    the user fns compiled so far merged with the prelude by
+///    [`build_resolution_functions`], and `ctx.alias_registry`.  The skeletons'
+///    param defaults compile against the same merge (prelude only, as no user
+///    fn is compiled yet).  When `fn_refs` is empty this block is skipped —
+///    skeleton compilation would be wasted.
 ///    The skeletons are the local tier of
 ///    [`name_env::ctor_template_registry`], so they shadow prelude templates of
 ///    the same name.
@@ -40,6 +43,7 @@ pub(crate) fn phase_functions(
     // registry is never consumed, so building skeletons (and compiling their
     // param defaults) is entirely wasted work.
     if !fn_refs.is_empty() {
+        let skeleton_table = build_resolution_functions(&ctx.functions, prelude);
         // Skeletons are declared BEFORE `merged_registry` so they outlive the
         // &-borrows taken by the registry (drop order is reverse-declaration).
         let skeletons: Vec<TopologyTemplate> = structure_refs
@@ -48,7 +52,7 @@ pub(crate) fn phase_functions(
                 build_structure_def_skeleton(
                     s,
                     &ctx.resolution_enums,
-                    &ctx.functions,
+                    &skeleton_table,
                     &ctx.alias_registry,
                     &ctx.resolution_structure_names,
                     &ctx.resolution_trait_names,
@@ -62,11 +66,9 @@ pub(crate) fn phase_functions(
         let merged_registry: HashMap<String, &TopologyTemplate> =
             name_env::ctor_template_registry(&skeletons, prelude);
 
-        // Compile user functions in source order.
-        //
-        // Passing `&ctx.functions` as the "prior compiled functions" parameter lets
-        // a function resolve a call to an earlier sibling declaration (forward
-        // references are not supported at the function layer).
+        // Compile user functions in source order. Each body resolves against the
+        // user fns compiled so far plus every prelude fn they do not shadow
+        // (`build_resolution_functions`); forward references still do not resolve.
         //
         // The order-INDEPENDENT companion to that order-dependent table
         // (task #5371), merged ONCE for the whole phase and borrowed by every
@@ -77,10 +79,11 @@ pub(crate) fn phase_functions(
             &ctx.resolution_structure_names,
         );
         for fn_def in fn_refs {
+            let body_table = build_resolution_functions(&ctx.functions, prelude);
             if let Some(compiled_fn) = compile_function(
                 fn_def,
                 &ctx.resolution_enums,
-                &ctx.functions,
+                &body_table,
                 &ctx.alias_registry,
                 &ctx.resolution_structure_names,
                 &ctx.resolution_trait_names,

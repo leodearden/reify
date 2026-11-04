@@ -12,7 +12,8 @@
 #   4. Install gui/ npm deps (vite needs them).
 #   5. Start the vite dev server in its own PROCESS GROUP, with stdin detached
 #      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
-#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
+#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`;
+#      no `embedded-frontend`, so the window loads devUrl).
 #   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
 #      renderer default.
 #   8. Run target/debug/reify-gui <file.ri> as a backgrounded child and
@@ -342,8 +343,9 @@ if [ "$VITE_READY" -ne 1 ]; then
 fi
 
 # -- 6. Build reify-gui in DEBUG profile -------------------------------------
-# Debug profile is required so Tauri's runtime selects `devUrl` (vite) instead
-# of `frontendDist` — see tauri.conf.json. cfg!(debug_assertions) drives this.
+# Only `gui`, not `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the
+# window loads devUrl, retargeted by gui/src-tauri/src/dev_url.rs; the debug
+# profile is for build time.
 echo "==> Building reify-gui (debug)..."
 cargo build -p reify-gui --bin reify-gui --features gui
 

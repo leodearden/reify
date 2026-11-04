@@ -83,8 +83,8 @@ pub(crate) struct CompilationCtx {
     /// module-local `enum_defs`. Populated by `enums_phase::bind_resolution_enums`.
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
-    /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
-    /// `functions_phase::phase_functions`.
+    /// prelude functions via `functions_phase::build_resolution_functions`.
+    /// Populated by `functions_phase::phase_functions`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
     /// Trait names known at compile time: local trait declarations + prelude
     /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE
@@ -108,7 +108,7 @@ pub(crate) struct CompilationCtx {
     /// reason this field exists. `resolution_functions` is a table of compiled
     /// SIGNATURES and is only complete once `phase_functions` has finished, so a
     /// fn body — which compiles DURING that phase, against the partially-grown
-    /// `ctx.functions` — cannot ask it whether a name exists. This set answers
+    /// user table (plus the prelude) — cannot ask it whether a name exists. This set answers
     /// the weaker question ("does the module declare this name at all?") and is
     /// complete before the first body compiles, which is what lets the terminal
     /// first-arg fallback in `expr.rs` tell "not a builtin, and nothing else

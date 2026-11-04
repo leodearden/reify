@@ -27,7 +27,7 @@ use reify_audit::{
     AuditContext, EvidenceRef, Finding, MockGitOps, MockJCodemunchOps, Pattern, Severity,
 };
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 /// Write `content` to relative `path` inside `root`, creating parent dirs.
@@ -69,17 +69,7 @@ impl Harness {
     }
 
     fn ctx(&self, root: &Path) -> AuditContext<'_> {
-        AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &self.conn,
-            git: &self.git,
-            jcodemunch: &self.jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        }
+        AuditContext::new(root.to_path_buf(), &self.conn, &self.git, &self.jc)
     }
 }
 
@@ -2047,22 +2037,12 @@ fn real_repo_smoke_findings_are_well_formed_and_deterministic() {
     let git = reify_audit::RealGitOps::new(&repo_root);
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: repo_root.clone(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(repo_root.clone(), &conn, &git, &jc);
 
     // Guard against a vacuous pass: an empty index (a vendored/exported tree
     // with no git work-tree) would make every loop in check() a no-op and the
     // assertions below meaningless.
-    let tracked = ctx.git.ls_files();
+    let tracked = ctx.git().ls_files();
     assert!(
         !tracked.is_empty(),
         "ls_files() returned an empty file list — the test is likely running \

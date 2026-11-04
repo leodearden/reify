@@ -24,10 +24,9 @@
 //! The E-axis (`Err { error: msg }` binder typed `String`) is pinned in a
 //! later section of this same file.
 
-use reify_compiler::CompiledModule;
 use reify_core::{Severity, Type};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledPattern};
-use reify_test_support::compile_source_with_stdlib;
+use reify_test_support::{compile_source_with_stdlib, get_let_expr_in};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // T-axis binder: `Ok { value: v }` types `v` as the substituted `T` (Length)
@@ -284,7 +283,7 @@ structure def Widget {
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 
-    let expr = widget_value_cell(&module, "label");
+    let expr = get_let_expr_in(&module, "Widget", "label");
     assert_eq!(
         expr.result_type,
         Type::String,
@@ -321,7 +320,7 @@ structure def Widget {
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 
-    let expr = widget_value_cell(&module, "probe");
+    let expr = get_let_expr_in(&module, "Widget", "probe");
     let err_arm = find_arm_by_tag(expr, "Err");
     assert_eq!(
         err_arm.body.result_type,
@@ -341,25 +340,7 @@ structure def Widget {
     );
 }
 
-// ─── helpers (mirror result_prelude_enum_tests.rs's widget_value_cell) ─────
-
-/// Locate the compiled default/init expr of the named value cell (`param` or
-/// `let`) on the `Widget` structure's `TopologyTemplate`.
-fn widget_value_cell<'a>(module: &'a CompiledModule, member: &str) -> &'a CompiledExpr {
-    let widget = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Widget")
-        .expect("Widget template should be present in module.templates");
-    let cell = widget
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("Widget should declare a '{member}' value cell"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{member}' value cell should carry a compiled default_expr"))
-}
+// ─── helpers ───────────────────────────────────────────────────────────────
 
 /// Find the arm of a compiled `Match` expression whose pattern tag name is
 /// `tag` (e.g. `"Ok"` / `"Err"`) and return it. Panics if `expr` is not a

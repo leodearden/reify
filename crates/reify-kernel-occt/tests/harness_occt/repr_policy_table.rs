@@ -896,3 +896,42 @@ fn fillet_and_chamfer_reject_a_non_solid_input_on_both_entry_points() {
     }
     t.finish();
 }
+
+/// An unknown target is an unknown reference on both entry points, never
+/// fillet/chamfer's "requires a BRepKind::Solid input shape" rejection.
+#[test]
+fn fillet_and_chamfer_of_an_unknown_handle_report_invalid_reference() {
+    let mut kernel = OcctKernel::new();
+    let unknown = GeometryHandleId(999_999);
+    let ops = [
+        (
+            "Fillet all-edges",
+            GeometryOp::Fillet {
+                target: unknown,
+                edges: vec![],
+                radius: Value::length(0.001),
+            },
+        ),
+        (
+            "Chamfer all-edges",
+            GeometryOp::Chamfer {
+                target: unknown,
+                edges: vec![],
+                distance: Value::length(0.001),
+            },
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (row, op) in ops {
+        let plain = kernel.execute(&op).map(|h| h.id);
+        let with_history = kernel.execute_with_history(&op).map(|(h, _)| h.id);
+        for (entry, result) in [("execute", plain), ("execute_with_history", with_history)] {
+            if !matches!(result, Err(GeometryError::InvalidReference(id)) if id == unknown) {
+                failures.push(format!(
+                    "{row} via {entry}: expected InvalidReference({unknown:?}), got {result:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

@@ -8,12 +8,15 @@
 //! closure form, and the caller's line for a `let-else` form with the
 //! `panic!` directly in the `#[track_caller]` fn body.
 //!
-//! This file guards three `reify-test-support` panic sites against the
-//! closure form: `require_default_expr` and the ambiguity panic of the shared
-//! cell-lookup walk `lookup_value_cell` (both reached through the public
-//! `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr` wrappers), and
-//! `cell_value`. Each guard asserts the reported location plus a SHORT
-//! payload substring — never full message prose, per the wording rule
+//! This file guards `reify-test-support`'s panicking helpers against
+//! regressing back to the closure form, or dropping `#[track_caller]` from
+//! any link of a delegation chain: `require_default_expr` (reached through
+//! the public `get_let_expr_in_template`/`get_let_expr_in`/`get_let_expr`
+//! wrappers), `cell_value`, and the value-cell lookup family's own panics
+//! ("no template named", "no value cell named", "ambiguous cell name",
+//! "expected at least one template"), each driven through the longest public
+//! chain that reaches it. Each guard asserts the reported location plus a
+//! SHORT payload substring — never full message prose, per the wording rule
 //! `dimensioned_assertions.rs` already follows.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -89,6 +92,26 @@ fn panic_site(f: impl FnOnce()) -> PanicSite {
     }
 }
 
+/// Asserts `site` was attributed to the CALLER (this file), not to `helpers.rs`, and that
+/// its payload contains `needle`. File identity alone discriminates the regression, so no
+/// exact line is pinned (`rustfmt --edition 2024` is free to shift it); `site.line` is
+/// surfaced for diagnosis only.
+#[track_caller]
+fn assert_attributed_here(site: &PanicSite, needle: &str) {
+    assert_eq!(
+        site.file.as_str(),
+        file!(),
+        "panic must attribute to the CALLER (this file), not to helpers.rs; reported {}:{}",
+        site.file,
+        site.line,
+    );
+    assert!(
+        site.message.contains(needle),
+        "panic message no longer contains {needle:?}; got: {}",
+        site.message,
+    );
+}
+
 #[test]
 fn require_default_expr_panic_reports_caller_not_helpers_rs() {
     let template = reify_test_support::TopologyTemplateBuilder::new("S")
@@ -99,52 +122,7 @@ fn require_default_expr_panic_reports_caller_not_helpers_rs() {
         reify_test_support::get_let_expr_in_template(&template, "x");
     });
 
-    // File identity alone discriminates the regression: helpers.rs is a
-    // different file by construction, so "attributes to the caller, not
-    // helpers.rs" is fully captured without pinning an exact line (which
-    // `rustfmt --edition 2024` would otherwise be free to shift, per this
-    // task's review). `site.line` is still surfaced below for diagnosis.
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "require_default_expr's panic must attribute to the CALLER (this \
-         file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("has no default expr"),
-        "panic message changed; got: {}",
-        site.message,
-    );
-}
-
-#[test]
-fn lookup_ambiguity_panic_reports_caller_not_helpers_rs() {
-    let template = reify_test_support::TopologyTemplateBuilder::new("Bracket")
-        .auto_param("First", "x", reify_core::Type::dimensionless_scalar())
-        .auto_param("Second", "x", reify_core::Type::dimensionless_scalar())
-        .build();
-
-    let site = panic_site(|| {
-        reify_test_support::get_let_expr_in_template(&template, "x");
-    });
-
-    // See `require_default_expr_panic_reports_caller_not_helpers_rs` above:
-    // file identity is the contract; the exact line is diagnostic-only.
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "the lookup's ambiguity panic must attribute to the CALLER (this \
-         file), not to helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("ambiguous cell name"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "has no default expr");
 }
 
 #[cfg(feature = "eval-helpers")]
@@ -156,19 +134,82 @@ fn cell_value_panic_reports_caller_not_helpers_rs() {
         reify_test_support::cell_value(&result, "Nope", "missing");
     });
 
-    // See `require_default_expr_panic_reports_caller_not_helpers_rs` above:
-    // file identity is the contract; the exact line is diagnostic-only.
-    assert_eq!(
-        site.file.as_str(),
-        file!(),
-        "cell_value's panic must attribute to the CALLER (this file), not to \
-         helpers.rs; reported {}:{}",
-        site.file,
-        site.line,
-    );
-    assert!(
-        site.message.contains("not found in eval result"),
-        "panic message changed; got: {}",
-        site.message,
-    );
+    assert_attributed_here(&site, "not found in eval result");
+}
+
+#[test]
+fn get_value_cell_empty_module_panic_reports_caller_not_helpers_rs() {
+    let module =
+        reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::single("empty"))
+            .build();
+
+    let site = panic_site(|| {
+        reify_test_support::get_value_cell(&module, "x");
+    });
+
+    assert_attributed_here(&site, "expected at least one template");
+}
+
+#[test]
+fn get_value_cell_missing_cell_panic_reports_caller_not_helpers_rs() {
+    let module = reify_test_support::compile_source("structure S { let x = 1.0 }");
+
+    let site = panic_site(|| {
+        reify_test_support::get_value_cell(&module, "missing");
+    });
+
+    assert_attributed_here(&site, "no value cell named");
+}
+
+#[test]
+fn get_value_cell_in_missing_template_panic_reports_caller_not_helpers_rs() {
+    let module = reify_test_support::compile_source("structure S { let x = 1.0 }");
+
+    let site = panic_site(|| {
+        reify_test_support::get_value_cell_in(&module, "DoesNotExist", "x");
+    });
+
+    assert_attributed_here(&site, "no template named");
+}
+
+#[test]
+fn get_let_expr_in_missing_cell_panic_reports_caller_not_helpers_rs() {
+    let module = reify_test_support::compile_source("structure S { let x = 1.0 }");
+
+    let site = panic_site(|| {
+        reify_test_support::get_let_expr_in(&module, "S", "missing");
+    });
+
+    assert_attributed_here(&site, "no value cell named");
+}
+
+#[test]
+fn get_let_expr_ambiguous_cell_panic_reports_caller_not_helpers_rs() {
+    let template = reify_test_support::TopologyTemplateBuilder::new("Bracket")
+        .auto_param("First", "x", reify_core::Type::dimensionless_scalar())
+        .auto_param("Second", "x", reify_core::Type::dimensionless_scalar())
+        .build();
+    let module =
+        reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::single("test"))
+            .template(template)
+            .build();
+
+    let site = panic_site(|| {
+        reify_test_support::get_let_expr(&module, "x");
+    });
+
+    assert_attributed_here(&site, "ambiguous cell name");
+}
+
+#[test]
+fn get_let_expr_empty_module_panic_reports_caller_not_helpers_rs() {
+    let module =
+        reify_test_support::CompiledModuleBuilder::new(reify_core::ModulePath::single("empty"))
+            .build();
+
+    let site = panic_site(|| {
+        reify_test_support::get_let_expr(&module, "x");
+    });
+
+    assert_attributed_here(&site, "expected at least one template");
 }

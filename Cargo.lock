@@ -4329,6 +4329,7 @@ dependencies = [
  "reify-builtins",
  "reify-compiler",
  "reify-config",
+ "reify-constraints",
  "reify-core",
  "reify-eval",
  "reify-expr",

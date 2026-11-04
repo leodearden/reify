@@ -23,6 +23,7 @@
 //! `member_force_deltas : List<Force>`, `slack : List<Bool>`, and
 //! `converged : Bool`.
 
+use crate::failed_diagnostics::{assert_mentions, joined_failure_messages, joined_messages};
 use reify_core::DimensionVector;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
 use reify_ir::{OpaqueState, Value};
@@ -236,36 +237,16 @@ fn assert_failed_infeasible(outcome: ComputeOutcome, needle: &str) {
 ///
 /// Every needle is checked against ONE flattened diagnostic set, so a caller
 /// invokes the trampoline once and the assertions provably describe the same
-/// message rather than several independently-produced ones. It is also the
-/// single site where a `Failed` outcome's diagnostics are flattened; the
-/// single-needle form above delegates here rather than re-spelling that.
+/// message rather than several independently-produced ones. The flattening and
+/// the needle checks live in `tests/common/failed_diagnostics.rs`; the
+/// single-needle form above delegates here.
 fn assert_failed_infeasible_needles(outcome: ComputeOutcome, must: &[&str], must_not: &[&str]) {
-    match outcome {
-        ComputeOutcome::Failed { diagnostics, .. } => {
-            let joined = diagnostics
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            assert!(
-                joined.contains("E_TensegrityLoadInfeasible"),
-                "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
-            );
-            for &needle in must {
-                assert!(
-                    joined.contains(needle),
-                    "expected the diagnostic to mention {needle:?}, got: {joined}"
-                );
-            }
-            for &needle in must_not {
-                assert!(
-                    !joined.contains(needle),
-                    "expected the diagnostic NOT to mention {needle:?}, got: {joined}"
-                );
-            }
-        }
-        other => panic!("expected ComputeOutcome::Failed, got {other:?}"),
-    }
+    let joined = joined_failure_messages(outcome);
+    assert!(
+        joined.contains("E_TensegrityLoadInfeasible"),
+        "expected an E_TensegrityLoadInfeasible diagnostic, got: {joined}"
+    );
+    assert_mentions(&joined, must, must_not);
 }
 
 /// (a) Slackening axial load: an axial tip load `P = 3·N0` drives cable `(1,2)`
@@ -525,11 +506,7 @@ fn solver_tensegrity_load_target_is_registered() {
             }
         },
         Err(diags) => {
-            let joined = diags
-                .iter()
-                .map(|d| d.message.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
+            let joined = joined_messages(&diags);
             panic!(
                 "solver::tensegrity_load must be a registered ComputeNode target, but \
                  dispatch returned the unregistered-target Err: {joined}"

@@ -1211,6 +1211,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
     ("geometry", 6),
     ("measurement", 1),
     ("purposes", 1),
+    ("solving", 3),
     ("traits", 3),
     ("units", 1),
 ];
@@ -1229,7 +1230,7 @@ const REIFY_FENCE_FLOORS: &[(&str, usize)] = &[
 /// separately-named test, `total_fence_count_is_exact_not_slack`, so a diff that
 /// legitimately adds a fence gets a message telling it to re-measure rather
 /// than a vacuity warning describing a bug that did not happen.
-const TOTAL_FENCE_COUNT: usize = 77;
+const TOTAL_FENCE_COUNT: usize = 85;
 
 /// The corpus-wide floor on ```` ```reify-invalid ```` fences.
 ///

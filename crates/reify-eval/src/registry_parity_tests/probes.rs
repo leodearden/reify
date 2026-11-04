@@ -14,56 +14,13 @@ use reify_ir::{
     CompiledExpr, FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value,
     ValueMap,
 };
-
-/// The uniaxial stress magnitude every analysis probe is built from, in SI
-/// pascals. The value is irrelevant to a KIND comparison; only the shape and
-/// the dimension are load-bearing.
-const SIGMA_PA: f64 = 100e6;
-
-/// The uniaxial [`SIGMA_PA`] stress window, row-major — the one statement of
-/// it, from which both the concrete tensor ([`uniaxial_stress`]) and every
-/// node of the Grid field ([`grid_stress_field`]) are built.
-const UNIAXIAL_STRESS_WINDOW: [[f64; 3]; 3] =
-    [[SIGMA_PA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+use reify_test_support::values::{UNIAXIAL_STRESS_ROWS, uniaxial_stress_tensor};
 
 /// A yield strength for `safety_factor`'s second argument, chosen non-zero so
 /// the ratio is finite and `sanitize_value` does not intervene.
 const YIELD_PA: f64 = 250e6;
 
-/// A 3×3 `Value::Tensor` of `Value::Tensor` of `Value::Scalar`, every element
-/// carrying `dimension`.
-///
-/// Shape reuse of `crates/reify-stdlib/tests/registry_dispatch_seed_parity.rs`'s
-/// `dimensioned_matrix` — the nesting is what `analysis::matrix_components_f64`
-/// reads, so getting it wrong makes every analysis kernel answer `Value::Undef`.
-///
-/// **A third copy, and a scope deferral rather than a design conclusion.** The
-/// right home is `reify_test_support::values`, which already holds exactly this
-/// class of `Value` fixture (`mm`, `newton`, `matrix3x3`, …) and is ALREADY a
-/// dev-dependency of BOTH reify-eval and reify-stdlib — so sharing it would
-/// cost no production dependency edge. That crate is outside this task's lock
-/// set; filed as follow-up work together with the harness's row filter
-/// (`eval_builtin_rows`) and this module's two stress-field fixtures
-/// ([`callable_stress_field`], [`grid_stress_field`]).
-fn dimensioned_matrix_3x3(rows_f64: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
-    Value::Tensor(
-        rows_f64
-            .iter()
-            .map(|r| {
-                Value::Tensor(
-                    r.iter()
-                        .map(|&si_value| Value::Scalar {
-                            si_value,
-                            dimension,
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
-/// The static type of [`dimensioned_matrix_3x3`]'s PRESSURE result.
+/// The static type of [`uniaxial_stress_tensor`]'s PRESSURE result.
 ///
 /// `quantity` is a real `Scalar<PRESSURE>` rather than a bare placeholder
 /// because the analysis resolvers read arg0's quantity out of exactly this
@@ -130,7 +87,7 @@ impl Probe {
 
 /// The one-argument concrete-tensor probe the analysis reductions share.
 fn concrete_tensor_probe() -> Probe {
-    Probe::concrete(vec![(uniaxial_stress(), pressure_tensor_type())])
+    Probe::concrete(vec![(uniaxial_stress_tensor(), pressure_tensor_type())])
 }
 
 /// `safety_factor`'s second argument: a PRESSURE yield strength, the same for
@@ -175,14 +132,14 @@ fn field_sample_point() -> Value {
 }
 
 /// A Callable-backed stress field: `Analytical`, with a lambda that ignores its
-/// coordinates and returns [`uniaxial_stress`] everywhere.
+/// coordinates and returns [`uniaxial_stress_tensor`] everywhere.
 ///
 /// Shape mirrors `make_constant_stress_field` in
 /// `crates/reify-expr/tests/field_analysis_tests.rs`, a separate integration
-/// test target that cannot be imported from here. **A copy, deferred like
-/// [`dimensioned_matrix_3x3`]**: the shared home is `reify_test_support`,
-/// already a dev-dependency of both reify-eval and reify-expr, and outside this
-/// task's lock set.
+/// test target that cannot be imported from here. **A copy, and a scope
+/// deferral**: the shared home for this and [`grid_stress_field`] is
+/// `reify_test_support`, already a dev-dependency of both reify-eval and
+/// reify-expr, and outside this task's lock set.
 fn callable_stress_field() -> (Value, Type) {
     let params = ["x", "y", "z"]
         .into_iter()
@@ -191,7 +148,7 @@ fn callable_stress_field() -> (Value, Type) {
     let lambda = Value::Lambda {
         params,
         body: Box::new(CompiledExpr::literal(
-            uniaxial_stress(),
+            uniaxial_stress_tensor(),
             pressure_tensor_type(),
         )),
         captures: ValueMap::new(),
@@ -208,7 +165,7 @@ fn callable_stress_field() -> (Value, Type) {
 }
 
 /// A Grid-backed stress field: `Sampled`, a Regular3D 2×2×2 grid over the
-/// unit cube holding the same uniaxial window at every node — the backing
+/// unit cube holding [`UNIAXIAL_STRESS_ROWS`] at every node — the backing
 /// `solve_elastic_static(..).stress` produces, so the production shape.
 ///
 /// Unlike the Callable backing, which samples through the pointwise builtin,
@@ -232,7 +189,7 @@ fn grid_stress_field() -> (Value, Type) {
         axis_grids: vec![unit_axis.clone(), unit_axis.clone(), unit_axis],
         interpolation: InterpolationKind::Linear,
         data: (0..NODES)
-            .flat_map(|_| UNIAXIAL_STRESS_WINDOW.into_iter().flatten())
+            .flat_map(|_| UNIAXIAL_STRESS_ROWS.into_iter().flatten())
             .collect(),
         oob_emitted: AtomicBool::new(false),
     };
@@ -343,7 +300,7 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // gated on exactly two arguments, so the Field probe keeps the yield.
         EvalBuiltinId::SafetyFactor => vec![
             Probe::concrete(vec![
-                (uniaxial_stress(), pressure_tensor_type()),
+                (uniaxial_stress_tensor(), pressure_tensor_type()),
                 yield_strength(),
             ]),
             Probe::field(
@@ -362,9 +319,4 @@ pub(super) fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // a degenerate probe here read as a vacuous pass.
         EvalBuiltinId::StressInvariants => vec![concrete_tensor_probe()],
     }
-}
-
-/// The uniaxial 100 MPa stress tensor every analysis probe is fed.
-fn uniaxial_stress() -> Value {
-    dimensioned_matrix_3x3(&UNIAXIAL_STRESS_WINDOW, DimensionVector::PRESSURE)
 }

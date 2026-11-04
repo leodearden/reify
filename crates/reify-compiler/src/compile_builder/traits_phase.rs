@@ -112,8 +112,9 @@ pub(crate) fn phase_traits(
     // 4. Register namespaced trait-static functions into `ctx.functions`.
     //
     // For each locally-compiled trait's body-carrying static (no-`self`) assoc fn,
-    // compile the body in a neutral scope (same as a free fn) and register the result
-    // as a `CompiledFunction` named `"Trait::method"` in `ctx.functions`.
+    // compile the body in a neutral scope against the user fns registered so far plus
+    // the prelude (the same rule `phase_functions` uses for a free fn) and register the
+    // result as a `CompiledFunction` named `"Trait::method"` in `ctx.functions`.
     //
     // This registration is what makes `TraitStaticCall { trait_name, method, args }`
     // dispatch possible: the `compile_expr_guarded` arm for `TraitStaticCall` looks up
@@ -137,7 +138,8 @@ pub(crate) fn phase_traits(
     // Performance note: `ctx.resolution_functions` is only rebuilt when at least one
     // static fn is actually registered. For modules that declare no traits or no
     // body-carrying static assoc fns, resolution_functions is already correct from
-    // phase_functions and the O(prelude) clone+merge is skipped entirely.
+    // phase_functions and the O(prelude) clone+merge is skipped entirely. Each
+    // registered static fn's body does pay one such clone+merge (`body_table`, below).
     // The module's declared callable vocabulary, merged ONCE for the phase and
     // borrowed by every static-fn body scope below (task #5371). Rationale:
     // `CompilationScope::declared_callable_names`.
@@ -162,14 +164,17 @@ pub(crate) fn phase_traits(
                 let mut namespaced_fn = fn_def.clone();
                 namespaced_fn.name = trait_static_fn_symbol(&compiled_trait.name, &fn_def.name);
                 // Compile the body. Borrows of ctx fields are disjoint here:
-                // - resolution_enums, functions, alias_registry, resolution_structure_names
+                // - functions is read only to build `body_table`, rebuilt per static fn
+                //   so a later one can call an earlier one's `Trait::method` symbol.
+                // - resolution_enums, alias_registry, resolution_structure_names
                 //   are immutable borrows released when compile_function returns.
                 // - diagnostics is the mutable borrow taken by compile_function.
                 // - functions.push() runs after compile_function returns (NLL-safe).
+                let body_table = build_resolution_functions(&ctx.functions, prelude);
                 let compiled_fn = compile_function(
                     &namespaced_fn,
                     &ctx.resolution_enums,
-                    &ctx.functions,
+                    &body_table,
                     &ctx.alias_registry,
                     &ctx.resolution_structure_names,
                     &trait_names,
