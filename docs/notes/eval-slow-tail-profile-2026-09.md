@@ -286,8 +286,10 @@ Slack = makespan − straggler end, computed from the unrounded figures.
 | 2026-10-20T03:14:36+01:00, `_mainsweep-cdbb14ff` | background, full scope | 26716 | 1240.3s | 500.7–501.7s | `corpus_sweep_shard_05`: 123.2s, ends 624.0s | `solve_elastic_static_body_e2e::non_prismatic_two_case_build_realizes_body_exactly_once`: 653.4s, 586.9s, ends 1240.3s | **616.3s** |
 | 2026-11-02T10:05:57Z, `_lane-12` | task, branch scope | 7480 | 609.3s | 175.6–177.6s | `corpus_sweep_shard_05`: 136.7s, ends 312.6s | the same test: 336.8s, 272.5s, ends 609.3s | **296.6s** |
 
-Both reports live at
+Both reports were read from
 `/home/leo/src/warm-lanes/worktrees/<lane>/target/nextest/default/reify-confirm.xml`.
+Lane targets are ephemeral, so this is not an archive: a 1304-test run
+overwrote `_lane-12`'s report on 2026-11-03.
 
 The other heavy shards in the same two runs (full / branch): `shard_02` 55.6s /
 66.0s, `shard_09` 44.9s / 49.2s, `shard_14` 25.8s / 34.4s, `shard_03` 10.5s /
@@ -302,8 +304,14 @@ process. It ran twice over the same 293 evaluated files:
 - **Run A** (planning): `_lane-19` at b31c164e63, with a throwaway patch
   that printed each file's shard (since reverted). Host loadavg ~130–216 on 32
   cores.
-- **Run B**: `_lane-19` at 16942dd986, 2026-11-02T16:11Z, using the
-  diagnostic that now prints shards itself. Loadavg 87.2 at start, 60.8 at end.
+- **Run B**: `_lane-19` at b31c164e63 plus #7564's change that makes the
+  diagnostic print shards itself, 2026-11-02T16:11Z. Loadavg 87.2 at start,
+  60.8 at end.
+
+Both runs count evaluated files only. A file that fails the sweep's compile
+check is skipped, and shard 20 holds one such file that is likely heavy once it
+compiles again (§5.5). The heavy set and the N table below are for the corpus
+as evaluated today.
 
 Heavy files (≥ 5s in either run):
 
@@ -315,7 +323,7 @@ Heavy files (≥ 5s in either run):
 | `examples/modal/simply_supported_beam_modes.ri` | 09 | 32.92s | 12.94s |
 | `examples/trajectory/tots_optimal_ptp.ri` | 09 | 10.83s | 6.03s |
 | `examples/buckling_column_p2.ri` | 03 | 5.38s | 6.74s |
-| **total, all 293 files** | | **281.9s** | **160.5s** |
+| **total, all 293 evaluated files** | | **281.9s** | **160.5s** |
 
 The next file in run B is `examples/anisotropic_bar.ri` at 2.49s (shard 21).
 
@@ -347,8 +355,8 @@ ships. The step-1 diagnostic reproduces only the N = 24 column.
 
 The gate-run walls (§5.1) and run B agree on WHICH shards are heavy, in the
 order 05 > 02 > 09 > 14 > 03. Run A's per-file figures imply the same order. A
-standalone `cargo nextest run -p reify-eval --test harness_corpus_gates` at
-16942dd986 (46 tests; loadavg 295.5 shortly before it started) finished in a
+standalone `cargo nextest run -p reify-eval --test harness_corpus_gates` on
+run B's tree (46 tests; loadavg 295.5 shortly before it started) finished in a
 70.2s Summary wall, set by `corpus_sweep_shard_05` at 70.199s.
 
 ### 5.3 Part 1 — no LPT `priority` entry for `harness_corpus_gates`
@@ -361,7 +369,9 @@ cannot move the end of the run.
 
 This holds even at #7431's worst isolated straggler of 240s. Taking the latest
 shard start in each run, the straggler would end at 177.6 + 240 = 417.6s <
-609.3s (branch) and 501.7 + 240 = 741.7s < 1240.3s (full scope).
+609.3s (branch) and 501.7 + 240 = 741.7s < 1240.3s (full scope). That bound
+also covers the skipped `shard_20` file of §5.5 rejoining the sweep, if it
+costs what #7431's `shard_20` did.
 
 Both candidate entries are worse than none:
 
@@ -386,8 +396,8 @@ file it drew, and no shard count can push the straggler below the single
 costliest file. The count only has to keep the heavy files in separate shards.
 
 At N = 24 the straggler sits within 0.41s (run A) and 0.23s (run B) of that
-floor. In the N table only N ≥ 32 is lower, by ≤ 0.4s, and N = 20 is worse
-(132.1s).
+floor. In the N table, N = 16 and N ≥ 32 are lower, each by ≤ 0.4s, and
+N = 20 is worse (132.1s).
 
 Why not change it anyway:
 
@@ -399,14 +409,24 @@ Why not change it anyway:
   recorded "shard NN" reproduction, which is the insert-stability #7431
   shipped, and buys nothing measurable.
 - **Raising N** buys ≤ 0.4s on a test that ends 297–616s ahead of the makespan.
-- **The hard-kill margin is not a constraint.** The measured stragglers of
-  121–137s sit against the inherited `[profile.default]` slow-timeout of 1200s
-  (period 120s × terminate-after 10), about 8.8× headroom.
+- **The hard-kill margin is not a constraint today.** The measured stragglers
+  of 121–137s sit against the inherited `[profile.default]` slow-timeout of
+  1200s (period 120s × terminate-after 10), about 8.8× headroom. That is for the
+  corpus as evaluated today. If #7431's 158–240s `shard_20` returns with the
+  file §5.5 names, headroom falls back to §4's 5–7.6×, which §4 notes the
+  esc-5097-3 8× contention case would breach.
 
-**Revisit when** a gate JUnit report shows the sweep's straggler ending near the
-makespan, or when a shard's sum exceeds the single-file floor because a second
-heavy file landed in it. The §5.7 diagnostic shows the second case directly:
-compare the top `DIAG-SHARD` sum with the costliest `DIAG` line.
+**Revisit when** any of these happens:
+
+- A gate JUnit report shows the sweep's straggler ending near the makespan.
+- A shard's sum exceeds the single-file floor because a second heavy file
+  landed in it. The §5.7 diagnostic shows this directly: compare the top
+  `DIAG-SHARD` sum with the costliest `DIAG` line.
+- `examples/trajectory/printer_print_envelope.ri` compiles clean in reify-eval's
+  sweep again, which is expected when #5847 dimensions its two TOTSShaper limit
+  sites (§5.5). It then drops out of the `DIAG-SKIP` lines. Re-run the
+  §5.7 diagnostic, re-check the floor and which shard is the straggler, and
+  re-check the hard-kill headroom against §4's esc-5097-3 8× contention case.
 
 ### 5.5 Observation: the straggler moved
 
@@ -418,11 +438,44 @@ Hash keying never moves an unchanged file between shards
 (`shard_of_is_independent_of_corpus_membership`). No `.ri` file under the
 corpus roots was deleted or renamed between #7431's first commit (a756bd32f8,
 2026-09-17) and run B (`git log --diff-filter=DR`), and
-`buckling_multi_case_smoke.ri` has existed since 2026-06-16. So no heavy file
-left `shard_20`: the shift is a change in per-file COST, not a repartition.
+`buckling_multi_case_smoke.ri` has existed since 2026-06-16. So no file left
+`shard_20`'s partition. What changed is which of its files the sweep EVALUATES.
 
-Which file got cheaper in `shard_20`, and whether `buckling_multi_case_smoke.ri`
-also got dearer, is **undetermined**.
+Observed in `_lane-19` on 2026-11-04, on #7564's branch, which changes no sweep
+behaviour over b31c164e63:
+
+- `corpus_sweep_shard_20` prints `13 of 15 file(s) evaluated, 2 skipped
+  (compile errors)`. §1's histogram gives shard 20 15 files, and §5.2's
+  diagnostic runs counted 13. The extended §5.7 diagnostic lists the same two
+  as `DIAG-SKIP ... shard 20`.
+- One skip is `examples/auto/bearing_unsat.ri`. It fails to compile by design
+  (no candidate satisfies its constraint) and has been in `examples_smoke`'s
+  `SKIP_SET` since it was added on 2026-06-16, so #7431's runs skipped it too.
+- The other is `examples/trajectory/printer_print_envelope.ri`, in the corpus
+  since 2026-06-06. It runs a gantry modal analysis, TOTS shaping and
+  `simulate_trajectory` for three variants: the cost classes of the modal and
+  TOTS files in §5.2's heavy set.
+- `reify check` on that file reports exactly two errors: its TOTSShaper
+  `velocity_limit` and `acceleration_limit` arguments are bare `Real` where the
+  params require velocity and acceleration. Those sites became errors with
+  #5306's δ step 5 (9b179b3f3d, `feat(5306)!: flip
+  CTOR_FIELD_CONFORMANCE_SEVERITY Warning -> Error`). That commit reached main
+  through e90a25ef5c (`Merge task/5306 into main`, 2026-09-25), and
+  `git merge-base --is-ancestor 9b179b3f3d 5e822de99a` is false, so #7431's
+  merge (2026-09-17 09:31) predates it.
+- `examples_smoke` waives exactly those two sites (`is_migration_debt_diagnostic`,
+  a debt owned by #5847). The reify-eval sweep has no such waiver, so it
+  skips the whole file.
+
+**Hypothesis:** #7431's runs evaluated `printer_print_envelope.ri`, and its
+evaluation was most of `shard_20`'s 158–240s. If so, the straggler moved
+because the sweep stopped evaluating that file. That is a coverage change, not
+a per-file cost change. The file will then make `shard_20` heavy again when
+#5847 lands. At N = 24 it would be the only heavy file in `shard_20`, so it
+would not stack on `shard_05`'s cost. §5.4 carries this as a revisit trigger.
+
+Not measured: the file's evaluation cost, since the sweep cannot evaluate it
+today, and whether `buckling_multi_case_smoke.ri` got dearer.
 
 ### 5.6 Out of scope, observed
 
@@ -447,9 +500,14 @@ cargo test -p reify-eval --test harness_corpus_gates -- --ignored --exact \
   eval_invariant_corpus_sweep::diag_per_file_timing --nocapture > /tmp/diag.log 2>&1
 ```
 
-It prints the 40 costliest files as `DIAG <duration> shard <NN> <file>`, then a
-`DIAG-TOTAL` line, then every shard ranked by summed cost as
-`DIAG-SHARD <NN> <sum>`. Record `/proc/loadavg` alongside: absolute figures
+It prints the 40 costliest evaluated files as
+`DIAG <duration> shard <NN> <file>`, then every file the sweep skips for a
+compile error as `DIAG-SKIP <duration> shard <NN> <file>`, then a `DIAG-TOTAL`
+line, then every shard ranked by summed cost as `DIAG-SHARD <NN> <sum>`. A
+skip's duration is its compile time, which a gate shard pays too, so the shard
+sums include it. On 2026-11-04 there were 10 skips, each ≤ 0.11s. A `DIAG-SKIP`
+line is a file the sweep does not cover yet; §5.4 names the one to watch.
+Record `/proc/loadavg` alongside: absolute figures
 differed ~1.8× between the two §5.2 runs, which ran at different host load, so
 compare rankings and the straggler − floor gap, not raw seconds.
 
