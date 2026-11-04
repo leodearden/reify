@@ -54,8 +54,8 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
 
 /**
  * Shortcut ids that are exempt from the typing-context guard (input/textarea/
- * select/contentEditable). These are global palette-open actions that must fire
- * from any focus state, including while the CodeMirror editor is focused.
+ * select type-ahead/contentEditable). These are global palette-open actions that
+ * must fire from any focus state, including while the CodeMirror editor is focused.
  */
 const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
 
@@ -98,12 +98,22 @@ export function runCommand(id: ShortcutId, callbacks: KeyboardShortcutCallbacks)
 }
 
 /**
+ * True for a key a focused native <select> consumes for its type-ahead: a
+ * printable character with no Ctrl/Meta/Alt held. Every other key (Escape,
+ * function keys, modifier chords) is not the select's, so shortcuts still fire.
+ */
+function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
+  return e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
+/**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
- * Skips when the event target is an input, textarea, select, or contenteditable
- * element (a select's type-ahead consumes bare letters), EXCEPT for
- * palette-global shortcuts (commandPalette, symbolJump) which are exempt from
- * the typing-context guard. A `toggle` shortcut swallows its key's auto-repeat
- * keydowns, so holding the key flips the state once.
+ * Skips when the event target is an input, textarea, or contenteditable
+ * element, or a select receiving a type-ahead key (bare letters and digits
+ * reach the select untouched; Ctrl+S, F5, Escape and the like still fire),
+ * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
+ * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
+ * auto-repeat keydowns, so holding the key flips the state once.
  */
 export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void {
   function handleKeyDown(e: KeyboardEvent) {
@@ -112,7 +122,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     const inTypingContext =
       tagName === 'input' ||
       tagName === 'textarea' ||
-      tagName === 'select' ||
+      (tagName === 'select' && isSelectTypeAheadKey(e)) ||
       target.isContentEditable;
 
     // Registry-driven matching.

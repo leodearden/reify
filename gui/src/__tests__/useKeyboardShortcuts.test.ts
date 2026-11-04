@@ -724,6 +724,58 @@ describe('useKeyboardShortcuts — toggleEdges shortcut', () => {
   });
 });
 
+describe('useKeyboardShortcuts — a focused <select> blocks only its type-ahead keys', () => {
+  let dispose: () => void;
+  let select: HTMLSelectElement;
+
+  afterEach(() => {
+    dispose?.();
+    select?.remove();
+  });
+
+  function focusedSelect(callbacks: Parameters<typeof useKeyboardShortcuts>[0]) {
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts(callbacks);
+      return d;
+    });
+    select = document.createElement('select');
+    document.body.appendChild(select);
+    return select;
+  }
+
+  it('Ctrl+S still saves', () => {
+    const onSave = vi.fn();
+    focusedSelect({ onSave }).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }),
+    );
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('F5 still re-evaluates', () => {
+    const onReEvaluate = vi.fn();
+    focusedSelect({ onReEvaluate }).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F5', bubbles: true }),
+    );
+    expect(onReEvaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape still clears the selection', () => {
+    const onClearSelection = vi.fn();
+    focusedSelect({ onClearSelection }).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('a digit is type-ahead, not a view switch, and is not prevented', () => {
+    const onSwitchViewByIndex = vi.fn();
+    const event = new KeyboardEvent('keydown', { key: '2', bubbles: true, cancelable: true });
+    focusedSelect({ onSwitchViewByIndex }).dispatchEvent(event);
+    expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
 describe('useKeyboardShortcuts — toggle shortcuts ignore auto-repeat', () => {
   let dispose: () => void;
 
