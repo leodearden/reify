@@ -10,15 +10,19 @@ missing or empty option value exits 64 where bash's ${2:?} exits 1.
 import os
 import re
 import sys
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
 
-from reify_verify import knobs, queries
-from reify_verify.invocation import Action, Invocation, Query, Scope
+from reify_verify import bashcall, build, knobs, queries, render
+from reify_verify.invocation import Action, Invocation, PlanFormat, Query, Scope
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
 EX_USAGE = 64
 EX_UNAVAILABLE = 69
 ERROR = "verify.sh: ERROR — "
 PRD = "docs/prds/v0_6/verify-structured-plan-and-role-table.md"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _ACTION_VALUES = frozenset(action.value for action in Action)
 GATE_ACTIONS = (Action.TEST, Action.LINT, Action.TYPECHECK, Action.ALL)
@@ -27,13 +31,42 @@ VALUE_FLAGS = ("--profile", "--scope", "--test-threads")
 SWITCHES = {
     "--narrow": "narrow",
     "--include-infra": "include_infra",
-    "--print-plan": "print_plan",
     "--confirm-failed": "confirm_failed",
 }
+_PLAN_FORMAT_FLAGS = frozenset(plan_format.value for plan_format in PlanFormat)
 HELP_TOKENS = ("-h", "--help")
 _QUERY_FLAGS = frozenset(query.value for query in Query)
-REPORTS = {Query.KNOBS: queries.knob_report, Query.ROLE_POLICY: queries.role_policy_report}
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
+
+
+@dataclass(frozen=True)
+class ActionFreeReport:
+    """A query that stands alone: no action, and nothing read but the env."""
+
+    report: Callable[[Mapping[str, str]], queries.QueryOutput]
+
+
+@dataclass(frozen=True)
+class ActionReport:
+    """A query that reads a gate invocation and runs nothing; it may call a bash library."""
+
+    report: Callable[[Invocation, Mapping[str, str], Path], queries.QueryOutput]
+
+
+PROJECTIONS = {
+    PlanFormat.TEXT: render.render_text,
+    PlanFormat.JSON: render.render_json,
+}
+
+REPORTS = {
+    Query.KNOBS: ActionFreeReport(queries.knob_report),
+    Query.ROLE_POLICY: ActionFreeReport(queries.role_policy_report),
+    Query.SCOPE: ActionReport(queries.scope_report),
+}
+
+
+def _takes_action(query: Query | None) -> bool:
+    return isinstance(REPORTS.get(query), ActionReport)
 
 
 def _choices(members) -> str:
@@ -49,7 +82,12 @@ USAGE = (
     "",
     "Usage:",
     f"  verify.sh <{_choices(GATE_ACTIONS)}> [options]",
-    *(f"  verify.sh {query.value}" for query in Query),
+    *(f"  verify.sh {query.value}" for query in Query if not _takes_action(query)),
+    *(
+        f"  verify.sh <{_choices(GATE_ACTIONS)}> {query.value} [options]"
+        for query in Query
+        if _takes_action(query)
+    ),
     "",
     "Options:",
     *_option(
@@ -71,9 +109,14 @@ USAGE = (
     ),
     *_option("--include-infra", "Also run the static infra checks."),
     *_option(
-        "--print-plan",
+        PlanFormat.TEXT.value,
         "Print the ordered command list, then exit 0 without",
         "running anything.",
+    ),
+    *_option(
+        PlanFormat.JSON.value,
+        "As --print-plan, as one JSON record per line: header,",
+        "scope, narrowing, environment, then each typed step.",
     ),
     *_option(
         "--test-threads=N",
@@ -94,6 +137,11 @@ USAGE = (
         Query.ROLE_POLICY.value,
         "Print the role table (one JSON line per role) and the",
         "profile table. A run's role is DF_VERIFY_ROLE (empty: task).",
+    ),
+    *_option(
+        Query.SCOPE.value,
+        "With a gate action: print the scope decision, the",
+        "narrowing and the infra selection as one JSON line.",
     ),
     *_option("-h|--help", "Show this usage."),
 )
@@ -130,6 +178,8 @@ def _scan(argv: list[str]) -> dict:
             raw[flag] = value
         elif token in SWITCHES:
             raw[SWITCHES[token]] = True
+        elif token in _PLAN_FORMAT_FLAGS:
+            _set_plan_format(raw, PlanFormat(token))
         elif token in _QUERY_FLAGS:
             _set_query(raw, Query(token))
         elif token in HELP_TOKENS:
@@ -147,6 +197,17 @@ def _set_action(raw: dict, action: Action) -> None:
     raw["action"] = action
 
 
+def _set_plan_format(raw: dict, plan_format: PlanFormat) -> None:
+    if raw.get("plan_format", plan_format) is not plan_format:
+        raise CliError(
+            (
+                f"{ERROR}plan format already set to '{raw['plan_format'].value}', "
+                f"got '{plan_format.value}'",
+            )
+        )
+    raw["plan_format"] = plan_format
+
+
 def _set_query(raw: dict, query: Query) -> None:
     if raw.get("query", query) is not query:
         raise CliError(
@@ -158,9 +219,11 @@ def _set_query(raw: dict, query: Query) -> None:
 def _validate(raw: dict, env: dict[str, str]) -> Invocation:
     action = raw.get("action")
     query = raw.get("query")
-    if action is None and query is None:
+    if action is None and (query is None or _takes_action(query)):
         raise CliError((f"{ERROR}missing action ({_choices(GATE_ACTIONS)})", *USAGE))
-    if action is not None and query is not None:
+    if _takes_action(query):
+        _check_action_query(query, action, raw)
+    elif action is not None and query is not None:
         raise CliError(
             (f"{ERROR}query '{query.value}' takes no action (got '{action.value}')",)
         )
@@ -180,12 +243,30 @@ def _validate(raw: dict, env: dict[str, str]) -> Invocation:
         scope=scope,
         narrow=raw.get("narrow", False),
         include_infra=raw.get("include_infra", False),
-        print_plan=raw.get("print_plan", False),
+        plan_format=raw.get("plan_format"),
         confirm_failed=confirm_failed,
         test_threads=test_threads,
         role=role,
         query=query,
     )
+
+
+def _check_action_query(query: Query, action: Action, raw: dict) -> None:
+    """An action query reads a gate invocation and runs nothing."""
+    if action not in GATE_ACTIONS:
+        raise CliError(
+            (
+                f"{ERROR}query '{query.value}' takes action {_choices(GATE_ACTIONS)} "
+                f"(got '{action.value}')",
+            )
+        )
+    conflicts = (
+        raw["plan_format"].value if raw.get("plan_format") else None,
+        "--confirm-failed" if raw.get("confirm_failed") else None,
+    )
+    conflict = next(filter(None, conflicts), None)
+    if conflict is not None:
+        raise CliError((f"{ERROR}query '{query.value}' does not combine with {conflict}",))
 
 
 def _member(enum, raw: str | None, flag: str):
@@ -244,19 +325,50 @@ def main(argv: list[str]) -> int:
 
 
 def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
-    if invocation.query is not None:
-        output = REPORTS[invocation.query](env)
-        _diagnose(output.warnings)
-        _print(output.stdout_lines)
-        return 0
+    match REPORTS.get(invocation.query):
+        case ActionReport(report=report):
+            try:
+                output = report(invocation, env, REPO_ROOT)
+            except bashcall.BashCallError as err:
+                _diagnose((f"{ERROR}{err}",))
+                return 1
+            return _emit(output)
+        case ActionFreeReport(report=report):
+            return _emit(report(env))
+    plan_format = invocation.plan_format
+    if plan_format is not None and not invocation.confirm_failed:
+        return _print_plan(invocation, plan_format, env)
+    action = invocation.action.value if invocation.action else ""
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
-            f"'{invocation.action.value}' yet; scripts/verify.sh remains the gate "
+            f"'{action}' yet; scripts/verify.sh remains the gate "
             f"until the S18 cutover ({PRD})",
         )
     )
     return EX_UNAVAILABLE
+
+
+def _print_plan(invocation: Invocation, plan_format: PlanFormat, env: dict[str, str]) -> int:
+    try:
+        outcome = build.plan_invocation(invocation, env, REPO_ROOT)
+    except bashcall.BashCallError as err:
+        _diagnose((f"{ERROR}{err}",))
+        return 1
+    match outcome:
+        case build.Refused(lines=lines, exit_code=exit_code):
+            _diagnose(lines)
+            return exit_code
+        case build.Planned(plan=plan, diagnostics=diagnostics):
+            _diagnose(diagnostics)
+            _print(PROJECTIONS[plan_format](plan))
+            return 0
+
+
+def _emit(output: queries.QueryOutput) -> int:
+    _diagnose(output.warnings)
+    _print(output.stdout_lines)
+    return 0
 
 
 def _print(lines: tuple[str, ...]) -> None:

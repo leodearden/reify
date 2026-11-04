@@ -42,7 +42,7 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, pattern_flag}
 const DEFAULT_MIN_CONFIDENCE: f64 = 0.5;
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    let symbols = match ctx.jcodemunch.get_untested_symbols(DEFAULT_MIN_CONFIDENCE) {
+    let symbols = match ctx.jcodemunch().get_untested_symbols(DEFAULT_MIN_CONFIDENCE) {
         Ok(symbols) => symbols,
         Err(failure) => {
             return vec![crate::model::corpus_unexamined(

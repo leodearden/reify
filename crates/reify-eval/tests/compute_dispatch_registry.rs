@@ -1312,11 +1312,11 @@ fn instance_scope_optimized_cell_declines_reuse_when_ctor_args_differ() {
     );
 }
 
-/// Guard for the `reify check` path (#6662 S5/S6): when NO trampoline is
+/// Guard for the empty-registry path (#6662 S5/S6): when NO trampoline is
 /// registered, template scope body-inlines too, so instance and template agree
-/// and the reuse gate fires SILENTLY. `reify check` deliberately registers no
-/// trampolines, so a diagnostic here would fire on every `check` of every
-/// fixture with an `@optimized` call in an instantiated structure.
+/// and the reuse gate fires SILENTLY. `reify-lsp` deliberately registers no
+/// trampolines, so a diagnostic here would fire on every LSP eval of every
+/// file with an `@optimized` call in an instantiated structure.
 ///
 /// amend (#6662 reviewer_comprehensive, suggestion #1). The original fixture
 /// pinned only the no-override quadrant, where the gate returns `Reuse` and no
@@ -1361,7 +1361,7 @@ fn instance_scope_optimized_unregistered_target_reuses_silently() {
     "#;
     let compiled = parse_and_compile_with_stdlib(source);
 
-    // NO register_compute_fn — this is the `reify check` shape.
+    // NO register_compute_fn — this is reify-lsp's empty-registry shape.
     let mut engine = make_simple_engine();
     let eval_result = engine.eval(&compiled);
 
@@ -1392,8 +1392,8 @@ fn instance_scope_optimized_unregistered_target_reuses_silently() {
     assert!(
         decline_warnings.is_empty(),
         "an unregistered @optimized target must not produce an instance-scope \
-         decline warning (template and instance agree; `reify check` registers \
-         no trampolines and would otherwise warn on every fixture). Got: {:?}",
+         decline warning (template and instance agree; reify-lsp registers no \
+         trampolines and would otherwise warn on every file). Got: {:?}",
         decline_warnings
     );
 
@@ -1425,7 +1425,7 @@ fn instance_scope_optimized_unregistered_target_reuses_silently() {
     // The point of the quadrant: ZERO INSTANCE-SCOPE decline warnings anywhere
     // in this eval. There is no dispatch to fall back FROM, and template scope
     // owns the unregistered-target report — which on an empty registry is
-    // itself a `Severity::Warning` (the `reify check` posture ruled in
+    // itself a `Severity::Warning` (the empty-registry posture ruled in
     // check-diagnostic-truthfulness.md D4) opening with the same
     // `@optimized target` stem, so severity + prose alone cannot tell the two
     // apart. `DiagnosticCode` can: template scope's report is coded
@@ -1442,7 +1442,7 @@ fn instance_scope_optimized_unregistered_target_reuses_silently() {
     assert!(
         all_declines.is_empty(),
         "a constructor override on an UNREGISTERED @optimized target must stay \
-         silent: `reify check` registers no trampolines, so this would warn on \
+         silent: reify-lsp registers no trampolines, so this would warn on \
          every model that instantiates an @optimized-bearing structure with an \
          override, while claiming a fallback that never happened. Got: {:?}",
         all_declines

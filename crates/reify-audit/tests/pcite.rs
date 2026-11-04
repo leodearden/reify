@@ -17,7 +17,7 @@ use reify_audit::{
     Severity,
 };
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -54,17 +54,12 @@ impl Harness {
     }
 
     fn check(&self, root: &Path) -> Vec<Finding> {
-        reify_audit::pcite::check(&AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &self.conn,
-            git: &self.git,
-            jcodemunch: &self.jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        })
+        reify_audit::pcite::check(&AuditContext::new(
+            root.to_path_buf(),
+            &self.conn,
+            &self.git,
+            &self.jc,
+        ))
     }
 }
 
@@ -349,7 +344,7 @@ fn findings_are_sorted_by_category_name_path_and_deterministic() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -388,7 +383,7 @@ fn pattern_pcite_reports_a_fabricated_cite_and_exits_zero() {
         .arg(&tasks_file)
         .arg("--runs-db")
         .arg(&runs_db);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     let out = cmd.output().expect("invoke reify-audit --pattern PCITE");
     let stderr = String::from_utf8_lossy(&out.stderr);
 
@@ -479,17 +474,7 @@ fn real_repo_pcite_smoke() {
     let git = RealGitOps::new(root.clone());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root,
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root, &conn, &git, &jc);
     let findings = reify_audit::pcite::check(&ctx);
     let keys: Vec<(&str, &str, &str)> = findings
         .iter()

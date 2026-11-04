@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use reify_core::{ConstraintNodeId, Type, ValueCellId};
 use reify_core::dimension::{DimensionVector, FORCE};
-use reify_ir::{DeterminacyState, Value};
+use reify_ir::{CompiledExpr, DeterminacyState, Value};
 
 // --- Range value constructors ---
 
@@ -59,6 +59,26 @@ pub fn mm(v: f64) -> Value {
         si_value: v * 0.001,
         dimension: DimensionVector::LENGTH,
     }
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in millimetres.
+pub fn mm_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(mm(v), Type::length())
+}
+
+/// `CompiledExpr` literal of a LENGTH-dimensioned scalar given in SI metres.
+pub fn length_literal(meters: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::length(meters), Type::length())
+}
+
+/// `CompiledExpr` literal of an ANGLE-dimensioned scalar given in SI radians.
+pub fn angle_literal(radians: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::angle(radians), Type::angle())
+}
+
+/// `CompiledExpr` literal of a dimensionless real scalar.
+pub fn real_literal(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
 }
 
 /// Create a Scalar with ANGLE dimension from degrees.
@@ -700,7 +720,7 @@ pub fn multi_case_result_value(cases: &[(&str, Value)]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{DeterminacyState, Value};
+    use reify_ir::{CompiledExprKind, DeterminacyState, Value};
     use std::collections::HashMap;
 
     // step-1: failing tests for range value constructors
@@ -889,6 +909,62 @@ mod tests {
             }
             _ => panic!("expected Value::Scalar"),
         }
+    }
+
+    fn literal_value(expr: &CompiledExpr) -> &Value {
+        match &expr.kind {
+            CompiledExprKind::Literal(v) => v,
+            other => panic!("expected CompiledExprKind::Literal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mm_literal_carries_si_length_and_length_type() {
+        let expr = mm_literal(5.0);
+        match literal_value(&expr) {
+            Value::Scalar {
+                si_value,
+                dimension,
+            } => {
+                assert!((si_value - 0.005).abs() < 1e-12, "5 mm should be 0.005 m");
+                assert_eq!(*dimension, DimensionVector::LENGTH);
+            }
+            other => panic!("expected Value::Scalar, got {other:?}"),
+        }
+        assert_eq!(expr.result_type, Type::length());
+    }
+
+    #[test]
+    fn length_literal_carries_si_length_and_length_type() {
+        let expr = length_literal(0.25);
+        assert_eq!(
+            *literal_value(&expr),
+            Value::Scalar {
+                si_value: 0.25,
+                dimension: DimensionVector::LENGTH,
+            }
+        );
+        assert_eq!(expr.result_type, Type::length());
+    }
+
+    #[test]
+    fn angle_literal_carries_si_angle_and_angle_type() {
+        let expr = angle_literal(1.5);
+        assert_eq!(
+            *literal_value(&expr),
+            Value::Scalar {
+                si_value: 1.5,
+                dimension: DimensionVector::ANGLE,
+            }
+        );
+        assert_eq!(expr.result_type, Type::angle());
+    }
+
+    #[test]
+    fn real_literal_carries_real_and_dimensionless_type() {
+        let expr = real_literal(2.5);
+        assert_eq!(*literal_value(&expr), Value::Real(2.5));
+        assert_eq!(expr.result_type, Type::dimensionless_scalar());
     }
 
     // step-19: failing tests for SnapshotValuesBuilder

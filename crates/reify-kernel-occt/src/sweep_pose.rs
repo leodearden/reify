@@ -3,7 +3,8 @@
 
 use reify_ir::{BRepKind, GeometryError};
 
-use crate::{brep_kind_of_shape, ffi};
+use crate::ffi;
+use crate::shape_store::brep_kind_of_shape;
 
 /// Minimum angle, in degrees, between a `sweep` path's start tangent and its
 /// profile's normal. Below this the profile is posed in (or effectively in) the

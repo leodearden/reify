@@ -6,11 +6,11 @@ use std::collections::HashMap;
 
 use reify_ast::ParsedModule;
 use reify_core::SourceSpan;
+use reify_syntax::{Keyword, lookup_keyword};
 use tower_lsp::lsp_types::{
     DocumentHighlight, DocumentHighlightKind, Position, TextEdit, Url, WorkspaceEdit,
 };
 
-use crate::completion::{BODY_KEYWORDS, EXPR_KEYWORDS, TOP_LEVEL_KEYWORDS};
 use crate::convert::{find_word_at_offset, position_to_offset, span_to_range};
 
 use super::local::{RefSymbolKind, RenameTarget, collect_references, collect_references_at};
@@ -77,8 +77,8 @@ pub(super) fn is_renameable(kind: RefSymbolKind) -> bool {
 /// `compute_rename` writes `new_name` verbatim into every declaration ∪ reference
 /// name-token span, so a `new_name` that is not a legal identifier — empty,
 /// containing whitespace or punctuation (`foo bar`, `foo-bar`), starting with a
-/// digit (`2x`), or a reserved keyword (`let`, `param`, …) — would produce source
-/// that no longer re-parses cleanly, violating the re-parse-clean half of
+/// digit (`2x`), or a rename-refused keyword — would produce source that no
+/// longer re-parses cleanly, violating the re-parse-clean half of
 /// Invariant 5. LSP clients do not generally validate the proposed name against a
 /// language's identifier grammar, so `compute_rename` (the producer the later
 /// server wiring consumes) is the contract surface that must reject these before
@@ -87,7 +87,9 @@ pub(super) fn is_renameable(kind: RefSymbolKind) -> bool {
 /// Grammar: a non-empty token whose first byte is ASCII alphabetic or `_` and
 /// whose remaining bytes are ASCII alphanumeric or `_` (mirroring
 /// `convert::is_ident_byte`, which defines what `find_word_at_offset` treats as an
-/// identifier), and which is not a reserved keyword.
+/// identifier), and which is not a rename-refused row of [`reify_syntax::KEYWORDS`]
+/// (PRD D15): every `Reserved` word plus the `Contextual` rows marked
+/// `rename: Refused`.
 pub(super) fn is_valid_rename_identifier(new_name: &str) -> bool {
     let mut bytes = new_name.bytes();
     match bytes.next() {
@@ -100,18 +102,7 @@ pub(super) fn is_valid_rename_identifier(new_name: &str) -> bool {
     if !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return false;
     }
-    // A reserved keyword would re-parse as that construct rather than an
-    // identifier, corrupting the buffer.
-    !is_reserved_keyword(new_name)
-}
-
-/// Whether `name` is a reserved Reify keyword (and therefore not a valid rename
-/// target). Reuses the LSP completion crate's keyword tables — the same lists the
-/// editor offers as completions — so the refusal set never drifts from them.
-fn is_reserved_keyword(name: &str) -> bool {
-    TOP_LEVEL_KEYWORDS.contains(&name)
-        || BODY_KEYWORDS.contains(&name)
-        || EXPR_KEYWORDS.contains(&name)
+    !lookup_keyword(new_name).is_some_and(Keyword::rename_refused)
 }
 
 /// Compute a [`WorkspaceEdit`] that renames the binding under the cursor.
@@ -127,7 +118,7 @@ pub fn compute_rename(
     new_name: &str,
 ) -> Option<WorkspaceEdit> {
     // A `new_name` that is not a legal Reify identifier — empty, whitespace,
-    // punctuation, digit-leading, or a reserved keyword — would corrupt the
+    // punctuation, digit-leading, or a rename-refused keyword — would corrupt the
     // identifier tokens so the buffer no longer re-parses cleanly (violating the
     // re-parse-clean half of Invariant 5), so refuse it outright before producing
     // any edits.

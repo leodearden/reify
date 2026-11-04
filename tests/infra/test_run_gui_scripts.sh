@@ -4,6 +4,8 @@
 # Validates the contents and behavior of:
 #   - scripts/run-gui.sh       (release-mode wrapper, no debug)
 #   - scripts/run-gui-dev.sh   (debug-mode wrapper, REIFY_DEBUG=1 + vite)
+#   - gui/sidecar/build-sidecar.sh (node_modules preflight)
+#   - scripts/setup-dev.sh     (gui/sidecar install, structural)
 
 set -euo pipefail
 
@@ -19,6 +21,17 @@ source "$SCRIPT_DIR/test_helpers.sh"
 source "$REPO_ROOT/scripts/lib_portable.sh"
 
 RUN_GUI="$REPO_ROOT/scripts/run-gui.sh"
+BUILD_SIDECAR="$REPO_ROOT/gui/sidecar/build-sidecar.sh"
+
+# _rgs_code_lines <file> — <file> without its full-line comments, so an
+# assertion that a launcher RUNS a step cannot be satisfied by a comment that
+# names the step. Capture it once and grep the capture inside `bash -c`: as an
+# assert command, `_rgs_code_lines f | grep -q ...` runs under the suite's
+# pipefail, where grep -q's early exit can SIGPIPE the producer (141).
+_rgs_code_lines() { grep -Ev '^[[:space:]]*#' "$1"; }
+# The fallback keeps a missing launcher from aborting the suite under `set -e`
+# before Test 1 can report it.
+RUN_GUI_CODE=$(_rgs_code_lines "$RUN_GUI") || RUN_GUI_CODE=""
 
 # Shared launch-environment helpers sourced by BOTH launchers (#7254).
 LIB_GUI_LAUNCH="$REPO_ROOT/scripts/lib_gui_launch.sh"
@@ -69,41 +82,41 @@ assert "scripts/run-gui.sh contains 'set -euo pipefail'" \
 echo ""
 echo "--- Test 3: build-sidecar.sh runs BEFORE cargo build ---"
 
-assert "scripts/run-gui.sh invokes 'gui/sidecar/build-sidecar.sh'" \
-    grep -q 'gui/sidecar/build-sidecar.sh' "$RUN_GUI"
+assert "scripts/run-gui.sh invokes 'gui/sidecar/build-sidecar.sh' on an uncommented line" \
+    bash -c 'grep -q "gui/sidecar/build-sidecar.sh" <<<"$1"' _ "$RUN_GUI_CODE"
 
-assert "scripts/run-gui.sh invokes 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUN_GUI"
+assert "scripts/run-gui.sh invokes 'cargo build -p reify-gui' on an uncommented line" \
+    bash -c 'grep -q "cargo build -p reify-gui" <<<"$1"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh: build-sidecar line precedes cargo build line" \
-    bash -c "
-        sidecar_line=\$(grep -n 'gui/sidecar/build-sidecar.sh' '$RUN_GUI' | head -1 | cut -d: -f1)
-        cargo_line=\$(grep -n 'cargo build -p reify-gui' '$RUN_GUI' | head -1 | cut -d: -f1)
-        [ -n \"\$sidecar_line\" ] && [ -n \"\$cargo_line\" ] && [ \"\$sidecar_line\" -lt \"\$cargo_line\" ]
-    "
+    bash -c '
+        sidecar_line=$(grep -n "gui/sidecar/build-sidecar.sh" <<<"$1" | head -1 | cut -d: -f1)
+        cargo_line=$(grep -n "cargo build -p reify-gui" <<<"$1" | head -1 | cut -d: -f1)
+        [ -n "$sidecar_line" ] && [ -n "$cargo_line" ] && [ "$sidecar_line" -lt "$cargo_line" ]
+    ' _ "$RUN_GUI_CODE"
 
 # -- Test 4: npm install + npm run build for the gui frontend ----------------
 echo ""
 echo "--- Test 4: gui frontend dependency install + build ---"
 
-assert "scripts/run-gui.sh runs 'npm install' (or 'npm ci')" \
-    bash -c "grep -qE 'npm (install|ci)' '$RUN_GUI'"
+assert "scripts/run-gui.sh runs 'npm install' (or 'npm ci') on an uncommented line" \
+    bash -c 'grep -qE "npm (install|ci)" <<<"$1"' _ "$RUN_GUI_CODE"
 
-assert "scripts/run-gui.sh runs 'npm run build' to produce gui/dist" \
-    grep -q 'npm run build' "$RUN_GUI"
+assert "scripts/run-gui.sh runs 'npm run build' on an uncommented line, to produce gui/dist" \
+    bash -c 'grep -q "npm run build" <<<"$1"' _ "$RUN_GUI_CODE"
 
 # -- Test 5: cargo build uses --release + --features gui ----------------------
 echo ""
 echo "--- Test 5: cargo build flags ---"
 
 assert "scripts/run-gui.sh cargo build line includes '--features gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--features gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--features gui"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh cargo build line includes '--release'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--release'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--release"' _ "$RUN_GUI_CODE"
 
 assert "scripts/run-gui.sh cargo build line includes '--bin reify-gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI' | grep -q -- '--bin reify-gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--bin reify-gui"' _ "$RUN_GUI_CODE"
 
 # -- Test 7: launches target/release/reify-gui --------------------------------
 echo ""
@@ -171,6 +184,7 @@ assert "run-gui.sh non-existent .ri error message mentions 'not found'" \
     bash -c 'printf "%s\n" "$1" | grep -qF "not found"' _ "$miss_out"
 
 RUN_GUI_DEV="$REPO_ROOT/scripts/run-gui-dev.sh"
+RUN_GUI_DEV_CODE=$(_rgs_code_lines "$RUN_GUI_DEV") || RUN_GUI_DEV_CODE=""
 
 echo ""
 echo "=== run-gui-dev.sh launcher tests ==="
@@ -199,8 +213,8 @@ assert "scripts/run-gui-dev.sh contains 'set -euo pipefail'" \
 echo ""
 echo "--- Test 13: dev script invokes gui/sidecar/build-sidecar.sh ---"
 
-assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh'" \
-    grep -q 'gui/sidecar/build-sidecar.sh' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh invokes 'gui/sidecar/build-sidecar.sh' on an uncommented line" \
+    bash -c 'grep -q "gui/sidecar/build-sidecar.sh" <<<"$1"' _ "$RUN_GUI_DEV_CODE"
 
 # -- Test 14: starts vite as a background process ----------------------------
 echo ""
@@ -242,14 +256,14 @@ assert "scripts/run-gui-dev.sh trap references the vite PID variable" \
 echo ""
 echo "--- Test 17: cargo build line uses DEBUG profile (no --release) ---"
 
-assert "scripts/run-gui-dev.sh invokes 'cargo build -p reify-gui'" \
-    grep -q 'cargo build -p reify-gui' "$RUN_GUI_DEV"
+assert "scripts/run-gui-dev.sh invokes 'cargo build -p reify-gui' on an uncommented line" \
+    bash -c 'grep -q "cargo build -p reify-gui" <<<"$1"' _ "$RUN_GUI_DEV_CODE"
 
 assert "scripts/run-gui-dev.sh cargo build line includes '--features gui'" \
-    bash -c "grep 'cargo build -p reify-gui' '$RUN_GUI_DEV' | grep -q -- '--features gui'"
+    bash -c 'grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--features gui"' _ "$RUN_GUI_DEV_CODE"
 
 assert "scripts/run-gui-dev.sh cargo build line does NOT include '--release'" \
-    bash -c "! grep 'cargo build -p reify-gui' '$RUN_GUI_DEV' | grep -q -- '--release'"
+    bash -c '! grep "cargo build -p reify-gui" <<<"$1" | grep -q -- "--release"' _ "$RUN_GUI_DEV_CODE"
 
 # -- Test 18: REIFY_DEBUG=1 is set ------------------------------------------
 echo ""
@@ -451,6 +465,19 @@ NPM_STUB
     chmod +x "$1/bin/npm"
 }
 
+# _rgs_stub_npx_marker <dir> — an npx that drops "$_RGS_NPX_MARKER" and fails,
+# standing in for a registry fetch: hermetic when reached, provably unreached
+# when the marker stays absent.
+_rgs_stub_npx_marker() {
+    cat > "$1/bin/npx" <<'NPX_STUB'
+#!/usr/bin/env bash
+: > "${_RGS_NPX_MARKER:?_RGS_NPX_MARKER must be set by the test}"
+echo "stub npx: would fetch from the registry" >&2
+exit 1
+NPX_STUB
+    chmod +x "$1/bin/npx"
+}
+
 # _rgs_stub_curl_stateful <dir> — a curl whose FIRST call reports the port FREE
 # and whose every later call reports it SERVED.
 #
@@ -478,9 +505,71 @@ CURL_STUB
 }
 
 # _rgs_stub_cargo <dir> [rc] — a cargo that short-circuits the real build.
+#
+# Opt-in: with "$_RGS_CARGO_ARGV" set, every call first appends its argv there
+# (one line per call), so a test can see what the launcher asked cargo for.
 _rgs_stub_cargo() {
-    printf '#!/usr/bin/env bash\nexit %s\n' "${2:-0}" > "$1/bin/cargo"
+    {
+        cat <<'CARGO_STUB'
+#!/usr/bin/env bash
+[ -z "${_RGS_CARGO_ARGV:-}" ] || printf '%s\n' "$*" >> "$_RGS_CARGO_ARGV"
+CARGO_STUB
+        printf 'exit %s\n' "${2:-0}"
+    } > "$1/bin/cargo"
     chmod +x "$1/bin/cargo"
+}
+
+# _rgs_cargo_build_features <argv-file> — the comma-joined --features/-F values
+# of the first recorded `build` of `-p reify-gui`, or "" if there is none.
+_rgs_cargo_build_features() {
+    local _line _i _is_gui _feats
+    local -a _a
+    [ -f "$1" ] || return 0
+    while IFS= read -r _line; do
+        read -r -a _a <<< "$_line"
+        [ "${_a[0]-}" = build ] || continue
+        _is_gui="" _feats=""
+        for ((_i = 1; _i < ${#_a[@]}; _i++)); do
+            case "${_a[_i]}" in
+                -p | --package)
+                    if [ "${_a[_i + 1]-}" = reify-gui ]; then _is_gui=1; fi ;;
+                --package=reify-gui) _is_gui=1 ;;
+                --features | -F) _feats+="${_feats:+,}${_a[_i + 1]-}" ;;
+                --features=*) _feats+="${_feats:+,}${_a[_i]#--features=}" ;;
+            esac
+        done
+        if [ -n "$_is_gui" ]; then
+            printf '%s\n' "$_feats"
+            return 0
+        fi
+    done < "$1"
+}
+
+# _rgs_tauri_features_under <scratch-dir> <features> — tauri's features, one per
+# line, as the REAL cargo resolves reify-gui under --features <features>.
+# <scratch-dir> must already be registered with _rgs_mktemp: this runs inside
+# $(...), where a registration would be lost. Silent and non-zero if cargo
+# cannot resolve (e.g. a cold registry). --filter-platform keeps --offline from
+# needing other targets' crates (macOS-only block2 etc.), which a Linux host
+# never downloads.
+_rgs_tauri_features_under() {
+    local _json="$1/cargo-metadata.json" _rc=0 _host
+    _host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
+    [ -n "$_host" ] || return 1
+    ( cd "$REPO_ROOT" && cargo metadata --format-version 1 --locked --offline \
+        --filter-platform "$_host" \
+        --manifest-path "$REPO_ROOT/gui/src-tauri/Cargo.toml" \
+        --features "$2" ) > "$_json" 2>/dev/null || _rc=$?
+    [ "$_rc" -eq 0 ] || return 1
+    python3 -I -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    meta = json.load(f)
+names = {p["id"]: p["name"] for p in meta["packages"]}
+for node in meta["resolve"]["nodes"]:
+    if names[node["id"]] == "tauri":
+        print("\n".join(node["features"]))
+' "$_json"
 }
 
 # _rgs_stub_npm_serving <dir> — an npm whose `run dev` stays alive so the
@@ -1394,6 +1483,179 @@ printf "%s\n%s" "$first" "$LD_LIBRARY_PATH"'
 else
     echo "  SKIP: /opt/reify-deps/tbb-pin absent on this host — Test 35"
 fi
+
+# -- Test 36: behavioral — release embeds gui/dist, dev loads vite ------------
+echo ""
+echo "--- Test 36: run-gui.sh builds tauri with custom-protocol; run-gui-dev.sh does not ---"
+
+# Why custom-protocol decides what the window loads: see `embedded-frontend` in
+# gui/src-tauri/Cargo.toml. Each launcher's --features value goes to the REAL
+# cargo's feature resolver.
+
+# _t36_resolve <label> <tmpdir> — read the --features value the launcher run in
+# <tmpdir> handed cargo into _t36_features, and tauri's features under it into
+# _t36_tauri; asserts all three are real, so neither verdict on custom-protocol
+# can pass vacuously.
+_t36_resolve() {
+    local _rc=0
+    _t36_features=$(_rgs_cargo_build_features "$2/cargo-argv")
+    _t36_tauri=$(_rgs_tauri_features_under "$2" "$_t36_features") || _rc=$?
+
+    assert "$1: its cargo build of reify-gui passes a --features value" \
+        test -n "$_t36_features"
+
+    assert "$1: cargo resolves reify-gui under --features '$_t36_features' (rc $_rc; on a cold registry warm it with \`cargo fetch --locked\`, or run scripts/setup-dev.sh)" \
+        test "$_rc" -eq 0
+
+    # Non-empty iff tauri is in the resolve: the workspace dep always enables devtools.
+    assert "$1: tauri is in cargo's resolve under --features '$_t36_features'" \
+        test -n "$_t36_tauri"
+}
+
+# --- 36a: run-gui.sh ---
+_rgs_mktemp _t36rel_tmpdir
+_mk_rungui_fixture "$_t36rel_tmpdir"
+_rgs_stub_npm_serving "$_t36rel_tmpdir"
+_rgs_stub_cargo "$_t36rel_tmpdir"
+_rgs_stub_gui_binary "$_t36rel_tmpdir" target/release/reify-gui
+
+env DISPLAY=:99 \
+    _RGS_ENV_DUMP="$_t36rel_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t36rel_tmpdir/cargo-argv" \
+    PATH="$_t36rel_tmpdir/bin:$PATH" \
+    bash "$_t36rel_tmpdir/scripts/run-gui.sh" "$_t36rel_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+_t36_resolve run-gui.sh "$_t36rel_tmpdir"
+
+assert "run-gui.sh: tauri resolves WITH custom-protocol under --features '$_t36_features', so the window serves gui/dist (tauri features: ${_t36_tauri//$'\n'/,})" \
+    bash -c 'grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
+
+# --- 36b: run-gui-dev.sh ---
+_rgs_mktemp _t36dev_tmpdir
+_t36dev_port=$(_rgs_free_port)
+_mk_rungui_dev_fixture "$_t36dev_tmpdir"
+_rgs_stub_npm_serving "$_t36dev_tmpdir"
+_rgs_stub_curl_stateful "$_t36dev_tmpdir"
+_rgs_stub_cargo "$_t36dev_tmpdir"
+_rgs_stub_gui_binary "$_t36dev_tmpdir" target/debug/reify-gui
+
+env DISPLAY=:99 \
+    REIFY_VITE_PORT="$_t36dev_port" \
+    _RGS_CURL_COUNTER="$_t36dev_tmpdir/curl-count" \
+    _RGS_ENV_DUMP="$_t36dev_tmpdir/env-dump" \
+    _RGS_CARGO_ARGV="$_t36dev_tmpdir/cargo-argv" \
+    PATH="$_t36dev_tmpdir/bin:$PATH" \
+    bash "$_t36dev_tmpdir/scripts/run-gui-dev.sh" "$_t36dev_tmpdir/test.ri" >/dev/null 2>&1 || true
+
+_t36_resolve run-gui-dev.sh "$_t36dev_tmpdir"
+
+assert "run-gui-dev.sh: tauri resolves WITHOUT custom-protocol under --features '$_t36_features', so the window keeps loading vite's devUrl (tauri features: ${_t36_tauri//$'\n'/,})" \
+    bash -c '! grep -qxF custom-protocol <<< "$1"' _ "$_t36_tauri"
+
+# -- Test 37: behavioral — build-sidecar.sh refuses without its node_modules --
+echo ""
+echo "--- Test 37: build-sidecar.sh refuses without gui/sidecar/node_modules (#9728) ---"
+
+_rgs_mktemp _t37_tmpdir
+mkdir -p "$_t37_tmpdir/gui/sidecar" "$_t37_tmpdir/bin"
+cp "$BUILD_SIDECAR" "$_t37_tmpdir/gui/sidecar/build-sidecar.sh"
+_rgs_stub_npx_marker "$_t37_tmpdir"
+
+# _t37_run — reset the npx marker, run the real script; sets _t37_err (stderr
+# only) and _t37_rc.
+_t37_run() {
+    rm -f "$_t37_tmpdir/npx-invoked"
+    _t37_rc=0
+    _t37_err=$(env _RGS_NPX_MARKER="$_t37_tmpdir/npx-invoked" \
+        PATH="$_t37_tmpdir/bin:$PATH" \
+        bash "$_t37_tmpdir/gui/sidecar/build-sidecar.sh" 2>&1 >/dev/null) || _t37_rc=$?
+}
+
+# _t37_assert_refused <label> — rc 1, one stderr line naming the remedy, no npx.
+_t37_assert_refused() {
+    assert "$1: exits 1 (rc $_t37_rc)" \
+        test "$_t37_rc" -eq 1
+    assert "$1: stderr is exactly one line" \
+        bash -c '[ "$(printf "%s\n" "$1" | wc -l)" -eq 1 ]' _ "$_t37_err"
+    assert "$1: stderr names the remedy 'cd gui/sidecar && npm ci' (got: $_t37_err)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF "cd gui/sidecar && npm ci"' _ "$_t37_err"
+    assert "$1: npx is never reached" \
+        bash -c '! [ -e "$1" ]' _ "$_t37_tmpdir/npx-invoked"
+}
+
+# --- 37a: no node_modules ---
+_t37_run
+_t37_assert_refused "build-sidecar.sh, no node_modules"
+assert "build-sidecar.sh, no node_modules: writes no sidecar binary" \
+    bash -c 'shopt -s nullglob; f=("$1"/gui/src-tauri/sidecar/reify-sidecar-*); [ "${#f[@]}" -eq 0 ]' _ "$_t37_tmpdir"
+
+# --- 37b: a partial install (node_modules without .bin/tsup) ---
+mkdir "$_t37_tmpdir/gui/sidecar/node_modules"
+_t37_run
+_t37_assert_refused "build-sidecar.sh, node_modules without .bin/tsup"
+
+# --- 37c: sensitivity pair — the same fixture builds once tsup is installed ---
+mkdir -p "$_t37_tmpdir/gui/sidecar/node_modules/.bin"
+cat > "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup" <<'TSUP_STUB'
+#!/usr/bin/env bash
+mkdir -p dist && printf '// t37 stub bundle argv: %s\n' "$*" > dist/cli.js
+TSUP_STUB
+chmod +x "$_t37_tmpdir/gui/sidecar/node_modules/.bin/tsup"
+_t37_run
+
+assert "build-sidecar.sh, tsup installed: exits 0 (rc $_t37_rc; stderr: $_t37_err)" \
+    test "$_t37_rc" -eq 0
+assert "build-sidecar.sh, tsup installed: npx is never reached" \
+    bash -c '! [ -e "$1" ]' _ "$_t37_tmpdir/npx-invoked"
+assert "build-sidecar.sh, tsup installed: writes exactly one reify-sidecar-* whose line 1 is the node shebang, bundling tsup's output for --config tsup.sidecar.ts" \
+    bash -c '
+        shopt -s nullglob
+        f=("$1"/gui/src-tauri/sidecar/reify-sidecar-*)
+        [ "${#f[@]}" -eq 1 ] || exit 1
+        [ "$(head -n1 "${f[0]}")" = "#!/usr/bin/env node" ] &&
+            grep -qF "t37 stub bundle" "${f[0]}" &&
+            grep -qF -- "--config tsup.sidecar.ts" "${f[0]}"
+    ' _ "$_t37_tmpdir"
+
+# -- Test 38: behavioral — run-gui.sh surfaces the sidecar refusal first -------
+echo ""
+echo "--- Test 38: run-gui.sh surfaces the sidecar refusal before any npm/cargo step ---"
+
+_rgs_mktemp _t38_tmpdir
+_mk_rungui_fixture "$_t38_tmpdir"
+cp "$BUILD_SIDECAR" "$_t38_tmpdir/gui/sidecar/build-sidecar.sh"
+_rgs_stub_npm_marker "$_t38_tmpdir"
+_rgs_stub_cargo "$_t38_tmpdir"
+_rgs_stub_npx_marker "$_t38_tmpdir"
+
+_t38_rc=0
+_t38_out=$(env DISPLAY=:99 \
+    _RGS_NPM_MARKER="$_t38_tmpdir/npm-invoked" \
+    _RGS_NPX_MARKER="$_t38_tmpdir/npx-invoked" \
+    _RGS_CARGO_ARGV="$_t38_tmpdir/cargo-argv" \
+    PATH="$_t38_tmpdir/bin:$PATH" \
+    bash "$_t38_tmpdir/scripts/run-gui.sh" "$_t38_tmpdir/test.ri" 2>&1) || _t38_rc=$?
+
+assert "run-gui.sh, no sidecar deps: exits non-zero" \
+    test "$_t38_rc" -ne 0
+assert "run-gui.sh, no sidecar deps: output names the remedy 'cd gui/sidecar && npm ci'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "cd gui/sidecar && npm ci"' _ "$_t38_out"
+assert "run-gui.sh, no sidecar deps: refusal precedes npm install and the frontend build" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npm-invoked"
+assert "run-gui.sh, no sidecar deps: refusal precedes every cargo call" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/cargo-argv"
+assert "run-gui.sh, no sidecar deps: npx is never reached" \
+    bash -c '! [ -e "$1" ]' _ "$_t38_tmpdir/npx-invoked"
+
+# -- Test 39: structural — setup-dev.sh provisions gui/sidecar ----------------
+echo ""
+echo "--- Test 39: setup-dev.sh installs gui/sidecar's node_modules (the precondition Tests 37/38 refuse without) ---"
+
+# setup-dev.sh cannot run hermetically (apt, sudo, systemd, .git hooks), so this
+# checks its UNCOMMENTED lines: a comment naming the step must not satisfy it.
+SETUP_DEV="$REPO_ROOT/scripts/setup-dev.sh"
+assert "setup-dev.sh: an uncommented line runs 'cd gui/sidecar && npm ci'" \
+    bash -c 'grep -qF "cd gui/sidecar && npm ci" <<<"$1"' _ "$(_rgs_code_lines "$SETUP_DEV")"
 
 # -- Test 32: suite invariant — hermetic DISPLAY pin survives every test -----
 echo ""

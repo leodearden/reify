@@ -2,7 +2,7 @@
 //!
 //! Consumers include it from their test-crate root with
 //! `#[path = "common/numeric_cell.rs"] mod numeric_cell;`, following the
-//! `common/angle_expr.rs` precedent.
+//! `common/differential.rs` precedent.
 
 use reify_ir::Value;
 

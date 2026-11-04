@@ -42,7 +42,17 @@
 # warm_lane_pool.task_pool_size_source derives the lane pool from this value at startup
 # (N = max_concurrent_tasks + git.spare_warm_lanes), so a cut here SHRINKS the pool unless
 # spare_warm_lanes absorbs it — see the pool-size invariant at git.spare_warm_lanes.
-max_concurrent_tasks: 24
+# 24 -> 16 (Leo, 2026-11-02, ruling after the 2026-11-01 portfolio review, seat Q3): the
+# per-project task-verify slot is saturated (a waiter is present in 92-99% of heartbeat
+# samples, W43-W44). A closed-loop queue model fitted to W44 keeps the slot >= 99.4% busy
+# at 16 while cutting modelled verify wait from 9.9 h to 4.6 h; reify landed no fewer at
+# 24 than at 48 (15.6 vs 14.3 a day), so the cap is not what limits landings. The warm-lane
+# pool is unchanged: git.spare_warm_lanes goes 32 -> 40 in the same edit, so
+# N = 16 + 40 = 56 = highest resident _lane-K + 1 (POOL-SIZE INVARIANT at
+# git.spare_warm_lanes). Tripwire: if the weekly waiter-present share falls below 0.90 or
+# landings/day fall below the W44 rate, revert at the next redeploy; raise again when task
+# 7977's remote task legs reach this project. Red tier: takes effect at the next redeploy.
+max_concurrent_tasks: 16
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
 # depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
@@ -570,7 +580,12 @@ warm_lane_pool:
 # the serial-queue backlog. Correctness is the same gate as single merges (the train tip
 # is verified by verify.sh --scope all before advance). df tasks 1704-1708 landed the code.
 merge_train_former_enabled: true
-merge_train_coalesce_enabled: true  # dark_factory:1722; user-authorized 2026-06-10
+# Retroactive coalescing disabled per Leo's ruling 2026-10-30 (task 9612): match Dark
+# Factory (dark_factory 7739, ccaa563020), where deep merge-ahead chains supersede it
+# and compete with it for the same buffered singles. Evidence: dark-factory
+# plans/mcp-coalesce-trains-2026-10-26.md §0, §4.4. Declared atomic trains are unaffected.
+# Restart-only (red tier). Originally enabled by dark_factory:1722, 2026-06-10.
+merge_train_coalesce_enabled: false
 merge_train_max_members: 3  # already the default; explicit per GO-N3
 
 # Variable-depth speculative verify placement (task 2359) — ACTIVATE the deep
@@ -910,7 +925,7 @@ psi_admission:            # PRD dark_factory plans/load-throttle-harmonisation-p
   mem_some_avg10: 15.0
   mem_full_avg10: 3.0
   io_some_avg10: 40.0
-  runqueue_ratio: 4.0     # provisional (D9); the calibration gate re-derives it
+  runqueue_ratio: 6.0     # calibrated: dark_factory plans/load-threshold-calibration-2026-11-03.md (esc-5219-1)
   min_inflight_floor: 3
   # cpu_some_avg10 and own_cpu_some_avg10 deliberately absent: off (D1, D2)
 
@@ -1003,16 +1018,10 @@ verify_cross_check_remote_green: false
 # should run at all when the queue re-verifies on landing.
 max_pre_merge_retries: 1
 #
-# sccache shared backend (κ): both hosts share a redis cache so the laptop free-rides
-# the workstation's warm compilation artifacts. ENABLED 2026-06-10 alongside the C enable.
-# Requires the workstation sccache server to be (re)started with this backend (the running
-# server's backend is fixed at start). Correctness: sccache is input-hashed (caches
-# compilation, not verdicts); the drift detector (every 20 lands) is the standing fidelity
-# guarantee for this env change (the D6 parity was proven pre-sccache).
-sccache:
-  enabled: true
-  backend_env:
-    SCCACHE_REDIS: redis://leo-workstation.tailb08a6b.ts.net:6380
+# No `sccache:` shared-backend block: each verify host's own sccache.service serves a
+# local-disk cache, reached through verify_env's RUSTC_WRAPPER. The shared Redis
+# backend was retired (dark_factory verify-speed ruling R2, 2026-09-11); its container
+# was removed 2026-11-01 after sitting empty, since the running servers never used it.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Trailing-24h spend ceiling. Default $200 was a backstop from before the
@@ -1401,7 +1410,9 @@ git:
   # the pool as infra-owned and never re-pins it, so its task's branch stays checked out
   # there and every re-dispatch faults rc=128 — #7532's 48 -> 24 cut stranded 24 tasks
   # this way. Hence 24 + 32 = 56; lower it only after draining the high lanes.
-  spare_warm_lanes: 32
+  # 2026-11-02 (Leo, portfolio review Q3): 32 -> 40 to absorb the max_concurrent_tasks cut
+  # 24 -> 16 above; 16 + 40 = 56 keeps N at the invariant floor.
+  spare_warm_lanes: 40
   # DF-1933 reclaim-on-exhaustion safety valve: on pool exhaustion, steals the
   # oldest non-dispatched non-terminal lane (with WIP-commit preservation) instead
   # of hard-faulting to the inv.6 cold-fallback. Enabled after the 2026-07-22
@@ -1413,6 +1424,13 @@ git:
   # phantom that lazy lowest-numbered-first acquire never demands. Fail-open,
   # idempotent, consulted once at startup.
   warm_lane_prewarm: true
+  # Soft-floor throttle (DF GitOps._warm_lane_soft_pressure_defer): defer FRESH lane
+  # allocations while free space or free inodes are under the soft floors
+  # (GitConfig.warm_lane_soft_free_gib / warm_lane_soft_free_inodes). NOT the top-level
+  # warm_lane_pool.soft_free_gib above: a different key, which this throttle never reads.
+  # warm_lane_disk_guard stays off, so the same check also defers below the HARD floor.
+  # Restart-tier: none of the soft-floor keys is in DF RELOADABLE_FIELDS.
+  warm_lane_soft_floor: true
 
 # Unknown-config-key census allowlist (dark-factory task 2989, filed as reify
 # task 5733 follow-up from escalation agent-followup-2989). 2989 adds a

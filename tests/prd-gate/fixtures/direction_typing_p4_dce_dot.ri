@@ -1,0 +1,12 @@
+module p4_dce_dot
+enum PressureDirection {
+    Normal,
+    Fixed { dir: Direction },
+}
+structure def P {
+    param direction : PressureDirection = PressureDirection.Normal
+}
+structure def Main {
+    let a = P()
+    let k = a.direction
+}

@@ -13,8 +13,8 @@ module driver_contract_allow_indeterminate
 @test
 @allow_indeterminate
 structure TestToleratedIndeterminate {
-    param w : Length = auto
-    // The opposing bound keeps `w` a legal strict auto under #6692 while it
-    // stays Indeterminate under the solver-free test runner.
+    // Indeterminate via a run-dependent Undef, not an auto: `reify test` solves autos.
+    param divisor : Int = 0
+    let w = 10mm / divisor
     constraint w > 0mm && w < 10mm
 }

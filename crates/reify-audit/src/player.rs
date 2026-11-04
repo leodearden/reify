@@ -51,7 +51,7 @@ use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity, pattern_flag}
 ///
 /// [`LayerViolation`]: crate::LayerViolation
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    let violations = match ctx.jcodemunch.get_layer_violations() {
+    let violations = match ctx.jcodemunch().get_layer_violations() {
         Ok(violations) => violations,
         Err(failure) => {
             return vec![crate::model::corpus_unexamined(

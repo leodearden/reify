@@ -40,7 +40,6 @@ crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs :: crates/reify
 crates/reify-cli/tests/fixtures/appearance_violated.ri :: crates/reify-cli/tests/cli_check.rs
 crates/reify-cli/tests/fixtures/result_match_bore_err.ri :: crates/reify-eval/tests/result_match_e2e.rs
 crates/reify-cli/tests/fixtures/result_match_bore_ok.ri :: crates/reify-eval/tests/result_match_e2e.rs
-crates/reify-cli/tests/fixtures/type_hygiene_strict.ri :: crates/reify-cli/tests/cli_type_hygiene_strict.rs
 crates/reify-cli/tests/harness_cli/cli_eval_result_fallback.rs :: crates/reify-eval/tests/result_fallback_e2e.rs
 crates/reify-cli/tests/harness_cli/cli_eval_result_match.rs :: crates/reify-eval/tests/result_match_e2e.rs
 crates/reify-cli/tests/harness_cli/cli_eval_result_recovery.rs :: crates/reify-eval/tests/result_recovery_e2e.rs
@@ -168,6 +167,7 @@ docs/prds/v0_3/geometry-handle-runtime.md :: crates/reify-compiler/tests/solid_p
 docs/prds/v0_5/buckling-eigensolver.md :: crates/reify-compiler/tests/buckling_stdlib_compile.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md :: crates/reify-compiler/tests/si_units_tests.rs
+docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.md :: crates/reify-compiler/tests/unit_label_round_trip.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.yaml :: crates/reify-compiler/tests/feature_datum_axis_example_tests.rs
 docs/prds/v0_6/angle-units-surface-convergence.capability-manifest.yaml :: crates/reify-compiler/tests/si_units_tests.rs
 docs/prds/v0_6/compiler-type-hygiene.md :: crates/reify-compiler/tests/mul_div_static_runtime_parity.rs

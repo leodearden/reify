@@ -35,95 +35,26 @@ mod check_verdict;
 mod cmd;
 mod constraint_report;
 mod dev;
+mod help;
 mod module_capabilities;
 mod sigpipe;
+use help::Command;
 use reify_core::ModulePath;
-
-fn print_usage(out: &mut dyn std::io::Write) {
-    let _ = writeln!(out, "Usage: reify <command> [options]");
-    let _ = writeln!(out, "Commands:");
-    let _ = writeln!(out, "  check <file>              Check constraints");
-    let _ = writeln!(
-        out,
-        "  test <file>               Run @test-annotated structures"
-    );
-    let _ = writeln!(
-        out,
-        "  build <file> -o <output>   Build geometry and export"
-    );
-    let _ = writeln!(
-        out,
-        "  run <file>                Alias for eval (flagship: reify run <shell.ri>)"
-    );
-    let _ = writeln!(
-        out,
-        "  eval <file>               Evaluate and print every top-level value cell"
-    );
-    let _ = writeln!(
-        out,
-        "  report --bom <file>       Roll up a BOM / cost / waste / provenance report"
-    );
-    let _ = writeln!(
-        out,
-        "  lsp                        Start language server (stdin/stdout)"
-    );
-    let _ = writeln!(
-        out,
-        "  gui [--debug] <file>       Open file in GUI (--debug enables MCP debug listener)"
-    );
-    let _ = writeln!(
-        out,
-        "  gui-debug <file>           Open file in GUI with debug MCP listener (alias for `gui --debug`)"
-    );
-    let _ = writeln!(
-        out,
-        "  doc <file> [-o <path>] [--format html|markdown|json] [--split] [--compact]  Generate documentation"
-    );
-    let _ = writeln!(
-        out,
-        "  cache export <hash>        Write a single cache entry to stdout as a tarball"
-    );
-    let _ = writeln!(
-        out,
-        "  cache import               Read a cache tarball from stdin into the local cache"
-    );
-    let _ = writeln!(
-        out,
-        "  cache stats                Print cache directory, entry count, total size, and top-N largest entries"
-    );
-    let _ = writeln!(
-        out,
-        "  cache clear [--engine-version <hash>] --yes  Empty the cache (or one engine-version subdir); --yes required"
-    );
-    let _ = writeln!(
-        out,
-        "  cache gc                   Force LRU eviction down to the configured cache cap (live engine version only)"
-    );
-    let _ = writeln!(
-        out,
-        "  explain <file>             Print per-cell objective provenance (B9 triple)"
-    );
-    let _ = writeln!(
-        out,
-        "  dev inspect-node <node-id> Print node kind, traits, priority, policy, and overrides"
-    );
-    let _ = writeln!(out, "  --version                  Print version");
-    let _ = writeln!(out, "  --help                     Show this list");
-}
 
 fn main() -> ExitCode {
     sigpipe::restore_default();
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        print_usage(&mut std::io::stderr());
+        help::write_overview(&mut std::io::stderr());
         return ExitCode::FAILURE;
     }
 
-    // (a) Early-exit arms: --help / --version short-circuit before the sweep.
+    // (a) Early-exit arms: --help / --version, an unknown command, and
+    // `reify <cmd> --help` short-circuit before the sweep.
     match args[1].as_str() {
         "--help" | "-h" | "help" => {
-            print_usage(&mut std::io::stdout());
+            help::write_overview(&mut std::io::stdout());
             return ExitCode::SUCCESS;
         }
         "--version" | "-V" => {
@@ -131,6 +62,16 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         _ => {}
+    }
+    let Some(subcommand) = help::lookup(&args[1]) else {
+        eprintln!("Unknown command: {}", args[1]);
+        help::write_overview(&mut std::io::stderr());
+        return ExitCode::FAILURE;
+    };
+    let subcommand_args = &args[2..];
+    if help::requests_help(subcommand_args) {
+        help::write_subcommand_help(subcommand, &mut std::io::stdout());
+        return ExitCode::SUCCESS;
     }
 
     // (b) Sweep stale tempfiles and orphan dirs from the persistent cache.
@@ -140,32 +81,27 @@ fn main() -> ExitCode {
     cache::run_startup_sweep();
 
     // (c) Command dispatcher.
-    match args[1].as_str() {
-        "check" => cmd::check::cmd_check(&args[2..]),
-        "test" => cmd::test::cmd_test(&args[2..]),
-        "build" => cmd::build::cmd_build(&args[2..]),
-        "run" | "eval" => cmd::eval::cmd_eval(&args[2..]),
-        "report" => cmd::report::cmd_report(&args[2..]),
-        "doc" => cmd::doc::cmd_doc(&args[2..]),
-        "lsp" => cmd::lsp::cmd_lsp(),
-        "gui" => cmd::gui::cmd_gui(&args[2..]),
-        "gui-debug" => {
+    match subcommand.command {
+        Command::Check => cmd::check::cmd_check(subcommand_args),
+        Command::Test => cmd::test::cmd_test(subcommand_args),
+        Command::Build => cmd::build::cmd_build(subcommand_args),
+        Command::Eval => cmd::eval::cmd_eval(subcommand_args),
+        Command::Report => cmd::report::cmd_report(subcommand_args),
+        Command::Doc => cmd::doc::cmd_doc(subcommand_args),
+        Command::Lsp => cmd::lsp::cmd_lsp(),
+        Command::Gui => cmd::gui::cmd_gui(subcommand_args),
+        Command::GuiDebug => {
             // `gui-debug` is sugar for `gui --debug`: prepend the flag and
             // route through the same code path as `cmd_gui` so the two entry
             // points share argument parsing and binary-launch logic.
-            let mut forwarded: Vec<String> = Vec::with_capacity(args.len() - 1);
+            let mut forwarded: Vec<String> = Vec::with_capacity(subcommand_args.len() + 1);
             forwarded.push("--debug".to_string());
-            forwarded.extend(args[2..].iter().cloned());
+            forwarded.extend(subcommand_args.iter().cloned());
             cmd::gui::cmd_gui(&forwarded)
         }
-        "explain" => cmd::explain::cmd_explain(&args[2..]),
-        "dev" => dev::cmd_dev(&args[2..]),
-        "cache" => cache::cmd_cache(&args[2..]),
-        other => {
-            eprintln!("Unknown command: {}", other);
-            print_usage(&mut std::io::stderr());
-            ExitCode::FAILURE
-        }
+        Command::Explain => cmd::explain::cmd_explain(subcommand_args),
+        Command::Dev => dev::cmd_dev(subcommand_args),
+        Command::Cache => cache::cmd_cache(subcommand_args),
     }
 }
 
@@ -315,10 +251,9 @@ fn parse_and_compile_with_cfg(
 /// membership, ordering, and the INV-FEA-1 single-source-of-truth rationale;
 /// this wrapper does not restate them).
 ///
-/// Exists to name the `MorphRegistration::Enabled` choice once and keep both
-/// call sites — `cmd_build` (solver-free, calls this directly) and
-/// [`configured_eval_engine`] (full solver) — one-line, with no drift between
-/// them.
+/// Exists to name the `MorphRegistration::Enabled` choice once; its one
+/// production caller is [`production_cli_engine`], which every CLI engine
+/// ([`configured_eval_engine`], [`configured_check_build_engine`]) goes through.
 ///
 /// The morph producer is dormant-safe (task 4744 β): the dispatch only
 /// attempts a morph when a prior source mesh carries a `BoundaryAssociation`,
@@ -329,6 +264,45 @@ fn register_compute_trampolines(engine: &mut reify_eval::Engine) {
     engine.register_production_compute_fns(reify_eval::MorphRegistration::Enabled(
         reify_mesh_morph::register_morph_producer,
     ));
+}
+
+/// A production CLI engine: `construct` called with `posture`, then the
+/// compute trampolines registered so `@optimized` targets dispatch.
+/// [`configured_eval_engine`] and [`configured_check_build_engine`] differ only
+/// in the posture they pass and in what they attach afterwards.
+fn production_cli_engine(
+    posture: reify_eval::SolverPosture,
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    let mut engine = construct(posture);
+    register_compute_trampolines(&mut engine);
+    engine
+}
+
+/// `cmd_check`'s and `cmd_build`'s solver posture: the solver's default budget,
+/// and nothing persisted is served, because [`configured_check_build_engine`]
+/// attaches no persistent cache.
+const CHECK_BUILD_POSTURE: reify_eval::SolverPosture =
+    reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH);
+
+/// Construct and configure the [`reify_eval::Engine`] that `cmd_check` and
+/// `cmd_build` run: `construct` is called with [`CHECK_BUILD_POSTURE`], whose
+/// `Solve` posture wires the production [`reify_constraints::SolverRegistry`]
+/// so autos resolve as they do under `reify eval`, and the compute trampolines
+/// are registered.
+///
+/// The registered trampolines also keep the missing-trampoline diagnostic an
+/// Error, which both commands gate on: on an engine whose compute registry is
+/// entirely empty it would be a Warning, leaving FEA-result constraints
+/// Indeterminate without failing the command.
+///
+/// No persistent cache is attached: the posture's `StalenessPolicy::Fresh`
+/// forbids serving an earlier session's results, and
+/// `Engine::set_persistent_cache_dir` refuses a cache on such an engine.
+fn configured_check_build_engine(
+    construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
+) -> reify_eval::Engine {
+    production_cli_engine(CHECK_BUILD_POSTURE, construct)
 }
 
 /// The eval family's (`cmd_eval`, `cmd_report`, `cmd_explain`) solver posture:
@@ -365,16 +339,10 @@ const EVAL_FAMILY_POSTURE: reify_eval::SolverPosture =
 /// `DispatchError::Failed` in `insert_shell_extract_upstream` and emit a misleading
 /// "falling back to tet meshing" warning even though the FEA trampoline independently
 /// re-classifies and runs the correct shell solve.
-///
-/// NOTE: `cmd_build` intentionally does NOT use this helper — it calls
-/// [`register_compute_trampolines`] directly (constructs `SolverPosture::SolverFree`)
-/// to preserve cmd_build's solver-free posture for `auto`-param fixtures.  See the comment in
-/// `cmd_build` for rationale.
 fn configured_eval_engine(
     construct: impl FnOnce(reify_eval::SolverPosture) -> reify_eval::Engine,
 ) -> reify_eval::Engine {
-    let mut engine = construct(EVAL_FAMILY_POSTURE);
-    register_compute_trampolines(&mut engine);
+    let mut engine = production_cli_engine(EVAL_FAMILY_POSTURE, construct);
     // Resolve the persistent FEA cache dir from env/config/defaults and wire it
     // into the engine.  Best-effort: a resolver error (e.g. bad
     // REIFY_CACHE_MAX_BYTES env var) is logged at DEBUG and the engine proceeds
@@ -566,6 +534,32 @@ mod persistent_cache_cli_wiring_tests {
                 panic!("the eval family must construct a Solve posture, got SolverFree")
             }
         }
+    }
+
+    /// `reify check` and `reify build` solve with a fresh profile, attach no
+    /// persistent cache, and register the compute trampolines.
+    #[test]
+    fn configured_check_build_engine_solves_fresh_with_trampolines_and_no_cache() {
+        let engine = configured_check_build_engine(|posture| {
+            reify_eval::Engine::new(
+                posture,
+                Box::new(reify_constraints::SimpleConstraintChecker),
+                None,
+            )
+        });
+        assert_eq!(
+            engine.solver_posture(),
+            reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            "check and build must solve, and serve nothing persisted"
+        );
+        assert!(
+            engine.persistent_cache_dir().is_none(),
+            "check and build must not attach the persistent cache"
+        );
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "check and build must register the production compute trampolines"
+        );
     }
 
     /// The `--cache-dir` flag override (modelled by calling

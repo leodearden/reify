@@ -32,9 +32,10 @@ SCRATCH_IDENTITY = (
 )
 
 
-def _git(repo, *args, stdin=None):
+def scratch_git(repo, *args, stdin=None):
+    """`git -C repo args` with hooks off, hermetic_env() and the scratch identity; stdout bytes."""
     return subprocess.run(
-        ["git", "-C", str(repo), *NO_HOOKS, *args],
+        ["git", "-C", str(repo), *NO_HOOKS, *SCRATCH_IDENTITY, *args],
         input=stdin,
         env=hermetic_env(),
         capture_output=True,
@@ -44,23 +45,23 @@ def _git(repo, *args, stdin=None):
 
 def shared_clone(dest: Path, source: Path = REPO_ROOT) -> Path:
     """Clone `source`'s tree under test into `dest` and return `dest`."""
-    head = _git(source, "rev-parse", "HEAD").decode().strip()
+    head = scratch_git(source, "rev-parse", "HEAD").decode().strip()
     subprocess.run(
         ["git", *NO_HOOKS, "clone", "--shared", "--no-checkout", "-q", str(source), str(dest)],
         env=hermetic_env(),
         capture_output=True,
         check=True,
     )
-    _git(dest, "checkout", "-q", "--detach", head)
+    scratch_git(dest, "checkout", "-q", "--detach", head)
     main = subprocess.run(
         ["git", "-C", str(source), "rev-parse", "--verify", "-q", "refs/heads/main"],
         env=hermetic_env(),
         capture_output=True,
     )
     if main.returncode == 0:
-        _git(dest, "branch", "-f", "main", main.stdout.decode().strip())
-    diff = _git(source, "diff", "--binary", "HEAD")
+        scratch_git(dest, "branch", "-f", "main", main.stdout.decode().strip())
+    diff = scratch_git(source, "diff", "--binary", "HEAD")
     if diff:
-        _git(dest, "apply", "--index", stdin=diff)
-        _git(dest, *SCRATCH_IDENTITY, "commit", "-q", "-m", "tree under test: uncommitted diff")
+        scratch_git(dest, "apply", "--index", stdin=diff)
+        scratch_git(dest, "commit", "-q", "-m", "tree under test: uncommitted diff")
     return dest

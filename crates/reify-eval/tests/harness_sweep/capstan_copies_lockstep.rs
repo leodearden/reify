@@ -30,10 +30,11 @@
 use std::collections::BTreeSet;
 
 use reify_compiler::{CompiledConstraint, SolverHintKind, TopologyTemplate, ValueCellDecl};
+use reify_test_support::design_files::{DEV_CAPSTAN, PRINTER_RI};
 
-use super::capstan_groove_e2e::{CAPSTAN_ENTITY, DEV_CAPSTAN, dev_capstan_compiled};
+use super::capstan_groove_e2e::{CAPSTAN_ENTITY, dev_capstan_compiled};
 use super::design_fixture::{Strictness, assert_constraints_ok, entity_template};
-use super::idler_seat_e2e::{PRINTER_RI, printer_checked, printer_compiled};
+use super::idler_seat_e2e::{printer_checked, printer_compiled};
 
 /// Sketch cells printer.ri's copy must never carry. `volume()` is the sketch's
 /// machining metric: on printer.ri's kernel-free surface these would have to

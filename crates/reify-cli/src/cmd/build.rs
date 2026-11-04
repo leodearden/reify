@@ -9,19 +9,13 @@ use reify_ir::ExportFormat;
 use crate::artifact_triangles::{stl_triangle_count, threemf_triangle_count};
 use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagnostic};
 use crate::constraint_report::report_eval_output;
+use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{parse_and_compile, register_compute_trampolines};
+use crate::{configured_check_build_engine, parse_and_compile};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
-    // Shared usage text for the empty-args and no-positional-file guards.
-    const USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose]\n  \
-        With -o:    write a single file in that format (imperative).\n  \
-        Without -o: every `: Output` occurrence in the design drives its own file\n              \
-        (declarative); each relative path resolves against the .ri file's\n              \
-        directory, or against --out-dir when given.";
-
     if args.is_empty() {
-        eprintln!("{USAGE}");
+        eprintln!("{BUILD_USAGE}");
         return ExitCode::FAILURE;
     }
 
@@ -68,7 +62,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     }) {
         Some((_, f)) => f,
         None => {
-            eprintln!("{USAGE}");
+            eprintln!("{BUILD_USAGE}");
             return ExitCode::FAILURE;
         }
     };
@@ -111,33 +105,9 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     }
 
     let checker = SimpleConstraintChecker;
-    // Register FEA/buckling/modal + shell-extract compute trampolines so that
-    // `@optimized("solver::elastic_static")` targets dispatch to the real solver
-    // rather than body-inlining.  This is also what keeps the missing-trampoline
-    // diagnostic GATING here: without these registrations this engine's compute
-    // registry would be entirely EMPTY — `cmd_check`'s declared trampoline-free
-    // posture — and task 5311's severity predicate would emit
-    // `DiagnosticCode::NoRegisteredComputeTrampoline` at `Severity::Warning`,
-    // leaving FEA-result constraints Indeterminate WITHOUT failing the build.
-    // With the bundle registered, a target that is still unregistered is a
-    // genuine defect and stays `Severity::Error`, which `reify build` gates on.
-    //
-    // NOTE: cmd_build intentionally does NOT call `configured_eval_engine` (which
-    // constructs under a `Solve` posture, wiring the production registry).  The DimensionalSolver resolves
-    // `auto` params via a synthetic Chebyshev-centre objective even when no explicit
-    // `minimize`/`maximize` directive is present; wiring it here would change the
-    // observable behaviour of existing `auto`-param fixtures (bracket_indeterminate,
-    // bracket_all_indeterminate) from INDETERMINATE → SATISFIED.  cmd_build's
-    // solver-free posture is intentional; cmd_eval wires the full solver via
-    // `configured_eval_engine` because it explicitly models the full evaluation path.
-    // The FEA trampoline is pure-Rust and independent of the DimensionalSolver, so
-    // the solve runs correctly here under `SolverPosture::SolverFree`.  See
-    // `build_is_success` for the (c) exit-code gate.
-    let mut engine = reify_eval::Engine::with_registered_kernel(
-        reify_eval::SolverPosture::SolverFree,
-        Box::new(checker),
-    );
-    register_compute_trampolines(&mut engine);
+    let mut engine = configured_check_build_engine(|posture| {
+        reify_eval::Engine::with_registered_kernel(posture, Box::new(checker))
+    });
     // Lazily acquire the OpenVDB kernel when the module contains an
     // `isosurface(...)` realization op (task δ/5002). Without OpenVDB
     // registered, the operand's Mesh→Voxel voxelize stage and the terminal

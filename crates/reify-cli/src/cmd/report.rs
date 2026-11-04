@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
+use crate::help::REPORT_USAGE;
 use crate::{configured_eval_engine, parse_and_compile};
 
 /// `reify report --bom <file>` — roll up and render a BOM / cost / waste /
@@ -29,7 +30,7 @@ pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
             }
             flag if flag.starts_with("--") => {
                 eprintln!("Error: unknown flag for `report`: {}", flag);
-                eprintln!("Usage: reify report --bom <file>");
+                eprintln!("{REPORT_USAGE}");
                 return ExitCode::FAILURE;
             }
             path => {
@@ -45,11 +46,11 @@ pub(crate) fn cmd_report(args: &[String]) -> ExitCode {
 
     if !want_bom {
         eprintln!("Error: `report` requires the --bom flag");
-        eprintln!("Usage: reify report --bom <file>");
+        eprintln!("{REPORT_USAGE}");
         return ExitCode::FAILURE;
     }
     let Some(path) = file_path else {
-        eprintln!("Usage: reify report --bom <file>");
+        eprintln!("{REPORT_USAGE}");
         return ExitCode::FAILURE;
     };
 

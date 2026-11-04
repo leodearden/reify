@@ -87,7 +87,8 @@ pub struct SiPrefixBase {
 }
 
 /// SI base units used by the prefix-expansion generator. Excludes unprefixed
-/// bases themselves — those live in `stdlib/units.ri` (m, kg, s, rad, K).
+/// bases themselves — those live in `stdlib/units.ri` (m, kg, s, A, K, mol, cd,
+/// rad).
 ///
 /// Note: `g` is the mass prefix base (not `kg`) because SI prefixes can't
 /// stack. The generator multiplies gram-prefix factors by 1e-3 and skips `k`

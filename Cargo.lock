@@ -4260,6 +4260,8 @@ name = "reify-audit"
 version = "0.1.0"
 dependencies = [
  "reify-audit",
+ "reify-git-env",
+ "reify-syntax",
  "reify-test-support",
  "rusqlite",
  "serde",
@@ -4328,9 +4330,11 @@ dependencies = [
  "reify-builtins",
  "reify-compiler",
  "reify-config",
+ "reify-constraints",
  "reify-core",
  "reify-eval",
  "reify-expr",
+ "reify-git-env",
  "reify-ir",
  "reify-mcp",
  "reify-syntax",
@@ -4518,6 +4522,13 @@ dependencies = [
  "reify-ir",
  "reify-test-support",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "reify-git-env"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -4782,6 +4793,7 @@ version = "0.1.0"
 dependencies = [
  "reify-ast",
  "reify-core",
+ "reify-git-env",
  "reify-test-support",
  "tree-sitter",
  "tree-sitter-reify",
@@ -4797,6 +4809,7 @@ dependencies = [
  "reify-core",
  "reify-eval",
  "reify-expr",
+ "reify-git-env",
  "reify-ir",
  "reify-syntax",
  "serde_json",

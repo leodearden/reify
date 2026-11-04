@@ -49,6 +49,8 @@ mod cli_broken_pipe;
 mod cli_cache;
 #[path = "harness_cli_surface/cli_gui.rs"]
 mod cli_gui;
+#[path = "harness_cli_surface/cli_help.rs"]
+mod cli_help;
 #[path = "harness_cli_surface/cli_lsp.rs"]
 mod cli_lsp;
 #[path = "harness_cli_surface/cli_lsp_protocol.rs"]

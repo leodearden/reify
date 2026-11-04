@@ -48,27 +48,31 @@
 //!
 //! - **No prose is pinned.** Nothing here matches a sentence, a heading, or an
 //!   ordering. The only structural pins are the byte-exact fence info strings
-//!   (```` ```reify ```` / ```` ```reify-rejected ````) and the one-cite-per-line
-//!   format, all of which are house convention precisely so the surrounding
-//!   wording stays free to change.
+//!   (```` ```reify ```` / ```` ```reify-rejected ````), the one-cite-per-line
+//!   format, and the inert `<!-- LENGTH-ARGS-XREF -->` marker with the backticked
+//!   topic its region must name, all of which are house convention precisely so
+//!   the surrounding wording stays free to change.
 //! - **Compile-acceptance is a parse/shape/slot result, not a full signature
 //!   check.** A `structure def` body types an unresolved call from its FIRST
 //!   argument's `result_type`, so an unknown call NAME is not itself an error —
 //!   which is why property 2 above exists as a separate registry assertion
 //!   rather than being folded into the fence compile.
-//! - **The `check`-vs-`eval` EXIT-CODE asymmetry the chunk documents is NOT
-//!   pinned here.** It is a CLI-level property; this harness compiles in-process
-//!   and never runs the binary. The chunk marks those rows UNPINNED for exactly
-//!   that reason, and `cited_test_paths_in_the_units_chunk_resolve` only checks
-//!   that the eval-side cites it DOES make resolve to real tests.
+//! - **Where `reify check` stops on these forms is NOT pinned here.** It is a
+//!   CLI-level property; this harness compiles in-process and never runs the
+//!   binary. It is pinned at the CLI seam by
+//!   crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs, which the
+//!   chunk cites, and `cited_test_paths_in_the_units_chunk_resolve` checks that
+//!   those cites resolve.
+
+use std::path::Path;
 
 use reify_core::units::LENGTH_MIGRATION_HINT;
 use reify_test_support::{LENGTH_SLOT_DIAGNOSTIC_MARKER, named_length_argument};
 
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
-use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
-use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH, UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::{section_body, tagged_fence_bodies};
 use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
 
@@ -547,18 +551,15 @@ fn bare_zero_is_not_special_cased() {
 /// The EXACT live counts, not round numbers under them — the reasoning
 /// `geometry_chunk_smoke.rs::MINIMUM_FN_CITES` spells out: at a floor below the
 /// live count one whole cite can be deleted while the check stays green, which
-/// is precisely the regression the floor claims to catch. Seven `<path>::<fn>`
-/// cites across three `.rs` files (this module's own self-cites, plus the
-/// primitive-profile and modify-sweep eval pins), and one `.ri` exemplar
-/// (`angle_crossings.ri`, which predates this task).
+/// is precisely the regression the floor claims to catch.
 ///
 /// Raise these WITH the chunk when a cite is added. Never lower one to go green:
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything. How
 /// to re-measure one — and why a batched sweep under-reports — is stated once,
 /// next to `geometry_chunk_smoke.rs::MINIMUM_FN_CITES`, not repeated here.
-const MINIMUM_FN_CITES: usize = 7;
-const MINIMUM_RS_FILES: usize = 3;
-const MINIMUM_RI_FILES: usize = 1;
+const MINIMUM_FN_CITES: usize = 10;
+const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_RI_FILES: usize = 2;
 
 /// Every test units.md cites as PINNING a claim must still exist.
 ///
@@ -567,10 +568,7 @@ const MINIMUM_RI_FILES: usize = 1;
 /// Without this test a PINNED row survives the deletion or rename of the test it
 /// names, and the chunk — served verbatim to the in-GUI assistant — goes on
 /// asserting a guarantee that no longer exists. A dangling cite is not a broken
-/// link; it is a false claim. The three `.rs` files behind the floor are this
-/// module's own guard plus the two eval-layer pins the note relies on, and the
-/// one `.ri` is `examples/best_practices/angle_crossings.ri`, the compile-gated
-/// exemplar this chunk defers to for the angle-crossing diagnostics.
+/// link; it is a false claim.
 ///
 /// Twin of `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve`, and
 /// SHARES ITS BODY: the loop was extracted to
@@ -588,6 +586,41 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
     );
 }
 
+/// Line that opens units.md's pointer to the per-position length-argument catalogue.
+const LENGTH_ARGS_XREF_MARKER: &str = "<!-- LENGTH-ARGS-XREF -->";
+
+/// What [`LENGTH_ARGS_XREF_MARKER`]'s region is called in a failure message.
+const LENGTH_ARGS_XREF_TITLE: &str = "length-argument catalogue cross-reference";
+
+/// The topic that retrieves the chunk holding the length-argument catalogue:
+/// [`GEOMETRY_CHUNK_PATH`]'s filename stem, which `fence_gate`'s check 4 holds
+/// equal to the topic serving that file.
+fn length_args_catalogue_topic() -> &'static str {
+    Path::new(GEOMETRY_CHUNK_PATH)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{GEOMETRY_CHUNK_PATH} must have a UTF-8 filename stem"))
+}
+
+/// units.md routes a reader to the length-argument catalogue's topic (scope: module header).
+#[test]
+fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
+    let region = section_body(
+        &read_chunk(UNITS_CHUNK_PATH),
+        LENGTH_ARGS_XREF_MARKER,
+        UNITS_CHUNK_PATH,
+        LENGTH_ARGS_XREF_TITLE,
+    );
+
+    let topic_key = format!("`{}`", length_args_catalogue_topic());
+    assert!(
+        region.contains(&topic_key),
+        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names topic {topic_key}, \
+         which retrieves {GEOMETRY_CHUNK_PATH} — a pointer that names no destination points \
+         nowhere. FIX: route the reader to topic {topic_key} of `reify_language_reference`."
+    );
+}
+
 /// The constructors units.md names as caught only at build/eval time really are
 /// INVISIBLE to the compile layer.
 ///
@@ -597,7 +630,8 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// `builtin_signatures.rs`'s own
 /// `polygon_stays_slot_free_because_its_positions_are_arity_open` — so a bare
 /// number in one of them compiles CLEAN and is rejected later, which is why
-/// `reify check` prints `error:` for these and still exits 0.
+/// `reify check` evaluates them to a verdict before its Severity::Error gate
+/// exits 1.
 ///
 /// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
 /// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
@@ -608,17 +642,17 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// ```` ```reify-rejected ```` block in the commit that recorded the move — the
 /// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.
 ///
-/// WHY PIN THE NEGATIVE. The chunk tells an author to gate on `reify eval`
-/// rather than `reify check`, and that advice is only worth following while the
-/// gap is real. If a compile-layer slot is later added for one of these, this
-/// test goes RED and the row must move to the ```` ```reify-rejected ```` block
-/// — so the doc is corrected by the same commit that closes the gap, instead of
-/// warning about a hazard that no longer exists.
+/// WHY PIN THE NEGATIVE. The chunk tells an author that `reify check` prints a
+/// clean verdict beside these rejections. If a compile-layer slot is later added
+/// for one of these, this test goes RED, the row moves to the
+/// ```` ```reify-rejected ```` block, and its CLI-seam row in
+/// cli_check_bare_length_exit.rs flips `Layer` in the same commit — so the doc
+/// is corrected by the commit that closes the gap.
 ///
 /// SCOPE — this pins the COMPILE-layer half only. That these forms are rejected
-/// at eval time is pinned on the eval side by the tests the chunk cites; that
-/// `reify check` EXITS 0 on them is a CLI-level property this harness never
-/// observes, and the chunk marks it UNPINNED for exactly that reason.
+/// at eval time is pinned on the eval side by the tests the chunk cites; where
+/// `reify check` stops on them is a CLI-level property this harness never
+/// observes, and the chunk cites its CLI-seam pin.
 #[test]
 fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
@@ -658,8 +692,9 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
             "{UNITS_CHUNK_PATH} lists `{rejected}` as caught only at build/eval time, but the \
              COMPILE layer now rejects it: {messages:?}. That is good news — a slot was added — \
              but the chunk is now wrong twice over: the form belongs in the ```{REJECTED_TAG} \
-             block, and the check-visibility note must stop naming this constructor as one \
-             `reify check` does not gate. Move the row and update the note in the same commit."
+             block, the check-visibility note must move the constructor to the compiler-checked \
+             list, and its cli_check_bare_length_exit.rs row must move to `Layer::Compiler`. \
+             Move all three in the same commit."
         );
 
         assert_module_compiles(

@@ -970,9 +970,9 @@ mod tests {
 
     // ---- step-3/4 pins: free-face selection + interior-vertex compaction ----
 
-    /// Unit cube `[0,1]^3` (vertices 0..=7, the [`box_surface_mesh`] corner
-    /// ordering) fanned into 12 tets about an INTERIOR centre node (vertex 8):
-    /// one tet per outward-wound boundary triangle.
+    /// The unit cube `reify_test_support::mesh_fixtures::unit_cube_mesh`
+    /// (vertices 0..=7) fanned into 12 tets about an INTERIOR centre node
+    /// (vertex 8): one tet per outward-wound boundary triangle.
     ///
     /// Every one of the 12 boundary triangles appears in exactly one tet, and
     /// every face touching the centre node is shared by exactly two tets — so
@@ -982,26 +982,13 @@ mod tests {
     /// interior faces, and compacting away the interior vertex they were the
     /// only carrier of.
     fn cube_fan_with_interior_node() -> VolumeMesh {
-        #[rustfmt::skip]
-        let corners: [[f32; 3]; 8] = [
-            [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0], [0.0, 1.0, 1.0],
-        ];
-        #[rustfmt::skip]
-        let boundary_tris: [[u32; 3]; 12] = [
-            [0, 2, 1], [0, 3, 2], // -Z
-            [4, 5, 6], [4, 6, 7], // +Z
-            [0, 1, 5], [0, 5, 4], // -Y
-            [3, 7, 6], [3, 6, 2], // +Y
-            [0, 4, 7], [0, 7, 3], // -X
-            [1, 2, 6], [1, 6, 5], // +X
-        ];
+        let cube = reify_test_support::mesh_fixtures::unit_cube_mesh();
 
-        let mut vertices: Vec<f32> = corners.iter().flatten().copied().collect();
+        let mut vertices = cube.vertices;
         vertices.extend_from_slice(&[0.5, 0.5, 0.5]); // 8 = interior centre
 
         let mut indices = Vec::with_capacity(48);
-        for tri in boundary_tris {
+        for tri in cube.indices.chunks_exact(3) {
             indices.extend_from_slice(&[tri[0], tri[1], tri[2], 8]);
         }
 
@@ -1098,6 +1085,42 @@ mod tests {
                  background size field is built over",
             );
         }
+    }
+
+    /// Across many elements, every one of them NEGATIVELY oriented, the
+    /// extractor must emit a surface that is globally wound OUTWARD and
+    /// encloses exactly the meshed volume.
+    ///
+    /// Checked with the divergence theorem rather than the per-face centroid
+    /// test the single-tet pins use. The enclosed volume is a global property
+    /// of the emitted closed surface, it stays valid for non-convex bodies, and
+    /// its exact value pins the winding sign and catches a dropped face or a
+    /// same-winding duplicate. A face emitted twice in OPPOSITE windings
+    /// cancels exactly and is invisible here; that is left to the face-count
+    /// pin in `boundary_surface_mesh_drops_shared_faces_and_compacts_interior_vertices`.
+    #[test]
+    fn boundary_surface_mesh_of_a_multi_element_mesh_encloses_its_volume_outward() {
+        let vm = cube_fan_with_interior_node();
+        let tets = vm.tet_indices().expect("cube fan carries tet connectivity");
+        for (element, tet) in tets.chunks_exact(4).enumerate() {
+            assert!(
+                signed_tet_volume(&vm, tet[0], tet[1], tet[2], tet[3]) < 0.0,
+                "fixture precondition: cube-fan element {element} ({tet:?}) must be \
+                 negatively oriented, so the orientation swap in `outward_tet_faces` \
+                 runs on every element",
+            );
+        }
+
+        let surf = boundary_surface_mesh(&vm).expect("cube fan is a well-formed tet mesh");
+
+        assert_eq!(
+            reify_kernel_gmsh::fill_metrics::enclosed_volume_of_surface(&surf),
+            Some(1.0),
+            "the cube fan's free faces must enclose the unit cube wound outward: \
+             +1.0 is outward, -1.0 is globally inverted (invisible to \
+             `Mesh::validate`, which checks orientability only), and any other \
+             magnitude means a dropped face or a same-winding duplicate",
+        );
     }
 
     // ---- step-5/6 pins: the shared tet_shape gate ----

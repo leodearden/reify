@@ -19,7 +19,7 @@ use reify_audit::{
     AuditContext, EvidenceRef, Finding, GitCommit, GitOps, MockGitOps, MockJCodemunchOps, Pattern,
     Severity,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::common;
@@ -563,17 +563,7 @@ fn check_degrades_to_zero_findings_when_tasks_db_absent() {
 
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: dir.path().to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(dir.path().to_path_buf(), &conn, &git, &jc);
 
     let findings = reify_audit::pdcheck::check(&ctx);
     assert!(
@@ -605,17 +595,7 @@ fn check_resolves_the_lane_against_the_default_db_path() {
 
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: dir.path().to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(dir.path().to_path_buf(), &conn, &git, &jc);
 
     let findings = reify_audit::pdcheck::check(&ctx);
     assert_eq!(findings.len(), 1, "expected the seeded row to be flagged; got {findings:?}");

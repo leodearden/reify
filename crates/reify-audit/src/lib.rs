@@ -30,7 +30,6 @@
 //! filtering) without a real git repo, a real runs.db, or a real jcodemunch
 //! MCP server.
 
-pub mod git_env;
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
@@ -72,6 +71,8 @@ pub mod jcodemunch_index;
 pub mod jcodemunch_seam;
 /// Crate-internal: the git seam; its public surface is re-exported below.
 mod git_ops;
+/// Crate-internal: the in-memory branch-history snapshot behind the git seam.
+mod git_history;
 /// Crate-internal: the jcodemunch seam; its public surface is re-exported below.
 mod jcodemunch_ops;
 /// Crate-internal: the finding and input shapes; re-exported below.
@@ -89,7 +90,7 @@ pub use jcodemunch_ops::{
 #[cfg(any(test, feature = "test-support"))]
 pub use jcodemunch_ops::MockJCodemunchOps;
 pub use model::{
-    AuditContext, DoneProvenance, EvidenceRef, Finding, Pattern, Severity, TaskMetadata, TimeWindow,
+    AuditContext, DoneProvenance, EvidenceRef, Finding, Pattern, Severity, TaskMetadata,
 };
 
 // -----------------------------------------------------------------------

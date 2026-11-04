@@ -590,15 +590,15 @@ fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Op
 ///   Filtering on the structural cause rather than on the presence of a
 ///   text-matching Error keeps this independent of any other site's wording.
 /// * REGISTERED-TARGET GATE. Without it the warning fired, with actively
-///   misleading text, in the plain `reify check` shape — which registers NO
-///   trampolines — for every sub carrying a constructor override on a param an
-///   `@optimized` call reads. MEASURED: `Outer.a.r` got `Int(11)`, the correct
-///   per-instance body-inlined answer, alongside "falling back to
-///   body-inlining"; there was no dispatch to fall back FROM, and template
-///   scope had already emitted its own `no registered compute trampoline` Error
-///   for the same condition. `reify check` is the default CLI path, so that was
-///   a spurious warning on every model instantiating an `@optimized`-bearing
-///   structure with an override.
+///   misleading text, on an engine that registers NO trampolines (at the
+///   time, plain `reify check`) — for every sub carrying a constructor
+///   override on a param an `@optimized` call reads. MEASURED: `Outer.a.r`
+///   got `Int(11)`, the correct per-instance body-inlined answer, alongside
+///   "falling back to body-inlining"; there was no dispatch to fall back
+///   FROM, and template scope had already emitted its own `no registered
+///   compute trampoline` Error for the same condition. That was a spurious
+///   warning on every model instantiating an `@optimized`-bearing structure
+///   with an override.
 /// * PER-TEMPLATE-CELL DEDUPE. The decline is a fact about `(target, child
 ///   template, member)`, not about one instance: three subs of one template
 ///   with three distinct overrides are one authoring fact, and a keyed

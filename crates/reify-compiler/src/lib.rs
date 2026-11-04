@@ -48,6 +48,7 @@ mod joint_self_check;
 mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
+mod member_cell_decls;
 mod member_path;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
@@ -67,6 +68,7 @@ pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
+mod type_acceptance;
 mod type_compat;
 mod type_resolution;
 mod types;
@@ -78,6 +80,7 @@ pub use annotations::materialize::{
     MaterializationAnnotationArg, MaterializationArgType, compile_materialization_annotation_args,
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
+pub use compile_builder::units_phase::seed_prelude_units;
 pub use entity::satisfies_trait_bound;
 pub use port_path::{ElementIndex, PortPath, PortRoot};
 pub use prelude_context::PreludeContext;
@@ -716,7 +719,11 @@ pub fn compile_with_prelude_context_checked_with_config(
         &decl_refs.trait_refs,
     );
 
-    compile_builder::fields_phase::phase_fields(&mut compile_ctx, &decl_refs.field_refs);
+    compile_builder::fields_phase::phase_fields(
+        &mut compile_ctx,
+        &trait_names,
+        &decl_refs.field_refs,
+    );
 
     compile_builder::defs_phase::phase_constraint_defs(
         &mut compile_ctx,

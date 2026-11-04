@@ -355,10 +355,7 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         .filter(|v| !v.is_null())
         .and_then(|v| serde_json::from_value::<DoneProvenance>(v.clone()).ok());
 
-    let prd = metadata
-        .get("prd")
-        .and_then(|p| p.as_str())
-        .map(String::from);
+    let prd = source_prd(&metadata);
     let consumer_ref = metadata
         .get("consumer_ref")
         .and_then(|p| p.as_str())
@@ -395,6 +392,16 @@ fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
             .and_then(Value::as_str)
             .and_then(parse_iso8601_to_epoch)
     })
+}
+
+/// The PRD a task was decomposed from: `metadata.prd` (the legacy key), else
+/// `metadata.prd_path` (the key the current `/prd` decompose writes). The
+/// first STRING value wins; a non-string value is skipped, never fatal.
+fn source_prd(metadata: &Value) -> Option<String> {
+    ["prd", "prd_path"]
+        .into_iter()
+        .find_map(|key| metadata.get(key).and_then(Value::as_str))
+        .map(String::from)
 }
 
 // -----------------------------------------------------------------------
@@ -717,6 +724,48 @@ mod tests {
         });
         let tm = task_metadata_from_wire(&v).expect("pending decode");
         assert!(tm.done_at.is_none());
+    }
+
+    #[test]
+    fn wire_adapter_resolves_prd_from_prd_then_prd_path() {
+        let rows = [
+            (
+                "p1",
+                json!({"prd": "docs/prds/a.md"}),
+                Some("docs/prds/a.md"),
+            ),
+            (
+                "p2",
+                json!({"prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            (
+                "p3",
+                json!({"prd": "docs/prds/a.md", "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/a.md"),
+            ),
+            (
+                "p4",
+                json!({"prd": null, "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            (
+                "p5",
+                json!({"prd": 42, "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            ("p6", json!({"prd_path": ["docs/prds/b.md"]}), None),
+            ("p7", json!({}), None),
+        ];
+        for (label, metadata, expected) in rows {
+            let v = json!({"id": label, "status": "pending", "metadata": metadata});
+            let tm = task_metadata_from_wire(&v).unwrap_or_else(|| panic!("row {label} dropped"));
+            assert_eq!(
+                tm.prd.as_deref(),
+                expected,
+                "row {label}: metadata = {metadata}"
+            );
+        }
     }
 
     #[test]

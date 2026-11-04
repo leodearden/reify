@@ -14,7 +14,7 @@ use crate::{
     AuditContext, ChangedSymbol, EvidenceRef, Finding, GitCommit, JCodemunchCallFailed, Pattern,
     Severity, TaskMetadata,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // Empty/vacuous assertion patterns scanned for by H1 (gate b).
 // Each is matched as a substring of added lines within a fn body.
@@ -94,6 +94,15 @@ const EMPTY_INTENT_NAME_TOKENS: &[&str] = &[
     "nothing",
     "no_",
 ];
+
+/// Gates (a) and (c) of H1, which always apply together: `fn_name` carries a
+/// placeholder marker AND an empty-intent token, so the fn's added lines are
+/// scanned for gate (b). The H1 prefilter and the per-path walk both ask
+/// through here, so the two cannot disagree on which declarations arm H1.
+fn arms_h1(fn_name: &str) -> bool {
+    PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m))
+        && EMPTY_INTENT_NAME_TOKENS.iter().any(|t| fn_name.contains(t))
+}
 
 /// Returns `true` when `line` contains a vacuous empty-assertion pattern
 /// (gate b of the H1 double-gate), with one exception: a `.is_empty()` that is
@@ -202,8 +211,17 @@ impl CheckMode {
 pub const PRODUCTION_QUERY: &str =
     "SELECT 1 FROM events WHERE task_id = ? AND event_type = 'task_completed' LIMIT 1";
 
+/// The sweep's one-shot form of [`PRODUCTION_QUERY`]: every task id with a
+/// `task_completed` event, asked once per sweep by [`SweepPrefetch::gather`]
+/// instead of once per merged task. Pinned against the seeded schema by
+/// `p5::tests::runs_db_completed_tasks_query_pin`; public for that test only,
+/// as [`PRODUCTION_QUERY`]'s visibility note explains.
+#[doc(hidden)]
+pub const PRODUCTION_COMPLETED_TASKS_QUERY: &str = "SELECT DISTINCT task_id FROM events \
+     WHERE event_type = 'task_completed' AND task_id IS NOT NULL";
+
 /// Run the P5 detector across every `status="done"` task in
-/// `ctx.task_metadata`. Returns one [`Finding`] per phantom-done task.
+/// `ctx.task_metadata()`. Returns one [`Finding`] per phantom-done task.
 ///
 /// Slice-1 corroboration logic, per `f-infra-design.md` §10:
 /// 1. **Primary**: `git diff main..<claimed_commit>` must cover every path
@@ -220,7 +238,7 @@ pub const PRODUCTION_QUERY: &str =
 ///
 /// Mismatches that survive both guards produce `Severity::High`.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
-    check_with_target(ctx, ctx.target_task_id.as_deref())
+    check_with_target(ctx, ctx.target_task_id())
 }
 
 /// Single-task entry point for the D-1 dark-factory pre-done hook
@@ -256,33 +274,113 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
 /// Slice-1 ships the wrapper; T-4 will host the CLI subprocess that the
 /// hook actually invokes.
 pub fn check_pre_done(ctx: &AuditContext, task_id: &str) -> Vec<Finding> {
-    let Some(meta) = ctx.task_metadata.get(task_id) else {
+    let Some(meta) = ctx.task_metadata().get(task_id) else {
         return vec![];
     };
-    check_task(ctx, meta, CheckMode::PreDone)
+    if let Some(msg) = h2_inert_skip_breadcrumb(ctx, &[meta]) {
+        eprintln!("{msg}");
+    }
+    check_task(ctx, meta, CheckMode::PreDone, &SweepPrefetch::none())
 }
 
 /// Inner loop for the [`check`] periodic-sweep entry point. Iterates all
-/// `status="done"` tasks in `ctx.task_metadata`, optionally restricted to
+/// `status="done"` tasks in `ctx.task_metadata()`, optionally restricted to
 /// `target_task_id` when the caller supplies a scoped sweep.
 ///
 /// [`check_pre_done`] deliberately does NOT route through this function — it
-/// uses a direct O(1) `ctx.task_metadata.get(task_id)` HashMap lookup so the
+/// uses a direct O(1) `ctx.task_metadata().get(task_id)` HashMap lookup so the
 /// D-1 hot path stays constant-time rather than paying the O(n) iteration cost
 /// of this loop. Borrows the context (no clone of `task_metadata`).
+///
+/// Collects the audited tasks once, so the [`SweepPrefetch`] asks git about
+/// exactly the tasks the passes then audit.
 fn check_with_target(ctx: &AuditContext, target_task_id: Option<&str>) -> Vec<Finding> {
-    swept_tasks(ctx, target_task_id)
-        .flat_map(|meta| check_task(ctx, meta, CheckMode::Sweep))
+    let audited: Vec<&TaskMetadata> = swept_tasks(ctx, target_task_id)
+        .filter(|meta| CheckMode::Sweep.audits(meta))
+        .collect();
+    let prefetch = SweepPrefetch::gather(ctx, &audited);
+    if let Some(msg) = h2_inert_skip_breadcrumb(ctx, &audited) {
+        eprintln!("{msg}");
+    }
+    audited
+        .into_iter()
+        .flat_map(|meta| check_task(ctx, meta, CheckMode::Sweep, &prefetch))
         .collect()
 }
 
+/// What a sweep asks git once for all its audited tasks, rather than once per
+/// task. Every lookup that misses asks git per call, so what was prefetched is
+/// never a correctness premise.
+struct SweepPrefetch {
+    /// `git check-ignore` answers for the declared paths of every audited
+    /// task. Only answered questions are kept, so an unanswered one is asked
+    /// again per call, exactly as a sweep without the prefetch would.
+    gitignored: HashMap<String, bool>,
+    /// Every task id runs.db holds a `task_completed` event for, or `None`
+    /// when that was not asked or runs.db could not answer; each merged task
+    /// then runs [`PRODUCTION_QUERY`] itself, so an unreadable runs.db still
+    /// yields its per-task Medium.
+    completed_tasks: Option<HashSet<String>>,
+}
+
+impl SweepPrefetch {
+    /// Ask git per call for everything: the pre-done hook's single task gains
+    /// nothing from a batch.
+    fn none() -> Self {
+        Self {
+            gitignored: HashMap::new(),
+            completed_tasks: None,
+        }
+    }
+
+    /// One batched gitignore probe over the unique union of the audited tasks'
+    /// declared files.
+    fn gather(ctx: &AuditContext, audited: &[&TaskMetadata]) -> Self {
+        let mut seen: HashSet<&str> = HashSet::new();
+        let union: Vec<String> = audited
+            .iter()
+            .flat_map(|meta| &meta.files)
+            .filter(|p| seen.insert(p.as_str()))
+            .cloned()
+            .collect();
+        let answers = ctx.git().try_is_gitignored_each(&union);
+        let gitignored = union
+            .into_iter()
+            .zip(answers)
+            .filter_map(|(path, answer)| answer.ok().map(|ignored| (path, ignored)))
+            .collect();
+        Self {
+            gitignored,
+            completed_tasks: completed_task_ids(ctx).ok(),
+        }
+    }
+
+    /// [`crate::GitOps::try_is_gitignored`], answered from the prefetch when
+    /// it holds `path`.
+    fn is_gitignored(&self, ctx: &AuditContext, path: &str) -> Result<bool, String> {
+        match self.gitignored.get(path) {
+            Some(&ignored) => Ok(ignored),
+            None => ctx.git().try_is_gitignored(path),
+        }
+    }
+
+    /// [`has_task_completed_event`], answered from the prefetch when it holds
+    /// runs.db's completed set.
+    fn task_completed(&self, ctx: &AuditContext, task_id: &str) -> Result<bool, rusqlite::Error> {
+        match &self.completed_tasks {
+            Some(completed) => Ok(completed.contains(task_id)),
+            None => has_task_completed_event(ctx, task_id),
+        }
+    }
+}
+
 /// The tasks [`check_with_target`] hands to [`check_task`]: every task in
-/// `ctx.task_metadata`, or only `target_task_id` when the caller names one.
+/// `ctx.task_metadata()`, or only `target_task_id` when the caller names one.
 fn swept_tasks<'a>(
     ctx: &'a AuditContext,
     target_task_id: Option<&'a str>,
 ) -> impl Iterator<Item = &'a TaskMetadata> {
-    ctx.task_metadata
+    ctx.task_metadata()
         .values()
         .filter(move |meta| target_task_id.is_none_or(|target| meta.task_id == target))
 }
@@ -291,7 +389,12 @@ fn swept_tasks<'a>(
 /// and the inner loop of [`check_with_target`] (periodic sweep, O(n) iteration).
 /// Centralising the pass list here prevents drift when future per-task detectors
 /// join the per-task pass set — they get added in exactly one place.
-fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<Finding> {
+fn check_task(
+    ctx: &AuditContext,
+    meta: &TaskMetadata,
+    mode: CheckMode,
+    prefetch: &SweepPrefetch,
+) -> Vec<Finding> {
     // Sweep only. The sweep audits tasks that are ALREADY done, so a non-done
     // row has nothing to corroborate.
     //
@@ -304,18 +407,19 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
     if !mode.audits(meta) {
         return vec![];
     }
-    // ONE `git check-ignore` fork per declared file for the whole task. Both
-    // `check_gitignored` (which needs the ignored set as its finding payload)
-    // and the pre-done landing leg (which subtracts it from the declared set)
-    // ask the same question about the same paths; computing it here makes the
-    // second consumer free. That matters on the pre-done path specifically —
-    // it runs inside fused-memory's per-project write lock under a 30 s hard
-    // timeout, so a duplicated per-file fork is paid by every task mutation
-    // for the project.
-    let probe = probe_gitignored(ctx, meta);
+    // ONE `git check-ignore` answer per declared file for the whole task —
+    // from the sweep's batched prefetch, or one fork per file at pre-done.
+    // Both `check_gitignored` (which needs the ignored set as its finding
+    // payload) and the pre-done landing leg (which subtracts it from the
+    // declared set) ask the same question about the same paths; computing it
+    // here makes the second consumer free. That matters on the pre-done path
+    // specifically — it runs inside fused-memory's per-project write lock
+    // under a 30 s hard timeout, so a duplicated per-file fork is paid by
+    // every task mutation for the project.
+    let probe = probe_gitignored(meta, |p| prefetch.is_gitignored(ctx, p));
 
     let mut findings = Vec::new();
-    if let Some(f) = check_one(ctx, meta, mode, &probe) {
+    if let Some(f) = check_one(ctx, meta, mode, &probe, prefetch) {
         findings.push(f);
     }
     if let Some(f) = check_gitignored(meta, &probe.ignored) {
@@ -367,6 +471,12 @@ fn check_task(ctx: &AuditContext, meta: &TaskMetadata, mode: CheckMode) -> Vec<F
 ///
 /// Skipped when `done_provenance.commit` is absent (no commit to diff).
 ///
+/// Prefiltered: one superset of the added lines over all the task's test paths
+/// ([`crate::GitOps::try_added_lines_in_commit_superset`]) holds every
+/// line any per-path diff adds, so when none of its lines declares a fn that
+/// [`arms_h1`], no per-path walk can fire and none is run. A failed superset
+/// query answers nothing, and the per-path walk decides as before.
+///
 /// # Known limitation
 ///
 /// H1 only fires when the `fn <name>(` declaration line itself appears among
@@ -381,13 +491,28 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     let Some(commit) = meta.done_provenance.as_ref().and_then(|p| p.commit.as_deref()) else {
         return vec![];
     };
+    let test_paths: Vec<String> = meta
+        .files
+        .iter()
+        .filter(|p| crate::is_test_path(p))
+        .cloned()
+        .collect();
+    if test_paths.is_empty() {
+        return vec![];
+    }
+    if let Ok(union) = ctx
+        .git()
+        .try_added_lines_in_commit_superset(commit, &test_paths)
+        && !union
+            .iter()
+            .any(|(_, line)| extract_fn_name(line).is_some_and(|name| arms_h1(&name)))
+    {
+        return vec![];
+    }
 
     let mut findings = Vec::new();
-    for path in &meta.files {
-        if !crate::is_test_path(path) {
-            continue;
-        }
-        let added = ctx.git.diff_added_lines_in_commit(commit, path);
+    for path in &test_paths {
+        let added = ctx.git().diff_added_lines_in_commit(commit, path);
         // Walk added lines tracking the current fn name.
         // State machine: once we see an anchored fn declaration, we record the
         // lowercased fn name until the next declaration, accumulating the fn's
@@ -396,8 +521,7 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
         // finding. Uses extract_fn_name to anchor detection to declaration lines
         // only, and line_has_empty_assertion to exclude negated .is_empty() calls.
         let mut current_fn_name: Option<String> = None;
-        let mut fn_has_placeholder = false;
-        let mut fn_has_empty_intent = false;
+        let mut fn_armed = false;
         let mut fn_has_empty_assertion = false;
         let mut found_in_file = false;
 
@@ -405,27 +529,22 @@ fn check_tests_assert_empty(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
             // Detect a new fn declaration (anchored to declaration start).
             if let Some(fn_name) = extract_fn_name(line) {
                 // Flush the previous fn if it triggered all three gates.
-                if fn_has_placeholder && fn_has_empty_intent && fn_has_empty_assertion {
+                if fn_armed && fn_has_empty_assertion {
                     found_in_file = true;
                 }
-                fn_has_placeholder = PLACEHOLDER_MARKERS.iter().any(|m| fn_name.contains(m));
-                fn_has_empty_intent = EMPTY_INTENT_NAME_TOKENS.iter().any(|t| fn_name.contains(t));
+                fn_armed = arms_h1(&fn_name);
                 fn_has_empty_assertion = false;
                 current_fn_name = Some(fn_name);
             }
 
             // Within a fn, check for vacuous assertions (excluding negated !is_empty()).
-            // Gate c (empty-intent name check) must also pass before we arm gate b.
-            if current_fn_name.is_some()
-                && fn_has_placeholder
-                && fn_has_empty_intent
-                && line_has_empty_assertion(line)
-            {
+            // Gates a and c (the fn name) must pass before we arm gate b.
+            if current_fn_name.is_some() && fn_armed && line_has_empty_assertion(line) {
                 fn_has_empty_assertion = true;
             }
         }
         // Flush the last fn.
-        if fn_has_placeholder && fn_has_empty_intent && fn_has_empty_assertion {
+        if fn_armed && fn_has_empty_assertion {
             found_in_file = true;
         }
 
@@ -480,11 +599,17 @@ struct GitignoreProbe {
 /// collected here: `gitignore_unavailable` latches on the first non-0/1 exit
 /// and silences every later one, so stderr names at most one entry for the
 /// whole task and cannot be the consumer's per-entry record.
-fn probe_gitignored(ctx: &AuditContext, meta: &TaskMetadata) -> GitignoreProbe {
+///
+/// `is_gitignored` answers one entry as [`crate::GitOps::try_is_gitignored`]
+/// does; [`check_task`] supplies it from its [`SweepPrefetch`].
+fn probe_gitignored(
+    meta: &TaskMetadata,
+    mut is_gitignored: impl FnMut(&str) -> Result<bool, String>,
+) -> GitignoreProbe {
     let mut ignored = Vec::new();
     let mut unprobed = Vec::new();
     for p in &meta.files {
-        match ctx.git.try_is_gitignored(p) {
+        match is_gitignored(p) {
             Ok(true) => ignored.push(p.clone()),
             Ok(false) => {}
             Err(_) => unprobed.push(p.clone()),
@@ -529,7 +654,7 @@ fn check_gitignored(meta: &TaskMetadata, ignored: &[String]) -> Option<Finding> 
 /// deliverable-presence rescue so the corroboration predicate lives in one place
 /// and cannot drift between the two sites.
 fn all_files_tracked_on_main(ctx: &AuditContext, meta: &TaskMetadata) -> bool {
-    !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git.path_tracked_on(MAIN_BASE, p))
+    !meta.files.is_empty() && meta.files.iter().all(|p| ctx.git().path_tracked_on(MAIN_BASE, p))
 }
 
 /// Verdict of the substring-collision filter for ONE `log_grep` hit.
@@ -632,7 +757,7 @@ fn try_task_referencing_commits(
     task_id: &str,
 ) -> Result<Vec<GitCommit>, String> {
     Ok(ctx
-        .git
+        .git()
         .try_log_grep(MAIN_BASE, task_id)?
         .into_iter()
         .filter(|c| hit_references_task(&c.subject, task_id))
@@ -677,7 +802,7 @@ impl AncestryCache {
         if let Some(&known) = self.0.get(commit) {
             return known;
         }
-        let answer = ctx.git.is_ancestor(commit, MAIN_BASE);
+        let answer = ctx.git().is_ancestor(commit, MAIN_BASE);
         self.0.insert(commit.to_string(), answer);
         answer
     }
@@ -704,11 +829,11 @@ fn changed_paths_for_claim(
     ancestry: &mut AncestryCache,
 ) -> Vec<String> {
     if ancestry.is_ancestor_of_main(ctx, commit) {
-        ctx.git.changed_paths_in_commit(commit)
+        ctx.git().changed_paths_in_commit(commit)
     } else {
         // Pre-merge D-1 case: `<commit>` is an un-landed branch tip, so
         // `main..<tip>` IS the branch delta and is correct.
-        ctx.git.diff_changed_paths(MAIN_BASE, commit)
+        ctx.git().diff_changed_paths(MAIN_BASE, commit)
     }
 }
 
@@ -818,7 +943,7 @@ fn check_pre_done_landing(
     let mut degraded: Option<String> = None;
     let mut absent: Vec<String> = Vec::new();
     for p in &declared {
-        match ctx.git.try_path_tracked_on(MAIN_BASE, p) {
+        match ctx.git().try_path_tracked_on(MAIN_BASE, p) {
             Ok(true) => {}
             Ok(false) => absent.push(p.clone()),
             Err(_) => {
@@ -1000,7 +1125,7 @@ fn covers_path(changed: &str, declared: &str) -> bool {
 /// Used only on the pre-done refusal road — see the "refuse only on evidence
 /// actually gathered" section of [`check_pre_done_landing`].
 fn main_base_resolves(ctx: &AuditContext) -> bool {
-    ctx.git.is_ancestor(MAIN_BASE, MAIN_BASE)
+    ctx.git().is_ancestor(MAIN_BASE, MAIN_BASE)
 }
 
 /// Build the pre-done refusal finding.
@@ -1121,12 +1246,14 @@ fn pre_done_refusal_severity() -> Severity {
 /// phantom-done, `None` if the provenance corroborates cleanly.
 ///
 /// `probe` is the task's `git check-ignore` pass, run once by [`check_task`];
-/// only the [`CheckMode::PreDone`] arm consumes it.
+/// only the [`CheckMode::PreDone`] arm consumes it. `prefetch` answers the
+/// runs.db leg.
 fn check_one(
     ctx: &AuditContext,
     meta: &TaskMetadata,
     mode: CheckMode,
     probe: &GitignoreProbe,
+    prefetch: &SweepPrefetch,
 ) -> Option<Finding> {
     // One ancestry answer per SHA for the whole invocation: the merged-arm
     // rescue and the primary git-diff leg below both test `prov.commit`.
@@ -1163,7 +1290,7 @@ fn check_one(
     //               citing the unreadable runs.db rather than mass-flagging
     //               every merged task as High.
     if kind == "merged" {
-        match has_task_completed_event(ctx, &meta.task_id) {
+        match prefetch.task_completed(ctx, &meta.task_id) {
             Ok(true) => {}
             Ok(false) => {
                 // Ancestor-corroboration rescue. If the claimed commit is a
@@ -1522,7 +1649,7 @@ fn check_one(
     let genuinely_absent: Vec<String> = meta
         .files
         .iter()
-        .filter(|p| !ctx.git.path_tracked_on(MAIN_BASE, p))
+        .filter(|p| !ctx.git().path_tracked_on(MAIN_BASE, p))
         .cloned()
         .collect();
 
@@ -1547,12 +1674,19 @@ fn has_task_completed_event(
     ctx: &AuditContext,
     task_id: &str,
 ) -> Result<bool, rusqlite::Error> {
-    let mut stmt = ctx.conn.prepare(PRODUCTION_QUERY)?;
+    let mut stmt = ctx.conn().prepare(PRODUCTION_QUERY)?;
     match stmt.query_row::<i64, _, _>(rusqlite::params![task_id], |row| row.get(0)) {
         Ok(_) => Ok(true),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
         Err(e) => Err(e),
     }
+}
+
+/// Every task id with a `task_completed` event, by
+/// [`PRODUCTION_COMPLETED_TASKS_QUERY`].
+fn completed_task_ids(ctx: &AuditContext) -> Result<HashSet<String>, rusqlite::Error> {
+    let mut stmt = ctx.conn().prepare(PRODUCTION_COMPLETED_TASKS_QUERY)?;
+    stmt.query_map([], |row| row.get(0))?.collect()
 }
 
 /// Returns the subset of `files` not present in `covered`.
@@ -1642,12 +1776,21 @@ fn build_high_finding(meta: &TaskMetadata, missing: &[String], summary: &str) ->
 /// query that left nothing to examine — an empty slice, or every
 /// symbol with an unlocatable declaration — gets a stderr vacuous breadcrumb
 /// via [`h2_vacuous_breadcrumb`] (task 4144).
+///
+/// An inert seam ([`crate::JCodemunchOps::is_inert`], e.g. `--no-jcodemunch`,
+/// and always at pre-done) is not queried at all: every task is skipped here,
+/// and each entry point instead prints ONE line naming how many cross-crate
+/// tasks went unexamined ([`h2_inert_skip_breadcrumb`]) rather than one
+/// vacuous line per task.
 fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Finding> {
+    if ctx.jcodemunch().is_inert() {
+        return vec![];
+    }
     let Some((since_sha, until_sha)) = h2_range(meta) else {
         return vec![];
     };
 
-    let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+    let symbols = match ctx.jcodemunch().get_changed_symbols(&since_sha, until_sha) {
         Ok(symbols) => symbols,
         Err(failure) => {
             return vec![live_path_unexamined(
@@ -1673,7 +1816,7 @@ fn check_live_path_stranded(ctx: &AuditContext, meta: &TaskMetadata) -> Vec<Find
     });
     // A failed lookup is not "no caller": skip and record the symbol,
     // as p1_producer_orphan does, and examine the rest.
-    let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch, examinable);
+    let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch(), examinable);
     let mut findings: Vec<Finding> = lookups
         .unconsumed
         .iter()
@@ -1788,7 +1931,7 @@ fn live_path_symbols_unexamined(
 /// clean whatever the seam, so a spot-check of a single-crate task records
 /// nothing.
 pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Finding> {
-    let reaches_h2 = swept_tasks(ctx, ctx.target_task_id.as_deref())
+    let reaches_h2 = swept_tasks(ctx, ctx.target_task_id())
         .any(|meta| CheckMode::Sweep.audits(meta) && h2_range(meta).is_some());
     reaches_h2.then(|| Finding {
         pattern: Pattern::P5LivePathUnexamined,
@@ -1800,6 +1943,27 @@ pub fn live_path_run_unexamined(ctx: &AuditContext, reason: &str) -> Option<Find
              once jcodemunch answers"
         ),
         evidence: vec![],
+    })
+}
+
+/// The one stderr line an entry point prints when H2 skipped its `audited`
+/// tasks because the seam is inert — a sweep's whole corpus, or the pre-done
+/// hook's one task — or `None` when the seam is live or no audited task is one
+/// H2 would have queried.
+fn h2_inert_skip_breadcrumb(ctx: &AuditContext, audited: &[&TaskMetadata]) -> Option<String> {
+    if !ctx.jcodemunch().is_inert() {
+        return None;
+    }
+    let skipped = audited
+        .iter()
+        .filter(|meta| h2_range(meta).is_some())
+        .count();
+    (skipped > 0).then(|| {
+        format!(
+            "reify-audit: H2 (live-path-stranded) skipped for {skipped} cross-crate \
+             task(s): the jcodemunch seam is inert, so none was queried — zero \
+             live-path-stranded findings are not a clean result"
+        )
     })
 }
 
@@ -1998,17 +2162,7 @@ mod tests {
             done_at: None,
         };
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = check_live_path_stranded(&ctx, &meta);
         assert!(
@@ -2016,6 +2170,70 @@ mod tests {
             "vacuous H2 sweep (empty get_changed_symbols, >=2 crate roots) \
              must yield no findings; got {findings:?}"
         );
+    }
+
+    /// A cross-crate task with a provenance commit: one H2 would query.
+    fn cross_crate_meta(task_id: &str) -> TaskMetadata {
+        TaskMetadata {
+            task_id: task_id.to_string(),
+            status: "done".to_string(),
+            files: vec![
+                "crates/reify-eval/src/lib.rs".to_string(),
+                "crates/reify-compiler/src/compile.rs".to_string(),
+            ],
+            done_provenance: Some(DoneProvenance {
+                kind: Some("merged".to_string()),
+                commit: Some("deadbeef".to_string()),
+                note: None,
+            }),
+            title: "cross-crate task".to_string(),
+            prd: None,
+            consumer_ref: None,
+            audit_foundation: None,
+            done_at: None,
+        }
+    }
+
+    /// The inert-skip line counts exactly the audited tasks H2 would have
+    /// queried, for the pre-done hook's one task as for a sweep, and is
+    /// silent under a live seam or when no audited task is one H2 queries.
+    #[test]
+    fn h2_inert_skip_breadcrumb_counts_the_tasks_h2_would_have_queried() {
+        let conn = Connection::open_in_memory().expect("open in-memory runs.db");
+        let git = MockGitOps::new();
+        let inert_jc = crate::NoopJCodemunchOps;
+        let live_jc = MockJCodemunchOps::new();
+        let context_over = |jcodemunch| {
+            AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, jcodemunch)
+        };
+        let inert = context_over(&inert_jc);
+        let live = context_over(&live_jc);
+        let cross = cross_crate_meta("1");
+        let single_crate = TaskMetadata {
+            files: vec!["crates/reify-eval/src/lib.rs".to_string()],
+            ..cross_crate_meta("2")
+        };
+        let no_commit = TaskMetadata {
+            done_provenance: None,
+            ..cross_crate_meta("3")
+        };
+
+        let msg = h2_inert_skip_breadcrumb(&inert, &[&cross])
+            .expect("the pre-done hook's one cross-crate task is reported");
+        assert!(
+            msg.contains("skipped for 1 cross-crate task(s)") && msg.contains("not a clean result"),
+            "got {msg:?}",
+        );
+        assert!(
+            h2_inert_skip_breadcrumb(&inert, &[&cross, &single_crate, &no_commit, &cross])
+                .expect("a sweep with cross-crate tasks is reported")
+                .contains("skipped for 2 cross-crate task(s)"),
+        );
+        assert_eq!(
+            h2_inert_skip_breadcrumb(&inert, &[&single_crate, &no_commit]),
+            None
+        );
+        assert_eq!(h2_inert_skip_breadcrumb(&live, &[&cross]), None);
     }
 
     /// Pins the empty-files short-circuit at `p5_phantom_done.rs:215`.
@@ -2062,17 +2280,8 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         let findings = check_pre_done(&ctx, "9001");
         assert!(

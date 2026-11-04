@@ -32,10 +32,12 @@
 //! Reference: `docs/prds/reify-audit-ptodo-detector.md` §8 (normative grammar),
 //! §6.7 (liveness degradation contract).
 
+mod ignore_attribute;
+
 use crate::ptodo_promise::is_owner_position;
+use ignore_attribute::{IgnoreForm, extract_ignore_reason, ignore_attr};
 use crate::scan_util::{contains_word, is_word_byte};
 use crate::{AuditContext, EvidenceRef, Finding, Pattern, Severity};
-use reify_test_support::ignore_hygiene::extract_ignore_reason;
 use rusqlite::OptionalExtension;
 use std::collections::HashSet;
 // §8.4 terminal set and the §6.3 membership test now live in the shared
@@ -97,34 +99,6 @@ fn find_macro_stub(line: &str) -> bool {
         return false;
     }
     line.contains("todo!(") || line.contains("unimplemented!(")
-}
-
-/// The two §8.1 `#[ignore]` shapes the structural lane distinguishes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IgnoreForm {
-    /// `#[ignore]` — no reason string (α emits `bare-ignore`).
-    Bare,
-    /// `#[ignore = "..."]` — carries a reason (α defers the reason policy to γ).
-    WithReason,
-}
-
-/// §8.1 ignore attributes (`.rs` only — gating in [`scan_file`]): a trimmed
-/// line that starts with `#[ignore`. `///`/`//!` doc-comment prose mentioning
-/// the attribute does not fire. `]` immediately after → `Bare`; `=` →
-/// `WithReason`.
-fn ignore_attr(line: &str) -> Option<IgnoreForm> {
-    let t = line.trim_start();
-    if t.starts_with("///") || t.starts_with("//!") {
-        return None;
-    }
-    let rest = t.strip_prefix("#[ignore")?.trim_start();
-    if rest.starts_with(']') {
-        Some(IgnoreForm::Bare)
-    } else if rest.starts_with('=') {
-        Some(IgnoreForm::WithReason)
-    } else {
-        None
-    }
 }
 
 /// §8.1 δ-A anchor (`.rs` only — gating in [`scan_file`]): an
@@ -2170,7 +2144,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
 
     // Collect ls_files() once: the Vec drives the structural sweep; the HashSet
     // is reused by the ζ inverse-lane membership test without a second git call.
-    let tracked_files: Vec<String> = ctx.git.ls_files();
+    let tracked_files: Vec<String> = ctx.git().ls_files();
     let tracked_set: HashSet<String> = tracked_files.iter().cloned().collect();
 
     for path in &tracked_files {
@@ -2227,11 +2201,11 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
     // existing-but-corrupt DB (resolve error) degrades all DB-backed lanes fail-soft.
     // The exit class is untouched (Medium-neutral) — 125 is reserved for genuine
     // arg/IO misconfig, never an absent optional substrate.
-    let db_path = tasks_db_path(&ctx.project_root);
+    let db_path = tasks_db_path(ctx.project_root());
     let mut inverse_findings: Vec<Finding> = Vec::new();
     match open_tasks_db(&db_path).and_then(|conn| {
         let live = resolve_liveness_keyed(&conn, &cited)?;
-        let inv = resolve_inverse(&conn, ctx.git, &tracked_set)?;
+        let inv = resolve_inverse(&conn, ctx.git(), &tracked_set)?;
         let g_allow = resolve_g_allow_owner_liveness(&conn, &g_allow_cited)?;
         Ok((live, inv, g_allow))
     }) {
@@ -2555,20 +2529,6 @@ mod tests {
         assert!(!has_deferral_prose("PENDING"));
         assert!(has_deferral_prose("blocked on"));
         assert!(!has_deferral_prose("Blocked on"));
-    }
-
-    // -------------------------------------------------------------------
-    // §8.1 marker recognition — ignore attributes (.rs)
-    // -------------------------------------------------------------------
-
-    #[test]
-    fn ignore_attr_forms() {
-        assert_eq!(ignore_attr("#[ignore]"), Some(IgnoreForm::Bare));
-        assert_eq!(ignore_attr("#[ignore = \"r\"]"), Some(IgnoreForm::WithReason));
-        // Indented bare form still recognised (trimmed-line start).
-        assert_eq!(ignore_attr("    #[ignore]"), Some(IgnoreForm::Bare));
-        // Doc-comment prose mentioning the attribute must NOT fire.
-        assert_eq!(ignore_attr("/// #[ignore]"), None);
     }
 
     // -------------------------------------------------------------------

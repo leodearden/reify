@@ -6,7 +6,7 @@
 //!   - expected_type_pushdown_let_tests.rs  — β #4702 let-position unit suite
 //!   - expected_type_arg_pushdown_tests.rs  — δ #4703 arg-position unit suite
 //!
-//! Unlike those suites, this gate asserts via `cell_type` / `get_let_expr(…).result_type`
+//! Unlike those suites, this gate asserts via `get_value_cell(…).cell_type` / `get_let_expr(…).result_type`
 //! and `DiagnosticCode` — never message substrings — so it survives diagnostic
 //! wording changes while remaining a durable end-to-end contract.
 //!
@@ -15,20 +15,9 @@
 //! the task is escalated rather than patching compiler code here.
 
 use reify_core::{DiagnosticCode, Type};
-use reify_test_support::{compile_source, errors_only, get_let_expr, warnings_only};
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-/// Return the resolved `cell_type` of a named value cell in `templates[0]`.
-fn cell_type<'a>(module: &'a reify_compiler::CompiledModule, member: &str) -> &'a Type {
-    let template = &module.templates[0];
-    &template
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("value cell '{member}' not found in templates[0]"))
-        .cell_type
-}
+use reify_test_support::{
+    compile_source, errors_only, get_let_expr, get_value_cell, warnings_only,
+};
 
 // ── §7#1: consumer-let list resolve ──────────────────────────────────────────
 
@@ -56,7 +45,7 @@ structure S {
         warnings_only(&module)
     );
     assert_eq!(
-        *cell_type(&module, "xs"),
+        get_value_cell(&module, "xs").cell_type,
         Type::List(Box::new(Type::length())),
         "§7#1: cell_type of `xs` must be List<Length>"
     );
@@ -87,7 +76,7 @@ structure S {
         warnings_only(&module)
     );
     assert_eq!(
-        *cell_type(&module, "s"),
+        get_value_cell(&module, "s").cell_type,
         Type::Set(Box::new(Type::length())),
         "§7#2 set: cell_type of `s` must be Set<Length>"
     );
@@ -118,7 +107,7 @@ structure S {
         warnings_only(&module)
     );
     assert_eq!(
-        *cell_type(&module, "m"),
+        get_value_cell(&module, "m").cell_type,
         Type::Map(Box::new(Type::String), Box::new(Type::length())),
         "§7#2 map: cell_type of `m` must be Map<String, Length>"
     );
@@ -151,7 +140,7 @@ structure S {
         warnings_only(&module)
     );
     assert_eq!(
-        *cell_type(&module, "xss"),
+        get_value_cell(&module, "xss").cell_type,
         Type::List(Box::new(Type::List(Box::new(Type::length())))),
         "§7#3: cell_type of `xss` must be List<List<Length>>"
     );
@@ -179,7 +168,7 @@ structure S {
     // cell_type must still be List<Real> (the wrong-default that proves the
     // unannotated path is unchanged).
     assert_eq!(
-        *cell_type(&module, "xs"),
+        get_value_cell(&module, "xs").cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
         "§7#4: unannotated `let xs = []` cell_type must still be List<Real>"
     );

@@ -94,6 +94,9 @@ enum class StepGuardFault : ::std::uint8_t;
 /// Outcome of `read_step_document`; defined by the cxx bridge (ffi.rs).
 /// Declared opaquely for the same reason as `StepGuardFault`.
 enum class StepReadStatus : ::std::uint8_t;
+/// Returned by `body_shape_kind`; defined by the cxx bridge (ffi.rs).
+/// Declared opaquely for the same reason as `StepGuardFault`.
+enum class FfiShapeKind : ::std::uint8_t;
 /// Returned by `step_document_tree`; defined by the cxx bridge (ffi.rs).
 struct StepTreeRecords;
 struct TopologyCacheBuildCounts;
@@ -110,14 +113,9 @@ struct AnalyticCurveDatum;
 
 /// Return OCCT's `Precision::Confusion()` value (~1e-7).
 ///
-/// Test-fixture-style helper intentionally compiled into every build of the
-/// wrapper.  Cfg-gating cxx::bridge entries is awkward, and the cost of
-/// always shipping a tiny constant-returning function is lower than the
-/// friction of conditional bridge declarations.  The current sole call site
-/// is the `reify-kernel-occt` crate's private test module in `lib.rs`, which
-/// pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` against the
-/// authoritative OCCT value at runtime.  The symbol is visible to all callers
-/// of the wrapper, not hidden by construction.
+/// Test-only: pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (see
+/// `src/ffi_contract_tests.rs`). Why it ships ungated: its declaration in
+/// `src/ffi.rs`.
 double precision_confusion();
 
 // --- Primitive construction ---
@@ -214,9 +212,9 @@ bool boolean_run_parallel();
 /// reported RunParallel() afterwards: what OCCT ran, not what was requested.
 uint64_t parallel_bop_build_count();
 
-/// The TopAbs name of `shape`'s body type after the single-body unwrap, so
-/// OCCT's 1-solid COMPOUND wrappers name "Solid"; throws on a null shape.
-rust::String body_type_name(const OcctShape& shape);
+/// The kind of `shape`'s body type after the single-body unwrap, so OCCT's
+/// 1-solid COMPOUND wrappers are Solid; throws on a null shape.
+FfiShapeKind body_shape_kind(const OcctShape& shape);
 
 // --- Boolean operations ---
 
@@ -231,7 +229,7 @@ rust::String body_type_name(const OcctShape& shape);
 /// the topology-preserving type the result actually is — one solid → bare
 /// SOLID, several → COMPSOLID, none → the compound untouched (task 7054).
 /// Callers must therefore classify the stored repr from the real shape (see
-/// `body_type_name`) rather than assuming Solid.
+/// `body_shape_kind`) rather than assuming Solid.
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& right);
 std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape& right);
@@ -1623,6 +1621,10 @@ std::unique_ptr<OcctShape> make_compsolid_for_test();
 /// inertia_tensor); such a shape cannot be constructed from Rust because
 /// `OcctShape` is opaque. Default construction cannot throw.
 std::unique_ptr<OcctShape> make_null_shape_for_test();
+
+/// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum` ordinal, the
+/// only way to reach its `TopAbs_SHAPE` arm; throws on any non-TopAbs value.
+FfiShapeKind shape_kind_of_topabs_for_test(uint8_t topabs);
 
 /// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
 /// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`

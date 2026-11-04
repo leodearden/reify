@@ -11,10 +11,13 @@ This walks through editing your first `.ri` file, re-running it, and opening the
 You should see:
 
 ```
+warning: W_MODULE_DECL_MISSING: file has no top-of-file `module` declaration; expected `module m5_geometry` (spec §7.1)
   OK Flange#constraint[0]
   OK Flange#constraint[1]
 All constraints satisfied.
 ```
+
+The warning is harmless: the example has no `module` line.
 
 ## 2. Build a STEP file
 
@@ -30,11 +33,11 @@ Open `/tmp/flange.step` in any STEP viewer (FreeCAD, KiCad's 3D viewer, Online o
 
 ```
 structure def Flange {
-    param radius : Scalar = 50mm
-    param height : Scalar = 10mm
+    param radius : Length = 50mm
+    param height : Length = 10mm
     param hole_count : Int = 6
-    param bolt_circle_radius : Scalar = 35mm
-    param hole_radius : Scalar = 3mm
+    param bolt_circle_radius : Length = 35mm
+    param hole_radius : Length = 3mm
 
     constraint radius > bolt_circle_radius
     constraint hole_count > 0
@@ -43,9 +46,47 @@ structure def Flange {
 }
 ```
 
-Try changing `radius : Scalar = 50mm` to `200mm`. Re-run `reify build` and open the new STEP — bigger flange. Try setting `radius` smaller than `bolt_circle_radius` — `reify check` will tell you which constraint failed.
+Try changing `radius : Length = 50mm` to `200mm`. Re-run `reify build` and open the new STEP — bigger flange. Try setting `radius` smaller than `bolt_circle_radius` — `reify check` will tell you which constraint failed.
 
-The `mm` suffix is meaningful: parameters are dimensioned. Try `radius : Scalar = 50` (no unit) — `reify check` reports the `radius > bolt_circle_radius` constraint as indeterminate ("undefined inputs"), since a bare number isn't comparable to `bolt_circle_radius`'s 35mm length.
+The `mm` suffix is meaningful: the unit is part of the type. Try `radius : Length = 50` (no unit) — `reify check` rejects the file before checking anything, and exits 1:
+
+```
+error: argument 'radius' has type 'Int' but param 'radius' requires type 'Scalar[m]'; pass a dimensioned Length literal such as `1m`
+```
+
+### An unfinished input is indeterminate, not a failure
+
+Delete the default instead (`param radius : Length`). `radius` now has no value, so the constraint that reads it cannot be decided either way:
+
+```
+  INDETERMINATE Flange#constraint[0]: undefined inputs: Flange.radius
+  OK Flange#constraint[1]
+warning: constraint Flange#constraint[0] indeterminate: undefined inputs: Flange.radius
+error: failed to compile geometry operation: argument 'radius' for cylinder is unresolved (Undef)
+error: all geometry operations failed; no geometry output produced
+No constraints violated (1 indeterminate).
+```
+
+Plain `reify check` still exits 0. An unbound parameter is an *expected* cause of indeterminacy, because the design is deliberately unfinished (INV-SF-4 in [design-invariants](legibility/design-invariants.md)). The geometry errors are the cylinder that cannot be built without a radius. `reify check --strict` fails, exit 1, on any INDETERMINATE constraint:
+
+```
+Strict check failed: 1 constraint(s) INDETERMINATE:
+  Flange#constraint[0]: undefined inputs: Flange.radius
+```
+
+### Let the solver choose a value
+
+Write `param radius : Length = auto` to let the solver pick `radius` from the constraints. With only `constraint radius > bolt_circle_radius`, `reify check` refuses, exit 1, and names the missing bound:
+
+```
+error: strict auto parameter resolution is not uniquely determined: no constraint bounds `Flange.radius` above. Only the constraints declared in `Flange` take part in its solve, and they bound it only below, so a solve could only return the edge of the solver's internal default domain — add the missing bound in `Flange`, give `Flange` an objective, or declare it `auto(free)`
+```
+
+Of its remedies, add the missing bound: an objective does not stand in for it today (`minimize radius` still fails, and `maximize radius` returns `Flange.radius = 10 m`, the edge of that default domain).
+
+Add an upper bound, `constraint radius < 80mm`, and it resolves. `reify check` prints three `OK` lines and `All constraints satisfied.`, and `reify eval` prints `Flange.radius = 0.0575 m`. With no objective, the solver picks the centre of the (35mm, 80mm) bracket. An objective whose optimum lies inside the bracket picks that optimum: add `minimize (radius - 40mm) * (radius - 40mm)` and `radius` resolves to 40mm (`reify eval` may show solver rounding in the trailing digits). A plain `minimize radius` or `maximize radius` does not move the value to a bound today: `minimize radius` still gives the centre, and `maximize radius` makes `reify check` exit 1 with `error: strict auto parameter resolution is not uniquely determined`.
+
+Every CLI command that evaluates a design, `check` (including `--strict`), `test`, `build`, `eval` / `run`, `report` and `explain`, resolves `auto`, and so does the GUI viewport. Whether the editor and the GUI's definition-preview pane do yet, every place `auto` may appear, what objectives do today, and what to do when it does not resolve: the `solving` chunk of the language reference ([`crates/reify-mcp/src/tools/chunks/solving.md`](../crates/reify-mcp/src/tools/chunks/solving.md)) and [spec §9.3](reify-language-spec.md#93-auto-resolution).
 
 ## 4. Open the GUI
 
@@ -64,6 +105,7 @@ The 50+ files under `examples/` exercise different language features:
 | File | What it shows |
 |------|---------------|
 | `m5_geometry.ri` | Simplest cylinder; the smoke-test baseline |
+| `continuous_cost_min.ri` | Letting the solver size a dimension (`auto`) under a cost objective |
 | `bracket.ri` | A more elaborate parametric part |
 | `m8_units.ri` | Dimensional analysis examples |
 | `m8_tolerancing.ri` | Tolerance propagation |

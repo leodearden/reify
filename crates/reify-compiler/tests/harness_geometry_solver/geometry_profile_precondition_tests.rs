@@ -420,3 +420,35 @@ fn pipe_of_translated_circle_is_rejected() {
         "pipe(translate(circle)) must be rejected (Surface≠Curve path), got {n}"
     );
 }
+
+// ─── task #7507: a swept curve is a Surface that is still no profile or path ─
+
+/// Pins that a swept curve (a Surface) is refused by the Closed/Planar clauses.
+#[test]
+fn extrude_of_an_inline_curve_sweep_is_rejected_at_both_profile_slots() {
+    let n = profile_required_count(
+        "structure def S { let r = extrude(sweep(line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm), \
+         line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 200mm)), 10mm) }",
+    );
+    assert_eq!(n, 2, "inner sweep 'profile' + outer extrude 'profile'");
+}
+
+/// Pins that a swept face (a Solid) is refused only at the outer profile slot.
+#[test]
+fn extrude_of_an_inline_face_sweep_is_rejected_once() {
+    let n = profile_required_count(
+        "structure def S { let r = extrude(sweep(circle(5mm), \
+         line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 200mm)), 10mm) }",
+    );
+    assert_eq!(n, 1, "outer extrude 'profile' only");
+}
+
+/// Pins that a swept curve is never a Curve, so it is refused as a pipe path.
+#[test]
+fn pipe_of_an_inline_curve_sweep_is_rejected_at_profile_and_path() {
+    let n = profile_required_count(
+        "structure def S { let r = pipe(sweep(line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm), \
+         line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 200mm)), 5mm) }",
+    );
+    assert_eq!(n, 2, "inner sweep 'profile' + pipe 'path'");
+}

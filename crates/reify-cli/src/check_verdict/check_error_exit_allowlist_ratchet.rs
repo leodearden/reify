@@ -36,19 +36,14 @@ fn key(
 fn allowlist_table_is_exactly_the_seeded_burn_down_set() {
     assert_eq!(
         CHECK_ERROR_EXIT_ALLOWLIST.len(),
-        4,
-        "the seeded burn-down set has exactly four entries; growing it is a \
+        3,
+        "the burn-down set has exactly three entries; growing it is a \
          regression against INV-SF-2's no-per-code-list end state, and \
          shrinking it means an entry was retired — update this pin \
          deliberately, in the same commit as the demotion/fix that retired it"
     );
 
     let expected: Vec<(String, CheckErrorAllowlistDisposition, &'static str)> = vec![
-        (
-            "Code(NoRegisteredComputeTrampoline)".to_string(),
-            CheckErrorAllowlistDisposition::Demote,
-            "#5404",
-        ),
         (
             r#"MessageContains("is unresolved (Undef)")"#.to_string(),
             CheckErrorAllowlistDisposition::Demote,

@@ -37,6 +37,7 @@
 //! auto-scaling, the free-standing (unanchored) eigenvalue case, external loads,
 //! and stability/buckling analysis are out of scope (tracked as T1b/T2/T3).
 
+use crate::fd_criteria::{RowSet, StiffnessScale, max_abs_coordinate};
 use crate::fd_matrix::assemble_d;
 use crate::group_spec::{GroupSpec, GroupSpecDefect};
 use faer::Mat;
@@ -428,6 +429,14 @@ impl<'a, S: TriangleStencil> ForceDensityProblem<'a, S> {
         self.members
     }
 
+    pub(crate) fn surfaces(&self) -> &'a [(usize, usize, usize)] {
+        self.surfaces
+    }
+
+    pub(crate) fn surface_stresses(&self) -> &'a [S::Stress] {
+        self.surface_stresses
+    }
+
     /// The per-member densities the contract checked: the given `q`, or a
     /// group spec's seed densities.
     pub(crate) fn q(&self) -> &[f64] {
@@ -529,7 +538,7 @@ pub fn form_find_anchored(
 // identical rank-1 edge pattern the line solve uses for the member q.
 
 /// Equilibrium-residual convergence tolerance for the cotangent fixed point,
-/// applied to [`free_equilibrium_residual_relative`]: every free row's net
+/// applied to [`StiffnessScale::relative_residual`]: every free row's net
 /// force `|(D·x)_i|`, divided by that row's own `Σ_j |D_ij|` and by the
 /// coordinate scale `(1+scale)`, must drop below this.
 ///
@@ -671,18 +680,18 @@ where
         // current geometry under the freshly-assembled `D` — the honest physical
         // signal (prestress-only equilibrium), additionally normalised by `D`'s
         // own magnitude so the stop condition is gauge-free (task 6119; see
-        // SURFACE_EQUILIBRIUM_REL_TOL's doc). It reuses the assembly we already
-        // need for the solve, so it adds no extra matrix build. At a
+        // SURFACE_EQUILIBRIUM_REL_TOL's doc). One stiffness scale per assembled
+        // `D` serves both this stop test and the solve's singular guard. At a
         // force-density fixed point `D(x*)·x*` ≈ 0 on the free rows.
+        let stiffness = StiffnessScale::of(&d, RowSet::Free(&free_indices));
         if !surfaces.is_empty()
-            && free_equilibrium_residual_relative(&d, &current, &free_indices)
-                <= SURFACE_EQUILIBRIUM_REL_TOL
+            && stiffness.relative_residual(&current) <= SURFACE_EQUILIBRIUM_REL_TOL
         {
             converged = true;
             break;
         }
 
-        let solved = solve_reduced(&d, &current, &free_indices, &anchor_indices)?;
+        let solved = solve_reduced(&stiffness, &current, &free_indices, &anchor_indices)?;
         current = solved;
 
         // Line-only path: `D` is geometry-independent, so the single solve above
@@ -756,19 +765,21 @@ pub(crate) fn member_axial_forces(
         .collect()
 }
 
-/// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the given
-/// (already-assembled) `D` and geometry, scattering the solved free rows back
-/// into a full node vector. The partition → faer partial-pivot LU → non-finite +
-/// scaled-residual guard ([`is_singular_reduced_solve`]) is the landed
-/// line-solve core, called once per iteration by [`anchored_fixed_point`]. Returns
+/// Solve the reduced anchored system `D_ff X_f = −D_fa X_a` once for the
+/// assembled `D` that `stiffness` judges (its free rows) and geometry,
+/// scattering the solved free rows back into a full node vector. The partition
+/// → faer partial-pivot LU → non-finite + scaled-residual guard
+/// ([`is_singular_reduced_solve`]) is the landed line-solve core, called once per
+/// iteration by [`anchored_fixed_point`]. Returns
 /// [`ReducedSolveFailure::SingularReducedStiffness`] when the reduced system is
 /// rank-deficient.
 fn solve_reduced(
-    d: &Mat<f64>,
+    stiffness: &StiffnessScale<'_>,
     nodes: &[[f64; 3]],
     free_indices: &[usize],
     anchor_indices: &[usize],
 ) -> Result<Vec<[f64; 3]>, ReducedSolveFailure> {
+    let d = stiffness.matrix();
     let nf = free_indices.len();
     // All three coordinate axes are solved at once as an |F|×3 RHS so D_ff is
     // factored only once.
@@ -797,7 +808,7 @@ fn solve_reduced(
         out_nodes[gi] = [rhs[(fi, 0)], rhs[(fi, 1)], rhs[(fi, 2)]];
     }
 
-    if is_singular_reduced_solve(d, &out_nodes, free_indices, anchor_indices) {
+    if is_singular_reduced_solve(stiffness, &out_nodes, anchor_indices) {
         return Err(ReducedSolveFailure::SingularReducedStiffness);
     }
 
@@ -811,8 +822,8 @@ fn solve_reduced(
 /// a numerically singular `D_ff` inflates (against the solved scale it would
 /// stay ~eps and never fire). Coordinates do not scale with `(q, σ)`, so the
 /// verdict is gauge-free. Pinned by
-/// `near_singular_reduced_stiffness_is_rejected_at_every_gauge`; measured
-/// margins: task 7046.
+/// `near_singular_reduced_stiffness_is_rejected_at_every_gauge` in
+/// tests/form_find_anchored_entries.rs; measured margins: task 7046.
 const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
 
 /// Post-solve guard for [`solve_reduced`]: true when the solved geometry must
@@ -820,85 +831,18 @@ const REDUCED_SOLVE_RESIDUAL_REL_TOL: f64 = 1e-6;
 /// disconnected `D_ff` makes the LU solve produce a non-finite or
 /// non-equilibrium result, which must surface as a diagnostic rather than NaNs
 /// or a silently wrong geometry. At the solved geometry the free rows of `D·x`
-/// are exactly the reduced residual `D_ff·x_f − b`, so the guard shares the
-/// stop criterion's per-row normaliser but judges it against the input
-/// (anchor) scale. Non-finite coordinates are tested first: that max is
-/// NaN-transparent.
+/// are exactly the reduced residual `D_ff·x_f − b`, so the guard judges the stop
+/// criterion's [`StiffnessScale`] against the input (anchor) scale
+/// ([`StiffnessScale::relative_residual_against`]). Non-finite coordinates are
+/// tested first: that max is NaN-transparent.
 fn is_singular_reduced_solve(
-    d: &Mat<f64>,
+    stiffness: &StiffnessScale<'_>,
     solved: &[[f64; 3]],
-    free_indices: &[usize],
     anchor_indices: &[usize],
 ) -> bool {
     let input_scale = max_abs_coordinate(anchor_indices.iter().map(|&a| &solved[a]));
     solved.iter().any(|p| p.iter().any(|c| !c.is_finite()))
-        || free_equilibrium_residual_relative_to(d, solved, free_indices, input_scale)
-            > REDUCED_SOLVE_RESIDUAL_REL_TOL
-}
-
-/// The stop criterion's measure ([`SURFACE_EQUILIBRIUM_REL_TOL`]): the per-row
-/// residual at the geometry's own coordinate scale, ~0 at a fixed point.
-pub(crate) fn free_equilibrium_residual_relative(
-    d: &Mat<f64>,
-    nodes: &[[f64; 3]],
-    free_indices: &[usize],
-) -> f64 {
-    free_equilibrium_residual_relative_to(d, nodes, free_indices, max_abs_coordinate(nodes))
-}
-
-/// Free-node equilibrium residual, normalised PER ROW: the largest
-/// `|(D·x)_i| / Σ_j |D_ij|` over free rows `i` and axes, over `1 + length_scale`.
-/// One factor of `D` above and below makes it exactly invariant under a
-/// uniform `(q, σ) → λ(q, σ)` rescale.
-///
-/// Returns `f64::INFINITY` ("not at equilibrium") when there is no free row,
-/// when any free row is identically zero or carries a NaN, or when any free
-/// row's net force is NaN (e.g. a NaN coordinate). A zero row is a node touched
-/// by neither a member nor a triangle: its net force is vacuously 0, which must
-/// not read as converged and echo the caller's unsolved initial guess back;
-/// `solve_reduced` then reports `SingularReducedStiffness`. Each check runs per
-/// row, before the row enters the NaN-transparent max, so a healthy row cannot
-/// mask a degenerate one.
-#[allow(clippy::needless_range_loop)]
-fn free_equilibrium_residual_relative_to(
-    d: &Mat<f64>,
-    nodes: &[[f64; 3]],
-    free_indices: &[usize],
-    length_scale: f64,
-) -> f64 {
-    if free_indices.is_empty() {
-        return f64::INFINITY;
-    }
-    let n = nodes.len();
-    let mut worst = 0.0_f64;
-    for &i in free_indices {
-        let mut row = 0.0_f64;
-        for j in 0..n {
-            row += d[(i, j)].abs();
-        }
-        if row.is_nan() || row <= 0.0 {
-            return f64::INFINITY;
-        }
-        for axis in 0..3 {
-            let mut net = 0.0;
-            for j in 0..n {
-                net += d[(i, j)] * nodes[j][axis];
-            }
-            if net.is_nan() {
-                return f64::INFINITY;
-            }
-            worst = worst.max(net.abs() / row);
-        }
-    }
-    worst / (1.0 + length_scale)
-}
-
-/// Largest `|c|` over all coordinates of `points` (0 if none; NaN-transparent).
-fn max_abs_coordinate<'a>(points: impl IntoIterator<Item = &'a [f64; 3]>) -> f64 {
-    points
-        .into_iter()
-        .flatten()
-        .fold(0.0_f64, |scale, c| scale.max(c.abs()))
+        || stiffness.relative_residual_against(solved, input_scale) > REDUCED_SOLVE_RESIDUAL_REL_TOL
 }
 
 /// Relative threshold below which a triangle is judged degenerate: when
@@ -1352,385 +1296,6 @@ mod tests {
     /// silence `clippy::type_complexity` on the bare nested-tuple return).
     type MembraneCase = (Vec<[f64; 3]>, Vec<(usize, usize, usize)>, Vec<usize>);
 
-    /// Tolerance for the analytic FD-identity goldens. The reduced linear solve
-    /// reproduces these exact identities to ~1e-13; 1e-9 leaves ~4 orders of
-    /// margin while still catching a wrong solve.
-    const TOL: f64 = 1e-9;
-
-    /// Max absolute componentwise difference between two 3-vectors.
-    fn max_coord_err(a: [f64; 3], b: [f64; 3]) -> f64 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0, f64::max)
-    }
-
-    // (a) A single free node cabled to 4 anchors with equal force density solves
-    // to the (unweighted) centroid of the anchors — the weighted-centroid FD
-    // identity x_f = Σ qᵢ x_{aᵢ} / Σ qᵢ with all qᵢ equal. Anchors are placed
-    // symmetrically in x,y so the centroid is (0, 0, 0.5).
-    #[test]
-    fn single_free_node_equal_q_solves_to_anchor_centroid() {
-        let nodes = vec![
-            [0.3, 0.2, 0.4], // free node 0 — deliberately off-solution
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
-        let kinds = [MemberKind::Cable; 4];
-        let q = [1.0, 1.0, 1.0, 1.0];
-        let anchors = [1, 2, 3, 4];
-
-        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-            .expect("equal-q anchored cable net must be feasible");
-
-        let expected = [0.0, 0.0, 0.5];
-        assert!(
-            max_coord_err(solve.nodes[0], expected) < TOL,
-            "nodes[0] = {:?}, expected anchor centroid {:?}",
-            solve.nodes[0],
-            expected,
-        );
-    }
-
-    // (b) Unequal force densities give the *weighted* centroid
-    // x_f = Σ qᵢ x_{aᵢ} / Σ qᵢ. Same geometry as (a) but q = [2,1,1,1]; the
-    // expected point is computed from the identity rather than hard-coded.
-    #[test]
-    fn single_free_node_unequal_q_solves_to_weighted_centroid() {
-        let anchor_pts = [
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        let nodes = vec![
-            [0.3, 0.2, 0.4], // free node 0
-            anchor_pts[0],
-            anchor_pts[1],
-            anchor_pts[2],
-            anchor_pts[3],
-        ];
-        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
-        let kinds = [MemberKind::Cable; 4];
-        let q = [2.0, 1.0, 1.0, 1.0];
-        let anchors = [1, 2, 3, 4];
-
-        // Analytic weighted centroid Σ qᵢ x_i / Σ qᵢ.
-        let qsum: f64 = q.iter().sum();
-        let mut expected = [0.0_f64; 3];
-        for (w, p) in q.iter().zip(anchor_pts.iter()) {
-            for (e, c) in expected.iter_mut().zip(p.iter()) {
-                *e += w * c;
-            }
-        }
-        for e in expected.iter_mut() {
-            *e /= qsum;
-        }
-
-        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-            .expect("unequal-q anchored cable net must be feasible");
-
-        assert!(
-            max_coord_err(solve.nodes[0], expected) < TOL,
-            "nodes[0] = {:?}, expected weighted centroid {:?}",
-            solve.nodes[0],
-            expected,
-        );
-    }
-
-    // (c) Two free nodes in a uniform-tension chain
-    // anchor(x=0) — node0 — node1 — anchor(x=3), all cables q=1. The interior
-    // nodes settle to evenly-spaced positions x0=1, x1=2. This exercises the
-    // off-diagonal D_ff coupling: the node0–node1 cable couples the two free
-    // equations, so a diagonal-only solve would get this wrong.
-    #[test]
-    fn two_free_node_chain_solves_to_uniform_spacing() {
-        let nodes = vec![
-            [0.5, 0.0, 0.0], // free node 0 — off-solution
-            [2.5, 0.0, 0.0], // free node 1 — off-solution
-            [0.0, 0.0, 0.0], // anchor at x=0
-            [3.0, 0.0, 0.0], // anchor at x=3
-        ];
-        let members = [(2, 0), (0, 1), (1, 3)];
-        let kinds = [MemberKind::Cable; 3];
-        let q = [1.0, 1.0, 1.0];
-        let anchors = [2, 3];
-
-        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-            .expect("uniform-tension chain must be feasible");
-
-        assert!(
-            max_coord_err(solve.nodes[0], [1.0, 0.0, 0.0]) < TOL,
-            "free node 0 = {:?}, expected (1,0,0)",
-            solve.nodes[0],
-        );
-        assert!(
-            max_coord_err(solve.nodes[1], [2.0, 0.0, 0.0]) < TOL,
-            "free node 1 = {:?}, expected (2,0,0)",
-            solve.nodes[1],
-        );
-    }
-
-    // Member forces, force-density echo, and convergence flag on the case-(a)
-    // geometry. Each axial force is Nᵢ = qᵢ · Lᵢ where Lᵢ is the Euclidean
-    // length of member i measured on the *solved* coordinates (here all four
-    // cables are √1.25 long and q=1, so each force equals that length). The
-    // expected length is recomputed from the returned nodes so the assertion
-    // tracks the solve rather than a hard-coded constant.
-    #[test]
-    fn member_forces_are_q_times_solved_length_and_q_is_echoed() {
-        let nodes = vec![
-            [0.3, 0.2, 0.4], // free node 0 — off-solution
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
-        let kinds = [MemberKind::Cable; 4];
-        let q = [1.0, 1.0, 1.0, 1.0];
-        let anchors = [1, 2, 3, 4];
-
-        let solve = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-            .expect("equal-q anchored cable net must be feasible");
-
-        assert_eq!(
-            solve.member_forces.len(),
-            members.len(),
-            "one axial force per member",
-        );
-        for (i, &(j, k)) in members.iter().enumerate() {
-            let pj = solve.nodes[j];
-            let pk = solve.nodes[k];
-            let len = ((pj[0] - pk[0]).powi(2)
-                + (pj[1] - pk[1]).powi(2)
-                + (pj[2] - pk[2]).powi(2))
-            .sqrt();
-            let expected = q[i] * len;
-            assert!(
-                (solve.member_forces[i] - expected).abs() < TOL,
-                "member_forces[{i}] = {}, expected q·L = {}",
-                solve.member_forces[i],
-                expected,
-            );
-        }
-
-        // force_densities is an exact echo of the input q (a copy, not a
-        // computed quantity), so exact equality must hold.
-        assert_eq!(
-            solve.force_densities,
-            q.to_vec(),
-            "force_densities must echo input q exactly",
-        );
-
-        assert!(
-            solve.converged,
-            "a well-posed anchored solve must report converged == true",
-        );
-    }
-
-    // (a) Sign-convention contract: a cable must carry tension (q > 0). A cable
-    // with q ≤ 0 is infeasible input.
-    #[test]
-    fn cable_with_nonpositive_q_is_sign_violation() {
-        let nodes = vec![
-            [0.0, 0.0, 0.5], // free node 0
-            [1.0, 0.0, 0.0], // anchor 1
-            [-1.0, 0.0, 0.0], // anchor 2
-        ];
-        let members = [(0, 1), (0, 2)];
-        let kinds = [MemberKind::Cable, MemberKind::Cable];
-        let q = [1.0, -1.0]; // cable 1 violates the q > 0 tension contract
-        let anchors = [1, 2];
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::SignViolation { member: 1 }),
-        );
-    }
-
-    // (a) Mirror: a strut must carry compression (q < 0). A strut with q ≥ 0 is
-    // infeasible input.
-    #[test]
-    fn strut_with_nonnegative_q_is_sign_violation() {
-        let nodes = vec![
-            [0.0, 0.0, 0.0], // free node 0
-            [1.0, 0.0, 0.0], // anchor 1
-        ];
-        let members = [(0, 1)];
-        let kinds = [MemberKind::Strut];
-        let q = [1.0]; // strut requires q < 0; +1 violates the compression contract
-        let anchors = [1];
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::SignViolation { member: 0 }),
-        );
-    }
-
-    // (b) A free node with no member path to any anchor leaves a zero row in the
-    // reduced stiffness D_ff → singular. The solve cannot recover that node.
-    #[test]
-    fn disconnected_free_node_is_singular_reduced_stiffness() {
-        let nodes = vec![
-            [0.0, 0.0, 0.0], // free node 0 — connected to the anchor
-            [5.0, 0.0, 0.0], // free node 1 — floating: no members touch it
-            [1.0, 0.0, 0.0], // anchor 2
-        ];
-        let members = [(0, 2)]; // only node 0 ↔ anchor; node 1 has no path
-        let kinds = [MemberKind::Cable];
-        let q = [1.0];
-        let anchors = [2];
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::SingularReducedStiffness,
-        );
-    }
-
-    // (b2) TASK 7046 — a NUMERICALLY singular D_ff must be reported too,
-    // identically at every gauge, while the control (half the critical strut
-    // density) stays Ok. LU returns finite but huge (~1e13) coordinates, so
-    // the residual branch rejects, and structurally rather than by rounding
-    // luck: at that size f0's free terms `2·x0 − x1` lie on a dyadic grid G
-    // (their ulp), and A0.y = 1/3 has no finite binary expansion, so f0's
-    // y-row cannot balance to better than G/3 under any LU kernel.
-    // Measurements: task 7046.
-    #[test]
-    fn near_singular_reduced_stiffness_is_rejected_at_every_gauge() {
-        // The strut is a rank-1 update of the cable-only D_ff, singular at
-        // q_s = −1/(compliance between its ends) = −1/(2 + 2).
-        const CRITICAL_STRUT_Q: f64 = -0.25;
-        const TWO_POW_20: f64 = 1_048_576.0;
-        let nodes = vec![
-            [1.0, 0.0, 0.0],        // free f0
-            [2.0, 0.0, 0.0],        // free f1
-            [3.0, 0.0, 0.0],        // free f2
-            [4.0, 0.0, 0.0],        // free f3
-            [0.0, 1.0 / 3.0, -2.0], // anchor A0, y off every dyadic grid
-            [5.0, -3.0, 4.0],       // anchor A1
-        ];
-        // A0 —cable— f0 —cable— f1 —STRUT— f2 —cable— f3 —cable— A1
-        let members = [(1, 2), (4, 0), (0, 1), (2, 3), (3, 5)];
-        let kinds = [
-            MemberKind::Strut,
-            MemberKind::Cable,
-            MemberKind::Cable,
-            MemberKind::Cable,
-            MemberKind::Cable,
-        ];
-        let anchors = [4, 5];
-        let solve_at = |strut_q: f64, lambda: f64| {
-            let q = [strut_q * lambda, lambda, lambda, lambda, lambda];
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-        };
-
-        for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
-            let near = solve_at(CRITICAL_STRUT_Q + 1e-14, lambda);
-            assert_eq!(
-                near.as_ref().err(),
-                Some(&FormFindError::SingularReducedStiffness),
-                "λ={lambda:e}: a near-critical strut leaves D_ff numerically singular, got {near:?}",
-            );
-            let control = solve_at(CRITICAL_STRUT_Q / 2.0, lambda);
-            assert!(
-                control.is_ok(),
-                "λ={lambda:e}: the same chain at half the critical strut density is well posed, got {control:?}",
-            );
-        }
-    }
-
-    // (c) Anchoring every node leaves no free DOF to solve for.
-    #[test]
-    fn all_nodes_anchored_is_empty_free_set() {
-        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
-        let members = [(0, 1)];
-        let kinds = [MemberKind::Cable];
-        let q = [1.0];
-        let anchors = [0, 1]; // every node anchored → empty free set
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::EmptyFreeSet,
-        );
-    }
-
-    // (d) members / kinds / q must agree in length. A short q is a dimension
-    // mismatch, caught up front before any solve.
-    #[test]
-    fn length_mismatch_is_dimension_mismatch() {
-        let nodes = vec![
-            [0.0, 0.0, 0.5],
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-        ];
-        let members = [(0, 1), (0, 2)];
-        let kinds = [MemberKind::Cable, MemberKind::Cable];
-        let q = [1.0]; // one density for two members → mismatch
-        let anchors = [1, 2];
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::DimensionMismatch),
-        );
-    }
-
-    // (d2) A member endpoint past `nodes` is infeasible input, not a panic in
-    // the `D` scatter (PRD §8.1: clean diagnostic). Index 5 is the FIRST invalid
-    // one for 5 nodes, in the END (k) position.
-    #[test]
-    fn out_of_range_member_index_is_index_out_of_range() {
-        let nodes = vec![
-            [0.3, 0.2, 0.4],
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        let members = [(0, 1), (0, 2), (0, 3), (0, 5)];
-        let kinds = [MemberKind::Cable; 4];
-        let q = [1.0; 4];
-        let anchors = [1, 2, 3, 4];
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::MemberEndpoint { member: 3 },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (d3) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). Every
-    // valid anchor is present too, so silently dropping index 5 would solve and fail here.
-    #[test]
-    fn out_of_range_anchor_index_is_index_out_of_range() {
-        let nodes = vec![
-            [0.3, 0.2, 0.4],
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
-        let kinds = [MemberKind::Cable; 4];
-        let q = [1.0; 4];
-        let anchors = [1, 2, 3, 4, 5];
-
-        assert_eq!(
-            form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::Anchor { anchor: 4 },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
     // ── γ (task 4414): per-triangle cotangent-Laplacian (NFDM surface) stencil ──
 
     /// Tolerance for the closed-form cotangent-stencil identity. The local 3×3
@@ -1816,67 +1381,6 @@ mod tests {
 
     // ── γ (task 4414): surface-aware form_find_anchored_surfaces ───────────────
 
-    /// Independent (faer-free) reassembly of the global force-density matrix
-    /// `D = CᵀQC` (lines) `+ Σ_T σ_T·L_T` (surface cotangent-Laplacians) at the
-    /// given geometry, as a dense `Vec<Vec<f64>>`. Used to check the *equilibrium*
-    /// residual ‖(D x)_free‖ at the solved geometry — the primary honest signal
-    /// that the solver reached a genuine force-density fixed point (net force on
-    /// each free node ≈ 0), computed without re-using the kernel's faer path.
-    fn reassemble_d(
-        n: usize,
-        members: &[(usize, usize)],
-        q: &[f64],
-        surfaces: &[(usize, usize, usize)],
-        sigmas: &[f64],
-        nodes: &[[f64; 3]],
-    ) -> Vec<Vec<f64>> {
-        let mut d = vec![vec![0.0_f64; n]; n];
-        for (&(j, k), &qi) in members.iter().zip(q.iter()) {
-            d[j][j] += qi;
-            d[k][k] += qi;
-            d[j][k] -= qi;
-            d[k][j] -= qi;
-        }
-        for (&(i, j, k), &s) in surfaces.iter().zip(sigmas.iter()) {
-            let l = triangle_cotangent_laplacian(nodes[i], nodes[j], nodes[k], s)
-                .expect("non-degenerate triangle in equilibrium reassembly");
-            let idx = [i, j, k];
-            for a in 0..3 {
-                for b in 0..3 {
-                    d[idx[a]][idx[b]] += l[a][b];
-                }
-            }
-        }
-        d
-    }
-
-    /// Max-norm of the free-node equilibrium residual `(D x)_free`, scaled by the
-    /// node-coordinate magnitude so the bound is coordinate-scale-free.
-    #[allow(clippy::needless_range_loop)] // explicit row/axis indexing of the dense D and node coords
-    fn equilibrium_residual_scaled(d: &[Vec<f64>], nodes: &[[f64; 3]], is_anchor: &[bool]) -> f64 {
-        let n = nodes.len();
-        let mut resid = 0.0_f64;
-        let mut scale = 0.0_f64;
-        for i in 0..n {
-            if is_anchor[i] {
-                continue;
-            }
-            for axis in 0..3 {
-                let mut net = 0.0;
-                for j in 0..n {
-                    net += d[i][j] * nodes[j][axis];
-                }
-                resid = resid.max(net.abs());
-            }
-        }
-        for p in nodes {
-            for c in p {
-                scale = scale.max(c.abs());
-            }
-        }
-        resid / (1.0 + scale)
-    }
-
     /// The shared tent golden, `reify_test_support::tensegrity_fixtures::TENT_*`,
     /// in this module's [`MembraneCase`] shape — why it is shaped that way is
     /// documented there.
@@ -1927,17 +1431,19 @@ mod tests {
             );
         }
 
-        // Primary honest signal: the free-node equilibrium residual (net force)
-        // at the SOLVED geometry is ~0.
-        let mut is_anchor = vec![false; nodes.len()];
-        for &a in &anchors {
-            is_anchor[a] = true;
-        }
-        let d = reassemble_d(nodes.len(), &members, &q, &surfaces, &sigmas, &solve.nodes);
-        let resid = equilibrium_residual_scaled(&d, &solve.nodes, &is_anchor);
+        // The returned geometry is the iterate the fixed point's stop test
+        // accepted: its free-node residual (net force) on the one assembled `D`,
+        // judged by the one criterion. The independent faer-free reassembly
+        // check lives in tests/tensegrity_gamma_membrane_form_find.rs.
+        let free: Vec<usize> = (0..nodes.len()).filter(|i| !anchors.contains(i)).collect();
+        let mut d = assemble_d(nodes.len(), &members, &q);
+        scatter_surface_stencils::<IsotropicStencil>(&mut d, &surfaces, &sigmas, &solve.nodes)
+            .expect("the solved tent's triangles are non-degenerate");
+        let resid = StiffnessScale::of(&d, RowSet::Free(&free)).relative_residual(&solve.nodes);
         assert!(
             resid < SURFACE_EQUIL_TOL,
-            "equilibrium residual ‖(D x)_free‖/scale = {resid:e}, expected < {SURFACE_EQUIL_TOL:e}",
+            "per-row relative free-node residual max|(D x)_i|/Σ_j|D_ij| over 1 + scale \
+             = {resid:e}, expected < {SURFACE_EQUIL_TOL:e}",
         );
 
         // The boundary is planar (all anchors at z=0), so the equilibrium
@@ -1961,384 +1467,6 @@ mod tests {
             "free node z = {}, expected ~0 (planar boundary ⇒ flat membrane)",
             n0[2],
         );
-    }
-
-    // (b) A non-positive surface stress (σ ≤ 0) is a non-tension membrane —
-    // infeasible input (the surface analogue of the cable q>0 sign contract).
-    #[test]
-    fn surfaces_nonpositive_sigma_is_non_tension() {
-        let (nodes, surfaces, anchors) = tent_membrane();
-        let mut sigmas = vec![1.0; surfaces.len()];
-        sigmas[2] = -0.5; // triangle 2 violates the σ>0 tension contract
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-
-        assert_eq!(
-            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-                .unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 2 }),
-        );
-    }
-
-    // (c) surfaces and surface_stresses must agree in length — a per-triangle σ
-    // is required for each triangle.
-    #[test]
-    fn surfaces_count_mismatch_is_surface_count_mismatch() {
-        let (nodes, surfaces, anchors) = tent_membrane();
-        let sigmas = vec![1.0; surfaces.len() - 1]; // one short
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-
-        assert_eq!(
-            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-                .unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
-        );
-    }
-
-    // (c2) A surface triangle corner that indexes past `nodes` is infeasible
-    // input — `assemble_combined_d` would panic on its `nodes[i]` index. PRD 8.1
-    // promises a clean diagnostic, never a panic.
-    #[test]
-    fn surfaces_out_of_range_index_is_index_out_of_range() {
-        let (nodes, _surfaces, anchors) = tent_membrane();
-        // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
-        // this pins the `≥ n` comparison that a `> n` typo would let pass.
-        // The predicate ANDs three comparisons, so each sibling test puts the
-        // bad index in a different corner — FIRST here, second in the aniso
-        // test, third in `form_find_free`'s — pinning all three between them.
-        let surfaces = vec![(5usize, 1usize, 2usize)];
-        let sigmas = vec![1.0];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-
-        assert_eq!(
-            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-                .unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::SurfaceCorner { surface: 0 },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (c3) A member endpoint past `nodes` is infeasible input, not a panic in
-    // the `D` scatter (PRD §8.1: clean diagnostic). The bad index is the START
-    // (j) endpoint; the line-only test above covers the END (k) one.
-    #[test]
-    fn surfaces_out_of_range_member_index_is_index_out_of_range() {
-        let (nodes, surfaces, anchors) = tent_membrane();
-        let sigmas = vec![1.0; surfaces.len()];
-        let members = vec![(5usize, 0usize)];
-        let kinds = vec![MemberKind::Cable];
-        let q = vec![1.0];
-
-        assert_eq!(
-            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-                .unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::MemberEndpoint { member: 0 },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (c4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
-    // valid anchors stay, so silently dropping index 5 would solve and fail here.
-    #[test]
-    fn surfaces_out_of_range_anchor_index_is_index_out_of_range() {
-        let (nodes, surfaces, mut anchors) = tent_membrane();
-        let bad_anchor = anchors.len();
-        anchors.push(5);
-        let sigmas = vec![1.0; surfaces.len()];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-
-        assert_eq!(
-            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-                .unwrap_err(),
-            FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::Anchor { anchor: bad_anchor },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (d) The pure-line path (empty surfaces) through the surface-aware entry
-    // must return exactly the landed form_find_anchored result, with an empty
-    // surface_stresses echo — the additive-extension invariant.
-    #[test]
-    fn surfaces_empty_matches_line_only_form_find_anchored() {
-        let nodes = vec![
-            [0.3, 0.2, 0.4],
-            [1.0, 0.0, 0.0],
-            [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 1.0],
-            [0.0, -1.0, 1.0],
-        ];
-        let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
-        let kinds = [MemberKind::Cable; 4];
-        let q = [1.0, 1.0, 1.0, 1.0];
-        let anchors = [1, 2, 3, 4];
-
-        let line = form_find_anchored(&nodes, &members, &kinds, &q, &anchors)
-            .expect("line-only reference solve");
-        let surf =
-            form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &[], &[], &anchors)
-                .expect("empty-surface path must match the line-only solve");
-
-        assert!(surf.surface_stresses.is_empty(), "no surfaces ⇒ empty echo");
-        assert_eq!(surf.converged, line.converged);
-        assert_eq!(surf.force_densities, line.force_densities);
-        assert_eq!(surf.member_forces.len(), line.member_forces.len());
-        for (a, b) in surf.member_forces.iter().zip(line.member_forces.iter()) {
-            assert!((a - b).abs() < 1e-12, "member force mismatch: {a} vs {b}");
-        }
-        assert_eq!(surf.nodes.len(), line.nodes.len());
-        for (a, b) in surf.nodes.iter().zip(line.nodes.iter()) {
-            assert!(max_coord_err(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
-        }
-    }
-
-    // (e) TASK 6119 — a free node touched by neither a member nor a triangle
-    // leaves its entire free-row block of D identically zero, so the net force
-    // on it is 0 for the vacuous reason that nothing acts on it at all. That
-    // must not be read as "converged": the honest outcome is
-    // SingularReducedStiffness (no path to any anchor), not echoing the
-    // caller's unsolved initial guess back as an "equilibrium".
-    #[test]
-    fn surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back() {
-        let nodes = vec![
-            [0.0, 0.0, 0.0], // anchor
-            [1.0, 0.0, 0.0], // anchor
-            [0.0, 1.0, 0.0], // anchor
-            [5.0, 5.0, 5.0], // free node 3 — isolated: no member, no triangle
-        ];
-        let surfaces = vec![(0, 1, 2)];
-        let surface_stresses = vec![1.0];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        let anchors = vec![0, 1, 2];
-
-        assert_eq!(
-            form_find_anchored_surfaces(
-                &nodes, &members, &kinds, &q, &surfaces, &surface_stresses, &anchors
-            )
-            .unwrap_err(),
-            FormFindError::SingularReducedStiffness,
-        );
-    }
-
-    // (e2) TASK 6119 REVIEW — the degenerate-row guard exercised by (e)/(g)
-    // must fire PER ROW: an aggregate guard on the MAX over free rows fires
-    // only when EVERY free row of D is zero, so a free node that IS
-    // connected, coexisting with an UNRELATED isolated free node, would hide
-    // the isolated one — which must still be rejected. Fixture: a
-    // flat symmetric tent — free node 0 sits at the exact centroid of 4
-    // anchors placed at (±1,0,0)/(0,±1,0), already at equilibrium by
-    // symmetry (the net cotangent force on node 0 is exactly 0) — plus an
-    // unrelated free node 5 touched by neither a member nor a triangle.
-    // REPRODUCED FIRST-HAND against the pre-fix (aggregate) guard: this
-    // returns `Ok(converged=true)` with `nodes[5] == [7.0, 7.0, 7.0]` — the
-    // caller's unsolved initial guess echoed straight back.
-    #[test]
-    fn surfaces_solve_rejects_isolated_free_node_alongside_a_connected_one() {
-        let nodes = vec![
-            [0.0, 0.0, 0.0],  // 0: free — connected, already at equilibrium
-            [1.0, 0.0, 0.0],  // 1: anchor
-            [0.0, 1.0, 0.0],  // 2: anchor
-            [-1.0, 0.0, 0.0], // 3: anchor
-            [0.0, -1.0, 0.0], // 4: anchor
-            [7.0, 7.0, 7.0],  // 5: free — isolated: no member, no triangle
-        ];
-        let surfaces = vec![(0, 1, 2), (0, 2, 3), (0, 3, 4), (0, 4, 1)];
-        let surface_stresses = vec![2.0; surfaces.len()];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        let anchors = vec![1, 2, 3, 4];
-
-        assert_eq!(
-            form_find_anchored_surfaces(
-                &nodes, &members, &kinds, &q, &surfaces, &surface_stresses, &anchors
-            )
-            .unwrap_err(),
-            FormFindError::SingularReducedStiffness,
-            "an isolated free node must reject even when another free node is connected",
-        );
-    }
-
-    // (f) TASK 6119 — the criterion itself must be EXACTLY invariant under a
-    // uniform gauge change q → λ·q, σ → λ·σ at a FIXED geometry. `D` is exactly
-    // linear in q and σ, so D_λ = λ·D entrywise; λ = 2^20 is a power of two, so
-    // λ·q and λ·σ are exact in IEEE-754 and D_λ = λ·D holds bit-exactly (not
-    // merely to rounding) — this makes the invariance an arithmetic identity,
-    // checkable with assert_eq! rather than a tolerance. A non-power-of-two λ
-    // would only test the identity to rounding.
-    //
-    // BEFORE task 6119's fix, `free_equilibrium_residual` (as it was then
-    // named) divided only by `(1 + coord_scale)`, which does not depend on
-    // D's magnitude at all, so the λ-scaled residual came out ~λ× the base
-    // residual instead of equal (MEASURED RED: base=1.2243416093590493e0,
-    // λ-scaled=1.2838152273752745e6 — exactly base × 2^20). The rename to
-    // `free_equilibrium_residual_relative` and its division by `D`'s own
-    // magnitude (per row since task 7046) are what make this GREEN.
-    #[test]
-    fn free_equilibrium_residual_is_invariant_under_uniform_force_density_scaling() {
-        const LAMBDA: f64 = 1_048_576.0; // 2^20
-
-        let (nodes, surfaces, anchors) = tent_membrane();
-        // Note: `assemble_combined_d` (unlike the public entry points) does not take
-        // `kinds` — it has no sign contract to enforce — so no MemberKind
-        // value is needed here.
-        let members = [(0usize, 1usize)];
-        let q = [0.7_f64];
-        let sigma = 2.0_f64;
-        let sigmas = vec![sigma; surfaces.len()];
-
-        let mut is_anchor = vec![false; nodes.len()];
-        for &a in &anchors {
-            is_anchor[a] = true;
-        }
-        let free_indices: Vec<usize> = (0..nodes.len()).filter(|&i| !is_anchor[i]).collect();
-
-        let d_base = assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q, &surfaces, &sigmas, &nodes)
-            .expect("non-degenerate fixture");
-        let resid_base = free_equilibrium_residual_relative(&d_base, &nodes, &free_indices);
-
-        let q_scaled: Vec<f64> = q.iter().map(|v| v * LAMBDA).collect();
-        let sigmas_scaled: Vec<f64> = sigmas.iter().map(|v| v * LAMBDA).collect();
-        let d_scaled =
-            assemble_combined_d::<IsotropicStencil>(nodes.len(), &members, &q_scaled, &surfaces, &sigmas_scaled, &nodes)
-                .expect("non-degenerate fixture");
-        let resid_scaled = free_equilibrium_residual_relative(&d_scaled, &nodes, &free_indices);
-
-        assert_eq!(
-            resid_base, resid_scaled,
-            "criterion must be exactly gauge-invariant: base={resid_base:e} λ-scaled={resid_scaled:e}",
-        );
-    }
-
-    // (g) TASK 6119 — pin BOTH degenerate branches of the per-row guard,
-    // spelled `row.is_nan() || row <= 0.0`. The NaN half is the load-bearing
-    // one: the "obvious" simplification `if row <= 0.0` silently drops NaN
-    // rejection, since every comparison against NaN (including `<=`) is
-    // false — the NaN row's ratio would then vanish into the NaN-transparent
-    // max and could read as converged. Calls the private function directly
-    // with hand-built `Mat<f64>` inputs (no `assemble_combined_d` involved), so both
-    // branches are exercised in isolation.
-    #[test]
-    fn free_equilibrium_residual_relative_returns_infinity_on_zero_or_nan_free_row() {
-        let nodes = vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]];
-        let free_indices = [1usize];
-
-        // (a) all-zero free-row block: node 1's row of D is identically zero
-        // (the isolated-free-node shape from test (e), at the criterion
-        // level rather than through the full surfaces solve).
-        let d_zero = Mat::<f64>::zeros(2, 2);
-        let r_zero = free_equilibrium_residual_relative(&d_zero, &nodes, &free_indices);
-        assert_eq!(r_zero, f64::INFINITY, "all-zero free row must reject, got {r_zero}");
-
-        // (b) a free row carrying NaN: node 1's row has a NaN entry.
-        let mut d_nan = Mat::<f64>::zeros(2, 2);
-        d_nan[(1, 0)] = f64::NAN;
-        let r_nan = free_equilibrium_residual_relative(&d_nan, &nodes, &free_indices);
-        assert_eq!(r_nan, f64::INFINITY, "NaN-carrying free row must reject, got {r_nan}");
-
-        // (c) TASK 6119 REVIEW — MIXED case: two free rows, one healthy
-        // (row-sum > 0), one NaN-carrying. An AGGREGATE guard on `max(rows)`
-        // never fires here: `f64::max` is NaN-transparent (it returns the
-        // non-NaN operand when the other is NaN), so the max lands on the
-        // healthy row's 8.5. This is NOT redundant with case (b) above: it is
-        // what forces the guard to be per-row. Node 0's
-        // coordinates are deliberately non-zero (unlike cases (a)/(b)'s
-        // origin stub) so the healthy row's net force is a clean non-zero
-        // finite number rather than a coincidental 0 — the pre-fix failure is
-        // "got some finite value" (any value), not "got exactly 0".
-        let nodes_mixed = vec![[1.0, 1.0, 1.0], [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let free_mixed = [1usize, 2usize];
-        let mut d_mixed = Mat::<f64>::zeros(3, 3);
-        d_mixed[(1, 0)] = 8.5; // healthy free row: row-sum = 8.5 > 0
-        d_mixed[(2, 0)] = f64::NAN; // NaN-carrying free row
-        let r_mixed = free_equilibrium_residual_relative(&d_mixed, &nodes_mixed, &free_mixed);
-        assert_eq!(
-            r_mixed,
-            f64::INFINITY,
-            "a NaN-carrying free row must reject even when another free row is healthy, got {r_mixed}",
-        );
-
-        // (d) EMPTY free set: with no free row there is no equilibrium to
-        // judge, so it must reject rather than report a vacuous residual.
-        let mut d_healthy = Mat::<f64>::zeros(2, 2);
-        d_healthy[(1, 0)] = 8.5;
-        let r_empty = free_equilibrium_residual_relative(&d_healthy, &nodes, &[]);
-        assert_eq!(
-            r_empty,
-            f64::INFINITY,
-            "an empty free set must reject, got {r_empty}"
-        );
-
-        // (e) #7800 — a healthy, finite row (|row| = 17) whose NET FORCE is NaN
-        // because the free node itself sits at a NaN coordinate. `f64::max` is
-        // NaN-transparent, so folding that net force into the worst-row max
-        // would drop it and leave the other axes' finite ratio standing.
-        let nodes_nan = vec![[1.0, 1.0, 1.0], [f64::NAN, 2.0, 3.0], [4.0, 5.0, 6.0]];
-        let mut d_finite = Mat::<f64>::zeros(3, 3);
-        d_finite[(1, 0)] = 8.5;
-        d_finite[(1, 1)] = -8.5;
-        let r_nan_net = free_equilibrium_residual_relative(&d_finite, &nodes_nan, &[1]);
-        assert_eq!(
-            r_nan_net,
-            f64::INFINITY,
-            "a NaN net force on a free row must reject, got {r_nan_net}"
-        );
-    }
-
-    // (h) TASK 7046 — the singular-solve verdict must be identical at every
-    // uniform gauge (an absolute term in the guard goes blind as λ → 0). This
-    // pins the pure predicate on an EXACT residual: test (c)'s chain at
-    // power-of-two λ, where `D_λ = λ·D` exactly. The off-equilibrium geometry
-    // is rejected and the exact solution (non-vacuity control) accepted at
-    // every λ. (b2) covers the end-to-end near-singular case; measurements:
-    // task 7046.
-    #[test]
-    fn singular_solve_verdict_is_invariant_under_uniform_force_density_scaling() {
-        const BASE_Q: f64 = 1.0;
-        const TWO_POW_20: f64 = 1_048_576.0;
-        let chain_with_node0_at = |x0: f64| {
-            vec![
-                [x0, 0.0, 0.0],  // free node 0
-                [2.0, 0.0, 0.0], // free node 1, at its exact solution
-                [0.0, 0.0, 0.0], // anchor at x=0
-                [3.0, 0.0, 0.0], // anchor at x=3
-            ]
-        };
-        let exact = chain_with_node0_at(1.0);
-        let off_equilibrium = chain_with_node0_at(1.0 + 1.0 / 1024.0); // 2^-10: exact
-        let members = [(2, 0), (0, 1), (1, 3)];
-        let free_indices = [0usize, 1];
-        let anchor_indices = [2usize, 3];
-
-        for lambda in [1.0, TWO_POW_20, 1.0 / TWO_POW_20] {
-            let q = [BASE_Q * lambda; 3];
-            let d = assemble_combined_d::<IsotropicStencil>(4, &members, &q, &[], &[], &exact).expect("line-only D");
-            assert!(
-                !is_singular_reduced_solve(&d, &exact, &free_indices, &anchor_indices),
-                "λ={lambda:e}: the exact chain solution must be accepted",
-            );
-            assert!(
-                is_singular_reduced_solve(&d, &off_equilibrium, &free_indices, &anchor_indices),
-                "λ={lambda:e}: the off-equilibrium chain (x0 = 1 + 2^-10) must be rejected",
-            );
-        }
     }
 
     // ── ε (task 4416): anisotropic warp/weft NFDM stencil ─────────────────────
@@ -2699,222 +1827,6 @@ mod tests {
             recover_principal_stress(pi, pj, pk, &spec).unwrap_err(),
             AnisoFormFindError::DegenerateMaterialFrame,
         );
-    }
-
-    // ── ε step-7 RED: form_find_anchored_surfaces_aniso guards + iso-equiv ──────
-
-    /// [`tent_membrane`] plus one isotropic-valued anisotropic prestress per
-    /// triangle, for the aniso solve tests.
-    #[allow(clippy::type_complexity)]
-    fn tent_aniso_fixture() -> (
-        Vec<[f64; 3]>,
-        Vec<(usize, usize, usize)>,
-        Vec<AnisotropicSurfaceStress>,
-        Vec<usize>,
-    ) {
-        let (nodes, surfaces, anchors) = tent_membrane();
-        let sigma = 2.0;
-        let prestress = vec![
-            AnisotropicSurfaceStress { warp_dir: [1.0, 0.0, 0.0], sigma_warp: sigma, sigma_weft: sigma };
-            surfaces.len()
-        ];
-        (nodes, surfaces, prestress, anchors)
-    }
-
-    // (a) surfaces/surface_prestress length mismatch → SurfaceCountMismatch.
-    #[test]
-    fn aniso_solve_surface_count_mismatch() {
-        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-        let short_prestress = prestress[..prestress.len() - 1].to_vec();
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &short_prestress, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
-        );
-    }
-
-    // (a2) A surface triangle corner that indexes past `nodes` is infeasible
-    // input — the stencil scatter would panic on its `nodes[i]` index. Mirrors
-    // the isotropic entry's guard.
-    #[test]
-    fn aniso_solve_out_of_range_surface_index_is_index_out_of_range() {
-        let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
-        // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
-        // this pins the `≥ n` comparison that a `> n` typo would let pass.
-        // The predicate ANDs three comparisons, so each sibling test puts the
-        // bad index in a different corner — SECOND here, first in the isotropic
-        // test, third in `form_find_free`'s — pinning all three between them.
-        let surfaces = vec![(0usize, 5usize, 2usize)];
-        let pres = vec![prestress[0].clone()];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &pres, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::SurfaceCorner { surface: 0 },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (a3) A member endpoint past `nodes` is infeasible input, not a panic in
-    // the `D` scatter (PRD §8.1: clean diagnostic). Mirrors the isotropic
-    // entry's guard; 5 is the first invalid index for the 5-node tent.
-    #[test]
-    fn aniso_solve_out_of_range_member_index_is_index_out_of_range() {
-        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-        let members = vec![(0usize, 5usize)];
-        let kinds = vec![MemberKind::Cable];
-        let q = vec![1.0_f64];
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::MemberEndpoint { member: 0 },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (a4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
-    // valid anchors stay, so silently dropping index 5 would solve and fail here.
-    #[test]
-    fn aniso_solve_out_of_range_anchor_index_is_index_out_of_range() {
-        let (nodes, surfaces, prestress, mut anchors) = tent_aniso_fixture();
-        let bad_anchor = anchors.len();
-        anchors.push(5);
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::Anchor { anchor: bad_anchor },
-                index: 5,
-                len: 5,
-            }),
-        );
-    }
-
-    // (b) members/kinds/q length mismatch → DimensionMismatch.
-    #[test]
-    fn aniso_solve_dimension_mismatch() {
-        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-        let members = vec![(0usize, 1usize)];
-        let kinds = vec![MemberKind::Cable];
-        let q: Vec<f64> = vec![]; // length 0 ≠ 1
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::DimensionMismatch),
-        );
-    }
-
-    // (c) A cable member with q ≤ 0 → SignViolation.
-    #[test]
-    fn aniso_solve_sign_violation() {
-        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-        let members = vec![(0usize, 1usize)];
-        let kinds = vec![MemberKind::Cable];
-        let q = vec![-1.0_f64]; // cable must be > 0
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::SignViolation { member: 0 }),
-        );
-    }
-
-    // (d) σ_w ≤ 0 → NonTensionSurfaceStress.
-    #[test]
-    fn aniso_solve_non_tension_surface_stress() {
-        let (nodes, surfaces, _prestress, anchors) = tent_aniso_fixture();
-        let bad_prestress = vec![
-            AnisotropicSurfaceStress {
-                warp_dir: [1.0, 0.0, 0.0],
-                sigma_warp: -1.0, // ≤ 0
-                sigma_weft: 1.0,
-            };
-            surfaces.len()
-        ];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &bad_prestress, &anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 0 }),
-        );
-    }
-
-    // (e) All nodes anchored → EmptyFreeSet.
-    #[test]
-    fn aniso_solve_empty_free_set() {
-        let (nodes, surfaces, prestress, _) = tent_aniso_fixture();
-        let all_anchors: Vec<usize> = (0..nodes.len()).collect();
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-        assert_eq!(
-            form_find_anchored_surfaces_aniso(
-                &nodes, &members, &kinds, &q, &surfaces, &prestress, &all_anchors
-            )
-            .unwrap_err(),
-            AnisoFormFindError::EmptyFreeSet,
-        );
-    }
-
-    // (f) ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
-    // isotropic solve to ≤ 1e-9 on node positions; converged == true.
-    #[test]
-    fn aniso_solve_isotropic_equivalence() {
-        let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-        let sigma = prestress[0].sigma_warp; // 2.0
-        let sigmas = vec![sigma; surfaces.len()];
-        let members: Vec<(usize, usize)> = vec![];
-        let kinds: Vec<MemberKind> = vec![];
-        let q: Vec<f64> = vec![];
-
-        let aniso = form_find_anchored_surfaces_aniso(
-            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors,
-        )
-        .expect("σ_w=σ_f aniso solve must be feasible");
-
-        let iso = form_find_anchored_surfaces(
-            &nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors,
-        )
-        .expect("isotropic reference solve must be feasible");
-
-        assert!(aniso.converged, "aniso solve must converge");
-        assert_eq!(aniso.nodes.len(), iso.nodes.len());
-        for (i, (a, b)) in aniso.nodes.iter().zip(iso.nodes.iter()).enumerate() {
-            let err = max_coord_err(*a, *b);
-            assert!(
-                err < 1e-9,
-                "node[{i}] aniso={a:?} iso={b:?} max_coord_err={err:e}",
-            );
-        }
     }
 }
 

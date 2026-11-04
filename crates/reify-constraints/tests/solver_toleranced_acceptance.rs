@@ -183,11 +183,26 @@ fn solved_point_is_satisfied_by_the_verdict_checker() {
     assert_checker_satisfies_the_solved_point(&two_coupled_autos(), "a + b == 30mm; a - b == 7mm");
 }
 
+/// A conflict the interval propagator cannot read (an `Or` compiles to no
+/// relation) still reaches the residual path and quotes the raw residual. The
+/// plain pair `w == 10mm; w == 20mm` is refuted before any solve instead
+/// (`solver_integration.rs::interval_refutation_reports_eq_pair_before_any_solve`).
 #[test]
-fn contradictory_equality_pair_stays_infeasible_with_raw_residual() {
-    let result = DimensionalSolver.solve(&single_length_auto_pinned_twice(10.0, 20.0));
+fn an_opaque_equality_conflict_still_reports_the_raw_residual() {
+    let length = Type::length();
+    let result = DimensionalSolver.solve(&problem(
+        vec![auto("w", &length)],
+        vec![
+            eq(cell("w", &length), literal(mm(10.0))),
+            or(
+                eq(cell("w", &length), literal(mm(20.0))),
+                eq(cell("w", &length), literal(mm(30.0))),
+            ),
+        ],
+        ValueMap::new(),
+    ));
     let SolveResult::Infeasible { diagnostics } = &result else {
-        panic!("w == 10mm; w == 20mm must be Infeasible; got {result:?}");
+        panic!("w == 10mm; w == 20mm or w == 30mm must be Infeasible; got {result:?}");
     };
     let unsatisfiable: Vec<_> = diagnostics
         .iter()
@@ -376,14 +391,17 @@ fn infeasible_report_names_the_worst_rejected_row_not_an_accepted_near_miss() {
         vec![
             eq(cell("w", &length), literal(mm(10.0))),
             near_miss,
-            le(cell("r", &length), literal(mm(10.0))),
+            or(
+                le(cell("r", &length), literal(mm(10.0))),
+                le(cell("r", &length), literal(mm(9.0))),
+            ),
         ],
         current_values,
     ));
     let message = unsatisfiable_message(&result);
     assert!(
         message.contains("max absolute residual: 1.00e-9"),
-        "the report must quote the rejected `r <= 10mm` row (1e-9), not the accepted 5e-7 near miss; got {message:?}"
+        "the report must quote the rejected `r <= 10mm or r <= 9mm` row (1e-9), not the accepted 5e-7 near miss; got {message:?}"
     );
 }
 

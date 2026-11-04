@@ -2178,7 +2178,7 @@ mod tests {
         let server = service.inner();
         let uri = open_bracket_source(server).await;
         // Renameable position (width use), but invalid identifiers must be refused.
-        for bad in ["let", "2x"] {
+        for bad in ["let", "match", "2x"] {
             let result = server
                 .rename(rename_params(uri.clone(), 7, 17, bad))
                 .await
@@ -2186,6 +2186,30 @@ mod tests {
             assert!(
                 result.is_none(),
                 "rename must refuse invalid new_name {bad:?}, got {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_accepts_contextual_keyword_new_names() {
+        let (service, _socket) = test_service();
+        let server = service.inner();
+        let uri = open_bracket_source(server).await;
+        for new_name in ["unit", "chain"] {
+            let edit = server
+                .rename(rename_params(uri.clone(), 7, 17, new_name))
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("rename to {new_name:?} must be accepted"));
+            let edits = edit
+                .changes
+                .expect("changes present")
+                .remove(&uri)
+                .expect("edits keyed by uri");
+            assert_eq!(edits.len(), 4, "bracket fixture: 1 decl + 3 uses of width");
+            assert!(
+                edits.iter().all(|e| e.new_text == new_name),
+                "every edit writes {new_name:?}: {edits:?}"
             );
         }
     }

@@ -55,6 +55,8 @@ mod cli_build_voxel_to_mesh;
 mod cli_cache_concurrent_writers;
 #[path = "harness_cli/cli_check.rs"]
 mod cli_check;
+#[path = "harness_cli/cli_check_bare_length_exit.rs"]
+mod cli_check_bare_length_exit;
 #[path = "harness_cli/cli_check_cfg.rs"]
 mod cli_check_cfg;
 #[path = "harness_cli/cli_check_cfg_example.rs"]
@@ -63,6 +65,10 @@ mod cli_check_cfg_example;
 mod cli_check_connect_direction;
 #[path = "harness_cli/cli_check_connect_undeclared_member.rs"]
 mod cli_check_connect_undeclared_member;
+#[path = "harness_cli/cli_check_driver_parity.rs"]
+mod cli_check_driver_parity;
+#[path = "harness_cli/cli_check_joint_dof_gates.rs"]
+mod cli_check_joint_dof_gates;
 #[path = "harness_cli/cli_check_parametric_rate.rs"]
 mod cli_check_parametric_rate;
 #[path = "harness_cli/cli_check_parametric_vec3.rs"]
@@ -103,6 +109,8 @@ mod cli_eval_fallback_recovery;
 mod cli_eval_generic_enum;
 #[path = "harness_cli/cli_eval_geometry.rs"]
 mod cli_eval_geometry;
+#[path = "harness_cli/cli_eval_joint_position_enum.rs"]
+mod cli_eval_joint_position_enum;
 #[path = "harness_cli/cli_eval_registry_determinism.rs"]
 mod cli_eval_registry_determinism;
 #[path = "harness_cli/cli_eval_result_fallback.rs"]

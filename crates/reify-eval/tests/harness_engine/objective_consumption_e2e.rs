@@ -428,16 +428,19 @@ structure DicLetIndirect {
 /// rather than *the whole scope went silent* — the suppression must cost the
 /// user nothing they were previously told. It doubles as the drift guard: a
 /// fixture that stopped failing would emit no failure diagnostic and trip here,
-/// instead of passing vacuously as a negative case.
+/// instead of passing vacuously as a negative case. A `ConstraintRefuted` proof
+/// (task #6655: an interval-refutable fixture such as `w >= 50mm ∧ w <= 10mm`)
+/// is a reported failure too.
 fn assert_solve_failure_still_reported(result: &reify_eval::EvalResult, why: &str) {
     let reported: Vec<&Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code != Some(DiagnosticCode::ObjectiveUnconsumed)
-                && (d.message.contains("could not be satisfied")
-                    || d.message.contains("no progress")
-                    || d.message.contains("No progress"))
+            d.code == Some(DiagnosticCode::ConstraintRefuted)
+                || (d.code != Some(DiagnosticCode::ObjectiveUnconsumed)
+                    && (d.message.contains("could not be satisfied")
+                        || d.message.contains("no progress")
+                        || d.message.contains("No progress")))
         })
         .collect();
     assert!(

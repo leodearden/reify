@@ -187,15 +187,8 @@
 //! assert_eq!(bcs_t8.len(), 6, "FixedSupport on shell node 0 → 6 BCs");
 //! assert_eq!(compat_t8, SupportCompatibility::Ok, "Fixed on Shell → Ok compat");
 //!
-//! // MpcRow re-export smoke test (T11 / Task 3021): pin that the type is
-//! // discoverable from the crate root for downstream consumers (Task 3020 will
-//! // add construction methods on this type). The struct-literal init is the
-//! // surface check; the dofs/coeffs equal-length invariant is T10's
-//! // constructor's job, not a literal-vs-literal len comparison here.
-//! let _row = MpcRow { dofs: vec![0, 6], coeffs: vec![1.0, -1.0], rhs: 0.0 };
-//!
-//! // T10 smoke tests (Task 3020): pin apply_mpc_row_elimination and
-//! // MpcRow::shell_tet_tying are discoverable from the crate root.
+//! // MpcRow / apply_mpc_row_elimination re-export smoke: pin that both are
+//! // discoverable from the crate root.
 //! let _ = apply_mpc_row_elimination;
 //! let _rows = MpcRow::shell_tet_tying(
 //!     [0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11], [12, 13, 14],
@@ -384,10 +377,10 @@
 //! assert_eq!(k_3778.n_dofs, 12);
 //!
 //! // Task 3795: Tensegrity T1b free-standing form-find — crate-root surface
-//! // pin. Behaviour is covered by `form_find_free::tests` and the integration
-//! // golden `tests/tensegrity_t1b_form_find_free.rs`; this block only pins that
-//! // the public surface (ForceDensitySpec / FreeFormResult / FreeFormError /
-//! // form_find_free) is reachable and callable from the crate root.
+//! // pin. Entry behaviour is covered by `tests/form_find_free_entries.rs` and
+//! // the integration golden `tests/tensegrity_t1b_form_find_free.rs`; this block
+//! // only pins that the public surface (ForceDensitySpec / FreeFormResult /
+//! // FreeFormError / form_find_free) is reachable and callable from the crate root.
 //! use reify_solver_elastic::{
 //!     ForceDensitySpec, FreeFormError, FreeFormResult, form_find_free,
 //! };
@@ -445,7 +438,7 @@
 //! assert_eq!(dim_err.unwrap_err(), StabilityError::DimensionMismatch);
 //!
 //! // Task 4416: Tensegrity-membrane ε — anisotropic warp/weft NFDM — crate-root
-//! // surface pin. Behaviour is covered by `form_find::tests` (in-crate unit tests)
+//! // surface pin. Entry behaviour is covered by `tests/form_find_anchored_entries.rs`
 //! // and the integration golden `tests/tensegrity_epsilon_anisotropic_membrane.rs`;
 //! // this block only pins that the ε public surface is reachable and callable.
 //! use reify_solver_elastic::{
@@ -535,6 +528,8 @@ pub mod qoi;
 pub(crate) mod fd_matrix;
 // Task 9271 (solver-crates-layering η₂): the validated GroupRatios spec, below form_find.
 pub(crate) mod group_spec;
+// Task 9272 (solver-crates-layering η₃): the scale-free equilibrium criterion, below form_find and form_find_free.
+pub(crate) mod fd_criteria;
 // Task 3794: Tensegrity T1a — anchored Force-Density form-finding kernel.
 pub mod form_find;
 // Task 3795: Tensegrity T1b — free-standing Force-Density form-finding kernel.

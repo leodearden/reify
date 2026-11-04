@@ -1,5 +1,59 @@
 use crate::common;
 
+/// Assert that every `Parse error: ` line on `stderr` reads `<line>:<col>: <message>`, and
+/// that one of them lands on the line of the `@@@` fault in `fixture`, the fixture the caller
+/// ran.
+///
+/// `report_parse_errors` in src/main.rs owns this format. Its unit test applies the same
+/// per-line rule to the rendered output; this checks the same rule end to end through the
+/// binary. The fault line comes from the fixture rather than being hard-coded, so the check
+/// follows the fixture if its layout changes.
+pub(crate) fn assert_parse_error_reports_fault_position(fixture: &str, stderr: &str) {
+    let source = std::fs::read_to_string(common::fixture_path(fixture))
+        .unwrap_or_else(|e| panic!("fixture {fixture} must be readable: {e}"));
+    let fault_offset = source.find("@@@").unwrap_or_else(|| {
+        panic!("fixture precondition: {fixture} must mark its parse fault with `@@@`")
+    });
+    let fault_line = source[..fault_offset].matches('\n').count() + 1;
+
+    let reported_lines: Vec<usize> = stderr
+        .lines()
+        .filter_map(reported_parse_error_line)
+        .collect();
+    assert!(
+        reported_lines.contains(&fault_line),
+        "stderr should contain `Parse error: {fault_line}:<col>: <message>` for {fixture}'s \
+         `@@@` fault on line {fault_line}; reported lines {reported_lines:?}, got: {stderr}"
+    );
+}
+
+/// The 1-based line of a `Parse error: <line>:<col>: <message>` stderr line, `None` for a
+/// stderr line that is not a parse-error report, and a panic for one that breaks the format.
+fn reported_parse_error_line(reported: &str) -> Option<usize> {
+    let located = reported.strip_prefix("Parse error: ")?;
+    let (line, rest) = located
+        .split_once(':')
+        .unwrap_or_else(|| panic!("expected `line:col: message`; got {reported:?}"));
+    let (col, message) = rest
+        .split_once(':')
+        .unwrap_or_else(|| panic!("expected a column after the line; got {reported:?}"));
+    let line: usize = line
+        .parse()
+        .unwrap_or_else(|_| panic!("the first field must be a line number; got {reported:?}"));
+    let col: usize = col
+        .parse()
+        .unwrap_or_else(|_| panic!("the second field must be a column number; got {reported:?}"));
+    assert!(
+        line >= 1 && col >= 1,
+        "line and column are 1-based; got {reported:?}"
+    );
+    assert!(
+        !message.trim().is_empty(),
+        "the position must be added to the parser's message, not replace it; got {reported:?}"
+    );
+    Some(line)
+}
+
 #[test]
 fn check_valid_bracket_exits_success() {
     let (status, stdout, stderr) =
@@ -40,17 +94,14 @@ fn check_violating_bracket_exits_failure() {
 
 #[test]
 fn check_parse_error_exits_failure() {
-    let (status, _stdout, stderr) =
-        common::run_subcommand("check", &common::fixture_path("bracket_parse_error.ri"));
+    let fixture = "bracket_parse_error.ri";
+    let (status, _stdout, stderr) = common::run_subcommand("check", &common::fixture_path(fixture));
 
     assert!(
         !status.success(),
         "reify check should exit non-zero for file with parse errors.\nstderr: {stderr}"
     );
-    assert!(
-        stderr.contains("Parse error"),
-        "stderr should contain 'Parse error', got: {stderr}"
-    );
+    assert_parse_error_reports_fault_position(fixture, &stderr);
 }
 
 #[test]
@@ -97,8 +148,8 @@ fn check_indeterminate_constraint_exits_success() {
         !stderr.contains("error:"),
         "stderr should not contain 'error:' for a successful check, got: {stderr}"
     );
-    // INDETERMINATE is non-violating by design (auto params not yet resolved),
-    // so the summary still reads "No constraints violated".
+    // INDETERMINATE is non-violating by design (the constraint reads an Undef
+    // input), so the summary still reads "No constraints violated".
     assert!(
         stdout.contains("No constraints violated"),
         "stdout should contain 'No constraints violated', got: {stdout}"
@@ -133,7 +184,7 @@ fn check_violated_with_indeterminate_exits_failure() {
         "stdout should contain violation summary, got: {stdout}"
     );
     // Negative assertions: the fixture has zero satisfied constraints
-    // (thickness=1mm violates thickness>2mm, tolerance=auto makes tolerance>0.1mm indeterminate).
+    // (thickness=1mm violates thickness>2mm, an Undef tolerance makes tolerance>0.1mm indeterminate).
     assert!(
         !stdout.contains("  OK "),
         "stdout should NOT contain '  OK ' (no satisfied constraints in fixture), got: {stdout}"
@@ -912,15 +963,16 @@ structure def OversizedBuildVolume {
 /// KNOWN GAP, pinned so #5404 has a target to flip — characterization, not
 /// endorsement.
 ///
-/// `CHECK_ERROR_EXIT_ALLOWLIST` entry 2 was seeded for an `auto` param awaiting
-/// a solver, but its code-less substring `is unresolved (Undef)` matches the one
+/// The `CHECK_ERROR_EXIT_ALLOWLIST` entry `MessageContains("is unresolved
+/// (Undef)")` was seeded for an `auto` param awaiting a solver, but its
+/// code-less substring matches the one
 /// wording `geometry_ops.rs::unresolved_arg_message` gives EVERY Undef geometry
 /// argument. So a genuine design error — here a `box` width that divides by a
 /// zero param — prints `error:` lines beside "All constraints satisfied." and
 /// exits 0, the shape INV-SF-2 forbids, while `reify eval` on the same file
 /// exits 1.
 ///
-/// When #5404 narrows entry 2, THIS TEST MUST FAIL: flip the `check` exit
+/// When #5404 narrows or deletes that entry, THIS TEST MUST FAIL: flip the `check` exit
 /// assertion to `!status.success()` and drop the known-gap framing.
 #[test]
 fn check_excuses_every_code_less_undef_geometry_argument() {
@@ -961,12 +1013,13 @@ structure def UndefBoxWidth {
          summary; without it this test pins nothing.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
-    // TODO(#5404): flip to `!status.success()` once entry 2 stops excusing
-    // non-`auto` Undef arguments.
+    // TODO(#5404): flip to `!status.success()` once the `is unresolved (Undef)`
+    // allowlist entry stops excusing non-`auto` Undef arguments.
     assert!(
         status.success(),
-        "KNOWN GAP: entry 2's substring excuses this genuine design error. If \
-         this now exits non-zero, #5404 narrowed entry 2 — flip this assertion.\n\
+        "KNOWN GAP: the `is unresolved (Undef)` allowlist entry excuses this \
+         genuine design error. If this now exits non-zero, #5404 narrowed or \
+         deleted that entry — flip this assertion.\n\
          stdout: {stdout}\nstderr: {stderr}"
     );
 
@@ -1691,20 +1744,17 @@ fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() 
 }
 
 /// Task 5311 / PRD `docs/prds/v0_6/check-diagnostic-truthfulness.md` leaf α —
-/// the CLI-seam LOCK on this task's headline user-visible change: `reify check`
-/// no longer prints an `error:`-prefixed line while exiting 0.
+/// the CLI-seam LOCK on this task's headline user-visible change: no CLI
+/// driver prints an `error:`-prefixed line while exiting 0.
 ///
 /// The engine emits the missing-trampoline fallback diagnostic at the two SOFT
 /// emission sites (`engine_eval.rs::evaluate_params_and_lets_unified` and
-/// `::evaluate_let_bindings`) with `Severity::Warning` when — and only when —
-/// the engine's compute registry is entirely EMPTY, and `Severity::Error`
-/// otherwise. `cmd_check` registers no compute trampolines at all, so its
-/// registry is empty and the diagnostic renders as `warning:`. `reify eval` and
-/// `reify build` both call `register_compute_trampolines`, whose production
-/// bundle registers 19 targets, so their registries are non-empty and the same
-/// diagnostic keeps rendering as `error:` — and keeps gating their exit codes.
-/// That contrast is the whole point of this test, so all three subcommands run
-/// against ONE byte-identical fixture.
+/// `::evaluate_let_bindings`) with `Severity::Error` whenever the engine's
+/// compute registry is non-empty. `reify check`, `reify eval` and `reify build`
+/// all register the production compute bundle, so every one of them prints the
+/// diagnostic as `error:` and gates its exit code on it. All three subcommands
+/// run against ONE byte-identical fixture, so a driver that stops registering
+/// the bundle — or stops gating on the Error — is caught here.
 ///
 /// The `@optimized` target is deliberately `test::never_registered_probe`: it is
 /// outside `register_production_compute_fns`'s 19-target bundle, and outside
@@ -1717,20 +1767,11 @@ fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() 
 /// CONTROL, measured at task 5311 against a binary built from this branch: the
 /// byte-identical fixture with the `@optimized` fn and its call removed
 /// (`let result = input`) exits 0 with EMPTY stderr on check, eval AND build.
-/// That is what makes the eval/build assertions below attributable to THIS
-/// diagnostic rather than to "the design produced no output files" — without
-/// the control, a non-zero exit here would prove nothing about severity.
-///
-/// FUTURE UPDATE — #6693 (`docs/prds/v0_6/solver-driver-parity.md` leaf δ) wires
-/// `SolverRegistry::production()` and the compute trampolines into `cmd_check`
-/// UNCONDITIONALLY. Post-#6693 `cmd_check`'s registry is non-empty, so the
-/// severity predicate correctly yields `error:` under `check` too and leg (a)
-/// below legitimately inverts. Whoever lands #6693 must update leg (a)
-/// deliberately — exactly as #6693 already plans to invert
-/// `check_fea_violated_constraint_is_not_gated` in `cli_build_fea.rs`.
+/// That is what makes the assertions below attributable to THIS diagnostic
+/// rather than to "the design produced no output files" — without the control,
+/// a non-zero exit here would prove nothing about severity.
 #[test]
-fn check_downgrades_unregistered_trampoline_fallback_to_warning_while_eval_and_build_keep_erroring()
-{
+fn check_eval_and_build_all_gate_on_an_unregistered_trampoline_fallback() {
     // Spelled ONCE and reused by every leg, so the test itself cannot drift the
     // wording between the `check` leg and the `eval`/`build` legs. The engine
     // single-sources the same stem via `engine_compute.rs`'s
@@ -1763,29 +1804,25 @@ structure def TrampolineSeverityProbe {
     let warning_line = format!("warning: {DIAGNOSTIC_BODY}");
     let error_line = format!("error: {DIAGNOSTIC_BODY}");
 
-    // ── (a) `check`: empty compute registry ⇒ Warning, and still exit 0. ──────
+    // ── (a) `check`: production bundle registered ⇒ Error, and it gates. ──────
     let (status, stdout, stderr) = common::run_with_args_in(dir.path(), &["check", path_str]);
     assert!(
-        status.success(),
-        "`reify check` must still exit 0 here — the fallback diagnostic is a \
-         Warning under check, and a Warning never moves #5403's \
-         Severity::Error exit gate.\nstdout: {stdout}\nstderr: {stderr}"
+        !status.success(),
+        "`reify check` registers the production compute bundle, so its registry \
+         is non-empty, the diagnostic is `Severity::Error`, and it must gate the \
+         exit code.\nstdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        stderr.contains(&warning_line),
-        "`cmd_check` registers no compute trampolines, so its registry is empty \
-         and the SOFT-site diagnostic must render as `{warning_line}`.\n\
-         stderr: {stderr}"
+        stderr.contains(&error_line),
+        "`reify check` must print `{error_line}`.\nstderr: {stderr}"
     );
     // Asserted explicitly, not merely implied by the `contains` above: a
-    // contains-only assertion would pass if BOTH the warning AND the old error
-    // line were printed, and the loud/silent mismatch this task closes (INV-4)
-    // is precisely the surviving `error:` line beside an exit code of 0.
+    // contains-only assertion would pass if BOTH the error AND a warning form
+    // were printed for the one diagnostic.
     assert!(
-        !stderr.contains("error: @optimized target \"test::never_registered_probe\""),
-        "no `error:`-prefixed form of this diagnostic may survive under \
-         `check` — an `error:` line printed alongside exit 0 is the exact \
-         falsehood this task closes.\nstderr: {stderr}"
+        !stderr.contains(&warning_line),
+        "no `warning:`-prefixed form of this diagnostic may appear under \
+         `check`: its registry is non-empty.\nstderr: {stderr}"
     );
 
     // ── (b) `eval`: production bundle registered ⇒ Error, and it still gates. ─

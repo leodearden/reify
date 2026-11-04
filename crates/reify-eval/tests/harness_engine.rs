@@ -99,6 +99,9 @@ mod let_tracing_transitive_e2e;
 // same anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
 mod instance_path_underdetermined_e2e;
+// Task #6655's BT5 end to end: an interval-refutable model reports the proof.
+#[path = "harness_engine/interval_refutation_e2e.rs"]
+mod interval_refutation_e2e;
 // Task #5240's `eval_cached` guarded-groups fall-through tests land here for the
 // same anti-re-accretion reason as #5196's and #5360's above. They are
 // also a topical fit: they drive `Engine::eval_cached`, the engine-level
@@ -170,3 +173,11 @@ mod viewport_unmeasured_attribution;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/first_class_frame_datum_eval.rs"]
 mod first_class_frame_datum_eval;
+// Task #9572's stdlib-preset density pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_material_preset_density_e2e.rs"]
+mod stdlib_material_preset_density_e2e;
+// Task #8393's stdlib-fn-in-user-fn-body e2e lands here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_fn_in_user_fn_body_e2e.rs"]
+mod stdlib_fn_in_user_fn_body_e2e;

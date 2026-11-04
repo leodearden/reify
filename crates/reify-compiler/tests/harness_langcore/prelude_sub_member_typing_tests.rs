@@ -17,6 +17,7 @@
 
 use reify_compiler::{TopologyTemplate, ValueCellKind};
 use reify_core::{DimensionVector, Type};
+use reify_test_support::stdlib_prelude;
 
 /// Fetch the named template from a compiled module.
 ///
@@ -332,22 +333,6 @@ structure def Styled {
 }
 "#;
 
-/// Read the declared type of `<member>` on the PRELUDE template `<template>`,
-/// so the expectation below is not a guess about how `Real` surfaces.
-fn prelude_member_type(template_name: &str, member: &str) -> Type {
-    let prelude = reify_compiler::stdlib_loader::load_stdlib();
-    let tmpl = prelude
-        .iter()
-        .find_map(|m| reify_compiler::find_template(&m.templates, template_name))
-        .unwrap_or_else(|| panic!("prelude has no template {template_name}"));
-    tmpl.value_cells
-        .iter()
-        .find(|c| c.id.member == member)
-        .unwrap_or_else(|| panic!("prelude template {template_name} has no member {member}"))
-        .cell_type
-        .clone()
-}
-
 /// The match-arm mirror of the plain-`Sub` defect. The same module-only
 /// `find_template` sub-target lookup appears three more times in `entity.rs` —
 /// the match-arm `Sub` pre-pass, the per-arm cluster member maps, and
@@ -385,7 +370,7 @@ fn prelude_typed_match_arm_sub_member_read_is_typed() {
     );
     assert_eq!(
         op_type,
-        prelude_member_type("DisplayStyle", "opacity"),
+        stdlib_prelude::member_type("DisplayStyle", "opacity"),
         "Styled.op must carry the declared type of DisplayStyle.opacity",
     );
 
@@ -440,8 +425,8 @@ structure def Fid {
 fn two_distinct_prelude_arm_types_agree_on_common_member() {
     // The fixture's premise, asserted rather than assumed: both prelude arm
     // types really do declare `target_fidelity`, at the same type.
-    let as_printed = prelude_member_type("AsPrintedOptions", "target_fidelity");
-    let fdm_slice = prelude_member_type("FDMSliceOptions", "target_fidelity");
+    let as_printed = stdlib_prelude::member_type("AsPrintedOptions", "target_fidelity");
+    let fdm_slice = stdlib_prelude::member_type("FDMSliceOptions", "target_fidelity");
     assert_eq!(
         as_printed, fdm_slice,
         "fixture premise: the two prelude arm types must declare `target_fidelity` \
@@ -498,16 +483,12 @@ structure def FidBad {
 #[test]
 fn member_on_only_one_prelude_arm_type_is_still_diagnosed() {
     // Fixture premise: `line_width` really is exclusive to the first arm type.
-    let _ = prelude_member_type("AsPrintedOptions", "line_width");
-    let fdm_slice = reify_compiler::stdlib_loader::load_stdlib()
-        .iter()
-        .find_map(|m| reify_compiler::find_template(&m.templates, "FDMSliceOptions"))
-        .expect("prelude has no template FDMSliceOptions")
-        .value_cells
-        .iter()
-        .any(|c| c.id.member == "line_width");
+    let _ = stdlib_prelude::member_type("AsPrintedOptions", "line_width");
     assert!(
-        !fdm_slice,
+        !stdlib_prelude::template("FDMSliceOptions")
+            .value_cells
+            .iter()
+            .any(|c| c.id.member == "line_width"),
         "fixture premise: FDMSliceOptions must NOT declare `line_width`",
     );
 

@@ -79,7 +79,8 @@ pub struct TestResult {
     pub constraint_results: Vec<ConstraintCheckEntry>,
 }
 
-/// Build a per-test [`Engine`] with all compute trampolines registered.
+/// Build a per-test [`Engine`] that resolves autos under the fresh profile and
+/// has all compute trampolines registered.
 ///
 /// # What this fixes
 ///
@@ -102,16 +103,12 @@ pub struct TestResult {
 /// `reify-eval`, so a normal dep back would cycle) while `build_test_engine`
 /// is regular non-`#[cfg(test)]` library code reached from production
 /// `run_tests`, so it may not name `reify_mesh_morph::*` at all.
-///
-/// # Solver-free
-///
-/// Unlike `configured_eval_engine`, this helper constructs
-/// `SolverPosture::SolverFree`, not `SolverPosture::Solve(..)` (which wires the
-/// production registry), to keep the
-/// `run_tests_with_auto_param_returns_indeterminate` contract: auto-params
-/// remain `Indeterminate` when no solver is wired.
 fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
-    let mut engine = Engine::new(crate::SolverPosture::SolverFree, checker, None);
+    let mut engine = Engine::new(
+        crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+        checker,
+        None,
+    );
     engine.register_production_compute_fns(crate::compute_targets::MorphRegistration::Unavailable {
         reason: "reify-mesh-morph is a dev-only dep of reify-eval (task 4744) — a normal dep back would cycle (reify-mesh-morph normal-deps reify-eval)",
     });
@@ -124,7 +121,8 @@ fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
 /// Each test is evaluated in an isolated `Engine` instance (no state leaks
 /// between tests) against a `CompiledModule` that contains the target test
 /// template plus non-test templates (with their constraints stripped so only
-/// the test's own constraints fire).
+/// the test's own constraints fire). Each test's engine resolves `auto`
+/// parameters, so a constraint reading an auto gets a real verdict.
 ///
 /// # Checker lifecycle
 ///
@@ -147,19 +145,6 @@ fn build_test_engine(checker: Box<dyn ConstraintChecker>) -> Engine {
 /// let results = reify_eval::run_tests(&compiled, || {
 ///     Box::new(MockConstraintChecker::new().with_default(Satisfaction::Indeterminate))
 /// });
-/// ```
-///
-/// # No pre-baked wrapper
-///
-/// `reify-eval` is intentionally decoupled from any concrete `ConstraintChecker`
-/// implementation — the trait lives in `reify-types`, not `reify-constraints`.
-/// A `run_tests_simple` shortcut would promote `reify-constraints` (and its
-/// `argmin` / `ndarray` transitive deps) from a dev-dependency to a runtime
-/// dependency, forcing all consumers to pay that cost.  Callers can define a
-/// local helper instead:
-///
-/// ```ignore
-/// fn simple() -> Box<dyn ConstraintChecker> { Box::new(SimpleConstraintChecker) }
 /// ```
 ///
 /// # See also

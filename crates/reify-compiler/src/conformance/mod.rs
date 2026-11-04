@@ -10,7 +10,7 @@ pub(crate) use sub_component_validation::check_sub_structure_existence;
 use super::*;
 use crate::ambient_defaults::AmbientDefaults;
 use crate::geometry_traits_inference::{GeometryTrait, infer_traits_for_expr_in_env};
-use reify_core::BASE_UNIT_SYMBOLS;
+use crate::type_acceptance::{ArgVerdict, ParamFamily, conformance_accepts};
 
 /// Severity of struct-constructor field-conformance diagnostics: **`Error`**.
 ///
@@ -598,10 +598,9 @@ pub(crate) fn check_param_default_conformance(
             // The old `_ => continue` silently accepted every non-StructureRef/
             // non-Geometry default (the "future work" hole this task fills). The
             // walker single-sources both the anti-cascade skip list and the
-            // param-family gating: its `reject_if_incompatible` skips
-            // `Error`/`TypeParam`/`Geometry`/`TraitObject` ARG types, and its
-            // general concrete-leaf arm judges a PARAM type only when
-            // [`general_leaf_param_family_is_validated`] vets it. So routing here
+            // param-family gating: its relation, `conformance_accepts`, skips
+            // `Error`/`TypeParam`/`Geometry`/`TraitObject` ARG types, and judges
+            // a PARAM type only when one of its family arms checks it. So routing here
             // is unconditional but diagnosing is not — a default at an
             // un-vetted family stays silent, and no gating logic is duplicated
             // at this call site. Only the top-level `Error`-default guard is
@@ -650,9 +649,9 @@ pub(crate) fn check_param_default_conformance(
 /// frame later.
 ///
 /// Adding a fourth table is now a one-line change here rather than a ninth
-/// parameter and a fourth suppression — which matters because
-/// [`general_leaf_param_family_is_validated`]'s "still unexamined" list names
-/// sixteen more `Type` variants, several of which will need their own lookup.
+/// parameter and a fourth suppression — which matters because the field types
+/// [`conformance_accepts`] leaves unexamined (spec §4.9 Known limitation #7958)
+/// may each need their own lookup.
 ///
 /// `Copy` because it is three shared references; callers pass it by value and
 /// [`WalkCtx`] stores it by value, so no reborrow ceremony is needed at the
@@ -663,22 +662,7 @@ pub(crate) struct ConformanceRegistries<'a> {
     pub templates: &'a HashMap<String, &'a TopologyTemplate>,
     /// Compiled traits visible at the call site, keyed by name.
     pub traits: &'a HashMap<String, &'a CompiledTrait>,
-    /// Declared enums visible at the call site — `prelude ++ module-local`, i.e.
-    /// exactly `CompilationCtx.resolution_enums` (task 5465, family 4).
-    ///
-    /// Exists SOLELY so the general concrete-leaf arm can tolerate D1/F-Mono
-    /// enum erasure: a constructed variant's `result_type` is always the bare
-    /// `Type::Enum(name)`, never the applied form, so a declared
-    /// `Type::Applied { name: "Result", args: [...] }` param would spuriously
-    /// fail raw [`type_compatible`], which has no Applied-vs-Enum arm in EITHER
-    /// direction. The general concrete-leaf arm maps BOTH sides through
-    /// [`base_enum_name`], which needs this table to recognise an applied ENUM
-    /// (vs. an applied generic STRUCTURE like `Coupling<T>`, which is spelled
-    /// the same way) while keeping a genuine cross-enum mismatch rejected.
-    ///
-    /// [`base_enum_name`] is the same oracle [`enum_payload_compatible`] uses at
-    /// the payload-field site in `variant_construct.rs`, so the two decisions
-    /// cannot drift.
+    /// Declared enums visible at the call site, read by [`conformance_accepts`]'s enum arm.
     pub enum_defs: &'a [reify_ir::EnumDef],
 }
 
@@ -756,9 +740,9 @@ fn promote_function_call_to_structure_ref(
     Some(Type::StructureRef(name.to_owned()))
 }
 
-/// Recursive dispatcher: walk `param_type` lockstep against `compiled_arg`,
-/// recursing into Option/List/Set/Map wrapper pairs and delegating `TraitObject`
-/// to the leaf helper.
+/// Walk `param_type` against `compiled_arg`, recursing into literal Option/List/Set/Map
+/// wrappers. Every other pair goes to [`walk_param_against_arg_type`] with the literal
+/// attached, so each leaf verdict comes from [`conformance_accepts`].
 fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &mut WalkCtx<'_>) {
     match (param_type, &compiled_arg.kind) {
         // Option wrapper: recurse into the inner value.
@@ -794,27 +778,13 @@ fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &
                 walk_param_against_arg(val_p, val_expr, ctx);
             }
         }
-        // Leaf: param type is a trait object — call the existing conformance logic.
-        (Type::TraitObject(required_trait), _) => {
-            check_leaf_trait_conformance(required_trait, compiled_arg, ctx);
-        }
-        // Fallback: for non-literal wrapped args (e.g. ValueRef), attempt a type-level
-        // wrapper walk comparing param_type against compiled_arg.result_type. This handles
-        // cases like passing `param p : Option<Physical>` to a slot of `Option<Material>`
-        // where `Physical : Material`. Non-wrapper and non-trait params fall through
-        // silently inside walk_param_against_arg_type.
-        //
-        // Apply StructureRef promotion when the compiled arg is a FunctionCall whose
-        // result_type defaulted to Real/Int (the expression compiler's numeric fallback
-        // for structure calls) and the callee is a known structure template. Without this,
-        // wrapper-shape diagnostics would show the misleading numeric fallback type (e.g.
-        // 'Real') instead of the structure name (e.g. 'Steel') for cases like
-        // `Host(m: Steel())` where `m : Option<MaterialSpec>`.
+        // A structure call whose result type fell back to Real/Int is promoted to its
+        // StructureRef, so diagnostics name the structure (e.g. 'Steel', not 'Real').
         _ => {
             let promoted =
                 promote_function_call_to_structure_ref(compiled_arg, ctx.registries.templates);
             let effective_type = promoted.as_ref().unwrap_or(&compiled_arg.result_type);
-            walk_param_against_arg_type(param_type, effective_type, ctx);
+            walk_param_against_arg_type(param_type, effective_type, Some(compiled_arg), ctx);
         }
     }
 }
@@ -1039,15 +1009,7 @@ fn emit_structure_ref_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut Wal
 /// Emit a single `Diagnostic::error` with
 /// [`DiagnosticCode::TypeNotConformingToVector`] when an arg does not conform to a
 /// `Type::Vector`-typed param (task-4622): either the arg is not vector-shaped, or it is
-/// `Type::Vector` with a mismatched arity (n).
-///
-/// Conformance rules:
-/// - A `Type::Vector { n, .. }` arg is accepted only when `n` matches the param's `n`.
-///   Arity mismatch (e.g. vec2 passed to a vec3 param) is a genuine type error.
-/// - A `Type::Tensor { rank: 1, .. }` arg is accepted regardless of element count
-///   (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
-/// - The quantity slot is intentionally loose (ty.rs Point/Vector quantity-slot convention).
-/// - Bare scalars, strings, bools, and other non-vector kinds are rejected.
+/// `Type::Vector` with a mismatched arity (n). The verdict is [`conformance_accepts`]'s.
 ///
 /// Modelled on [`emit_structure_ref_mismatch`]: one diagnostic, one label at `ctx.span`,
 /// message names the required vector type and the offending arg type.
@@ -1094,7 +1056,7 @@ fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_
 /// diagnostics.rs). Severity is `ctx.severity` in BOTH branches (severity-invariant:
 /// the 5302 knob governs the whole selector surface uniformly — see design decision
 /// Q3/Option-A). The same-kind case (`Selector(k)` arg vs `Selector(k)` param) never
-/// reaches here — `reject_if_incompatible`'s `type_compatible` gate accepts it — so
+/// reaches here — the relation's `type_compatible` arm accepts it — so
 /// the `j != k` guard is defensive, not load-bearing.
 fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     let is_kind_mismatch = match (param_type, arg_type) {
@@ -1150,19 +1112,6 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
     }
 }
 
-/// Skip-guard + `type_compatible` gate shared by the `StructureRef` and `Selector/AnySelector`
-/// leaf arms in [`walk_param_against_arg_type`] (task-4584, task-4598).
-///
-/// Returns without emitting when `arg_ty` is one of the conservatively-skipped kinds:
-/// - `Error` — anti-cascade poison sentinel.
-/// - `TypeParam` — unresolved generic; conformance decided at instantiation.
-/// - `Geometry` — carries no nominal identity verifiable at the type level.
-/// - `TraitObject` — may resolve to a conforming type; defer.
-///
-/// For all other concrete arg types, calls `type_compatible`; if that returns false,
-/// delegates to `emit` to push the mismatch diagnostic. Encapsulating the three-line
-/// body prevents the anti-cascade skip list from drifting between the two arms.
-///
 /// Emit a single `DiagnosticCode::ArgTypeMismatch` diagnostic (at `ctx.severity`)
 /// for a general concrete-leaf param/arg type mismatch (task 5302 α — the fully
 /// general arg-shape pass that replaces the old silent `_` fall-through in
@@ -1206,58 +1155,17 @@ fn emit_arg_type_mismatch(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
-/// Whether each [`BASE_UNIT_SYMBOLS`] slot is spellable as a unit LITERAL, in
-/// the same slot order.
+/// An example unit literal for `dimension`: `"1m"`, `"1m/s^2"`, `"1kg/m^3"`,
+/// `"1Pa"`.
 ///
-/// `BASE_UNIT_SYMBOLS` is the DISPLAY table: it names every slot so a
-/// `DimensionVector` can be rendered. That is a weaker property than being
-/// parseable — `stdlib/units.ri` declares `m`, `kg`, `s`, `K`, `rad` and `USD`
-/// as units, but NOT `A`, `mol`, `cd` or `sr`, so a composed `…/A` literal fails
-/// with `unknown unit: A`. Measured, not assumed: the round-trip guard in
-/// `struct_ctor_field_conformance_tests.rs` caught exactly this on `Voltage`
-/// (`1m^2*kg/s^3/A`).
+/// The unit is [`reify_core::ri_compound_unit_expr`]'s, the spelling `.ri`
+/// value emission writes, so the hint and the emitter cannot disagree and every
+/// `NAMED_DIMENSIONS` row is covered with no per-dimension table.
 ///
-/// `[bool; 10]`, same as the symbol table, so an 11th base dimension breaks at
-/// compile time here too. Registering one of the missing symbols in the stdlib
-/// is a one-flag change, and the round-trip guard proves it immediately.
-const BASE_UNIT_SYMBOL_IS_SPELLABLE: [bool; 10] = [
-    true,  // m
-    true,  // kg
-    true,  // s
-    false, // A
-    true,  // K
-    false, // mol
-    false, // cd
-    true,  // rad
-    false, // sr
-    true,  // USD
-];
-
-/// An example unit literal for `dimension`, spelled in reify's compound-unit
-/// grammar — `"1m"`, `"1m/s^2"`, `"1kg/m^3"`, `"1kg*m^2/s^2"`.
-///
-/// Composed from [`BASE_UNIT_SYMBOLS`] rather than looked up in a per-dimension
-/// table, which is what makes the hint unable to rot: every present and future
-/// `NAMED_DIMENSIONS` row is covered uniformly, with no second list to keep in
-/// step. (`si_units.rs`'s `SI_DERIVED_UNITS` was the obvious table and is not
-/// usable: it covers ~25 derived units and misses Length, Mass, Time, Area,
-/// Volume, Density — and Velocity and Acceleration, the two dimensions in this
-/// task's own signal.)
-///
-/// NOT built from [`DimensionVector`]'s `Display`, which joins with `·` and
-/// emits `^-1`; neither is reify syntax. Positive exponents go to a `*`-joined
-/// numerator and negative ones to `/`-prefixed denominator terms, the shape
-/// `compound_unit_resolution_tests.rs` pins as accepted (`5kN*m`, `9.81m/s^2`,
-/// `7850kg/m^3`, `0.001kg/m/s`).
-///
-/// `None` when no clean literal exists — three cases, all measured against the
-/// round-trip guard rather than guessed:
-/// * a FRACTIONAL exponent (`den() != 1`, e.g. `FractureToughness`'s Pa·m^0.5)
-///   has no unit-literal spelling at all;
-/// * an EMPTY numerator (e.g. `Frequency`, s⁻¹) would need a bare `1/s`, which
-///   reify's grammar reads as a division rather than as a quantity literal;
-/// * a slot whose symbol the stdlib does not register as a unit (see
-///   [`BASE_UNIT_SYMBOL_IS_SPELLABLE`]), e.g. `Voltage`'s ampere term.
+/// `None` where that emitter declines (see its doc). Also `None` for a
+/// dimension with no positive exponent (`Frequency`, s⁻¹), which the emitter
+/// writes as signed powers (`s^-1`): the hint offers an example only in the
+/// numerator/denominator form.
 ///
 /// Declining is deliberate: an example that does not parse is worse than none,
 /// because the reader would paste it. The round-trip guard in
@@ -1265,48 +1173,10 @@ const BASE_UNIT_SYMBOL_IS_SPELLABLE: [bool; 10] = [
 /// and fails the build if any offered example stops resolving to its own
 /// dimension.
 fn example_unit_literal(dimension: &DimensionVector) -> Option<String> {
-    let mut numerator: Vec<String> = Vec::new();
-    let mut denominator: Vec<String> = Vec::new();
-
-    for (slot, exponent) in dimension.0.iter().enumerate() {
-        if exponent.num() == 0 {
-            continue;
-        }
-        if exponent.den() != 1 {
-            return None;
-        }
-        if !BASE_UNIT_SYMBOL_IS_SPELLABLE[slot] {
-            return None;
-        }
-        let symbol = BASE_UNIT_SYMBOLS[slot];
-        let power = exponent.num();
-        let magnitude = power.abs();
-        let term = if magnitude == 1 {
-            symbol.to_owned()
-        } else {
-            format!("{symbol}^{magnitude}")
-        };
-        if power > 0 {
-            numerator.push(term);
-        } else {
-            denominator.push(term);
-        }
-    }
-
-    // MEASURED, not assumed: `structure def S { param x : Frequency = 1/s }`
-    // fails to compile with `unresolved name: s` — with no numerator term to
-    // anchor it, the leading `1` is parsed as a plain number and `/s` as a
-    // division by an identifier, never as a quantity literal.
-    if numerator.is_empty() {
+    if !dimension.0.iter().any(|exponent| exponent.num() > 0) {
         return None;
     }
-
-    let mut literal = format!("1{}", numerator.join("*"));
-    for term in &denominator {
-        literal.push('/');
-        literal.push_str(term);
-    }
-    Some(literal)
+    reify_core::ri_compound_unit_expr(dimension).map(|unit| format!("1{unit}"))
 }
 
 /// The D4-6 migration hint clause appended to a rejection at a DIMENSIONED
@@ -1340,879 +1210,149 @@ fn dimensioned_scalar_migration_hint(dimension: &DimensionVector) -> String {
     }
 }
 
-/// The arg types that every leaf gate in this walker conservatively SKIPS rather
-/// than judges: each is "unknown / unverifiable here", NOT "definitely
-/// non-conforming", so emitting on one would be a false positive.
-///
-/// * `Error` — anti-cascade poison sentinel; the root-cause diagnostic already fired.
-/// * `TypeParam` — an unresolved generic type variable; real conformance is
-///   decided when the var is bound at instantiation.
-/// * `Geometry` — carries no nominal identity verifiable at the type level
-///   (geometry conformance is decided from the compiled op-array, reachable only
-///   through the literal walker).
-/// * `TraitObject` — may resolve to a conforming type at evaluation; defer.
-///
-/// # Why a named helper rather than a repeated `matches!`
-///
-/// [`reject_if_incompatible`] and the four SHAPE-BASED leaf arms (`Vector`,
-/// `Point`, `Matrix`/`Tensor`, `Field`) all need exactly this set. Before task
-/// 5465's amendment pass each spelled it out inline and the arm comments claimed
-/// the copies were "character-for-character" identical so they "cannot drift" —
-/// a claim enforced only by comment. Routing every caller through one function
-/// makes it structurally true.
-///
-/// # `Type::ScalarParam` is deliberately NOT in this set
-///
-/// `Type::ScalarParam(Q)` is the unresolved *dimension*-parameter placeholder
-/// (`type_resolution.rs:3134`), which superficially looks like a sibling of
-/// `TypeParam`. It is not, for this purpose: with `TypeParam` the whole type is
-/// unknown, whereas with `ScalarParam` the FAMILY is known (it is a scalar) and
-/// only its dimension is open. Adding it here would silence genuine family-level
-/// mismatches such as `String ← Scalar<Q>` at every arm at once. Instead, the
-/// two arms that already tolerate a scalar-family arg (`Point`,
-/// `Matrix`/`Tensor`) accept it through [`is_numeric_placeholder_leaf`], which
-/// is where its scalar-ness — not its unknown-ness — is the load-bearing
-/// property.
-fn arg_type_is_unverifiable(arg_ty: &Type) -> bool {
-    matches!(
-        arg_ty,
-        Type::Error | Type::TypeParam(_) | Type::Geometry | Type::TraitObject(_)
-    )
-}
-
-/// The NARROW numeric-leaf predicate the `Point` and `Matrix`/`Tensor` shape
-/// arms use to accept a scalar-family arg (task 5465).
-///
-/// Its membership is exactly what the `matches!` below says: `Type::Int`, ANY
-/// `Type::Scalar { .. }` — dimensioned or not, the match is dimension-BLIND —
-/// and `Type::ScalarParam(_)`, a scalar shape whose DIMENSION is unresolved
-/// rather than absent (see [`arg_type_is_unverifiable`]'s closing note). Read
-/// the membership off the predicate, never off an example.
-///
-/// This is a SHARED helper, and each call site states its own reason for wanting
-/// it: the `Point` arm (below), the `Matrix`/`Tensor` arm, and
-/// `list_bottoms_out_numeric`. Notably the `Matrix`/`Tensor` arm wants the
-/// `Type::Scalar { .. }` leg for rank-0 scalar equivalence (Rules 2a/2b), where
-/// the arg is a REAL dimensioned scalar and not a placeholder at all — so
-/// narrowing this predicate to `Int | ScalarParam` to suit the `Point` arm
-/// would break that accept. Any claim about which args "survive" belongs to a
-/// call site's own branch, not here.
-///
-/// `point3(…)` / `point2(…)` are NOT among the `Point` arm's placeholder inputs:
-/// they carry a real `Type::Point` and take that arm's OTHER branch. Ruled once,
-/// in the *Point / Vector quantity-slot convention* section of
-/// `crates/reify-core/src/ty.rs`.
-///
-/// Deliberately NOT `type_compat.rs::is_scalar_like_leaf`, which also admits
-/// `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and `Geometry` — that
-/// would make `Anchor(origin: "origin")` silent and defeat the value floors.
-fn is_numeric_placeholder_leaf(ty: &Type) -> bool {
-    matches!(ty, Type::Int | Type::Scalar { .. } | Type::ScalarParam(_))
-}
-
-/// Whether a `Type::ScalarParam(_)` ARG at a `Type::Scalar { .. }` PARAM must be
-/// DEFERRED rather than judged (task 5627 γ, D4-5; PRD invariant I5 / §7.4 B4).
-///
-/// `Type::ScalarParam(Q)` is the unresolved-DIMENSION placeholder a dim-kinded
-/// generic produces: `fn fwd<Q: Dimension>(x: Scalar<Q>)` resolves `x` to
-/// `ScalarParam("Q")` (`type_resolution.rs`), displayed `Scalar<Q>`. Its FAMILY
-/// is known — it is a scalar — and only its DIMENSION is open (see
-/// [`arg_type_is_unverifiable`]'s closing note, which draws the same distinction
-/// against `TypeParam`). At a `Scalar` slot there is therefore no dimension to
-/// compare: `Q` is bound at instantiation, and whether that binding conforms is
-/// decided there. Judging the UNINSTANTIATED body under the strict
-/// `DimensionVector` equality γ routes into this arm can only ever REJECT, so
-/// every such site would be a false positive — one γ's own promotion opens.
-///
-/// # Deliberately narrower than [`is_numeric_placeholder_leaf`]
-///
-/// That predicate also matches `Type::Int` and any CONCRETE `Type::Scalar { .. }`.
-/// Reusing it as the arg-side accept HERE would silence `Scalar<Q> ← Int` (I3)
-/// and `Scalar<Length> ← Scalar<Mass>` (I2) — precisely the two rejections γ
-/// exists to produce — leaving the promotion green, the corpus clean and the
-/// whole task functionally inert. The `Point` and `Matrix`/`Tensor` arms want its
-/// full membership set, each for the reason stated at its own call site; this
-/// arm wants only the dimension-placeholder half.
-///
-/// It is a PER-ARM guard for the same reason it is not an entry in
-/// [`arg_type_is_unverifiable`]: adding it there would silence
-/// `String ← Scalar<Q>` at every arm at once, which that predicate's own doc
-/// comment already rules out.
-///
-/// # A2 — the INTENDED side effect on the dimensionless half
-///
-/// `Real` is `Type::Scalar { dimension: <dimensionless> }`, so this necessarily
-/// also silences `Real ← Scalar<Q>` — a warning belonging to task 5465's
-/// already-shipped dimensionless family, not to the family γ promotes. That is
-/// intended, not collateral: the argument for silence is identical in both
-/// halves, since `Q` is unbound either way and there is nothing to compare.
-/// Narrowing the guard to `!dimension.is_dimensionless()` to preserve that
-/// warning would assert `Scalar<Q>` is definitely-not-`Real` while
-/// simultaneously accepting it as maybe-`Scalar<Length>`.
-///
-/// All five behaviours above — the accept, the A2 post-state, and the three
-/// narrowness fences — are pinned by name in the γ D4-5 section of
-/// `crates/reify-compiler/tests/harness_structure_declarations/struct_ctor_field_conformance_tests.rs`.
-fn scalar_param_arg_defers_at_scalar_slot(param_type: &Type, arg_ty: &Type) -> bool {
-    matches!(param_type, Type::Scalar { .. }) && matches!(arg_ty, Type::ScalarParam(_))
-}
-
-/// ARG-side predicate: the dimension an ARG's quantity slot names — TOLERANT, so
-/// a dimensionless `Scalar` (like `Type::Int` / `Type::ScalarParam`) names none.
-///
-/// Normative rule, and why this side is the tolerant one: the "Point / Vector
-/// quantity-slot convention" section of `crates/reify-core/src/ty.rs` (tasks
-/// 5766, 6159). This is its implementation, not a second source of truth.
-fn arg_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
-    match quantity {
-        Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
-        _ => None,
-    }
-}
-
-/// PARAM-side predicate: STRICT sibling of [`arg_quantity_slot_dimension`] — a
-/// dimensionless `Scalar` DOES name a dimension here; `Type::Int` /
-/// `Type::ScalarParam` still name none.
-///
-/// Ruling and basis: `crates/reify-core/src/ty.rs` (task 6159).
-fn param_quantity_slot_dimension(quantity: &Type) -> Option<DimensionVector> {
-    match quantity {
-        Type::Scalar { dimension } => Some(*dimension),
-        _ => None,
-    }
-}
-
-/// The quantity slot carried by a `Vector`/`Point`/`Matrix`/`Tensor` type, or
-/// `None` for every other shape (`Type::List` — the nested-list-literal matrix
-/// spelling — an [`is_numeric_placeholder_leaf`] scalar, …).
-///
-/// FAMILY-based, never side-based, so BOTH sides of the comparison are extracted
-/// by this one function and cannot drift apart. Returning `Some` for a family a
-/// given arm does not accept is harmless: every caller runs this only AFTER its
-/// own family/arity check.
-fn quantity_slot(ty: &Type) -> Option<&Type> {
-    match ty {
-        Type::Vector { quantity, .. }
-        | Type::Point { quantity, .. }
-        | Type::Matrix { quantity, .. }
-        | Type::Tensor { quantity, .. } => Some(quantity),
-        _ => None,
-    }
-}
-
-/// Apply the quantity-slot rule at one shape arm, emitting
-/// [`DiagnosticCode::ArgTypeMismatch`] at `ctx.severity` when it fires.
-///
-/// Rule, rationale and residuals: the "Point / Vector quantity-slot convention"
-/// section of `crates/reify-core/src/ty.rs`. This is its implementation, not a
-/// second source of truth.
-///
-/// # Caller contract
-///
-/// Call this ONLY after the arm's own family/arity check has passed, and ONLY
-/// from an arm whose `param_type` is a quantity-carrying shape — the
-/// `debug_assert!` below is that second half, made loud in tests rather than
-/// left to no-op silently. That ordering plus the [`quantity_slot`] gate is how
-/// PRD 4's D4-5 unknown-ness fence survives at these arms: a placeholder scalar
-/// carries no slot and so never reaches the comparison, and a `String` is
-/// rejected before it. Routing all three arms here also keeps the diagnostic
-/// `ArgTypeMismatch` at every one, leaving the `Vector` arm's bespoke
-/// `TypeNotConformingToVector` owning ARITY/FAMILY failures only.
-///
-/// The rule is ASYMMETRIC, so each side is asked by its own
-/// `*_quantity_slot_dimension` by NAME and the emission is INLINE, where both
-/// types and both slots are already bound — leaving no parameter list of
-/// adjacent `&Type`s for a call site to transpose. The comparison itself is the
-/// derived `PartialEq` on [`DimensionVector`], the same primitive the bare-`Scalar`
-/// leaf rule uses.
-///
-/// Two wording choices below are deliberate and are pinned by test, not by this
-/// comment: the parenthetical claims ACCEPTANCE rather than shape EQUALITY (two
-/// arms reach here with a genuinely different shape), and it names "the compared
-/// shape" rather than "the arg type", which on the `Option`/`List`/`Set`/`Map`
-/// wrapper recursion is the INNER type, not the one the user wrote.
-/// `assert_quantity_slot_conflict` pins the discriminating fragments at every
-/// probe and `dimensionless_quantity_param_rejects_dimensioned_vector_arg` pins
-/// the whole rendering once.
-fn emit_if_quantity_conflict(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
-    debug_assert!(
-        quantity_slot(param_type).is_some(),
-        "emit_if_quantity_conflict must be called from a quantity-carrying param arm \
-         (Vector/Point/Matrix/Tensor), got param type '{param_type}'. A shape arm added \
-         by copy/paste whose family `quantity_slot` does not cover would otherwise \
-         compile, run, and never emit, with no signal."
-    );
-    if let (Some(param_quantity), Some(arg_quantity)) =
-        (quantity_slot(param_type), quantity_slot(arg_ty))
-        && let (Some(param_dim), Some(arg_dim)) = (
-            param_quantity_slot_dimension(param_quantity),
-            arg_quantity_slot_dimension(arg_quantity),
-        )
-        && param_dim != arg_dim
-    {
-        ctx.diagnostics.push(
-            diag_at(
-                ctx.severity,
-                format!(
-                    "argument '{}' has quantity '{}' but param '{}' requires quantity '{}' \
-                     (the compared shape '{}' is otherwise accepted at '{}'; only the quantity \
-                     slot disagrees)",
-                    ctx.arg_name, arg_quantity, ctx.arg_name, param_quantity, arg_ty, param_type,
-                ),
-            )
-            .with_code(DiagnosticCode::ArgTypeMismatch)
-            .with_label(DiagnosticLabel::new(
-                ctx.span,
-                format!("quantity mismatch: expected '{param_quantity}', got '{arg_quantity}'"),
-            )),
-        );
-    }
-}
-
-/// Whether a `Type::List` arg at a `Matrix`/`Tensor` param is plausibly the
-/// idiomatic nested-list-literal spelling of that matrix — i.e. it bottoms out
-/// in a NUMERIC (or already tensor-shaped) element type.
-///
-/// The `Matrix`/`Tensor` arm accepts `Type::List` because
-/// `[[0.0, …], [0.0, …], [0.0, …]]` is how every `examples/dynamics/*_idyn.ri`
-/// spells a `MassProperties.inertia`, and that literal compiles to
-/// `List<List<Real>>`. But "is a list" is not the same claim as "is a matrix
-/// literal": an UNCONSTRAINED `Type::List(_)` accept also swallows
-/// `Body(inertia: ["a", "b"])` (arg type `List<String>`), because a
-/// `Matrix`-typed param never pairs with the literal walker's
-/// `(Type::List(param), ListLiteral)` arm and so arrives here as a bare type.
-/// That left the just-promoted family with a hole on exactly the shape the
-/// accept was written for.
-///
-/// Peeling `List` recursively (rather than checking one level) keeps the rule
-/// rank-agnostic: `List<Real>` for a rank-1 tensor, `List<List<Real>>` for a
-/// 3×3 matrix, `List<List<List<Real>>>` for a rank-3 tensor. ARITY is still not
-/// checked — see the arm comment for why that asymmetry with `Point`/`Vector` is
-/// deliberate — only the element FAMILY is.
-///
-/// `Error` and `TypeParam` bottoms return true: those elements are unknown, not
-/// definitely non-numeric, and rejecting them would violate the same
-/// anti-cascade / defer-to-instantiation contract [`arg_type_is_unverifiable`]
-/// encodes at the top level. `Geometry` / `TraitObject` are NOT included: a
-/// `List<Geometry>` at a matrix slot is a genuine family mismatch, and neither
-/// is a numeric-literal shape.
-fn list_bottoms_out_numeric(ty: &Type) -> bool {
-    match ty {
-        Type::List(inner) => list_bottoms_out_numeric(inner),
-        Type::Vector { .. } | Type::Matrix { .. } | Type::Tensor { .. } => true,
-        Type::Error | Type::TypeParam(_) => true,
-        other => is_numeric_placeholder_leaf(other),
-    }
-}
-
-/// Vector's bespoke arity logic (`emit_vector_mismatch`) is intentionally separate.
-fn reject_if_incompatible<F>(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>, emit: F)
-where
-    F: FnOnce(&Type, &Type, &mut WalkCtx<'_>),
-{
-    if !arg_type_is_unverifiable(arg_ty) && !type_compatible(param_type, arg_ty) {
-        emit(param_type, arg_ty, ctx);
-    }
-}
-
-/// Type-level fallback walker: compare `param_type` against `arg_type` wrapper-by-wrapper.
-///
-/// Used when the compiled arg is not a literal (e.g. a `ValueRef`), so its inner
-/// expressions are not available for inspection. Walks the wrapper structure of
-/// `arg_type` in lockstep with `param_type`. At a `Type::TraitObject` leaf,
-/// `StructureRef`/`TraitObject` args defer to `emit_leaf_conformance_for_arg_type`;
-/// `Geometry`/`Error`/`TypeParam` args are skipped (unverifiable at the type level /
-/// anti-cascade / unresolved generic); any other leaf type (scalar, enum, point, …)
-/// cannot carry trait bounds and emits a
-/// `TypeNotConformingToTrait` directly — mirroring the literal walker's fallback so a
-/// wrapper-nested trait param reached with a non-literal scalar arg is not silently
-/// accepted (task-4081 soundness, esc-4081-174).
-///
-/// Wrapper-shape mismatches (e.g. `Option<T>` param vs `List<T>` arg, or bare leaf arg
-/// vs wrapper param) emit a `TypeNotConformingToTrait` diagnostic when `param_type` is
-/// `Option/List/Set/Map`. A top-level `Type::Error` in either `param_type` or `arg_type`
-/// short-circuits the whole walk via an early return, so no diagnostic — wrapper-shape,
-/// leaf-conformance, or future-arm — is emitted on top of an already-reported upstream
-/// error. The guard runs before the match, making the anti-cascade contract uniform
-/// across all arms (current and future). Note: this guard is top-level only — an `Error`
-/// nested inside a wrapper (e.g. `Option<Error>`) is not detected and may produce a
-/// secondary wrapper-shape diagnostic on top of the root-cause error. Since task 5302,
-/// non-wrapper, non-trait param types reach the general concrete-leaf arm, which checks
-/// the families [`general_leaf_param_family_is_validated`] admits; the dedicated
-/// shape arms (Vector, Point, Matrix/Tensor, Field, Selector) and the enum branch
-/// check theirs. Every remaining family falls through silently (owner #7958).
-fn walk_param_against_arg_type(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
-    // Anti-cascade: skip when either type carries the poison sentinel so no
-    // wrapper-shape, leaf-conformance, or future-arm diagnostic piles on top
-    // of an already-reported upstream error. Hoisted above the match so the
-    // contract is explicit and uniform across all current and future arms.
-    if matches!(param_type, Type::Error) || matches!(arg_type, Type::Error) {
-        return;
-    }
+/// Type-level walker: recurse `param_type` against `arg_type` through wrapper pairs and the
+/// implicit-Some unwrap, and judge every other pair with [`judge_leaf`], whose verdicts all
+/// come from [`conformance_accepts`]. Recursing first is that relation's precondition.
+/// `literal` is the compiled arg at the top-level pair only: every recursion, the
+/// implicit-Some unwrap included, passes `None`.
+fn walk_param_against_arg_type(
+    param_type: &Type,
+    arg_type: &Type,
+    literal: Option<&CompiledExpr>,
+    ctx: &mut WalkCtx<'_>,
+) {
     match (param_type, arg_type) {
-        // Wrapper pairs: recurse into inner types lockstep.
         (Type::Option(inner_p), Type::Option(inner_a)) => {
-            walk_param_against_arg_type(inner_p, inner_a, ctx);
+            walk_param_against_arg_type(inner_p, inner_a, None, ctx);
         }
         (Type::List(inner_p), Type::List(inner_a)) => {
-            walk_param_against_arg_type(inner_p, inner_a, ctx);
+            walk_param_against_arg_type(inner_p, inner_a, None, ctx);
         }
         (Type::Set(inner_p), Type::Set(inner_a)) => {
-            walk_param_against_arg_type(inner_p, inner_a, ctx);
+            walk_param_against_arg_type(inner_p, inner_a, None, ctx);
         }
         (Type::Map(key_p, val_p), Type::Map(key_a, val_a)) => {
-            walk_param_against_arg_type(key_p, key_a, ctx);
-            walk_param_against_arg_type(val_p, val_a, ctx);
+            walk_param_against_arg_type(key_p, key_a, None, ctx);
+            walk_param_against_arg_type(val_p, val_a, None, ctx);
         }
-        // Leaf: param type is a trait object.
-        // No FunctionCall promotion needed here — we work with the resolved result_type.
-        (Type::TraitObject(required_trait), arg_ty) => match arg_ty {
-            // StructureRef / TraitObject args: walk trait bounds via the shared helper.
-            Type::StructureRef(_) | Type::TraitObject(_) => {
-                emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
-            }
-            // Geometry conformance (Bounded/Connected/Convex) is decided from the
-            // compiled op-array, which is only reachable through the literal walker
-            // (`check_leaf_trait_conformance`). A type-level `Type::Geometry` leaf
-            // (e.g. an `Option<Geometry>` ValueRef) carries no op-array here, so we
-            // cannot verify it — skip rather than risk a false positive. `Type::Error`
-            // is anti-cascade (a nested poison sentinel reaching this leaf).
-            // `Type::TypeParam` is an unresolved generic type variable (e.g. `T` in a
-            // generic structure/function that forwards a type-param-typed value to a
-            // trait param). It is "unknown/unresolved", NOT "definitely
-            // non-conforming" — its real conformance is decided once `T` is bound to a
-            // concrete type at instantiation — so it is unverifiable at this leaf and
-            // skipped. Emitting here would be a false positive (esc-4081 amend,
-            // reviewer_comprehensive robustness_false_positive).
-            Type::Geometry | Type::Error | Type::TypeParam(_) => {}
-            // Any other leaf type (scalar, enum, point, vector, …) can never carry
-            // trait bounds, so it cannot conform to a trait param. Emit the same
-            // diagnostic the literal walker emits for non-struct/non-trait leaves.
-            // Without this arm, a wrapper-nested trait param reached with a
-            // non-literal arg — e.g. `param j : Option<DrivingJoint>` given an
-            // `Option<Real>` ValueRef — would silently lose the previously-existing
-            // "no matching overload" hard error (task-4081 soundness regression,
-            // esc-4081-174). The bare (unwrapped) trait-param case is already
-            // covered by the literal walker's own fallback arm.
-            _ => {
-                ctx.diagnostics.push(
-                    diag_at(
-                        ctx.severity,
-                        format!(
-                            "type '{}' does not conform to trait '{}' required by param '{}'",
-                            arg_ty, required_trait, ctx.arg_name
-                        ),
-                    )
-                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                    .with_label(DiagnosticLabel::new(
-                        ctx.span,
-                        format!("expected a type conforming to trait '{}'", required_trait),
-                    )),
-                );
-            }
-        },
-        // Leaf: param type is a StructureRef (nominal structure type, task-4584).
-        // Skip/gate logic is in `reject_if_incompatible` (Error anti-cascade,
-        // TypeParam unresolved, Geometry unverifiable, TraitObject may resolve).
-        (Type::StructureRef(_), arg_ty) => {
-            reject_if_incompatible(param_type, arg_ty, ctx, emit_structure_ref_mismatch);
-        }
-        // Leaf: param type is a Vector (task-4622). SHAPE-BASED with an arity check
-        // and, since task 5766, a QUANTITY-SLOT check ([`emit_if_quantity_conflict`];
-        // normative statement in `crates/reify-core/src/ty.rs`).
-        // For `Type::Vector` args, additionally
-        // require matching arity (n): `vec2` is NOT a valid substitute for a `vec3` param.
-        // `Type::Tensor { rank: 1, .. }` args are accepted regardless of element count
-        // (Tensor arity is not yet pinned in param signatures, so accepted conservatively).
-        // Reject bare scalars, strings, bools, and any other non-vector kind.
-        //
-        // Unverifiable arg kinds are skipped through the shared
-        // [`arg_type_is_unverifiable`] gate (Error anti-cascade, TypeParam
-        // unresolved-generic, Geometry, TraitObject) — the SAME function the other
-        // three shape arms and `reject_if_incompatible` call, so the set cannot
-        // drift between them. For all other concrete arg types, reject unless the
-        // arg is vector-shaped with matching arity.
-        //
-        // NOT type_compatible: implicitly_converts_to has no Vector<->Vector
-        // quantity-coercion arm, so type_compatible(Vector3<Length>, Vector3<Real>)
-        // is FALSE — a naive type_compatible gate would falsely reject `vec3(0,0,1)`
-        // (dimensionless) for a Length-quantity param (see task-4622 design decision D1).
-        // Task 5766's quantity check does NOT reintroduce that hazard:
-        // [`arg_quantity_slot_dimension`] returns `None` for exactly the dimensionless
-        // ARG such a gate would have false-rejected, so the rule cannot fire on it.
-        // Task 6159's param-side tightening does not reach this case either — it
-        // fires only when the PARAM slot is the dimensionless one.
-        (Type::Vector { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
-            // Accept vector-shaped args; for Type::Vector args, also require matching
-            // arity (n). A Tensor{rank:1} is accepted regardless of its element count.
-            let is_conforming = match arg_ty {
-                Type::Vector { n: arg_n, .. } => match param_type {
-                    Type::Vector { n: param_n, .. } => param_n == arg_n,
-                    _ => true, // unreachable: outer arm guards param_type as Type::Vector
-                },
-                Type::Tensor { rank: 1, .. } => true,
-                _ => false,
-            };
-            if !is_conforming {
-                emit_vector_mismatch(param_type, arg_ty, ctx);
-            } else {
-                // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
-                // `crates/reify-core/src/ty.rs`; applied after the family/arity check.
-                emit_if_quantity_conflict(param_type, arg_ty, ctx);
-            }
-        }
-        // Leaf: param type is a Point (task 5465, family 1). SHAPE-BASED with an
-        // arity check, modelled directly on the `Type::Vector` arm above and
-        // sharing its anti-cascade/unverifiable skip guard via the same
-        // [`arg_type_is_unverifiable`] function.
-        //
-        // Accepts:
-        //   • `Type::Point { n: arg_n, .. }` when `arg_n` matches the param's
-        //     `n` AND, since task 5766, the two QUANTITY slots do not conflict
-        //     ([`emit_if_quantity_conflict`]; normative statement in the
-        //     "Point / Vector quantity-slot convention" section of
-        //     `crates/reify-core/src/ty.rs`, deliberately not restated here).
-        //   • Scalar-like numeric args, as the expression compiler's
-        //     numeric-fallback placeholder. NOTE this does NOT cover
-        //     `point3(…)` / `point2(…)`, which carry a real `Type::Point` and
-        //     take the branch ABOVE (ruled in the ty.rs section named just
-        //     above). What arrives here is everything [`is_numeric_placeholder_leaf`]
-        //     matches: `Type::Int`, ANY `Type::Scalar { .. }` (dimensioned or
-        //     not — the match is dimension-blind, so a scalar-returning call
-        //     such as `abs(-5kg)` lands here too), and `Type::ScalarParam(_)`.
-        //
-        // The placeholder predicate is deliberately NARROW — see
-        // [`is_numeric_placeholder_leaf`] (`Int | Scalar | ScalarParam`).
-        // `type_compat.rs::is_scalar_like_leaf` is NOT reused: it also admits
-        // `Bool`, `String`, `Enum`, `StructureRef`, `TraitObject` and
-        // `Geometry`, which would make `Anchor(origin: "origin")` silent.
-        //
-        // WHY THE TOLERANCE LIVES INSIDE THIS ARM rather than as an arg-side
-        // `CompiledExpr` skip in the shared fallback. A broad "skip any
-        // FunctionCall arg whose result_type is Scalar/Int" would punch a hole
-        // through the ALREADY-allowlisted families — `Widget(label:
-        // some_scalar_fn())` at a `String` param would go silent. Keyed on
-        // `Type::Point`, this arm structurally cannot be reached by a `String` /
-        // `Bool` / `Int` / `Real` param, so that hazard is dissolved by
-        // construction. It also covers the `let p = point3(…); Anchor(origin: p)`
-        // shape, which an arg-side skip would MISS: only the type-level walker
-        // sees the resulting `ValueRef`. That shape reaches this SAME arm by a
-        // second route — a persisted `Type::Point` on the value cell rather than
-        // a `FunctionCall`'s inferred `result_type` — and the rule below fires
-        // through it exactly as it does for a direct call. Pinned by
-        // `point3_cross_dimension_via_let_at_dimensioned_point_param_errors_arg_type_mismatch`
-        // (`struct_ctor_field_conformance_tests.rs`); this claim is not carried
-        // by prose alone.
-        //
-        // THE BOUNDED, DELIBERATE COST, at its true size: ANY scalar-family
-        // arg at a Point slot stays silent. That is a bare numeric literal
-        // (`Anchor(origin: 5)`), but ALSO a scalar carrying the WRONG dimension
-        // (`Anchor(origin: 5kg)` at `Point3<Length>`) and a scalar-returning
-        // call (`Anchor(origin: abs(-5kg))`) — all measured silent, and pinned
-        // respectively by `bare_numeric_literal_at_point_param_stays_clean`,
-        // `dimensioned_scalar_at_point_param_stays_clean` and
-        // `scalar_returning_call_at_point_param_stays_clean`. Note `5kg` at a
-        // `Scalar<Length>` slot IS rejected; the asymmetry is the cost.
-        //
-        // The placeholder EXCLUSION is a standing ruling, identical in kind to
-        // the pre-existing `Type::Geometry` one (geometry constructors compile
-        // to a dimensionless-scalar placeholder, GHR-γ).
-        //
-        // OPEN ITEM, still live: tightening the dimensioned legs — e.g. a
-        // `FunctionCall`-shaped check, or consulting the quantity slot for a
-        // concrete `Type::Scalar { .. }`. Task 5344 removed `point3(…)` from
-        // this branch but did NOT empty it of `FunctionCall`-shaped or
-        // dimensioned inputs, so that narrowing is as available and as
-        // motivated as it was before. It must be argued from the membership set
-        // above, and it cannot be done by narrowing the shared predicate, which
-        // the `Matrix`/`Tensor` rank-0 accept also depends on.
-        //
-        // That bounded cost is UNCHANGED by task 5766's quantity rule — see the
-        // `else` branch below for why.
-        (Type::Point { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
-            let is_conforming = match arg_ty {
-                Type::Point { n: arg_n, .. } => match param_type {
-                    Type::Point { n: param_n, .. } => param_n == arg_n,
-                    _ => true, // unreachable: outer arm guards param_type as Type::Point
-                },
-                // Numeric-fallback placeholder: `Int`, ANY `Scalar { .. }`
-                // (dimension-blind) or `ScalarParam(_)`. NOT `point3(…)` /
-                // `point2(…)`, which match the arm above. Pinned by
-                // `bare_numeric_literal_at_point_param_stays_clean` and
-                // `dimensioned_scalar_at_point_param_stays_clean`.
-                other => is_numeric_placeholder_leaf(other),
-            };
-            if !is_conforming {
-                emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            } else {
-                // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
-                // `crates/reify-core/src/ty.rs`; applied after the arity check.
-                //
-                // A real corpus `point3(…)` arg reaches this check via the
-                // `Type::Point { .. }` branch above, carrying a genuine quantity
-                // slot, and IS compared here — measured in both directions by
-                // `point3_cross_dimension_at_dimensioned_point_param_warns_arg_type_mismatch`
-                // (dimensions disagree ⇒ one `ArgTypeMismatch`) and
-                // `point3_dimensionless_at_dimensioned_point_param_stays_clean`
-                // (arg names no dimension ⇒ silent, the arg-side tolerance), both
-                // in `struct_ctor_field_conformance_tests.rs`. The placeholder
-                // branch above does carry no slot and stay dimension-blind, but
-                // it is not where those args go.
-                emit_if_quantity_conflict(param_type, arg_ty, ctx);
-            }
-        }
-        // Leaf: param type is a Matrix or Tensor (task 5465, family 2).
-        // SHAPE-BASED, sharing the other shape arms' anti-cascade/unverifiable
-        // skip guard through [`arg_type_is_unverifiable`]. Handled as ONE arm
-        // because `type_compat.rs` already treats the two families as
-        // interconvertible.
-        //
-        // Accepts, each for a stated reason:
-        //   • `Type::Matrix` / `Type::Tensor` — the nominal families themselves.
-        //     Rule 3 (`type_compat.rs:163-179`) already makes
-        //     `Tensor<2,N,Q> → Matrix<N,N,Q>` legal. Since task 5766 the FAMILY
-        //     accept is followed by the shared quantity-slot check
-        //     ([`emit_if_quantity_conflict`], below).
-        //   • `Type::Vector` — Rules 1a/1b (`type_compat.rs:83-108`) make
-        //     `Vector<N,Q>` and `Tensor<1,N,Q>` interconvertible.
-        //   • `Type::List` — the idiomatic nested-list-literal spelling of a
-        //     matrix, which compiles to `List<List<Real>>` — but ONLY when it
-        //     bottoms out in a numeric/tensor element type. See
-        //     [`list_bottoms_out_numeric`]: an unconstrained `Type::List(_)`
-        //     accept also swallowed `Body(inertia: ["a", "b"])`, leaving the
-        //     promoted family a hole on the very shape the accept exists for.
-        //   • `Type::Int | Type::Scalar | Type::ScalarParam` — everything
-        //     [`is_numeric_placeholder_leaf`] matches. ANY `Type::Scalar { .. }`
-        //     arrives (dimension- AND rank-blind: a scalar-returning call such
-        //     as `trace(…)` lands here too). Only a matching scalar at a rank-0
-        //     `Tensor` param has a rule behind it (Rules 2a/2b,
-        //     `type_compat.rs`); at a `Matrix` or rank≥1 `Tensor` param it is a
-        //     bounded cost, though spec §4.9 lists "a scalar" as legal. NOT the
-        //     math builtins that build a matrix, tensor or vector (`matrix`,
-        //     `diag`, `identity`, `vec`, `transpose`, `inverse`, `outer`): they
-        //     carry a real `Type::Matrix` / `Type::Tensor` / `Type::Vector` from
-        //     `math_fn_result_type`, take the nominal branch above and are
-        //     quantity-checked, pinned by
-        //     `matrix_builtin_cross_dimension_at_inertia_param_errors_arg_type_mismatch`.
-        //     One pin per leg here:
-        //     `bare_numeric_literal_at_matrix_param_stays_clean`,
-        //     `dimensioned_scalar_at_matrix_param_stays_clean`,
-        //     `matching_scalar_at_rank0_tensor_param_stays_clean` and
-        //     `scalar_param_at_matrix_param_stays_clean`.
-        //
-        // Everything else (`String`, `Bool`, `Selector`/`AnySelector`, `Enum`,
-        // `Applied`, `StructureRef`, `Field`, `Point`, `Frame`, `Transform`,
-        // `Set`, `Map`, a non-numeric `List`, …) is rejected via the shared
-        // `emit_arg_type_mismatch`.
-        //
-        // NO ARITY CHECK, in deliberate contrast to the `Point` and `Vector`
-        // arms. `List<List<Real>>` — the idiomatic spelling — carries no element
-        // counts in its type, so an m/n (or rank) check would either false-reject
-        // every list-literal matrix or be silently unenforceable for exactly the
-        // shape that matters. Constraining the ELEMENT FAMILY (above) is the part
-        // that is decidable from the type alone; arity/PSD validation for
-        // `MassProperties.inertia` is the ctor-time inertia hook's job (see
-        // `examples/dynamics/pendulum_idyn.ri:24-26`), not this walker's.
-        //
-        // That asymmetry is UNCHANGED by task 5766 and ORTHOGONAL to it: ARITY is
-        // undecidable here because the idiomatic `Type::List` spelling drops the
-        // element counts, whereas the QUANTITY slot is compared whenever the arg
-        // happens to arrive in one of the three nominal families instead. The
-        // tolerance rationale and this leg's own residuals are stated normatively
-        // in `crates/reify-core/src/ty.rs`, not restated here.
-        (Type::Matrix { .. } | Type::Tensor { .. }, arg_ty)
-            if !arg_type_is_unverifiable(arg_ty) =>
-        {
-            let is_conforming = match arg_ty {
-                Type::Matrix { .. } | Type::Tensor { .. } | Type::Vector { .. } => true,
-                Type::List(_) => list_bottoms_out_numeric(arg_ty),
-                // Scalar-family leg; inputs, reason and pins: arm comment above.
-                other => is_numeric_placeholder_leaf(other),
-            };
-            if !is_conforming {
-                emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            } else {
-                // QUANTITY SLOT (task 5766, param side ruled task 6159) — rule:
-                // `crates/reify-core/src/ty.rs`; applied after the family check. The
-                // `Type::List` and `is_numeric_placeholder_leaf` branches carry no
-                // slot and are left EXACTLY as they were.
-                emit_if_quantity_conflict(param_type, arg_ty, ctx);
-            }
-        }
-        // Leaf: param type is a Selector or AnySelector (task-4598).
-        // Skip/gate logic is in `reject_if_incompatible`; `type_compat.rs` AnySelector
-        // arms encode: AnySelector accepts any Selector(k), rejects Real/String/Int/…;
-        // Selector(k) accepts only Selector(k), rejects AnySelector/others.
-        (Type::Selector(_) | Type::AnySelector, arg_ty) => {
-            reject_if_incompatible(param_type, arg_ty, ctx, emit_selector_mismatch);
-        }
-        // Leaf: param type is a Field (task 5465, family 3). SHAPE-BASED, and
-        // deliberately WITHOUT a domain/codomain check.
-        //
-        // Both `Field` slots erase to the expression compiler's numeric
-        // fallback: a legitimate arg's `result_type` is `Field<Real, Real>`
-        // however the field was declared (an analytical `field def` is the
-        // common case — `examples/fea_shell_channels.ri` alone produced six such
-        // false warnings before this arm existed: top / mid / bottom /
-        // displacement / stress / frame). Comparing the declared slots against
-        // that placeholder would compare a declaration against a hole, so this
-        // arm is NOT routed through `type_compatible` — the same reason the
-        // `Type::Vector` arm above is shape-based (task-4622 D1).
-        //
-        // The skip guard is the shared [`arg_type_is_unverifiable`] function, so
-        // the anti-cascade / unverifiable set cannot drift between the arms:
-        // Error (anti-cascade), TypeParam (unresolved generic, decided at
-        // instantiation), Geometry (unverifiable at the type level), TraitObject
-        // (may resolve to a field-producing type).
-        (Type::Field { .. }, arg_ty) if !arg_type_is_unverifiable(arg_ty) => {
-            // Accept any field-shaped arg, plus a lambda: `Type::Function` is a
-            // legitimate spelling of a field-shaped arg at a `Field` slot.
-            // Everything else (String, Bool, Int, Scalar, Point, List, …) is
-            // rejected through the shared `emit_arg_type_mismatch`, which already
-            // emits `ArgTypeMismatch` at `ctx.severity` — no new DiagnosticCode.
-            if !matches!(arg_ty, Type::Field { .. } | Type::Function { .. }) {
-                emit_arg_type_mismatch(param_type, arg_ty, ctx);
-            }
-        }
-        // Option-unwrap (implicit-Some, C1 rule 6 — task 5302 α): an `Option<T>`
-        // param supplied a bare non-Option arg of type `T` is a valid `Some(arg)`.
-        // Recurse on the inner param type so the arg is checked against `T`. This
-        // MUST precede the wrapper-shape catch-all below: without it, a valid
-        // implicit-Some arg (e.g. `Option<FaceSelector>` ← `Selector(Face)`) would
-        // fall through to the wrapper-shape arm and spuriously warn — the live hole
-        // this task closes. The `Option`/`Option` pair is handled by the wrapper-
-        // pair arm at the top of this match, so the guard here only ever fires for a
-        // non-Option arg.
+        // Implicit-Some (spec §4.9 `Option<T>` row): a bare arg is checked against `T`.
         (Type::Option(inner_p), arg_ty) if !matches!(arg_ty, Type::Option(_)) => {
-            walk_param_against_arg_type(inner_p, arg_ty, ctx);
+            walk_param_against_arg_type(inner_p, arg_ty, None, ctx);
         }
-        // Wrapper-shape mismatch OR general concrete-leaf mismatch.
+        _ => judge_leaf(param_type, arg_type, literal, ctx),
+    }
+}
+
+/// The walker's single leaf funnel: emits whatever [`conformance_accepts`] decides for
+/// `param_type` against `arg_ty`.
+fn judge_leaf(
+    param_type: &Type,
+    arg_ty: &Type,
+    literal: Option<&CompiledExpr>,
+    ctx: &mut WalkCtx<'_>,
+) {
+    match conformance_accepts(param_type, arg_ty, ctx.registries.enum_defs) {
+        ArgVerdict::Accept | ArgVerdict::Unverifiable => {}
+        ArgVerdict::Reject(family) => emit_rejection(family, param_type, arg_ty, ctx),
+        ArgVerdict::QuantityConflict { param_q, arg_q } => {
+            emit_quantity_conflict(param_type, arg_ty, param_q, arg_q, ctx);
+        }
+        ArgVerdict::RequiresTraitConformance(required_trait) => match literal {
+            Some(compiled_arg) => check_leaf_trait_conformance(required_trait, compiled_arg, ctx),
+            None => check_type_level_trait_conformance(required_trait, arg_ty, ctx),
+        },
+    }
+}
+
+/// Trait conformance of an arg known only by its type (no literal to inspect) at a
+/// trait-object param.
+fn check_type_level_trait_conformance(required_trait: &str, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    match arg_ty {
+        Type::StructureRef(_) | Type::TraitObject(_) => {
+            emit_leaf_conformance_for_arg_type(arg_ty, required_trait, ctx);
+        }
+        // Unverifiable without a literal: geometry conformance needs the op-array, an
+        // error was already reported, and a type parameter is decided at instantiation.
+        Type::Geometry | Type::Error | Type::TypeParam(_) => {}
+        // Any other leaf type cannot carry trait bounds.
         _ => {
-            if matches!(
-                param_type,
-                Type::List(_) | Type::Set(_) | Type::Map(_, _)
-            ) {
-                // Wrapper-shape mismatch: a `List/Set/Map<T>` param supplied an arg
-                // whose shape doesn't match (e.g. a bare leaf, or a differently-
-                // shaped wrapper). (`Option<T>` params never reach here — the
-                // Option-unwrap arm above handles every non-Option arg, and the
-                // wrapper-pair arm handles `Option`/`Option`.) Emitted at ctx.severity.
-                ctx.diagnostics.push(
-                    diag_at(
-                        ctx.severity,
-                        format!(
-                            "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
-                            arg_type, ctx.arg_name, param_type
-                        ),
-                    )
-                    .with_code(DiagnosticCode::TypeNotConformingToTrait)
-                    .with_label(DiagnosticLabel::new(
-                        ctx.span,
-                        format!("expected '{}', got '{}'", param_type, arg_type),
-                    )),
-                );
-            } else if let Some(param_enum) = base_enum_name(param_type, ctx.registries.enum_defs) {
-                // ENUM FAMILY (task 5465, family 4). Handled as its own branch,
-                // BEFORE the allowlist, so the D1/F-Mono erasure gap is absorbed
-                // without a `type_compatible` call that cannot express it.
-                //
-                // Under erasure (PRD §7.1: "resolved args live only in the
-                // per-site substitution map, never on the persisted `Type` or
-                // `Value`"), a constructed variant's `result_type` is the bare
-                // `Type::Enum(name)`, while a declared annotation may be the
-                // applied `Type::Applied { name, args }`. `type_compatible` has
-                // no Applied-vs-Enum rule in EITHER direction, so both spellings
-                // must be reconciled here.
-                //
-                // SYMMETRIC by construction. The first cut short-circuited on
-                // `enum_payload_compatible`, which only matches a bare
-                // `Type::Enum` on the SUPPLIED side (type_compat.rs:334-337).
-                // Combined with `Type::Enum(_)` joining the allowlist, the
-                // reverse pairing — a param declared bare `Enum("Result")`
-                // supplied an arg whose `result_type` is the applied
-                // `Applied { name: "Result", .. }` (a `ValueRef` to a cell
-                // declared `Result<Length, String>`, or a call to a fn whose
-                // return annotation is the applied form, cf.
-                // `examples/m6_result_recovery.ri:30`) — fell through to
-                // `type_compatible` and produced a SPURIOUS `ArgTypeMismatch`
-                // that was silent before the promotion. On the
-                // `check_fn_arg_conformance` path that is a hard Error, so it
-                // would have failed the compile rather than merely added noise
-                // (reviewer_comprehensive, robustness-false-positive).
-                //
-                // Mapping BOTH sides through [`base_enum_name`] — the same
-                // oracle `enum_payload_compatible` itself now uses, so the
-                // payload-field guard in `variant_construct.rs` and this arm
-                // cannot drift — makes the tolerance direction-agnostic. It also
-                // removes the double `enum_defs` scan the first cut performed
-                // per `Applied` leaf (once inside `enum_payload_compatible`,
-                // again inside `general_leaf_param_family_is_validated`);
-                // membership is now resolved exactly once per side, and not at
-                // all for the non-enum params that dominate the corpus
-                // (reviewer_comprehensive, efficiency).
-                //
-                // STILL A TARGETED TOLERANCE, NOT A FAMILY BYPASS: only the
-                // same-base-name pairing is accepted. A genuine cross-enum
-                // mismatch (`Hue` ← `Outline`) or a non-enum arg
-                // (`Result<…>` ← `String`) falls straight through to the shared
-                // `reject_if_incompatible` gate below and is rejected exactly as
-                // an allowlisted family would be. Type-ARG agreement is the
-                // inference/pin passes' job, not this walker's — see
-                // `enum_payload_compatible`'s doc.
-                if base_enum_name(arg_type, ctx.registries.enum_defs) != Some(param_enum) {
-                    reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
-                }
-            } else if general_leaf_param_family_is_validated(param_type) {
-                // GENERAL CONCRETE-LEAF arm (task 5302 α): this replaces the former
-                // silent `_` fall-through for the param families that
-                // [`general_leaf_param_family_is_validated`] vets, routing them
-                // through the shared `reject_if_incompatible` → `type_compatible`
-                // gate and emitting `ArgTypeMismatch` at ctx.severity for a genuine
-                // mismatch. Every other family keeps falling through silently,
-                // exactly as before α — see that predicate's doc comment for the
-                // per-family rationale and the sound-by-construction posture.
-                //
-                // D4-5 (task 5627 γ): one arg-side accept sits in front of that
-                // gate — an unresolved-DIMENSION placeholder at a `Scalar` slot
-                // is deferred to instantiation rather than judged. See
-                // [`scalar_param_arg_defers_at_scalar_slot`] for why it is
-                // narrower than [`is_numeric_placeholder_leaf`] and why it is not
-                // an [`arg_type_is_unverifiable`] entry.
-                if !scalar_param_arg_defers_at_scalar_slot(param_type, arg_type) {
-                    reject_if_incompatible(param_type, arg_type, ctx, emit_arg_type_mismatch);
-                }
-            }
+            ctx.diagnostics.push(
+                diag_at(
+                    ctx.severity,
+                    format!(
+                        "type '{}' does not conform to trait '{}' required by param '{}'",
+                        arg_ty, required_trait, ctx.arg_name
+                    ),
+                )
+                .with_code(DiagnosticCode::TypeNotConformingToTrait)
+                .with_label(DiagnosticLabel::new(
+                    ctx.span,
+                    format!("expected a type conforming to trait '{}'", required_trait),
+                )),
+            );
         }
     }
 }
 
-/// Whether `param_type` belongs to a param family whose args are safe to judge
-/// with raw [`type_compatible`] at the general concrete-leaf arm of
-/// [`walk_param_against_arg_type`].
-///
-/// # Why this is an allowlist and not a skip list
-///
-/// The α cut of the general-leaf arm used a NEGATIVE guard
-/// (`!matches!(param_type, Type::Geometry | Type::TypeParam(_))`), which made it
-/// unsound BY DEFAULT: every present and future [`Type`] variant was opted in to
-/// `type_compatible` unless somebody remembered to carve it out. Five families
-/// were false-rejected across 15+ shipped examples before the corpus gate in
-/// `examples_smoke.rs` caught it.
-///
-/// The inversion here makes the arm sound BY CONSTRUCTION — a newly-added `Type`
-/// variant defaults to silence, not to a false positive. Broadening the list is
-/// a deliberate act that must come with corpus evidence.
-///
-/// # Why these families
-///
-/// `type_compatible` is a *call-site coercion* predicate: it presumes both sides
-/// carry genuinely inferred types. `Bool`, `Int`, `String` and the WHOLE
-/// `Scalar` family — dimensionless (spelled `Real` in source, and by `Display`)
-/// and dimensioned alike — are the families for which that presumption holds
-/// unconditionally at a struct-ctor arg position: the expression compiler infers
-/// them precisely, and `type_compat.rs` has real arms for each.
-///
-/// The dimensioned half is admitted by task 5627 (γ). It was HELD through tasks
-/// 5302/5465 pending a language-semantics ruling on whether a bare dimensionless
-/// arg is legal at a dimensioned slot; the ruling landed (fix the call sites, do
-/// not relax the slot) and its contract table lives in
-/// `docs/prds/v0_6/dimensioned-construction-strictness.md` §0.1 / §4.1 — read it
-/// there rather than here, so the two cannot drift out of lockstep.
-///
-/// Nothing about the dimensioned half is special-cased in this walker: it rides
-/// the same `reject_if_incompatible` → `type_compatible` gate as the other
-/// three. Strict `DimensionVector` equality is what `type_compatible` already
-/// does (`implicitly_converts_to` has no `Scalar`-vs-`Scalar` arm past the
-/// `from == to` short-circuit), and the ONE scalar relaxation it carries
-/// (`type_compat.rs:232-237`, `Int` → `Scalar`) is gated on the PARAM side being
-/// dimensionless — which is simultaneously why `Real ← Int` survives the
-/// promotion and why `Scalar<Q> ← Int` now rejects.
-///
-/// # Handled by dedicated shape-based arms instead (task 5465)
-///
-/// `Point`, `Field`, `Matrix` and `Tensor` are NOT excluded — they are handled
-/// by dedicated SHAPE-BASED arms in [`walk_param_against_arg_type`], exactly as
-/// `Type::Vector` is, so none ever reaches this predicate. The
-/// placeholder/erasure/missing-coercion rationale below is still why those arms
-/// are shape-based rather than `type_compatible`-based:
-///
-/// * an analytical `field def` erases both slots to `Field<Real, Real>` whatever
-///   its declaration says;
-/// * a nested list literal is the idiomatic `Matrix3x3` spelling but compiles to
-///   `List<List<Real>>`, for which no `List`→`Matrix` coercion arm exists.
-///
-/// No erasure route runs through `point3(…)` / `point2(…)`; the `Point` arm stays
-/// shape-based for the reasons the arm itself states. What the arg-side tolerance
-/// rests on now is ruled once, in the *Point / Vector quantity-slot convention*
-/// section of `crates/reify-core/src/ty.rs`.
-///
-/// But "unverifiable SLOTS" is not the same as "unverifiable FAMILY", and the
-/// families themselves are now checked. For the remaining placeholder families
-/// this is the same class the `Type::Geometry` exclusion below and
-/// [`promote_function_call_to_structure_ref`] already exist for.
-///
-/// # Deliberately excluded, with evidence
-///
-/// Contrary to what this comment claimed before task 5465, promoting those four
-/// families needed NO new `type_compat.rs` coercion RULE — the shape-based arms
-/// and the [`base_enum_name`]-keyed enum branch sit entirely inside this walker
-/// (`base_enum_name` itself is a factoring of a predicate `type_compat.rs`
-/// already had, not a new coercion). What remains excluded is excluded for its
-/// own stated reason, and each
-/// entry names an owner (INV-SF-5 `placeholders-owned-and-loud`,
-/// `docs/legibility/design-invariants.md:126-128`, forbids a blanket escape that
-/// names none):
-///
-/// * **`Geometry`** — geometry constructors compile to a dimensionless-scalar
-///   placeholder (GHR-γ) and `type_compatible` has no `Geometry` arm at all;
-///   geometry conformance is decided only through the literal walker's op-array
-///   inference. Owner: #8101.
-/// * **`TypeParam`** — an unresolved generic param, whose real conformance is
-///   decided when the type var is bound at instantiation (mirrors the arg-side
-///   `TypeParam` skip inside [`reject_if_incompatible`]).
-///
-/// Both were the α negative guard's explicit carve-outs; they are subsumed by
-/// simple absence from the allowlist, so the redundant `matches!` is gone rather
-/// than left as dead belt-and-braces.
-///
-/// # Still unexamined
-///
-/// Every other [`Type`] variant defaults to silence and has simply not been
-/// looked at yet. Enumerated against the real `Type` enum
-/// (`crates/reify-core/src/ty.rs:120-345`) so the list cannot quietly rot:
-/// `Complex`, `Orientation`, `Frame`, `Transform`, `AffineMap`, `Range`,
-/// `Plane`, `Axis`, `Direction`, `BoundingBox`, `Feature`, `Function`, `Keyed`,
-/// `Union`, `Projection`, `ScalarParam`. Promoting any of them is the same
-/// deliberate act the four families above went through: a per-family probe pair
-/// (clean fixture + value floor) plus a green corpus gate, with no new
-/// `SKIP_SET` entry. Owner: #7958 (INV-SF-5 `placeholders-owned-and-loud`).
-///
-/// # Enum families (task 5465, family 4) — handled by the caller, not here
-///
-/// `Type::Enum(_)` and enum-named `Type::Applied` are promoted, but they never
-/// reach this predicate: the general concrete-leaf arm dispatches them into its
-/// own [`base_enum_name`]-keyed branch first, which absorbs the D1/F-Mono
-/// erasure gap SYMMETRICALLY (either side may be the bare or the applied
-/// spelling) and then falls into the same shared `reject_if_incompatible` gate
-/// for a residual genuine mismatch (`Hue` ← `Outline`, `Result<…>` ← `String`).
-///
-/// The first cut of family 4 instead listed both variants here and relied on a
-/// preceding `enum_payload_compatible` short-circuit. That was one-directional
-/// (it matches only a bare `Type::Enum` on the SUPPLIED side) and it scanned
-/// `enum_defs` twice per applied leaf. Keeping the whole enum decision in one
-/// branch fixes both — see the arm comment.
-///
-/// Note that `Type::Applied` was never a candidate for a BLANKET entry here
-/// regardless: it also represents generic STRUCTURE refs (e.g. `Coupling<T>`,
-/// see `type_arg_applied_resolution_tests.rs`), and `implicitly_converts_to` has
-/// no Applied-vs-StructureRef arm, so an unconditional entry would reintroduce
-/// exactly the class of false positive this allowlist exists to prevent. An
-/// applied generic structure still falls through this predicate silently.
-fn general_leaf_param_family_is_validated(param_type: &Type) -> bool {
-    matches!(
-        param_type,
-        Type::Bool | Type::Int | Type::String | Type::Scalar { .. }
-    )
+/// Emits the mismatch diagnostic of the param `family` an [`ArgVerdict::Reject`] names.
+fn emit_rejection(family: ParamFamily, param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>) {
+    match family {
+        ParamFamily::StructureRef => emit_structure_ref_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Vector => emit_vector_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Selector => emit_selector_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Wrapper => emit_wrapper_shape_mismatch(param_type, arg_ty, ctx),
+        ParamFamily::Point
+        | ParamFamily::MatrixTensor
+        | ParamFamily::Field
+        | ParamFamily::Enum
+        | ParamFamily::ScalarFamily => emit_arg_type_mismatch(param_type, arg_ty, ctx),
+    }
+}
+
+/// Emit [`DiagnosticCode::TypeNotConformingToTrait`] when a `List`/`Set`/`Map` param is
+/// supplied an arg of another shape (a bare leaf, or a differently-shaped wrapper).
+fn emit_wrapper_shape_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
+    ctx.diagnostics.push(
+        diag_at(
+            ctx.severity,
+            format!(
+                "type '{}' does not match wrapper shape required by param '{}' (expected '{}')",
+                arg_type, ctx.arg_name, param_type
+            ),
+        )
+        .with_code(DiagnosticCode::TypeNotConformingToTrait)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("expected '{}', got '{}'", param_type, arg_type),
+        )),
+    );
+}
+
+/// Emit [`DiagnosticCode::ArgTypeMismatch`] for an [`ArgVerdict::QuantityConflict`]. The
+/// message names "the compared shape": under wrapper recursion that is the inner type.
+fn emit_quantity_conflict(
+    param_type: &Type,
+    arg_ty: &Type,
+    param_quantity: &Type,
+    arg_quantity: &Type,
+    ctx: &mut WalkCtx<'_>,
+) {
+    ctx.diagnostics.push(
+        diag_at(
+            ctx.severity,
+            format!(
+                "argument '{}' has quantity '{}' but param '{}' requires quantity '{}' \
+                 (the compared shape '{}' is otherwise accepted at '{}'; only the quantity \
+                 slot disagrees)",
+                ctx.arg_name, arg_quantity, ctx.arg_name, param_quantity, arg_ty, param_type,
+            ),
+        )
+        .with_code(DiagnosticCode::ArgTypeMismatch)
+        .with_label(DiagnosticLabel::new(
+            ctx.span,
+            format!("quantity mismatch: expected '{param_quantity}', got '{arg_quantity}'"),
+        )),
+    );
 }
 
 /// Leaf conformance check: verify that `compiled_arg` conforms to `required_trait`.
@@ -4922,7 +4062,7 @@ mod tests {
     ///
     /// Pinned separately from (a-i) because a rule that compared only one side
     /// against `None` would pass (a-i) and fail here. Together they pin that
-    /// [`emit_if_quantity_conflict`] requires BOTH sides to name a dimension —
+    /// [`crate::type_acceptance::quantity_verdict`] requires BOTH sides to name a dimension —
     /// which is also how the `is_numeric_placeholder_leaf` unknown-ness fence
     /// (D4-5) survives at these arms.
     #[test]
@@ -4981,7 +4121,7 @@ mod tests {
              erasure, so `Dimensionless` there asserts unit-lessness. The ARG-side tolerance \
              leg is deliberately untouched (`vector_param_accepts_dimensionless_vector_arg`).",
         );
-        // The ONE whole-message pin for `emit_if_quantity_conflict`'s rendering
+        // The ONE whole-message pin for `emit_quantity_conflict`'s rendering
         // — see `assert_quantity_slot_conflict`'s doc for why it is here and only
         // here. This probe is chosen because its two quantities differ
         // ASYMMETRICALLY (`Scalar[m]` arg, `Real` param), so a transposition
@@ -5007,7 +4147,7 @@ mod tests {
 
     /// THE PARAM-SIDE RULING (task 6159) at the `Matrix`/`Tensor` arm.
     ///
-    /// [`emit_if_quantity_conflict`] is shared by all three shape arms, but the
+    /// [`crate::type_acceptance::quantity_verdict`] is shared by all three shape arms, but the
     /// ruling's new cell was pinned only at the `Vector` one, and
     /// `crates/reify-core/src/ty.rs` asserts a consequence specific to THIS arm:
     /// a dimensioned `matrix(…)` at a `Matrix<M, N, Dimensionless>` param is
@@ -5046,7 +4186,7 @@ mod tests {
 
     /// THE PARAM-SIDE RULING (task 6159) at the `Point` arm — sibling of
     /// `dimensionless_quantity_matrix_param_rejects_dimensioned_tensor_arg`,
-    /// closing the third of the three arms [`emit_if_quantity_conflict`] serves.
+    /// closing the third of the three arms [`crate::type_acceptance::quantity_verdict`] serves.
     ///
     /// Constructed as a direct `Type` so the probe reaches the walker without
     /// depending on `math_fn_result_type`'s agreeing-components quantity
@@ -5111,13 +4251,13 @@ mod tests {
     /// FENCE (b-param), task 6159: an `Int` PARAM quantity slot stays CLEAN.
     ///
     /// The PARAM-side half of fence (b) directly above, which puts `Type::Int` in
-    /// the ARG slot and so constrains [`arg_quantity_slot_dimension`] only.
+    /// the ARG slot and so constrains [`crate::type_acceptance::arg_quantity_slot_dimension`] only.
     /// `crates/reify-core/src/ty.rs` rules that on the param side "`Type::Int`
     /// and `Type::ScalarParam` still name nothing", and only the `ScalarParam`
     /// half of that was pinned param-side (fence (a-i),
     /// `dimensioned_quantity_param_accepts_generic_vector_arg`). Without this
     /// probe, adding `Type::Int => Some(DimensionVector::DIMENSIONLESS)` to
-    /// [`param_quantity_slot_dimension`] leaves every other test in both files
+    /// [`crate::type_acceptance::param_quantity_slot_dimension`] leaves every other test in both files
     /// green.
     ///
     /// This is a fence on the PREDICATE's shape, not on a reachable source cell:
@@ -5228,7 +4368,7 @@ mod tests {
     ///
     /// `matrix_param_accepts_matrix_arg_without_arity_check` below builds a
     /// DIMENSIONLESS `Matrix` arg, so it exercises only
-    /// [`arg_quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
+    /// [`crate::type_acceptance::arg_quantity_slot_dimension`]'s `None` return; the family's one `.ri`-level
     /// tightening fixture routes through a `Type::Tensor` arg. This is the
     /// `Type::Matrix`-arg reject leg.
     ///

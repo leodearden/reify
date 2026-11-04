@@ -286,7 +286,7 @@ const SECTION_6_ROWS: &[BoundaryRow] = &[
                    `linear_pattern_2d`, not `linear_2d`)",
         discharged_by: &[Discharge {
             file: BOUNDARY_GATE,
-            test_fn: "pattern_spacing_undef_names_the_builtin_the_author_typed",
+            test_fn: "pattern_undef_length_arg_names_the_builtin_the_author_typed",
         }],
     },
     BoundaryRow {

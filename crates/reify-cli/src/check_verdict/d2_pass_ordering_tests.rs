@@ -314,12 +314,12 @@ fn dedup_collapses_only_uncoded_entries() {
 /// TODAY (coded) and the shape it emitted BEFORE (uncoded). Two `@optimized`
 /// call sites in one module produce two byte-identical copies, so the
 /// uncoded pair collapsed to one printed line and the coded pair does not.
-/// Confirmed end to end against a binary built from this branch:
-/// `reify check examples/anisotropic_bar.ri` prints the
-/// `solver::elastic_static` warning twice (two call sites), and
-/// `examples/fdm_bracket.ri` prints three lines over two distinct targets.
-/// That is what `dedup_diagnostics`' own rationale asks for — a coded
-/// entry's multiplicity is a per-callout fact, not re-run noise.
+/// The end-to-end measurement of that change, taken while `check`'s compute
+/// registry was still empty, is recorded once, in the
+/// `DiagnosticCode::NoRegisteredComputeTrampoline` rustdoc in
+/// `crates/reify-core/src/diagnostics.rs`. Keeping the multiplicity is what
+/// `dedup_diagnostics`' own rationale asks for — a coded entry's
+/// multiplicity is a per-callout fact, not re-run noise.
 #[test]
 fn dedup_exempts_the_coded_missing_trampoline_pair() {
     const MESSAGE: &str = "@optimized target \"solver::elastic_static\": \
@@ -653,13 +653,14 @@ fn empty_build_diags_short_circuits_regardless_of_verdicts() {
 /// The gap is exit-relevant: `check_gating_error` reads this merged set,
 /// so a surviving stale `ConstraintViolated` Error would move `check`'s
 /// EXIT CODE against the `Satisfied` verdict on its own stdout.
-/// `CHECK_ERROR_EXIT_ALLOWLIST` entry #4 (`Code(ConstraintViolated)`,
-/// disposition `FixPath`) holds that off — this test and that entry are
+/// The `CHECK_ERROR_EXIT_ALLOWLIST` entry `Code(ConstraintViolated)`
+/// (disposition `FixPath`) holds that off — this test and that entry are
 /// two views of one gap, and `FixPath` says the repair belongs in
 /// `drop_falsified_indeterminate_diagnostics`, not in the gate.
 ///
 /// When #6048 lands, THIS TEST MUST FAIL — that is the point; flip it to
-/// assert the drop, and retire allowlist entry #4 in the same change.
+/// assert the drop, and retire the `Code(ConstraintViolated)` allowlist
+/// entry in the same change.
 #[test]
 fn mirror_case_build_side_violation_currently_survives() {
     let needle = "BoltFlange#constraint[1]";

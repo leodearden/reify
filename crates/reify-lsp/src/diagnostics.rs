@@ -194,8 +194,8 @@ pub struct DiagnosticsResult {
 /// `DiagnosticCode::NoRegisteredComputeTrampoline`.  The engine conditions that
 /// severity on its compute registry being entirely EMPTY, and the LSP builds
 /// `Engine::new(checker, None)` and never registers a trampoline, so it is
-/// always on the Warning arm.  (`reify eval` / `reify build` register the
-/// production bundle and so keep receiving `Severity::Error`.)
+/// always on the Warning arm.  (`reify check` / `reify eval` / `reify build`
+/// register the production bundle and so receive `Severity::Error`.)
 ///
 /// That is ONLY about this fallback diagnostic.  It leaves the LSP's SEPARATE
 /// `fea-not-evaluated` INFORMATION constraint hint (below) entirely untouched,
@@ -205,10 +205,8 @@ pub struct DiagnosticsResult {
 ///
 /// This trampoline-free posture is an executable contract locked by one
 /// test (below, in `mod tests`):
-/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` — the
-/// LSP-side analog of `cmd_check`'s `check_fea_violated_constraint_is_not_gated`
-/// lock (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`), and also the
-/// lock that task #6798's compile-time checker injection (see the section
+/// `fea_bearing_constraint_produces_no_false_violation_or_false_pass` — also
+/// the lock that task #6798's compile-time checker injection (see the section
 /// above) does not disturb this posture, by observing that every
 /// missing-trampoline diagnostic the engine reports is a Warning, which the
 /// engine picks only when its compute registry is empty — changing this
@@ -2988,11 +2986,8 @@ structure S {
     /// executable contract. Over the FEA-bearing [`FEA_BEARING_SRC`] fixture,
     /// locks that the resulting `Indeterminate` FEA constraint produces
     /// neither a false violation nor a false pass (see
-    /// [`assert_no_false_violation_or_pass`]) — the LSP-side analog of the
-    /// CLI's `check_fea_violated_constraint_is_not_gated`
-    /// (`crates/reify-cli/tests/harness_cli/cli_build_fea.rs`). GREEN before
-    /// and after: this locks pre-existing gate behaviour, not new runtime
-    /// behaviour.
+    /// [`assert_no_false_violation_or_pass`]). GREEN before and after: this
+    /// locks pre-existing gate behaviour, not new runtime behaviour.
     ///
     /// The posture itself is read off the pipeline's own result. The engine
     /// reports a missing compute trampoline

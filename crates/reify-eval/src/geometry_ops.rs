@@ -1205,22 +1205,12 @@ fn accept_variadic_length_args(
 /// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
 /// wordings are lifted VERBATIM from [`required_length_arg`].
 ///
-/// SCOPE OF "byte-identical", stated precisely because the phrase recurs
-/// throughout this module: it is a claim about the pushed `Diagnostic` and about
-/// the `Err` STRING THIS FUNCTION RETURNS, not about whatever a caller then
-/// wraps that string in. The value-form pattern callers keep their PRE-δ
-/// per-builtin prefix — [`pattern_mirror`] wraps the decoder result in
-/// `format!("mirror: {}", e)` and [`pattern_circular`] in
-/// `format!("circular_pattern: {}", e)` — so the op-compile `Err` reaching
-/// `engine_build`'s "failed to compile geometry operation" wrapper reads
-/// `mirror: missing or non-Length argument 'ox' for mirror`, where the SCALAR
-/// branch's un-wrapped [`required_length_origin3`] reads
-/// `missing or non-Length argument 'ox' for mirror`. That stutter is cosmetic
-/// and PRE-EXISTS δ (it is on the merge-base at both sites), and the string is
-/// not the user-facing contract — the `Diagnostic` is, and that one IS identical
-/// across both forms. δ deliberately does not drop the prefix: doing so would
-/// change a pre-δ caller-facing message, which is precisely what the rest of
-/// this leaf's discipline forbids.
+/// SCOPE OF "byte-identical": it holds for a given label, and the label is the
+/// caller's to choose. The value-form callers pass the decoder `Err` through
+/// unwrapped, and each decoder prefixes only its own non-units messages with the
+/// label it is given. [`pattern_mirror`] and [`pattern_circular`] both pass
+/// `kind`, whose `Display` is the builtin the author typed, so each value form
+/// reads exactly like its scalar branch.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -1229,9 +1219,9 @@ fn accept_variadic_length_args(
 ///
 /// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
 /// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
-/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
-/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
-/// message survives byte-identical.
+/// nothing of its own — so the wording of a shape message, label prefix
+/// included, is entirely the caller's. This helper replaces
+/// [`point3_components`]' ACCEPTANCE policy, not its shape check.
 ///
 /// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
 /// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
@@ -1277,8 +1267,8 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
-    // whatever the caller's `shape_err` pushes is the whole of it.
+    // arity. A mismatch returns the caller's `shape_err` text and mints nothing
+    // here: whatever that closure pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
         _ => return Err(shape_err(diagnostics)),
@@ -2027,6 +2017,18 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
     Ok([v[0] / mag, v[1] / mag, v[2] / mag])
 }
 
+/// A decoder's OWN failure (wrong variant, wrong shape, degenerate vector), led
+/// by the label of the builtin it decodes for: `mirror: expected a Plane value,
+/// got …`.
+///
+/// The one home of that prefix. A units rejection never passes through here:
+/// [`accept_length_point3`] renders it already naming the label
+/// (`missing or non-Length argument 'ox' for mirror`), so prefixing it as well
+/// would print the builtin twice.
+fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display) -> String {
+    format!("{kind_label}: {failure}")
+}
+
 /// Decode a [`Value::Plane`] into `(origin, unit_normal)` — an SI metre triple
 /// and a dimensionless unit vector, returned as `([f64; 3], [f64; 3])`.
 ///
@@ -2077,8 +2079,8 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
 ///     `decode_plane_non_finite_length_origin_warns_without_a_code`);
 ///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
 ///     or a normal with non-numeric / non-finite components — these keep their
-///     pre-δ wording and push no diagnostic, because a wrong shape is not a
-///     units rejection;
+///     pre-δ wording behind the `kind_label` prefix and push no diagnostic,
+///     because a wrong shape is not a units rejection;
 ///   - zero-magnitude normal.
 ///
 /// # Visibility
@@ -2093,27 +2095,42 @@ pub(crate) fn decode_plane(
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
-            return Err(format!("expected a Plane value, got {}", other));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected a Plane value, got {other}"),
+            ));
         }
     };
-    // The plane ORIGIN is a point in space — LENGTH-gated. The shape message is
-    // handed through unchanged as `shape_err`, so a wrong-arity origin still
-    // reads exactly as it did pre-δ.
+    // The plane ORIGIN is a point in space — LENGTH-gated. A wrong-arity origin
+    // is no units rejection, so `accept_length_point3` returns this `shape_err`
+    // unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| {
+            labelled(
+                kind_label,
+                "Plane origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
     // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
-        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+        labelled(
+            kind_label,
+            "Plane normal is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_normal =
-        unit_vector3(normal_raw).map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    let unit_normal = unit_vector3(normal_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Plane has a degenerate normal: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -2153,8 +2170,9 @@ pub(crate) fn decode_plane(
 ///     `decode_axis_non_finite_length_origin_warns_without_a_code`;
 ///   - origin or direction of the wrong SHAPE (not a 3-component
 ///     `Point`/`Vector`), or a direction with non-numeric / non-finite
-///     components — these keep their pre-δ wording and push no diagnostic. A
-///     kernel-minted `Value::Direction` still lands here, unchanged;
+///     components — these keep their pre-δ wording behind the `kind_label`
+///     prefix and push no diagnostic. A kernel-minted `Value::Direction` still
+///     lands here, unchanged;
 ///   - zero-magnitude direction.
 ///
 /// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
@@ -2173,26 +2191,41 @@ pub(crate) fn decode_axis(
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
-            return Err(format!("expected an Axis value, got {}", other));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected an Axis value, got {other}"),
+            ));
         }
     };
-    // The axis ORIGIN is a point in space — LENGTH-gated, with the pre-δ shape
-    // message handed through unchanged as `shape_err`.
+    // The axis ORIGIN is a point in space — LENGTH-gated; a wrong-shape origin
+    // comes back as this `shape_err`, unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| {
+            labelled(
+                kind_label,
+                "Axis origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
     // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
-        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+        labelled(
+            kind_label,
+            "Axis direction is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_dir =
-        unit_vector3(dir_raw).map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    let unit_dir = unit_vector3(dir_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Axis has a degenerate direction: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_dir))
 }
 
@@ -4124,16 +4157,6 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The SURFACE name the author typed, bound ONCE (SPOT) and used at every
-    // site in this function that must not render `kind`. `PatternKind::Circular`
-    // Displays as "circular", so `kind` in these messages names a builtin that
-    // does not exist; `PatternKind::Linear` was already given its surface name
-    // (task 5755), and doing the same for Circular/Arbitrary is task #6874.
-    // That repair lives in reify-compiler and moves every OTHER diagnostic
-    // rendering this kind too — a migration of its own, not a clause of ε —
-    // which is why it is a follow-up and this is a local binding. When #6874
-    // lands, this binding and its uses collapse back to `kind`.
-    let surface_name = "circular_pattern";
     if args.iter().any(|(n, _)| n == "axis") {
         let axis_val = eval_named_arg(
             "axis",
@@ -4145,8 +4168,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
-            .map_err(|e| format!("{}: {}", surface_name, e))?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -4166,15 +4188,9 @@ fn pattern_circular(
         // per-builtin; the case for settling it across the whole surface
         // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
         // Do not re-derive #1763 from this one call site and restore it.
-        //
-        // `surface_name`, not `kind`: passing `kind` would render "circular:
-        // angle argument expects Angle" at a call the author wrote as
-        // `circular_pattern(...)`. The retired warning hard-coded that name and
-        // the compile layer's slot renders the surface call name too, so `kind`
-        // here would regress the wording AND split it across the two layers.
         let angle = required_angle_value(
             "angle",
-            surface_name,
+            kind,
             args,
             values,
             functions,
@@ -4211,12 +4227,12 @@ fn pattern_circular(
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // The scalar-axis sibling of the value-axis form above: same gate,
-        // same task-#1763 reversal and same `surface_name`, whose rationale is
-        // recorded there in full rather than copied here.
+        // The scalar-axis sibling of the value-axis form above: same gate and
+        // same task-#1763 reversal, whose rationale is recorded there in full
+        // rather than copied here.
         let angle = required_angle_value(
             "angle",
-            surface_name,
+            kind,
             args,
             values,
             functions,
@@ -4253,8 +4269,7 @@ fn pattern_mirror(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
-        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)
-            .map_err(|e| format!("mirror: {}", e))?;
+        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)?;
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
             plane_origin,
@@ -4389,21 +4404,20 @@ fn pattern_arbitrary(
             meta_map,
             diagnostics,
         )
-        .ok_or_else(|| "arbitrary_pattern: 'transform_list' arg is missing".to_string())?;
+        .ok_or_else(|| format!("{kind}: 'transform_list' arg is missing"))?;
         let reify_ir::Value::List(elements) = &value else {
-            diagnostics.push(Diagnostic::warning(
-                "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
-                    .to_string(),
+            diagnostics.push(Diagnostic::warning(format!(
+                "{kind} dropped: 'transform_list' arg is not a List<Transform<3>>"
+            )));
+            return Err(format!(
+                "{kind}: 'transform_list' arg is not a List<Transform<3>>"
             ));
-            return Err(
-                "arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>".into(),
-            );
         };
         if elements.is_empty() {
-            diagnostics.push(Diagnostic::warning(
-                "arbitrary_pattern dropped: 'transform_list' is empty".to_string(),
-            ));
-            return Err("arbitrary_pattern: 'transform_list' is empty".into());
+            diagnostics.push(Diagnostic::warning(format!(
+                "{kind} dropped: 'transform_list' is empty"
+            )));
+            return Err(format!("{kind}: 'transform_list' is empty"));
         }
         let mut transforms = Vec::with_capacity(elements.len());
         for element in elements {
@@ -4415,15 +4429,12 @@ fn pattern_arbitrary(
             // where widening it would turn one bad transform into a storm.
             transforms.push(accept_transform_to_arrays(
                 element,
-                "arbitrary_pattern",
+                kind,
                 &|diagnostics: &mut Vec<Diagnostic>| {
-                    diagnostics.push(Diagnostic::warning(
-                        "arbitrary_pattern dropped: 'transform_list' element is not a valid \
-                         Transform<3>"
-                            .to_string(),
-                    ));
-                    "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
-                        .to_string()
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{kind} dropped: 'transform_list' element is not a valid Transform<3>"
+                    )));
+                    format!("{kind}: 'transform_list' element is not a valid Transform<3>")
                 },
                 diagnostics,
             )?);
@@ -8644,6 +8655,87 @@ fn resolve_index_usize(
     }
 }
 
+/// Kernel-aware `flat_map(list, |x| body)` over relational topology selectors,
+/// e.g. `flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))`: binds each
+/// list element to the lambda param and concatenates the `List`s the body
+/// yields through [`try_eval_topology_selector`].
+///
+/// `None` means "not mine; keep the pure-eval value". It is returned unless the
+/// list arg is a `ValueRef` to a `List` or a call this function resolves to a
+/// `List`, the lambda has one param and a `FunctionCall` body, and every
+/// element's body resolves to a `List`. A `Selector`-valued list arg such as
+/// `faces(b)` is not supported. `Some(Undef)` only propagates a kernel failure
+/// the nested helper already reported. The diagnostics the walk's nested
+/// helpers report are kept only with a `Some`: a declined cell leaves none.
+///
+/// A `ValueRef` list arg reads another selector cell's resolved `List`, so its
+/// result depends on that cell being hydrated first: UnifiedDag's HydrateCell
+/// walk guarantees it; the whole-template post-process sees it only when that
+/// cell is declared first (see `Engine::post_process_topology_selectors`).
+///
+/// It is reached from inside `try_eval_topology_selector` so both hydration
+/// ladders, a nested `flat_map` and the `single(...)` fallback share one entry.
+fn try_eval_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let mut walk_diagnostics = Vec::new();
+    let walked = walk_topology_flat_map(args, named_steps, values, kernel, &mut walk_diagnostics)?;
+    diagnostics.append(&mut walk_diagnostics);
+    Some(walked)
+}
+
+/// The walk behind [`try_eval_topology_flat_map`]. It reports into
+/// `diagnostics` even on the paths that return `None`.
+fn walk_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let [list_arg, lambda_arg] = args else {
+        return None;
+    };
+    let (param_id, body) = match &lambda_arg.kind {
+        reify_ir::CompiledExprKind::Lambda {
+            param_ids, body, ..
+        } if param_ids.len() == 1 => (&param_ids[0], body.as_ref()),
+        _ => return None,
+    };
+    if !matches!(body.kind, reify_ir::CompiledExprKind::FunctionCall { .. }) {
+        return None;
+    }
+    let items = match &list_arg.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id)? {
+            reify_ir::Value::List(items) => items.clone(),
+            _ => return None,
+        },
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(list_arg, named_steps, values, kernel, diagnostics)? {
+                reify_ir::Value::List(items) => items,
+                reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let mut scope = values.clone();
+    let mut out = Vec::new();
+    for item in items {
+        scope.insert(param_id.clone(), item);
+        match try_eval_topology_selector(body, named_steps, &scope, kernel, diagnostics)? {
+            reify_ir::Value::List(sub) => out.extend(sub),
+            reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+            _ => return None,
+        }
+    }
+    Some(reify_ir::Value::List(out))
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
@@ -8656,6 +8748,13 @@ pub(crate) fn try_eval_topology_selector(
         reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
+
+    // (1b) `flat_map` is a generic combinator, checked before the helper-name
+    // match (which would reject it); it claims the cell only when its lambda
+    // body resolves through this function.
+    if function.name == "flat_map" {
+        return try_eval_topology_flat_map(args, named_steps, values, kernel, diagnostics);
+    }
 
     // (2) Must be one of the recognised helper names.
     let helper = match function.name.as_str() {
@@ -12957,3 +13056,6 @@ mod tests;
 
 #[cfg(test)]
 mod dispatch_table_uniqueness;
+
+#[cfg(test)]
+mod flat_map_tests;

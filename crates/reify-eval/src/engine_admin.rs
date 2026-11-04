@@ -867,8 +867,7 @@ impl Engine {
     ///
     /// **No compute trampolines are registered.** Call
     /// [`Self::register_production_compute_fns`] on the returned engine unless you
-    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
-    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    /// are deliberately building a trampoline-free engine.
     ///
     /// This is the standard constructor for production use. For tests that
     /// require an isolated or empty prelude, use `Engine::with_prelude`.
@@ -893,8 +892,7 @@ impl Engine {
     ///
     /// **No compute trampolines are registered.** Call
     /// [`Self::register_production_compute_fns`] on the returned engine unless you
-    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
-    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    /// are deliberately building a trampoline-free engine.
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the **BRep-preferring lex-smallest** entry (see

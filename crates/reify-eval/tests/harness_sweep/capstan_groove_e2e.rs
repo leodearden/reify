@@ -157,11 +157,11 @@
 //! [`super::idler_seat_e2e`] wanted it verbatim against `printer.ri` (#6135).
 //!
 //! This module OWNS the `dev_capstan.ri` fixtures for the whole `harness_sweep`
-//! compile unit: [`DEV_CAPSTAN`], [`dev_capstan_compiled`],
-//! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, shared by every
-//! gate in the unit that reads this file rather than loaded again by each — so
-//! the file is read, parsed, stdlib-compiled, checked and OCCT-tessellated ONCE
-//! per test binary however many gates read it, and the single-compilation
+//! compile unit (the file's path itself is `reify_test_support::design_files`'s):
+//! [`dev_capstan_compiled`], [`dev_capstan_checked`] and [`dev_capstan`] are
+//! `pub(super)`, shared by every gate in the unit that reads this file rather
+//! than loaded again by each — so the file is read, parsed, stdlib-compiled,
+//! checked and OCCT-tessellated ONCE per test binary however many gates read it, and the single-compilation
 //! argument [`dev_capstan_compiled`] makes holds across module boundaries
 //! rather than only inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
 //! (printer.ri is compiled by
@@ -181,6 +181,7 @@ use reify_core::{
 };
 use reify_eval::{CheckResult, TessellateResult};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
+use reify_test_support::design_files::{DEV_CAPSTAN, read_design_file};
 use std::collections::HashSet;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -189,15 +190,6 @@ use std::sync::OnceLock;
 use super::design_fixture::{
     assert_constraints_ok, entity_cell, entity_real, CellSpans, Strictness,
 };
-
-/// The real design file under test, reached from this crate's manifest dir.
-///
-/// `pub(super)` so every gate in the compile unit that reads this file names
-/// the same path rather than spelling a second `concat!` for it.
-pub(super) const DEV_CAPSTAN: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../prj/printer_v01/dev_capstan.ri"
-);
 
 /// The design entity whose cells and constraints this module gates.
 ///
@@ -496,8 +488,7 @@ pub(super) fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule 
 /// stages are Error-diagnostic-free. Use [`dev_capstan_compiled`] rather than
 /// calling this directly — every caller must share one compilation.
 fn compile_dev_capstan() -> reify_compiler::CompiledModule {
-    let source = std::fs::read_to_string(DEV_CAPSTAN)
-        .unwrap_or_else(|e| panic!("failed to read design file {DEV_CAPSTAN}: {e}"));
+    let source = read_design_file(DEV_CAPSTAN);
 
     // ---- Parse ----
     let parsed = reify_syntax::parse(&source, ModulePath::single("dev_capstan"));

@@ -52,37 +52,12 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 /// Returns `(tempfile, path_str)`.  The caller **must** keep the returned
 /// [`tempfile::NamedTempFile`] alive for the duration of the test — dropping it
 /// would delete the file and make the path invalid.
-///
-/// # Cross-file duplication note
-///
-/// The same fixture recipe exists in `imported_field_e2e.rs` (task 3576,
-/// `imported_field_e2e_vdb_cube_sdf`).  Deduplicating across test files would
-/// require moving this helper into `reify-test-support` (outside the scope of
-/// task 2669); this amendment eliminates the within-file duplication between
-/// tests 2 and 4.
 #[cfg(has_openvdb)]
 fn make_cube_sdf_vdb_fixture() -> (tempfile::NamedTempFile, String) {
     use reify_kernel_openvdb::OpenVdbKernel;
+    use reify_kernel_openvdb::test_fixtures::{box_mesh, vertex_and_triangle_arrays};
 
-    let verts: Vec<[f32; 3]> = vec![
-        [-1.0, -1.0, -1.0],
-        [1.0, -1.0, -1.0],
-        [1.0, 1.0, -1.0],
-        [-1.0, 1.0, -1.0],
-        [-1.0, -1.0, 1.0],
-        [1.0, -1.0, 1.0],
-        [1.0, 1.0, 1.0],
-        [-1.0, 1.0, 1.0],
-    ];
-    #[rustfmt::skip]
-    let tris: Vec<[u32; 3]> = vec![
-        [0, 2, 1], [0, 3, 2],
-        [4, 5, 6], [4, 6, 7],
-        [0, 1, 5], [0, 5, 4],
-        [2, 3, 7], [2, 7, 6],
-        [3, 0, 4], [3, 4, 7],
-        [1, 2, 6], [1, 6, 5],
-    ];
+    let (verts, tris) = vertex_and_triangle_arrays(&box_mesh(1.0, 1.0, 1.0));
 
     let mut kernel = OpenVdbKernel::new();
     let handle = kernel

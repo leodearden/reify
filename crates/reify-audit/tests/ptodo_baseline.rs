@@ -36,9 +36,9 @@
 //!
 //! (D) **fixture git-env hygiene** — always-on. Pins that the two fixture
 //!   command builders (C) drives the real binary through strip every
-//!   `reify_audit::git_env::REPO_REDIRECT_VARS` entry, and replays (C) under a
+//!   `reify_git_env::REPO_REDIRECT_VARS` entry, and replays (C) under a
 //!   real ambient hook git environment. Rationale lives in
-//!   `reify_test_support::git_env`; not restated here.
+//!   `reify_git_env`; not restated here.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test ptodo_baseline`   (A + A′ + C + D)
@@ -203,10 +203,7 @@ fn baseline_is_well_formed() {
 //
 // These hermetic unit tests drive crafted content straight through the SAME
 // `validate_baseline_content` validator, so every grammar/taxonomy/sort rule has
-// real coverage that does not depend on what the committed file contains. They
-// were written while the baseline was empty — when `baseline_is_well_formed`
-// alone would have exercised only the `path.exists()` branch — and they remain
-// the permanent home of that coverage now that it is not.
+// real coverage that does not depend on what the committed file contains.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -344,9 +341,8 @@ fn cited_marker(id: u32, body: &str) -> String {
 /// A `git` command targeting the fixture repo at `root`.
 ///
 /// Built through the shared `git -C <root>` constructor, as this crate's
-/// sibling git-fixture test binaries are. The rule lives in
-/// [`reify_audit::git_env`] and the failure mode it prevents in
-/// [`reify_test_support::git_env`]; neither is restated here.
+/// sibling git-fixture test binaries are. The rule and the failure mode it
+/// prevents live in [`reify_git_env`]; neither is restated here.
 fn fixture_git_cmd(root: &Path) -> Command {
     common::git_env::git_cmd(root)
 }
@@ -387,16 +383,16 @@ fn staged_fixture(files: &[(&str, String)]) -> tempfile::TempDir {
 /// removed (the β liveness lane then degrades fail-soft, which is what a
 /// hermetic fixture wants).
 ///
-/// Sanitized DIRECTLY rather than built through [`reify_audit::git_env`]'s
+/// Sanitized DIRECTLY rather than built through [`reify_git_env`]'s
 /// `git -C <root>` constructor: the program here is a reify binary that runs
 /// git internally, not git itself, which is the other-shape case
-/// [`reify_test_support::git_env::sanitize`] sanctions.
+/// [`reify_git_env::sanitize`] sanctions.
 fn generator_cmd(root: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ptodo-baseline-gen"));
     cmd.arg("--project-root")
         .arg(root)
         .env_remove("REIFY_PTODO_TASKS_DB");
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     cmd
 }
 
@@ -734,7 +730,7 @@ fn generator_emits_scan_evidence_tasks_db_absent_when_override_is_unresolvable()
 // (C) above drives the real generator over hermetic tempdir git fixtures, and
 // these tests run ALWAYS-ON under `hooks/pre-commit` -> `hooks/project-checks`
 // -> `scripts/verify.sh` — i.e. inside a git process tree, which is exactly the
-// ambient condition `reify_test_support::git_env` documents. The failure mode
+// ambient condition `reify_git_env` documents. The failure mode
 // and its measured signatures are argued there and are deliberately not
 // restated here.
 // ---------------------------------------------------------------------------
@@ -742,11 +738,11 @@ fn generator_emits_scan_evidence_tasks_db_absent_when_override_is_unresolvable()
 /// (D1) Both fixture command builders must remove EVERY repo-redirect git env
 /// var, iterating the canonical set rather than a local copy.
 ///
-/// Iterating `reify_audit::git_env::REPO_REDIRECT_VARS` is the point: the set
+/// Iterating `reify_git_env::REPO_REDIRECT_VARS` is the point: the set
 /// may GROW without editing this test (its deletion guard already lives at the
 /// definition site, `repo_redirect_vars_covers_the_removal_floor`), and a local
 /// list of names here would be precisely the "re-derive `REPO_REDIRECT_VARS` by
-/// hand" step that `reify_test_support::git_env::sanitize`'s doc names as how
+/// hand" step that `reify_git_env::sanitize`'s doc names as how
 /// this bug class reaches a new helper.
 ///
 /// Removals are read through `removed_vars` — `std` encodes `env_remove` as a
@@ -763,8 +759,8 @@ fn fixture_commands_remove_every_repo_redirect_var() {
         ("fixture_git_cmd", fixture_git_cmd(root)),
         ("generator_cmd", generator_cmd(root)),
     ] {
-        let removed = reify_test_support::git_env::removed_vars(&cmd);
-        for var in reify_audit::git_env::REPO_REDIRECT_VARS {
+        let removed = reify_git_env::removed_vars(&cmd);
+        for var in reify_git_env::REPO_REDIRECT_VARS {
             assert!(
                 removed.iter().any(|r| r == var),
                 "{label}() must REMOVE `{var}` (env_remove -> `(key, None)`), not \
@@ -776,7 +772,7 @@ fn fixture_commands_remove_every_repo_redirect_var() {
     // Separately: the hermeticity property (C1)/(C2) rest on. An ambient tasks
     // DB would wake the β liveness lane and change the fingerprint set, so a
     // rewrite of `generator_cmd` may not silently drop this removal.
-    let removed = reify_test_support::git_env::removed_vars(&generator_cmd(root));
+    let removed = reify_git_env::removed_vars(&generator_cmd(root));
     assert!(
         removed.iter().any(|r| r == "REIFY_PTODO_TASKS_DB"),
         "generator_cmd() must REMOVE `REIFY_PTODO_TASKS_DB` so the fixture stays \

@@ -99,6 +99,7 @@
 use reify_core::{ConstraintNodeId, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::{CheckResult, ConstraintCheckEntry};
 use reify_ir::{Value, ValueMap};
+use reify_test_support::design_files::{DEV_CAPSTAN, PRINTER_RI, read_design_file};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::OnceLock;
 
@@ -111,15 +112,6 @@ use std::sync::OnceLock;
 use super::design_fixture::{
     assert_constraints_ok, entity_cell, entity_real, entity_template, CellSpans, Strictness,
 };
-
-/// The design file that OWNS the idler seat contract, reached from this crate's
-/// manifest dir. Mirrors [`super::capstan_groove_e2e`]'s `DEV_CAPSTAN`, and like
-/// it is `pub(super)` so every gate in the compile unit that reads this file
-/// names the same path.
-pub(super) const PRINTER_RI: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../prj/printer_v01/printer.ri"
-);
 
 /// The design entity whose cells and constraints this module gates.
 const IDLER_ENTITY: &str = "IdlerPulley";
@@ -206,8 +198,7 @@ const PRINTER_ENUM_PATH_UNRESOLVED: &[&str] = &[
 /// [`super::capstan_groove_e2e`]'s and is imported at the head of the lockstep
 /// section.
 fn compile_printer() -> reify_compiler::CompiledModule {
-    let source = std::fs::read_to_string(PRINTER_RI)
-        .unwrap_or_else(|e| panic!("failed to read {PRINTER_RI}: {e}"));
+    let source = read_design_file(PRINTER_RI);
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("printer"));
     assert!(
@@ -1006,9 +997,7 @@ fn idler_seat_clears_the_tendon() {
 // of the file, rather than from two that agree only if the compiler is
 // deterministic. The printer.ri fixtures above are shared across the compile
 // unit the same way.
-use super::capstan_groove_e2e::{
-    dev_capstan, dev_capstan_checked, dev_capstan_compiled, DEV_CAPSTAN,
-};
+use super::capstan_groove_e2e::{dev_capstan, dev_capstan_checked, dev_capstan_compiled};
 
 /// Every scalar cell the `IdlerPulley` structure computes, as
 /// `(name, Some(dimension))` — or `None` for the one `: Real` cell.

@@ -29,7 +29,7 @@
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, SweepKind};
-use reify_core::{ModulePath, Type};
+use reify_core::ModulePath;
 use reify_ir::{
     AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
@@ -173,17 +173,6 @@ impl GeometryKernel for HistoryMockKernel {
 
 // ─── shared helpers ───────────────────────────────────────────────────────────
 
-fn mm_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(mm(v), Type::length())
-}
-
-fn real_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
-}
-
-#[path = "../common/angle_expr.rs"]
-mod angle_expr;
-use angle_expr::angle_literal;
 
 /// Build a synthesised `CompiledModule` with two ops:
 /// (0) a LineSegment curve (a non-primitive whose primitive-seeding step

@@ -2292,14 +2292,9 @@ fn build_channel_field(template: &Value, data: Vec<f64>, name: &str) -> Value {
 /// | solve_time_ms     | (not stored in Value)                          | `0`             |
 /// | aposteriori       | see below (task #4942)                         | `None`          |
 ///
-/// `rotation` is intentionally ABSENT from this table: it is not extracted and
-/// not persisted. Ruling #6164 derives it from the `curl` slab at wrap time
-/// (`value_from_elastic_result`), because it is a pure ×½ of a slab already on
-/// the wire and the binary header is frozen (`curl_len` at a fixed byte offset,
-/// byte-exact golden test). So this direction needs no `rotation` arm, and
-/// existing persisted entries gain a correct `.rotation` for free. The same
-/// holds for `shear_angles` (task #6183), derived from the persisted `gradient`
-/// slab: no extract arm, no wire change.
+/// `rotation` and `shear_angles` have no row: they are derived from the `curl`
+/// and `gradient` slabs at wrap time, so this direction needs no arm for them
+/// (see `rotation_sf_from_curl`).
 ///
 /// `frame` (always `Value::Undef` in production) is intentionally ignored.
 /// `shell_channels.frame` is not stored in the `ShellStress` `Value`, so it
@@ -2575,18 +2570,8 @@ pub(crate) fn value_from_elastic_result(er: &ElasticResult) -> Value {
         }
         None => (Value::Undef, Value::Undef),
     };
-    // ruling #6164: rotation is DERIVED from the SAME reconstructed curl slab,
-    // never persisted — the compute-contract wire header is frozen (`curl_len`
-    // at a fixed byte offset, byte-exact golden test), and rotation is a pure
-    // ×½ of a slab already on the wire. Deriving here means every EXISTING
-    // persisted cache entry gains a correct `.rotation` for free, with no
-    // format version bump and no new `elastic_result_from_value` extract arm.
-    //
-    // ONE `build_sf` feeds BOTH channels, mirroring the live tet path's single
-    // `curl_sf`. Splitting them into two independent `match` arms would both
-    // rebuild the slab twice on the cache-HIT path (the cheap one) and let a
-    // future edit to curl's reconstruction land on one arm only, silently
-    // desynchronising the two channels.
+    // Rotation is derived from the same reconstructed curl slab (see
+    // `rotation_sf_from_curl`); one `build_sf` feeds both channels.
     let (curl_field, rotation_field) = match build_sf(er.curl.clone(), "curl") {
         Some(sf) => {
             let rotation = super::sampled_rotation_field(super::rotation_sf_from_curl(&sf));
@@ -4352,7 +4337,8 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
 ///
 /// - `aabb_min` / `aabb_max` — `Point3<Length>` (3 Scalar<Length> SI metres)
 /// - `params`        — `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
-///   (all `Value::Real`; bx/by/bz are the normalised build-direction components)
+///   (layer_height / line_width are `Scalar<Length>` SI metres like the AABB
+///   corners; the rest are `Value::Real`, bx/by/bz the normalised build direction)
 /// - `cos_threshold` — `Value::Real` top/bottom-vs-side face cosine cutoff
 /// - `mat_wall`, `mat_skin`, `mat_infill` — `AnisotropicMaterial` StructureInstances
 ///
@@ -4593,7 +4579,11 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// AsPrintedZones lambda:
 /// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
 ///
-/// All elements are `Value::Real`.
+/// `layer_height` and `line_width` (idx 2, 3) are `Scalar<Length>` read through
+/// [`extract_length_si`], the same rule as the `Point3<Length>` AABB corners;
+/// the counts and the build direction are `Value::Real`. A non-finite band
+/// width or direction is refused as `NonFinite`, so `classify_material` fails
+/// loudly instead of solving with arbitrary zones.
 ///
 /// Task D4 (compute-fea-hardening PRD): Result-ified leaf extractor — returns
 /// `Err(FeaValueShapeError)` on a malformed `Value` instead of panicking. Its
@@ -4635,13 +4625,20 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
             got: format!("params[{idx}] = {other:?}"),
         }),
     };
-    Ok(ZoneProcessParams {
+    let params = ZoneProcessParams {
         walls:             real(0)? as u32,
         top_bottom_layers: real(1)? as u32,
-        layer_height:      real(2)?,
-        line_width:        real(3)?,
+        layer_height:      extract_length_si(&list[2])?,
+        line_width:        extract_length_si(&list[3])?,
         build_direction:   [real(4)?, real(5)?, real(6)?],
-    })
+    };
+    if !params.is_finite() {
+        return Err(FeaValueShapeError::NonFinite {
+            context: "extract_zone_process_params",
+            got: format!("{params:?}"),
+        });
+    }
+    Ok(params)
 }
 
 /// Convert an `AnisotropicMaterial { law: ConstitutiveLaw, frame: MaterialFrame }`
@@ -4861,7 +4858,8 @@ fn annotate_law_type(err: FeaValueShapeError, type_name: &str) -> FeaValueShapeE
         FeaValueShapeError::ExpectedScalar { got, .. }
         | FeaValueShapeError::ExpectedReal { got, .. }
         | FeaValueShapeError::ExpectedStructureInstance { got, .. }
-        | FeaValueShapeError::ExpectedList { got, .. } => got,
+        | FeaValueShapeError::ExpectedList { got, .. }
+        | FeaValueShapeError::NonFinite { got, .. } => got,
     };
     FeaValueShapeError::ExpectedScalar {
         context: "law_from_value (isotropic fallback)",
@@ -10621,11 +10619,10 @@ mod tests {
             //
             // NOTE this makes the round trip a second, stronger guard on the
             // derive: `elastic_result_from_value` deliberately does NOT extract
-            // rotation (no rotation slab is persisted — the wire header is
-            // frozen), so hash identity holds ONLY IF `value_from_elastic_result`
-            // re-derives byte-for-byte the same field from the curl slab. If the
-            // derive ever drifted between the live and cache paths, this test
-            // would red.
+            // rotation (rotation is never persisted), so hash identity holds
+            // ONLY IF `value_from_elastic_result` re-derives byte-for-byte the
+            // same field from the curl slab. If the derive ever drifted between
+            // the live and cache paths, this test would red.
             (
                 "rotation".to_string(),
                 super::super::sampled_rotation_field(super::super::rotation_sf_from_curl(
@@ -11029,8 +11026,8 @@ mod tests {
         let params = Value::List(vec![
             Value::Real(2.0),
             Value::Real(3.0),
-            Value::Real(0.25),
-            Value::Real(0.5),
+            scalar(0.25),
+            scalar(0.5),
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
@@ -11609,18 +11606,20 @@ mod tests {
     ///
     /// Amendment (task #5082 review round 3, suggestion 2): deliberately
     /// does NOT assert that `got` contains the failing index (e.g.
-    /// `"params[2]"`), matching `extract_zone_process_params_rejects_wrong_arity`'s
+    /// `"params[0]"`), matching `extract_zone_process_params_rejects_wrong_arity`'s
     /// policy of relying on structural (variant) matching only rather than
     /// pinning runtime-message prose. The index-folding in the `real`
     /// closure remains for panic-message diagnosability (see its doc
     /// comment) — it is just not part of this test's asserted contract.
     #[test]
     fn extract_zone_process_params_rejects_non_real_element() {
+        // The `Value::Point` sits in a dimensionless count slot (idx 0); the
+        // two band widths (idx 2, 3) are `Length` scalars (task 6940).
         let mixed = Value::List(vec![
-            Value::Real(1.0),
-            Value::Real(2.0),
             Value::Point(vec![]),
-            Value::Real(4.0),
+            Value::Real(2.0),
+            scalar(3.0, DimensionVector::LENGTH),
+            scalar(4.0, DimensionVector::LENGTH),
             Value::Real(5.0),
             Value::Real(6.0),
             Value::Real(7.0),
@@ -11633,6 +11632,87 @@ mod tests {
         );
     }
 
+    /// task 6940: `layer_height` / `line_width` (idx 2, 3) are typed
+    /// `Length`, so a bare `Value::Real` there is a missing dimension —
+    /// `extract_length_si`'s `ExpectedScalar`, not a silent read as metres.
+    #[test]
+    fn extract_zone_process_params_rejects_a_bare_length() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::LENGTH),
+            Value::Real(0.5),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a bare line_width, got: {res:?}"
+        );
+    }
+
+    /// task 6940: a band width of another dimension is refused as
+    /// `WrongDimension` rather than having its SI magnitude read as metres.
+    #[test]
+    fn extract_zone_process_params_rejects_a_wrong_dimension_length() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::MASS),
+            scalar(0.5, DimensionVector::LENGTH),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::WrongDimension { .. })),
+            "expected Err(WrongDimension) for a MASS layer_height, got: {res:?}"
+        );
+    }
+
+    /// task 6940: a NaN band width is a present, correctly typed `Length`
+    /// whose zone bands are meaningless, so the reader refuses it as
+    /// `NonFinite` instead of classifying with arbitrary zones.
+    #[test]
+    fn extract_zone_process_params_rejects_a_non_finite_length() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(f64::NAN, DimensionVector::LENGTH),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::NonFinite { .. })),
+            "expected Err(NonFinite) for a NaN line_width, got: {res:?}"
+        );
+    }
+
+    /// task 6940: likewise for a non-finite build-direction component.
+    #[test]
+    fn extract_zone_process_params_rejects_a_non_finite_build_direction() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(0.5, DimensionVector::LENGTH),
+            Value::Real(0.0),
+            Value::Real(f64::INFINITY),
+            Value::Real(1.0),
+        ]);
+        let res = extract_zone_process_params(&list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::NonFinite { .. })),
+            "expected Err(NonFinite) for an infinite build direction, got: {res:?}"
+        );
+    }
+
     /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
     /// return `Ok` with the mapped `ZoneProcessParams` for a well-formed
     /// 7-element `Value::List`, locking the success/field-mapping path
@@ -11642,8 +11722,8 @@ mod tests {
         let list = Value::List(vec![
             Value::Real(2.0),
             Value::Real(3.0),
-            Value::Real(0.25),
-            Value::Real(0.5),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(0.5, DimensionVector::LENGTH),
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
@@ -11673,8 +11753,8 @@ mod tests {
         let list = Value::List(vec![
             Value::Real(2.0),
             Value::Real(3.0),
-            Value::Real(0.25),
-            Value::Real(0.5),
+            scalar(0.25, DimensionVector::LENGTH),
+            scalar(0.5, DimensionVector::LENGTH),
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
@@ -12702,8 +12782,8 @@ mod tests {
         let params = Value::List(vec![
             Value::Real(2.0),    // walls
             Value::Real(3.0),    // top_bottom_layers
-            Value::Real(0.0002), // layer_height
-            Value::Real(0.0004), // line_width
+            len(0.0002),         // layer_height
+            len(0.0004),         // line_width
             Value::Real(0.0),    // bx
             Value::Real(0.0),    // by
             Value::Real(1.0),    // bz
@@ -14728,13 +14808,13 @@ mod tests {
 
     // ── ruling #6164: the `rotation` derivative channel ───────────────────────
     //
-    // step-5 RED. `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the
-    // radian enters the elastic-result algebra. It is DERIVED from the `curl`
-    // SampledField at wrap time in every production path and STORED IN NONE —
-    // see `rotation_sf_from_curl`'s doc comment for the wire-format reason.
+    // `rotation` = ∇×u / 2 is the DESIGNATED CROSSING where the radian enters
+    // the elastic-result algebra. It is DERIVED from the `curl` SampledField at
+    // wrap time in every production path and STORED IN NONE — see
+    // `rotation_sf_from_curl`.
     //
-    // These three tests pin all three production paths, plus the negative
-    // no-wire-change guarantee.
+    // These three tests pin all three production paths; the cache test also
+    // pins that a record carrying only a curl slab still reconstructs rotation.
 
     /// Shared helper: pull the `SampledField` out of a `Value::Field { Sampled }`,
     /// asserting the source kind on the way through.
@@ -14773,8 +14853,6 @@ mod tests {
     /// path is live here. Bumping `resample_multi_nodal_to_grid` to a 6th entry
     /// to resample rotation independently would trip that assert and red this
     /// test — which is exactly the intent (rotation costs no extra BVH pass).
-    ///
-    /// RED: nothing writes a `"rotation"` key yet.
     #[test]
     fn rotation_channel_tet_path_is_curl_halved() {
         let value_inputs = [
@@ -14832,9 +14910,6 @@ mod tests {
     /// (b) SHELL path — derivative channels are out of scope for the shell
     /// solver (PRD §7), so `rotation` joins divergence/gradient/curl in the
     /// honest-absence `Value::Undef` convention.
-    ///
-    /// RED: the shell fields map has no `"rotation"` key at all, so the
-    /// `.expect` fires.
     #[test]
     fn rotation_channel_shell_path_is_undef() {
         // Same 50mm × 10mm × 1mm steel-flexure fixture as
@@ -14883,15 +14958,13 @@ mod tests {
     ///
     /// `value_from_elastic_result` rebuilds an `ElasticResult` `Value` from the
     /// persisted compute-contract record. That record carries a `curl` slab and
-    /// NO rotation slab — and it never will, because the binary wire header is
-    /// frozen (`curl_len` at a fixed byte offset, byte-exact golden test).
+    /// no rotation slab (rotation is never persisted; see
+    /// `rotation_sf_from_curl`).
     ///
     /// This test proves that deriving rotation at wrap time means EXISTING
     /// persisted cache entries gain a correct `.rotation` for free: an `er` with
     /// only a curl slab must reconstruct to a rotation field bit-identical to
     /// what the live tet path produces from the same data.
-    ///
-    /// RED: the cache fields map has no `"rotation"` key yet.
     #[test]
     fn rotation_channel_cache_reconstruction_derives_from_curl_slab() {
         use reify_compute_contract::ElasticResult as ContractElasticResult;

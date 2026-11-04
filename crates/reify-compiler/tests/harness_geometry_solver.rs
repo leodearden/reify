@@ -36,6 +36,8 @@ mod geometry_query_inline_arg_tests;
 mod geometry_traits_inference_tests;
 #[path = "harness_geometry_solver/geometry_traits_sibling_chase_tests.rs"]
 mod geometry_traits_sibling_chase_tests;
+#[path = "harness_geometry_solver/geometry_traits_sweep_inference_tests.rs"]
+mod geometry_traits_sweep_inference_tests;
 #[path = "harness_geometry_solver/geometry_traits_tests.rs"]
 mod geometry_traits_tests;
 #[path = "harness_geometry_solver/geometry_traits_user_asserted_tests.rs"]

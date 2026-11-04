@@ -125,7 +125,7 @@ struct Audit {
 }
 
 fn audit(ctx: &AuditContext<'_>) -> Result<Audit, ScopeEmpty> {
-    let tracked = ctx.git.ls_files();
+    let tracked = ctx.git().ls_files();
     let scanned: Vec<&String> = tracked.iter().filter(|path| in_scope(path)).collect();
     if scanned.is_empty() {
         return Err(ScopeEmpty);

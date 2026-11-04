@@ -27,6 +27,7 @@
 
 use reify_compiler::CompiledModule;
 use reify_core::{Severity, Type};
+use reify_test_support::design_files::{PRINTER_RI, read_design_file};
 use reify_test_support::{
     compile_source, compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only,
 };
@@ -228,15 +229,6 @@ fn nested_transform3_over_orient_identity_types_as_transform_3() {
     );
 }
 
-/// The real `prj/printer_v01/printer.ri`, resolved from this crate's manifest
-/// dir. Mirrors the `DEV_CAPSTAN` constant in
-/// `crates/reify-eval/tests/harness_sweep/capstan_groove_e2e.rs`, the existing
-/// precedent for gating on a REAL design file rather than a reconstruction.
-const PRINTER_RI: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../prj/printer_v01/printer.ri"
-);
-
 /// The task's headline acceptance criterion, pinned against the ACTUAL file it
 /// was measured on: compiling `prj/printer_v01/printer.ri` emits ZERO "cannot
 /// infer return type" diagnostics (it emitted 25 before this family existed).
@@ -252,13 +244,12 @@ const PRINTER_RI: &str = concat!(
 /// the assertion prints every offending diagnostic.
 #[test]
 fn real_printer_ri_emits_zero_infer_warnings() {
-    let source = std::fs::read_to_string(PRINTER_RI)
-        .unwrap_or_else(|e| panic!("cannot read {PRINTER_RI}: {e}"));
+    let source = read_design_file(PRINTER_RI);
     let module = compile_source_with_stdlib(&source);
     let warnings = infer_warnings(&module);
     assert!(
         warnings.is_empty(),
-        "compiling the real prj/printer_v01/printer.ri must emit ZERO 'cannot \
+        "compiling the real {PRINTER_RI} must emit ZERO 'cannot \
          infer return type' warnings (was 25); got {}: {warnings:#?}",
         warnings.len()
     );
