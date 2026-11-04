@@ -11,15 +11,15 @@ use std::collections::HashSet;
 
 use reify_ast::{
     Annotation, AssociatedTypeDecl, ChainDecl, ConnectDecl, ConstraintDecl, ConstraintDef,
-    ConstraintInstDecl, Declaration, DefaultDecl, EnumDecl, EnumVariantDecl, Expr, FieldDef,
-    FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
+    ConstraintInstDecl, Declaration, DefaultDecl, EnumDecl, EnumVariantDecl, Expr, ExprKind,
+    FieldDef, FieldSource, FnBody, FnDef, FnParam, ForallConnectBody, ForallConnectDecl,
     ForallConstraintBody, ForallConstraintDecl, GuardedGroupDecl, ImportDecl, JointDef,
-    JointDofField, KeyedSubMemberEntry, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
-    MaximizeDecl, MemberDecl, MetaBlockDecl, MinimizeDecl, ModuleDecl, OccurrenceDef, ParamDecl,
-    ParsedModule, PortDecl, PortRef, PurposeDef, PurposeParam, RelateDecl, SketchDecl,
-    StructureDef, SubDecl, SubDerivation, SubDerivationKind, SubDisposition, SubParamOverride,
-    TraitBoundRef, TraitDecl, TypeAliasDecl, TypeExpr, TypeExprKind, TypeParamDecl, UnitDecl,
-    VariantPayload, WhereClause,
+    JointDofField, KeyedSubMemberEntry, LambdaParam, LetDecl, MatchArm, MatchArmDeclArmDecl,
+    MatchArmDeclGroupDecl, MatchPattern, MaximizeDecl, MemberDecl, MetaBlockDecl, MinimizeDecl,
+    ModuleDecl, OccurrenceDef, ParamDecl, ParsedModule, PortDecl, PortRef, PurposeDef,
+    PurposeParam, RelateDecl, SketchDecl, StringPart, StructureDef, SubDecl, SubDerivation,
+    SubDerivationKind, SubDisposition, SubParamOverride, TraitBoundRef, TraitDecl, TypeAliasDecl,
+    TypeExpr, TypeExprKind, TypeParamDecl, UnitDecl, UnitExpr, VariantPayload, WhereClause,
 };
 
 /// The position a name is written in, which decides what kinds of definition
@@ -617,12 +617,13 @@ impl Collector {
 
     fn constraint_inst(&mut self, instance: &ConstraintInstDecl) {
         let ConstraintInstDecl {
-            name: _,
+            name,
             args,
             where_clause,
             span: _,
             content_hash: _,
         } = instance;
+        self.use_name(name, NameRole::Callee);
         for (_, arg) in args {
             self.visit_expr(arg);
         }
@@ -632,7 +633,7 @@ impl Collector {
     fn sub(&mut self, sub: &SubDecl) {
         let SubDecl {
             name,
-            structure_name: _,
+            structure_name,
             type_args,
             args,
             is_collection: _,
@@ -651,6 +652,10 @@ impl Collector {
             content_hash: _,
         } = sub;
         self.bind_value(name);
+        // Empty on a derived sub, whose prototype is a sibling sub instead.
+        if !structure_name.is_empty() {
+            self.use_name(structure_name, NameRole::Callee);
+        }
         for type_arg in type_args {
             self.type_expr(type_arg);
         }
@@ -748,13 +753,16 @@ impl Collector {
             left: PortRef { expr: left },
             operator: _,
             right: PortRef { expr: right },
-            connector_type: _,
+            connector_type,
             params,
             // Port-name pairs local to the two endpoints.
             port_mappings: _,
             span: _,
             content_hash: _,
         } = connect;
+        if let Some(connector_type) = connector_type {
+            self.use_name(connector_type, NameRole::Callee);
+        }
         self.visit_expr(left);
         self.visit_expr(right);
         for (_, value) in params {
@@ -782,11 +790,14 @@ impl Collector {
         } = group;
         self.visit_expr(discriminant);
         for MatchArmDeclArmDecl {
-            patterns: _,
+            patterns,
             member,
             span: _,
         } in arms
         {
+            for variant in patterns {
+                self.use_name(variant, NameRole::Variant);
+            }
             self.member(member);
         }
     }
@@ -884,7 +895,204 @@ impl Collector {
 
     // ─── expressions ───────────────────────────────────────────────────────
 
-    /// Expression positions are not walked yet: the one accepted gap of the
-    /// type-position walk, closed by stdlib-namespace ε step-4.
-    fn visit_expr(&mut self, _expr: &Expr) {}
+    fn visit_expr(&mut self, expr: &Expr) {
+        let Expr { kind, span: _ } = expr;
+        match kind {
+            ExprKind::NumberLiteral {
+                value: _,
+                is_real: _,
+            }
+            | ExprKind::StringLiteral(_)
+            | ExprKind::BoolLiteral(_)
+            | ExprKind::Undef => {}
+            ExprKind::QuantityLiteral { value: _, unit } => self.quantity_unit(unit),
+            ExprKind::Ident(name) => self.use_name(name, NameRole::Value),
+            ExprKind::BinOp { op: _, left, right } => {
+                self.visit_expr(left);
+                self.visit_expr(right);
+            }
+            ExprKind::UnOp { op: _, operand } => self.visit_expr(operand),
+            ExprKind::FunctionCall {
+                name,
+                args,
+                arg_names: _,
+            } => {
+                self.use_name(name, NameRole::Callee);
+                self.visit_exprs(args);
+            }
+            ExprKind::MemberAccess { object, member: _ } => self.visit_expr(object),
+            ExprKind::EnumAccess {
+                type_name,
+                variant: _,
+            } => self.use_name(type_name, NameRole::Enum),
+            ExprKind::Conditional {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.visit_expr(condition);
+                self.visit_expr(then_branch);
+                self.visit_expr(else_branch);
+            }
+            ExprKind::ListLiteral(items) | ExprKind::SetLiteral(items) => self.visit_exprs(items),
+            ExprKind::MapLiteral(entries) => {
+                for (key, value) in entries {
+                    self.visit_expr(key);
+                    self.visit_expr(value);
+                }
+            }
+            ExprKind::IndexAccess { object, index } => {
+                self.visit_expr(object);
+                self.visit_expr(index);
+            }
+            ExprKind::Match { discriminant, arms } => {
+                self.visit_expr(discriminant);
+                for MatchArm {
+                    patterns,
+                    body,
+                    span: _,
+                } in arms
+                {
+                    for pattern in patterns {
+                        self.match_pattern(pattern);
+                    }
+                    self.visit_expr(body);
+                }
+            }
+            ExprKind::Auto { free: _, params } => {
+                for (_, value) in params {
+                    self.visit_expr(value);
+                }
+            }
+            ExprKind::Lambda { params, body } => {
+                for LambdaParam {
+                    name,
+                    type_expr,
+                    span: _,
+                } in params
+                {
+                    self.bind_value(name);
+                    if let Some(type_expr) = type_expr {
+                        self.type_expr(type_expr);
+                    }
+                }
+                self.visit_expr(body);
+            }
+            ExprKind::Quantifier {
+                kind: _,
+                variable,
+                variable_span: _,
+                collection,
+                predicate,
+            } => {
+                self.bind_value(variable);
+                self.visit_expr(collection);
+                self.visit_expr(predicate);
+            }
+            ExprKind::AdHocSelector {
+                base,
+                selector: _,
+                args,
+            } => {
+                self.visit_expr(base);
+                self.visit_exprs(args);
+            }
+            ExprKind::QualifiedAccess {
+                qualifier,
+                member: _,
+            } => {
+                // `Foo::bar` names a type or trait, not a value.
+                if let ExprKind::Ident(name) = &qualifier.kind {
+                    self.use_name(name, NameRole::Type);
+                } else {
+                    self.visit_expr(qualifier);
+                }
+            }
+            ExprKind::InstanceQualifiedAccess { object, qualified } => {
+                self.visit_expr(object);
+                self.visit_expr(qualified);
+            }
+            ExprKind::Range {
+                lower,
+                upper,
+                lower_inclusive: _,
+                upper_inclusive: _,
+            } => {
+                for bound in lower.iter().chain(upper) {
+                    self.visit_expr(bound);
+                }
+            }
+            ExprKind::TraitMethodCall {
+                object,
+                trait_name,
+                method: _,
+                args,
+            } => {
+                self.visit_expr(object);
+                self.use_name(trait_name, NameRole::Trait);
+                self.visit_exprs(args);
+            }
+            ExprKind::TraitStaticCall {
+                trait_name,
+                method: _,
+                args,
+            } => {
+                self.use_name(trait_name, NameRole::Trait);
+                self.visit_exprs(args);
+            }
+            ExprKind::VariantConstruct { name, fields } => {
+                self.use_name(name, NameRole::Callee);
+                for (_, value) in fields {
+                    self.visit_expr(value);
+                }
+            }
+            ExprKind::InterpolatedString(parts) => {
+                for part in parts {
+                    match part {
+                        StringPart::Literal(_) => {}
+                        StringPart::Hole(hole) => self.visit_expr(hole),
+                    }
+                }
+            }
+        }
+    }
+
+    fn visit_exprs(&mut self, exprs: &[Expr]) {
+        for expr in exprs {
+            self.visit_expr(expr);
+        }
+    }
+
+    fn match_pattern(&mut self, pattern: &MatchPattern) {
+        match pattern {
+            MatchPattern::Wildcard => {}
+            MatchPattern::Variant(name) => self.use_name(name, NameRole::Variant),
+            MatchPattern::VariantBind { name, binders } => {
+                self.use_name(name, NameRole::Variant);
+                for (_, binder) in binders {
+                    self.bind_value(binder);
+                }
+            }
+        }
+    }
+
+    /// A bare unit falls back to the builtin unit table; the factors of a
+    /// compound unit resolve through the unit registry only.
+    fn quantity_unit(&mut self, unit: &UnitExpr) {
+        match unit {
+            UnitExpr::Unit(name) => self.use_name(name, NameRole::BareUnit),
+            UnitExpr::Mul(..) | UnitExpr::Div(..) | UnitExpr::Pow(..) => self.unit_factors(unit),
+        }
+    }
+
+    fn unit_factors(&mut self, unit: &UnitExpr) {
+        match unit {
+            UnitExpr::Unit(name) => self.use_name(name, NameRole::UnitFactor),
+            UnitExpr::Mul(left, right) | UnitExpr::Div(left, right) => {
+                self.unit_factors(left);
+                self.unit_factors(right);
+            }
+            UnitExpr::Pow(base, _) => self.unit_factors(base),
+        }
+    }
 }
