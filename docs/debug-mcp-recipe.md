@@ -205,7 +205,7 @@ when omitted, the first populated viewport is targeted.
 | `load_fixture` | `{name}` | `{ok}` — loads a named fixture from debug_server.rs catalogue |
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
-| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection |
+| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection, resets the camera view, injected diagnostics and layout pane dimensions, and turns the edges-in-black toggle off (persisted) |
 | `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. A call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — scoped or not, since a testId can repeat within one pane — delivered over MCP as a second `text` content block after the image |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 
