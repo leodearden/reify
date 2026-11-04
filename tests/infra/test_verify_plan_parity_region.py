@@ -321,6 +321,26 @@ class TestReleaseDeltaParity(PremisedParity):
                            env={**listed, "REIFY_AFFECTED_CRATES_OVERRIDE": "reify-doc"}), **KEPT),
         )
 
+    def test_a_declared_list_with_no_crate_refuses(self):
+        declared = self.scratch / "release-sensitive-crates.txt"
+        declared.write_text("# b1 scratch list, no crate\n\n   \n", encoding="utf-8")
+        listed = {"RELEASE_SENSITIVE_CRATES_FILE": str(declared)}
+        self.check(
+            *(
+                Case(plan(f"{action}, a declared list with no crate", action, "--scope", "all",
+                          env={"REIFY_VERIFY_CLIPPY_TIMEOUT": "bogus", **listed}),
+                     exit_code=1, stderr=(CLIPPY_WARNING,), stderr_absent=(DECLARED_MISSING,))
+                for action in ("lint", "test")
+            ),
+            Case(plan("test --profile release, a declared list with no crate", "test", "--profile", "release",
+                      env=listed),
+                 exit_code=1),
+            Case(plan("merge skip override=reify-eval, a declared list with no crate", "test", "--scope", "all",
+                      "--profile", "both",
+                      env={**DELTA_SKIP_MERGE, "REIFY_AFFECTED_CRATES_OVERRIDE": "reify-eval", **listed}),
+                 exit_code=1, absent=(RELEASE_SKIP_MARKER,)),
+        )
+
     def test_a_missing_declared_list_refuses(self):
         (self.clone.root / DECLARED_LIST).unlink()
         self.check(*(

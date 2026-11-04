@@ -14,7 +14,8 @@ here:
   exactly when the plan has one, and a record rendered inside quotes refuses
   that quote;
 - nextest.nextest_config_path's generate arm, which only the executor reaches;
-- bashcall.source_delta over a scratch ~/.cargo/env.
+- bashcall.source_delta over a scratch ~/.cargo/env, and the shell options
+  the lib seams run under, over a scratch lib.
 
 run_all.sh discovers `test_*.sh` only; the gate runs this file through its
 thin wrapper tests/infra/test_verify_plan_model.sh.
@@ -213,6 +214,60 @@ class TestSourceDelta(unittest.TestCase):
     def test_a_failing_file_is_an_error(self):
         with self.assertRaises(BashCallError):
             self.delta_of("return 3\n")
+
+
+class TestSeamShellOptions(unittest.TestCase):
+    """bashcall's lib seams run under the shell options verify.sh's call sites run under.
+
+    verify.sh sources its libs under `set -euo pipefail` and calls their
+    functions inside `$(...)` or under `||`, where errexit does not reach:
+    so nounset and pipefail hold in a call, errexit does not, and all three
+    hold while a lib is sourced.
+    """
+
+    LIB = "lib.sh"
+    FUNCTIONS = (
+        "piped(){ false | true; }\n"
+        'unbound(){ echo "${B1_SEAM_UNSET_VAR}"; }\n'
+        "continues(){ false; echo after; }\n"
+    )
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.repo_root = Path(scratch.name)
+        self.env = base_env()
+        self.env.pop("B1_SEAM_UNSET_VAR", None)
+
+    def write_lib(self, text):
+        (self.repo_root / self.LIB).write_text(text, encoding="utf-8")
+
+    def ask(self, function):
+        self.write_lib(self.FUNCTIONS)
+        return bashcall.ask(bashcall.BashCall(self.LIB, function), (), self.repo_root, self.env)
+
+    def test_a_failing_pipeline_stage_fails_the_call(self):
+        self.assertNotEqual(self.ask("piped").returncode, 0)
+        with self.assertRaises(BashCallError):
+            bashcall.run(bashcall.BashCall(self.LIB, "piped"), (), self.repo_root, self.env)
+
+    def test_an_unset_variable_fails_the_call(self):
+        result = self.ask("unbound")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(
+            any("B1_SEAM_UNSET_VAR: unbound variable" in line for line in result.stderr_lines),
+            result.stderr_lines,
+        )
+
+    def test_a_failing_command_does_not_end_the_call(self):
+        result = self.ask("continues")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.lines, ("after",))
+
+    def test_a_lib_whose_top_level_pipeline_fails_is_not_sourced(self):
+        self.write_lib("B1_EXPORTED=x; export B1_EXPORTED; false | true\n")
+        with self.assertRaises(BashCallError):
+            bashcall.read_export(bashcall.BashExport(self.LIB, "B1_EXPORTED"), self.repo_root, self.env)
 
 
 class TestNextestConfigPath(unittest.TestCase):
