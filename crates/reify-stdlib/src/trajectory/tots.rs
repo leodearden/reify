@@ -69,10 +69,9 @@ pub(crate) enum TotsKind {
 /// The prose invariant above is MECHANICALLY enforced by
 /// `shaper_family_guard::every_shipped_shaper_structure_is_recognised` below:
 /// it scans the shipped `trajectory.ri` for every `structure def <Name> :
-/// Shaper` and fails if any of them is recognised by neither
-/// [`is_tots_shaper_type_name`] nor `build_train_for_shaper`. That turns "must
-/// be widened in lockstep" from a comment into a RED at the source of the next
-/// drift.
+/// Shaper` and fails if any of them is recognised by neither this function
+/// nor `build_train_for_shaper`. That turns "must be widened in lockstep" from
+/// a comment into a RED at the source of the next drift.
 pub(crate) fn tots_kind(type_name: &str) -> Option<TotsKind> {
     match type_name {
         "TOTSShaper" => Some(TotsKind::Linear),
@@ -81,16 +80,11 @@ pub(crate) fn tots_kind(type_name: &str) -> Option<TotsKind> {
     }
 }
 
-/// Is `type_name` a member of the TOTS shaper family? See [`tots_kind`].
-pub(crate) fn is_tots_shaper_type_name(type_name: &str) -> bool {
-    tots_kind(type_name).is_some()
-}
-
 #[cfg(test)]
 mod shaper_family_guard {
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 
-    use super::is_tots_shaper_type_name;
+    use super::{TotsKind, tots_kind};
     use crate::trajectory::input_shape::build_train_for_shaper;
 
     /// The shipped stdlib source, embedded at COMPILE time so the guard needs
@@ -202,7 +196,7 @@ mod shaper_family_guard {
 
     /// LOCKSTEP GATE (task 6096). Every shaper structure shipped in
     /// `trajectory.ri` must be recognised by one of the two eval-side
-    /// recognisers — [`is_tots_shaper_type_name`] (the SQP family) or
+    /// recognisers — [`tots_kind`] (the SQP family) or
     /// [`build_train_for_shaper`] (the ZV/ZVD/EI/Cascaded impulse family).
     ///
     /// WHY this exists rather than a comment: a `Shaper` refiner that neither
@@ -249,7 +243,7 @@ mod shaper_family_guard {
         );
 
         for name in &declared {
-            let by_tots = is_tots_shaper_type_name(name);
+            let by_tots = tots_kind(name).is_some();
             let by_impulse = matches!(
                 build_train_for_shaper(&bare_shaper_instance(name)),
                 Ok(Some(_))
@@ -257,8 +251,8 @@ mod shaper_family_guard {
             assert!(
                 by_tots || by_impulse,
                 "`structure def {name} : Shaper` is shipped in trajectory.ri but no \
-                 eval-side dispatch arm recognises it: is_tots_shaper_type_name() is \
-                 false and build_train_for_shaper() returns Ok(None). Evaluating it would \
+                 eval-side dispatch arm recognises it: tots_kind() is None and \
+                 build_train_for_shaper() returns Ok(None). Evaluating it would \
                  yield a SILENT Value::Undef (exit 0, zero diagnostics). Widen \
                  `tots_kind` (SQP family) or add a \
                  `build_train_for_shaper` arm (impulse family)."
@@ -334,18 +328,14 @@ mod shaper_family_guard {
         }
     }
 
-    /// Direct unit coverage of the predicate's name set: both family members
-    /// in, and the neighbouring shaper structures — which MUST be handled by
-    /// the impulse arm instead — out. Pins the boundary the guard above
-    /// checks only in aggregate.
+    /// Direct unit coverage of the family's name set: each member maps to its
+    /// own joint kind, and the neighbouring shaper structures — which MUST be
+    /// handled by the impulse arm instead — map to none. Pins the boundary the
+    /// guard above checks only in aggregate.
     #[test]
-    fn is_tots_shaper_type_name_matches_exactly_the_sqp_family() {
-        for member in ["TOTSShaper", "RevoluteTOTSShaper"] {
-            assert!(
-                is_tots_shaper_type_name(member),
-                "{member} is an SQP-family shaper and must be recognised"
-            );
-        }
+    fn tots_kind_maps_exactly_the_sqp_family() {
+        assert_eq!(tots_kind("TOTSShaper"), Some(TotsKind::Linear));
+        assert_eq!(tots_kind("RevoluteTOTSShaper"), Some(TotsKind::Revolute));
         for outsider in [
             "ZVShaper",
             "ZVDShaper",
@@ -355,8 +345,9 @@ mod shaper_family_guard {
             "totsshaper",
             "",
         ] {
-            assert!(
-                !is_tots_shaper_type_name(outsider),
+            assert_eq!(
+                tots_kind(outsider),
+                None,
                 "{outsider:?} is not an SQP-family shaper; recognising it would route \
                  it into the SQP loop instead of its own arm"
             );
