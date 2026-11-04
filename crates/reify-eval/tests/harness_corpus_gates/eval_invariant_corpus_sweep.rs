@@ -1650,24 +1650,34 @@ fn run_corpus_shard(shard_index: usize) {
 #[ignore = "diagnostic timing harness; run explicitly with --ignored"]
 fn diag_per_file_timing() {
     let mut timings: Vec<(std::time::Duration, String)> = Vec::new();
+    let mut compile_skips: Vec<(std::time::Duration, String)> = Vec::new();
     for file in &corpus_files() {
         let t0 = std::time::Instant::now();
-        if matches!(sweep_file(file), FileSweep::CompileError) {
-            continue;
+        let swept = sweep_file(file);
+        let timed = (t0.elapsed(), file.rel.clone());
+        match swept {
+            FileSweep::CompileError => compile_skips.push(timed),
+            FileSweep::Evaluated(_) => timings.push(timed),
         }
-        timings.push((t0.elapsed(), file.rel.clone()));
     }
     timings.sort();
     timings.reverse();
     for (d, f) in timings.iter().take(40) {
         eprintln!("DIAG {d:?} shard {:02} {f}", shard_of(f));
     }
+    for (d, f) in &compile_skips {
+        eprintln!("DIAG-SKIP {d:?} shard {:02} {f}", shard_of(f));
+    }
     let mut shard_cost = vec![std::time::Duration::ZERO; CORPUS_SHARD_COUNT];
-    for (d, f) in &timings {
+    for (d, f) in timings.iter().chain(&compile_skips) {
         shard_cost[shard_of(f)] += *d;
     }
     let total: std::time::Duration = shard_cost.iter().sum();
-    eprintln!("DIAG-TOTAL {} file(s) evaluated, {total:?}", timings.len());
+    eprintln!(
+        "DIAG-TOTAL {} file(s) evaluated, {} skipped (compile errors), {total:?}",
+        timings.len(),
+        compile_skips.len()
+    );
     let mut ranked: Vec<_> = shard_cost.into_iter().enumerate().collect();
     ranked.sort_by(|(_, a), (_, b)| b.cmp(a));
     for (shard, sum) in ranked {
