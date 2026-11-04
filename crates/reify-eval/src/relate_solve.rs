@@ -3135,8 +3135,8 @@ mod tests_driving_set_failure {
     use super::test_datums::{axis_v, plane_v, realized};
     use super::{
         FailureContext, FrameUnknown, Pose, RealizedDatums, RelateTolerance, SolveBudget,
-        build_relation_instances, collect_relate_scope, failure_diagnostic, partition_driving_set,
-        solve_scaling,
+        build_relation_instances, collect_relate_scope, failure_diagnostic,
+        minimal_infeasible_subset, partition_driving_set, solve_frame_outcome, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3263,5 +3263,63 @@ structure PairSearchScope {
             "{diagnostic:?}"
         );
         assert!(diagnostic.message.contains("`peg`"), "{diagnostic:?}");
+    }
+
+    /// A pair that merely ran out of budget proves nothing; only a pair whose own
+    /// solve is CERTIFIED infeasible is the minimal conflict.
+    #[test]
+    fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
+        with_failure_context(SolveBudget { max_iterations: 0 }, |context| {
+            assert_eq!(
+                context.partition.driving,
+                vec![0, 1, 2],
+                "all three relations drive: {:?}",
+                context.partition
+            );
+
+            let instances = &context.built.instances;
+            let full = solve_frame_outcome(
+                instances,
+                context.unknown,
+                context.seed,
+                context.scaling,
+                context.budget,
+            );
+            assert!(
+                matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
+                "the full driving set is certified under this budget, so production \
+                 reaches the conflict search: {full:?}"
+            );
+
+            let pair = [instances[0].clone(), instances[1].clone()];
+            let starved = solve_frame_outcome(
+                &pair,
+                context.unknown,
+                context.seed,
+                context.scaling,
+                context.budget,
+            );
+            assert!(
+                matches!(starved.result, Err(SolveFailureCause::BudgetExhausted(_))),
+                "the first pair is out of budget, not infeasible: {starved:?}"
+            );
+            let funded = solve_frame_outcome(
+                &pair,
+                context.unknown,
+                context.seed,
+                context.scaling,
+                SolveBudget::default(),
+            );
+            assert!(
+                funded.result.is_ok(),
+                "the first pair has a root: {funded:?}"
+            );
+
+            assert_eq!(
+                minimal_infeasible_subset(context),
+                vec![0, 2],
+                "the conflict is the first CERTIFIED pair in pairwise order"
+            );
+        });
     }
 }
