@@ -313,7 +313,15 @@ def _git_head_sha(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
 
 
 def _mtime_utc(path: str) -> str:
-    stamp = datetime.datetime.fromtimestamp(os.stat(path).st_mtime, tz=datetime.timezone.utc)
+    """path's mtime in UTC, or "unknown" once a concurrent relink has removed it.
+
+    Diagnostic text only: it never decides whether a binary is trusted.
+    """
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return "unknown"
+    stamp = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc)
     return stamp.isoformat(timespec="seconds")
 
 

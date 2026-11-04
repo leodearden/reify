@@ -16,6 +16,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 from _pcc_test_support import (
     pcc,
@@ -197,6 +198,44 @@ class TestReifyBinaryTrust(unittest.TestCase):
         ctx = self._ctx()
         self.assertEqual(ctx.reify_bin, release)
         self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_an_ambient_git_dir_does_not_decide_whose_head_the_sidecar_names(self):
+        """Under a hook GIT_DIR is exported; HEAD must still be the fixture repo's.
+
+        Without the scrub, a GIT_DIR aimed at another repository answers with
+        that repository's HEAD, and a nonexistent one with no HEAD at all.
+        """
+        release, _ = self._both_binaries(newer="debug")
+        self._sidecar(self._head() + "\n")
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_other_") as other:
+            _git(other, "init", "-q")
+            _git(other, "commit", "-q", "--allow-empty", "-m", "another repository")
+            for label, git_dir in (("another repository", os.path.join(other, ".git")),
+                                   ("a nonexistent path", os.path.join(other, "no-such-git"))):
+                with self.subTest(git_dir=label):
+                    ctx = self._ctx(GIT_DIR=git_dir)
+                    self.assertEqual(ctx.reify_bin, release, ctx.reify_bin_refusal)
+
+    def test_a_binary_removed_mid_resolution_is_still_refused(self):
+        """A concurrent relink removes target/debug/reify after the presence check.
+
+        Its mtime is diagnostic text, so losing it leaves the refusal standing
+        rather than escaping from_environment(), which every mode calls first.
+        """
+        _, debug = self._both_binaries(newer="debug")
+        real_access = os.access
+
+        def access_then_relink_away(path, mode, *args, **kwargs):
+            answer = real_access(path, mode, *args, **kwargs)
+            if path == debug and os.path.exists(debug):
+                os.remove(debug)
+            return answer
+
+        with unittest.mock.patch.object(os, "access", side_effect=access_then_relink_away):
+            ctx = self._ctx()
+        self.assertFalse(os.path.exists(debug), "precondition: the relink happened")
+        self.assertIsNone(ctx.reify_bin)
+        self.assertIn(f"{debug} (mtime unknown)", ctx.reify_bin_refusal)
 
     def test_a_stale_sidecar_is_refused_naming_both_shas(self):
         self._both_binaries(newer="release")
