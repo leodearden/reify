@@ -149,14 +149,18 @@ fn the_anchored_fixture_solves_on_every_entry() {
 
 #[test]
 fn a_member_endpoint_past_the_nodes_is_an_indexed_input_error() {
-    let mut case = FdAnchoredCase::valid();
-    let n = case.node_count();
-    case.members[1] = (3, n);
-    case.assert_every_entry_rejects(ForceDensityInputError::IndexOutOfRange {
-        what: IndexedInput::MemberEndpoint { member: 1 },
-        index: n,
-        len: n,
-    });
+    let valid = FdAnchoredCase::valid();
+    let (j, k) = valid.members[1];
+    let n = valid.node_count();
+    for endpoints in [(n, k), (j, n)] {
+        let mut case = FdAnchoredCase::valid();
+        case.members[1] = endpoints;
+        case.assert_every_entry_rejects(ForceDensityInputError::IndexOutOfRange {
+            what: IndexedInput::MemberEndpoint { member: 1 },
+            index: n,
+            len: n,
+        });
+    }
 }
 
 #[test]
@@ -212,18 +216,21 @@ fn densities_shorter_than_the_members_are_a_dimension_mismatch() {
 
 #[test]
 fn surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
-    let mut case = FdAnchoredCase::valid();
-    case.sigma.clear();
-    case.aniso.clear();
-    case.assert_surface_entries_reject(ForceDensityInputError::SurfaceCountMismatch);
+    for stress_count in [0, 2] {
+        let mut case = FdAnchoredCase::valid();
+        case.sigma = vec![1.0; stress_count];
+        case.aniso = vec![fd_aniso_stress(1.0, 1.0); stress_count];
+        case.assert_surface_entries_reject(ForceDensityInputError::SurfaceCountMismatch);
+    }
 }
 
 #[test]
 fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
-    let non_tension = ForceDensityInputError::NonTensionSurfaceStress { surface: 0 };
+    let non_tension = ForceDensityInputError::NonTensionSurfaceStress { surface: 1 };
     for sigma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         let mut case = FdAnchoredCase::valid();
-        case.sigma = vec![sigma];
+        case.surfaces.push((1, 2, 3));
+        case.sigma = vec![1.0, sigma];
         assert_eq!(
             case.isotropic(),
             Err(FormFindError::Input(non_tension)),
@@ -237,7 +244,8 @@ fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
         fd_aniso_stress(1.0, f64::INFINITY),
     ] {
         let mut case = FdAnchoredCase::valid();
-        case.aniso = vec![stress];
+        case.surfaces.push((1, 2, 3));
+        case.aniso = vec![fd_aniso_stress(1.0, 1.0), stress];
         assert_eq!(
             case.anisotropic(),
             Err(AnisoFormFindError::Input(non_tension))
