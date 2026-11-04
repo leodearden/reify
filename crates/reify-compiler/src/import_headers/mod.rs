@@ -8,12 +8,13 @@
 //! in a std module need an import.
 
 mod attribution;
+mod header_edit;
 mod name_uses;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::ModulePath;
+use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
 
@@ -44,6 +45,15 @@ impl ImportPlan {
     pub fn required(&self) -> &[RequiredImport] {
         &self.required
     }
+
+    /// The required modules `parsed` does not already import, in any form.
+    pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<&RequiredImport> {
+        let declared: HashSet<&str> = header_edit::declared_import_paths(parsed).collect();
+        self.required
+            .iter()
+            .filter(|required| !declared.contains(required.module.to_dotted().as_str()))
+            .collect()
+    }
 }
 
 /// Derive the std imports `parsed` needs, attributing each written name to
@@ -73,4 +83,81 @@ pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -
             })
             .collect(),
     }
+}
+
+/// Every compiled stdlib module except `module`, in load order: the universe
+/// a stdlib module's own imports are derived against.
+pub fn stdlib_universe_excluding(module: &ModulePath) -> Vec<&'static CompiledModule> {
+    crate::stdlib_loader::load_stdlib()
+        .iter()
+        .filter(|candidate| &candidate.path != module)
+        .collect()
+}
+
+/// The Error and Warning diagnostics `parsed` gets when compiled against only
+/// the `imports` modules of `universe`, less those the whole `universe` gives
+/// it too (matched one for one on severity, code and message). Empty when the
+/// imports supply everything the module needs from `universe`; a diagnostic
+/// the module raises regardless is never counted against them.
+pub fn residual_diagnostics(
+    parsed: &ParsedModule,
+    imports: &[ModulePath],
+    universe: &[&CompiledModule],
+) -> Vec<Diagnostic> {
+    let imported: Vec<&CompiledModule> = universe
+        .iter()
+        .copied()
+        .filter(|module| imports.contains(&module.path))
+        .collect();
+    let restricted = crate::compile_with_prelude_refs(parsed, &imported);
+    let full = crate::compile_with_prelude_refs(parsed, universe);
+
+    let mut unmatched: HashMap<DiagnosticKey<'_>, usize> = HashMap::new();
+    for diagnostic in full.diagnostics.iter().filter(|d| is_reportable(d)) {
+        *unmatched.entry(DiagnosticKey::of(diagnostic)).or_default() += 1;
+    }
+    restricted
+        .diagnostics
+        .iter()
+        .filter(|d| is_reportable(d))
+        .filter(
+            |diagnostic| match unmatched.get_mut(&DiagnosticKey::of(diagnostic)) {
+                Some(count) if *count > 0 => {
+                    *count -= 1;
+                    false
+                }
+                _ => true,
+            },
+        )
+        .cloned()
+        .collect()
+}
+
+fn is_reportable(diagnostic: &Diagnostic) -> bool {
+    matches!(diagnostic.severity, Severity::Error | Severity::Warning)
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct DiagnosticKey<'d> {
+    severity: Severity,
+    code: Option<DiagnosticCode>,
+    message: &'d str,
+}
+
+impl<'d> DiagnosticKey<'d> {
+    fn of(diagnostic: &'d Diagnostic) -> Self {
+        Self {
+            severity: diagnostic.severity,
+            code: diagnostic.code,
+            message: &diagnostic.message,
+        }
+    }
+}
+
+/// `source` with an `import` line added for every module of `modules` it
+/// does not already import, in the order given: after the last import, else
+/// after the `module` declaration, else after the leading module pragmas,
+/// else after the leading comment block's last blank line.
+pub fn insert_imports(source: &str, parsed: &ParsedModule, modules: &[ModulePath]) -> String {
+    header_edit::insert_imports(source, parsed, modules)
 }
