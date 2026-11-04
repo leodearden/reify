@@ -56,6 +56,88 @@ fn test_command_on_indeterminate_file_exits_success() {
     );
 }
 
+// A FAIL names the violated constraint under its status line, and the
+// violation diagnostic reaches stderr.
+#[test]
+fn test_command_prints_the_violation_behind_a_fail() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_one_fail.ri"));
+
+    assert!(
+        !status.success(),
+        "reify test should exit non-zero when a test fails.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            "  FAIL  TestNegative",
+            "    VIOLATED TestNegative#constraint[0]",
+            "test result: FAIL. 0 passed; 1 failed; 0 indeterminate",
+        ],
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line == "error: constraint TestNegative#constraint[0] violated"),
+        "stderr should carry the violation diagnostic, got: {stderr}"
+    );
+}
+
+// An INDETERMINATE names the undecided constraint and its recorded reason
+// under its status line, and the indeterminate diagnostic reaches stderr.
+#[test]
+fn test_command_prints_the_reason_behind_an_indeterminate() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_indeterminate.ri"));
+
+    assert!(
+        status.success(),
+        "reify test should exit 0 when no test fails.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [
+            "  INDETERMINATE  TestUndefTolerance",
+            "    INDETERMINATE TestUndefTolerance#constraint[0]: undefined inputs: TestUndefTolerance.tolerance",
+            "test result: ok. 0 passed; 0 failed; 1 indeterminate",
+        ],
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.lines().any(|line| line
+            == "warning: constraint TestUndefTolerance#constraint[0] indeterminate: undefined inputs: TestUndefTolerance.tolerance"),
+        "stderr should carry the indeterminate diagnostic, got: {stderr}"
+    );
+}
+
+// Solver-driver parity B8: `reify test` resolves autos, so a test whose
+// constraint reads a two-sided auto gets a real verdict, not Indeterminate.
+#[test]
+fn test_command_reports_a_real_verdict_for_a_test_reading_an_auto() {
+    let (status, stdout, stderr) =
+        common::run_subcommand("test", &common::fixture_path("test_auto_resolves.ri"));
+
+    assert!(
+        status.success(),
+        "reify test should exit 0 when the auto resolves and its constraint holds.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.lines().any(|line| line == "  PASS  TestSolvedAuto"),
+        "stdout should report TestSolvedAuto as PASS, got: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "test result: ok. 1 passed; 0 failed; 0 indeterminate"),
+        "stdout should summarise one passing test, got: {stdout}"
+    );
+    assert!(
+        !stdout.lines().any(|line| line.contains("INDETERMINATE")),
+        "a solved auto must not leave any INDETERMINATE line, got: {stdout}"
+    );
+}
+
 // Step 10: mixed file — exits failure (has FAIL), shows all three statuses and summary counts
 #[test]
 fn test_command_on_mixed_file_shows_summary() {
@@ -66,43 +148,44 @@ fn test_command_on_mixed_file_shows_summary() {
         !status.success(),
         "reify test should exit non-zero when some tests fail.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    assert!(
-        stdout.contains("PASS"),
-        "stdout should contain 'PASS', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("FAIL"),
-        "stdout should contain 'FAIL', got: {stdout}"
-    );
-    assert!(
-        stdout.contains("INDETERMINATE"),
-        "stdout should contain 'INDETERMINATE', got: {stdout}"
-    );
-    // Summary line should show counts
-    assert!(
-        stdout.contains("1 passed"),
-        "stdout should contain '1 passed' in summary, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("1 failed"),
-        "stdout should contain '1 failed' in summary, got: {stdout}"
+    for status_line in [
+        "  PASS  TestPass",
+        "  FAIL  TestFail",
+        "  INDETERMINATE  TestIndet",
+    ] {
+        assert!(
+            stdout.lines().any(|line| line == status_line),
+            "stdout should carry the status line {status_line:?}, got: {stdout}\nstderr: {stderr}"
+        );
+    }
+    assert_eq!(
+        stdout.lines().last(),
+        Some("test result: FAIL. 1 passed; 1 failed; 1 indeterminate"),
+        "stdout: {stdout}\nstderr: {stderr}"
     );
 }
 
-// Step 11: no-tests file exits success (vacuously passing)
+// A file with no @test entities exits success, but its summary says no tests
+// ran rather than reading like a passing suite.
 #[test]
 fn test_command_on_no_tests_file_exits_success() {
-    let (status, stdout, stderr) =
-        common::run_subcommand("test", &common::fixture_path("test_none.ri"));
+    let path = common::fixture_path("test_none.ri");
+    let (status, stdout, stderr) = common::run_subcommand("test", &path);
 
     assert!(
         status.success(),
         "reify test should exit 0 when there are no @test entities.\nstdout: {stdout}\nstderr: {stderr}"
     );
-    // Should indicate zero tests ran
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        [format!(
+            "test result: no tests. {path} declares no @test structures"
+        )],
+        "stderr: {stderr}"
+    );
     assert!(
-        stdout.contains("0 passed") || stdout.contains("no tests"),
-        "stdout should mention 0 tests or 'no tests', got: {stdout}"
+        !stdout.contains("test result: ok."),
+        "a zero-test run must not read like a passing suite, got: {stdout}"
     );
 }
 

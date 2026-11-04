@@ -1,9 +1,10 @@
-//! Parsing of `reify` subcommand arguments into typed values, plus the usage
-//! banners those parsers print when the arguments are malformed.
+//! Parsing of `reify` subcommand arguments into typed values.
 
 use std::process::ExitCode;
 
 use reify_compiler::cfg::CfgSet;
+
+use crate::help::DOC_USAGE;
 
 /// One per-param binding parsed from a `--purpose` flag value.
 ///
@@ -160,12 +161,6 @@ pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
     Ok(cfg)
 }
 
-/// Usage line printed to stderr for any `reify check` usage error.
-pub(crate) const CHECK_USAGE: &str = "Usage: reify check [--strict] [--verbose] [--purpose <name>=<binding>]... [--cfg <key=value|flag>]... <file>";
-
-/// Usage line printed to stderr for any `reify explain` usage error.
-pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
-
 /// Parse a single required file-path positional, rejecting unknown `--`-prefixed flags
 /// and extra positionals.  Every error prints `usage` to stderr before returning
 /// `Err(ExitCode::FAILURE)` — callers can `return` the `Err` value directly.
@@ -202,9 +197,6 @@ pub(crate) fn parse_single_file_arg(args: &[String], cmd: &str, usage: &str) -> 
         }
     }
 }
-
-/// Usage line printed to stderr for any `reify doc` usage error.
-const DOC_USAGE: &str = "Usage: reify doc <input.ri> [-o <path>] [--format html|markdown|json] [--split] [--compact]\n       reify doc --stdlib --out <dir>";
 
 /// Report a `reify doc` usage error: the `Error:` line naming the guard, then
 /// the [`DOC_USAGE`] banner that tells it apart from a genuine exit-1 failure.

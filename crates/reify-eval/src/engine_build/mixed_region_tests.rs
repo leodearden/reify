@@ -171,24 +171,24 @@
             let row = result
                 .mpc_rows
                 .iter()
-                .find(|r| r.dofs == vec![shell_disp, tet_mid_dof])
+                .find(|r| r.dofs() == [shell_disp, tet_mid_dof])
                 .unwrap_or_else(|| {
                     panic!(
                         "missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]"
                     )
                 });
             assert_eq!(
-                row.coeffs,
-                vec![1.0, -1.0],
+                row.coeffs(),
+                [1.0, -1.0],
                 "displacement-matching row coeffs for axis {a}"
             );
-            assert_eq!(row.rhs, 0.0, "homogeneous tie (rhs = 0) for axis {a}");
+            assert_eq!(row.rhs(), 0.0, "homogeneous tie (rhs = 0) for axis {a}");
         }
 
         // D=6 sanity: every DOF index lies in the unified 6·node space.
         let n_total = result.nodes.len(); // 7
         for row in &result.mpc_rows {
-            for &d in &row.dofs {
+            for &d in row.dofs() {
                 assert!(
                     d < 6 * n_total,
                     "DOF {d} must lie within the D=6 space (6 · {n_total} nodes)"
@@ -203,7 +203,7 @@
             result
                 .mpc_rows
                 .iter()
-                .any(|r| r.dofs.iter().any(|d| shell_rot.contains(d))),
+                .any(|r| r.dofs().iter().any(|d| shell_rot.contains(d))),
             "a rotation row must reference a shell rotation DOF (6·n + 3..5)"
         );
     }

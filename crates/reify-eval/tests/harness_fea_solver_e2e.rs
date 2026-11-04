@@ -29,6 +29,9 @@
 //! `fdm_bracket_e2e::<test>` selectors still resolve.
 mod common;
 
+#[path = "common/failed_diagnostics.rs"]
+mod failed_diagnostics;
+
 #[path = "harness_fea_solver_e2e/as_printed_body_realization_e2e.rs"]
 mod as_printed_body_realization_e2e;
 #[path = "harness_fea_solver_e2e/as_printed_material_e2e.rs"]

@@ -6,15 +6,14 @@ to stderr. The knob and role reports de-duplicate theirs; scope_report keeps
 every stage's lines, in bash's stage order.
 """
 
-import dataclasses
 import json
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 
 from reify_verify import knobs, narrowing, policy, scope, selection
+from reify_verify.jsondata import to_data
 from reify_verify.invocation import Invocation
 
 
@@ -59,7 +58,7 @@ def role_policy_report(env: Mapping[str, str]) -> QueryOutput:
                 "v": 1,
                 "kind": "role",
                 "role": role.value,
-                "policy": _jsonable(policy.ROLE_TABLE[role]),
+                "policy": to_data(policy.ROLE_TABLE[role]),
                 "resolved": resolved,
             }
         )
@@ -69,7 +68,7 @@ def role_policy_report(env: Mapping[str, str]) -> QueryOutput:
             "v": 1,
             "kind": "profile",
             "profile": profile.value,
-            "policy": _jsonable(policy.PROFILE_TABLE[profile]),
+            "policy": to_data(policy.PROFILE_TABLE[profile]),
         }
         for profile in policy.Profile
     )
@@ -108,20 +107,6 @@ def _resolved(
         "heavy_partition": policy.heavy_partition(role_policy, env).value,
     }
     return resolved, [wall.warning for wall in walls.values() if wall.warning]
-
-
-def _jsonable(value):
-    """A policy record as JSON data; every dataclass field appears by construction."""
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, knobs.Knob):
-        return value.name
-    if dataclasses.is_dataclass(value):
-        return {
-            field.name: _jsonable(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-        }
-    return value
 
 
 def _default_json(default: str | knobs.DerivedDefault) -> str | dict:

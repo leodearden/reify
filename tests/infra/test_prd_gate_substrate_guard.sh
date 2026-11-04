@@ -627,10 +627,10 @@ _resolve_e2e_bin() {
 }
 
 # A tree-sitter that reproduces the MEASURED sandboxed-role cache denial:
-# grammar_cache_denied() requires BOTH a load-failure marker ("Failed to load
-# language") AND a permission marker ("Permission denied" / "os error 13"), so
-# a stub carrying only one half would be classified as an ordinary parse
-# failure and would test nothing. The signature text is written to a sibling
+# α's grammar_load_failure() boundary parser marks a cache denial only with BOTH
+# a load-failure marker ("Failed to load language") AND a permission marker
+# ("Permission denied" / "os error 13") after it, so a stub carrying only one
+# half would not read as a denial and would test nothing. The signature text is written to a sibling
 # file and cat'd rather than embedded in the stub body — it is unindented and
 # quote-heavy, exactly the shape that a heredoc inside a heredoc mangles.
 _mk_cache_denial_stub() {

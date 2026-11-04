@@ -30,8 +30,10 @@ from _pcc_test_support import (
     _require_grammar_substrate,
     _ts_stub_cache_denied,
     _ts_stub_clean,
+    _ts_stub_hangs,
     _ts_stub_not_executable,
 )
+from _schema_test_support import schema_errors
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +98,9 @@ class _MainHarness:
         A key that is not a probe kind is a typo, and a silent one would be the
         worst kind: the steer would go nowhere and the test would assert against
         an all-PASSing run while believing it had forced a failure.
+
+        A value is either an (exit_code, stdout, stderr) triple or a ready
+        ProbeRun, returned verbatim, for a test that steers its typed fields.
         """
         unknown = sorted(set(by_kind) - set(self._PASSING_RUNS))
         if unknown:
@@ -106,9 +111,17 @@ class _MainHarness:
         runs = dict(self._PASSING_RUNS, **by_kind)
 
         def runner(probe: Any) -> Any:
-            exit_code, stdout, stderr = runs[probe.probe_kind]
+            run = runs[probe.probe_kind]
+            if isinstance(run, pcc.ProbeRun):
+                return run
+            exit_code, stdout, stderr = run
             return pcc.ProbeRun(exit_code=exit_code, stdout=stdout, stderr=stderr)
         return runner
+
+    @staticmethod
+    def _grammar_run(stderr):
+        """A grammar run as run_probe() reports it: stderr parsed at the boundary."""
+        return pcc.ProbeRun(1, "", stderr, harness_failure=pcc.grammar_load_failure(stderr))
 
     def _all_pass_runner(self):
         """Runner that causes every probe kind in example-probe-set.json to PASS."""
@@ -143,7 +156,7 @@ class TestMain(_MainHarness, unittest.TestCase):
 
         # The kinds that ARE steerable are exactly the harness's known kinds,
         # which are exactly the probe kinds the loader admits.
-        self.assertEqual(set(self._PASSING_RUNS), set(pcc._VALID_PROBE_KINDS))
+        self.assertEqual(set(self._PASSING_RUNS), set(pcc.ProbeKind))
 
     # ── arg / IO errors → 64 ─────────────────────────────────────────────────
 
@@ -399,7 +412,7 @@ class TestMain(_MainHarness, unittest.TestCase):
             [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
         )
         self.assertEqual(rc, 0)
-        self.assertIn(pcc.PASS, out)
+        self.assertIn(pcc.Verdict.PASS, out)
 
     def test_bad_probe_set_without_flag_still_exits_64(self):
         """A missing probe set still returns 64, not the new 75."""
@@ -429,7 +442,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         rc, out, _ = self._run_main_capturing(
             [str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
         )
-        self.assertIn(pcc.PASS, out, "output must contain 'PASS' verdict")
+        self.assertIn(pcc.Verdict.PASS, out, "output must contain 'PASS' verdict")
 
     def test_main_output_contains_command(self):
         """Human output contains the probe command (reify or tree-sitter)."""
@@ -464,11 +477,11 @@ class TestMain(_MainHarness, unittest.TestCase):
     def _cache_denial_runner(self):
         """Runner whose grammar probe reproduces the measured cache denial.
 
-        exit 1 + "Failed to load language" is what observe() classifies as
-        _HARNESS_ERROR, so this exercises the real rendering path.
+        The run carries the boundary parser's GRAMMAR_LOAD answer, as run_probe()
+        would report it, so this exercises the real rendering path.
         """
         return self._make_runner({
-            "grammar": (1, "", _CACHE_DENIED_STDERR),
+            "grammar": self._grammar_run(_CACHE_DENIED_STDERR),
         })
 
     def test_harness_error_stderr_shows_the_denied_path(self):
@@ -518,12 +531,31 @@ class TestMain(_MainHarness, unittest.TestCase):
         dropped — leaving the renderer calling a missing CLI a landlock denial.
         """
         runner = self._make_runner({
-            "grammar": (127, "", pcc._BINARY_NOT_FOUND_SENTINEL +
-                        ": [Errno 2] No such file or directory: 'tree-sitter'"),
+            "grammar": pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.LAUNCH,
+                "[Errno 2] No such file or directory: 'tree-sitter'",
+            )),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
         self._assert_no_cache_denial_hint(out)
+
+    def test_harness_error_row_names_its_failure_kind_and_detail(self):
+        """The errno detail no longer rides in stderr, so it gets its own line."""
+        detail = "[Errno 2] No such file or directory: 'tree-sitter'"
+        runner = self._make_runner({
+            "grammar": pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(
+                pcc.HarnessFailureKind.LAUNCH, detail,
+            )),
+        })
+        rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
+        self.assertEqual(rc, 70)
+        harness_lines = [
+            line for line in out.splitlines() if line.strip().startswith("harness:")
+        ]
+        self.assertEqual(len(harness_lines), 1, out)
+        self.assertIn("launch", harness_lines[0])
+        self.assertIn(detail, harness_lines[0])
 
     def test_non_permission_load_failure_emits_no_cache_denial_hint(self):
         """A load failure with no permission indicator gets no cache hint either.
@@ -532,8 +564,9 @@ class TestMain(_MainHarness, unittest.TestCase):
         corrupt grammar must not be written off as an environmental skip.
         """
         runner = self._make_runner({
-            "grammar": (1, "", "Error: Failed to load language for path \"x.ri\"\n"
-                               "Caused by: No language found for path\n"),
+            "grammar": self._grammar_run(
+                "Error: Failed to load language for path \"x.ri\"\n"
+                "Caused by: No language found for path\n"),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -566,7 +599,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
         runner = self._make_runner({
-            "grammar": (1, "", flood),
+            "grammar": self._grammar_run(flood),
         })
         rc, out, _ = self._run_main_capturing([str(_EXAMPLE_PROBE_SET)], runner=runner)
         self.assertEqual(rc, 70, "precondition: the grammar probe is a HARNESS_ERROR")
@@ -588,7 +621,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         tail = "TAIL_BEYOND_THE_HARNESS_ERROR_CAP"
         flood = _CACHE_DENIED_STDERR + ("z" * pcc._HARNESS_ERROR_STDERR_CAP) + tail
         runner = self._make_runner({
-            "grammar": (1, "", flood),
+            "grammar": self._grammar_run(flood),
         })
         rc, out, _ = self._run_main_capturing(
             ["--json", str(_EXAMPLE_PROBE_SET)], runner=runner
@@ -641,8 +674,56 @@ class TestMain(_MainHarness, unittest.TestCase):
         self.assertGreater(len(items), 0, "--json must include at least one result")
         first = items[0]
         for fld in ("capability", "probe_kind", "verdict", "command",
-                    "exit_code", "stdout", "stderr"):
+                    "exit_code", "stdout", "stderr",
+                    "fixture", "fixture_present", "harness_failure"):
             self.assertIn(fld, first, f"--json result must include '{fld}'")
+
+    # ── the typed probe outcome on the record (PRD §5.1) ─────────────────────
+
+    def _absent_check_fixture_runner(self):
+        """The check probe ran — exit 1 satisfies its match — on no fixture."""
+        return self._make_runner({
+            "check": pcc.ProbeRun(1, "", "Error reading x.ri", fixture_present=False),
+        })
+
+    def test_json_record_names_the_fixture_as_written(self):
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)], runner=self._all_pass_runner()
+        )
+        self.assertEqual(rc, 0)
+        with open(_EXAMPLE_PROBE_SET) as fh:
+            written = [p["fixture"] for p in json.load(fh)["probes"]]
+        records = json.loads(out)["results"]
+        self.assertEqual([r["fixture"] for r in records], written)
+        for record in records:
+            with self.subTest(capability=record["capability"]):
+                self.assertIs(record["fixture_present"], True)
+                self.assertIsNone(record["harness_failure"])
+
+    def test_json_record_of_an_absent_fixture_is_unprovable(self):
+        rc, out, _ = self._run_main_capturing(
+            ["--json", str(_EXAMPLE_PROBE_SET)],
+            runner=self._absent_check_fixture_runner(),
+        )
+        self.assertEqual(rc, 2, "a probe set naming a missing fixture never exits 0")
+        check = [r for r in json.loads(out)["results"] if r["probe_kind"] == "check"][0]
+        self.assertIs(check["fixture_present"], False)
+        self.assertEqual(check["verdict"], pcc.Verdict.UNPROVABLE)
+
+    def test_text_renderer_marks_an_absent_fixture(self):
+        rc, out, _ = self._run_main_capturing(
+            [str(_EXAMPLE_PROBE_SET)], runner=self._absent_check_fixture_runner()
+        )
+        self.assertEqual(rc, 2)
+        for row in re.split(r"\n(?=\[)", out.strip()):
+            fixture_line = [
+                line for line in row.splitlines() if line.strip().startswith("fixture:")
+            ][0]
+            with self.subTest(row=row.splitlines()[0]):
+                self.assertEqual(
+                    "not present" in fixture_line, "kind:      check" in row,
+                    fixture_line,
+                )
 
     def test_main_json_verdict_is_string(self):
         """--json result.verdict is a string."""
@@ -672,7 +753,7 @@ class TestMain(_MainHarness, unittest.TestCase):
         finally:
             os.unlink(tmp)
         self.assertEqual(rc, 1, "revolute silent-accept → FAIL (exit 1)")
-        self.assertIn(pcc.FAIL, out)
+        self.assertIn(pcc.Verdict.FAIL, out)
 
     # ── skip-guarded real e2e (tree-sitter grammar) ───────────────────────────
 
@@ -699,7 +780,109 @@ class TestMain(_MainHarness, unittest.TestCase):
         # tree-sitter exits 1 for arrow_type.ri (grammar rejects it) → ABSENT
         # expected present → FAIL
         self.assertEqual(rc, 1, "arrow_type.ri with expected present → FAIL (exit 1)")
-        self.assertIn(pcc.FAIL, out)
+        self.assertIn(pcc.Verdict.FAIL, out)
+
+
+class TestHarnessFailureRecord(_MainHarness, unittest.TestCase):
+    """B4: each harness failure reaches the --json record as a typed field.
+
+    Driven through main() with the REAL run_probe, so the record is what α
+    emits, and no '[HARNESS ERROR' text appears anywhere in its output.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp(prefix="prd_gate_harness_failure_")
+        self.addCleanup(shutil.rmtree, self._tmpdir, ignore_errors=True)
+        env = unittest.mock.patch.dict(os.environ, {})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
+
+    def _probe_set(self, kind, fixture):
+        path = os.path.join(self._tmpdir, f"{kind}-probe-set.json")
+        with open(path, "w") as fh:
+            json.dump({"probes": [{
+                "capability": f"{kind} harness failure",
+                "probe_kind": kind,
+                "fixture": fixture,
+                "expected": {"observation": "present", "match": {"exit_code": 1}
+                             if kind == "check" else {}},
+            }]}, fh)
+        return path
+
+    def _assert_typed_failure(self, kind, fixture, expected_kind):
+        rc, out, err = self._run_main_capturing(["--json", self._probe_set(kind, fixture)])
+        self.assertEqual(rc, 70, out + err)
+        [record] = json.loads(out)["results"]
+        self.assertEqual(record["verdict"], pcc.Verdict.HARNESS_ERROR)
+        self.assertEqual(record["harness_failure"]["kind"], expected_kind)
+        for label, text in (("record stderr", record["stderr"]),
+                            ("stdout", out), ("stderr", err)):
+            with self.subTest(channel=label):
+                self.assertNotIn("[HARNESS ERROR", text)
+        return record
+
+    def test_missing_reify_binary_is_launch(self):
+        os.environ["REIFY_BIN"] = os.path.join(self._tmpdir, "nonexistent-reify")
+        self._assert_typed_failure(
+            "check", "tests/prd-gate/fixtures/revolute_silent_accept.ri", "launch"
+        )
+
+    def test_wedged_grammar_cache_is_setup(self):
+        os.environ["TREE_SITTER_BIN"] = _ts_stub_clean(self._tmpdir)
+        with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
+            wedged = pcc._grammar_cache_home(pcc._find_repo_root())
+            shutil.rmtree(wedged, ignore_errors=True)
+            with open(wedged, "w") as fh:
+                fh.write("x")
+            record = self._assert_typed_failure(
+                "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "setup"
+            )
+        self.assertIn(wedged, record["harness_failure"]["detail"])
+
+    def test_cache_denied_tree_sitter_is_grammar_load(self):
+        os.environ["TREE_SITTER_BIN"] = _ts_stub_cache_denied(self._tmpdir)
+        record = self._assert_typed_failure(
+            "grammar", "tests/prd-gate/fixtures/arrow_type.ri", "grammar_load"
+        )
+        self.assertIs(record["harness_failure"]["cache_denied"], True)
+
+    def test_hanging_tree_sitter_under_substrate_status_is_75(self):
+        os.environ["TREE_SITTER_BIN"] = _ts_stub_hangs(self._tmpdir)
+        with unittest.mock.patch.object(pcc, "_SUBSTRATE_PROBE_TIMEOUT_S", 0.4), \
+             _patch_parser_c(True):
+            rc, out, err = self._run_main_capturing(["--grammar-substrate-status"])
+        self.assertEqual(rc, 75, out + err)
+        self.assertNotIn("[HARNESS ERROR", out + err)
+
+
+class TestJsonRecordConformsToPublishedSchema(_MainHarness, unittest.TestCase):
+    """Every --json record α emits conforms to the result_record α publishes."""
+
+    def _records(self, runner):
+        rc, out, err = self._run_main_capturing(["--json", _EXAMPLE_PROBE_SET], runner=runner)
+        self.assertIn(rc, (0, 70), out + err)
+        return json.loads(out)["results"]
+
+    def _assert_conforming(self, records):
+        schema = pcc.published_schemas()["result_record"]
+        for record in records:
+            with self.subTest(probe_kind=record.get("probe_kind")):
+                self.assertEqual(schema_errors(record, schema), [])
+
+    def test_all_pass_records_conform(self):
+        records = self._records(self._all_pass_runner())
+        self.assertTrue(any("value_observation" in r for r in records))
+        self._assert_conforming(records)
+
+    def test_a_launch_failure_record_conforms(self):
+        launch = pcc.ProbeRun(
+            127, "", "",
+            harness_failure=pcc.HarnessFailure(pcc.HarnessFailureKind.LAUNCH, "no such file"),
+        )
+        records = self._records(self._make_runner({"check": launch}))
+        self.assertTrue(any(r["harness_failure"] is not None for r in records))
+        self._assert_conforming(records)
 
 
 # ---------------------------------------------------------------------------
@@ -909,7 +1092,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         """
         rc, out, _ = self._run_main(value_stdout="something else entirely\n")
         self.assertEqual(rc, 2, out)
-        self.assertIn(f"[{pcc.UNPROVABLE}]", out)
+        self.assertIn(f"[{pcc.Verdict.UNPROVABLE}]", out)
         line = self._value_lines(out)[0]
         self.assertIn("pattern", line)
 
@@ -955,7 +1138,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             argv_prefix=["--json"], value_stdout="something else entirely\n"
         )
         record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
-        self.assertEqual(record["verdict"], pcc.UNPROVABLE)
+        self.assertEqual(record["verdict"], pcc.Verdict.UNPROVABLE)
         self.assertEqual(
             record["value_observation"],
             {"satisfied": False, "captured": None, "failed_constraint": "pattern"},
@@ -965,7 +1148,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         """A non-zero exit produced no stdout to read, so there is no reading."""
         _, out, _ = self._run_main(argv_prefix=["--json"], value_exit=1)
         record = {r["probe_kind"]: r for r in self._json_records(out)}["value"]
-        self.assertEqual(record["verdict"], pcc.UNPROVABLE)
+        self.assertEqual(record["verdict"], pcc.Verdict.UNPROVABLE)
         self.assertNotIn("value_observation", record)
 
     def test_json_value_observation_present_on_pass(self):
@@ -987,7 +1170,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             row for row in self._rows(out) if "kind:      value" in row
         ]
         self.assertEqual(len(value_rows), 1, out)
-        self.assertTrue(value_rows[0].startswith(f"[{pcc.PASS}]"), value_rows[0])
+        self.assertTrue(value_rows[0].startswith(f"[{pcc.Verdict.PASS}]"), value_rows[0])
 
     def test_committed_example_value_row_points_at_the_fixture(self):
         with open(_EXAMPLE_PROBE_SET) as fh:
@@ -1020,7 +1203,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             "stdout_value": dict(_DAMPING_SPEC)
         })
         self.assertEqual(rc, 0, out)
-        self.assertIn(f"[{pcc.PASS}]", out)
+        self.assertIn(f"[{pcc.Verdict.PASS}]", out)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_degenerate_ratio_is_fail(self):
@@ -1032,7 +1215,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             }
         })
         self.assertEqual(rc, 1, out)
-        self.assertIn(f"[{pcc.FAIL}]", out)
+        self.assertIn(f"[{pcc.Verdict.FAIL}]", out)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_undef_ratio_is_fail(self):
@@ -1044,7 +1227,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
             }
         })
         self.assertEqual(rc, 1, out)
-        self.assertIn(f"[{pcc.FAIL}]", out)
+        self.assertIn(f"[{pcc.Verdict.FAIL}]", out)
 
     @unittest.skipUnless(_REIFY_BUILT, "reify binary not built")
     def test_e2e_same_fixture_still_passes_an_ir_probe_vacuously(self):
@@ -1052,7 +1235,7 @@ class TestValueProbeReporting(_MainHarness, unittest.TestCase):
         change `ir`."""
         rc, out, _ = self._e2e("ir", "absent", {"stderr_contains": "EvalError"})
         self.assertEqual(rc, 0, out)
-        self.assertIn(f"[{pcc.PASS}]", out)
+        self.assertIn(f"[{pcc.Verdict.PASS}]", out)
 
 
 # ---------------------------------------------------------------------------

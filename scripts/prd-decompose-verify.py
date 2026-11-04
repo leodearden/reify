@@ -11,6 +11,9 @@ It handles:
     (blocking on FAIL / UNPROVABLE / HARNESS_ERROR)
 
 CLI subcommands:
+    print-schema                  — emit the JSON schemas pdv publishes:
+                                    {premises, results, verdict,
+                                     aggregate_input, aggregate} (exit 0)
     bind      <premises.json>     — emit probe-set JSON to stdout (exit 0)
     synthesize <results.json>     — emit BatchVerdict JSON
                                     {blocks, blocking, report, malformed,
@@ -24,7 +27,8 @@ CLI subcommands:
                                     `total` before trusting it.
 
 Reuses α (`prd-capability-check.py`) in-process via importlib — the same loader
-pattern used by `_pcc_test_support.py`.  α's file is NOT edited.
+pattern used by `_pcc_test_support.py` — and imports α's vocabulary through that
+handle (pcc.Verdict, pcc.ProbeKind, pcc.Observation) rather than re-spelling it.
 
 Design decisions:
   D1: negative-assertion mandate — a `rejection` premise binds probe_kind="check"
@@ -40,26 +44,34 @@ Design decisions:
       rather than tabulated as a premise falsification.  HARNESS_ERROR is
       exempt and always blocks: it is the verdict that reports "nothing could
       be run at all", so absent evidence is its message, not a defect in it.
+      A record α measured as having no fixture (`fixture_present: false`) is
+      set aside as fixture-absent rather than blocking.  A record that cannot
+      be adjudicated — a verdict outside α's Verdict, or (HARNESS_ERROR aside)
+      a fixture_present that is not α's boolean — is MALFORMED: set aside, and
+      its evidence is not counted as executed, so it never reads as verified.
+      classify_record states the order (PRD §5.2 as amended by R14).
   D3: reuse α's exact output shape via importlib — no re-implementation.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
+import dataclasses
 import importlib.util
 import json
 import os
-import re
 import sys
 from dataclasses import dataclass, field
+from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Load α (prd-capability-check.py) via importlib
 # ---------------------------------------------------------------------------
-# Mirror the loader pattern in _pcc_test_support.py so α is reused
-# in-process without editing the locked/merged file.
+# Mirror the loader pattern in _pcc_test_support.py so α, and the vocabulary it
+# publishes, is reused in-process.
 
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _ALPHA_PATH = os.path.join(_SCRIPTS_DIR, "prd-capability-check.py")
@@ -76,13 +88,23 @@ _alpha_spec.loader.exec_module(pcc)
 # Premise — input record from the Enumerator / leaf fixture
 # ---------------------------------------------------------------------------
 
+class AssertionKind(StrEnum):
+    """What a premise asserts; each kind is one row of _ASSERTION_KIND_MAP."""
+    REJECTION = "rejection"
+    PARSES = "parses"
+    RESOLVES = "resolves"
+    PRODUCES = "produces"
+    IR = "ir"
+    VALUE = "value"
+
+
 @dataclass
 class Premise:
     """A single premise asserted by a decompose-leaf signal.
 
     Fields:
         text            — human-readable assertion statement
-        assertion_kind  — "rejection" | "parses" | "resolves" | "produces" | "ir" | "value"
+        assertion_kind  — an AssertionKind value
         fixture         — repo-relative path to the .ri fixture file
         match           — the premise's own match keys for α's probe (stderr_contains, …);
                           premise_to_probe adds the ones its assertion kind requires
@@ -108,8 +130,8 @@ class AssertionBinding:
     own statement of what makes it non-vacuous.  It is read-only, so no probe
     handed to a caller can rewrite the row.
     """
-    probe_kind: str
-    observation: str
+    probe_kind: pcc.ProbeKind
+    observation: pcc.Observation
     required_match: Mapping[str, Any]
 
 
@@ -117,32 +139,39 @@ _NO_REQUIRED_MATCH: Mapping[str, Any] = MappingProxyType({})
 
 # Deterministic binding table (PRD D1 / D4).  α's load_probe_set holds the rest
 # of each probe's non-vacuity, by the rules tests/prd-gate/README.md states.
-_ASSERTION_KIND_MAP: Mapping[str, AssertionBinding] = MappingProxyType({
+_PRESENT = pcc.Observation.PRESENT
+_ABSENT = pcc.Observation.ABSENT
+
+_ASSERTION_KIND_MAP: Mapping[AssertionKind, AssertionBinding] = MappingProxyType({
     # The rejection FIRES → exit 1 → match satisfied → PRESENT → PASS; reify
     # accepting silently (exit 0) misses it → ABSENT → expected present → FAIL.
     # Negative-assertion mandate: "present", NOT "absent" (see premise_to_probe).
-    "rejection": AssertionBinding(
-        "check", "present", MappingProxyType({"exit_code": 1})
+    AssertionKind.REJECTION: AssertionBinding(
+        pcc.ProbeKind.CHECK, _PRESENT, MappingProxyType({"exit_code": 1})
     ),
     # reify check exits 0 → match satisfied → PRESENT.
-    "resolves": AssertionBinding(
-        "check", "present", MappingProxyType({"exit_code": 0})
+    AssertionKind.RESOLVES: AssertionBinding(
+        pcc.ProbeKind.CHECK, _PRESENT, MappingProxyType({"exit_code": 0})
     ),
     # tree-sitter exits 0 (no parse errors) → PRESENT → PASS.
-    "parses": AssertionBinding("grammar", "present", _NO_REQUIRED_MATCH),
+    AssertionKind.PARSES: AssertionBinding(pcc.ProbeKind.GRAMMAR, _PRESENT, _NO_REQUIRED_MATCH),
     # reify eval exits ≠ 0 with the premise's stderr signature → PRESENT → PASS.
     # No fixed key: the signature is the premise's own, and α refuses its lack.
-    "produces": AssertionBinding("ir", "present", _NO_REQUIRED_MATCH),
+    AssertionKind.PRODUCES: AssertionBinding(pcc.ProbeKind.IR, _PRESENT, _NO_REQUIRED_MATCH),
     # reify eval exits 0 (clean) → ABSENT → expected absent → PASS.
-    "ir": AssertionBinding("ir", "absent", _NO_REQUIRED_MATCH),
+    AssertionKind.IR: AssertionBinding(pcc.ProbeKind.IR, _ABSENT, _NO_REQUIRED_MATCH),
     # reify eval exits 0 AND the stdout capture satisfies the numeric
     # constraint → PRESENT → PASS; exits 0 and a capture was read but is wrong
     # or undef → ABSENT → FAIL; exits ≠ 0, or the pattern located nothing →
     # INDETERMINATE → UNPROVABLE (ABSENT is reserved for a value actually read:
     # a mis-aimed pattern is a broken probe, not a negative finding).  α's value
     # predicate rules are what make this row non-vacuous.
-    "value": AssertionBinding("value", "present", _NO_REQUIRED_MATCH),
+    AssertionKind.VALUE: AssertionBinding(pcc.ProbeKind.VALUE, _PRESENT, _NO_REQUIRED_MATCH),
 })
+
+_KINDS_WITHOUT_BINDING = sorted(set(AssertionKind) - set(_ASSERTION_KIND_MAP))
+if _KINDS_WITHOUT_BINDING:
+    raise RuntimeError(f"_ASSERTION_KIND_MAP has no row for {_KINDS_WITHOUT_BINDING}")
 
 
 def premise_to_probe(premise: Premise) -> Dict[str, Any]:
@@ -180,10 +209,10 @@ def premise_to_probe(premise: Premise) -> Dict[str, Any]:
                     an object, or it contradicts the row's required_match.
     """
     kind = premise.assertion_kind
-    if kind not in _ASSERTION_KIND_MAP:
+    if not isinstance(kind, str) or kind not in _ASSERTION_KIND_MAP:
         raise ValueError(
             f"unknown assertion_kind {kind!r}; "
-            f"must be one of {sorted(_ASSERTION_KIND_MAP)}"
+            f"must be one of {[k.value for k in AssertionKind]}"
         )
     binding = _ASSERTION_KIND_MAP[kind]
 
@@ -299,18 +328,16 @@ def normalize_command(value: Any) -> List[str]:
 # BatchVerdict — output of synthesize_batch
 # ---------------------------------------------------------------------------
 
-# Verdict constants reused from α (imported via pcc above)
-_BLOCKING_VERDICTS = frozenset({"FAIL", "UNPROVABLE", "HARNESS_ERROR"})
+class RecordCategory(StrEnum):
+    """How synthesize_batch treats one result record (task #7257 ARM 1).
 
-
-# Record classification (task #7257 ARM 1).  These are RECORD categories, NOT
-# new verdicts — PRD §6 decision 3 fixes the verdict vocabulary at
-# PASS / FAIL / UNPROVABLE (+ HARNESS_ERROR) and this harness does not extend it.
-CAT_NON_BLOCKING = "NON_BLOCKING"   # verdict outside _BLOCKING_VERDICTS (incl. PASS
-                                    # and premise-shaped records with no verdict key)
-CAT_MALFORMED = "MALFORMED"         # blocking verdict with no executed-probe evidence
-CAT_FIXTURE_ABSENT = "FIXTURE_ABSENT"   # probe ran but its fixture does not exist
-CAT_BLOCKING = "BLOCKING"           # a real, evidence-backed falsification
+    RECORD categories, not verdicts: α's Verdict is the verdict vocabulary and
+    this harness does not extend it.
+    """
+    NON_BLOCKING = "NON_BLOCKING"      # counts toward a clean leaf
+    MALFORMED = "MALFORMED"            # cannot be adjudicated: set aside, reported
+    FIXTURE_ABSENT = "FIXTURE_ABSENT"  # the probe ran but its fixture did not exist
+    BLOCKING = "BLOCKING"              # an evidence-backed falsification, or HARNESS_ERROR
 
 
 def has_probe_evidence(rec: Dict[str, Any]) -> bool:
@@ -338,176 +365,46 @@ def has_probe_evidence(rec: Dict[str, Any]) -> bool:
     return rec.get("exit_code") is not None
 
 
-# ENOENT signatures, matched case-insensitively.  Both spellings occur: Rust's
-# io::Error renders ENOENT as "(os error 2)", while Python/CLI wrappers render
-# the strerror text.  A signature counts only on a stderr line that also names
-# the probe's own fixture (pcc.fixture_argument), because an ENOENT about any
-# other path is not evidence that the probe's target was absent.
-#
-# The two are deliberately NOT the same kind of pattern.  The strerror text is a
-# complete phrase, so a plain substring test carries no prefix hazard.  The
-# errno rendering does: `"os error 2"` as a bare substring is a PREFIX test, not
-# an errno test, and swallows ENOTDIR(20) / EISDIR(21) / EINVAL(22) /
-# EMFILE(24) / ENOSPC(28) and the whole 2XX range.  The negative lookahead is
-# what makes it mean ENOENT specifically.  It must be a lookahead rather than a
-# required closing paren, because a bare trailing `os error 2` at end-of-string
-# is a spelling that occurs in the wild and must still match.
-_FIXTURE_ABSENT_PHRASE = "no such file or directory"
-_FIXTURE_ABSENT_ERRNO_RE = re.compile(r"os error 2(?![0-9])")
+def classify_record(rec: Dict[str, Any]) -> RecordCategory:
+    """Classify a result record into its RecordCategory.
 
+    PRD docs/prds/v0_6/prd-probe-gate-typed-outcomes.md §5.2 as amended by R14,
+    first match wins:
 
-def _reports_enoent(line: str) -> bool:
-    lowered = line.lower()
-    return (_FIXTURE_ABSENT_PHRASE in lowered
-            or bool(_FIXTURE_ABSENT_ERRNO_RE.search(lowered)))
+      1. NON_BLOCKING   — PASS on a fixture α saw (`fixture_present is True`).
+      2. BLOCKING       — HARNESS_ERROR: the machinery could not run, so absent
+                          evidence is its message rather than a defect in it
+                          (the Prover's no-process fallback carries none).
+      3. MALFORMED      — the verdict is not one of α's, or fixture_present is
+                          not α's boolean: the record adjudicates nothing.
+      4. MALFORMED      — no executed-probe evidence: an unexecuted promise.
+      5. FIXTURE_ABSENT — α measured the fixture absent when the probe launched,
+                          whatever the remaining verdict, PASS included.
+      6. BLOCKING       — an evidence-backed falsification.
 
-
-def _path_token_re(path: str) -> "re.Pattern[str]":
-    """Match `path` as a whole path token, never as the tail of a longer path.
-
-    `/` is deliberately not a left delimiter, so `leaf.ri` does not match
-    inside `/other/leaf.ri` or `fixtures/subleaf.ri`.
-    """
-    return re.compile(r"(?:^|[\s'\"`])" + re.escape(path) + r"(?=[\s'\"`:]|$)")
-
-
-def fixture_absent_evidence(rec: Dict[str, Any]) -> bool:
-    """True iff the record's captured stderr says the probe's fixture did not exist.
-
-    Detection is STDERR-SIGNATURE based, not filesystem based, deliberately.
-    Re-stat-ing the fixture here would be a time-of-check/time-of-run split: the
-    synthesize step runs after the probes, potentially in a different working
-    directory, a different worktree, or after the leaf's own deliverable has
-    since been written.  A filesystem answer at synthesize time is therefore an
-    answer to a different question than "could this probe find its target when
-    it ran".  The captured stderr IS the record of what happened at run time,
-    and PRD §6 decision 4 exists precisely so this is answerable from the
-    record alone.
-
-    Carve-out for α's binary-not-found sentinel: a missing `reify` binary makes
-    the OS emit the SAME ENOENT text (α wraps it as
-    `f"{_BINARY_NOT_FOUND_SENTINEL}: {exc}"`), but nothing was probed at all, so
-    it is a real harness failure that must keep blocking.  The sentinel is read
-    from α rather than re-declared as a literal so the two cannot drift.  α
-    itself always classifies that case HARNESS_ERROR (observe() checks the
-    sentinel before any kind-specific logic), and classify_record now short-
-    circuits HARNESS_ERROR to BLOCKING before calling this function at all — so
-    for α-produced records this carve-out is belt-and-braces.  It is kept
-    because these records reach the harness via a relay agent, which can
-    mislabel a launch failure as a bare FAIL; then this is the only thing
-    standing between "the binary is missing" and "the fixture is the leaf's own
-    deliverable".
-
-    The errno signature is ANCHORED (`os error 2(?![0-9])`).  ENOENT is errno 2,
-    and an unanchored `"os error 2"` substring is a prefix test that also fires
-    on ENOTDIR(20), EISDIR(21), EINVAL(22), EMFILE(24), ENOSPC(28) and every
-    3-digit 2XX errno — each a genuine, executed falsification that would
-    silently stop blocking, inverting the carve-out into a hole that swallows
-    real findings.  The lookahead (rather than a required closing paren) is
-    load-bearing: a bare trailing `os error 2` at end-of-string is a real
-    spelling and must still match.
-
-    The signature is ANCHORED TO THE TARGET: it must sit on a stderr line that
-    also names the probe's own fixture as a whole path token, read from the
-    record's argv by pcc.fixture_argument (reify renders `Error reading
-    <fixture>: ...`).  That excludes ENOENT text quoted on a line that does not
-    name the fixture, an ENOENT about some other path (an imported module, a
-    data file, the α script itself, or a longer path that merely ends in the
-    fixture's name), and a signature on a line that does not name the fixture.
-    An argv naming no fixture never qualifies.
-
-    RESIDUAL LIMITATION: the anchor narrows the quoting hazard but does not
-    close it.  A genuine FAIL whose diagnostic line both names the fixture and
-    quotes the ENOENT text (`<fixture>:3: expected "No such file or
-    directory"`) is still mis-routed to FIXTURE_ABSENT, which downgrades BLOCKS
-    to INCOMPLETE and never reaches PASS.  The principled fix is for α to tag
-    the record structurally at probe time; follow-up ticket
-    tkt_0RVA2VQZR806G3PZTQVH0JCDXG.
-
-    GRAMMAR PROBES ARE NOT COVERED: tree-sitter reports a missing file as
-    `Error: No files were found at or matched by the provided pathname/glob`,
-    which names neither the path nor ENOENT.  A never-written grammar fixture
-    therefore still blocks, failing closed.  Tracked by #8122.
+    Rule 3's out-of-vocabulary arm is the fail-closed reading of a corner §5.2
+    leaves unstated (esc-8651-1).  No stderr text is consulted.
 
     Args:
         rec: An α --json result record.
 
     Returns:
-        True when a stderr line names the probe's fixture and carries an ENOENT
-        signature, and the stderr is not α's binary-not-found sentinel.
+        The record's RecordCategory.
     """
-    stderr = str(rec.get("stderr", ""))
-    if pcc._BINARY_NOT_FOUND_SENTINEL in stderr:
-        return False
-    fixture = pcc.fixture_argument(normalize_command(rec.get("command")))
-    if not fixture:
-        return False
-    names_fixture = _path_token_re(fixture)
-    return any(names_fixture.search(line) and _reports_enoent(line)
-               for line in stderr.splitlines())
-
-
-def classify_record(rec: Dict[str, Any]) -> str:
-    """Classify a result record into one of the CAT_* categories.
-
-    Precedence (first match wins):
-
-      1. NON_BLOCKING   — the verdict is not one of FAIL / UNPROVABLE /
-                          HARNESS_ERROR.  This covers PASS and also
-                          premise-shaped records that carry no `verdict` key at
-                          all (RESULTS_SCHEMA is loose enough today that a
-                          premise validates as a result).  The evidence gate
-                          deliberately does NOT re-litigate a non-blocking
-                          record: it exists to stop unexecuted promises from
-                          being tabulated as falsifications.
-      2. BLOCKING (HARNESS_ERROR) — see the carve-out below; checked before
-                          BOTH downgrade branches.
-      3. MALFORMED      — a FAIL/UNPROVABLE with no executed-probe evidence.
-                          A harness defect, not a premise falsification.
-      4. FIXTURE_ABSENT — a FAIL/UNPROVABLE whose probe ran but whose target
-                          file did not exist.  Ordered AFTER malformed so an
-                          evidence-free record is never reclassified on the
-                          strength of a stderr string no process produced.
-      5. BLOCKING       — an evidence-backed falsification.
-
-    HARNESS_ERROR CARVE-OUT (task #7257 amendment).  Both downgrade branches
-    exist to stop a *premise falsification* being claimed on no evidence.
-    HARNESS_ERROR does not make that claim — it says "the probe machinery
-    itself could not run", which is the one verdict for which absent evidence
-    is the message rather than a defect in the message.  Routing it through
-    either downgrade inverts its meaning:
-
-      - MALFORMED: the Prover prompt's documented fallback for "I could not run
-        anything at all" is literally `{verdict: "HARNESS_ERROR", command: [],
-        exit_code: -1}`.  Under a blanket evidence gate that record stops
-        blocking, so the one path meaning "python3 missing / α script path
-        wrong / the shell step died" silently downgrades the batch to
-        INCOMPLETE.
-      - FIXTURE_ABSENT: a harness-level ENOENT (e.g. `python3: can't open file
-        'scripts/prd-capability-check.py': [Errno 2] No such file or
-        directory`, or a mis-resolved repo root) can carry the fixture-absent
-        signature and would be reported as "the fixture is the leaf's own deliverable" — the
-        opposite diagnosis, and it stops blocking.  The carve-out's rationale
-        (a not-yet-written `.ri` deliverable) is about a PROBE verdict; it has
-        no purchase on a harness error.
-
-    Args:
-        rec: An α --json result record.
-
-    Returns:
-        One of CAT_NON_BLOCKING / CAT_MALFORMED / CAT_FIXTURE_ABSENT /
-        CAT_BLOCKING.
-    """
-    verdict = rec.get("verdict", "")
-    if verdict not in _BLOCKING_VERDICTS:
-        return CAT_NON_BLOCKING
-    if verdict == "HARNESS_ERROR":
-        return CAT_BLOCKING
+    verdict = rec.get("verdict")
+    fixture_present = rec.get("fixture_present")
+    if verdict == pcc.Verdict.PASS and fixture_present is True:
+        return RecordCategory.NON_BLOCKING
+    if verdict == pcc.Verdict.HARNESS_ERROR:
+        return RecordCategory.BLOCKING
+    is_verdict = isinstance(verdict, str) and verdict in set(pcc.Verdict)
+    if not is_verdict or not isinstance(fixture_present, bool):
+        return RecordCategory.MALFORMED
     if not has_probe_evidence(rec):
-        return CAT_MALFORMED
-    if fixture_absent_evidence(rec):
-        return CAT_FIXTURE_ABSENT
-    return CAT_BLOCKING
+        return RecordCategory.MALFORMED
+    if fixture_present is False:
+        return RecordCategory.FIXTURE_ABSENT
+    return RecordCategory.BLOCKING
 
 
 @dataclass
@@ -523,15 +420,19 @@ class BatchVerdict:
                          executed / blocking / malformed / fixture-absent;
                          labelled sections below it embed the captured evidence
                          (command, exit_code, stdout, stderr) per record
-        malformed      — capability strings for FAIL/UNPROVABLE verdicts that
-                         carry NO executed-probe evidence.  A harness defect,
-                         not a falsification: these do NOT set `blocks`, but
-                         they mean the batch was not actually verified.
-                         HARNESS_ERROR is never routed here — it always blocks
-                         (see classify_record).
-        fixture_absent — capability strings whose probe could not run because
-                         the fixture does not exist (populated from step-06).
-        executed       — number of records carrying executed-probe evidence
+        malformed      — capability strings for records classify_record
+                         finds MALFORMED: no executed-probe evidence, a verdict
+                         outside α's, or a fixture_present that is not α's
+                         boolean.  A harness defect, not a falsification:
+                         these do NOT set `blocks`, but they mean the batch was
+                         not actually verified.  HARNESS_ERROR is never routed
+                         here — it always blocks.
+        fixture_absent — capability strings whose probe ran without its
+                         fixture: α measured it absent at launch.  Not a
+                         falsification, so these do NOT set `blocks`.
+        executed       — number of records carrying executed-probe evidence,
+                         MALFORMED records excluded: evidence on a record that
+                         adjudicates nothing verifies nothing (PRD §5.2, B5′)
         total          — total number of records synthesized
 
     `malformed` and `fixture_absent` default to empty and `executed`/`total` to
@@ -548,6 +449,61 @@ class BatchVerdict:
     fixture_absent: List[str] = field(default_factory=list)
     executed: int = 0
     total: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Workflow verdict — the per-leaf and batch dispositions (PRD §5.4)
+# ---------------------------------------------------------------------------
+
+class LeafDisposition(StrEnum):
+    BLOCKS = "BLOCKS"              # an evidence-backed falsification
+    NOT_VERIFIED = "NOT_VERIFIED"  # nothing blocked, and no probe executed
+    VERIFIED = "VERIFIED"          # a probe executed and nothing blocked
+    UNENUMERATED = "UNENUMERATED"  # the Enumerator produced no premises
+
+
+class BatchDisposition(StrEnum):
+    BLOCKS = "BLOCKS"              # some leaf blocks, or a leaf was dropped
+    INCOMPLETE = "INCOMPLETE"      # nothing blocks, but something went unverified
+    PASS = "PASS"                  # every leaf verified
+
+
+class LeafResultStatus(StrEnum):
+    """What the workflow's stage 3 returns for one leaf (PRD D6)."""
+    SYNTHESIZED = "synthesized"
+    UNENUMERATED = "unenumerated"
+    SYNTHESIZE_FAILED = "synthesize_failed"
+
+
+@dataclass(frozen=True)
+class LeafDispositionRow:
+    """One leaf's disposition and counters; never its report (PRD D7)."""
+    label: str
+    disposition: LeafDisposition
+    blocks: bool
+    blocking: Tuple[str, ...]
+    executed: int
+    total: int
+    malformed: Tuple[str, ...]
+    fixture_absent: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkflowVerdict:
+    """The workflow's batch verdict: PRD §5.4's aggregate stdout."""
+    disposition: BatchDisposition
+    blocks: bool
+    blocking: Tuple[str, ...]
+    summary: str
+    leaf_dispositions: Tuple[LeafDispositionRow, ...]
+    leaves_total: int
+    leaves_probed: int
+    leaves_unenumerated: int
+    leaves_not_verified: int
+    unenumerated_leaves: Tuple[str, ...]
+    not_verified_leaves: Tuple[str, ...]
+    malformed_records: int
+    fixture_absent_records: int
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +553,8 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
     """Synthesize Prover + Adversary α result records into a BatchVerdict.
 
     Consumes α's --json result records (shape:
-        {capability, probe_kind, verdict, command, exit_code, stdout, stderr}
+        {capability, probe_kind, verdict, command, exit_code, stdout, stderr,
+         fixture, fixture_present, harness_failure}
     ) keyed by role ("prover" / "adversary").
 
     Union semantics (PRD decision 5):
@@ -612,22 +569,22 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         and is routed to `malformed` instead, where it is reported but does not
         set `blocks`.  Without this, one real falsification was buried among N
         vacuous ones and a human reading the report could not tell them apart.
+        A record whose verdict or fixture_present is not α's is MALFORMED too
+        (PRD §5.2 as amended by R14), and no MALFORMED record counts toward
+        `executed`, so it can never make a leaf read as verified.
 
         HARNESS_ERROR is exempt from BOTH downgrades and always blocks: it is
         the verdict that *reports* "nothing could be run", so absent evidence is
         its message rather than a defect in its message.  See classify_record.
 
-    Fixture-absent carve-out (task #7257 ARM 1):
-        A FAIL/UNPROVABLE probe that ran but could not find its target file has
-        falsified nothing — during decompose the fixture is very often the
-        leaf's own deliverable.  Such records are routed to `fixture_absent`,
-        reported under their own label, and do NOT set `blocks`.  Detection is
-        stderr-signature based rather than filesystem based; see
-        fixture_absent_evidence for the time-of-check/time-of-run rationale and
-        for the binary-not-found carve-out that keeps a missing `reify` binary
-        blocking.  A HARNESS_ERROR is never routed here either: a harness-level
-        ENOENT means the machinery is broken, not that a deliverable is
-        unwritten.
+    Fixture-absent carve-out (PRD §5.2 / D3):
+        A probe whose fixture did not exist has falsified nothing — during
+        decompose the fixture is very often the leaf's own deliverable.  α
+        measures that when the probe launches; a record it marks
+        `fixture_present: false` is routed to `fixture_absent`, reported under
+        its own label, and does NOT set `blocks`.  A HARNESS_ERROR is never
+        routed here: the machinery failing is the louder fact.  See
+        classify_record for the full precedence.
 
     Args:
         role_results: dict with "prover" and "adversary" keys, each mapping to
@@ -662,11 +619,11 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         capability = rec.get("capability", "<unknown>")
         role = rec.get("_role", "unknown")
 
-        if has_probe_evidence(rec):
+        category = classify_record(rec)
+        if category != RecordCategory.MALFORMED and has_probe_evidence(rec):
             executed += 1
 
-        category = classify_record(rec)
-        if category == CAT_NON_BLOCKING:
+        if category == RecordCategory.NON_BLOCKING:
             continue
 
         # Captured evidence, normalized for rendering only — never rewritten.
@@ -679,12 +636,12 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         block = _evidence_block(verdict, capability, role, cmd_str,
                                 exit_code, stdout, stderr)
 
-        if category == CAT_MALFORMED:
+        if category == RecordCategory.MALFORMED:
             malformed.append(capability)
             malformed_parts.append(block)
             continue
 
-        if category == CAT_FIXTURE_ABSENT:
+        if category == RecordCategory.FIXTURE_ABSENT:
             fixture_absent.append(capability)
             fixture_absent_parts.append(block)
             continue
@@ -713,8 +670,8 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
         )
     if fixture_absent_parts:
         sections.append(
-            "FIXTURE ABSENT (probe could not run — the fixture is the leaf's own "
-            "deliverable; not a falsification):\n\n"
+            "FIXTURE ABSENT (the probe ran, but its fixture did not exist — "
+            "typically the leaf's own deliverable; not a falsification):\n\n"
             + "\n\n".join(fixture_absent_parts)
         )
     report = "\n\n".join(sections)
@@ -731,6 +688,180 @@ def synthesize_batch(role_results: Dict[str, List[Dict[str, Any]]]) -> BatchVerd
 
 
 # ---------------------------------------------------------------------------
+# published_schemas() — the JSON schemas `print-schema` emits
+# ---------------------------------------------------------------------------
+
+_RELAY_REQUIRED = ["capability", "verdict", "command", "exit_code", "fixture_present"]
+_VERDICT_REQUIRED = ["blocks", "blocking", "report", "executed", "total"]
+
+
+def _string_list() -> Dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}}
+
+
+def _premises_schema() -> Dict[str, Any]:
+    premise = {
+        "type": "object",
+        "required": ["text", "assertion_kind", "fixture", "match"],
+        "properties": {
+            "text": {"type": "string"},
+            "assertion_kind": pcc.enum_schema(AssertionKind),
+            "fixture": {"type": "string"},
+            "match": {"type": "object"},
+            "capability": {"type": "string"},
+        },
+    }
+    return {
+        "type": "object",
+        "required": ["premises"],
+        "properties": {"premises": {"type": "array", "items": premise}},
+    }
+
+
+def _relay_record_schema() -> Dict[str, Any]:
+    """α's result_record as an agent relays it.
+
+    The property shapes are α's.  pdv authors the widening: fixture_present may
+    be null, but only beside HARNESS_ERROR — the Prover's own record of a run no
+    α process produced.  exit_code −1 for that record is already an integer.
+    """
+    properties = copy.deepcopy(pcc.published_schemas()["result_record"]["properties"])
+    properties["fixture_present"] = {"type": ["boolean", "null"]}
+    return {
+        "type": "object",
+        "required": list(_RELAY_REQUIRED),
+        "properties": properties,
+        "if": {"properties": {"verdict": {"not": {"const": pcc.Verdict.HARNESS_ERROR.value}}}},
+        "then": {"properties": {"fixture_present": {"type": "boolean"}}},
+    }
+
+
+def _results_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["prover"],
+        "properties": {
+            "prover": {"type": "array", "items": _relay_record_schema()},
+            "adversary": {"type": "array", "items": _relay_record_schema()},
+        },
+    }
+
+
+def _batch_verdict_properties() -> Dict[str, Any]:
+    return {
+        "blocks": {"type": "boolean"},
+        "blocking": _string_list(),
+        "report": {"type": "string"},
+        "malformed": _string_list(),
+        "fixture_absent": _string_list(),
+        "executed": {"type": "integer"},
+        "total": {"type": "integer"},
+    }
+
+
+def _verdict_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": list(_VERDICT_REQUIRED),
+        "properties": _batch_verdict_properties(),
+    }
+
+
+def _leaf_result_schema(status: LeafResultStatus, **properties: Any) -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["label", "status", *properties],
+        "properties": {
+            "label": {"type": "string"},
+            "status": {"const": status.value},
+            **properties,
+        },
+    }
+
+
+def _aggregate_input_schema() -> Dict[str, Any]:
+    """PRD §5.4's aggregate input.  A synthesized leaf carries no report (D7)."""
+    leaf_verdict = {
+        "type": "object",
+        "required": [key for key in _VERDICT_REQUIRED if key != "report"],
+        "properties": {
+            key: schema for key, schema in _batch_verdict_properties().items()
+            if key != "report"
+        },
+    }
+    leaf_result = {"oneOf": [
+        {"type": "null"},
+        _leaf_result_schema(LeafResultStatus.SYNTHESIZED, verdict=leaf_verdict),
+        _leaf_result_schema(LeafResultStatus.UNENUMERATED),
+        _leaf_result_schema(LeafResultStatus.SYNTHESIZE_FAILED, reason={"type": "string"}),
+    ]}
+    leaf = {"type": "object", "required": ["label"], "properties": {"label": {"type": "string"}}}
+    return {
+        "type": "object",
+        "required": ["leaves", "leaf_results"],
+        "properties": {
+            "leaves": {"type": "array", "items": leaf},
+            "leaf_results": {"type": "array", "items": leaf_result},
+        },
+    }
+
+
+def _every_field_required(dataclass_type: type, properties: Dict[str, Any]) -> Dict[str, Any]:
+    """A serialised `dataclass_type`: its fields, every one required, typed by `properties`."""
+    return {
+        "type": "object",
+        "required": [f.name for f in dataclasses.fields(dataclass_type)],
+        "properties": properties,
+    }
+
+
+def _aggregate_schema() -> Dict[str, Any]:
+    """PRD §5.4's aggregate stdout: a serialised WorkflowVerdict."""
+    row = _every_field_required(LeafDispositionRow, {
+        "label": {"type": "string"},
+        "disposition": pcc.enum_schema(LeafDisposition),
+        "blocks": {"type": "boolean"},
+        "blocking": _string_list(),
+        "executed": {"type": "integer"},
+        "total": {"type": "integer"},
+        "malformed": _string_list(),
+        "fixture_absent": _string_list(),
+    })
+    return _every_field_required(WorkflowVerdict, {
+        "disposition": pcc.enum_schema(BatchDisposition),
+        "blocks": {"type": "boolean"},
+        "blocking": _string_list(),
+        "summary": {"type": "string"},
+        "leaf_dispositions": {"type": "array", "items": row},
+        "leaves_total": {"type": "integer"},
+        "leaves_probed": {"type": "integer"},
+        "leaves_unenumerated": {"type": "integer"},
+        "leaves_not_verified": {"type": "integer"},
+        "unenumerated_leaves": _string_list(),
+        "not_verified_leaves": _string_list(),
+        "malformed_records": {"type": "integer"},
+        "fixture_absent_records": {"type": "integer"},
+    })
+
+
+def published_schemas() -> Dict[str, Dict[str, Any]]:
+    """The JSON schemas of what pdv reads and emits, built fresh per call.
+
+    premises is the Enumerator's output and `bind`'s input; results is what the
+    Prover and Adversary relay and `synthesize` reads; verdict is `synthesize`'s
+    output; aggregate_input / aggregate are PRD §5.4's.  Every enum is read off
+    a vocabulary — pdv's own, or α's through pcc — never re-spelt.
+    """
+    return {
+        "premises": _premises_schema(),
+        "results": _results_schema(),
+        "verdict": _verdict_schema(),
+        "aggregate_input": _aggregate_input_schema(),
+        "aggregate": _aggregate_schema(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # _parse_premises_file() — read premises JSON and return list of Premise
 # ---------------------------------------------------------------------------
 
@@ -742,7 +873,7 @@ def _parse_premises_file(path: str) -> List[Premise]:
             "premises": [
                 {
                     "text": "...",
-                    "assertion_kind": "rejection|parses|resolves|produces|ir|value",
+                    "assertion_kind": "<an AssertionKind value>",
                     "fixture": "...",
                     "match": {...},            // optional; see premise_to_probe
                     "capability": "..."   // optional
@@ -824,10 +955,13 @@ def main(argv: List[str]) -> int:
     """CLI entry-point.  Returns an exit code (0/1/64).
 
     Usage:
+        prd-decompose-verify.py print-schema
         prd-decompose-verify.py bind      <premises.json>
         prd-decompose-verify.py synthesize <results.json>
 
     Subcommands:
+        print-schema  Emit published_schemas() as JSON to stdout.  Exit 0.
+
         bind        Read {"premises":[...]} from premises.json, emit α probe-set
                     JSON to stdout.  Exit 0 on success, 64 on usage/IO/parse error.
 
@@ -862,6 +996,8 @@ def main(argv: List[str]) -> int:
     )
     sub = parser.add_subparsers(dest="subcmd")
 
+    sub.add_parser("print-schema", help="Print the JSON schemas pdv publishes.")
+
     # bind subcommand
     bind_p = sub.add_parser("bind", help="Bind premises to an α probe-set JSON.")
     bind_p.add_argument("premises", metavar="PREMISES_JSON",
@@ -880,9 +1016,14 @@ def main(argv: List[str]) -> int:
         return 0 if code == 0 else 64
 
     if args.subcmd is None:
-        sys.stderr.write("error: a subcommand is required: bind | synthesize\n")
+        sys.stderr.write(f"error: a subcommand is required: {' | '.join(sub.choices)}\n")
         parser.print_help(sys.stderr)
         return 64
+
+    if args.subcmd == "print-schema":
+        sys.stdout.write(json.dumps(published_schemas(), indent=4))
+        sys.stdout.write("\n")
+        return 0
 
     # ── bind ──────────────────────────────────────────────────────────────────
     if args.subcmd == "bind":
@@ -917,17 +1058,7 @@ def main(argv: List[str]) -> int:
             return 64
 
         bv = synthesize_batch(role_results)
-
-        output = {
-            "blocks": bv.blocks,
-            "blocking": bv.blocking,
-            "report": bv.report,
-            "malformed": bv.malformed,
-            "fixture_absent": bv.fixture_absent,
-            "executed": bv.executed,
-            "total": bv.total,
-        }
-        sys.stdout.write(json.dumps(output, indent=4))
+        sys.stdout.write(json.dumps(dataclasses.asdict(bv), indent=4))
         sys.stdout.write("\n")
         return 1 if bv.blocks else 0
 

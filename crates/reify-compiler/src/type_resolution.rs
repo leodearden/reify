@@ -1,6 +1,18 @@
-use super::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+
+use reify_core::{
+    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type,
+};
+use reify_ir::{CompiledExpr, CompiledExprKind, Value};
+
+use crate::entity::satisfies_trait_bound;
+use crate::types::{
+    CompiledTrait, CompiledTypeAlias, DefaultKind, RequirementKind, TopologyTemplate,
+};
+use crate::units::{
+    UnitEntry, UnitRegistry, resolve_unit_expr, unit_resolve_error_to_diagnostic, unit_to_scalar,
+};
 
 thread_local! {
     /// Ambient map from each in-scope enum's name to its declared type params
@@ -5831,8 +5843,8 @@ mod tests {
     //    rather than zero-diagnostics: an unresolved bare name returns None
     //    from `resolve_type_expr_with_aliases` WITHOUT a diagnostic → the joint
     //    DOF type becomes `Type::Error` → the §7.1 verdict gate in
-    //    `compile_builder::entities_phase` reads that as already-diagnosed,
-    //    sets `skip_verdict` and emits nothing (anti-cascade). So an
+    //    `joint_self_check::joint_dof_diagnostics` reads that as
+    //    already-diagnosed and emits nothing (anti-cascade). So an
     //    `Orientation` DOF was byte-identical in output to a `Blorp` one, and
     //    `stdlib/joints.ri`'s `with orientation: Orientation` silently disabled
     //    the self-check for every orientation-bearing joint.

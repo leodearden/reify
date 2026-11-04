@@ -19,7 +19,8 @@
 use std::sync::Arc;
 
 use crate::common::as_printed::{
-    BOX_MAX, BOX_MIN, as_printed_options, box_mesh, coupon_default, fdm_process, scalar, with_field,
+    BOX_MAX, BOX_MIN, as_printed_options, assert_degraded_field, box_mesh, coupon_default,
+    fdm_process, length, scalar, vec3_dimensionless, with_field,
 };
 use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
@@ -212,6 +213,108 @@ fn infill_e_in_plane(outcome: ComputeOutcome) -> f64 {
         }
         other => panic!("expected Completed with a Field, got {other:?}"),
     }
+}
+
+/// task 6940: the zone-params slot (lambda items[2]) types its two band widths
+/// — `layer_height`, `line_width` — as `Length`; the counts and the unit build
+/// direction stay dimensionless `Value::Real`.
+#[test]
+fn as_printed_trampoline_types_the_zone_param_lengths() {
+    let ComputeOutcome::Completed {
+        result: Value::Field { lambda, .. },
+        ..
+    } = run_r_fast(as_printed_options())
+    else {
+        panic!("expected Completed with a Field");
+    };
+    let Value::List(items) = lambda.as_ref() else {
+        panic!("expected the 7-element zone payload, got {lambda:?}");
+    };
+    let Value::List(p) = &items[2] else {
+        panic!("expected the params list at items[2], got {:?}", items[2]);
+    };
+    assert_eq!(p.len(), 7, "params must be a 7-element list");
+    assert_eq!(
+        p[2],
+        scalar(0.0002, DimensionVector::LENGTH),
+        "layer_height"
+    );
+    assert_eq!(p[3], scalar(0.0004, DimensionVector::LENGTH), "line_width");
+    for idx in [0, 1, 4, 5, 6] {
+        assert!(
+            matches!(p[idx], Value::Real(_)),
+            "params[{idx}] must stay a dimensionless Value::Real, got {:?}",
+            p[idx]
+        );
+    }
+}
+
+/// The result of a `Completed` run.
+fn completed_result(outcome: ComputeOutcome) -> Value {
+    match outcome {
+        ComputeOutcome::Completed { result, .. } => result,
+        other => panic!("expected ComputeOutcome::Completed, got {other:?}"),
+    }
+}
+
+/// task 6940: a non-finite `line_width` has no meaningful wall band, so the
+/// field degrades to its Undef lambda rather than carrying it into the params.
+#[test]
+fn as_printed_trampoline_degrades_on_a_non_finite_line_width() {
+    let options = with_field(as_printed_options(), "line_width", length(f64::NAN));
+    assert_degraded_field(&completed_result(run_r_fast(options)));
+}
+
+/// task 6940: likewise for a non-finite `layer_height` (the skin band).
+#[test]
+fn as_printed_trampoline_degrades_on_a_non_finite_layer_height() {
+    let process = with_field(fdm_process(), "layer_height", length(f64::INFINITY));
+    assert_degraded_field(&completed_result(run_r_fast_with(
+        process,
+        as_printed_options(),
+    )));
+}
+
+/// task 6940: a non-finite `build_direction` component names no build axis, so
+/// the field degrades rather than silently classifying against +Z.
+#[test]
+fn as_printed_trampoline_degrades_on_a_non_finite_build_direction() {
+    let process = with_field(
+        fdm_process(),
+        "build_direction",
+        vec3_dimensionless([0.0, f64::NAN, 1.0]),
+    );
+    assert_degraded_field(&completed_result(run_r_fast_with(
+        process,
+        as_printed_options(),
+    )));
+}
+
+/// task 6940: a finite but zero-length `build_direction` is the deliberate
+/// degenerate case — it falls back to +Z instead of degrading.
+#[test]
+fn as_printed_trampoline_falls_back_to_plus_z_for_a_zero_build_direction() {
+    let process = with_field(
+        fdm_process(),
+        "build_direction",
+        vec3_dimensionless([0.0, 0.0, 0.0]),
+    );
+    let Value::Field { lambda, .. } =
+        completed_result(run_r_fast_with(process, as_printed_options()))
+    else {
+        panic!("expected a Field");
+    };
+    let Value::List(items) = lambda.as_ref() else {
+        panic!("a zero build_direction must not degrade, got {lambda:?}");
+    };
+    let Value::List(p) = &items[2] else {
+        panic!("expected the params list at items[2], got {:?}", items[2]);
+    };
+    assert_eq!(
+        p[4..],
+        [Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)],
+        "zero build_direction must fall back to +Z"
+    );
 }
 
 fn coupon_with_ex(ex: Value) -> Value {

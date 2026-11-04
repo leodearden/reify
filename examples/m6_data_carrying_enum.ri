@@ -4,7 +4,7 @@
 //! and a `match` arm that binds payload fields — the ζ integration gate.
 //!
 //! `reify eval` should report:
-//!   Widget.outline = Shape::Rect
+//!   Widget.outline = Shape::Rect { width: 0.02 m, height: 0.01 m }
 //!   Widget.area    = 0.0002 m^2   (= 20 mm × 10 mm)
 
 module m6_data_carrying_enum

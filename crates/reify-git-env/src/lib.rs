@@ -1,18 +1,5 @@
-//! The workspace's single definition of the repo-redirect git-env sanitizer.
-//!
-//! `REPO_REDIRECT_VARS` and `sanitize` live HERE, in the lower crate, because
-//! the dependency edge runs `reify-audit` -> `reify-test-support` (see
-//! `crates/reify-audit/Cargo.toml`'s `[dependencies]` entry, where
-//! `reify-test-support` is a production dependency). Both sides need the same
-//! sanitizer — this crate's own `orphan_audit` spawns and probes, and
-//! `reify-audit`'s repo-targeting git commands — and only this direction is
-//! reachable without inverting the edge.
-//!
-//! This module is the ENTRY POINT: what the sanitizer removes, why, and the
-//! measured evidence are all below, so a reader needs nothing from above the
-//! edge. `reify_audit::git_env` re-exports both items and adds the
-//! `git -C <root>` constructor, the workspace rule requiring its use, and how
-//! to sweep for breaches — further reading, not a prerequisite.
+//! The workspace's single constructor and sanitizer for git invocations that
+//! target a specific repository.
 //!
 //! # The failure mode this prevents
 //!
@@ -29,27 +16,66 @@
 //! production reader path, and `git ["add", "."] exited Some(128)` from a
 //! fixture helper colliding with the parent repo's `index.lock`.
 //!
-//! Note the asymmetry that makes this worth a single shared definition: the
-//! redirect vars do not make git *fail* — they make it silently operate on a
-//! different repository.
+//! The redirect vars do not make git *fail* — they make it silently operate on
+//! a different repository. That asymmetry is why there is one shared
+//! definition rather than a per-site precaution.
 //!
-//! # Measured
+//! ## Measured
 //!
 //! An ambient redirect var beats BOTH cwd and an explicit `-C`:
 //! `GIT_DIR=/tmp/gwt_a/.git GIT_WORK_TREE=/tmp/gwt_a git -C /tmp/gwt_b
 //! rev-parse --show-toplevel` prints `/tmp/gwt_a`; dropping the two vars prints
 //! `/tmp/gwt_b`. `sanitize_makes_dash_c_authoritative_against_real_git`, in this
-//! module's tests, re-checks both halves of that against real git on every run
+//! crate's tests, re-checks both halves of that against real git on every run
 //! rather than resting on this paragraph.
 //!
 //! Under this project's warm-lane topology the ambient case is routine, not
 //! hypothetical: tests execute inside `worktrees/_lane-NN` while a hook
 //! environment may name a different checkout entirely. The blast radius is
-//! whatever the caller does to the wrong repository — for `crate::orphan_audit`'s
-//! script spawn, whose first action is
-//! `REPO_ROOT="$(git rev-parse --show-toplevel)"`, an audit silently enumerating
-//! the wrong tree rather than erroring.
+//! whatever the caller does to the wrong repository — for a spawned script
+//! whose first action is `REPO_ROOT="$(git rev-parse --show-toplevel)"`, an
+//! audit silently enumerating the wrong tree rather than erroring.
+//!
+//! # The rule
+//!
+//! **Every git invocation that targets a specific repository is built through
+//! [`command`]**, so that `-C <root>` is authoritative regardless of an ambient
+//! environment. That covers production and test code alike: a fixture helper
+//! that shells `git init` into a tempdir is exactly as vulnerable as a shipped
+//! binary.
+//!
+//! A shape other than `git -C <root>` — a `current_dir` invocation, or a spawn
+//! of a program that runs git internally, where `-C <root>` is not the right
+//! shape — routes through [`sanitize`] directly instead, the same single
+//! sanitizer [`command`] applies.
+//!
+//! **Carve-out:** a bare `git --version` availability probe opens no
+//! repository, so no redirect var can reach it. That is the only exemption,
+//! and it rests on git's own semantics rather than on how a command happens to
+//! be used today — anything carrying `-C`, a repository path, or an implicit
+//! cwd repository is NOT exempt, including a `Command` that nothing currently
+//! spawns. "It is only read back through `get_envs()`" stops being true the
+//! day someone appends a `.status()`, so it is not a line worth drawing.
+//!
+//! The workspace's one deliberate breach is the HAZARD half of this crate's
+//! real-git test, which stays unsanitized precisely to demonstrate that an
+//! ambient redirect var still overrides `-C`. It is a premise check rather than
+//! a call site, and would have no teeth sanitized.
+//!
+//! ## Sweeping for new call sites
+//!
+//! Two shapes reach git and a sweep must consider both.
+//! `git grep -n 'Command::new("git")' -- '*.rs'` finds direct invocations; it
+//! does NOT find a spawn of a shell script that runs git internally, which is
+//! the shape of `reify-test-support`'s orphan-audit spawn. A site of either
+//! shape that is neither the `--version` carve-out nor routed through
+//! [`command`] or [`sanitize`] is a defect.
+//!
+//! Re-run that sweep when adding a call site rather than trusting a list here:
+//! an enumerated census of call sites in a doc comment rots the moment one is
+//! renamed, and silently reads as authoritative while it does.
 
+use std::path::Path;
 use std::process::Command;
 
 /// Git environment variables that redirect *which repository* a command
@@ -63,24 +89,19 @@ use std::process::Command;
 /// drop `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` (which a
 /// harness may set precisely to *increase* isolation), `GIT_TRACE*`
 /// (debuggability) and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` (commit determinism) —
-/// strictly more collateral for no gain against the failure mode this module's
-/// doc analyses above. Those are left untouched.
-///
-/// This doc is the workspace's ONE copy of that argument, living with the
-/// constant it justifies; `reify_audit::git_env` points here rather than
-/// restating it.
+/// strictly more collateral for no gain against the failure mode the crate doc
+/// analyses. Those are left untouched.
 ///
 /// Removed — not overwritten — by [`sanitize`].
 ///
 /// # Deletion guard
 ///
-/// `repo_redirect_vars_covers_the_removal_floor`, in this module's tests, names
+/// `repo_redirect_vars_covers_the_removal_floor`, in this crate's tests, names
 /// each entry independently as a containment FLOOR, so this list may still GROW
 /// without a lockstep test edit, but an entry cannot be silently DELETED from
 /// it. That guard sits next to the definition it guards on purpose: every other
-/// test of this set — here and above the dependency edge — iterates the set
-/// itself to assert the code removes what it lists, so all of them stay green
-/// through a deletion.
+/// test of this set iterates the set itself to assert the code removes what it
+/// lists, so all of them stay green through a deletion.
 pub const REPO_REDIRECT_VARS: &[&str] = &[
     // Exported by git into a hook's process tree — the observed failure.
     "GIT_DIR",
@@ -94,78 +115,31 @@ pub const REPO_REDIRECT_VARS: &[&str] = &[
     "GIT_PREFIX",
 ];
 
+/// A pre-sanitized `git -C <root>` command.
+///
+/// The path of least resistance for every repo-targeting call site — prefer
+/// this over hand-rolling `Command::new("git").arg("-C")`, which is how the
+/// failure mode [`sanitize`] prevents reaches a new helper.
+pub fn command(root: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root);
+    sanitize(&mut cmd);
+    cmd
+}
+
 /// Remove every [`REPO_REDIRECT_VARS`] entry from `cmd`'s environment.
 ///
-/// Returns `&mut Command` so callers that need a shape other than
-/// `git -C <root>` can still chain off it — this crate's own `orphan_audit`
-/// sites are exactly that case (`.current_dir(..)`, and a spawn of a shell
-/// script that runs git internally).
+/// For shapes other than `git -C <root>` (which [`command`] builds): a
+/// `current_dir` invocation, or a spawn of a program that runs git internally.
+/// Returns `&mut Command` so such callers can chain off it. A caller needing
+/// another shape reaches this sanitizer rather than re-deriving
+/// [`REPO_REDIRECT_VARS`] by hand, which is exactly how this class of bug
+/// reaches a new helper.
 ///
 /// Removal (`env_remove`) rather than assignment is deliberate: there is no
 /// correct value to assign, and an inherited-but-empty var is not the same as
 /// an absent one to git.
-///
-/// `reify_audit::git_env::command` is the `git -C <root>` constructor built on
-/// top of this, and is the path of least resistance for a repo-targeting call
-/// site above the dependency edge. A caller needing another shape must be able
-/// to reach this sanitizer rather than re-derive [`REPO_REDIRECT_VARS`] by
-/// hand, which is exactly how this class of bug reaches a new helper.
-///
-/// # What does NOT enforce this `pub`
-///
-/// No orphan-producer sweep reaches this item: the crate is excluded from that
-/// audit at the script level (`scripts/audit-orphan-producers.sh`'s
-/// `EXCLUDE_CRATES`, whose Rust mirror is `crate::orphan_audit`'s own
-/// `EXCLUDE_CRATES`), and `discover_sources` skips any path containing that
-/// segment, so a `// G-allow:` marker here would be dead ceremony. The `pub` is
-/// justified by the re-export in `reify_audit::git_env` and its callers, not by
-/// a gate: if that consumer goes away, demote or delete this item in the same
-/// change, because no sweep will say so.
-///
-/// That exclusion was written assuming a test-support crate's publics are
-/// reached only from test files. Two items break that assumption, both
-/// reached from `reify-audit`'s PRODUCTION path:
-///
-/// - this one, together with [`REPO_REDIRECT_VARS`] — re-exported by
-///   `reify_audit::git_env`, whose `git -C <root>` constructor every
-///   repo-targeting call site above the edge is required to build through
-///   (added by task 5657);
-/// - `crate::ignore_hygiene::extract_ignore_reason` — read by
-///   `reify_audit::ptodo`'s scan for the §8.3 γ reason policy, and the
-///   original reason `reify-audit` carries this crate as a normal dependency
-///   rather than a dev-dependency. It stays below the edge because it is
-///   reached from both sides: reify-audit's production scan reads it from
-///   above, and it is the extraction half of `crate::ignore_hygiene`'s
-///   format-vs-liveness split with PTODO, whose other public entry point
-///   `check_ignore_reasons` is called from a crate that does not depend on
-///   `reify-audit` at all — so a definition above the edge could not serve
-///   that module. Its form-agreement pin points UP, not sideways: the
-///   sibling it mirrors on which ignore-attribute forms carry a reason is
-///   `reify_audit::ptodo`'s private `ignore_attr`, which lives ABOVE the
-///   edge (`eir_non_canonical_no_spaces_returns_reason` here,
-///   `scan_file_ignore_non_canonical_form_blocker_prose` there). Do not
-///   infer any agreement with `check_ignore_reasons`: that scanner never
-///   calls the extractor and deliberately recognises only the canonical
-///   spaced form (pinned by
-///   `check_ignore_reasons_non_canonical_form_is_silently_ignored`, against
-///   which the extractor's own pin above deliberately disagrees). The two
-///   below-edge scanners are locked together on doc-comment skipping alone
-///   (`lock_step_doc_comment_skipping_in_both_scanners`).
-///
-/// Items, not a census of their call sites: a census rots on the next rename
-/// while still reading as authoritative — see `reify_audit::git_env`'s module
-/// doc, which tells a reader to re-run the sweep instead. The test names cited
-/// above are the one deliberate exception, and are not that census: they are
-/// pins, not call sites — the things to re-run to check the claims made here.
-///
-/// Single-sourced here: other sites that mention this arrangement state only
-/// the fact and point back, keeping no copy. Keep it that way — adding or
-/// retiring a reach is then one edit.
-///
-/// Whether the arrangement warrants a dep-free `reify-git-env` leaf crate the
-/// sweep does cover, or a narrower `EXCLUDE_CRATES`, is owned by task **#6356**
-/// (filed as ticket `tkt_0RSN6D9381MSERHKK41GP3GE72` from task 5657's review);
-/// decide it there rather than re-deriving an answer at each new item.
+// G-allow: the sanitizer for shapes other than `git -C <root>`; its cross-crate callers are reify-test-support's orphan_audit spawn (excluded from this sweep) and integration tests
 pub fn sanitize(cmd: &mut Command) -> &mut Command {
     for var in REPO_REDIRECT_VARS {
         cmd.env_remove(var);
@@ -177,19 +151,14 @@ pub fn sanitize(cmd: &mut Command) -> &mut Command {
 /// as a `(key, None)` pair in `get_envs()`; an overwrite would be
 /// `(key, Some(value))`, and an untouched var does not appear at all.
 ///
-/// The workspace's single reader of that encoding: this module's tests,
-/// `crate::orphan_audit`'s
-/// `build_audit_command_removes_every_repo_redirect_var` and
-/// `reify_audit::git_env`'s tests all assert through here, so there is one
-/// place to fix if the encoding ever changes. `pub` rather than
-/// `#[cfg(test)] pub(crate)` for exactly that reason — a `cfg(test)` item is
-/// invisible to dependent crates, and that invisibility is what previously
-/// forced a hand-copied twin one crate up. Exporting test helpers is what this
-/// crate is for.
-///
-/// The `pub` caveat on [`sanitize`] applies here too, minus the production
-/// reach: this helper is called only from test code, which is the premise the
-/// crate's audit exclusion already rests on.
+/// The workspace's single reader of that encoding: every test asserting that a
+/// command was sanitized reads through here, so there is one place to fix if
+/// the encoding ever changes. Behind the `test-utils` feature rather than
+/// `#[cfg(test)]`, because a `cfg(test)` item is invisible to dependent crates
+/// and would force a hand-copied twin in each of them. Dependents enable the
+/// feature from their `[dev-dependencies]`, so no production build compiles it.
+#[cfg(any(test, feature = "test-utils"))]
+// G-allow: the single test-side reader of std's `env_remove` encoding; every caller is test code
 pub fn removed_vars(cmd: &Command) -> Vec<String> {
     cmd.get_envs()
         .filter(|(_, v)| v.is_none())
@@ -199,7 +168,7 @@ pub fn removed_vars(cmd: &Command) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{REPO_REDIRECT_VARS, removed_vars, sanitize};
+    use super::{REPO_REDIRECT_VARS, command, removed_vars, sanitize};
     use std::ffi::OsStr;
     use std::path::Path;
     use std::process::Command;
@@ -240,19 +209,18 @@ mod tests {
     /// case, and exactly what `reify-audit`'s integration-test replay harness
     /// poisons with (`crates/reify-audit/tests/common/git_env.rs`, which
     /// independently asserts its own poison set is contained in
-    /// [`REPO_REDIRECT_VARS`] from the other side of the dependency edge).
+    /// [`REPO_REDIRECT_VARS`] from the consumer's side).
     const HOOK_EXPORTED_FLOOR: &[&str] = &["GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"];
 
     /// The deletion guard for [`REPO_REDIRECT_VARS`], and the only test of that
     /// set anywhere that is NOT self-referential.
     ///
-    /// Every other test of it — in this crate and above the dependency edge —
-    /// iterates the same constant to assert the code removes what it lists, so
-    /// dropping an entry keeps them all green. This test names each var
-    /// independently, so a deletion has to be argued for here too. It lives in
-    /// the crate that DEFINES the constant so an editor working only in
-    /// `reify-test-support` gets that signal locally rather than from a reverse
-    /// dependency.
+    /// Every other test of it — here and in consumer crates — iterates the
+    /// same constant to assert the code removes what it lists, so dropping an
+    /// entry keeps them all green. This test names each var independently, so
+    /// a deletion has to be argued for here too. It lives in the crate that
+    /// DEFINES the constant so an editor working only in this crate gets that
+    /// signal locally rather than from a reverse dependency.
     #[test]
     fn repo_redirect_vars_covers_the_removal_floor() {
         for (var, why) in REMOVAL_FLOOR {
@@ -276,19 +244,13 @@ mod tests {
         }
     }
 
-    /// [`sanitize`]'s core behaviour, asserted in the module that DEFINES it:
-    /// every [`REPO_REDIRECT_VARS`] entry is marked for REMOVAL rather than
-    /// overwritten or left inherited. `std` encodes an `env_remove` as a
-    /// `(key, None)` pair in `get_envs()`; an overwrite would be
-    /// `(key, Some(value))`.
+    /// [`sanitize`]'s core behaviour: every [`REPO_REDIRECT_VARS`] entry is
+    /// marked for REMOVAL rather than overwritten or left inherited.
     ///
     /// Self-referential by construction — it asserts the fn removes exactly
     /// what the same constant lists, so it stays green through a DELETION from
     /// [`REPO_REDIRECT_VARS`]; `repo_redirect_vars_covers_the_removal_floor`
-    /// above is the guard against that, not this. What this contributes is
-    /// that the defining module covers its own core behaviour directly,
-    /// instead of borrowing that coverage from consumers whose spawns may be
-    /// refactored away without anything here announcing the loss.
+    /// above is the guard against that, not this.
     #[test]
     fn sanitize_removes_every_repo_redirect_var() {
         let mut cmd = Command::new("git");
@@ -306,15 +268,8 @@ mod tests {
         }
     }
 
-    /// The part of [`sanitize`]'s contract no caller in this crate exercises:
-    /// the `&mut Command` return. In-crate call sites discard it in statement
-    /// position, so this is the only in-crate exercise of the chaining shape —
-    /// without it that half of the contract would rest entirely on a reverse
-    /// dependency.
-    ///
-    /// The removal half is covered by
-    /// `sanitize_removes_every_repo_redirect_var` above, and the set itself by
-    /// `repo_redirect_vars_covers_the_removal_floor`.
+    /// The `&mut Command` half of [`sanitize`]'s contract: callers needing a
+    /// shape other than `git -C <root>` chain off the sanitized command.
     #[test]
     fn sanitize_returns_the_command_for_chaining() {
         let mut cmd = Command::new("git");
@@ -327,6 +282,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn command_targets_git_dash_c_at_the_requested_root() {
+        let cmd = command(Path::new("/some/root"));
+
+        assert_eq!(cmd.get_program(), OsStr::new("git"));
+
+        let args: Vec<&OsStr> = cmd.get_args().collect();
+        assert!(
+            args.len() >= 2,
+            "expected at least the `-C <root>` prefix, got {:?}",
+            args
+        );
+        assert_eq!(args[0], OsStr::new("-C"));
+        assert_eq!(args[1], OsStr::new("/some/root"));
+    }
+
+    /// [`command`] must actually APPLY the sanitization to the `-C <root>`
+    /// shape it builds — the one thing a dropped `sanitize(&mut cmd)` line in
+    /// [`command`] would break without any other unit test noticing.
+    ///
+    /// Self-referential by construction, like
+    /// `sanitize_removes_every_repo_redirect_var`.
+    #[test]
+    fn command_removes_every_repo_redirect_var() {
+        let cmd = command(Path::new("/some/root"));
+        let removed = removed_vars(&cmd);
+        for var in REPO_REDIRECT_VARS {
+            assert!(
+                removed.iter().any(|r| r == var),
+                "command() must REMOVE `{var}` (env_remove -> `(key, None)`), not \
+                 merely overwrite it; removals seen: {removed:?}"
+            );
+        }
+    }
+
     /// Close the loop on REAL git behaviour rather than on `Command` metadata.
     ///
     /// The tests above inspect what [`sanitize`] *records*. That is necessary
@@ -337,17 +327,14 @@ mod tests {
     ///
     /// - **HAZARD** — with the hook's exported vars present,
     ///   `git -C <root> rev-parse --show-toplevel` reports the DECOY, not
-    ///   `<root>`. If this half ever stops holding, this module is unnecessary
+    ///   `<root>`. If this half ever stops holding, this crate is unnecessary
     ///   and should be deleted rather than trusted.
     /// - **FIX** — applying the same vars and THEN [`sanitize`] reports
     ///   `<root>`.
     ///
-    /// It belongs at the DEFINITION site because this crate's own
-    /// `crate::orphan_audit` spawns depend on the vars actually being DEFEATED,
-    /// not merely on the removals being recorded. Left in a reverse dependency,
-    /// that proof could be refactored away without anything here announcing the
-    /// loss, leaving the production-path spawns covered by metadata assertions
-    /// alone.
+    /// Both halves hand-roll `-C` rather than calling [`command`]: the poison
+    /// must land in a controlled order relative to sanitizing, and [`command`]
+    /// sanitizes first, so a later `.env(..)` would re-poison it.
     ///
     /// Setting the vars via `.env(..)` and then sanitizing is a faithful
     /// stand-in for an ambient environment, not a weaker one: `std` records
@@ -361,24 +348,19 @@ mod tests {
     /// race sibling tests under `cargo test`'s thread-per-test model.
     #[test]
     fn sanitize_makes_dash_c_authoritative_against_real_git() {
-        // Graceful-skip convention this module follows from
-        // `crate::orphan_audit`'s tests: a git-less image must skip, not fail.
+        // A git-less image must skip, not fail.
         if Command::new("git").arg("--version").output().is_err() {
-            eprintln!("git_env: skipping real-git test — git not available");
+            eprintln!("reify-git-env: skipping real-git test — git not available");
             return;
         }
 
-        let target = crate::temp_dirs::prefixed_tempdir("git-env-target-");
-        let decoy = crate::temp_dirs::prefixed_tempdir("git-env-decoy-");
+        let target = tempdir("git-env-target-");
+        let decoy = tempdir("git-env-decoy-");
         for dir in [target.path(), decoy.path()] {
-            // The `git -C <root>` shape `reify_audit::git_env::command` builds,
-            // hand-rolled because that constructor lives one crate UP.
-            let mut init = Command::new("git");
-            init.arg("-C")
-                .arg(dir)
-                .args(["init", "--initial-branch=main"]);
-            sanitize(&mut init);
-            let status = init.status().expect("git init failed to spawn");
+            let status = command(dir)
+                .args(["init", "--initial-branch=main"])
+                .status()
+                .expect("git init failed to spawn");
             assert!(
                 status.success(),
                 "git init {dir:?} exited {:?}",
@@ -426,7 +408,7 @@ mod tests {
             canonical(decoy.path()),
             "PREMISE CHECK: a hook's exported git env must still override an \
              explicit `-C <root>`. If this fails, git's behaviour changed and \
-             this module's reason to exist should be re-examined, not patched."
+             this crate's reason to exist should be re-examined, not patched."
         );
 
         // FIX: the same poison, then sanitize -> `-C <target>` wins.
@@ -439,5 +421,16 @@ mod tests {
             "sanitize() must make `-C <root>` authoritative against real git, \
              not merely record removals on the Command"
         );
+    }
+
+    /// A self-deleting temp dir whose `prefix` attributes a dir that survives
+    /// a SIGKILL (which `Drop` cannot cover) to this crate's tests. Bind the
+    /// guard to a named local — `tempdir(..).path().to_path_buf()` compiles
+    /// but deletes the dir at the end of that statement.
+    fn tempdir(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir()
+            .unwrap_or_else(|e| panic!("create temp dir with prefix {prefix:?}: {e}"))
     }
 }

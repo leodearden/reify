@@ -1402,12 +1402,12 @@ fn counts_of(sites: &BTreeMap<String, Vec<usize>>) -> BTreeMap<String, u32> {
 fn census(ctx: &AuditContext) -> Census {
     let mut swept = 0usize;
     let mut sites: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    for path in ctx.git.ls_files() {
+    for path in ctx.git().ls_files() {
         if !is_swept_path(&path) {
             continue;
         }
         swept += 1;
-        let content = match std::fs::read_to_string(ctx.project_root.join(&path)) {
+        let content = match std::fs::read_to_string(ctx.project_root().join(&path)) {
             Ok(content) => content,
             Err(_) => continue,
         };
@@ -1451,10 +1451,10 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let Census { swept, sites } = census(ctx);
     let live = counts_of(&sites);
 
-    // Resolved under `ctx.project_root`, never `CARGO_MANIFEST_DIR`, so the
+    // Resolved under `ctx.project_root()`, never `CARGO_MANIFEST_DIR`, so the
     // CLI-level fixture trees can point the whole detector at a tempdir —
     // exactly how ptodo resolves its task DB.
-    let baseline = match std::fs::read_to_string(ctx.project_root.join(BASELINE_PATH)) {
+    let baseline = match std::fs::read_to_string(ctx.project_root().join(BASELINE_PATH)) {
         Ok(content) => match parse_baseline(&content) {
             Ok(baseline) => baseline,
             Err(err) => return vec![malformed_baseline_finding(&err)],
@@ -1511,7 +1511,7 @@ pub mod test_support {
     use super::{BASELINE_PATH, census_summary, check, live_counts};
     use crate::{AuditContext, Finding, MockGitOps, MockJCodemunchOps, Severity};
     use rusqlite::Connection;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
     use std::path::Path;
 
     /// A working tree at `root` plus the exact set of paths `ls_files()` reports.
@@ -1610,17 +1610,7 @@ pub mod test_support {
             let jc = MockJCodemunchOps::new();
             let mut git = MockGitOps::new();
             git.set_ls_files(self.tracked.clone());
-            let ctx = AuditContext {
-                project_root: self.root.to_path_buf(),
-                conn: &conn,
-                git: &git,
-                jcodemunch: &jc,
-                task_metadata: HashMap::new(),
-                target_task_id: None,
-                window: None,
-                now: None,
-                producer_branch: None,
-            };
+            let ctx = AuditContext::new(self.root.to_path_buf(), &conn, &git, &jc);
             f(&ctx)
         }
     }

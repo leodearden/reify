@@ -9,19 +9,13 @@ use reify_ir::ExportFormat;
 use crate::artifact_triangles::{stl_triangle_count, threemf_triangle_count};
 use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagnostic};
 use crate::constraint_report::report_eval_output;
+use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
 use crate::{configured_check_build_engine, parse_and_compile};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
-    // Shared usage text for the empty-args and no-positional-file guards.
-    const USAGE: &str = "Usage: reify build <file.ri> [-o <output>] [--out-dir <dir>] [--verbose]\n  \
-        With -o:    write a single file in that format (imperative).\n  \
-        Without -o: every `: Output` occurrence in the design drives its own file\n              \
-        (declarative); each relative path resolves against the .ri file's\n              \
-        directory, or against --out-dir when given.";
-
     if args.is_empty() {
-        eprintln!("{USAGE}");
+        eprintln!("{BUILD_USAGE}");
         return ExitCode::FAILURE;
     }
 
@@ -68,7 +62,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
     }) {
         Some((_, f)) => f,
         None => {
-            eprintln!("{USAGE}");
+            eprintln!("{BUILD_USAGE}");
             return ExitCode::FAILURE;
         }
     };

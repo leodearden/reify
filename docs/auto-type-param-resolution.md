@@ -1,5 +1,7 @@
 # How `auto` Type-Parameter Resolution Works
 
+> This page is about `auto` in a TYPE-parameter position (`Bearing<auto: Seal>`). To let the solver choose a VALUE (`param thickness : Length = auto`), read the `solving` language-reference chunk ([`crates/reify-mcp/src/tools/chunks/solving.md`](../crates/reify-mcp/src/tools/chunks/solving.md)) and spec [§9.3](reify-language-spec.md#93-auto-resolution).
+
 **Applies to:** Reify v0.1
 **Status:** Library shipped; end-to-end surface gated on B1 grammar chain — see [Known gaps](#known-gaps)
 **Audience:** Language users and compiler contributors who need to understand how `Bearing<auto: Seal>` is resolved.

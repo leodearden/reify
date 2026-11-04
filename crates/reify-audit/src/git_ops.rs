@@ -570,7 +570,7 @@ impl RealGitOps {
                 ));
             }
         }
-        crate::git_env::command(&self.project_root)
+        reify_git_env::command(&self.project_root)
             .args(args)
             .output()
     }
@@ -655,7 +655,7 @@ impl RealGitOps {
     /// message blaming index freshness — a misleading diagnosis for a
     /// transient the retry absorbs.
     ///
-    /// `run` also inherits `git_env::command`'s sanitization, which is
+    /// `run` also inherits `reify_git_env::command`'s sanitization, which is
     /// load-bearing here: an inherited `GIT_DIR` / `GIT_WORK_TREE` makes
     /// `git -C <root>` report a DIFFERENT repository, and a HEAD read from the
     /// wrong repo would make the freshness comparison silently meaningless.
@@ -698,7 +698,7 @@ impl RealGitOps {
     /// The paths are written from a scoped thread while this one collects
     /// stdout, so a full stdout pipe cannot deadlock the write.
     fn check_ignore_batch(&self, paths: &[String]) -> Result<Vec<u8>, String> {
-        let mut child = crate::git_env::command(&self.project_root)
+        let mut child = reify_git_env::command(&self.project_root)
             .args(["check-ignore", "--stdin", "-z"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -867,7 +867,7 @@ impl GitOps for RealGitOps {
         // NOT set the latch (see Err branch below), so recovery is possible
         // on the next call.  The shell-layer run_audit retry in the PTODO infra
         // test provides defense-in-depth against persistent spawn pressure.
-        match crate::git_env::command(&self.project_root)
+        match reify_git_env::command(&self.project_root)
             .args(["check-ignore", "--quiet", "--", path])
             .output()
         {
@@ -963,7 +963,7 @@ impl GitOps for RealGitOps {
         // (exit 0→1 via a spurious finding) — caught by re-running.
         // The shell-layer run_audit retry in the PTODO infra test provides
         // defense-in-depth.
-        match crate::git_env::command(&self.project_root)
+        match reify_git_env::command(&self.project_root)
             .args(["merge-base", "--is-ancestor", commit, branch])
             .output()
         {

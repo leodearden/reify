@@ -146,13 +146,13 @@ fn build_expansion_map(
     let mut pivot_of: Vec<Option<usize>> = vec![None; n_dofs]; // pivot_of[g] = Some(mpc_idx)
     for (mpc_idx, row) in mpcs.iter().enumerate() {
         assert!(
-            row.rhs == 0.0,
+            row.rhs() == 0.0,
             "MPC row {mpc_idx}: rhs = {} is non-homogeneous; v0.5 buckling kernel \
              supports only rhs == 0.0 (homogeneous MPCs). inhomogeneous constraints \
              are ill-defined for the generalized eigenproblem.",
-            row.rhs,
+            row.rhs(),
         );
-        let pivot = row.dofs[0];
+        let pivot = row.dofs()[0];
         assert!(
             !is_dirichlet[pivot],
             "MPC row {mpc_idx}: pivot DOF {pivot} is also in the Dirichlet BC list; \
@@ -169,7 +169,7 @@ fn build_expansion_map(
 
     // Pass 3: check no-chain constraint (other DOFs must not be pivots).
     for (mpc_idx, row) in mpcs.iter().enumerate() {
-        for &d in &row.dofs[1..] {
+        for &d in &row.dofs()[1..] {
             assert!(
                 pivot_of[d].is_none(),
                 "MPC chain detected: MPC row {mpc_idx} references DOF {d} as an \
@@ -198,10 +198,10 @@ fn build_expansion_map(
         } else if let Some(mpc_idx) = pivot_of[g] {
             // Slave: express as linear combination of other DOFs.
             let row = &mpcs[mpc_idx];
-            let c0 = row.coeffs[0];
-            for i in 1..row.dofs.len() {
-                let d_i = row.dofs[i];
-                let c_i = row.coeffs[i];
+            let c0 = row.coeffs()[0];
+            for i in 1..row.dofs().len() {
+                let d_i = row.dofs()[i];
+                let c_i = row.coeffs()[i];
                 let alpha_i = -c_i / c0;
                 // Skip Dirichlet other-DOFs (contribute 0).
                 if !is_dirichlet[d_i] {
@@ -281,7 +281,7 @@ fn project_with_expansion(
 /// - `mpcs` — multi-point constraints applied via master-slave (transformation)
 ///   reduction. Pass `&[]` for no MPCs (no-op, bit-identical to the 6-arg
 ///   behaviour). v0.5 limitations enforced by panic at entry:
-///   - **Homogeneous only** (`row.rhs == 0.0` for every row): inhomogeneous MPCs
+///   - **Homogeneous only** (`row.rhs() == 0.0` for every row): inhomogeneous MPCs
 ///     are ill-defined for the eigenproblem and will panic with a message
 ///     containing `"rhs"`.
 ///   - **No Dirichlet-pivot conflict**: if a slave DOF (`dofs[0]`) also appears

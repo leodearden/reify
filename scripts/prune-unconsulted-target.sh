@@ -8,14 +8,17 @@
 #   scripts/prune-unconsulted-target.sh --window-days N [--atime-probe PATH]
 #                                       [--lock FILE]...
 #                                       [--free-floor-gib G --min-window-days M]
+#                                       [--prune-dead-unit-records]
 #                                       PROFILE_DIR...
 #
 # Callers:
-#   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy.
+#   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy,
+#     with --prune-dead-unit-records.
 #   - deploy/systemd/reify-merge-verify-trim.service: leo-laptop's persistent
-#     _merge-verify target. dark_factory's install_laptop_merge_verify_trim.sh
-#     installs THIS FILE ALONE into ~/.local/lib/reify-verify-host/, so it must
-#     never source a sibling.
+#     _merge-verify target, without --prune-dead-unit-records.
+#     dark_factory's install_laptop_merge_verify_trim.sh installs THIS FILE
+#     ALONE into ~/.local/lib/reify-verify-host/, so it must never source a
+#     sibling.
 #
 # The rule, applied to each PROFILE_DIR (e.g. target/debug) on its own:
 #   A depth-1 file of <profile>/deps whose name, final dot-suffix stripped, ends
@@ -31,7 +34,21 @@
 #                ages nothing; anchoring per profile keeps a rarely built
 #                profile from being wiped whenever another one is busy.
 #   Never deleted: a hashed file with no fingerprint dir, a name outside the
-#   grammar, anything below deps/ depth 1, and .fingerprint itself.
+#   grammar, anything below deps/ depth 1, build/, and (unless
+#   --prune-dead-unit-records) .fingerprint itself.
+#
+# Record victims, under --prune-dead-unit-records only: for each hash that had
+# a deps file deleted in THIS pass and has no <profile>/build/<pkg>-<hash> dir,
+# also delete .fingerprint/<pkg>-<hash>/ and each depth-1 deps/*.dwo whose
+# name, cut at its FIRST dot, ends in that -<hash> (the later 16-hex cgu token
+# is not a unit hash). Order: deps files, then shards, then records, each stage
+# only after the previous one succeeded, so a failed unlink leaves the record.
+#   Safe: a unit whose deps are gone is rebuilt whether or not its record
+#   survives. Build-script units own no deps files, so they keep their records
+#   and build/ outputs, which a later build can still reuse as Fresh.
+#   Opt-in: only a staging copy re-imports the records on every refresh. On a
+#   persistent target the deletion is permanent and erases the evidence the
+#   next run reads.
 #
 # Skips — a line containing "skip", nothing deleted in that profile, the other
 # profiles still pruned:
@@ -66,15 +83,19 @@
 #                       one by up to 24h, and M must clear that lag plus one
 #                       build. A df failure stops the tightening, so a failed
 #                       measurement never deletes more.
+#   --prune-dead-unit-records
+#                       Also delete record victims (above).
 #   -h, --help          Print usage and exit 0.
 #
 # Output: nothing on stdout. stderr, per pruned profile:
-#   prune deps=<deps dir> files=N victim_bytes=N window_days=N
-# victim_bytes is the victims' summed apparent size.
+#   prune deps=<deps dir> files=N victim_bytes=N records=N dwo=N window_days=N
+# files and victim_bytes (summed apparent size) count the deps/ victims only;
+# records and dwo count the deleted fingerprint dirs and shards, and are 0
+# without --prune-dead-unit-records.
 #
 # Exit: 0 pruned, skipped, or a --lock held elsewhere; 1 failure (a --lock
-# that cannot be taken, or the unlink pipeline failed); 2 usage error, before
-# anything is read or deleted.
+# that cannot be taken, victim selection failed, or a deps, shard or record
+# removal stage failed); 2 usage error, before anything is read or deleted.
 #
 # Executable spec: tests/infra/test_prune_unconsulted_target.py, and through
 # refresh-warm-base.sh, tests/infra/test_refresh_warm_base.sh Block LIVE.
@@ -87,7 +108,8 @@ err()  { printf '[error] %s\n' "$*" >&2; }
 _usage() {
     cat >&2 <<EOF
 Usage: $(basename "$0") --window-days N [--atime-probe PATH] [--lock FILE]...
-           [--free-floor-gib G --min-window-days M] PROFILE_DIR...
+           [--free-floor-gib G --min-window-days M] [--prune-dead-unit-records]
+           PROFILE_DIR...
 
   Delete the deps/ files of cargo units whose .fingerprint was last consulted
   more than N days before the profile's newest consult. Rule, skips and exit
@@ -111,6 +133,7 @@ ATIME_PROBE=""
 LOCKS=()
 FREE_FLOOR_GIB=""
 MIN_WINDOW_DAYS=""
+PRUNE_RECORDS=0
 PROFILE_DIRS=()
 
 while [ $# -gt 0 ]; do
@@ -132,6 +155,8 @@ while [ $# -gt 0 ]; do
         --min-window-days)
             [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--min-window-days requires a value"
             MIN_WINDOW_DAYS="$2"; shift 2 ;;
+        --prune-dead-unit-records)
+            PRUNE_RECORDS=1; shift ;;
         --)
             shift; PROFILE_DIRS+=("$@"); break ;;
         -*)
@@ -186,15 +211,21 @@ _mount_tracks_atime() {
     return 0
 }
 
-# _select_unconsulted_victims <fingerprint_dir> <deps_dir> <window_secs> <summary_file>
-# stdout: the NUL-delimited names of the <deps_dir> files to delete.
-# <summary_file>: "files=N victim_bytes=N" for exactly those files. stdout
-# carries the list, so the summary crosses back through the file.
+# _select_unconsulted_victims <profile_dir> <window_secs> <prune_records> <work_dir>
+# Writes three NUL-delimited name lists into <work_dir>: deps (files of
+# <profile_dir>/deps), dwo (shards of <profile_dir>/deps) and records (dirs of
+# <profile_dir>/.fingerprint), plus summary: "files=N victim_bytes=N records=N
+# dwo=N", where files and victim_bytes count the deps list only. With
+# <prune_records> 0 the dwo and records lists stay empty and build/ is not read.
 _select_unconsulted_victims() {
-    local fp="$1" deps="$2" window="$3" summary="$4"
-    { find "$fp" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
-      find "$deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
-    } | awk -F'\t' -v window="$window" -v now="$(date +%s)" -v summary_file="$summary" '
+    local profile="$1" window="$2" prune_records="$3" work="$4"
+    { find "$profile/.fingerprint" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
+      find "$profile/deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
+      if [ "$prune_records" = 1 ] && [ -d "$profile/build" ]; then
+          find "$profile/build" -mindepth 1 -maxdepth 1 -type d -printf 'B\t%f\n'
+      fi
+    } | awk -F'\t' -v window="$window" -v now="$(date +%s)" \
+            -v prune_records="$prune_records" -v work="$work" '
         BEGIN {
             # The ONE copy of the unit-hash grammar: <stem>-<16 lowercase hex>.
             # Spelled out as repeated [0-9a-f] classes, not {16}: mawk < 1.3.4 and
@@ -204,7 +235,7 @@ _select_unconsulted_victims() {
             hash_re = "^.+-"
             for (i = 0; i < hash_len; i++) hash_re = hash_re "[0-9a-f]"
             hash_re = hash_re "$"
-            anchor = 0; n = 0; files = 0; bytes = 0
+            anchor = 0; n = 0; m = 0; files = 0; bytes = 0; records = 0; dwo = 0
         }
         function unit_hash(stem) {
             return (stem ~ hash_re) ? substr(stem, length(stem) - hash_len + 1) : ""
@@ -214,6 +245,7 @@ _select_unconsulted_victims() {
             split($4, parts, "/")
             h = unit_hash(parts[1])
             if (h == "") next
+            fp_dir[parts[1]] = h
             atime = $2 + 0; mtime = $3 + 0
             t = (atime > mtime) ? atime : mtime
             if (!(h in last_use) || t > last_use[h]) last_use[h] = t
@@ -228,9 +260,28 @@ _select_unconsulted_victims() {
             stem = $3
             sub(/\.[^.]*$/, "", stem)
             h = unit_hash(stem)
+            if (h != "") {
+                n++
+                cand_name[n] = $3; cand_size[n] = $2; cand_hash[n] = h
+                next
+            }
+            # A split-debuginfo shard, <stem>-<h>.<crate>.<cgu>-cgu.N.rcgu.dwo, is
+            # keyed on its name cut at the FIRST dot: its later 16-hex cgu token
+            # is not a unit hash. Only prune_records ever reads a shard.
+            if (prune_records != 1 || $3 !~ /\.dwo$/) next
+            stem = $3
+            sub(/\..*$/, "", stem)
+            h = unit_hash(stem)
             if (h == "") next
-            n++
-            cand_name[n] = $3; cand_size[n] = $2; cand_hash[n] = h
+            m++
+            shard_name[m] = $3; shard_hash[m] = h
+            next
+        }
+        # B: one build/ dir, present only under prune_records.
+        $1 == "B" {
+            h = unit_hash($2)
+            if (h != "") has_build[h] = 1
+            next
         }
         END {
             cutoff = anchor - window
@@ -238,22 +289,50 @@ _select_unconsulted_victims() {
                 h = cand_hash[i]
                 if (!(h in last_use) || last_use[h] >= cutoff) continue
                 # NUL via %c: ORS="\0" is dropped by busybox awk, %c 0 is not.
-                printf "%s%c", cand_name[i], 0
+                printf "%s%c", cand_name[i], 0 > (work "/deps")
                 files++
                 bytes += cand_size[i]
+                selected[h] = 1
             }
-            printf "files=%d victim_bytes=%.0f\n", files, bytes > summary_file
+            # A record victim is a unit this pass pruned deps for, so the dead
+            # verdict above is its only test.
+            if (prune_records == 1) {
+                for (h in selected) if (!(h in has_build)) record_victim[h] = 1
+                for (i = 1; i <= m; i++) {
+                    if (!(shard_hash[i] in record_victim)) continue
+                    printf "%s%c", shard_name[i], 0 > (work "/dwo")
+                    dwo++
+                }
+                for (d in fp_dir) {
+                    if (!(fp_dir[d] in record_victim)) continue
+                    printf "%s%c", d, 0 > (work "/records")
+                    records++
+                }
+            }
+            printf "files=%d victim_bytes=%.0f records=%d dwo=%d\n", files, bytes, records, dwo \
+                > (work "/summary")
         }
     '
 }
 
-# The summary file of the profile being pruned; the EXIT trap reclaims it when
-# a prune fails midway.
-_SUMMARY_FILE=""
-_reclaim_summary() {
-    [ -z "$_SUMMARY_FILE" ] || rm -f "$_SUMMARY_FILE"
+# The work dir of the profile being pruned; the EXIT trap reclaims it when a
+# prune fails midway.
+_WORK_DIR=""
+_reclaim_work_dir() {
+    [ -z "$_WORK_DIR" ] || rm -rf "$_WORK_DIR"
 }
-trap _reclaim_summary EXIT
+trap _reclaim_work_dir EXIT
+
+# _unlink_listed <dir> <list> <what> <rm_opt>: rm <rm_opt> every name in the
+# NUL-delimited <list>, from inside <dir>. Any failure exits 1, so no later
+# stage runs.
+_unlink_listed() {
+    local dir="$1" list="$2" what="$3" rm_opt="$4"
+    if ! (cd "$dir" && xargs -r -0 rm "$rm_opt" -- < "$list"); then
+        err "removing the $what in $dir failed; they may be partly removed, and no later stage ran."
+        exit 1
+    fi
+}
 
 # _prune_profile <profile_dir> <window_days>
 _prune_profile() {
@@ -275,19 +354,24 @@ _prune_profile() {
         info "Mount of $probe does not maintain atime (noatime, or findmnt unavailable or empty) — no liveness evidence; skipping liveness prune of $profile (files=0)."
         return 0
     fi
-    _SUMMARY_FILE="$(mktemp)"
-    if ! _select_unconsulted_victims "$fp" "$deps" "$(( window_days * 86400 ))" "$_SUMMARY_FILE" \
-            | (cd "$deps" && xargs -r -0 rm -f --); then
-        err "prune of $deps failed (victim selection or unlink); its files may be partly pruned."
+    _WORK_DIR="$(mktemp -d)"
+    : > "$_WORK_DIR/deps"; : > "$_WORK_DIR/dwo"; : > "$_WORK_DIR/records"
+    if ! _select_unconsulted_victims "$profile" "$(( window_days * 86400 ))" \
+            "$PRUNE_RECORDS" "$_WORK_DIR"; then
+        err "victim selection for $profile failed; nothing deleted."
         exit 1
     fi
-    info "prune deps=$deps $(cat "$_SUMMARY_FILE") window_days=$window_days"
-    rm -f "$_SUMMARY_FILE"
-    _SUMMARY_FILE=""
+    _unlink_listed "$deps" "$_WORK_DIR/deps" "deps files" -f
+    _unlink_listed "$deps" "$_WORK_DIR/dwo" ".dwo shards" -f
+    _unlink_listed "$fp" "$_WORK_DIR/records" "fingerprint records" -rf
+    info "prune deps=$deps $(cat "$_WORK_DIR/summary") window_days=$window_days"
+    rm -rf "$_WORK_DIR"
+    _WORK_DIR=""
 }
 
 # _prune_pass <window_days>: one prune of every profile at that window. Each
-# pass re-reads the .fingerprint trees, which no pass ever edits.
+# pass re-reads the .fingerprint trees. The records a pass deletes were all
+# below its cutoff, so never the anchor: a later pass's anchor is unchanged.
 _prune_pass() {
     local profile
     for profile in "${PROFILE_DIRS[@]}"; do

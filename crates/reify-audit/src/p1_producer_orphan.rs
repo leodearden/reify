@@ -50,7 +50,7 @@ use crate::caller_lookup::CallerLookups;
 use crate::{
     AuditContext, ChangedSymbol, EvidenceRef, Finding, JCodemunchCallFailed, Pattern, Severity,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashSet;
 
 /// 14-day grace window. `f-infra-design.md` §5 P1 line 83 specifies a
 /// producer-orphan is "flagged only if **>14 days** have passed since
@@ -60,10 +60,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// is downgraded to Low ("log only").
 const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
 
-/// Returns `true` when some active-consumer task's `consumer_ref` points at
-/// `producer_prd` — i.e. a downstream consumer is already in flight, so the
-/// producer's symbols are not truly orphaned (design §5 P1 false-positive
-/// guard). The canonical Taskmaster pending-consumer statuses are:
+/// The PRDs some active-consumer task's `consumer_ref` points at. A producer
+/// whose `prd` is in this set has a downstream consumer already in flight, so
+/// its symbols are not truly orphaned (design §5 P1 false-positive guard).
+/// Built from the whole task corpus, never the targeted subset: the consumer
+/// is a different task from the producer being audited. The canonical
+/// Taskmaster pending-consumer statuses are:
 ///   `"pending"`, `"in-progress"`, `"review"`.
 /// Using an explicit allow-list (rather than inverting against `{done,
 /// cancelled, deferred, blocked}`) keeps semantic intent visible and
@@ -71,36 +73,25 @@ const GRACE_WINDOW_SECS: i64 = 14 * 86_400;
 /// Status strings follow Taskmaster's canonical form (`in-progress`,
 /// hyphenated); the T-4 CLI normalizes at the boundary. Per
 /// `f-infra-design.md` §5 P1.
-// Perf note: this rescans every task for each done producer that has a
-//   `prd`, so the producer↔consumer correlation is O(tasks²). Harmless at
-//   solo-OSS task volumes (the audit window is ~14 days of done-flips), but
-//   if `task_metadata` ever grows, precompute a `HashSet<&str>` of the
-//   `consumer_ref`s of pending/in-progress/review tasks once before the
-//   producer loop and do an O(1) membership check here. Not required at
-//   current scale. Reference: docs/architecture-audit/f-infra-design.md §5 P1.
-fn has_pending_consumer(ctx: &AuditContext, producer_prd: &str) -> bool {
-    ctx.task_metadata.values().any(|t| {
-        matches!(t.status.as_str(), "pending" | "in-progress" | "review")
-            && t.consumer_ref.as_deref() == Some(producer_prd)
-    })
+fn pending_consumer_prds<'c>(ctx: &'c AuditContext) -> HashSet<&'c str> {
+    ctx.task_metadata()
+        .values()
+        .filter(|t| matches!(t.status.as_str(), "pending" | "in-progress" | "review"))
+        .filter_map(|t| t.consumer_ref.as_deref())
+        .collect()
 }
 
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    // Synthetic clock when provided (deterministic tests); else wall clock.
-    let now_secs = ctx.now.unwrap_or_else(|| {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after UNIX_EPOCH")
-            .as_secs() as i64
-    });
+    let now_secs = ctx.now();
+    let pending_consumer_prds = pending_consumer_prds(ctx);
 
-    for meta in ctx.task_metadata.values() {
+    for meta in ctx.task_metadata().values() {
         // Optional single-task narrowing: mirrors p2_consumer_stub::check at
         // lines 132-136 and p5_phantom_done::check_with_target — keeps all
         // three detectors' scoping behaviour in lockstep.
-        if let Some(target) = ctx.target_task_id.as_deref()
+        if let Some(target) = ctx.target_task_id()
             && meta.task_id != target
         {
             continue;
@@ -120,7 +111,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         // Per-task guard: a pending/in-progress/review consumer task already
         // references this producer's PRD (design §5 P1 false-positive guard).
         if let Some(prd) = meta.prd.as_deref()
-            && has_pending_consumer(ctx, prd)
+            && pending_consumer_prds.contains(prd)
         {
             continue;
         }
@@ -136,7 +127,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         let since_sha = format!("{commit}^1");
         let until_sha = commit;
 
-        let symbols = match ctx.jcodemunch.get_changed_symbols(&since_sha, until_sha) {
+        let symbols = match ctx.jcodemunch().get_changed_symbols(&since_sha, until_sha) {
             Ok(symbols) => symbols,
             Err(failure) => {
                 findings.push(task_unexamined(
@@ -174,7 +165,7 @@ pub fn check(ctx: &AuditContext) -> Vec<Finding> {
         // suppress. A failed lookup proves nothing either way, so the
         // symbol is skipped and recorded, never reported as an orphan;
         // the task's remaining symbols are still examined.
-        let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch, examinable);
+        let lookups = crate::caller_lookup::lookup_callers(ctx.jcodemunch(), examinable);
         let age = now_secs.saturating_sub(done_at);
         findings.extend(
             lookups

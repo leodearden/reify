@@ -48,6 +48,7 @@ mod joint_self_check;
 mod joint_signatures;
 mod list_helpers;
 mod math_signatures;
+mod member_cell_decls;
 mod member_path;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
@@ -67,6 +68,7 @@ pub(crate) mod stdlib_topo;
 mod termination;
 mod trait_requirements;
 mod traits;
+mod type_acceptance;
 mod type_compat;
 mod type_resolution;
 mod types;

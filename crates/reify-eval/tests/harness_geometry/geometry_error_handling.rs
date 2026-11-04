@@ -12,9 +12,6 @@ use reify_ir::{
 };
 use reify_test_support::*;
 
-#[path = "../common/angle_expr.rs"]
-mod angle_expr;
-use angle_expr::angle_literal;
 
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops
@@ -30,7 +27,6 @@ use angle_expr::angle_literal;
 /// does not need to accept kernel or format parameters.
 fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compiler::CompiledModule {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let mut builder = TopologyTemplateBuilder::new(e)
         .param(e, "width", Type::length(), Some(mm_literal(80.0)))
@@ -51,7 +47,6 @@ fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compil
 /// Creates a compiled module with a single structure containing one box
 /// primitive realization, so there is exactly one geometry operation to process.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -85,7 +80,6 @@ fn make_sentinel_module(
     std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -321,7 +315,6 @@ fn loft_through_full_eval_pipeline() {
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 
     let e = "TestLoft";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (produces handle at step index 0)
     let sphere_op_0 = CompiledGeometryOp::Primitive {
@@ -413,7 +406,6 @@ fn loft_through_full_eval_pipeline() {
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // compile_geometry_op returns None for each because step_handles is empty.
@@ -481,7 +473,6 @@ fn cascading_compile_failures_aborted_after_first() {
 #[test]
 fn cascading_kernel_failures_aborted_after_first() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Box primitives — all will compile successfully but fail at kernel.execute
     let box_op_0 = CompiledGeometryOp::Primitive {
@@ -549,7 +540,6 @@ fn cascading_kernel_failures_aborted_after_first() {
 #[test]
 fn realization_abort_is_per_realization() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Realization 0: Boolean union referencing non-existent steps → compile failure
     let union_op = CompiledGeometryOp::Boolean {
@@ -631,7 +621,6 @@ fn realization_abort_is_per_realization() {
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // With the sentinel fix, all 3 are attempted → 3 compile-failure diagnostics.
@@ -701,7 +690,6 @@ fn tessellate_aborts_cascading_compile_failures() {
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box (succeeds) → handle at step[0]
     let box_op = CompiledGeometryOp::Primitive {
@@ -801,7 +789,6 @@ fn mixed_failure_then_dependent_ops_aborted() {
 #[test]
 fn partial_failure_tessellate_produces_no_mesh() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive (compiles and executes OK)
     let box_op = CompiledGeometryOp::Primitive {
@@ -904,7 +891,6 @@ fn tessellate_sentinel_placeholder_continues_independent_ops() {
 #[test]
 fn partial_failure_build_produces_no_geometry() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive (compiles and executes OK)
     let box_op = CompiledGeometryOp::Primitive {
@@ -978,7 +964,6 @@ fn partial_failure_build_produces_no_geometry() {
 #[test]
 fn partial_failure_does_not_contaminate_subsequent_realization() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Realization 0: [Box (succeeds), Boolean union with bad refs (compile failure)]
     let box_op_0 = CompiledGeometryOp::Primitive {
@@ -1095,7 +1080,6 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 #[test]
 fn build_primitive_missing_arg_no_kernel_error() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Box with size_y and size_z present, but 'size_x' deliberately omitted
     let box_op = CompiledGeometryOp::Primitive {
@@ -1159,7 +1143,6 @@ fn build_primitive_missing_arg_no_kernel_error() {
 #[test]
 fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -1313,7 +1296,6 @@ fn build_modify_missing_arg_case(
     kind_name_for_warning: &str,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Modify op's target.
@@ -1497,10 +1479,6 @@ fn assert_rejected_at_compile(
 fn build_scale_negative_factor_emits_diagnostic() {
     use reify_compiler::TransformKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Scale op's target
@@ -1582,7 +1560,6 @@ fn build_scale_negative_factor_emits_diagnostic() {
 fn build_extrude_nonfinite_distance_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere primitive with radius — provides step_handles[0] as the
     // Extrude's profile handle
@@ -1649,10 +1626,6 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
 fn build_revolve_degenerate_axis_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1724,10 +1697,6 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1818,7 +1787,6 @@ fn sentinel_placeholder_continues_independent_ops() {
 #[test]
 fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (compiles and executes OK) → valid handle in step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1902,10 +1870,6 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
 fn draft_plane_invalid_sentinel_causes_compile_failure() {
     use reify_compiler::ModifyKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Sphere — succeeds, produces a valid handle at step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -2178,16 +2142,6 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
 fn build_extrude_distance_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let length_literal = |si_value: f64| {
-        reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Scalar {
-                si_value,
-                dimension: reify_core::DimensionVector::LENGTH,
-            },
-            Type::length(),
-        )
-    };
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Extrude's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -2234,16 +2188,6 @@ fn build_extrude_distance_just_below_threshold_rejected() {
 fn build_extrude_distance_at_threshold_accepted() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let length_literal = |si_value: f64| {
-        reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Scalar {
-                si_value,
-                dimension: reify_core::DimensionVector::LENGTH,
-            },
-            Type::length(),
-        )
-    };
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2318,10 +2262,6 @@ fn build_extrude_distance_at_threshold_accepted() {
 fn build_revolve_angle_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2377,10 +2317,6 @@ fn build_revolve_angle_just_below_threshold_rejected() {
 fn build_revolve_angle_negative_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2430,15 +2366,12 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
 // ---------------------------------------------------------------------------
 
 /// Circular pattern dispatch rejects a missing `count` argument at compile
-/// time. The Warning message identifies both the arg name and the kind name
-/// (lowercase `circular` via the Display impl).
+/// time. The Warning message identifies both the arg name and the
+/// `circular_pattern` builtin the author typed.
 #[test]
 fn build_circular_pattern_missing_count_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2486,7 +2419,11 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "count", "circular"],
+        &[
+            "missing required geometry argument",
+            "count",
+            "circular_pattern",
+        ],
     );
 }
 
@@ -2497,9 +2434,6 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
 fn build_circular_pattern_missing_axis_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2546,7 +2480,11 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "ax", "circular"],
+        &[
+            "missing required geometry argument",
+            "ax",
+            "circular_pattern",
+        ],
     );
 }
 
@@ -2557,9 +2495,6 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
 fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
@@ -2718,7 +2653,6 @@ fn run_boolean_unresolved_ref_case(
     std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,

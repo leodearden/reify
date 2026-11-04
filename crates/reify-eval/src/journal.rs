@@ -31,9 +31,19 @@ pub struct EvalEvent {
 #[derive(Clone, Debug)]
 pub enum EventKind {
     /// Evaluation of a node has started.
-    Started,
-    /// Evaluation of a node completed with the given outcome.
-    Completed { outcome: EvalOutcome },
+    Started {
+        /// `Some` on a cell commit made through `commit_cell_result`; `None`
+        /// on a visit that is not a commit, or on a commit not yet routed
+        /// through that primitive.
+        commit: Option<CommitTag>,
+    },
+    /// Evaluation of a node completed.
+    Completed {
+        /// The cache outcome. `None` iff the paired `Started` event's tag is
+        /// [`CacheLegKind::Skipped`]: no cache entry was written, so there is
+        /// no outcome to report.
+        outcome: Option<EvalOutcome>,
+    },
     /// Evaluation of a node was cancelled.
     Cancelled,
     /// Evaluation of a node failed with the given error.
@@ -72,6 +82,50 @@ pub enum EventPayload {
     Error(String),
     /// Custom string payload.
     Custom(String),
+}
+
+/// What a cell commit records on its journal `Started` event: which call-path
+/// produced the value, and the fate of its cache leg.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitTag {
+    pub trace: TraceSource,
+    pub cache: CacheLegKind,
+}
+
+/// Whether a cell commit wrote its cache leg.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheLegKind {
+    Recorded,
+    /// The cache leg was omitted. `reason` is opaque data for a human
+    /// reader; it is never parsed.
+    Skipped {
+        reason: &'static str,
+    },
+}
+
+/// Which call-path produced a committed value, carried on the journal as
+/// [`CommitTag::trace`], so the §2.6 divergence audit can attribute a
+/// mismatch to its producing path. Which cache leg each path writes is
+/// `cell_commit.rs`'s concern, not this enum's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceSource {
+    /// First-time (cold) evaluation of a node with no prior cache entry.
+    ColdEval,
+    /// A cache miss in the cached-serve pass: the value was recomputed.
+    CachedServe,
+    /// A cache hit in the cached-serve pass: the stored value was served
+    /// again unchanged. Kept apart from [`TraceSource::CachedServe`] so the
+    /// journal alone separates a re-serve from a miss, and named "reuse"
+    /// rather than "reserve" so the two names differ by more than a letter.
+    CachedReuse,
+    /// Re-evaluation triggered by an edit to an upstream cell.
+    EditReeval,
+    /// Part of a guarded-group re-evaluation (the `GuardedParamCtx` family).
+    GuardedGroup,
+    /// Overwrite applied after the main eval pass (post-pass correction).
+    PostPassOverwrite,
+    /// The `reeval_cone_cell` re-propagation pass.
+    ConeReeval,
 }
 
 /// Append-only event journal dual-indexed by time and node.
@@ -176,6 +230,39 @@ impl EventJournal {
             .and_then(|indices| indices.last())
             .map(|&idx| &self.events[idx])
     }
+
+    /// The commit tag on `node_id`'s FIRST `Started` event: `None` if the
+    /// node has no `Started` event, or if that event is an untagged visit.
+    pub fn first_commit_for_node(&self, node_id: &NodeId) -> Option<&CommitTag> {
+        self.started_commits_for_node(node_id)
+            .next()
+            .and_then(Option::as_ref)
+    }
+
+    /// The commit tag on `node_id`'s LATEST `Started` event: `None` if the
+    /// node has no `Started` event, or if that event is an untagged visit.
+    /// An untagged later visit therefore hides an earlier tag.
+    pub fn latest_commit_for_node(&self, node_id: &NodeId) -> Option<&CommitTag> {
+        self.started_commits_for_node(node_id)
+            .next_back()
+            .and_then(Option::as_ref)
+    }
+
+    /// The `commit` field of each of `node_id`'s `Started` events, in
+    /// insertion order.
+    fn started_commits_for_node(
+        &self,
+        node_id: &NodeId,
+    ) -> impl DoubleEndedIterator<Item = &Option<CommitTag>> {
+        self.by_node
+            .get(node_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|&idx| match &self.events[idx].kind {
+                EventKind::Started { commit } => Some(commit),
+                _ => None,
+            })
+    }
 }
 
 impl Default for EventJournal {
@@ -189,7 +276,8 @@ impl Default for EventJournal {
 ///
 /// # Victim / donor contract
 ///
-/// The mapping preserves the contract documented at lines 52–62 of this file:
+/// The mapping preserves the translation contract documented on
+/// [`EventKind::Evicted`] and [`EventKind::Donated`]:
 ///
 /// * [`crate::warm_pool::WarmPoolEvent::Evicted`] → [`EventKind::Evicted`]:
 ///   `EvalEvent.node_id` is the **evicted** node (the victim whose state was
@@ -247,7 +335,7 @@ mod tests {
 
     #[test]
     fn event_kind_started() {
-        let kind = EventKind::Started;
+        let kind = EventKind::Started { commit: None };
         let _ = format!("{:?}", kind); // Debug works
         let _ = kind.clone(); // Clone works
     }
@@ -255,7 +343,7 @@ mod tests {
     #[test]
     fn event_kind_completed_changed() {
         let kind = EventKind::Completed {
-            outcome: EvalOutcome::Changed,
+            outcome: Some(EvalOutcome::Changed),
         };
         let _ = format!("{:?}", kind);
         let _ = kind.clone();
@@ -264,7 +352,7 @@ mod tests {
     #[test]
     fn event_kind_completed_unchanged() {
         let kind = EventKind::Completed {
-            outcome: EvalOutcome::Unchanged,
+            outcome: Some(EvalOutcome::Unchanged),
         };
         let _ = format!("{:?}", kind);
         let _ = kind.clone();
@@ -358,18 +446,18 @@ mod tests {
     #[test]
     fn journal_record_increments_len() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("x", EventKind::Started, 0));
+        journal.record(make_event("x", EventKind::Started { commit: None }, 0));
         assert_eq!(journal.len(), 1);
         assert!(!journal.is_empty());
 
-        journal.record(make_event("y", EventKind::Started, 0));
+        journal.record(make_event("y", EventKind::Started { commit: None }, 0));
         assert_eq!(journal.len(), 2);
     }
 
     #[test]
     fn journal_record_maintains_insertion_order() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
         journal.record(make_event("b", EventKind::CacheHit, 0));
         journal.record(make_event("c", EventKind::Cancelled, 0));
 
@@ -396,12 +484,12 @@ mod tests {
         let node_b = NodeId::Value(reify_core::ValueCellId::new("Test", "b"));
         let node_c = NodeId::Value(reify_core::ValueCellId::new("Test", "c"));
 
-        journal.record(make_event("a", EventKind::Started, 0));
-        journal.record(make_event("b", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("b", EventKind::Started { commit: None }, 0));
         journal.record(make_event(
             "a",
             EventKind::Completed {
-                outcome: EvalOutcome::Changed,
+                outcome: Some(EvalOutcome::Changed),
             },
             0,
         ));
@@ -409,18 +497,18 @@ mod tests {
         journal.record(make_event(
             "b",
             EventKind::Completed {
-                outcome: EvalOutcome::Unchanged,
+                outcome: Some(EvalOutcome::Unchanged),
             },
             0,
         ));
 
         let a_events = journal.events_for_node(&node_a);
         assert_eq!(a_events.len(), 2);
-        assert!(matches!(a_events[0].kind, EventKind::Started));
+        assert!(matches!(a_events[0].kind, EventKind::Started { .. }));
         assert!(matches!(
             a_events[1].kind,
             EventKind::Completed {
-                outcome: EvalOutcome::Changed
+                outcome: Some(EvalOutcome::Changed)
             }
         ));
 
@@ -443,14 +531,14 @@ mod tests {
     fn events_for_node_preserves_insertion_order() {
         let mut journal = EventJournal::new();
         // Interleave events for same node
-        journal.record(make_event("x", EventKind::Started, 0));
-        journal.record(make_event("y", EventKind::Started, 0));
+        journal.record(make_event("x", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("y", EventKind::Started { commit: None }, 0));
         journal.record(make_event("x", EventKind::CacheHit, 1));
         journal.record(make_event("y", EventKind::CacheHit, 1));
         journal.record(make_event(
             "x",
             EventKind::Completed {
-                outcome: EvalOutcome::Changed,
+                outcome: Some(EvalOutcome::Changed),
             },
             2,
         ));
@@ -458,7 +546,7 @@ mod tests {
         let node_x = NodeId::Value(reify_core::ValueCellId::new("Test", "x"));
         let x_events = journal.events_for_node(&node_x);
         assert_eq!(x_events.len(), 3);
-        assert!(matches!(x_events[0].kind, EventKind::Started));
+        assert!(matches!(x_events[0].kind, EventKind::Started { .. }));
         assert!(matches!(x_events[1].kind, EventKind::CacheHit));
         assert!(matches!(x_events[2].kind, EventKind::Completed { .. }));
     }
@@ -470,7 +558,7 @@ mod tests {
         journal.record(EvalEvent {
             timestamp: t1,
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "a")),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(0),
             payload: None,
         });
@@ -480,7 +568,7 @@ mod tests {
         journal.record(EvalEvent {
             timestamp: t2,
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "b")),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(0),
             payload: None,
         });
@@ -489,7 +577,7 @@ mod tests {
         journal.record(EvalEvent {
             timestamp: t3,
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "c")),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(0),
             payload: None,
         });
@@ -514,7 +602,7 @@ mod tests {
         journal.record(EvalEvent {
             timestamp: t1,
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "a")),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(0),
             payload: None,
         });
@@ -523,7 +611,7 @@ mod tests {
         journal.record(EvalEvent {
             timestamp: t2,
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "b")),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(0),
             payload: None,
         });
@@ -540,8 +628,8 @@ mod tests {
     #[test]
     fn events_in_range_full() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
-        journal.record(make_event("b", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("b", EventKind::Started { commit: None }, 0));
 
         let events = journal.events_in_range(..);
         assert_eq!(events.len(), 2);
@@ -550,7 +638,7 @@ mod tests {
     #[test]
     fn events_in_range_empty() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
         std::thread::sleep(std::time::Duration::from_millis(1));
         let future = Instant::now();
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -563,10 +651,10 @@ mod tests {
     #[test]
     fn events_since_version_filters_correctly() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
-        journal.record(make_event("b", EventKind::Started, 0));
-        journal.record(make_event("c", EventKind::Started, 1));
-        journal.record(make_event("d", EventKind::Started, 2));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("b", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("c", EventKind::Started { commit: None }, 1));
+        journal.record(make_event("d", EventKind::Started { commit: None }, 2));
 
         let events = journal.events_since(VersionId(1));
         assert_eq!(events.len(), 2);
@@ -583,8 +671,8 @@ mod tests {
     #[test]
     fn events_since_exact_boundary() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 5));
-        journal.record(make_event("b", EventKind::Started, 5));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 5));
+        journal.record(make_event("b", EventKind::Started { commit: None }, 5));
 
         let events = journal.events_since(VersionId(5));
         assert_eq!(events.len(), 2);
@@ -593,8 +681,8 @@ mod tests {
     #[test]
     fn events_since_higher_than_all_returns_empty() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
-        journal.record(make_event("b", EventKind::Started, 1));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("b", EventKind::Started { commit: None }, 1));
 
         let events = journal.events_since(VersionId(99));
         assert!(events.is_empty());
@@ -603,11 +691,11 @@ mod tests {
     #[test]
     fn latest_for_node_returns_last_event() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("x", EventKind::Started, 0));
+        journal.record(make_event("x", EventKind::Started { commit: None }, 0));
         journal.record(make_event(
             "x",
             EventKind::Completed {
-                outcome: EvalOutcome::Changed,
+                outcome: Some(EvalOutcome::Changed),
             },
             0,
         ));
@@ -629,19 +717,19 @@ mod tests {
     #[test]
     fn latest_for_node_interleaved() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
-        journal.record(make_event("b", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
+        journal.record(make_event("b", EventKind::Started { commit: None }, 0));
         journal.record(make_event(
             "a",
             EventKind::Completed {
-                outcome: EvalOutcome::Unchanged,
+                outcome: Some(EvalOutcome::Unchanged),
             },
             0,
         ));
         journal.record(make_event(
             "b",
             EventKind::Completed {
-                outcome: EvalOutcome::Changed,
+                outcome: Some(EvalOutcome::Changed),
             },
             0,
         ));
@@ -651,7 +739,7 @@ mod tests {
         assert!(matches!(
             latest_a.kind,
             EventKind::Completed {
-                outcome: EvalOutcome::Unchanged
+                outcome: Some(EvalOutcome::Unchanged)
             }
         ));
 
@@ -660,9 +748,80 @@ mod tests {
         assert!(matches!(
             latest_b.kind,
             EventKind::Completed {
-                outcome: EvalOutcome::Changed
+                outcome: Some(EvalOutcome::Changed)
             }
         ));
+    }
+
+    fn started(node_name: &str, commit: Option<CommitTag>) -> EvalEvent {
+        make_event(node_name, EventKind::Started { commit }, 0)
+    }
+
+    fn recorded(trace: TraceSource) -> Option<CommitTag> {
+        Some(CommitTag {
+            trace,
+            cache: CacheLegKind::Recorded,
+        })
+    }
+
+    #[test]
+    fn commit_for_node_is_none_without_a_started_event() {
+        let mut journal = EventJournal::new();
+        journal.record(make_event("x", EventKind::CacheHit, 0));
+
+        let x = node("Test", "x");
+        assert_eq!(journal.first_commit_for_node(&x), None);
+        assert_eq!(journal.latest_commit_for_node(&x), None);
+    }
+
+    #[test]
+    fn first_and_latest_commit_read_the_node_s_first_and_last_started_events() {
+        let skipped = Some(CommitTag {
+            trace: TraceSource::PostPassOverwrite,
+            cache: CacheLegKind::Skipped { reason: "seeded" },
+        });
+        let mut journal = EventJournal::new();
+        journal.record(started("x", recorded(TraceSource::ColdEval)));
+        journal.record(make_event(
+            "x",
+            EventKind::Completed {
+                outcome: Some(EvalOutcome::Changed),
+            },
+            0,
+        ));
+        journal.record(started("y", recorded(TraceSource::EditReeval)));
+        journal.record(started("x", skipped.clone()));
+        journal.record(make_event("x", EventKind::Completed { outcome: None }, 0));
+
+        let x = node("Test", "x");
+        assert_eq!(
+            journal.first_commit_for_node(&x),
+            recorded(TraceSource::ColdEval).as_ref()
+        );
+        assert_eq!(journal.latest_commit_for_node(&x), skipped.as_ref());
+    }
+
+    #[test]
+    fn an_untagged_started_event_is_the_commit_it_stands_at() {
+        let mut journal = EventJournal::new();
+        journal.record(started("x", recorded(TraceSource::ColdEval)));
+        journal.record(started("x", None));
+        journal.record(started("y", None));
+        journal.record(started("y", recorded(TraceSource::ConeReeval)));
+
+        let x = node("Test", "x");
+        assert_eq!(
+            journal.first_commit_for_node(&x),
+            recorded(TraceSource::ColdEval).as_ref()
+        );
+        assert_eq!(journal.latest_commit_for_node(&x), None);
+
+        let y = node("Test", "y");
+        assert_eq!(journal.first_commit_for_node(&y), None);
+        assert_eq!(
+            journal.latest_commit_for_node(&y),
+            recorded(TraceSource::ConeReeval).as_ref()
+        );
     }
 
     #[test]
@@ -681,7 +840,7 @@ mod tests {
     fn count_donated_counts_only_donated_events() {
         let mut journal = EventJournal::new();
         // Mixed sequence: Started, Donated, CacheHit, Donated, Evicted, Completed
-        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
         journal.record(make_event("b", EventKind::Donated { size_bytes: 100 }, 0));
         journal.record(make_event("c", EventKind::CacheHit, 0));
         journal.record(make_event("d", EventKind::Donated { size_bytes: 200 }, 0));
@@ -689,7 +848,7 @@ mod tests {
         journal.record(make_event(
             "f",
             EventKind::Completed {
-                outcome: EvalOutcome::Changed,
+                outcome: Some(EvalOutcome::Changed),
             },
             0,
         ));
@@ -700,7 +859,7 @@ mod tests {
     #[test]
     fn count_helpers_ignore_other_kinds() {
         let mut journal = EventJournal::new();
-        journal.record(make_event("a", EventKind::Started, 0));
+        journal.record(make_event("a", EventKind::Started { commit: None }, 0));
         journal.record(make_event("b", EventKind::CacheHit, 0));
         journal.record(make_event("c", EventKind::WarmStartUsed, 0));
         journal.record(make_event("d", EventKind::Cancelled, 0));
@@ -744,7 +903,7 @@ mod tests {
         let event = EvalEvent {
             timestamp: Instant::now(),
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "x")),
-            kind: EventKind::Started,
+            kind: EventKind::Started { commit: None },
             version: VersionId(0),
             payload: None,
         };
@@ -756,7 +915,7 @@ mod tests {
             timestamp: Instant::now(),
             node_id: NodeId::Value(reify_core::ValueCellId::new("Test", "y")),
             kind: EventKind::Completed {
-                outcome: EvalOutcome::Changed,
+                outcome: Some(EvalOutcome::Changed),
             },
             version: VersionId(1),
             payload: Some(EventPayload::Duration(std::time::Duration::from_nanos(100))),
@@ -776,7 +935,7 @@ mod tests {
     /// node_id is the **victim** (the evicted node), kind is EventKind::Evicted{size_bytes},
     /// payload is None.
     ///
-    /// The victim/donor contract (journal.rs:52-55) requires that for Evicted, the
+    /// The victim/donor contract (on `EventKind::Evicted`) requires that for Evicted, the
     /// EvalEvent.node_id is the evicted node, not a hypothetical donating node.
     /// We use two distinct node_ids to make the contract observable.
     #[test]
@@ -811,7 +970,7 @@ mod tests {
     /// node_id is the **donor** (the donating node), kind is EventKind::Donated{size_bytes},
     /// payload is None.
     ///
-    /// The victim/donor contract (journal.rs:58-62) requires that for Donated, the
+    /// The victim/donor contract (on `EventKind::Donated`) requires that for Donated, the
     /// EvalEvent.node_id is the donating node.
     #[test]
     fn translate_warm_pool_event_donated_maps_donor_node_id_and_size_bytes() {
@@ -840,7 +999,7 @@ mod tests {
     /// Evicted victim contract: when victim and a hypothetical donor differ,
     /// the EvalEvent.node_id must be the victim, not the donor.
     ///
-    /// This pins the contract documented at journal.rs:52-55: Evicted events must
+    /// This pins the contract documented on `EventKind::Evicted`: Evicted events must
     /// carry the evicted node's id, not the donating node that triggered eviction.
     #[test]
     fn translate_warm_pool_event_evicted_victim_contract_not_donor() {

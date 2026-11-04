@@ -21,7 +21,7 @@
 
 use super::Ledger;
 use crate::{AuditContext, NoopJCodemunchOps, RealGitOps};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -79,17 +79,7 @@ impl<R: Ord + Clone, E: fmt::Display> Regenerator<R, E> {
         // read, but `AuditContext` requires both seams.
         let conn = rusqlite::Connection::open_in_memory()
             .expect("in-memory sqlite connection for AuditContext placeholder");
-        let ctx = AuditContext {
-            project_root: args.project_root.clone(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &NoopJCodemunchOps,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(args.project_root.clone(), &conn, &git, &NoopJCodemunchOps);
 
         let ledger = match (self.derive)(&ctx) {
             Ok(ledger) => ledger,

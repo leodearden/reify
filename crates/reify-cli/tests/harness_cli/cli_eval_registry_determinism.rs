@@ -41,9 +41,9 @@ fn eval_two_infeasible_components_is_identical_across_runs_and_reports_the_first
         );
     }
     assert!(
-        first_stderr.contains("max absolute residual: 5.00e-3"),
+        first_stderr.contains("narrowed to empty by constraint Twin#constraint[1])"),
         "the reported failure must be a's (the first-declared contradiction, \
-         residual 5.00e-3), not b's (5.00e-4);\nstderr:\n{first_stderr}",
+         refuted at `a == 20mm`), not b's (Twin#constraint[3]);\nstderr:\n{first_stderr}",
     );
 }
 

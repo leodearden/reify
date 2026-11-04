@@ -415,13 +415,13 @@ fn panic_in_leaf_propagates_pending_with_chain_to_mid_and_quiets_downstream() {
     let c_events = engine.journal().events_for_node(&c_node);
     let pass2_started_count = c_events
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .count();
     let c_changed_after_pass1 = c_events.iter().rev().take(pass2_started_count).any(|e| {
         matches!(
             e.kind,
             EventKind::Completed {
-                outcome: EvalOutcome::Changed
+                outcome: Some(EvalOutcome::Changed)
             }
         )
     });

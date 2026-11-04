@@ -34,14 +34,17 @@
 //
 // Two lines of defence against a verdict with no evidence behind it:
 //   1. RESULT_RECORD_SCHEMA (below) — an agent cannot EMIT a record without a
-//      capability, a verdict from the closed vocabulary, an argv-array command
-//      and an integer exit_code.  VERDICT_SCHEMA likewise requires the
+//      capability, a verdict from the closed vocabulary, an argv-array command,
+//      an integer exit_code and α's fixture_present, which may be null only
+//      beside HARNESS_ERROR.  VERDICT_SCHEMA likewise requires the
 //      executed/total counters, so a Synthesize agent cannot drop them and have
-//      the batch silently read as INCOMPLETE.
+//      the batch silently read as INCOMPLETE.  Every schema literal mirrors a
+//      `prd-decompose-verify.py print-schema` member (B9 holds them equal).
 //   2. The Python harness (has_probe_evidence / classify_record) — a
-//      FAIL/UNPROVABLE that still arrives evidence-free is reported as
-//      MALFORMED rather than tabulated as a premise falsification (PRD §6
-//      decision 4).
+//      FAIL/UNPROVABLE that still arrives evidence-free, or any record whose
+//      fixture_present is not α's boolean, is reported as MALFORMED rather
+//      than tabulated as a premise falsification or counted as verified (PRD
+//      §6 decision 4, §5.2).
 //
 // Committed under scripts/ (not .claude/workflows/ which is .gitignored) so
 // β can reference it by a stable path and D4 can re-run it.  .mjs extension
@@ -61,6 +64,18 @@ export const meta = {
 // ---------------------------------------------------------------------------
 // JSON schemas for structured agent output
 // ---------------------------------------------------------------------------
+//
+// These literals mirror `python3 scripts/prd-decompose-verify.py print-schema`,
+// because a Workflow script cannot read files (PRD §3 M4).  B9 in
+// scripts/test_prd_decompose_verify_mjs.py holds each schema an agent() call
+// receives equal to its member.  One array per vocabulary, in the Python enum
+// order, feeds both the schemas and the role prompts.
+
+const ASSERTION_KINDS = ["rejection", "parses", "resolves", "produces", "ir", "value"];
+const HARNESS_ERROR = "HARNESS_ERROR";
+const VERDICTS = ["PASS", "FAIL", "UNPROVABLE", HARNESS_ERROR];
+const PROBE_KINDS = ["grammar", "check", "ir", "value"];
+const HARNESS_FAILURE_KINDS = ["launch", "setup", "timeout", "grammar_load"];
 
 const PREMISES_SCHEMA = {
     type: "object",
@@ -73,8 +88,7 @@ const PREMISES_SCHEMA = {
                 required: ["text", "assertion_kind", "fixture", "match"],
                 properties: {
                     text:           { type: "string" },
-                    assertion_kind: { type: "string",
-                                      enum: ["rejection", "parses", "resolves", "produces", "ir", "value"] },
+                    assertion_kind: { type: "string", enum: ASSERTION_KINDS },
                     fixture:        { type: "string" },
                     match:          { type: "object" },
                     capability:     { type: "string" },
@@ -98,22 +112,47 @@ const PREMISES_SCHEMA = {
 //
 // Requiring capability/verdict/command/exit_code, pinning `verdict` to the
 // PRD §6 decision 3 vocabulary, and typing `command` as an array of strings
-// makes all three unrepresentable at the agent boundary.
+// makes all three unrepresentable at the agent boundary.  Every property is α's
+// published result_record shape (§5.1), relayed verbatim; pdv's widening is
+// fixture_present's null, admitted only by the if/then arm beside HARNESS_ERROR.
 const RESULT_RECORD_SCHEMA = {
     type: "object",
-    required: ["capability", "verdict", "command", "exit_code"],
+    required: ["capability", "verdict", "command", "exit_code", "fixture_present"],
     properties: {
         capability: { type: "string" },
-        probe_kind: { type: "string" },
-        verdict:    { type: "string",
-                      enum: ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"] },
+        probe_kind: { type: "string", enum: PROBE_KINDS },
+        verdict:    { type: "string", enum: VERDICTS },
         // argv TOKENS, never a ready-to-paste shell string.
         command:    { type: "array", items: { type: "string" } },
         // A real process outcome.  -1 when no process ran (HARNESS_ERROR).
         exit_code:  { type: "integer" },
         stdout:     { type: "string" },
         stderr:     { type: "string" },
+        fixture:    { type: "string" },
+        fixture_present: { type: ["boolean", "null"] },
+        harness_failure: {
+            type: ["object", "null"],
+            required: ["kind", "detail", "cache_denied"],
+            properties: {
+                kind:         { type: "string", enum: HARNESS_FAILURE_KINDS },
+                detail:       { type: "string" },
+                cache_denied: { type: "boolean" },
+            },
+        },
+        value_observation: {
+            type: "object",
+            required: ["satisfied", "captured", "failed_constraint"],
+            properties: {
+                satisfied:         { type: "boolean" },
+                captured:          { type: ["string", "null"] },
+                failed_constraint: { type: ["string", "null"] },
+            },
+        },
     },
+    // null is the Prover's own no-process HARNESS_ERROR fallback; on any other
+    // verdict fixture_present is α's true/false.
+    if:   { properties: { verdict: { not: { const: HARNESS_ERROR } } } },
+    then: { properties: { fixture_present: { type: "boolean" } } },
 };
 
 // The record-shape contract in prose, stated ONCE and interpolated into BOTH
@@ -121,14 +160,19 @@ const RESULT_RECORD_SCHEMA = {
 // it was duplicated near-verbatim into the Prover and Adversary prompts and the
 // two copies had ALREADY drifted in their closing paragraph.  Prose that drifts
 // from the schema is prose an agent will follow into a rejected response.
-const RECORD_SHAPE_RULES = `RECORD SHAPE — every result record MUST carry all four of capability, verdict,
-command and exit_code, and:
+const RECORD_SHAPE_RULES = `RECORD SHAPE — every result record MUST carry all five of capability, verdict,
+command, exit_code and fixture_present, and:
   - \`command\` MUST be an ARRAY OF STRINGS (argv tokens, e.g.
     ["python3", "scripts/prd-capability-check.py", "--json", "/tmp/ps.json"]).
     Do NOT return a single ready-to-paste shell string — it is not re-runnable
     as captured evidence and the schema rejects it.
   - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
-  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+  - \`verdict\` MUST be one of ${VERDICTS.join(" / ")}.
+  - \`fixture\`, \`fixture_present\` and \`harness_failure\` are relayed VERBATIM
+    from α's record.  fixture_present is α's true/false.  null is allowed ONLY
+    on a ${HARNESS_ERROR} record no α process produced; on any other verdict a
+    missing or null fixture_present makes the record MALFORMED — it is set
+    aside and never counts as verified.
 A FAIL or UNPROVABLE you did not actually RUN is not a falsification — the
 harness discards any such record with no captured command+exit_code as an
 unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
@@ -383,7 +427,8 @@ Instructions:
    match.stderr_contains naming the diagnostic, to pin WHICH rejection fires.
    DO NOT use observation="absent" for rejection premises — that would silently
    pass the 4575 silent-accept bug.
-4. assertion_kind values, and the match keys each accepts.  Bind refuses any
+4. assertion_kind values, and the match keys each accepts.  The closed list is
+   ${ASSERTION_KINDS.join(", ")}.  Bind refuses any
    match key the kind does not consult: a misspelt key would otherwise be
    silently ignored, leaving the probe asserting nothing.
    - "rejection": compiler must reject — e.g. type mismatches.  Bind sets
@@ -478,7 +523,7 @@ If any step fails, return a single HARNESS_ERROR result record (this record is
 EXEMPT from the evidence rule above and DOES block — it is how "I could not run
 anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
-   command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
+   command: [], exit_code: -1, fixture_present: null, stdout: "", stderr: "<error detail>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
                 ),
 

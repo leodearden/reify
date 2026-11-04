@@ -4,7 +4,9 @@ narrow returns the Narrowing record and the narrowing stage's stderr lines.
 The closure comes from affected-crates-lib.sh's affected_crates, called once
 over every changed path and never reimplemented here (PRD D15). Its text, or
 an operator override's, is parsed once into a Closure variant; narrowing and
-closure_reaches_reify_gui match on the variant.
+closure_reaches_reify_gui match on the variant. Every variant keeps that text
+verbatim, because the plan's narrowing header prints it as read, multi-line
+or whitespace-only.
 """
 
 import re
@@ -27,6 +29,8 @@ _CRATE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 class NotComputed:
     """No closure answers this run: none was read, or an override held no word."""
 
+    text: str = ""
+
     @property
     def words(self) -> tuple[str, ...]:
         return ()
@@ -42,6 +46,7 @@ class Crates:
 
     names: tuple[str, ...]
     from_diff: bool
+    text: str
 
     def __post_init__(self):
         if not self.names and not self.from_diff:
@@ -57,6 +62,7 @@ class AllCrates:
     """affected_crates' ALL sentinel: every crate is affected."""
 
     from_diff: bool
+    text: str = ALL_CRATES
 
     @property
     def words(self) -> tuple[str, ...]:
@@ -69,6 +75,7 @@ class Malformed:
 
     words: tuple[str, ...]
     from_diff: bool
+    text: str
 
 
 Closure = NotComputed | Crates | AllCrates | Malformed
@@ -78,12 +85,12 @@ def parse_closure(text: str, from_diff: bool) -> Closure:
     """The one reading of a closure's text, split as bash's default IFS splits it."""
     names = _ifs_split(text)
     if not names and not from_diff:
-        return NotComputed()
+        return NotComputed(text)
     if text == ALL_CRATES:
         return AllCrates(from_diff)
     if names == (ALL_CRATES,) or not all(_CRATE_NAME.fullmatch(name) for name in names):
-        return Malformed(names, from_diff)
-    return Crates(names, from_diff)
+        return Malformed(names, from_diff, text)
+    return Crates(names, from_diff, text)
 
 
 def _ifs_split(text: str) -> tuple[str, ...]:
@@ -101,6 +108,11 @@ class Narrowing:
     def affected(self) -> tuple[str, ...]:
         """bash's AFFECTED: the closure's words when this run may narrow."""
         return self.closure.words if self.narrow_eligible else ()
+
+    @property
+    def affected_text(self) -> str:
+        """bash's AFFECTED as text: the closure's verbatim text when this run may narrow."""
+        return self.closure.text if self.narrow_eligible else ""
 
     @property
     def narrow_active(self) -> bool:

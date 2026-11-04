@@ -7,6 +7,7 @@ use reify_core::Severity;
 
 use crate::check_verdict::has_error_diagnostic;
 use crate::constraint_report::format_undef_cause;
+use crate::help::EVAL_USAGE;
 use crate::module_capabilities::module_has_geometry;
 use crate::{configured_eval_engine, parse_and_compile};
 
@@ -72,9 +73,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
                 i += 1;
                 if i >= args.len() {
                     eprintln!("Error: --cache-dir requires a path argument");
-                    eprintln!(
-                        "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
-                    );
+                    eprintln!("{EVAL_USAGE}");
                     return ExitCode::FAILURE;
                 }
                 cache_dir_override = Some(std::path::PathBuf::from(&args[i]));
@@ -82,9 +81,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
             }
             flag if flag.starts_with("--") => {
                 eprintln!("Error: unknown flag for `eval`: {}", flag);
-                eprintln!(
-                    "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
-                );
+                eprintln!("{EVAL_USAGE}");
                 return ExitCode::FAILURE;
             }
             path => {
@@ -98,9 +95,7 @@ pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
         }
     }
     let Some(path) = file_path else {
-        eprintln!(
-            "Usage: reify eval [--explain-undef] [--verbose] [--cache-dir <path>] <file>"
-        );
+        eprintln!("{EVAL_USAGE}");
         return ExitCode::FAILURE;
     };
 

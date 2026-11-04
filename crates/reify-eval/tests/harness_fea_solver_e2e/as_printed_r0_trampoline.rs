@@ -24,9 +24,10 @@
 use std::sync::Arc;
 
 use crate::common::as_printed::{
-    as_printed_options, box_mesh, fdm_process, r0_toolpath_gcode, structure, with_field,
+    as_printed_options, assert_degraded_field, box_mesh, fdm_process, length, r0_toolpath_gcode,
+    structure, vec3_dimensionless, with_field,
 };
-use reify_core::{ContentHash, DiagnosticCode, RealizationNodeId, Severity, Type};
+use reify_core::{ContentHash, DiagnosticCode, DimensionVector, RealizationNodeId, Severity, Type};
 use reify_eval::compute_targets::as_printed_material::as_printed_material_r_fast_trampoline;
 use reify_eval::compute_targets::as_printed_material_r0::as_printed_material_r0_trampoline;
 use reify_eval::{CancellationHandle, ComputeOutcome, RealizationReadHandle, RealizedContent};
@@ -68,36 +69,6 @@ fn run_r0(gcode: &str) -> Value {
         fdm_process(),
         as_printed_options(),
     ])
-}
-
-/// Assert `result` is a well-typed, honestly-degraded `AsPrintedZones` field:
-/// codomain `AnisotropicMaterial`, source `AsPrintedZones`, and an `Undef`
-/// lambda (so every `sample_field_at` falls through to `Undef`) — never a panic
-/// and never a malformed field.
-fn assert_degraded_field(result: &Value) {
-    match result {
-        Value::Field {
-            codomain_type,
-            source,
-            lambda,
-            ..
-        } => {
-            assert!(
-                matches!(source, FieldSourceKind::AsPrintedZones),
-                "degraded field is still well-typed AsPrintedZones, got {source:?}"
-            );
-            assert_eq!(
-                *codomain_type,
-                Type::StructureRef("AnisotropicMaterial".to_string()),
-                "degraded field codomain must be AnisotropicMaterial"
-            );
-            assert!(
-                matches!(lambda.as_ref(), Value::Undef),
-                "degrade must yield an Undef lambda, got {lambda:?}"
-            );
-        }
-        other => panic!("expected Value::Field even on degrade, got {other:?}"),
-    }
 }
 
 /// Destructure a `Value::Field`, returning `(codomain, source, lambda items)`.
@@ -310,12 +281,83 @@ fn r0_field_differs_structurally_from_r_fast() {
     );
 }
 
+/// task 6940: the R0 zone-params slot (lambda items[2]) types its two band
+/// widths as `Length` exactly as R-fast does; `line_width` is the mean wall bead
+/// width (0.45 mm → SI). The counts and the unit build direction stay
+/// dimensionless `Value::Real`.
+#[test]
+fn r0_trampoline_types_the_zone_param_lengths() {
+    let (_, _, items) = field_parts(&run_r0(r0_toolpath_gcode()));
+    let Value::List(p) = &items[2] else {
+        panic!("expected the params list at items[2], got {:?}", items[2]);
+    };
+    assert_eq!(p.len(), 7, "params must be a 7-element list");
+    assert_eq!(p[2], length(0.0002), "layer_height");
+    match &p[3] {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(*dimension, DimensionVector::LENGTH, "line_width dimension");
+            assert!(
+                (si_value - 0.45 * MM_TO_M).abs() < 1e-12,
+                "line_width {si_value} != mean bead width 0.45 mm"
+            );
+        }
+        other => panic!("line_width must be a Length Scalar, got {other:?}"),
+    }
+    for idx in [0, 1, 4, 5, 6] {
+        assert!(
+            matches!(p[idx], Value::Real(_)),
+            "params[{idx}] must stay a dimensionless Value::Real, got {:?}",
+            p[idx]
+        );
+    }
+}
+
 #[test]
 fn r0_trampoline_degrades_to_undef_lambda_on_malformed_gcode() {
     // A `;WIDTH:` directive with a non-numeric value is a hard toolpath parse
     // error → the trampoline must degrade honestly to an Undef-lambda field
     // (every sample falls through to Undef), never panic.
     assert_degraded_field(&run_r0(";WIDTH:notanumber\n"));
+}
+
+/// task 6940: every bead width parses to +inf, so the wall `mean_width_m` and
+/// hence `line_width` are non-finite and no zone classification is meaningful
+/// — the field degrades. Spelled `inf`, not `NaN`: the parser's width-change
+/// test `(new - w).abs() > POS_EPS` is false for NaN, so a `;WIDTH:NaN`
+/// directive is silently dropped and the width never becomes non-finite.
+#[test]
+fn r0_trampoline_degrades_on_a_non_finite_bead_width() {
+    let gcode = r0_toolpath_gcode().replace(";WIDTH:0.45", ";WIDTH:inf");
+    assert_degraded_field(&run_r0(&gcode));
+}
+
+/// task 6940: a non-finite `layer_height` has no meaningful skin band, so the
+/// field degrades rather than carrying it into the zone params.
+#[test]
+fn r0_trampoline_degrades_on_a_non_finite_layer_height() {
+    assert_degraded_field(&run_r0_inputs(&[
+        Value::String(r0_toolpath_gcode().to_string()),
+        with_field(fdm_process(), "layer_height", length(f64::NAN)),
+        as_printed_options(),
+    ]));
+}
+
+/// task 6940: a non-finite `build_direction` component names no build axis, so
+/// the field degrades rather than silently classifying against +Z.
+#[test]
+fn r0_trampoline_degrades_on_a_non_finite_build_direction() {
+    assert_degraded_field(&run_r0_inputs(&[
+        Value::String(r0_toolpath_gcode().to_string()),
+        with_field(
+            fdm_process(),
+            "build_direction",
+            vec3_dimensionless([0.0, 0.0, f64::INFINITY]),
+        ),
+        as_printed_options(),
+    ]));
 }
 
 /// The trampoline marshals an arbitrary value graph, so the second input may not

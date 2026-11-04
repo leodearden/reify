@@ -36,7 +36,7 @@ use reify_core::{DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_ir::value::LeafQuery;
 use reify_ir::{ExportFormat, GeometryHandleId, Value};
-use reify_test_support::{MockGeometryKernel, assert_selector_leaf_targeting};
+use reify_test_support::{MockGeometryKernel, assert_selector_leaf_targeting, scalar_si};
 
 /// Parse and compile a source string with the stdlib prelude.
 /// Asserts the parse and compile pipelines produce no errors.
@@ -1074,13 +1074,7 @@ fn closest_point_on_box_via_occt_returns_plus_x_face_hit() {
     let expected = [0.005_f64, 0.0, 0.0];
     let names = ["x", "y", "z"];
     for (i, component) in components.iter().enumerate() {
-        let si = match component {
-            Value::Scalar { si_value, .. } => *si_value,
-            other => panic!(
-                "Bracket.cp.{} must be Length-dimensioned Scalar, got {:?}",
-                names[i], other
-            ),
-        };
+        let si = scalar_si(component, &format!("Bracket.cp.{}", names[i]));
         let diff = (si - expected[i]).abs();
         assert!(
             diff < 1e-6,

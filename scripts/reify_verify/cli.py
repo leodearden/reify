@@ -14,8 +14,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from reify_verify import bashcall, knobs, queries
-from reify_verify.invocation import Action, Invocation, Query, Scope
+from reify_verify import bashcall, build, knobs, queries, render
+from reify_verify.invocation import Action, Invocation, PlanFormat, Query, Scope
 from reify_verify.policy import ProfileSelection, UnknownRoleError, parse_role
 
 EX_USAGE = 64
@@ -31,12 +31,11 @@ VALUE_FLAGS = ("--profile", "--scope", "--test-threads")
 SWITCHES = {
     "--narrow": "narrow",
     "--include-infra": "include_infra",
-    "--print-plan": "print_plan",
     "--confirm-failed": "confirm_failed",
 }
+_PLAN_FORMAT_FLAGS = frozenset(plan_format.value for plan_format in PlanFormat)
 HELP_TOKENS = ("-h", "--help")
 _QUERY_FLAGS = frozenset(query.value for query in Query)
-ACTION_QUERY_CONFLICTS = ("--print-plan", "--confirm-failed")
 POSITIVE_INTEGER = re.compile(r"[1-9][0-9]*", re.ASCII)
 
 
@@ -53,6 +52,11 @@ class ActionReport:
 
     report: Callable[[Invocation, Mapping[str, str], Path], queries.QueryOutput]
 
+
+PROJECTIONS = {
+    PlanFormat.TEXT: render.render_text,
+    PlanFormat.JSON: render.render_json,
+}
 
 REPORTS = {
     Query.KNOBS: ActionFreeReport(queries.knob_report),
@@ -105,9 +109,14 @@ USAGE = (
     ),
     *_option("--include-infra", "Also run the static infra checks."),
     *_option(
-        "--print-plan",
+        PlanFormat.TEXT.value,
         "Print the ordered command list, then exit 0 without",
         "running anything.",
+    ),
+    *_option(
+        PlanFormat.JSON.value,
+        "As --print-plan, as one JSON record per line: header,",
+        "scope, narrowing, environment, then each typed step.",
     ),
     *_option(
         "--test-threads=N",
@@ -169,6 +178,8 @@ def _scan(argv: list[str]) -> dict:
             raw[flag] = value
         elif token in SWITCHES:
             raw[SWITCHES[token]] = True
+        elif token in _PLAN_FORMAT_FLAGS:
+            _set_plan_format(raw, PlanFormat(token))
         elif token in _QUERY_FLAGS:
             _set_query(raw, Query(token))
         elif token in HELP_TOKENS:
@@ -184,6 +195,17 @@ def _set_action(raw: dict, action: Action) -> None:
             (f"{ERROR}action already set to '{raw['action'].value}', got '{action.value}'",)
         )
     raw["action"] = action
+
+
+def _set_plan_format(raw: dict, plan_format: PlanFormat) -> None:
+    if raw.get("plan_format", plan_format) is not plan_format:
+        raise CliError(
+            (
+                f"{ERROR}plan format already set to '{raw['plan_format'].value}', "
+                f"got '{plan_format.value}'",
+            )
+        )
+    raw["plan_format"] = plan_format
 
 
 def _set_query(raw: dict, query: Query) -> None:
@@ -221,7 +243,7 @@ def _validate(raw: dict, env: dict[str, str]) -> Invocation:
         scope=scope,
         narrow=raw.get("narrow", False),
         include_infra=raw.get("include_infra", False),
-        print_plan=raw.get("print_plan", False),
+        plan_format=raw.get("plan_format"),
         confirm_failed=confirm_failed,
         test_threads=test_threads,
         role=role,
@@ -238,9 +260,13 @@ def _check_action_query(query: Query, action: Action, raw: dict) -> None:
                 f"(got '{action.value}')",
             )
         )
-    for flag in ACTION_QUERY_CONFLICTS:
-        if raw.get(SWITCHES[flag]):
-            raise CliError((f"{ERROR}query '{query.value}' does not combine with {flag}",))
+    conflicts = (
+        raw["plan_format"].value if raw.get("plan_format") else None,
+        "--confirm-failed" if raw.get("confirm_failed") else None,
+    )
+    conflict = next(filter(None, conflicts), None)
+    if conflict is not None:
+        raise CliError((f"{ERROR}query '{query.value}' does not combine with {conflict}",))
 
 
 def _member(enum, raw: str | None, flag: str):
@@ -309,14 +335,34 @@ def _dispatch(invocation: Invocation, env: dict[str, str]) -> int:
             return _emit(output)
         case ActionFreeReport(report=report):
             return _emit(report(env))
+    plan_format = invocation.plan_format
+    if plan_format is not None and not invocation.confirm_failed:
+        return _print_plan(invocation, plan_format, env)
+    action = invocation.action.value if invocation.action else ""
     _diagnose(
         (
             f"{ERROR}scripts/verify.py does not run action "
-            f"'{invocation.action.value}' yet; scripts/verify.sh remains the gate "
+            f"'{action}' yet; scripts/verify.sh remains the gate "
             f"until the S18 cutover ({PRD})",
         )
     )
     return EX_UNAVAILABLE
+
+
+def _print_plan(invocation: Invocation, plan_format: PlanFormat, env: dict[str, str]) -> int:
+    try:
+        outcome = build.plan_invocation(invocation, env, REPO_ROOT)
+    except bashcall.BashCallError as err:
+        _diagnose((f"{ERROR}{err}",))
+        return 1
+    match outcome:
+        case build.Refused(lines=lines, exit_code=exit_code):
+            _diagnose(lines)
+            return exit_code
+        case build.Planned(plan=plan, diagnostics=diagnostics):
+            _diagnose(diagnostics)
+            _print(PROJECTIONS[plan_format](plan))
+            return 0
 
 
 def _emit(output: queries.QueryOutput) -> int:

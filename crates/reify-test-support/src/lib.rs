@@ -12,7 +12,6 @@ pub mod design_files;
 pub mod examples_corpus;
 pub mod finite_difference;
 pub mod fixtures;
-pub mod git_env;
 pub mod helpers;
 pub mod ignore_hygiene;
 pub mod kernel_assertions;
@@ -26,6 +25,7 @@ pub mod rust_fixture_scan;
 pub mod sampled_field_fixtures;
 pub mod skip_sets;
 pub mod specialization_fixtures;
+pub mod stdlib_prelude;
 pub mod stl_bytes;
 pub mod temp_dirs;
 pub mod tensegrity_fixtures;
@@ -46,9 +46,9 @@ pub mod workspace_sweep;
 // - `ctor_conformance_debt`
 // - `design_files`
 // - `examples_corpus`
-// - `git_env`
 // - `mesh_fixtures`
 // - `rust_fixture_scan`
+// - `stdlib_prelude`
 // - `stl_bytes`
 // - `workspace_root`
 pub use builders::*;

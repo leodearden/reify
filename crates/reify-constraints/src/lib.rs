@@ -10,6 +10,8 @@ mod decompose;
 mod dependent_reads;
 mod discrete_fallback;
 mod dual_jacobian;
+pub mod hc4;
+pub mod interval;
 pub mod relate_solve;
 mod registry;
 pub mod scaling;

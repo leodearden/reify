@@ -1,5 +1,9 @@
 //! A validated free-standing `GroupRatios` force-density spec.
 
+/// The smallest group magnitude the search admits, in units of the reference
+/// group's seed magnitude.
+pub(crate) const MIN_UNIT_MAGNITUDE: f64 = 1e-10;
+
 /// Why a `GroupRatios` force-density spec cannot seed the search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupSpecDefect {
@@ -21,8 +25,10 @@ pub enum GroupSpecDefect {
 
 /// A `GroupRatios` spec that can seed the search: members share their group's
 /// density, whose sign the seed fixes and whose magnitude the search varies,
-/// with `reference_group` held as the scale gauge. Only [`GroupSpec::new`]
-/// builds one, so its group ids index `signs` / `seed_magnitudes` unguarded.
+/// with `reference_group` held as the scale gauge. The search runs in units of
+/// the reference group's seed magnitude, so a whole-gauge rescale of the seeds
+/// is a change of unit it never sees. Only [`GroupSpec::new`] builds one, so
+/// its group ids index `signs` / `seed_magnitudes` unguarded.
 #[derive(Debug, Clone)]
 pub(crate) struct GroupSpec {
     group_ids: Vec<usize>,
@@ -66,20 +72,22 @@ impl GroupSpec {
         })
     }
 
-    /// Per-member group id, parallel to `members`.
-    pub(crate) fn group_ids(&self) -> &[usize] {
-        &self.group_ids
-    }
-
     /// Per-member density at the seeds, which stands for `q` in the input
     /// contract: the search keeps each group's sign.
     pub(crate) fn seed_densities(&self) -> &[f64] {
         &self.seed_densities
     }
 
-    /// Per-group seed magnitude `|seed_ratios[g]|`, indexed by group id.
-    pub(crate) fn seed_magnitudes(&self) -> &[f64] {
-        &self.seed_magnitudes
+    /// The reference group's seed magnitude: the unit the search runs in.
+    pub(crate) fn reference_magnitude(&self) -> f64 {
+        self.seed_magnitudes[self.reference_group]
+    }
+
+    /// Per-group seed magnitude `|seed_ratios[g]|` in reference units (the
+    /// reference group's is 1), indexed by group id.
+    pub(crate) fn unit_seed_magnitudes(&self) -> Vec<f64> {
+        let unit = self.reference_magnitude();
+        self.seed_magnitudes.iter().map(|m| m / unit).collect()
     }
 
     /// The groups the search varies: every group some member uses, except the
@@ -94,10 +102,31 @@ impl GroupSpec {
             .collect()
     }
 
-    /// Per-member density at per-group `magnitudes` (indexed by group id):
-    /// member `i`'s group's seed sign times that group's magnitude.
-    pub(crate) fn densities(&self, magnitudes: &[f64]) -> Vec<f64> {
-        member_densities(&self.group_ids, &self.signs, magnitudes)
+    /// Per-member density in reference units at per-group reference-unit
+    /// magnitudes (indexed by group id): member `i`'s group's seed sign times
+    /// that group's magnitude.
+    pub(crate) fn unit_densities(&self, unit_magnitudes: &[f64]) -> Vec<f64> {
+        member_densities(&self.group_ids, &self.signs, unit_magnitudes)
+    }
+
+    /// Per-member physical density at per-group reference-unit magnitudes:
+    /// [`GroupSpec::unit_densities`] times the reference magnitude.
+    pub(crate) fn densities(&self, unit_magnitudes: &[f64]) -> Vec<f64> {
+        let unit = self.reference_magnitude();
+        self.unit_densities(unit_magnitudes)
+            .iter()
+            .map(|q| q * unit)
+            .collect()
+    }
+
+    /// Sets each group's reference-unit magnitude in `unit_magnitudes` to
+    /// `|qᵢ|` of its members `i`, in member order, in reference units and
+    /// floored at [`MIN_UNIT_MAGNITUDE`].
+    pub(crate) fn refresh_unit_magnitudes(&self, unit_magnitudes: &mut [f64], q: &[f64]) {
+        let unit = self.reference_magnitude();
+        for (&group, qi) in self.group_ids.iter().zip(q) {
+            unit_magnitudes[group] = (qi.abs() / unit).max(MIN_UNIT_MAGNITUDE);
+        }
     }
 }
 
@@ -114,9 +143,10 @@ fn member_densities(group_ids: &[usize], signs: &[f64], magnitudes: &[f64]) -> V
 mod tests {
     use super::*;
 
-    /// Members 0 and 1 in group 0, 2 in group 1, at seeds −2 and 3.
+    /// Member 0 in group 0, members 1 and 2 in the reference group 1, at seeds
+    /// −2 and 4: powers of two, so converting to reference units is exact.
     fn two_group_spec() -> GroupSpec {
-        GroupSpec::new(&[0, 1, 1], &[-2.0, 3.0], 1, 3).expect("a well-formed spec")
+        GroupSpec::new(&[0, 1, 1], &[-2.0, 4.0], 1, 3).expect("a well-formed spec")
     }
 
     #[test]
@@ -129,19 +159,32 @@ mod tests {
 
     #[test]
     fn densities_carry_each_groups_seed_sign_at_the_given_magnitude() {
-        assert_eq!(
-            two_group_spec().densities(&[5.0, 7.0]),
-            vec![-5.0, 7.0, 7.0]
-        );
+        let groups = two_group_spec();
+        assert_eq!(groups.unit_densities(&[5.0, 7.0]), vec![-5.0, 7.0, 7.0]);
+        assert_eq!(groups.densities(&[5.0, 7.0]), vec![-20.0, 28.0, 28.0]);
     }
 
     #[test]
     fn seed_densities_are_the_densities_at_the_seed_magnitudes() {
         let groups = two_group_spec();
-        assert_eq!(groups.seed_densities(), [-2.0, 3.0, 3.0]);
+        assert_eq!(groups.unit_seed_magnitudes(), vec![0.5, 1.0]);
+        assert_eq!(groups.seed_densities(), [-2.0, 4.0, 4.0]);
         assert_eq!(
-            groups.densities(groups.seed_magnitudes()),
+            groups.densities(&groups.unit_seed_magnitudes()),
             groups.seed_densities()
         );
+    }
+
+    #[test]
+    fn refreshed_magnitudes_are_floored_relative_to_the_reference_seed() {
+        let reference_seed = 2.0_f64.powi(-20);
+        let groups =
+            GroupSpec::new(&[0, 1], &[-1.0, reference_seed], 1, 2).expect("a well-formed spec");
+        let mut unit_magnitudes = groups.unit_seed_magnitudes();
+        groups.refresh_unit_magnitudes(
+            &mut unit_magnitudes,
+            &[-reference_seed * 2.0_f64.powi(-40), 2.0_f64.powi(-21)],
+        );
+        assert_eq!(unit_magnitudes, vec![MIN_UNIT_MAGNITUDE, 0.5]);
     }
 }

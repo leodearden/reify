@@ -1316,6 +1316,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Partial match. The digest shows four consecutive Read calls on the same background task output file (tasks/bro6dv1re.output), which fits the repeated-Read retry loop in this entry. The digest does not show the sleep+tail poll being blocked, so that part of the entry is unconfirmed.
+  - date: '2026-11-02'
+    project: reify
+    session: 6d8aded3-08f6-4d04-9112-faf5cb137c41
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Read was repeated three times on the same background task output file (tasks/b9x0eo250.output), consistent with a repeated-Read retry loop while polling a background task. The digest does not show the sleep+tail fallback that this entry describes, so the match is partial.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260729-3
@@ -2415,6 +2421,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'Partial match: watcher-rearm.sh CEILING (exit 124) timeout is retried repeatedly. Here the retries are verbatim rather than cosmetic, and the session ends by clean digest rather than user interrupt.'
+  - date: '2026-11-01'
+    project: reify
+    session: 38b5268f-d5d9-462c-84f9-12d7642e03a9
+    origin_phase: unknown
+    manifested_phase: ops
+    note: watcher-rearm.sh CEILING timeout retried repeatedly with only the timeout argument changed (3600 to 3300). The session shows no user interrupt, so the ending differs from the matched entry's description.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260720-5
@@ -4140,6 +4152,18 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: The bounded-wait watcher timeout (exit 124) recurs; the digest shows the CEILING outcome repeating across the re-arm attempts.
+  - date: '2026-10-31'
+    project: reify
+    session: 673c929f-e0f4-43ac-bc41-e30d02e20c2f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: The bounded-wait watcher reached its exit-124 ceiling, which the digest records as a designed outcome. The digest's tool_error is a separate get_pending_escalations timeout, so this match is partial.
+  - date: '2026-11-01'
+    project: reify
+    session: 38b5268f-d5d9-462c-84f9-12d7642e03a9
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bounded-wait watcher timeout (exit 124 / WATCHER_REARM_OUTCOME CEILING) recurred across four Bash calls in the session.
 - id: entry-cand-20260719-3
   title: Escalation-watcher session missing DARK_FACTORY_ROOT for cross-project target
   severity: medium
@@ -4652,6 +4676,24 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: 'The identical watcher-rearm.sh --level 1 --timeout 3600 command was issued 4 times. The first returned exit 124 with WATCHER_REARM_OUTCOME: CEILING, and a later call ended in exit 144. No change of approach is visible between calls. The evidence does not show whether the repeats were an intended re-arm loop or a blind retry.'
+  - date: '2026-10-31'
+    project: reify
+    session: 673c929f-e0f4-43ac-bc41-e30d02e20c2f
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'Bash watcher-rearm command with --timeout 3600 was re-issued three times with identical arguments after the bounded wait hit its own ceiling (exit 124, WATCHER_REARM_OUTCOME: CEILING).'
+  - date: '2026-11-01'
+    project: reify
+    session: 38b5268f-d5d9-462c-84f9-12d7642e03a9
+    origin_phase: unknown
+    manifested_phase: ops
+    note: Bounded rearm wait was re-issued with the same command and timeout (3600) after hitting its own ceiling (exit 124, CEILING), and then re-issued again with only the timeout lowered to 3300.
+  - date: '2026-11-02'
+    project: reify
+    session: d6ec5d6d-6047-40a3-b4a0-b813fe8d7e68
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Bash watcher-rearm.sh --timeout 3600 hit its own CEILING (exit 124) and was re-issued with the identical command three times in the Retry Loops signal.
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -6527,6 +6569,12 @@ entries:
     origin_phase: unknown
     manifested_phase: merge
     note: Autonomous orchestrated-task session repeatedly called Bash and mcp__escalation__merge_status / get_task_escalation_history assuming tool access; the session runs in don't-ask mode and each call was denied (turns 38, 50, 51), leaving merge-status inspection blocked. Matches the 'assumes unrestricted default toolset' confusion.
+  - date: '2026-10-31'
+    project: reify
+    session: 9a527879-cc46-41d7-a7d0-c60821d001e6
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'Agent repeatedly issued Bash calls (turns 39 and 48) after the harness denied Bash in don''t-ask mode, which fits an assumption of an unrestricted default toolset. Weak match: the digest does not show why the agent expected Bash to be available, and the origin phase is not evidenced.'
 - id: entry-cand-20260727-5
   title: Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work
   severity: medium
@@ -7853,6 +7901,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The agent probed the undocumented .task-meta/<lane>/iterations.jsonl path and got a nonzero exit. Here the exit was 1 from wc, not 2 as in the earlier entry.
+  - date: '2026-11-02'
+    project: reify
+    session: 3aab9aec-26a2-4591-9f59-bedc7533fea0
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 26 ran `tail -c 3000 .task/iterations.jsonl` and got exit 2 (no such file), with the per-lane iterations artifact absent from the .task directory listing. The agent probed an iterations path that is not present in this lane.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260725-5
@@ -8727,6 +8781,24 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Turn 67: `tail -c 6000 $d/iterations.jsonl 2>/dev/null` exited 1 because the per-lane iterations.jsonl is absent from the resolved .task-meta/_lane-35 directory, whose listing shows only agent_session.json, metadata.json, plan.json, plan.json.mutex, plan.lock, reviews and verdicts.'
+  - date: '2026-10-30'
+    project: reify
+    session: 32bc0c62-36e9-4c8e-b622-80b3e3ad2a25
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 56 probes .task-meta/_lane-3/iterations.jsonl with wc and gets 'No such file or directory'. The directory listing shows the lane's task-meta without that file, matching the missing per-lane iterations.jsonl at the expected path. The digest does not show the phase.
+  - date: '2026-10-31'
+    project: reify
+    session: 073e07d4-88bf-420f-b4da-eb859aa96d86
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Agent ran ls and wc -l on .task-meta/_lane-23/iterations.jsonl, which does not exist (turn 43: ''No such file or directory''). This matches the per-lane task-meta iterations.jsonl missing at its expected path. Phase is not supported by the digest.'
+  - date: '2026-11-02'
+    project: reify
+    session: 7dd6d10b-b889-4bbe-9ee2-93f80602f326
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'At turn 44 the agent listed and ran wc on .task-meta/_lane-11/iterations.jsonl, which does not exist (wc: No such file or directory). The lane directory holds agent_session.json, metadata.json, plan.json, plan.lock, reviews/ and verdicts/, but no iterations.jsonl. Phase cannot be determined from the digest.'
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260727-8
@@ -9609,6 +9681,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: A fused-memory MCP call (resolve_ticket) returned only 'The operation timed out.' with no diagnostic detail. The entry describes a timeout with no diagnostic detail on a fused-memory call. The digest shows a single occurrence, not repeated retries, and the entry concerns get_task rather than resolve_ticket, so this is a partial match.
+  - date: '2026-11-01'
+    project: reify
+    session: abc5c87f-5084-4d2e-9f03-707e124621dc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: fused-memory submit_task timed out at turns 636 and 644 with no diagnostic detail, and the same escalation-id payload was re-issued. The matched entry is about get_task, so this is a partial match on the same timeout-without-diagnostics pattern for a different tool.
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -9704,6 +9782,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: At turn 73 the Read tool was called on a large transcript .jsonl and rejected for exceeding the token cap (110400 tokens vs 25000). The agent then had to fall back to sed/grep-style line extraction.
+  - date: '2026-11-01'
+    project: reify
+    session: abc5c87f-5084-4d2e-9f03-707e124621dc
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Read of docs/prds/v0_6/geometry-algebra-solver-unification.md (turn 46) exceeded the 25000-token cap even with offset/limit, and the error suggests allow_large. This matches the file-size-cap entry; the file is a PRD, not generated source.
   last_seen_runs:
   - census-reify-20261022
   filed_tickets:
@@ -10095,6 +10179,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Weak fit. The digest lists two slash-command invocations (/team, /prd) with session-brief text under User Corrections, the same kind of digest mislabeling this entry describes. The digest shows no agent confusion, and the not_found items lack the context needed to support a candidate.
+  - date: '2026-11-01'
+    project: reify
+    session: 483bed29-24ee-4756-ac39-d496c904bb5e
+    origin_phase: unknown
+    manifested_phase: verify
+    note: 'The digest''s User Corrections section lists a system-injected block notice (Task ID, Worktree, ''Block reason: Post-merge verification failed'') as a user correction. This is the same digest miscategorization pattern as the codebook entry, though the source here is a block notice rather than an async background-agent failure. Partial fit; origin phase is not evidenced in the digest.'
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -12008,6 +12098,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: At turn 287 a guessed scripts/*/__init__.py probe runs with 2>/dev/null and exits 2, which matches the bare exit-2 pattern for a nonexistent guessed subdirectory. The turn-26 probes (scripts/reify_verify, scripts/verify.py) show the same guessed-path failure but without stderr suppression, so the match rests mainly on turn 287.
+  - date: '2026-11-02'
+    project: reify
+    session: cccd688d-1173-4d4e-a0fc-695246ebcda3
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Turn 138 probes guessed warm-lane artifact paths (target/.reify*, target/*stamp*) with stderr suppressed, so the missing-path condition surfaces only as a bare exit 2. Turn 153 (exit 1, guessed .basecommit/.warm-base-meta globs) is similar but the digest does not show enough of its command to match it confidently, so it is not matched.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -12288,6 +12384,18 @@ entries:
     origin_phase: merge
     manifested_phase: ops
     evidence_quote: Read(.../worktrees/_lane-13/.task/metadata.json) -> File does not exist; Bash(tail .../worktrees/_lane-13/.task/iterations.jsonl) -> No such file or directory; Bash(ls .../worktrees/_lane-13/.task/reviews/) -> exit 2
+  - date: '2026-10-30'
+    project: reify
+    session: 3c2bb42f-719a-40b4-b54f-b3edf1f26f08
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Weak match. The error-neighborhood command chains `test -f .task/plan.json && python3 ...` after an ls of the .task-meta/_lane-30/ directory, which lists no plan or iterations artifact. The exit 1 is consistent with plan.json being absent at bootstrap, but the digest never shows the test result directly.
+  - date: '2026-11-01'
+    project: reify
+    session: 99764cba-5b96-4a04-a5a6-71976042e3a8
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: At turn 27 the agent in a warm-lane worktree cwd (_lane-40) reads .task/plan.json and .task/iterations.jsonl, and both return 'No such file or directory' (not_found x2, tool_error 1). This matches the codebook's plan.json / task-meta iteration artifact missing at bootstrap. Phase is not supported by the digest, so both phases are unknown.
   filed_tickets:
   - ticket: null
     project_root: /home/leo/src/reify
@@ -31591,6 +31699,58 @@ candidates:
   finding_tags:
   - tests
   - kind:confusion
+- id: cand-20261101-1
+  title: Agent retries a permission-denied Bash diagnostic with reworded git-based variants instead of stopping
+  cause: After Bash was denied in don't-ask mode, the agent issued three reformulated git commands (git -C grep, git log -S) to reach the same blocked information, rather than treating the denial as a stop signal and reporting it.
+  area: agent-tooling
+  first_seen: '2026-11-01'
+  disposition: pending
+  sightings:
+  - date: '2026-11-01'
+    project: reify
+    session: e38738df-de4e-40ff-bf53-80d397034132
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: Permission to use Bash has been denied because Claude Code is running in don't ask mode.
+- id: cand-20261101-2
+  title: Rust-coupled .ri fixture registration is a hand-maintained list in verify.sh with no discoverable link to the fixture
+  cause: A test fixture read by a compiled test target must be listed in verify.sh's _RUST_COUPLED_RI_FIXTURES array. Nothing at the fixture or test site signals this, so adding the fixture without updating the list passes review and only fails at verify time. The agent then had to search HEAD and main to find where the list is defined.
+  area: test-infrastructure
+  first_seen: '2026-11-01'
+  disposition: pending
+  sightings:
+  - date: '2026-11-01'
+    project: reify
+    session: e38738df-de4e-40ff-bf53-80d397034132
+    origin_phase: implement
+    manifested_phase: verify
+    evidence_quote: tests/prd-gate/fixtures/ssc_refuted_pair.ri -> RUN_RUST=1 (read by a compiled test target; must be in verify.sh's _RUST_COUPLED_RI_FIXTURES)
+- id: cand-20261101-3
+  title: Code comment asserts a false cache-configuration fact, so follow-up work would be planned on a false premise
+  cause: A new code comment stated that nothing outside tests configures a persistent cache. The CLI's configured_eval_engine attaches one by default for reify eval, explain and report. A future change relying on the comment would misjudge the hardcoded ContentHash(0) cache key's reach and could serve stale solver results.
+  area: code comments / documentation accuracy
+  first_seen: '2026-11-01'
+  disposition: pending
+  sightings:
+  - date: '2026-11-01'
+    project: reify
+    session: 3ced990f-a62a-4212-a4a7-74529fed1365
+    origin_phase: implement
+    manifested_phase: unknown
+    evidence_quote: The new cost note on `RedispatchPassState` says nothing outside tests configures a persistent cache. That's wrong
+- id: cand-20261102-1
+  title: Post-merge gui-script verification fails on a cold cargo registry, and the remediation is blocked by Bash permission denial
+  cause: test_run_gui_scripts.sh fails during post-merge verification because cargo cannot resolve reify-gui and tauri on a cold registry. The failure message prescribes warming the registry (cargo fetch --locked or scripts/setup-dev.sh), but the autonomous don't-ask-mode session denies Bash, so the agent cannot run the prescribed fix or inspect the registry. The failure is environmental yet is reported as a test_failure, which makes it hard to distinguish from a code regression.
+  area: verification
+  first_seen: '2026-11-02'
+  disposition: pending
+  sightings:
+  - date: '2026-11-02'
+    project: reify
+    session: 3aab9aec-26a2-4591-9f59-bedc7533fea0
+    origin_phase: unknown
+    manifested_phase: verify
+    evidence_quote: 'FAIL: run-gui.sh: cargo resolves reify-gui under --features ''gui,embedded-frontend'' (rc 1; on a cold registry warm it with `cargo fetch --locked`, or run scripts/setup-dev.sh)'
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:

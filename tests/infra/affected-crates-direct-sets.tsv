@@ -1982,7 +1982,6 @@ crates/reify-kernel-occt/tests/harness_occt/topology_cache_observability.rs	reif
 crates/reify-kernel-occt/tests/harness_occt/topology_selectors_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/transform_distance_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/vertex_point_integration.rs	reify-kernel-occt
-crates/reify-kernel-occt/tests/harness_occt/warm_start_failures_accessor_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/warm_startable_registration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/wrap_occt_call_diagnostic_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt_measurement.rs	reify-kernel-occt

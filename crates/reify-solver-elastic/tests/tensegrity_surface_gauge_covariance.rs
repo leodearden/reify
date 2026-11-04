@@ -387,7 +387,7 @@ fn iso_surfaces_form_find_is_gauge_covariant_small_lambda() {
 
 // ---------------------------------------------------------------------------
 // Anisotropic surfaces path — shares the identical criterion with
-// `form_find_anchored_surfaces` (`free_equilibrium_residual_relative` /
+// `form_find_anchored_surfaces` (`StiffnessScale` /
 // `SURFACE_EQUILIBRIUM_REL_TOL`), not restated here to avoid a bare line
 // citation rotting on the next edit to form_find.rs (task 6119 review).
 // ---------------------------------------------------------------------------
@@ -516,8 +516,8 @@ fn build_catenoid_tube_with_decoupled_cable_pair() -> DecoupledPairFixture {
 /// move any other node: force densities are relative ratios PER independent
 /// component, so rescaling only the cable pair's `q` by [`LAMBDA`] is
 /// physically a no-op on the membrane (and, at a power-of-two `λ`, an
-/// arithmetic identity). form_find.rs's stop criterion,
-/// `free_equilibrium_residual_relative`, must therefore judge each free row
+/// arithmetic identity). form_find.rs's stop criterion, `fd_criteria.rs`'s
+/// `StiffnessScale`, must therefore judge each free row
 /// against that row's own magnitude — one global `max` over rows lets the
 /// stiffened pair loosen every membrane row's stop test.
 ///

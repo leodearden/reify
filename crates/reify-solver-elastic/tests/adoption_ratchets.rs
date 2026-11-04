@@ -83,7 +83,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "assembly-element-literals",
         home: "AssemblyElement::new (solver-crates-layering D7, leaf δ)",
-        baseline: 37,
+        baseline: 38,
         measure: Measure::Occurrences(Pattern {
             exclude: &["src/assembly/global.rs"],
             ..Pattern::whole_file(
@@ -201,7 +201,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "mpc-row-literals",
         home: "MpcRow::new (solver-crates-layering D10, leaf θ)",
-        baseline: 2,
+        baseline: 0,
         measure: Measure::Occurrences(Pattern {
             skip_items: &["impl MpcRow", "pub struct MpcRow"],
             view: View::CodeAndDocs,

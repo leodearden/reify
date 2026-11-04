@@ -146,7 +146,5 @@ mod transform_distance_integration;
 mod vertex_point_integration;
 #[path = "harness_occt/warm_startable_registration.rs"]
 mod warm_startable_registration;
-#[path = "harness_occt/warm_start_failures_accessor_integration.rs"]
-mod warm_start_failures_accessor_integration;
 #[path = "harness_occt/wrap_occt_call_diagnostic_integration.rs"]
 mod wrap_occt_call_diagnostic_integration;

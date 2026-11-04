@@ -427,7 +427,7 @@ struct AuditRun {
 /// Run the command [`reify_test_support::orphan_audit::audit_command`]
 /// builds TWICE against one shared [`common::git_env::decoy_repo`]: once with
 /// the hook poison ambient in the child, once with
-/// [`reify_audit::git_env::sanitize`] applied — the canonical sanitizer
+/// [`reify_git_env::sanitize`] applied — the canonical sanitizer
 /// production uses, not a hand-rolled removal of the three vars poisoned here.
 /// Both commands come from ONE closure against ONE decoy, so the environment
 /// is provably the only delta: the closure's base is already `audit_command`'s
@@ -487,7 +487,7 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
     // `.env_remove(..)` — assert that here rather than leave the reader to
     // derive it from std's docs.
     //
-    // Scoped to `reify_audit::git_env::REPO_REDIRECT_VARS` MEMBERSHIP, not to
+    // Scoped to `reify_git_env::REPO_REDIRECT_VARS` MEMBERSHIP, not to
     // every `Some(..)` entry on `poisoned_cmd`: `audit_command`'s documented
     // contract is only that it applies `sanitize`, never that it sets no env
     // var of its own, so a future legitimate `.env(..)` in
@@ -505,7 +505,7 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
     let poisoned_redirect_vars: Vec<(String, PathBuf)> = poisoned_cmd
         .get_envs()
         .filter_map(|(name, value)| {
-            let is_redirect_var = reify_audit::git_env::REPO_REDIRECT_VARS
+            let is_redirect_var = reify_git_env::REPO_REDIRECT_VARS
                 .iter()
                 .any(|redirect| OsStr::new(redirect) == name);
             if !is_redirect_var {
@@ -533,7 +533,7 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
 
     let mut sanitized_cmd = build();
     common::git_env::poison_with_hook_git_env(&mut sanitized_cmd, &decoy);
-    reify_audit::git_env::sanitize(&mut sanitized_cmd);
+    reify_git_env::sanitize(&mut sanitized_cmd);
 
     let run = |mut cmd: Command, label: &str| -> AuditRun {
         let out = cmd.output().unwrap_or_else(|e| {
@@ -570,7 +570,7 @@ fn audit_script_stdout_poisoned_and_sanitized(scope: &str) -> Option<(AuditRun, 
 ///
 /// - poison pointed at the decoy: exit 0, empty stdout, stderr
 ///   `audit-orphan-producers.sh: no source files matched`.
-/// - the same poison, then [`reify_audit::git_env::sanitize`]d: exit 0, a JSON
+/// - the same poison, then [`reify_git_env::sanitize`]d: exit 0, a JSON
 ///   envelope with a numeric `orphan_count`.
 ///
 /// The mechanism is the script's `REPO_ROOT="$(git rev-parse --show-toplevel)"`

@@ -1,0 +1,8 @@
+// #8740 (compiler-declaration-passes B12): a DOF whose type does not resolve
+// gates the joint DOF verdict off and draws no second diagnostic.
+
+module joint_dof_gate_error_type
+
+joint j(a: Axis, b: Axis) with angle: Blorp = concentric(a, b)
+
+joint k(a: Axis, b: Axis) with { angle: Angle, x: Blorp } = concentric(a, b)

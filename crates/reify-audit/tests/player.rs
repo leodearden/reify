@@ -11,9 +11,8 @@
 //! puntested.rs convention.
 //!
 //! All tests use in-memory rusqlite + MockJCodemunchOps + MockGitOps so they
-//! remain hermetic. PLAYER is repo-wide (ignores task_metadata/target_task_id/
-//! window), so task_metadata is empty and target_task_id/window/now/
-//! producer_branch are all None.
+//! remain hermetic. PLAYER is repo-wide (ignores the task corpus and the
+//! target), so each context is a bare `AuditContext::new` with no builders.
 
 mod player {
 
@@ -22,7 +21,6 @@ use reify_audit::{
     Severity, player,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Build a LayerViolation with the given fields.
@@ -61,17 +59,7 @@ mod tests {
             "rule[0]: reify_ast::parser → reify_eval::engine",
         )]);
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
 
@@ -123,17 +111,7 @@ mod tests {
         let git = MockGitOps::new();
         let jc = MockJCodemunchOps::new();
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
         assert!(
@@ -172,17 +150,7 @@ mod tests {
 
         jc.set_layer_violations(violations.clone());
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
 
@@ -226,17 +194,7 @@ mod tests {
         let mut jc = MockJCodemunchOps::new();
         jc.fail_layer_violations(TIMEOUT);
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = player::check(&ctx);
         assert_eq!(

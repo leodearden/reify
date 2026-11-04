@@ -106,7 +106,7 @@ counterpart of rule 3.
 
 | `probe_kind` | Command | Observation model |
 |---|---|---|
-| `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; "Failed to load language" in stderr → **HARNESS ERROR** |
+| `grammar` | `tree-sitter parse --quiet <fixture>` (CWD = `tree-sitter-reify/`) | exit 0 → **PRESENT** (no parse errors); exit 1 with `(ERROR` in output → **ABSENT**; a grammar load failure → **HARNESS ERROR** — α parses tree-sitter's load-failure signature once, at its runner boundary, into `harness_failure` (kind `grammar_load`) |
 | `check` | `reify check <fixture>` | `match` predicate satisfied → **PRESENT**; predicate not satisfied → **ABSENT** |
 | `ir` | `reify eval <fixture>` (eval-error proxy) | exit 0 → **ABSENT** (sound by determinism); exit ≠ 0 with asserted `stderr_contains` signature → **PRESENT**; exit ≠ 0 without signature → **INDETERMINATE** → UNPROVABLE |
 | `value` | `reify eval <fixture>` (same argv as `ir` — the kind names the observation model, not the command) | exit 0 and the `stdout_value` capture satisfies the constraint → **PRESENT**; exit 0 and a capture was read but failed the constraint → **ABSENT**; exit 0 but the `pattern` located nothing → **INDETERMINATE** → UNPROVABLE; exit ≠ 0 → **INDETERMINATE** → UNPROVABLE |
@@ -143,6 +143,11 @@ PRESENT, ABSENT and ABSENT respectively.
 | ABSENT | present | **FAIL** |
 | INDETERMINATE | (any) | **UNPROVABLE** |
 
+A fixture that does not exist when the probe launches makes the observation
+INDETERMINATE → **UNPROVABLE** for every kind (exit 2), unless a `harness_failure`
+is set, which is **HARNESS_ERROR** instead. The probe still runs, so its evidence
+is still recorded.
+
 ## Harness exit codes
 
 | Code | Meaning |
@@ -151,7 +156,7 @@ PRESENT, ABSENT and ABSENT respectively.
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
 | 64 | Usage / argument error (`EX_USAGE`) |
-| 70 | Tool / runtime error (`EX_SOFTWARE`) — missing binary, grammar load failure |
+| 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set
 
@@ -159,6 +164,10 @@ PRESENT, ABSENT and ABSENT respectively.
 python3 scripts/prd-capability-check.py tests/prd-gate/example-probe-set.json
 python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
 ```
+
+Each `--json` record also carries the typed probe outcome: `fixture` (as written
+in the probe set), `fixture_present` and `harness_failure`. The record contract is
+`docs/prds/v0_6/prd-probe-gate-typed-outcomes.md` §5.1.
 
 ## Fixtures
 
@@ -183,7 +192,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 
 | File | Description |
 |---|---|
-| `example-probe-set.json` | Example showing all four probe kinds (used in README and docs). Pinned one-row-per-kind against `_VALID_PROBE_KINDS`, so a new kind reds until the example covers it. |
+| `example-probe-set.json` | Example showing all four probe kinds (used in README and docs). Pinned one-row-per-kind against `ProbeKind`, so a new kind reds until the example covers it. |
 | `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
 | `compiler-type-hygiene-probe-set.json` | §8 boundary-table integration gate (task λ/5070) — 7 rows, **all PASS**: grammar (`SpecLike<Foo>` parses) + 3 flipped POST-state rejections (`E_TYPE_ARG_ON_TRAIT` / `is undefined for operand kinds` / `must be a comparable kind`) + 3 end-to-end integration-fixture rows. Gated by `tests/infra/test_prd_gate_compiler_type_hygiene.sh` (all-PASS, tree-sitter skip-guarded). |
 | `struct-ctor-conformance-probe-set.json` | §7 boundary-row CLI gate for the struct-ctor field-type-conformance PRD (task δ/5306) — 5 rows, **all PASS**, every one `probe_kind: check` with `exit_code: 1`. Rows 1/2/3 are the α type surface (pose-vs-set, Int→String, disallow-string), rows 11/12 the ε structural codes (`E_CTOR_UNKNOWN_FIELD`, `E_CTOR_ARITY`). Each `capability` states the PRE state (exit 0, "All constraints satisfied.") alongside the POST assertion. Gated by `tests/infra/test_prd_gate_struct_ctor_conformance.sh` (all-PASS, reify-binary skip-guarded; no grammar probe, so no tree-sitter substrate guard). C3's span-at-the-offending-argument is NOT assertable here — `reify check` prints neither label nor span nor code — and stays a Rust-level assertion in `struct_ctor_field_conformance_tests.rs`. |

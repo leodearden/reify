@@ -271,7 +271,6 @@ crates/reify-doc/src/fmt_markdown.rs :: fmt_markdown.rs:610
 crates/reify-doc/src/fmt_markdown.rs :: tests/fmt_html_tests.rs:1101
 crates/reify-doc/src/fmt_markdown.rs :: tests/fmt_html_tests.rs:543
 crates/reify-eval/src/cache.rs :: cache.rs:1080
-crates/reify-eval/src/cache_divergence.rs :: engine_eval.rs:5380
 crates/reify-eval/src/compute_cache_key.rs :: hash.rs:32
 crates/reify-eval/src/compute_cache_key.rs :: identity.rs:119
 crates/reify-eval/src/compute_targets/buckling.rs :: modal_ops.rs:1838
@@ -360,7 +359,6 @@ crates/reify-eval/src/engine_compute.rs :: engine_edit.rs:2275
 crates/reify-eval/src/engine_constraints.rs :: engine_constraints.rs:42
 crates/reify-eval/src/engine_constraints.rs :: lib.rs:163
 crates/reify-eval/src/engine_edit.rs :: cache.rs:263
-crates/reify-eval/src/engine_edit.rs :: cell_commit.rs:268
 crates/reify-eval/src/engine_edit.rs :: crates/reify-expr/tests/gradient_tests.rs:4043
 crates/reify-eval/src/engine_edit.rs :: deps.rs:194
 crates/reify-eval/src/engine_edit.rs :: deps.rs:210
@@ -428,8 +426,6 @@ crates/reify-eval/src/invariants.rs :: structural_physical.ri:46
 crates/reify-eval/src/invariants.rs :: type_resolution.rs:551
 crates/reify-eval/src/invariants.rs :: units.rs:870
 crates/reify-eval/src/invariants.rs :: value.rs:3733
-crates/reify-eval/src/journal.rs :: journal.rs:52
-crates/reify-eval/src/journal.rs :: journal.rs:58
 crates/reify-eval/src/kernel_registry.rs :: crates/reify-types/src/geometry.rs:226
 crates/reify-eval/src/lib.rs :: crates/reify-compiler/src/types.rs:854
 crates/reify-eval/src/lib.rs :: lib.rs:303

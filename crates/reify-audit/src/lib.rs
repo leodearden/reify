@@ -30,7 +30,6 @@
 //! filtering) without a real git repo, a real runs.db, or a real jcodemunch
 //! MCP server.
 
-pub mod git_env;
 pub mod p5_phantom_done;
 pub mod p2_consumer_stub;
 pub mod p1_producer_orphan;
@@ -91,7 +90,7 @@ pub use jcodemunch_ops::{
 #[cfg(any(test, feature = "test-support"))]
 pub use jcodemunch_ops::MockJCodemunchOps;
 pub use model::{
-    AuditContext, DoneProvenance, EvidenceRef, Finding, Pattern, Severity, TaskMetadata, TimeWindow,
+    AuditContext, DoneProvenance, EvidenceRef, Finding, Pattern, Severity, TaskMetadata,
 };
 
 // -----------------------------------------------------------------------

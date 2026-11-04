@@ -255,20 +255,20 @@ class TestProbeSetRoundTrip(unittest.TestCase):
         with open(_EXAMPLE_PROBE_SET) as f:
             text = f.read()
         probes = pcc.load_probe_set(text)
-        self.assertEqual(len(probes), len(pcc._VALID_PROBE_KINDS))
+        self.assertEqual(len(probes), len(pcc.ProbeKind))
 
     def test_committed_probe_set_has_one_of_each_kind(self):
         """The worked example demonstrates every kind — derived, so it cannot drift.
 
         Spelling the expected set here is what let it fall a kind behind when a
-        fourth was added; reading it off _VALID_PROBE_KINDS makes the next
+        fourth was added; reading it off ProbeKind makes the next
         addition red this test until the example covers it too.
         """
         with open(_EXAMPLE_PROBE_SET) as f:
             text = f.read()
         probes = pcc.load_probe_set(text)
         kinds = {p.probe_kind for p in probes}
-        self.assertEqual(kinds, set(pcc._VALID_PROBE_KINDS))
+        self.assertEqual(kinds, set(pcc.ProbeKind))
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +319,7 @@ class TestValueProbeSchema(unittest.TestCase):
 
     def test_value_kind_is_valid(self):
         """"value" is a member of the valid probe-kind vocabulary."""
-        self.assertIn("value", pcc._VALID_PROBE_KINDS)
+        self.assertIn("value", pcc.ProbeKind)
 
     def test_accepts_bounded_predicate(self):
         spec = {"pattern": r"X = ([0-9.]+)", "min": 0.01, "max": 0.03}

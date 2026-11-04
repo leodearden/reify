@@ -2,7 +2,8 @@
 //!
 //! Pins the literal `reify eval` report at the binary surface:
 //!   `Widget.area = 0.0002 m^2`  (SI-normalized §1 signal: 20mm × 10mm = 200 mm²)
-//!   `Widget.outline = Shape::Rect` (default variant)
+//!   `Widget.outline = Shape::Rect { width: 0.02 m, height: 0.01 m }`
+//!     (default variant with its named payload)
 //!
 //! Mirrors the δ precedent `cli_check_variant_construction.rs` — uses
 //! `common::run_subcommand("eval", &common::example_path("m6_data_carrying_enum.ri"))`.
@@ -21,6 +22,8 @@ use crate::common;
 /// as long as the display format doesn't change.  If the eval reporter's output
 /// format changes, update the `contains` string here; the numeric integration test
 /// will remain stable.
+///
+/// The outline line is matched exactly so its payload text is pinned.
 #[test]
 fn eval_data_carrying_enum_reports_area() {
     let path = common::example_path("m6_data_carrying_enum.ri");
@@ -34,8 +37,9 @@ fn eval_data_carrying_enum_reports_area() {
         stdout.contains("Widget.area = 0.0002 m^2"),
         "stdout should contain 'Widget.area = 0.0002 m^2' (§1 signal)\nstdout: {stdout}"
     );
+    let expected_outline = "Widget.outline = Shape::Rect { width: 0.02 m, height: 0.01 m }";
     assert!(
-        stdout.contains("Widget.outline = Shape::Rect"),
-        "stdout should contain 'Widget.outline = Shape::Rect'\nstdout: {stdout}"
+        stdout.lines().any(|line| line == expected_outline),
+        "stdout should contain the exact line {expected_outline:?}\nstdout: {stdout}"
     );
 }

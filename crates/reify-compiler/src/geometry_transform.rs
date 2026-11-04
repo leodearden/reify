@@ -1,4 +1,8 @@
-use super::*;
+use reify_core::{Diagnostic, SourceSpan, Type};
+use reify_ir::CompiledExpr;
+
+use crate::arg_check::{check_arg_count_exact, push_labeled_arg_count_error};
+use crate::types::{CompiledGeometryOp, GeomRef, TransformKind};
 
 /// Compile a transform operation into CompiledGeometryOps.
 ///
@@ -194,6 +198,7 @@ pub(crate) fn compile_transform_op(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_ir::Value;
 
     fn scalar_literal(v: f64) -> CompiledExpr {
         CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())

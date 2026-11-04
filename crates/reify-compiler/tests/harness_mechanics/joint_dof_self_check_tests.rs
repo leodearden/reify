@@ -250,15 +250,56 @@ fn range_dimension_match_angle_dof_angle_range_is_clean() {
 /// `in <range>` dimension check, which also uses `ArgTypeMismatch` but whose
 /// message mentions `range`).
 fn dof_kind_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    arg_type_errors(module)
+        .into_iter()
+        .filter(|d| d.message.contains("not a valid joint DOF kind"))
+        .collect()
+}
+
+/// Every error-severity `E_ARG_TYPE_MISMATCH`, whatever its message.
+fn arg_type_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::ArgTypeMismatch)
-                && d.severity == Severity::Error
-                && d.message.contains("not a valid joint DOF kind")
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
         })
         .collect()
+}
+
+/// A DOF whose type does not resolve registers as `Type::Error`, which the
+/// resolver owns: the self-check draws neither a verdict nor a second
+/// diagnostic for it, in the single and the record form. Each source's
+/// companion differs only in reading `Blorp` as `Angle`, and must draw the
+/// verdict — so the silence is the gate's, not a source that never reaches the
+/// self-check.
+///
+/// Nothing is asserted about a diagnostic for the unresolved `Blorp` itself
+/// (that silence is task #8148's).
+#[test]
+fn type_error_dof_draws_no_mismatch_and_no_second_diagnostic() {
+    for source in [
+        "joint j(a: Axis, b: Axis) with angle: Blorp = concentric(a, b)",
+        "joint j(a: Axis, b: Axis) with { angle: Angle, x: Blorp } = concentric(a, b)",
+    ] {
+        let module = compile_source_with_stdlib(source);
+        assert!(
+            joint_dof_errors(&module).is_empty() && arg_type_errors(&module).is_empty(),
+            "a Type::Error DOF must draw no E_JOINT_DOF_MISMATCH and no E_ARG_TYPE_MISMATCH \
+             for `{source}`: {:#?}",
+            module.diagnostics
+        );
+
+        let companion_source = source.replace("Blorp", "Angle");
+        let companion = compile_source_with_stdlib(&companion_source);
+        assert_eq!(
+            joint_dof_errors(&companion).len(),
+            1,
+            "the resolvable companion `{companion_source}` must draw exactly one \
+             E_JOINT_DOF_MISMATCH: {:#?}",
+            companion.diagnostics
+        );
+    }
 }
 
 /// A DOF declared with a type that is neither `Angle`, `Length`, nor
@@ -271,6 +312,13 @@ fn dof_kind_errors(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> 
 fn unclassifiable_dof_type_is_surfaced_per_field_and_suppresses_the_verdict() {
     let module =
         compile_source_with_stdlib("joint j(a: Axis, b: Axis) with foo: Axis = concentric(a, b)");
+    assert_eq!(
+        arg_type_errors(&module).len(),
+        1,
+        "a DOF declared `foo: Axis` must draw exactly one E_ARG_TYPE_MISMATCH of any \
+         message.\nAll diagnostics: {:#?}",
+        module.diagnostics
+    );
     let errs = dof_kind_errors(&module);
     assert_eq!(
         errs.len(),
@@ -294,26 +342,42 @@ fn unclassifiable_dof_type_is_surfaced_per_field_and_suppresses_the_verdict() {
 
 // ── Gradualism: body member with a curated count but no kind split ────────────
 
-/// `tangent` has a curated DOF COUNT (`relation_delta_dof` = 2) but no
-/// rotational/translational split (`relation_delta_dof_kinds` = `None`, because
-/// it is surface-conditional). `residual_kinds` omits it, INFLATING the residual
-/// above the true geometry — so a count/kind verdict computed from that residual
-/// would draw a SPURIOUS `E_JOINT_DOF_MISMATCH`.
+/// `tangent` has a curated DOF COUNT (`relation_delta_dof` is known for the
+/// cylinder/cylinder operand pair) but no rotational/translational split
+/// (`relation_delta_dof_kinds` = `None`, because it is surface-conditional).
+/// `residual_kinds` omits it, INFLATING the residual above the true geometry —
+/// so a count/kind verdict computed from that residual would draw a SPURIOUS
+/// `E_JOINT_DOF_MISMATCH`.
 ///
 /// PRD §7.1 gradualism requires the verdict be suppressed when the body contains
 /// any such count-known/kind-unknown member. Here `concentric(a, b)` (residual
-/// the kind table reads as (1, 1)) plus `tangent(a, b)` would mismatch the
-/// `angle: Angle` = (1, 0) declaration under the naive computation, but must NOT:
-/// the residual cannot be fully attributed, so no mismatch is emitted.
+/// the kind table reads as (1, 1)) plus `tangent(a, b, 5mm, 6mm)` would mismatch
+/// the `angle: Angle` = (1, 0) declaration under the naive computation, but must
+/// NOT. The companion drops the `tangent` member and must draw the verdict.
 #[test]
 fn body_with_undecidable_kind_split_suppresses_spurious_mismatch() {
     let module = compile_source_with_stdlib(
-        "joint j(a: Axis, b: Axis) with angle: Angle = { concentric(a, b)  tangent(a, b) }",
+        "joint j(a: Axis, b: Axis) with angle: Angle = \
+         { concentric(a, b)  tangent(a, b, 5mm, 6mm) }",
     );
+    let errors: Vec<&Diagnostic> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
-        joint_dof_errors(&module).is_empty(),
+        errors.is_empty(),
         "a body with a count-known/kind-unknown member (`tangent`) must suppress the \
-         count/kind verdict (gradualism), drawing zero E_JOINT_DOF_MISMATCH: {:#?}",
-        joint_dof_errors(&module)
+         count/kind verdict (gradualism), drawing zero Error diagnostics: {errors:#?}",
+    );
+
+    let control = compile_source_with_stdlib(
+        "joint j(a: Axis, b: Axis) with angle: Angle = concentric(a, b)",
+    );
+    assert_eq!(
+        joint_dof_errors(&control).len(),
+        1,
+        "without the `tangent` member the verdict must fire: {:#?}",
+        control.diagnostics
     );
 }

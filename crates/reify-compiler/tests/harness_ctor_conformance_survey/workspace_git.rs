@@ -1,13 +1,14 @@
 //! The workspace root, and the only sanctioned way this survey reaches git.
 
+use std::path::Path;
 use std::process::Command;
 
 // The workspace's SINGLE definition of the repo-redirect sanitizer, not a local
-// twin: `sanitize` is what `git_at_workspace_root` below applies, and
+// twin: `command` is what `git_at_workspace_root` below builds on, and
 // `REPO_REDIRECT_VARS`/`removed_vars` are what its contract tests read, so this
 // survey cannot drift from the set it is supposed to remove.
-// (`crates/reify-test-support/src/git_env.rs`.)
-use reify_test_support::git_env::{REPO_REDIRECT_VARS, removed_vars, sanitize};
+// (`crates/reify-git-env/src/lib.rs`.)
+use reify_git_env::{REPO_REDIRECT_VARS, removed_vars};
 
 /// Absolute path to the workspace root, resolved at compile time from this
 /// crate's manifest directory (two levels up).
@@ -23,7 +24,7 @@ pub(crate) const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..
 /// survey reaches git.
 ///
 /// Every git call here targets a specific repository (this workspace), and the
-/// workspace rule for that shape is stated at `reify_audit::git_env`: build it
+/// workspace rule for that shape is stated at `reify_git_env`: build it
 /// through a sanitized `-C <root>` constructor, because git exports
 /// `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` into a hook's entire process tree
 /// and those OVERRIDE an explicit `-C`. The failure is silent — the command
@@ -33,24 +34,10 @@ pub(crate) const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..
 /// one carve-out is a bare `git --version` availability probe — which is
 /// exactly [`git_is_available`] below, and the ONLY spawn in this survey that
 /// does not come from here; every repo-targeting call site routes through this
-/// constructor.
-///
-/// `reify_audit::git_env::command` is the same shape one crate up, and is
-/// deliberately NOT used: `reify-audit` is not a dependency of
-/// `reify-compiler`, and adding that edge to reuse a four-line constructor
-/// would be a far larger change than the sanctioned below-the-edge pattern its
-/// own doc describes — route repo-targeting spawns through
-/// `reify_test_support::git_env::sanitize` directly, which is the same single
-/// sanitizer either way.
-///
-/// Returns an owned `Command` rather than borrowing `sanitize`'s `&mut` return,
-/// because two of the three consumers need `.output()` and one needs only
-/// `.status`.
+/// constructor, which is `reify_git_env::command` pinned to [`WORKSPACE_ROOT`].
 pub(crate) fn git_at_workspace_root(args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(WORKSPACE_ROOT);
+    let mut cmd = reify_git_env::command(Path::new(WORKSPACE_ROOT));
     cmd.args(args);
-    sanitize(&mut cmd);
     cmd
 }
 
@@ -85,7 +72,7 @@ pub(crate) fn git_is_available() -> bool {
 fn git_at_workspace_root_removes_every_repo_redirect_var() {
     // Iterates the SHARED constant rather than naming the vars locally, so a
     // future GROWTH of the sanitized set is covered here with no edit to this
-    // file. Same shape as `reify_audit::git_env`'s own wiring test
+    // file. Same shape as `reify_git_env`'s own wiring test
     // (`command_removes_every_repo_redirect_var`), which likewise reads the
     // `(key, None)` removal encoding through the definition site's
     // `removed_vars` rather than a hand-copied local twin.
@@ -93,7 +80,7 @@ fn git_at_workspace_root_removes_every_repo_redirect_var() {
     // What this deliberately does NOT re-prove: that the removals actually
     // defeat a real ambient redirect var, and that an unsanitized `-C` loses to
     // one. That is spawned against real git at the definition site, in
-    // `reify_test_support::git_env`'s
+    // `reify_git_env`'s
     // `sanitize_makes_dash_c_authoritative_against_real_git`. Re-spawning git
     // here would buy no new signal and would add a git-availability skip path.
     let cmd = git_at_workspace_root(&["rev-parse", "HEAD"]);

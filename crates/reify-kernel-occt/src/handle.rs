@@ -61,17 +61,10 @@ enum OcctRequest {
         tolerance: f64,
         reply: oneshot::Sender<Result<Mesh, TessError>>,
     },
-    WarmState {
-        reply: oneshot::Sender<Option<OpaqueState>>,
-    },
-    WithWarmState {
-        state: OpaqueState,
-        reply: oneshot::Sender<()>,
-    },
     /// Task 5212: evict every resident native shape (+ derived caches) on the
     /// kernel thread while keeping `next_id` monotonic, bounding OCCT native
     /// memory across GUI whole-file reloads. Routed here because `OcctKernel`
-    /// is `!Send`. Reply is `()` (fire-and-confirm), mirroring `WithWarmState`.
+    /// is `!Send`. Reply is `()` (fire-and-confirm).
     Reset {
         reply: oneshot::Sender<()>,
     },
@@ -312,8 +305,8 @@ enum OcctRequest {
 /// `export_async`, `tessellate_async`) from async code.
 ///
 /// The `WarmStartable` trait methods (`warm_state`, `with_warm_state`) are
-/// safe to call from both sync and async contexts — they detect the runtime
-/// and use `block_in_place` when needed.
+/// the trait no-op, answered on the calling thread without touching the
+/// channel, so they are safe from both sync and async contexts.
 ///
 /// # Drop behaviour
 ///
@@ -1224,14 +1217,6 @@ impl OcctKernelHandle {
                         let result = kernel.tessellate(handle, tolerance);
                         let _ = reply.send(result);
                     }
-                    OcctRequest::WarmState { reply } => {
-                        let result = kernel.warm_state();
-                        let _ = reply.send(result);
-                    }
-                    OcctRequest::WithWarmState { state, reply } => {
-                        kernel.with_warm_state(state);
-                        let _ = reply.send(());
-                    }
                     OcctRequest::Reset { reply } => {
                         kernel.reset();
                         let _ = reply.send(());
@@ -1453,11 +1438,6 @@ impl OcctKernelHandle {
     /// `chan_died` is `FnOnce` because the two failure paths (send failure and
     /// recv failure) are mutually exclusive — only one can occur per call.
     ///
-    /// Note: `warm_state_async` and `with_warm_state_async` intentionally do
-    /// not use this helper — their channel-death semantics differ (`Option`/`()`
-    /// with `.ok()?` rather than a typed error), so they inline the pattern
-    /// directly. See the TODO on each of those methods.
-    ///
     /// Safe to call from within a tokio async execution context.
     async fn send_request_async<Resp, E>(
         &self,
@@ -1588,52 +1568,6 @@ impl OcctKernelHandle {
         .await?
     }
 
-    /// Extract warm-start state from the kernel thread (async version).
-    ///
-    /// Safe to call from within a tokio async execution context.
-    ///
-    /// # Design note
-    ///
-    /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
-    /// because its channel-death semantics differ: a dead kernel is treated as
-    /// "no warm state" (`Option` / `.ok()?`) rather than as a typed error.
-    /// Routing through the helper would require a fake error type or a third
-    /// helper variant — neither improves clarity over the explicit inline form.
-    pub async fn warm_state_async(&self) -> Option<OpaqueState> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(OcctRequest::WarmState { reply: reply_tx })
-            .await
-            .ok()?;
-        reply_rx.await.ok()?
-    }
-
-    /// Restore warm-start state on the kernel thread (async version).
-    ///
-    /// Safe to call from within a tokio async execution context.
-    ///
-    /// # Design note
-    ///
-    /// This method intentionally does not use [`send_request_async`](Self::send_request_async)
-    /// because its channel-death semantics differ: failure is silently ignored
-    /// (`()` return, fire-and-forget) rather than mapped to a typed error.
-    /// Routing through the helper would require a fake error type or a third
-    /// helper variant — neither improves clarity over the explicit inline form.
-    pub async fn with_warm_state_async(&self, state: OpaqueState) {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .tx
-            .send(OcctRequest::WithWarmState {
-                state,
-                reply: reply_tx,
-            })
-            .await
-            .is_ok()
-        {
-            let _ = reply_rx.await;
-        }
-    }
-
     /// Reset the kernel thread's `OcctKernel`: evict every resident native
     /// shape and clear the derived caches while keeping `next_id` monotonic
     /// (see `OcctKernel::reset`), bounding OCCT native memory across GUI
@@ -1642,10 +1576,9 @@ impl OcctKernelHandle {
     /// Routed over the actor channel because `OcctKernel` is `!Send` and lives
     /// on the dedicated OS thread. Blocks until the kernel thread confirms;
     /// safe from both sync and async contexts (via `send_recv`). A dead kernel
-    /// thread is a silent no-op — there is nothing left to reset. Mirrors the
-    /// `with_warm_state` channel wiring (`&self` because the actor channel
-    /// sender only needs a shared borrow; the `GeometryKernel::reset` override
-    /// takes `&mut self` and delegates here).
+    /// thread is a silent no-op — there is nothing left to reset. Takes `&self`
+    /// because the actor channel sender only needs a shared borrow; the
+    /// `GeometryKernel::reset` override takes `&mut self` and delegates here.
     pub fn reset(&self) {
         let (reply_tx, reply_rx) = oneshot::channel::<()>();
         send_recv(&self.tx, OcctRequest::Reset { reply: reply_tx }, reply_rx);
@@ -1701,27 +1634,14 @@ fn send_recv<T: Send + 'static>(
     }
 }
 
+/// The kernel thread's `OcctKernel` is stateless across warm starts, so the
+/// handle answers directly with no channel round-trip.
 impl WarmStartable for OcctKernelHandle {
     fn warm_state(&self) -> Option<OpaqueState> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        send_recv(
-            &self.tx,
-            OcctRequest::WarmState { reply: reply_tx },
-            reply_rx,
-        )?
+        None
     }
 
-    fn with_warm_state(&mut self, state: OpaqueState) {
-        let (reply_tx, reply_rx) = oneshot::channel::<()>();
-        send_recv(
-            &self.tx,
-            OcctRequest::WithWarmState {
-                state,
-                reply: reply_tx,
-            },
-            reply_rx,
-        );
-    }
+    fn with_warm_state(&mut self, _state: OpaqueState) {}
 }
 
 impl Drop for OcctKernelHandle {

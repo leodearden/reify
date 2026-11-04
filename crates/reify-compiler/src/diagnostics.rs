@@ -1,4 +1,4 @@
-use super::*;
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
 /// Build the precision-loss warning for an integer-form literal that overflowed i64 bounds
 /// and was classified as [`reify_syntax::NumberClass::LossyReal`].
@@ -126,6 +126,7 @@ pub(crate) fn check_duplicate_member_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::Severity;
 
     #[test]
     fn lossy_real_warning_emits_precision_loss_warning_with_label() {
