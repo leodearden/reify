@@ -14,8 +14,8 @@ use reify_ir::Value;
 
 use super::common::{
     attach_compliance, declared_range, length_arg, make_compliance_record, make_flexure_joint,
-    neutral, symmetric_angle_range, yield_stress, youngs_modulus, InputFault, RangeKind,
-    PRB_ANGLE_LIMIT_RAD,
+    neutral, notch_ligament, symmetric_angle_range, yield_stress, youngs_modulus, InputFault,
+    RangeKind, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Shape factors for the standard circular notch flexure hinge
@@ -112,10 +112,10 @@ struct NotchInputs<'a> {
 /// material, pivot, axis[, neutral[, declared_range]])`.
 ///
 /// [`InputFault::Rejected`] for a present argument or material field of the
-/// wrong dimension (a bare geometry length included). [`InputFault::Invalid`]
-/// on: arity ∉ {6, 7, 8}; non-positive or non-finite geometry (r, t, or b ≤ 0);
-/// degenerate geometry (t ≥ 2·r — web at least as thick as the notch diameter,
-/// the E_FlexureGeometryInvalid regime); a material that is not a
+/// wrong dimension (a bare geometry length included). [`InputFault::Degenerate`]
+/// for t ≥ 2·r — a web at least as thick as the notch diameter
+/// ([`notch_ligament`]). [`InputFault::Invalid`] on: arity ∉ {6, 7, 8};
+/// non-positive or non-finite geometry (r, t, or b ≤ 0); a material that is not a
 /// `Value::StructureInstance` with a finite `youngs_modulus` > 0; or an axis
 /// that is not a finite, non-zero, dimensionless 3-vector.
 fn parse_notch_inputs(args: &[Value]) -> Result<NotchInputs<'_>, InputFault> {
@@ -125,13 +125,7 @@ fn parse_notch_inputs(args: &[Value]) -> Result<NotchInputs<'_>, InputFault> {
     let r = length_arg(&args[0], "notch_radius")?;
     let t = length_arg(&args[1], "web_thickness")?;
     let b = length_arg(&args[2], "width")?;
-    if r <= 0.0 || t <= 0.0 || b <= 0.0 {
-        return Err(InputFault::Invalid);
-    }
-    // Degenerate: web ≥ notch diameter — no hinge ligament exists.
-    if t >= 2.0 * r {
-        return Err(InputFault::Invalid);
-    }
+    notch_ligament(r, t, b)?;
     let material = &args[3];
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;

@@ -14,8 +14,8 @@ use reify_ir::Value;
 
 use super::common::{
     attach_compliance, cantilever_sigma_at, declared_range, length_arg, make_compliance_record,
-    make_flexure_joint, neutral, poisson_ratio, symmetric_angle_range, yield_stress,
-    youngs_modulus, InputFault, RangeKind, PRB_ANGLE_LIMIT_RAD,
+    make_flexure_joint, neutral, poisson_ratio, slender_beam, symmetric_angle_range,
+    yield_stress, youngs_modulus, InputFault, RangeKind, PRB_ANGLE_LIMIT_RAD,
 };
 
 /// Howell §5.7 small-length flexural pivot (SLFP) stiffness coefficient.
@@ -100,8 +100,9 @@ struct BendingHingeInputs<'a> {
 /// `(length, width, thickness, material, pivot, axis[, neutral[, declared_range]])`.
 ///
 /// [`InputFault::Rejected`] for a present argument or material field of the
-/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {6, 7, 8}; non-positive
-/// or non-finite geometry; thickness ≥ length; missing or non-positive
+/// wrong dimension; [`InputFault::Degenerate`] for thickness ≥ length
+/// ([`slender_beam`]); [`InputFault::Invalid`] on: arity ∉ {6, 7, 8};
+/// non-positive or non-finite geometry; missing or non-positive
 /// `youngs_modulus`; or an invalid axis.
 fn parse_bending_hinge_inputs(args: &[Value]) -> Result<BendingHingeInputs<'_>, InputFault> {
     if args.len() < 6 || args.len() > 8 {
@@ -110,9 +111,7 @@ fn parse_bending_hinge_inputs(args: &[Value]) -> Result<BendingHingeInputs<'_>, 
     let length = length_arg(&args[0], "length")?;
     let width = length_arg(&args[1], "width")?;
     let thickness = length_arg(&args[2], "thickness")?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return Err(InputFault::Invalid);
-    }
+    slender_beam(length, width, thickness)?;
     let material = &args[3];
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;
@@ -235,8 +234,9 @@ struct LetInputs<'a> {
 ///
 /// [`InputFault::Rejected`] for a present argument or material field of the
 /// wrong dimension (a dimensioned `poisson_ratio` included);
+/// [`InputFault::Degenerate`] for thickness ≥ length ([`slender_beam`]);
 /// [`InputFault::Invalid`] on: arity ∉ {7, 8, 9}; non-positive or non-finite
-/// geometry; thickness ≥ length; n_blades < 1 or non-integer;
+/// geometry; n_blades < 1 or non-integer;
 /// missing/non-positive `youngs_modulus`; missing `poisson_ratio` or
 /// ν ∉ [0, 0.5); invalid axis.
 fn parse_let_inputs(args: &[Value]) -> Result<LetInputs<'_>, InputFault> {
@@ -246,9 +246,7 @@ fn parse_let_inputs(args: &[Value]) -> Result<LetInputs<'_>, InputFault> {
     let length = length_arg(&args[0], "length")?;
     let width = length_arg(&args[1], "width")?;
     let thickness = length_arg(&args[2], "thickness")?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return Err(InputFault::Invalid);
-    }
+    slender_beam(length, width, thickness)?;
     // n_blades: positive integer (Int or whole-valued finite Real).
     let n_blades = match &args[3] {
         Value::Int(n) if *n >= 1 => *n as f64,

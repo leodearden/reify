@@ -34,8 +34,8 @@ use reify_ir::Value;
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range,
     fixed_guided_delta_max, fixed_guided_sigma_at, length_arg, make_compliance_record,
-    make_flexure_joint, neutral, symmetric_angle_range, symmetric_length_range, yield_stress,
-    youngs_modulus, InputFault, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
+    make_flexure_joint, neutral, slender_beam, symmetric_angle_range, symmetric_length_range,
+    yield_stress, youngs_modulus, InputFault, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// Shared validated inputs for compound-flexure constructors.
@@ -70,8 +70,9 @@ struct CompoundInputs<'a> {
 /// `(length, width, thickness, blade_spacing, material, motion_axis, pivot[, declared_range])`.
 ///
 /// [`InputFault::Rejected`] for a present argument or material field of the
-/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {7, 8}; non-positive or
-/// non-finite geometry (including `blade_spacing`); thickness ≥ length; a
+/// wrong dimension; [`InputFault::Degenerate`] for thickness ≥ length
+/// ([`slender_beam`]); [`InputFault::Invalid`] on: arity ∉ {7, 8}; non-positive
+/// or non-finite geometry (including `blade_spacing`); a
 /// material that is not a `Value::StructureInstance` with a finite positive
 /// `youngs_modulus`; or a motion_axis that is not a finite, non-zero,
 /// dimensionless 3-vector. The optional 8th slot is the declared operating range.
@@ -86,10 +87,8 @@ fn parse_compound_inputs(args: &[Value]) -> Result<CompoundInputs<'_>, InputFaul
     // (PRD §6.1 prescribes the argument) but intentionally does NOT enter the
     // §6.1/§6.2 closed forms — stiffness and parasitic depend only on L,b,t,E.
     let blade_spacing = length_arg(&args[3], "blade_spacing")?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || blade_spacing <= 0.0 {
-        return Err(InputFault::Invalid);
-    }
-    if thickness >= length {
+    slender_beam(length, width, thickness)?;
+    if blade_spacing <= 0.0 {
         return Err(InputFault::Invalid);
     }
     let material = &args[4];
@@ -290,16 +289,21 @@ struct CartwheelInputs<'a> {
 /// material, pivot, axis[, neutral[, declared_range]])`.
 ///
 /// [`InputFault::Rejected`] for a present argument or material field of the
-/// wrong dimension; [`InputFault::Invalid`] on: arity ∉ {7, 8, 9}; blade_count
+/// wrong dimension; [`InputFault::Degenerate`] for thickness ≥ length
+/// ([`slender_beam`]); [`InputFault::Invalid`] on: arity ∉ {7, 8, 9}; blade_count
 /// not an integer-valued finite number ≥ 1 (i.e. `Int` ≥ 1, or a whole finite
 /// `Real` ≥ 1.0 — non-integers and values < 1 are rejected); non-positive or
-/// non-finite geometry; thickness ≥ length; a material without a finite
+/// non-finite geometry; a material without a finite
 /// positive `youngs_modulus`; or an axis that is not a finite, non-zero,
 /// dimensionless 3-vector. The optional 9th slot is the declared operating range.
 fn parse_cartwheel_inputs(args: &[Value]) -> Result<CartwheelInputs<'_>, InputFault> {
     if args.len() < 7 || args.len() > 9 {
         return Err(InputFault::Invalid);
     }
+    let length = length_arg(&args[1], "blade_length")?;
+    let width = length_arg(&args[2], "blade_width")?;
+    let thickness = length_arg(&args[3], "blade_thickness")?;
+    slender_beam(length, width, thickness)?;
     // Strict blade_count: Int ≥ 1, or a whole finite Real ≥ 1.
     // Mirrors parse_let_inputs n_blades arm (hinge.rs).
     let blade_count = match &args[0] {
@@ -307,12 +311,6 @@ fn parse_cartwheel_inputs(args: &[Value]) -> Result<CartwheelInputs<'_>, InputFa
         Value::Real(r) if r.is_finite() && *r >= 1.0 && r.fract() == 0.0 => *r,
         _ => return Err(InputFault::Invalid),
     };
-    let length = length_arg(&args[1], "blade_length")?;
-    let width = length_arg(&args[2], "blade_width")?;
-    let thickness = length_arg(&args[3], "blade_thickness")?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return Err(InputFault::Invalid);
-    }
     let material = &args[4];
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;

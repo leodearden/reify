@@ -96,14 +96,48 @@ pub(super) fn make_flexure_joint(
 /// Why a PRB constructor refused its arguments: the one verdict both the ctor
 /// (⇒ `Value::Undef`) and its classifier ([`super::input_fault`]) read, so the
 /// acceptance and the diagnostic come from one expectation (PRD 5 §7 I1).
+#[derive(Debug)]
 pub(super) enum InputFault {
     /// A present argument or material field of the wrong dimension or kind,
     /// named by its argument path (`length`, `material.youngs_modulus`, …).
     Rejected(FieldRejection),
-    /// Any other refusal: arity, non-positive / non-finite / degenerate
-    /// geometry, a bad axis or count, a material that is not a structure or has
-    /// no positive `youngs_modulus`.
+    /// Positive geometry that admits no pseudo-rigid-body joint — the
+    /// `E_FlexureGeometryInvalid` regime ([`slender_beam`], [`notch_ligament`]).
+    Degenerate(GeometryViolation),
+    /// Any other refusal: arity, non-positive / non-finite geometry, a bad axis
+    /// or count, a material that is not a structure or has no positive
+    /// `youngs_modulus`.
     Invalid,
+}
+
+/// The geometry gate of every slender-beam layout: a positive `thickness ≥
+/// length` is [`InputFault::Degenerate`] — whatever the width — and any other
+/// non-positive dimension is [`InputFault::Invalid`].
+pub(super) fn slender_beam(length: f64, width: f64, thickness: f64) -> Result<(), InputFault> {
+    if length > 0.0 && thickness > 0.0 && thickness >= length {
+        return Err(InputFault::Degenerate(
+            GeometryViolation::ThicknessExceedsLength { thickness, length },
+        ));
+    }
+    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 {
+        return Err(InputFault::Invalid);
+    }
+    Ok(())
+}
+
+/// The geometry gate of the notch layout: a positive web `thickness ≥
+/// 2·radius` leaves no hinge ligament ([`InputFault::Degenerate`], whatever the
+/// width), and any other non-positive dimension is [`InputFault::Invalid`].
+pub(super) fn notch_ligament(radius: f64, thickness: f64, width: f64) -> Result<(), InputFault> {
+    if radius > 0.0 && thickness > 0.0 && thickness >= 2.0 * radius {
+        return Err(InputFault::Degenerate(
+            GeometryViolation::WebExceedsNotchDiameter { thickness, radius },
+        ));
+    }
+    if radius <= 0.0 || thickness <= 0.0 || width <= 0.0 {
+        return Err(InputFault::Invalid);
+    }
+    Ok(())
 }
 
 /// `accept_arg(v, spec)` as a reader of the positional argument `arg`:
@@ -390,21 +424,14 @@ pub(super) fn attach_compliance(joint: Value, record: Value) -> Value {
     }
 }
 
-/// A degenerate-geometry violation re-derived from a rejected PRB constructor's
-/// arguments — the input class the `E_FlexureGeometryInvalid` diagnostic
-/// (PRD §1) is scoped to.
-///
-/// The PRB ctors return `Value::Undef` for BOTH degenerate geometry AND
-/// non-geometry input errors (bad material / axis / arity). To emit
-/// `E_FlexureGeometryInvalid` for *only* the geometry class — mirroring how
-/// `stackup::diagnose` re-classifies on the `Undef` path — `flexure_diagnose`
-/// re-derives the geometry from the raw args via [`classify_geometry_invalid`].
+/// A degenerate-geometry violation of a PRB constructor's arguments — the
+/// input class the `E_FlexureGeometryInvalid` diagnostic (PRD §1) is scoped to,
+/// carried by [`InputFault::Degenerate`].
+#[derive(Debug)]
 pub(super) enum GeometryViolation {
-    /// Slender-beam families `(length, width, thickness, …)`: bending thickness
-    /// `t` ≥ beam length `L`.
+    /// Slender-beam families: bending thickness `t` ≥ beam length `L`.
     ThicknessExceedsLength { thickness: f64, length: f64 },
-    /// Notch-hinge family `(notch_radius, web_thickness, …)`: web thickness `t`
-    /// ≥ notch diameter `2r`.
+    /// Notch-hinge family: web thickness `t` ≥ notch diameter `2r`.
     WebExceedsNotchDiameter { thickness: f64, radius: f64 },
 }
 
@@ -430,51 +457,92 @@ impl GeometryViolation {
     }
 }
 
-/// Re-classify a degenerate-geometry violation from a rejected PRB constructor's
-/// positional arguments, or `None` when the geometry is valid (so a
-/// non-geometry Undef — bad material / axis / arity — stays silent) or the
-/// relevant geometry slots cannot be read.
-///
-/// Dispatches by ctor name into the three positional layouts:
-/// - slender-beam families `(length, width, thickness, …)` → `t ≥ L`;
-/// - `prb_cartwheel_flexure` `(blade_count, length, width, thickness, …)` →
-///   `t ≥ L` (length at index 1, thickness at index 3);
-/// - notch family `(notch_radius, web_thickness, width, …)` → `t ≥ 2r`.
-pub(super) fn classify_geometry_invalid(name: &str, args: &[Value]) -> Option<GeometryViolation> {
-    match name {
-        "prb_cantilever_beam"
-        | "prb_fixed_fixed_beam"
-        | "prb_living_hinge"
-        | "prb_cross_spring_pivot"
-        | "prb_let_joint"
-        | "prb_prismatic_blade"
-        | "prb_two_axis_pivot"
-        | "prb_parallelogram_flexure"
-        | "prb_double_parallelogram_flexure" => {
-            let length = length_arg(args.first()?, "length").ok()?;
-            let thickness = length_arg(args.get(2)?, "thickness").ok()?;
-            thickness_vs_length(thickness, length)
-        }
-        "prb_cartwheel_flexure" => {
-            let length = length_arg(args.get(1)?, "blade_length").ok()?;
-            let thickness = length_arg(args.get(3)?, "blade_thickness").ok()?;
-            thickness_vs_length(thickness, length)
-        }
-        "prb_notch_circular" | "prb_notch_elliptical" | "prb_notch_right_circular" => {
-            let radius = length_arg(args.first()?, "notch_radius").ok()?;
-            let thickness = length_arg(args.get(1)?, "web_thickness").ok()?;
-            (radius > 0.0 && thickness > 0.0 && thickness >= 2.0 * radius)
-                .then_some(GeometryViolation::WebExceedsNotchDiameter { thickness, radius })
-        }
-        _ => None,
-    }
-}
+#[cfg(test)]
+mod read_family_tests {
+    use super::super::test_util::{material, steel, steel_no_yield};
+    use super::*;
 
-/// Shared degeneracy test for the slender-beam families: a positive, finite
-/// `t ≥ L` is the `thickness ≥ length` violation those ctors reject on.
-fn thickness_vs_length(thickness: f64, length: f64) -> Option<GeometryViolation> {
-    (length > 0.0 && thickness > 0.0 && thickness >= length)
-        .then_some(GeometryViolation::ThicknessExceedsLength { thickness, length })
+    fn pressure(si: f64) -> Value {
+        Value::Scalar {
+            si_value: si,
+            dimension: DimensionVector::PRESSURE,
+        }
+    }
+
+    /// The argument path a refusal names; panics on any other outcome.
+    fn rejected_path<T: std::fmt::Debug>(read: Result<T, InputFault>) -> String {
+        match read {
+            Err(InputFault::Rejected(rejection)) => rejection.path,
+            other => panic!("expected a Rejected fault, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bare_length_is_refused_by_name_and_a_dimensioned_one_read_in_metres() {
+        assert_eq!(rejected_path(length_arg(&Value::Real(0.02), "thickness")), "thickness");
+        assert_eq!(length_arg(&Value::length(0.02), "thickness").unwrap(), 0.02);
+        assert!(matches!(length_arg(&Value::Undef, "thickness"), Err(InputFault::Invalid)));
+    }
+
+    #[test]
+    fn a_nested_optional_motion_argument_unwraps_to_its_value() {
+        let nested = Value::Option(Some(Box::new(Value::Option(Some(Box::new(
+            Value::angle(0.1),
+        ))))));
+        assert_eq!(neutral(Some(&nested), &RangeKind::Angle).unwrap(), 0.1);
+        assert_eq!(neutral(None, &RangeKind::Angle).unwrap(), 0.0);
+        assert_eq!(neutral(Some(&Value::Option(None)), &RangeKind::Length).unwrap(), 0.0);
+    }
+
+    #[test]
+    fn a_bare_neutral_is_radians_for_an_angle_but_refused_for_a_length() {
+        assert_eq!(neutral(Some(&Value::Real(0.1)), &RangeKind::Angle).unwrap(), 0.1);
+        assert_eq!(rejected_path(neutral(Some(&Value::Real(0.001)), &RangeKind::Length)), "neutral");
+        assert_eq!(
+            rejected_path(declared_range(Some(&Value::length(0.001)), &RangeKind::Angle)),
+            "declared_range"
+        );
+    }
+
+    #[test]
+    fn an_absent_or_none_yield_stress_is_the_documented_fallback() {
+        assert_eq!(yield_stress(&steel_no_yield()).unwrap(), None);
+        let none_yield = material(
+            "NoneYield",
+            &[("youngs_modulus", pressure(205e9)), ("yield_stress", Value::Option(None))],
+        );
+        assert_eq!(yield_stress(&none_yield).unwrap(), None);
+        assert_eq!(yield_stress(&steel()).unwrap(), Some(310e6));
+    }
+
+    #[test]
+    fn a_material_field_of_the_wrong_dimension_is_refused_by_its_path() {
+        let length_modulus = material("FakeMat", &[("youngs_modulus", Value::length(0.2))]);
+        assert_eq!(rejected_path(youngs_modulus(&length_modulus)), "material.youngs_modulus");
+        let pressure_ratio = material(
+            "FakeMat",
+            &[("youngs_modulus", pressure(205e9)), ("poisson_ratio", pressure(0.29))],
+        );
+        assert_eq!(rejected_path(poisson_ratio(&pressure_ratio)), "material.poisson_ratio");
+        assert_eq!(poisson_ratio(&steel()).unwrap(), 0.29);
+        assert!(matches!(youngs_modulus(&Value::Real(1.0)), Err(InputFault::Invalid)));
+    }
+
+    #[test]
+    fn degenerate_geometry_is_named_whatever_the_width_and_non_positive_is_invalid() {
+        assert!(matches!(
+            slender_beam(0.002, -1.0, 0.003),
+            Err(InputFault::Degenerate(GeometryViolation::ThicknessExceedsLength { .. }))
+        ));
+        assert!(matches!(slender_beam(0.02, 0.0, 0.0005), Err(InputFault::Invalid)));
+        assert!(slender_beam(0.02, 0.005, 0.0005).is_ok());
+        assert!(matches!(
+            notch_ligament(0.001, 0.002, -1.0),
+            Err(InputFault::Degenerate(GeometryViolation::WebExceedsNotchDiameter { .. }))
+        ));
+        assert!(matches!(notch_ligament(0.0, 0.002, 0.005), Err(InputFault::Invalid)));
+        assert!(notch_ligament(0.002, 0.001, 0.005).is_ok());
+    }
 }
 
 #[cfg(test)]

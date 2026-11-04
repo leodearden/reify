@@ -12,8 +12,8 @@ use reify_ir::Value;
 use super::common::{
     attach_compliance, cantilever_sigma_at, cantilever_theta_lim, declared_range,
     fixed_guided_delta_max, fixed_guided_sigma_at, length_arg, make_compliance_record,
-    make_flexure_joint, neutral, symmetric_angle_range, symmetric_length_range, yield_stress,
-    youngs_modulus, InputFault, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
+    make_flexure_joint, neutral, slender_beam, symmetric_angle_range, symmetric_length_range,
+    yield_stress, youngs_modulus, InputFault, RangeKind, CANTILEVER_GAMMA, FIXED_GUIDED_GAMMA,
 };
 
 /// A beam ctor: the motion kind of its trailing arguments and its joint builder.
@@ -75,10 +75,9 @@ struct BeamInputs<'a> {
 /// axis[, neutral[, declared_range]])`, the trailing pair read as `kind`.
 ///
 /// [`InputFault::Rejected`] for a present argument or material field of the
-/// wrong dimension (a bare geometry length included). [`InputFault::Invalid`]
-/// on: arity ∉ {6, 7, 8}; non-positive or non-finite geometry; a degenerate
-/// beam (thickness ≥ length — the `E_FlexureGeometryInvalid` regime); a
-/// material that is not a `Value::StructureInstance` with a finite
+/// wrong dimension (a bare geometry length included). [`InputFault::Degenerate`]
+/// for thickness ≥ length ([`slender_beam`]). [`InputFault::Invalid`] on:
+/// arity ∉ {6, 7, 8}; non-positive or non-finite geometry; a material that is not a `Value::StructureInstance` with a finite
 /// `youngs_modulus` > 0; or an axis that is not a finite, non-zero,
 /// dimensionless 3-vector.
 fn parse_beam_inputs(args: &[Value], kind: RangeKind) -> Result<BeamInputs<'_>, InputFault> {
@@ -88,9 +87,7 @@ fn parse_beam_inputs(args: &[Value], kind: RangeKind) -> Result<BeamInputs<'_>, 
     let length = length_arg(&args[0], "length")?;
     let width = length_arg(&args[1], "width")?;
     let thickness = length_arg(&args[2], "thickness")?;
-    if length <= 0.0 || width <= 0.0 || thickness <= 0.0 || thickness >= length {
-        return Err(InputFault::Invalid);
-    }
+    slender_beam(length, width, thickness)?;
     let material = &args[3];
     let e = youngs_modulus(material)?;
     let yield_si = yield_stress(material)?;

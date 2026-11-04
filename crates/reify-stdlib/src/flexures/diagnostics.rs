@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector};
 use reify_ir::{PersistentMap, Value};
 
-use super::common::{classify_geometry_invalid, InputFault, PRB_ANGLE_LIMIT_RAD};
+use super::common::{InputFault, PRB_ANGLE_LIMIT_RAD};
 use super::input_fault;
 
 /// PRB rotational small-deflection bound in degrees — the human-facing spelling
@@ -38,10 +38,10 @@ const PRB_ANGLE_LIMIT_DEG: f64 = 5.0;
 /// recognised PRB ctor it then reads `result`:
 /// - a constructed joint `Value::Map` surfaces `W_FlexureYielding` (cached
 ///   `at_yield`) and `W_FlexurePrbOutOfRange` (declared angular range past ±5°);
-/// - a `Value::Undef` is re-classified: a refused wrong-dimension argument or
-///   material field ([`input_fault`]) surfaces one `DimensionedArgRejected`
-///   Error naming it; otherwise [`classify_geometry_invalid`] surfaces
-///   `E_FlexureGeometryInvalid` ONLY for degenerate geometry.
+/// - a `Value::Undef` is re-classified by the ctor's own parse fn
+///   ([`input_fault`]): a refused wrong-dimension argument or material field
+///   surfaces one `DimensionedArgRejected` Error naming it, degenerate geometry
+///   surfaces `E_FlexureGeometryInvalid`, and every other refusal stays silent.
 ///
 /// Every recognised PRB ctor call also appends the standing
 /// `W_FlexureFatigueCheckMissing` Info advisory; its once-per-eval-session
@@ -127,23 +127,19 @@ pub fn flexure_diagnose(name: &str, args: &[Value], result: &Value) -> Vec<Diagn
                 diags.push(prb_out_of_range_diagnostic(endpoint));
             }
         }
-        // Undef path: re-classify the rejection. A wrong-dimension input is
-        // named by the shared reader's wording; otherwise emit
-        // E_FlexureGeometryInvalid ONLY for degenerate geometry, and the other
+        // Undef path: the ctor's own verdict names why it refused. The other
         // rejections (bad material / axis / arity) stay silent.
-        Value::Undef => {
-            if let Some(InputFault::Rejected(rejection)) = input_fault(name, args) {
-                diags.push(rejection.to_error(name));
-            } else if let Some(violation) = classify_geometry_invalid(name, args) {
-                diags.push(
-                    Diagnostic::error(format!(
-                        "E_FLEXURE_GEOMETRY_INVALID: {}",
-                        violation.describe()
-                    ))
-                    .with_code(DiagnosticCode::FlexureGeometryInvalid),
-                );
-            }
-        }
+        Value::Undef => match input_fault(name, args) {
+            Some(InputFault::Rejected(rejection)) => diags.push(rejection.to_error(name)),
+            Some(InputFault::Degenerate(violation)) => diags.push(
+                Diagnostic::error(format!(
+                    "E_FLEXURE_GEOMETRY_INVALID: {}",
+                    violation.describe()
+                ))
+                .with_code(DiagnosticCode::FlexureGeometryInvalid),
+            ),
+            Some(InputFault::Invalid) | None => {}
+        },
         _ => {}
     }
 
@@ -496,7 +492,7 @@ mod tests {
         );
 
         // (c.2) Non-geometry Undef: VALID geometry (t=0.5 mm < L=20 mm) but a
-        // bad material ⇒ Undef. classify_geometry_invalid must NOT fire.
+        // bad material ⇒ Undef. The geometry diagnostic must NOT fire.
         let bad_material = vec![
             Value::length(0.02),
             Value::length(0.005),
@@ -512,6 +508,33 @@ mod tests {
             !has_code(&diags, DiagnosticCode::FlexureGeometryInvalid),
             "valid geometry + bad material does NOT emit FlexureGeometryInvalid"
         );
+    }
+
+    #[test]
+    fn flexure_diagnose_names_a_refused_bare_geometry_length() {
+        // A bare thickness on otherwise degenerate geometry (t ≥ L): the
+        // dimension refusal comes first and is the one Error, named by its
+        // argument; the geometry is never read, so no geometry Error joins it.
+        let bare_thickness = vec![
+            Value::length(0.002),
+            Value::length(0.005),
+            Value::Real(0.003),
+            steel(),
+            origin(),
+            axis_y(),
+        ];
+        let result = crate::eval_builtin("prb_cantilever_beam", &bare_thickness);
+        assert!(result.is_undef(), "a bare thickness returns Undef");
+        let diags = flexure_diagnose("prb_cantilever_beam", &bare_thickness, &result);
+        assert_eq!(count_code(&diags, DiagnosticCode::DimensionedArgRejected), 1);
+        let rejected = find(&diags, DiagnosticCode::DimensionedArgRejected);
+        assert_eq!(rejected.severity, Severity::Error);
+        assert!(
+            rejected.message.starts_with("prb_cantilever_beam: thickness argument expects"),
+            "the Error names the builtin and the refused argument: {}",
+            rejected.message
+        );
+        assert!(!has_code(&diags, DiagnosticCode::FlexureGeometryInvalid));
     }
 
     #[test]
@@ -578,8 +601,8 @@ mod tests {
         // The displacement-family ctors (fixed-fixed beam, prismatic blade) reject
         // degenerate geometry (thickness ≥ length) with Undef; flexure_diagnose
         // re-classifies that Undef as E_FlexureGeometryInvalid (Error), exactly
-        // like the cantilever path (step-7) — confirming classify_geometry_invalid
-        // covers these names too.
+        // like the cantilever path (step-7) — confirming their parse fns report
+        // the degeneracy too.
         let degenerate = vec![
             Value::length(0.002), // L = 2 mm
             Value::length(0.005),
@@ -611,7 +634,7 @@ mod tests {
         // The notch family rejects degenerate geometry t ≥ 2r (web ≥ notch
         // diameter) with Undef; flexure_diagnose re-classifies that Undef as
         // E_FlexureGeometryInvalid (Error) for all three notch variants —
-        // confirming classify_geometry_invalid covers the notch arg layout
+        // confirming the notch parse fn reports its own layout's degeneracy
         // (radius at index 0, web thickness at index 1), distinct from the
         // slender-beam (thickness at index 2) layout.
         let degenerate = vec![
