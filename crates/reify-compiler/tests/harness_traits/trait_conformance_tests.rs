@@ -11,8 +11,8 @@ use reify_test_support::{
 };
 
 /// Asserts `template` carries exactly one value cell for `member`, whatever its entity,
-/// and returns it. `get_value_cell_in_template` cannot pin this count: it resolves the
-/// template's own `S.x` beside a trait-scoped `D.x` silently.
+/// and returns it. Counting every same-named cell lets the exactly-once dedup pins state
+/// their count directly, not through `get_value_cell_in_template`'s collision tie-break.
 #[track_caller]
 fn assert_one_value_cell_named<'t>(
     template: &'t TopologyTemplate,
