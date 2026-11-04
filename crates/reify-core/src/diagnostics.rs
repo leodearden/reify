@@ -292,6 +292,9 @@ pub enum DiagnosticCode {
     /// (`reify_ir::SolveFailureCause::Stalled`, rendered by
     /// `crates/reify-eval/src/relate_solve.rs`): the step collapsed at a point that
     /// is neither a root nor certified stationary — a search failure, not a proof.
+    /// Likewise of a NON-FINITE evaluation (`reify_ir::SolveFailureCause::NonFinite`):
+    /// a residual row or Jacobian entry was NaN or ±∞ where the solve stood, so it
+    /// could judge nothing there.
     ConstraintUnsatisfiable,
     /// Origin: three producers, all carrying the shared "not uniquely determined" phrase:
     /// - `crates/reify-constraints/src/solver.rs::verify_uniqueness`, perturbation re-solve

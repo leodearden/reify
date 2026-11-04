@@ -25,6 +25,10 @@ pub enum SolveFailureCause {
     /// The step collapsed at a point that is neither a root nor stationary (e.g.
     /// a kink) — a search failure, not a proof.
     Stalled(SolveStall),
+    /// A residual row or a Jacobian entry evaluated to NaN or ±∞ at a point the
+    /// solve stood on (its start, or where an accepted step or probe landed), so
+    /// no convergence or stationarity test can judge that point.
+    NonFinite(NonFiniteEvaluation),
 }
 
 impl SolveFailureCause {
@@ -33,7 +37,7 @@ impl SolveFailureCause {
         match self {
             Self::Infeasible(_) => DiagnosticCode::SolverInfeasible,
             Self::BudgetExhausted(_) => DiagnosticCode::SolverBudgetExhausted,
-            Self::Stalled(_) => DiagnosticCode::ConstraintUnsatisfiable,
+            Self::Stalled(_) | Self::NonFinite(_) => DiagnosticCode::ConstraintUnsatisfiable,
         }
     }
 }
@@ -44,6 +48,7 @@ impl fmt::Display for SolveFailureCause {
             Self::Infeasible(cert) => cert.fmt(f),
             Self::BudgetExhausted(exhaustion) => exhaustion.fmt(f),
             Self::Stalled(stall) => stall.fmt(f),
+            Self::NonFinite(evaluation) => evaluation.fmt(f),
         }
     }
 }
@@ -155,6 +160,52 @@ impl fmt::Display for SolveStall {
              that is not stationary (range cosine {:.2e}); largest scaled \
              residual {:.3e}",
             self.iterations, self.step_norm, self.range_cosine, self.max_scaled_residual
+        )
+    }
+}
+
+/// The record of a solve that met a non-finite residual row or Jacobian entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NonFiniteEvaluation {
+    /// Trial steps taken before the point was reached.
+    pub iterations: u32,
+    /// What produced the row.
+    pub source: ResidualSource,
+    /// The row's index in the solve's residual vector.
+    pub row: usize,
+    /// Which evaluation of the row was non-finite.
+    pub entry: NonFiniteEntry,
+    /// The non-finite value (NaN or ±∞).
+    pub value: f64,
+}
+
+/// Which evaluation of a residual row was non-finite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonFiniteEntry {
+    /// The scaled residual `r̃ᵢ` itself.
+    Residual,
+    /// The Jacobian entry `∂r̃ᵢ/∂x̃_column`.
+    Jacobian {
+        /// The unknown the entry differentiates by.
+        column: usize,
+    },
+}
+
+impl fmt::Display for NonFiniteEvaluation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.entry {
+            NonFiniteEntry::Residual => write!(f, "residual row {}", self.row),
+            NonFiniteEntry::Jacobian { column } => write!(
+                f,
+                "the derivative of residual row {} by unknown {column}",
+                self.row
+            ),
+        }?;
+        write!(
+            f,
+            " evaluated to {} after {} iterations, where the solve cannot judge \
+             convergence",
+            self.value, self.iterations
         )
     }
 }

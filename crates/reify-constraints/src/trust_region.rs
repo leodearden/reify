@@ -21,6 +21,8 @@
 //!    [`Stalled`](SolveFailureCause::Stalled);
 //!
 //! or on the iteration budget ([`BudgetExhausted`](SolveFailureCause::BudgetExhausted)).
+//! Before any test, a residual row or Jacobian entry that is NaN or ±∞ ends the
+//! run as [`NonFinite`](SolveFailureCause::NonFinite): no bar can judge it.
 //!
 //! A stationary point is only first-order evidence: the crest of a bounded row
 //! (a sine of a misalignment at its maximum) is stationary too. So before
@@ -29,35 +31,35 @@
 //! iterate (one iteration of the budget) and the search resumes from it.
 
 use reify_ir::{
-    BudgetExhaustion, InfeasibilityCertificate, ResidualSource, RowBlame, SolveFailureCause,
-    SolveStall,
+    BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+    ResidualSource, RowBlame, SolveFailureCause, SolveStall,
 };
 
 use crate::linalg::{RankTolerance, RowSpaceQr, dot, mat_t_vec, mat_vec, norm};
 
 /// The initial trust radius: one nominal scale.
-pub const INITIAL_RADIUS: f64 = 1.0;
+const INITIAL_RADIUS: f64 = 1.0;
 /// The largest trust radius, in nominal scales.
-pub const MAX_RADIUS: f64 = 1e3;
+const MAX_RADIUS: f64 = 1e3;
 /// A trial step is accepted iff its gain ratio `ρ = actual / predicted` exceeds
 /// this.
-pub const ACCEPT_RATIO: f64 = 0.1;
+const ACCEPT_RATIO: f64 = 0.1;
 /// Below this gain ratio the radius contracts by [`CONTRACT_FACTOR`].
-pub const CONTRACT_BELOW: f64 = 0.25;
+const CONTRACT_BELOW: f64 = 0.25;
 /// The radius contraction factor.
-pub const CONTRACT_FACTOR: f64 = 0.25;
+const CONTRACT_FACTOR: f64 = 0.25;
 /// Above this gain ratio, on a step that reached the boundary, the radius grows
 /// by [`EXPAND_FACTOR`] (up to [`MAX_RADIUS`]).
-pub const EXPAND_ABOVE: f64 = 0.75;
+const EXPAND_ABOVE: f64 = 0.75;
 /// The radius expansion factor.
-pub const EXPAND_FACTOR: f64 = 2.0;
+const EXPAND_FACTOR: f64 = 2.0;
 /// The bar of the infeasibility certificate: the cosine between `r̃` and the
 /// range of `J̃` (`‖P r̃‖ / ‖r̃‖`, `P` the orthogonal projector onto that range)
 /// is at most this. The cosine is zero iff the gradient `J̃ᵀr̃` vanishes, and is
 /// blind to column scaling and to how stiff the satisfied rows are.
 pub const RANGE_COSINE_TOLERANCE: f64 = 1e-8;
 /// The relative scaled-step bar of the stall test (`√ε`).
-pub const STEP_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
+const STEP_TOLERANCE: f64 = 1.490_116_119_384_765_6e-8;
 /// How far, in nominal scales, a descent probe moves from a stationary point.
 const PROBE_LENGTH: f64 = 0.1;
 /// A probe escapes a stationary point iff it lowers `‖r̃‖²` by more than this
@@ -137,6 +139,16 @@ pub fn solve(
 
     loop {
         match iterate.verdict(problem) {
+            Verdict::NonFinite { row, entry, value } => {
+                let cause = SolveFailureCause::NonFinite(NonFiniteEvaluation {
+                    iterations,
+                    source: problem.row_source(row),
+                    row,
+                    entry,
+                    value,
+                });
+                return iterate.finish(iterations, step_norms, Err(cause));
+            }
             Verdict::Converged(converged) => {
                 return iterate.finish(iterations, step_norms, Ok(converged));
             }
@@ -191,7 +203,8 @@ pub fn solve(
         } else if radius > collapse {
             continue;
         }
-        // Test 3 fired. A converged or stationary iterate is resolved at the top.
+        // Test 3 fired. A converged, stationary or non-finite iterate is resolved
+        // at the top.
         if let Verdict::Open = iterate.verdict(problem) {
             let cause = SolveFailureCause::Stalled(SolveStall {
                 iterations,
@@ -206,6 +219,12 @@ pub fn solve(
 
 /// What tests 1 and 2 make of one iterate.
 enum Verdict {
+    /// A residual row or Jacobian entry is NaN or ±∞, so neither test applies.
+    NonFinite {
+        row: usize,
+        entry: NonFiniteEntry,
+        value: f64,
+    },
     /// Every row is within its bar.
     Converged(Converged),
     /// A stationary non-root, pending the descent probe.
@@ -253,8 +272,12 @@ impl Iterate {
         }
     }
 
-    /// Tests 1 and 2: converged, stationary, or neither.
+    /// Tests 1 and 2: converged, stationary, or neither — unless the iterate is
+    /// not finite.
     fn verdict(&self, problem: &impl LeastSquaresProblem) -> Verdict {
+        if let Some(non_finite) = self.first_non_finite() {
+            return non_finite;
+        }
         if max_abs(&self.r) <= 1.0 {
             return Verdict::Converged(Converged {
                 rank: self.qr.rank(),
@@ -271,6 +294,26 @@ impl Iterate {
             max_scaled_residual: max_abs(&self.r),
             blame: self.blame(problem),
         })
+    }
+
+    /// The first NaN or ±∞ among the residual rows, else among the Jacobian
+    /// entries (row-major).
+    fn first_non_finite(&self) -> Option<Verdict> {
+        let residual = self
+            .r
+            .iter()
+            .enumerate()
+            .map(|(row, &value)| (row, NonFiniteEntry::Residual, value));
+        let jacobian = self.jacobian.iter().enumerate().flat_map(|(row, entries)| {
+            entries
+                .iter()
+                .enumerate()
+                .map(move |(column, &value)| (row, NonFiniteEntry::Jacobian { column }, value))
+        });
+        residual
+            .chain(jacobian)
+            .find(|(_, _, value)| !value.is_finite())
+            .map(|(row, entry, value)| Verdict::NonFinite { row, entry, value })
     }
 
     /// The lowest-cost point [`PROBE_LENGTH`] away along a coordinate axis or a

@@ -47,8 +47,8 @@ impl RowSpaceQr {
         }
     }
 
-    /// Push one row (of length [`dim`](Self::dim)); `true` iff it widened the
-    /// span.
+    /// Push one row (of the length given to [`new`](Self::new)); `true` iff it
+    /// widened the span.
     pub fn push(&mut self, row: &[f64]) -> bool {
         assert_eq!(row.len(), self.dim, "row length must equal the dimension");
         let row_norm = norm(row);
@@ -75,11 +75,6 @@ impl RowSpaceQr {
         rows.into_iter()
             .filter(|row| self.push(row.as_ref()))
             .count()
-    }
-
-    /// The row length.
-    pub fn dim(&self) -> usize {
-        self.dim
     }
 
     /// The number of independent rows pushed.

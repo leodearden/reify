@@ -66,8 +66,8 @@ pub use constraint::{
 };
 pub use resolution_profile::{IterationBudget, ResolutionProfile, StalenessPolicy};
 pub use solve_termination::{
-    BudgetExhaustion, InfeasibilityCertificate, ResidualSource, RowBlame, SolveFailureCause,
-    SolveStall,
+    BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+    ResidualSource, RowBlame, SolveFailureCause, SolveStall,
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,

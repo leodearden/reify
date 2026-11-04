@@ -12,7 +12,7 @@ use reify_constraints::linalg::RankTolerance;
 use reify_constraints::trust_region::{
     LeastSquaresProblem, RANGE_COSINE_TOLERANCE, SolveBudget, TrustRegionRun, solve,
 };
-use reify_ir::{ResidualSource, SolveFailureCause};
+use reify_ir::{NonFiniteEntry, ResidualSource, SolveFailureCause};
 
 const S: f64 = 1e8;
 
@@ -23,6 +23,10 @@ const RANK: RankTolerance = RankTolerance {
 
 fn max_abs(r: &[f64]) -> f64 {
     r.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
+}
+
+fn norm(r: &[f64]) -> f64 {
+    r.iter().map(|v| v * v).sum::<f64>().sqrt()
 }
 
 fn run(problem: &impl LeastSquaresProblem, x0: &[f64]) -> TrustRegionRun {
@@ -90,7 +94,14 @@ fn a_stationary_non_root_is_certified_infeasible_with_blame() {
         "range cosine {} above the published tolerance",
         cert.range_cosine
     );
-    assert!(cert.gradient_norm >= 0.0);
+    // ‖J̃ᵀr̃‖ = ‖J̃ᵀP r̃‖ ≤ ‖J̃‖_F · (range cosine) · ‖r̃‖, with ‖J̃‖_F = √3·S.
+    let residual_norm = norm(&Inconsistent.residual(&run.x));
+    let gradient_bound = RANGE_COSINE_TOLERANCE * 3.0_f64.sqrt() * S * residual_norm;
+    assert!(
+        cert.gradient_norm <= gradient_bound,
+        "‖J̃ᵀr̃‖ = {} must vanish at the least-squares minimum (bound {gradient_bound}): {cert:?}",
+        cert.gradient_norm
+    );
     assert!(
         (cert.max_scaled_residual - 2.0 * S).abs() <= 1e-9 * S,
         "the LS-minimum residual is 2S: {cert:?}"
@@ -312,4 +323,98 @@ fn a_stationary_crest_is_left_not_certified_infeasible() {
     let run = run(&Crest, &[0.0]);
     assert!(run.outcome.is_ok(), "{run:?}");
     assert!(max_abs(&Crest.residual(&run.x)) <= 1.0, "{run:?}");
+}
+
+/// A problem undefined at every point: one row evaluates to NaN. `NaN ≤ 1` is
+/// false, but a NaN folded through `f64::max` vanishes, so this pins that the
+/// run cannot read it as converged.
+struct Undefined;
+
+impl LeastSquaresProblem for Undefined {
+    fn dim(&self) -> usize {
+        1
+    }
+    fn residual(&self, _x: &[f64]) -> Vec<f64> {
+        vec![f64::NAN]
+    }
+    fn jacobian(&self, _x: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![S]]
+    }
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(7 + row)
+    }
+}
+
+#[test]
+fn a_nan_residual_is_never_converged() {
+    let run = run(&Undefined, &[0.0]);
+    let Err(SolveFailureCause::NonFinite(found)) = &run.outcome else {
+        panic!("a NaN residual must end the run as non-finite, got {run:?}");
+    };
+    assert_eq!(found.row, 0);
+    assert_eq!(found.source, ResidualSource::Relation(7));
+    assert_eq!(found.entry, NonFiniteEntry::Residual);
+    assert!(found.value.is_nan(), "{found:?}");
+    assert_eq!(found.iterations, 0);
+    assert_eq!(run.iterations, 0);
+}
+
+/// `[x − 1, NaN]`·S: a violated row beside an undefined one. A NaN in `r̃`
+/// makes `‖r̃‖` NaN, which must not pass for a stationary point and yield an
+/// infeasibility certificate full of NaN figures.
+struct ViolatedBesideUndefined;
+
+impl LeastSquaresProblem for ViolatedBesideUndefined {
+    fn dim(&self) -> usize {
+        1
+    }
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        vec![S * (x[0] - 1.0), f64::NAN]
+    }
+    fn jacobian(&self, _x: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![S], vec![S]]
+    }
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(row)
+    }
+}
+
+#[test]
+fn a_nan_row_beside_a_violated_row_is_not_certified_infeasible() {
+    let run = run(&ViolatedBesideUndefined, &[3.0]);
+    let Err(SolveFailureCause::NonFinite(found)) = &run.outcome else {
+        panic!("a NaN row must end the run as non-finite, got {run:?}");
+    };
+    assert_eq!(found.row, 1);
+    assert_eq!(found.entry, NonFiniteEntry::Residual);
+}
+
+/// `[x₀ − 1]`·S with a Jacobian whose second column is NaN: a finite residual is
+/// not enough, since the step and the certificates are read off `J̃`.
+struct UndefinedJacobian;
+
+impl LeastSquaresProblem for UndefinedJacobian {
+    fn dim(&self) -> usize {
+        2
+    }
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        vec![S * (x[0] - 1.0)]
+    }
+    fn jacobian(&self, _x: &[f64]) -> Vec<Vec<f64>> {
+        vec![vec![S, f64::INFINITY]]
+    }
+    fn row_source(&self, row: usize) -> ResidualSource {
+        ResidualSource::Relation(row)
+    }
+}
+
+#[test]
+fn a_non_finite_jacobian_entry_names_its_row_and_column() {
+    let run = run(&UndefinedJacobian, &[3.0, 0.0]);
+    let Err(SolveFailureCause::NonFinite(found)) = &run.outcome else {
+        panic!("a non-finite Jacobian must end the run as non-finite, got {run:?}");
+    };
+    assert_eq!(found.row, 0);
+    assert_eq!(found.entry, NonFiniteEntry::Jacobian { column: 1 });
+    assert_eq!(found.value, f64::INFINITY);
 }

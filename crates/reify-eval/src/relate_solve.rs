@@ -33,8 +33,8 @@ use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
 use reify_constraints::trust_region::SolveBudget;
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{
-    CompiledExpr, CompiledExprKind, ExportFormat, InfeasibilityCertificate, ResidualSource,
-    SolveFailureCause, Value, ValueMap,
+    CompiledExpr, CompiledExprKind, ExportFormat, InfeasibilityCertificate, NonFiniteEvaluation,
+    ResidualSource, SolveFailureCause, Value, ValueMap,
 };
 
 use crate::Engine;
@@ -520,10 +520,13 @@ pub struct RelateSolution {
     /// `free_twists.len()`: both come from the one factorization at the solution.
     pub free: u32,
     /// Number of relations in the driving set (the maximal independent subset that
-    /// was handed to the solver).
+    /// was handed to the solver). Unlike [`spent`](Self::spent), the partition is
+    /// read at the SEED witness: a relation whose rows all sit at a crest there
+    /// counts as redundant even when it would drive at the solution (#9716).
     pub driving: usize,
     /// Number of relations in the redundant remainder (verified post-solve as
-    /// geometry-backed assertions, never solved).
+    /// geometry-backed assertions, never solved). Read at the seed, like
+    /// [`driving`](Self::driving).
     pub redundant: usize,
     /// Verification diagnostics: a redundant-remainder relation violated at the
     /// solved placement (step-14), or a failed solve of the driving set (one
@@ -1734,6 +1737,7 @@ struct FailureContext<'s, 'a> {
 ///   [`minimal_infeasible_subset`], the solver's certificate, and the driving
 ///   relations whose rows remain violated;
 /// - budget exhaustion — the counts and step-norm trend, with the seed guidance;
+/// - a non-finite evaluation — the driving relation whose row it was;
 /// - a stall (or any later cause) — the cause's own figures.
 fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Diagnostic {
     let sub = &context.unknown.sub;
@@ -1751,6 +1755,13 @@ fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Di
              configuration may be too far from a solution — try an `auto(seed = …)` \
              nearer the intended placement"
         ),
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            source: ResidualSource::Relation(driving_position),
+            ..
+        }) => format!(
+            "the relations on `{sub}` could not be solved: {cause}, in {}",
+            driving_relation_label(*driving_position, context)
+        ),
         _ => format!("the relations on `{sub}` could not be solved: {cause}"),
     };
     Diagnostic::error(message).with_code(cause.code())
@@ -1764,22 +1775,26 @@ fn blamed_relations(certificate: &InfeasibilityCertificate, context: &FailureCon
         let ResidualSource::Relation(driving_position) = blame.source else {
             continue;
         };
-        let instance = context.partition.driving[driving_position];
-        if !blamed.contains(&instance) {
-            blamed.push(instance);
+        if !blamed.contains(&driving_position) {
+            blamed.push(driving_position);
         }
     }
     blamed
         .iter()
-        .map(|&i| {
-            format!(
-                "`{}` ({})",
-                context.built.instances[i].name,
-                describe_operands(context.built.relation(i))
-            )
-        })
+        .map(|&position| driving_relation_label(position, context))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// The driving relation at `driving_position` named with its operands (e.g.
+/// `` `flush` (bolt.seat_plane and plate.wall_plane) ``).
+fn driving_relation_label(driving_position: usize, context: &FailureContext) -> String {
+    let instance = context.partition.driving[driving_position];
+    format!(
+        "`{}` ({})",
+        context.built.instances[instance].name,
+        describe_operands(context.built.relation(instance))
+    )
 }
 
 /// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).

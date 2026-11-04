@@ -4,8 +4,8 @@
 
 use reify_core::DiagnosticCode;
 use reify_ir::{
-    BudgetExhaustion, InfeasibilityCertificate, ResidualSource, RowBlame, SolveFailureCause,
-    SolveStall,
+    BudgetExhaustion, InfeasibilityCertificate, NonFiniteEntry, NonFiniteEvaluation,
+    ResidualSource, RowBlame, SolveFailureCause, SolveStall,
 };
 
 #[test]
@@ -41,6 +41,18 @@ fn an_uncertified_stall_is_a_search_failure() {
         step_norm: 1e-17,
         range_cosine: 1.0,
         max_scaled_residual: 1e8,
+    });
+    assert_eq!(cause.code(), DiagnosticCode::ConstraintUnsatisfiable);
+}
+
+#[test]
+fn a_non_finite_evaluation_is_a_search_failure() {
+    let cause = SolveFailureCause::NonFinite(NonFiniteEvaluation {
+        iterations: 4,
+        source: ResidualSource::Relation(2),
+        row: 5,
+        entry: NonFiniteEntry::Jacobian { column: 3 },
+        value: f64::NAN,
     });
     assert_eq!(cause.code(), DiagnosticCode::ConstraintUnsatisfiable);
 }
