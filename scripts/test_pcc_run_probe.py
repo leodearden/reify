@@ -680,6 +680,30 @@ class TestRunProbeTakesContext(unittest.TestCase):
         self.assertIs(run.harness_failure.kind, pcc.HarnessFailureKind.LAUNCH)
         self.assertEqual(run.command, tuple(pcc.build_command(probe, ctx)))
 
+    _REFUSAL = "two reify binaries, neither vouched for; set REIFY_BIN"
+
+    def test_a_reify_probe_on_a_refusing_ctx_raises_the_refusal(self):
+        """The ProbeRunner precondition: with no reify binary picked there is no argv."""
+        ctx = probe_context(reify_bin=None, reify_bin_refusal=self._REFUSAL)
+        for kind in ("check", "ir", "value"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(pcc.ReifyBinaryRefused) as cm:
+                    pcc.run_probe(self._probe(kind), ctx)
+                self.assertIn(self._REFUSAL, str(cm.exception))
+
+    def test_a_grammar_probe_on_a_refusing_ctx_still_runs(self):
+        root = make_fixture_repo(os.path.join(self.tmp, "repo"))
+        ctx = probe_context(
+            repo_root=root,
+            reify_bin=None,
+            reify_bin_refusal=self._REFUSAL,
+            tree_sitter_bin=self.echo,
+            cache_home_override=os.path.join(self.tmp, "cache"),
+        )
+        run = pcc.run_probe(self._probe("grammar", "fx/g.ri"), ctx)
+        self.assertIsNone(run.harness_failure, run)
+        self.assertEqual(run.command, tuple(run.stdout.splitlines()))
+
 
 if __name__ == "__main__":
     unittest.main()

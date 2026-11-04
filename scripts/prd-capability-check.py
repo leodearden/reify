@@ -1417,11 +1417,17 @@ def build_command(probe: Probe, ctx: ProbeContext) -> List[str]:
 
 
 class ProbeRunner(Protocol):
-    """The runner contract: run one probe under ctx, never raising.
+    """The runner contract: run one probe under ctx, representing every failure.
 
     run_probe() is the real one.  timeout is None for a probe-set run, which
     stays unbounded, and a bound in seconds only for the substrate probe.  The
     returned ProbeRun carries the argv it launched in `command`.
+
+    Precondition: a reify-kind probe needs a ctx that picked a reify binary.
+    A ctx carrying reify_bin_refusal has no argv to launch or record for one,
+    so run_probe() raises ReifyBinaryRefused instead; main() refuses such a
+    probe set (exit 64) before any probe runs.  A grammar probe needs no reify
+    binary and never meets it.
     """
 
     def __call__(
@@ -1462,7 +1468,9 @@ def run_probe(
     This is the one place a HarnessFailure is built, and none is ever raised:
     callers run this at import time in the test harness, where a raise costs the
     whole suite instead of one skip.  stdout/stderr then stay "" and the errno
-    or tool text is the failure's detail.
+    or tool text is the failure's detail.  The one raise is the ProbeRunner
+    precondition, ReifyBinaryRefused, which that import-time caller cannot meet:
+    it runs only the grammar substrate probe.
       * SETUP (exit 127) — building the grammar env failed.  It CREATES the
         private cache dir, and an uncreatable one (a world-writable /tmp lets
         any uid pre-create the path as a file) must be represented, and
@@ -1491,6 +1499,10 @@ def run_probe(
         A ProbeRun with exit_code, stdout, and stderr from the subprocess, its
         harness_failure (or None), fixture_present measured on the argv's
         fixture just before launch, and the argv as `command`.
+
+    Raises:
+        ReifyBinaryRefused: a check/ir/value probe on a ctx that refused every
+        reify binary (the ProbeRunner precondition); nothing is launched.
     """
     repo_root = ctx.repo_root
     cmd = build_command(probe, ctx)
