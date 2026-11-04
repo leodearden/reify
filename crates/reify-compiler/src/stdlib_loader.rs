@@ -555,7 +555,7 @@ struct NameCollision {
 /// the panic message should spell modules the way they are spelled there.
 /// `Display for ModulePath` is slash-separated (`std/solver/buckling`).
 fn dotted(path: &reify_core::ModulePath) -> String {
-    path.to_string().replace('/', ".")
+    path.to_dotted()
 }
 
 /// NS-P2 (task 5496, PRD docs/prds/v0_6/stdlib-namespace.md §7): no two stdlib
