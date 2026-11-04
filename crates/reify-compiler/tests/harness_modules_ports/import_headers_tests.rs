@@ -8,8 +8,10 @@
 
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
-use reify_compiler::import_headers::{ImportPlan, NameRole, NameUse, derive_std_imports};
-use reify_core::ModulePath;
+use reify_compiler::import_headers::{
+    ImportPlan, NameRole, NameUse, derive_std_imports, insert_imports, residual_diagnostics,
+};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
 
 const SUBJECT_PATH: &str = "subject";
 
@@ -431,4 +433,150 @@ fn an_already_imported_module_is_still_derived() {
         &[name_use("twice", NameRole::Callee)],
         source,
     );
+}
+
+// ─── g1/g2: the residual-diagnostics guard ─────────────────────────────────
+
+fn module_paths(dotted: &[&str]) -> Vec<ModulePath> {
+    dotted
+        .iter()
+        .map(|path| ModulePath::from_dotted(path).expect("valid dotted module path"))
+        .collect()
+}
+
+#[test]
+fn a_missing_import_leaves_a_residual_that_the_derived_import_clears() {
+    let universe = compile_universe(&[SHAPES, FNS]);
+    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
+    let parsed = parse_clean("structure def S { param b : Bracket }\n", SUBJECT_PATH);
+
+    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    assert!(
+        residual
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error
+                && diagnostic.code == Some(DiagnosticCode::UnresolvedType)),
+        "expected an UnresolvedType error; got {residual:?}"
+    );
+
+    let residual =
+        residual_diagnostics(&parsed, &module_paths(&["std.fake.shapes"]), &universe_refs);
+    assert!(residual.is_empty(), "{residual:?}");
+}
+
+#[test]
+fn a_diagnostic_the_full_universe_also_raises_is_not_residual() {
+    let universe = compile_universe(&[SHAPES]);
+    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
+    let parsed = parse_clean("structure def S { param b : Nowhere }\n", SUBJECT_PATH);
+    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    assert!(residual.is_empty(), "{residual:?}");
+}
+
+// ─── m1: declared imports in every form ────────────────────────────────────
+
+#[test]
+fn missing_from_omits_modules_imported_in_any_form() {
+    let universe = compile_universe(&[FNS, SHAPES, ENUMS, CDEFS, UNITS, MOUNTABLE]);
+    let source = "import std.fake.fns\n\
+                  import std.fake.shapes.Bracket\n\
+                  import std.fake.enums.{Hue}\n\
+                  import std.fake.cdefs as c\n\
+                  import std.fake.units.Furlong as F\n\
+                  structure def S : Mountable {\n\
+                      let a = twice(1.0)\n\
+                      let b = Bracket()\n\
+                      let h = Hue.Red\n\
+                      constraint positive(v: 1.0)\n\
+                      let d = 3furlong\n\
+                  }\n";
+    let parsed = parse_clean(source, SUBJECT_PATH);
+    let plan = derive_parsed(&parsed, &universe);
+    assert_eq!(
+        dotted_modules(&plan),
+        vec![
+            "std.fake.cdefs",
+            "std.fake.enums",
+            "std.fake.fns",
+            "std.fake.shapes",
+            "std.fake.traits",
+            "std.fake.units",
+        ]
+    );
+    let missing: Vec<String> = plan
+        .missing_from(&parsed)
+        .iter()
+        .map(|required| required.module.to_dotted())
+        .collect();
+    assert_eq!(missing, vec!["std.fake.traits"]);
+}
+
+// ─── h1-h5: inserting import lines ─────────────────────────────────────────
+
+fn insert(source: &str, modules: &[&str]) -> String {
+    let parsed = parse_clean(source, SUBJECT_PATH);
+    insert_imports(source, &parsed, &module_paths(modules))
+}
+
+#[test]
+fn new_imports_land_after_the_last_import_line() {
+    assert_eq!(
+        insert(
+            "import std.fake.a\nimport std.fake.b\n\nstructure def S {}\n",
+            &["std.fake.c", "std.fake.d"],
+        ),
+        "import std.fake.a\nimport std.fake.b\nimport std.fake.c\nimport std.fake.d\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn new_imports_follow_a_module_declaration_after_a_blank_line() {
+    assert_eq!(
+        insert("module a.b\n\nstructure def S {}\n", &["std.fake.c"]),
+        "module a.b\n\nimport std.fake.c\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn new_imports_follow_the_leading_module_pragmas_after_a_blank_line() {
+    assert_eq!(
+        insert("#no_prelude\n\nstructure def S {}\n", &["std.fake.c"]),
+        "#no_prelude\n\nimport std.fake.c\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn new_imports_follow_the_leading_comment_block_up_to_its_last_blank_line() {
+    assert_eq!(
+        insert(
+            "// Header line one\n// Header line two\n\n// Doc for S\nstructure def S {}\n",
+            &["std.fake.c"],
+        ),
+        "// Header line one\n// Header line two\n\nimport std.fake.c\n\n// Doc for S\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn a_comment_hugging_the_first_declaration_keeps_the_imports_at_offset_zero() {
+    assert_eq!(
+        insert("// Doc for S\nstructure def S {}\n", &["std.fake.c"]),
+        "import std.fake.c\n\n// Doc for S\nstructure def S {}\n"
+    );
+    assert_eq!(
+        insert("structure def S {}\n", &["std.fake.c", "std.fake.d"]),
+        "import std.fake.c\nimport std.fake.d\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn inserting_is_idempotent() {
+    let source = "import std.fake.c\n\nstructure def S {}\n";
+    assert_eq!(insert(source, &["std.fake.c"]), source);
+
+    let once = insert(source, &["std.fake.c", "std.fake.d"]);
+    assert_eq!(
+        once,
+        "import std.fake.c\nimport std.fake.d\n\nstructure def S {}\n"
+    );
+    assert_eq!(insert(&once, &["std.fake.c", "std.fake.d"]), once);
 }

@@ -40,6 +40,8 @@ mod connect_compile_tests;
 mod deprecated_use_tests;
 #[path = "harness_modules_ports/entity_overload_tests.rs"]
 mod entity_overload_tests;
+#[path = "harness_modules_ports/import_headers_stdlib_tests.rs"]
+mod import_headers_stdlib_tests;
 #[path = "harness_modules_ports/import_headers_tests.rs"]
 mod import_headers_tests;
 #[path = "harness_modules_ports/import_resolve_tests.rs"]
