@@ -66,7 +66,6 @@ pub use overload::{
     type_carries_trait_object, type_carries_type_param,
 };
 pub use panic_payload::panic_payload_to_string;
-pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
