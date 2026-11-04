@@ -84,6 +84,7 @@ reify eval   <file>                      Evaluate and print every top-level valu
 reify run    <file>                      Alias for eval
 reify report --bom <file>                Roll up a BOM / cost / waste / provenance report
 reify explain <file>                     Print per-cell objective provenance: which objective chose each `auto` value
+reify fix    --imports <file>...         Add the `import std.X` lines each file needs
 reify gui    [--debug] <file>            Open file in GUI
 reify gui-debug <file>                   Alias for `gui --debug`
 reify lsp                                Start language server (stdin/stdout)
