@@ -46,10 +46,11 @@
 //! `eval_builtin(name, args)` and nothing else is vacuous once both route
 //! through the same code. So each probe carries a HAND-WRITTEN expected
 //! `Value` reproducing what the pre-registry string path returned. Where the
-//! arithmetic is exactly representable in `f64` the expectation is a literal
-//! (`parse_length("12mm")` → `12.0 * 0.001`; von Mises of a uniaxial 100 MPa
-//! window → `√(0.5·2·(10⁸)²)` = exactly `1e8`, since `1e16` and `1e8` are both
-//! exact doubles; `safety_factor` → `250e6 / 1e8` = exactly `2.5`). Where it is
+//! arithmetic is exactly representable in `f64` the expectation is spelled as
+//! that arithmetic (`parse_length("12mm")` → `12.0 * 0.001`; von Mises of the
+//! shared uniaxial window → `√(σ²)` = exactly σ, which `reify-test-support`
+//! pins for its `UNIAXIAL_STRESS_PA`; `safety_factor` → `YIELD_PA / σ`, the
+//! kernel's own single division of yield by that exact von Mises). Where it is
 //! NOT — `max_shear` and `principal_stresses` both run the iterative
 //! `compute_eigenvalues_3x3` — the expectation is built from the crate's own
 //! PUBLIC kernel (`reify_stdlib::compute_max_shear_3x3` /
@@ -65,14 +66,19 @@ use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::__registry_dispatch_for_test as dispatch;
 use reify_stdlib::__try_dispatch_for_test as try_dispatch;
 use reify_stdlib::{compute_eigenvalues_3x3, compute_max_shear_3x3, eval_builtin};
-use reify_test_support::values::{UNIAXIAL_STRESS_PA, uniaxial_stress_tensor};
+use reify_test_support::values::{
+    UNIAXIAL_STRESS_PA, UNIAXIAL_STRESS_ROWS, uniaxial_stress_tensor,
+};
 
 /// The `StructureTypeId` sentinel `analysis::stress_invariants` mints for
 /// registry-free instances (`crates/reify-stdlib/src/analysis.rs:20`).
 const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
-/// Row-major 3×3 window of the uniaxial tensor, as the kernels see it.
-const UNIAXIAL_WINDOW: [f64; 9] = [UNIAXIAL_STRESS_PA, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+/// Row-major 3×3 window of [`uniaxial_stress_tensor`], as the kernels see it.
+const UNIAXIAL_WINDOW: &[f64] = UNIAXIAL_STRESS_ROWS.as_flattened();
+
+/// Yield strength the `safety_factor` probe divides by von Mises.
+const YIELD_PA: f64 = 250e6;
 
 fn pressure(si_value: f64) -> Value {
     Value::Scalar {
@@ -108,8 +114,8 @@ fn probes() -> Vec<Probe> {
         dimension: DimensionVector::LENGTH,
     };
 
-    let eigs = compute_eigenvalues_3x3(&UNIAXIAL_WINDOW)
-        .expect("uniaxial 3×3 window has real eigenvalues");
+    let eigs =
+        compute_eigenvalues_3x3(UNIAXIAL_WINDOW).expect("uniaxial 3×3 window has real eigenvalues");
 
     // I1 = trace = σ; I2 = I3 = 0 for a rank-1 diagonal tensor.
     let dim = DimensionVector::PRESSURE;
@@ -193,7 +199,7 @@ fn probes() -> Vec<Probe> {
             id: EvalBuiltinId::MaxShear,
             name: "max_shear",
             args: vec![stress.clone()],
-            expected: pressure(compute_max_shear_3x3(&UNIAXIAL_WINDOW)),
+            expected: pressure(compute_max_shear_3x3(UNIAXIAL_WINDOW)),
             what: "max_shear of a uniaxial window",
         },
         Probe {
@@ -206,10 +212,10 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: EvalBuiltinId::SafetyFactor,
             name: "safety_factor",
-            args: vec![stress.clone(), pressure(250e6)],
-            // yield / von_mises = 250e6 / 1e8 = 2.5, exactly; dimensionless,
-            // so `from_real_scalar` yields a bare `Value::Real`.
-            expected: Value::Real(2.5),
+            args: vec![stress.clone(), pressure(YIELD_PA)],
+            // The kernel returns a bare `Value::Real` of yield / von_mises,
+            // and von_mises is exactly σ (see the von_mises probe).
+            expected: Value::Real(YIELD_PA / UNIAXIAL_STRESS_PA),
             what: "safety_factor of a uniaxial window",
         },
         Probe {

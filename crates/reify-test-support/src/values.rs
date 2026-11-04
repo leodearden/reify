@@ -468,10 +468,14 @@ pub fn matrix3x3(
     ])
 }
 
-/// Uniaxial 100 MPa stress magnitude, in SI pascals. Chosen because `1e8` and
-/// `(1e8)² = 1e16` are both exact doubles, so analysis expectations built from
-/// it (von Mises, safety factor) need no tolerance.
+/// Uniaxial stress magnitude σ, in SI pascals. Chosen so that `√(σ²) == σ`
+/// exactly in `f64`, which lets a von Mises expectation be σ itself.
 pub const UNIAXIAL_STRESS_PA: f64 = 100e6;
+
+/// Row-major components of the uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`]
+/// at `[0][0]`, zero elsewhere. Flatten it for the `&[f64]` analysis kernels.
+pub const UNIAXIAL_STRESS_ROWS: [[f64; 3]; 3] =
+    [[UNIAXIAL_STRESS_PA, 0.0, 0.0], [0.0; 3], [0.0; 3]];
 
 /// Create a 3×3 `Value::Tensor` of `Value::Tensor` rows of `Value::Scalar`s,
 /// every element carrying `dimension` — the nested shape the analysis kernels
@@ -493,13 +497,9 @@ pub fn dimensioned_tensor3x3(rows: &[[f64; 3]; 3], dimension: DimensionVector) -
     )
 }
 
-/// The uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`] at `[0][0]`, zero
-/// elsewhere, in PRESSURE.
+/// The uniaxial stress tensor: [`UNIAXIAL_STRESS_ROWS`] in PRESSURE.
 pub fn uniaxial_stress_tensor() -> Value {
-    dimensioned_tensor3x3(
-        &[[UNIAXIAL_STRESS_PA, 0.0, 0.0], [0.0; 3], [0.0; 3]],
-        DimensionVector::PRESSURE,
-    )
+    dimensioned_tensor3x3(&UNIAXIAL_STRESS_ROWS, DimensionVector::PRESSURE)
 }
 
 // --- Complex value constructors ---
@@ -1814,7 +1814,7 @@ mod tests {
     /// shape.
     fn tensor3x3_components(v: &Value) -> [[(f64, DimensionVector); 3]; 3] {
         let Value::Tensor(rows) = v else {
-            panic!("expected an outer Value::Tensor, got {v:?}");
+            panic!("expected an outer Value::Tensor (not matrix3x3's Value::Matrix), got {v:?}");
         };
         assert_eq!(rows.len(), 3, "three rows");
         std::array::from_fn(|r| {
@@ -1836,10 +1836,6 @@ mod tests {
     fn dimensioned_tensor3x3_nests_three_rows_of_dimensioned_scalars() {
         let input = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]];
         let v = dimensioned_tensor3x3(&input, DimensionVector::LENGTH);
-        assert!(
-            !matches!(v, Value::Matrix(_)),
-            "a nested Value::Tensor, not matrix3x3's Value::Matrix"
-        );
         for (r, row) in tensor3x3_components(&v).iter().enumerate() {
             for (c, &(si_value, dimension)) in row.iter().enumerate() {
                 assert_eq!(si_value, input[r][c], "[{r}][{c}]");
