@@ -19,6 +19,7 @@ const DISPATCHED_SUBCOMMANDS: &[&str] = &[
     "explain",
     "dev",
     "cache",
+    "fix",
 ];
 
 /// The four flags `cmd_check`'s flag walk accepts.
