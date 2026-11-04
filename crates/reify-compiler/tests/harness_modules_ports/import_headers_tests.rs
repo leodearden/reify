@@ -15,10 +15,14 @@ const SUBJECT_PATH: &str = "subject";
 
 fn parse_clean(source: &str, path: &str) -> ParsedModule {
     let module_path = ModulePath::from_dotted(path).expect("valid dotted fixture path");
-    let parsed = reify_syntax::parse(source, module_path);
+    assert_parsed_clean(reify_syntax::parse(source, module_path), source)
+}
+
+fn assert_parsed_clean(parsed: ParsedModule, source: &str) -> ParsedModule {
     assert!(
         parsed.errors.is_empty(),
-        "fixture `{path}` must parse cleanly; errors: {:?}\nsource:\n{source}",
+        "fixture `{}` must parse cleanly; errors: {:?}\nsource:\n{source}",
+        parsed.path.to_dotted(),
         parsed.errors
     );
     parsed
@@ -32,9 +36,12 @@ fn compile_universe(modules: &[(&str, &str)]) -> Vec<CompiledModule> {
 }
 
 fn derive(source: &str, universe: &[CompiledModule]) -> ImportPlan {
-    let parsed = parse_clean(source, SUBJECT_PATH);
+    derive_parsed(&parse_clean(source, SUBJECT_PATH), universe)
+}
+
+fn derive_parsed(parsed: &ParsedModule, universe: &[CompiledModule]) -> ImportPlan {
     let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
-    derive_std_imports(&parsed, &universe_refs)
+    derive_std_imports(parsed, &universe_refs)
 }
 
 fn dotted_modules(plan: &ImportPlan) -> Vec<String> {
@@ -196,5 +203,232 @@ fn modules_are_sorted_by_dotted_path_and_names_sorted_and_deduplicated() {
     assert_eq!(
         names_needing(&plan, "std.fake.zeta"),
         vec![name_use("Zed", NameRole::Type)]
+    );
+}
+
+// ─── expression positions ──────────────────────────────────────────────────
+
+const FNS: (&str, &str) = (
+    "std.fake.fns",
+    "pub fn twice(x: Real) -> Real { x * 2.0 }\n",
+);
+
+const ENUMS: (&str, &str) = (
+    "std.fake.enums",
+    "enum Hue { Red, Green }\n\
+     enum Mark { Dot, Ring { radius: Real } }\n",
+);
+
+/// `mm` shares its name with a builtin-table unit; `furlong` is in no builtin
+/// table (`reify_core::units::unit_symbol_to_si`).
+const UNITS: (&str, &str) = (
+    "std.fake.units",
+    "pub unit mm : Length = 0.001\n\
+     pub unit furlong : Length = 201.168\n",
+);
+
+const CDEFS: (&str, &str) = (
+    "std.fake.cdefs",
+    "pub constraint def positive {\n\
+         param v : Real\n\
+         v > 0.0\n\
+     }\n",
+);
+
+fn assert_needs(plan: &ImportPlan, module: &str, expected: &[NameUse], source: &str) {
+    assert_eq!(dotted_modules(plan), vec![module], "source:\n{source}");
+    let names = names_needing(plan, module);
+    for name_use in expected {
+        assert!(
+            names.contains(name_use),
+            "{name_use:?} should need {module}; got {names:?}\nsource:\n{source}"
+        );
+    }
+}
+
+// ─── e1: callees ───────────────────────────────────────────────────────────
+
+#[test]
+fn callees_attribute_to_functions_structures_and_constraint_defs() {
+    let universe = compile_universe(&[FNS, SHAPES, CDEFS]);
+    let cases: &[(&str, &str, NameUse)] = &[
+        (
+            "structure def S { let a = twice(1.0) }\n",
+            "std.fake.fns",
+            name_use("twice", NameRole::Callee),
+        ),
+        (
+            "structure def S { let b = Bracket() }\n",
+            "std.fake.shapes",
+            name_use("Bracket", NameRole::Callee),
+        ),
+        (
+            "structure def S { sub s = Bracket() }\n",
+            "std.fake.shapes",
+            name_use("Bracket", NameRole::Callee),
+        ),
+        (
+            "structure def S { constraint positive(v: 1.0) }\n",
+            "std.fake.cdefs",
+            name_use("positive", NameRole::Callee),
+        ),
+    ];
+    for (source, module, expected) in cases {
+        let plan = derive(source, &universe);
+        assert_needs(&plan, module, std::slice::from_ref(expected), source);
+    }
+}
+
+// ─── e2: enum accesses in both lowerings ───────────────────────────────────
+
+#[test]
+fn an_enum_access_needs_the_enum_module_in_both_lowerings() {
+    let universe = compile_universe(&[ENUMS]);
+    let source = "structure def S { let h = Hue.Red }\n";
+
+    let as_member_access = parse_clean(source, SUBJECT_PATH);
+    let plan = derive_parsed(&as_member_access, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.enums",
+        &[name_use("Hue", NameRole::Value)],
+        source,
+    );
+
+    let module_path = ModulePath::from_dotted(SUBJECT_PATH).expect("valid dotted fixture path");
+    let as_enum_access = assert_parsed_clean(
+        reify_syntax::parse_with_prelude_enums(source, module_path, &["Hue"]),
+        source,
+    );
+    let plan = derive_parsed(&as_enum_access, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.enums",
+        &[name_use("Hue", NameRole::Enum)],
+        source,
+    );
+}
+
+// ─── e3: variants ──────────────────────────────────────────────────────────
+
+#[test]
+fn match_patterns_and_variant_constructions_need_the_enum_module() {
+    let universe = compile_universe(&[ENUMS]);
+    let source = "structure def S {\n\
+                      param n : Int = 1\n\
+                      let k = match n { Red => 1, Green => 2 }\n\
+                  }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.enums",
+        &[
+            name_use("Green", NameRole::Variant),
+            name_use("Red", NameRole::Variant),
+        ],
+        source,
+    );
+
+    let source = "structure def S { let r = Ring { radius: 1.0 } }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.enums",
+        &[name_use("Ring", NameRole::Callee)],
+        source,
+    );
+}
+
+// ─── e4: units ─────────────────────────────────────────────────────────────
+
+#[test]
+fn a_bare_non_builtin_unit_needs_the_unit_module() {
+    let universe = compile_universe(&[UNITS]);
+    let source = "structure def S { let d = 3furlong }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.units",
+        &[name_use("furlong", NameRole::BareUnit)],
+        source,
+    );
+}
+
+#[test]
+fn a_bare_builtin_table_unit_needs_no_import() {
+    let universe = compile_universe(&[UNITS]);
+    let plan = derive("structure def S { let d = 1mm }\n", &universe);
+    assert!(plan.modules().is_empty(), "{:?}", dotted_modules(&plan));
+}
+
+#[test]
+fn a_compound_unit_factor_resolves_through_the_registry_only() {
+    let universe = compile_universe(&[UNITS]);
+    let source = "structure def S { let v = 1mm/s }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.units",
+        &[name_use("mm", NameRole::UnitFactor)],
+        source,
+    );
+}
+
+// ─── e5: binder exclusion ──────────────────────────────────────────────────
+
+#[test]
+fn a_module_binder_shadows_a_std_value_of_the_same_name() {
+    let universe = compile_universe(&[FNS]);
+    for source in [
+        "structure def S {\n\
+             let twice = 2.0\n\
+             let y = twice\n\
+         }\n",
+        "structure def S {\n\
+             param twice : Real = 1.0\n\
+             let y = twice * 2.0\n\
+         }\n",
+    ] {
+        let plan = derive(source, &universe);
+        assert!(
+            plan.modules().is_empty(),
+            "{:?}\nsource:\n{source}",
+            dotted_modules(&plan)
+        );
+    }
+}
+
+// ─── e6: member names ──────────────────────────────────────────────────────
+
+#[test]
+fn member_names_never_attribute() {
+    let universe = compile_universe(&[FNS, SHAPES]);
+    let plan = derive(
+        "structure def S {\n\
+             let w = Bracket().w\n\
+             let t = Bracket().twice\n\
+         }\n",
+        &universe,
+    );
+    assert_eq!(dotted_modules(&plan), vec!["std.fake.shapes"]);
+    assert_eq!(
+        names_needing(&plan, "std.fake.shapes"),
+        vec![name_use("Bracket", NameRole::Callee)]
+    );
+}
+
+// ─── e7: declared imports are not special-cased ────────────────────────────
+
+#[test]
+fn an_already_imported_module_is_still_derived() {
+    let universe = compile_universe(&[FNS]);
+    let source = "import std.fake.fns\n\
+                  structure def S { let a = twice(1.0) }\n";
+    let plan = derive(source, &universe);
+    assert_needs(
+        &plan,
+        "std.fake.fns",
+        &[name_use("twice", NameRole::Callee)],
+        source,
     );
 }
