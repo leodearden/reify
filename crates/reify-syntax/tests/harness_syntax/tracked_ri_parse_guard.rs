@@ -3,12 +3,17 @@
 //!
 //! Every tracked `.ri` that is not declared in [`MUST_ERROR_RI_FIXTURES`]
 //! must have a clean Rust tree-sitter CST and an empty
-//! `reify_syntax::parse(..).errors`. A declared file must keep showing its
+//! `reify_syntax::parse(..).errors`, outside the trees in
+//! [`UNSWEPT_RI_TREES`], whose undeclared members are skipped unread. A
+//! declared file is checked wherever it lives and must keep showing its
 //! declared fault. When this guard reds, fix the file in the same diff, or
 //! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
+use std::any::Any;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::io;
+use std::panic::{self, AssertUnwindSafe};
 
 use reify_core::ModulePath;
 use tree_sitter::Node;
@@ -268,36 +273,168 @@ fn first_cst_fault(node: Node<'_>) -> Option<CstFaultSite> {
 const REMEDY: &str =
     "fix the file in this diff, or declare it in MUST_ERROR_RI_FIXTURES with a reason";
 
-/// The guard's verdict on one file: `None` when it meets its expectation,
-/// otherwise a message naming the file and the remedy.
-fn violation(path: &str, expected: Expectation, observed: &Observed) -> Option<String> {
+/// Why one tracked path fails the guard.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Violation {
+    UndeclaredCstFault(CstFaultSite),
+    UndeclaredErrors { count: usize, first: String },
+    DeclaredCstFaultGone,
+    DeclaredErrorsOnlyHasCstFault(CstFaultSite),
+    DeclaredErrorsGone,
+    Unreadable(String),
+    ParsePanicked(String),
+    StaleEntry,
+}
+
+impl fmt::Display for Violation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UndeclaredCstFault(site) => write!(
+                f,
+                "undeclared, but the Rust CST has a fault ({site}); {REMEDY}"
+            ),
+            Self::UndeclaredErrors { count, first } => write!(
+                f,
+                "undeclared, but the lowering reports {count} parse error(s), first \
+                 `{first}`; {REMEDY}"
+            ),
+            Self::DeclaredCstFaultGone => f.write_str(
+                "declared CstFault, but the Rust CST is clean; remove its \
+                 MUST_ERROR_RI_FIXTURES entry (or reclassify it ErrorsOnly if the lowering \
+                 still reports)",
+            ),
+            Self::DeclaredErrorsOnlyHasCstFault(site) => write!(
+                f,
+                "declared ErrorsOnly, but the Rust CST has a fault ({site}); reclassify its \
+                 MUST_ERROR_RI_FIXTURES entry as CstFault"
+            ),
+            Self::DeclaredErrorsGone => f.write_str(
+                "declared ErrorsOnly, but the lowering reports no parse error; remove its \
+                 MUST_ERROR_RI_FIXTURES entry",
+            ),
+            Self::Unreadable(error) => write!(f, "tracked but unreadable: {error}"),
+            Self::ParsePanicked(message) => write!(
+                f,
+                "parsing it panicked: {message}; the parser must reject a source, never \
+                 panic on it"
+            ),
+            Self::StaleEntry => f.write_str(
+                "declared in MUST_ERROR_RI_FIXTURES but not a tracked .ri; fix or remove the \
+                 entry",
+            ),
+        }
+    }
+}
+
+/// The guard's verdict on one observed file: `None` when it meets its
+/// expectation.
+fn violation(expected: Expectation, observed: &Observed) -> Option<Violation> {
     match (expected, &observed.cst_fault, observed.errors.first()) {
-        (Expectation::Clean, Some(site), _) => Some(format!(
-            "{path}: undeclared, but the Rust CST has a fault ({site}); {REMEDY}"
-        )),
-        (Expectation::Clean, None, Some(first)) => Some(format!(
-            "{path}: undeclared, but the lowering reports {} parse error(s), first `{first}`; \
-             {REMEDY}",
-            observed.errors.len()
-        )),
+        (Expectation::Clean, Some(site), _) => Some(Violation::UndeclaredCstFault(site.clone())),
+        (Expectation::Clean, None, Some(first)) => Some(Violation::UndeclaredErrors {
+            count: observed.errors.len(),
+            first: first.clone(),
+        }),
         (Expectation::Clean, None, None) => None,
-        (Expectation::MustError(MustErrorKind::CstFault), None, _) => Some(format!(
-            "{path}: declared CstFault, but the Rust CST is clean; remove its \
-             MUST_ERROR_RI_FIXTURES entry (or reclassify it ErrorsOnly if the lowering \
-             still reports)"
-        )),
+        (Expectation::MustError(MustErrorKind::CstFault), None, _) => {
+            Some(Violation::DeclaredCstFaultGone)
+        }
         (Expectation::MustError(MustErrorKind::CstFault), Some(_), _) => None,
-        (Expectation::MustError(MustErrorKind::ErrorsOnly), Some(site), _) => Some(format!(
-            "{path}: declared ErrorsOnly, but the Rust CST has a fault ({site}); reclassify \
-             its MUST_ERROR_RI_FIXTURES entry as CstFault"
-        )),
-        (Expectation::MustError(MustErrorKind::ErrorsOnly), None, None) => Some(format!(
-            "{path}: declared ErrorsOnly, but the lowering reports no parse error; remove \
-             its MUST_ERROR_RI_FIXTURES entry"
-        )),
+        (Expectation::MustError(MustErrorKind::ErrorsOnly), Some(site), _) => {
+            Some(Violation::DeclaredErrorsOnlyHasCstFault(site.clone()))
+        }
+        (Expectation::MustError(MustErrorKind::ErrorsOnly), None, None) => {
+            Some(Violation::DeclaredErrorsGone)
+        }
         (Expectation::MustError(MustErrorKind::ErrorsOnly), None, Some(_)) => None,
         (Expectation::Unswept, _, _) => None,
     }
+}
+
+/// A violation, attributed to the tracked path it was found on.
+#[derive(Debug, PartialEq, Eq)]
+struct Finding {
+    path: String,
+    violation: Violation,
+}
+
+impl fmt::Display for Finding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.path, self.violation)
+    }
+}
+
+/// The outcome of a sweep: its findings, and how many files it checked.
+struct Sweep {
+    findings: Vec<Finding>,
+    swept: usize,
+}
+
+/// The guard over a listing of tracked paths. `read` loads a path's source
+/// and `inspect` observes it; an unswept path is skipped before it is read,
+/// and a declared entry missing from the listing is a finding of its own.
+fn sweep(
+    files: &[String],
+    read: impl Fn(&str) -> io::Result<String>,
+    inspect: impl Fn(&str) -> Observed,
+) -> Sweep {
+    let mut findings = Vec::new();
+    let mut visited_declared: BTreeSet<&str> = BTreeSet::new();
+    let mut swept = 0usize;
+    for rel in files {
+        let expected = expectation(rel);
+        if expected == Expectation::Unswept {
+            continue;
+        }
+        if matches!(expected, Expectation::MustError(_)) {
+            visited_declared.insert(rel);
+        }
+        swept += 1;
+        if let Some(violation) = check(rel, expected, &read, &inspect) {
+            findings.push(Finding {
+                path: rel.clone(),
+                violation,
+            });
+        }
+    }
+    findings.extend(
+        MUST_ERROR_RI_FIXTURES
+            .iter()
+            .filter(|fixture| !visited_declared.contains(fixture.path))
+            .map(|fixture| Finding {
+                path: fixture.path.to_owned(),
+                violation: Violation::StaleEntry,
+            }),
+    );
+    Sweep { findings, swept }
+}
+
+/// One swept file's verdict. A panic while observing it is caught and
+/// reported against the file, so the sweep still names it and keeps going.
+fn check(
+    rel: &str,
+    expected: Expectation,
+    read: &impl Fn(&str) -> io::Result<String>,
+    inspect: &impl Fn(&str) -> Observed,
+) -> Option<Violation> {
+    let source = match read(rel) {
+        Ok(source) => source,
+        Err(error) => return Some(Violation::Unreadable(error.to_string())),
+    };
+    match panic::catch_unwind(AssertUnwindSafe(|| inspect(&source))) {
+        Ok(observed) => violation(expected, &observed),
+        Err(payload) => Some(Violation::ParsePanicked(panic_message(payload.as_ref()))),
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_owned();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "a non-string panic payload".to_owned()
 }
 
 // ── verdict unit tests, over inline sources ─────────────────────────────────
@@ -312,12 +449,30 @@ const CLEAN: &str = "structure S {\n    param a : Length = 1mm\n}\n";
 
 const PROBE_PATH: &str = "examples/zz_guard_probe.ri";
 
+/// A declared entry that lives inside an unswept tree.
+const DECLARED_IN_UNSWEPT_TREE: &str =
+    "crates/reify-spec-conformance/fixtures/_placement-probe/placement_probe.ri";
+
+/// An undeclared member of an unswept tree.
+const UNDECLARED_IN_UNSWEPT_TREE: &str =
+    "crates/reify-spec-conformance/fixtures/zz_section/zz_synthetic.ri";
+
+fn faulty_site() -> CstFaultSite {
+    observe(FAULTY)
+        .cst_fault
+        .expect("premise: FAULTY has a CST fault")
+}
+
 #[test]
 fn observe_reports_a_cst_fault_with_its_location() {
-    let observed = observe(FAULTY);
-    assert!(
-        observed.cst_fault.is_some(),
-        "{FAULTY:?} must observe a CST fault"
+    assert_eq!(
+        observe(FAULTY).cst_fault,
+        Some(CstFaultSite {
+            line: 1,
+            column: 13,
+            node: "MISSING identifier".to_owned(),
+        }),
+        "{FAULTY:?} must observe its CST fault where the type is missing"
     );
 }
 
@@ -342,68 +497,176 @@ fn observe_is_silent_on_a_clean_source() {
 }
 
 #[test]
-fn undeclared_cst_fault_is_a_violation_naming_the_file() {
-    let observed = observe(FAULTY);
-    let site = observed
-        .cst_fault
-        .as_ref()
-        .expect("premise: FAULTY has a CST fault")
-        .to_string();
-    let message = violation(PROBE_PATH, Expectation::Clean, &observed)
-        .expect("an undeclared CST fault must be a violation");
-    assert!(message.contains(PROBE_PATH), "{message}");
-    assert!(message.contains(&site), "{message} must name {site}");
+fn undeclared_cst_fault_is_a_violation() {
+    assert_eq!(
+        violation(Expectation::Clean, &observe(FAULTY)),
+        Some(Violation::UndeclaredCstFault(faulty_site()))
+    );
 }
 
 #[test]
-fn undeclared_parse_error_on_a_clean_cst_is_a_violation_naming_the_file() {
+fn undeclared_parse_error_on_a_clean_cst_is_a_violation() {
     let observed = observe(ERRORS_ONLY);
     let first = observed
         .errors
         .first()
         .expect("premise: ERRORS_ONLY reports a lowering error")
         .clone();
-    let message = violation(PROBE_PATH, Expectation::Clean, &observed)
-        .expect("an undeclared parse error must be a violation");
-    assert!(message.contains(PROBE_PATH), "{message}");
-    assert!(message.contains(&first), "{message} must carry {first}");
+    assert_eq!(
+        violation(Expectation::Clean, &observed),
+        Some(Violation::UndeclaredErrors {
+            count: observed.errors.len(),
+            first,
+        })
+    );
 }
 
 #[test]
 fn undeclared_clean_source_is_not_a_violation() {
-    assert_eq!(
-        violation(PROBE_PATH, Expectation::Clean, &observe(CLEAN)),
-        None
-    );
+    assert_eq!(violation(Expectation::Clean, &observe(CLEAN)), None);
 }
 
 #[test]
 fn declared_cst_fault_holds_only_while_the_cst_is_faulty() {
     let declared = Expectation::MustError(MustErrorKind::CstFault);
-    assert_eq!(violation(PROBE_PATH, declared, &observe(FAULTY)), None);
-
-    let message = violation(PROBE_PATH, declared, &observe(CLEAN))
-        .expect("a declared CstFault that parses cleanly must be a violation");
-    assert!(message.contains(PROBE_PATH), "{message}");
-    assert!(message.contains("MUST_ERROR_RI_FIXTURES"), "{message}");
+    assert_eq!(violation(declared, &observe(FAULTY)), None);
+    assert_eq!(
+        violation(declared, &observe(CLEAN)),
+        Some(Violation::DeclaredCstFaultGone)
+    );
+    assert_eq!(
+        violation(declared, &observe(ERRORS_ONLY)),
+        Some(Violation::DeclaredCstFaultGone),
+        "a clean CST breaks a CstFault declaration even while the lowering reports"
+    );
 }
 
 #[test]
 fn declared_errors_only_needs_a_clean_cst_and_errors() {
     let declared = Expectation::MustError(MustErrorKind::ErrorsOnly);
-    assert_eq!(violation(PROBE_PATH, declared, &observe(ERRORS_ONLY)), None);
+    assert_eq!(violation(declared, &observe(ERRORS_ONLY)), None);
+    assert_eq!(
+        violation(declared, &observe(CLEAN)),
+        Some(Violation::DeclaredErrorsGone)
+    );
+    assert_eq!(
+        violation(declared, &observe(FAULTY)),
+        Some(Violation::DeclaredErrorsOnlyHasCstFault(faulty_site()))
+    );
+}
 
-    let clean = violation(PROBE_PATH, declared, &observe(CLEAN))
-        .expect("a declared ErrorsOnly that reports nothing must be a violation");
-    assert!(clean.contains(PROBE_PATH), "{clean}");
-    assert!(clean.contains("MUST_ERROR_RI_FIXTURES"), "{clean}");
+// ── sweep unit tests, over inline listings ──────────────────────────────────
 
-    let faulty = violation(PROBE_PATH, declared, &observe(FAULTY))
-        .expect("a declared ErrorsOnly with a CST fault must be a violation");
-    assert!(faulty.contains(PROBE_PATH), "{faulty}");
-    assert!(
-        faulty.contains("CstFault"),
-        "{faulty} must say to reclassify"
+fn listing(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|path| (*path).to_owned()).collect()
+}
+
+fn findings_on<'a>(result: &'a Sweep, path: &str) -> Vec<&'a Violation> {
+    result
+        .findings
+        .iter()
+        .filter(|finding| finding.path == path)
+        .map(|finding| &finding.violation)
+        .collect()
+}
+
+#[test]
+fn sweep_names_the_file_of_an_undeclared_cst_fault() {
+    let result = sweep(&listing(&[PROBE_PATH]), |_| Ok(FAULTY.to_owned()), observe);
+    let finding = result
+        .findings
+        .iter()
+        .find(|finding| finding.path == PROBE_PATH)
+        .expect("an undeclared CST fault must be a finding");
+    assert_eq!(
+        finding.violation,
+        Violation::UndeclaredCstFault(faulty_site())
+    );
+    let message = finding.to_string();
+    assert!(message.contains(PROBE_PATH), "{message} must name the file");
+}
+
+#[test]
+fn sweep_reports_every_declared_entry_missing_from_the_listing() {
+    let result = sweep(
+        &[],
+        |rel| panic!("an empty listing reads nothing, yet {rel} was read"),
+        observe,
+    );
+    let stale: Vec<Finding> = MUST_ERROR_RI_FIXTURES
+        .iter()
+        .map(|fixture| Finding {
+            path: fixture.path.to_owned(),
+            violation: Violation::StaleEntry,
+        })
+        .collect();
+    assert_eq!(result.findings, stale);
+    assert_eq!(result.swept, 0);
+}
+
+#[test]
+fn sweep_checks_a_listed_declared_entry_inside_an_unswept_tree() {
+    let result = sweep(
+        &listing(&[DECLARED_IN_UNSWEPT_TREE]),
+        |_| Ok(CLEAN.to_owned()),
+        observe,
+    );
+    assert_eq!(
+        findings_on(&result, DECLARED_IN_UNSWEPT_TREE),
+        [&Violation::DeclaredCstFaultGone],
+        "a listed declared entry is read and checked, and is not stale"
+    );
+    assert_eq!(result.swept, 1);
+}
+
+#[test]
+fn sweep_skips_an_undeclared_member_of_an_unswept_tree_unread() {
+    let result = sweep(
+        &listing(&[UNDECLARED_IN_UNSWEPT_TREE]),
+        |rel| panic!("{rel} is an undeclared member of an unswept tree and must not be read"),
+        observe,
+    );
+    assert_eq!(
+        findings_on(&result, UNDECLARED_IN_UNSWEPT_TREE),
+        Vec::<&Violation>::new()
+    );
+    assert_eq!(result.swept, 0);
+}
+
+#[test]
+fn sweep_reports_an_unreadable_file() {
+    let result = sweep(
+        &listing(&[PROBE_PATH]),
+        |_| Err(io::Error::new(io::ErrorKind::NotFound, "probe: gone")),
+        observe,
+    );
+    assert_eq!(
+        findings_on(&result, PROBE_PATH),
+        [&Violation::Unreadable("probe: gone".to_owned())]
+    );
+}
+
+#[test]
+fn sweep_reports_a_parser_panic_against_the_file_and_keeps_going() {
+    let panicking = "examples/zz_guard_panic_probe.ri";
+    let result = sweep(
+        &listing(&[panicking, PROBE_PATH]),
+        |rel| Ok(rel.to_owned()),
+        |source| {
+            if source == panicking {
+                panic!("probe panic");
+            }
+            observe(FAULTY)
+        },
+    );
+    assert_eq!(
+        findings_on(&result, panicking),
+        [&Violation::ParsePanicked("probe panic".to_owned())]
+    );
+    assert_eq!(
+        findings_on(&result, PROBE_PATH),
+        [&Violation::UndeclaredCstFault(faulty_site())],
+        "the sweep keeps checking after a panic"
     );
 }
 
@@ -412,12 +675,12 @@ fn declared_errors_only_needs_a_clean_cst_and_errors() {
 #[test]
 fn expectation_declared_entry_wins_over_an_unswept_tree() {
     assert_eq!(
-        expectation("crates/reify-spec-conformance/fixtures/_placement-probe/placement_probe.ri"),
+        expectation(DECLARED_IN_UNSWEPT_TREE),
         Expectation::MustError(MustErrorKind::CstFault),
         "a declared entry is checked wherever it lives"
     );
     assert_eq!(
-        expectation("crates/reify-spec-conformance/fixtures/zz_section/zz_synthetic.ri"),
+        expectation(UNDECLARED_IN_UNSWEPT_TREE),
         Expectation::Unswept,
         "an undeclared member of an unswept tree is skipped"
     );
@@ -428,10 +691,10 @@ fn expectation_declared_entry_wins_over_an_unswept_tree() {
     );
 }
 
-/// THE GUARD: every tracked `.ri` meets its expectation, and every declared
-/// entry names a tracked `.ri` the sweep actually checked.
+/// THE GUARD: every swept tracked `.ri` meets its expectation, and every
+/// declared entry names a tracked `.ri` the sweep actually checked.
 #[test]
-fn every_tracked_ri_parses_cleanly_unless_declared_must_error() {
+fn every_swept_tracked_ri_parses_cleanly_unless_declared_must_error() {
     let root = workspace_root();
     let files = tracked_ri_paths(&root);
     assert!(
@@ -442,42 +705,19 @@ fn every_tracked_ri_parses_cleanly_unless_declared_must_error() {
         root.display()
     );
 
-    let mut violations: Vec<String> = Vec::new();
-    let mut visited_declared: BTreeSet<&str> = BTreeSet::new();
-    let mut swept = 0usize;
-    for rel in &files {
-        let expected = expectation(rel);
-        if expected == Expectation::Unswept {
-            continue;
-        }
-        if matches!(expected, Expectation::MustError(_)) {
-            visited_declared.insert(rel);
-        }
-        swept += 1;
-        match std::fs::read_to_string(root.join(rel)) {
-            Ok(source) => violations.extend(violation(rel, expected, &observe(&source))),
-            Err(e) => violations.push(format!("{rel}: tracked but unreadable: {e}")),
-        }
-    }
-    violations.extend(
-        MUST_ERROR_RI_FIXTURES
-            .iter()
-            .filter(|fixture| !visited_declared.contains(fixture.path))
-            .map(|fixture| {
-                format!(
-                    "{}: declared in MUST_ERROR_RI_FIXTURES but not a tracked .ri; fix or \
-                     remove the entry",
-                    fixture.path
-                )
-            }),
+    let result = sweep(
+        &files,
+        |rel| std::fs::read_to_string(root.join(rel)),
+        observe,
     );
-
+    let report: Vec<String> = result.findings.iter().map(Finding::to_string).collect();
     assert!(
-        violations.is_empty(),
-        "{} tracked-.ri parse guard violation(s) (swept {swept} of {} tracked files):\n{}",
-        violations.len(),
+        report.is_empty(),
+        "{} tracked-.ri parse guard violation(s) (swept {} of {} tracked files):\n{}",
+        report.len(),
+        result.swept,
         files.len(),
-        violations.join("\n")
+        report.join("\n")
     );
 }
 
