@@ -2698,6 +2698,16 @@ mod tests {
             .build()
     }
 
+    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
+    /// `value_cells` and a first-match resolver would pick the wrong one.
+    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
+        structure def Vent { param area : Length = 1mm }
+        structure def Manifold {
+            sub v : Vent { area = auto }
+            let area = 2mm
+        }
+    "#;
+
     /// The module route to the same resolution as
     /// `test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell`
     /// (`get_let_expr_in` and `get_let_expr` reach it through this function): a
@@ -2894,13 +2904,40 @@ mod tests {
         let _ = super::try_get_value_cell_in_template(&ambiguous_x_template(), "x");
     }
 
+    /// Two cells both claiming the template's own entity (`Bracket`) stay
+    /// ambiguous: picking the first of them would be silently wrong.
+    ///
+    /// Builder-only fixture — the compiler never emits two cells with one id.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_try_get_value_cell_in_template_panics_when_two_cells_claim_the_templates_own_entity() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "Bracket",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Bracket",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build();
+
+        let _ = super::try_get_value_cell_in_template(&template, "x");
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
-    // The not-found and has-no-default panics are not re-pinned here:
-    // get_let_expr_in_template and get_let_expr_in raise them from the same
-    // primitives (get_value_cell_in_template, require_default_expr), and
-    // they are pinned on get_value_cell_in_template and get_let_expr_in. A
-    // copy at this layer would cover the entry point, not new behavior
-    // (task #5831 review).
+    // Not-found is pinned on get_value_cell_in_template and get_let_expr_in,
+    // has-no-default on get_let_expr_in; see the get_value_cell_in header.
 
     /// get_let_expr_in_template should return the default_expr of the named
     /// cell directly from a template the caller already holds (no module or
@@ -2921,16 +2958,6 @@ mod tests {
             expr.result_type
         );
     }
-
-    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
-    /// `value_cells` and a first-match resolver would pick the wrong one.
-    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
-        structure def Vent { param area : Length = 1mm }
-        structure def Manifold {
-            sub v : Vent { area = auto }
-            let area = 2mm
-        }
-    "#;
 
     /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
     /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
@@ -3015,37 +3042,6 @@ mod tests {
             !message.contains("has no default expr"),
             "ambiguity must be reported before the missing default, got: {message}"
         );
-    }
-
-    /// Two cells both claiming the template's own entity (`Bracket`) stay
-    /// ambiguous: picking the first of them would be silently wrong.
-    ///
-    /// Builder-only fixture — the compiler never emits two cells with one id.
-    #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_lookup_panics_when_two_colliding_cells_claim_the_templates_own_entity() {
-        use reify_core::Type;
-        use reify_ir::{CompiledExpr, Value};
-
-        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
-            .param(
-                "Bracket",
-                "x",
-                Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(
-                    Value::Real(1.5),
-                    Type::dimensionless_scalar(),
-                )),
-            )
-            .param(
-                "Bracket",
-                "x",
-                Type::Int,
-                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
-            )
-            .build();
-
-        let _ = super::get_let_expr_in_template(&template, "x");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
