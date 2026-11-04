@@ -3602,6 +3602,50 @@ test_generate_regenerates_when_a_header_is_missing() {
     done
 }
 
+test_generate_refuses_to_stamp_when_the_cli_writes_no_header() {
+    # The post-generate check's header arm. A real CLI always writes the
+    # headers, so only a stub that exits 0 having written the three grammar
+    # outputs alone reaches it — the shape a CLI that stops writing a header
+    # would leave. Stamping that tree would report success and then regenerate
+    # on every later run, since the headers stay missing.
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+
+    local stubdir
+    stubdir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$stubdir'")
+    cat > "$stubdir/tree-sitter" <<'STUB'
+#!/bin/sh
+touch src/parser.c src/grammar.json src/node-types.json
+exit 0
+STUB
+    chmod +x "$stubdir/tree-sitter"
+
+    local err rc=0
+    err=$( export PATH="$stubdir:$PATH"
+           bash "$fix/scripts/tree-sitter-generate.sh" --force 2>&1 >/dev/null ) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: generate script exited 0 though the CLI wrote no header"
+        return 1
+    fi
+    if ! grep -q "did not produce src/tree_sitter/" <<< "$err"; then
+        echo ""
+        echo "  ASSERTION FAILED: the failure does not name the missing src/tree_sitter/ header"
+        echo "$err"
+        return 1
+    fi
+
+    local st
+    for st in "$(ts_generate_grammar_stamp "$fix")" "$(ts_generate_outputs_stamp "$fix")"; do
+        if [ -f "$st" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: $st written over a tree missing its headers"
+            return 1
+        fi
+    done
+}
+
 test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
     # (d) A generate that fails must leave NEITHER stamp. _cleanup_partial_outputs
     # already deletes the three outputs on both error branches; a stamp surviving
@@ -4107,6 +4151,12 @@ test_build_rs_restores_deleted_generated_headers() {
     # generate creates them. Deleting them afterwards — what git does to a
     # checkout updating past the untracking commit — must re-run the build
     # script, which must regenerate them.
+    #
+    # One header at a time, then the whole directory, as
+    # test_generate_regenerates_when_a_header_is_missing does for the shell
+    # twin: with the directory gone any one surviving GENERATED_HEADERS entry
+    # forces the regeneration, so only a lone deletion pins each entry of the
+    # Rust list against what the real CLI wrote.
     require_tree_sitter_cli || return 0
 
     local va
@@ -4135,27 +4185,34 @@ test_build_rs_restores_deleted_generated_headers() {
         return 1
     fi
 
-    # grammar.js and parser.c untouched and stamped 2020; only the headers go.
-    ts_normalize_lane_mtimes "$fix"
-    rm -rf "$fix/src/tree_sitter"
+    local hdr_dir="$fix/src/tree_sitter" victim
+    local -a gone
+    for victim in "${headers[@]/#/$hdr_dir/}" "$hdr_dir"; do
+        # grammar.js and parser.c untouched and stamped 2020; only the victim goes.
+        ts_normalize_lane_mtimes "$fix"
+        rm -rf "$victim"
 
-    guard_rc=0
-    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
-        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
-    if [ "$guard_rc" -eq 2 ]; then return 0; fi
-    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+        guard_rc=0
+        run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
+            cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+        if [ "$guard_rc" -eq 2 ]; then return 0; fi
+        if [ "$guard_rc" -ne 0 ]; then
+            echo "  (the build that failed followed removing ${victim#"$fix"/})"
+            return 1
+        fi
 
-    local -a gone=()
-    for h in "${headers[@]}"; do
-        [ -f "$fix/src/tree_sitter/$h" ] || gone+=("$h")
+        gone=()
+        for h in "${headers[@]}"; do
+            [ -f "$hdr_dir/$h" ] || gone+=("$h")
+        done
+        if [ "${#gone[@]}" -gt 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: after removing ${victim#"$fix"/}, cargo reported success"
+            echo "  while the headers the archive compiles against are gone: ${gone[*]}"
+            echo "  The deletion re-ran nothing, so the previously-built archive stayed linked."
+            return 1
+        fi
     done
-    if [ "${#gone[@]}" -gt 0 ]; then
-        echo ""
-        echo "  ASSERTION FAILED: cargo reported success while the headers the archive"
-        echo "  compiles against are gone: ${gone[*]}"
-        echo "  The deletion re-ran nothing, so the previously-built archive stayed linked."
-        return 1
-    fi
 }
 
 # --- Main ---
