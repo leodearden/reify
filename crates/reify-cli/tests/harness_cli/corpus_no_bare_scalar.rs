@@ -370,16 +370,28 @@ struct LoadMagnitudeSite {
 
 /// Every magnitude argument passed to a stdlib FEA load ctor in `source`.
 ///
-/// A ctor the file declares itself resolves to that local shadow, so its calls
-/// are not sites, and comment text is never a site.
+/// A ctor declared in the call's own scope resolves to that local shadow, so
+/// its calls are not sites; comment text is never a site. Each raw string
+/// literal is a scope of its own (one embedded `.ri` source), and the text
+/// outside every raw string literal is one more.
 fn load_magnitude_sites(source: &str) -> Vec<LoadMagnitudeSite> {
     let code = without_line_comments(source);
+    let bodies = raw_string_bodies(&code);
+    let mut outside = code.clone().into_bytes();
+    for body in &bodies {
+        outside[body.clone()].fill(b' ');
+    }
+    let outside = String::from_utf8_lossy(&outside);
     let mut sites = Vec::new();
     for (ctor, field) in FEA_LOAD_MAGNITUDE_FIELDS {
-        if declares_structure(&code, ctor) {
-            continue;
-        }
+        let shadowed = |at: usize| match bodies.iter().find(|body| body.contains(&at)) {
+            Some(body) => declares_structure(&code[body.clone()], ctor),
+            None => declares_structure(&outside, ctor),
+        };
         for open in call_opens(&code, ctor) {
+            if shadowed(open) {
+                continue;
+            }
             for (offset, argument) in call_arguments(&code, open) {
                 let Some((name, value)) = argument.split_once(':') else {
                     continue;
@@ -399,6 +411,31 @@ fn load_magnitude_sites(source: &str) -> Vec<LoadMagnitudeSite> {
         }
     }
     sites
+}
+
+/// The byte range of every raw string literal's body (`r"…"`, `r#"…"#`, …)
+/// in `code`.
+fn raw_string_bodies(code: &str) -> Vec<std::ops::Range<usize>> {
+    let bytes = code.as_bytes();
+    let mut bodies = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let opens_literal = i == 0 || !(is_ident_byte(bytes[i - 1]) || bytes[i - 1] == b'"');
+        if bytes[i] == b'r' && opens_literal {
+            let quote = i + 1 + bytes[i + 1..].iter().take_while(|&&b| b == b'#').count();
+            if bytes.get(quote) == Some(&b'"') {
+                let closer = format!("\"{}", "#".repeat(quote - i - 1));
+                let start = quote + 1;
+                if let Some(len) = code[start..].find(&closer) {
+                    bodies.push(start..start + len);
+                    i = start + len + closer.len();
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    bodies
 }
 
 /// `source` with every pure comment line blanked and every trailing line
@@ -650,6 +687,18 @@ mod load_site_predicate_tests {
                       let p = PressureLoad(magnitude: 1.0)\n\
                       let q = PointLoad(force: 1.0)";
         assert_eq!(sites(source), [("force", 3, MagnitudeSpelling::Bare)]);
+    }
+
+    #[test]
+    fn a_shadow_covers_only_the_raw_string_that_declares_it() {
+        let source = "const SHADOWED: &str = r#\"\n\
+                      structure def PressureLoad { param magnitude : Real }\n\
+                      let p = PressureLoad(magnitude: 1.0)\n\
+                      \"#;\n\
+                      const STDLIB: &str = r#\"\n\
+                      let q = PressureLoad(magnitude: 2.0)\n\
+                      \"#;";
+        assert_eq!(sites(source), [("magnitude", 6, MagnitudeSpelling::Bare)]);
     }
 }
 
