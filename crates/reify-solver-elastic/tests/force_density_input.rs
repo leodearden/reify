@@ -509,14 +509,18 @@ fn the_free_fixtures_satisfy_the_input_contract() {
 
 #[test]
 fn a_free_member_endpoint_past_the_nodes_is_an_indexed_input_error() {
-    for mut case in [FdFreeCase::explicit(), FdFreeCase::group_ratios()] {
-        let n = case.node_count();
-        case.members[1] = (1, n);
-        case.assert_both_entries_reject(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::MemberEndpoint { member: 1 },
-            index: n,
-            len: n,
-        });
+    for valid in [FdFreeCase::explicit, FdFreeCase::group_ratios] {
+        let (j, k) = valid().members[1];
+        let n = valid().node_count();
+        for endpoints in [(n, k), (j, n)] {
+            let mut case = valid();
+            case.members[1] = endpoints;
+            case.assert_both_entries_reject(ForceDensityInputError::IndexOutOfRange {
+                what: IndexedInput::MemberEndpoint { member: 1 },
+                index: n,
+                len: n,
+            });
+        }
     }
 }
 
@@ -642,25 +646,29 @@ fn a_group_spec_with_no_seeds_has_an_unseeded_reference_group() {
 
 #[test]
 fn free_surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
-    let mut case = FdFreeCase::explicit();
-    case.sigma.push(0.05);
-    assert_eq!(
-        case.with_surfaces(),
-        Err(FreeFormError::Input(
-            ForceDensityInputError::SurfaceCountMismatch
-        ))
-    );
+    for stress_count in [0, 2] {
+        let mut case = FdFreeCase::explicit();
+        case.sigma = vec![0.05; stress_count];
+        assert_eq!(
+            case.with_surfaces(),
+            Err(FreeFormError::Input(
+                ForceDensityInputError::SurfaceCountMismatch
+            )),
+            "{stress_count} stresses for one surface"
+        );
+    }
 }
 
 #[test]
 fn a_free_surface_stress_that_is_not_tension_is_rejected_including_nan() {
     for sigma in [0.0, f64::NAN, f64::INFINITY] {
         let mut case = FdFreeCase::explicit();
-        case.sigma = vec![sigma];
+        case.surfaces.push((3, 4, 5));
+        case.sigma = vec![0.05, sigma];
         assert_eq!(
             case.with_surfaces(),
             Err(FreeFormError::Input(
-                ForceDensityInputError::NonTensionSurfaceStress { surface: 0 }
+                ForceDensityInputError::NonTensionSurfaceStress { surface: 1 }
             )),
             "σ = {sigma}"
         );
