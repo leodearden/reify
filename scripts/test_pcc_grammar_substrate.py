@@ -33,6 +33,7 @@ from _pcc_test_support import (
     _write_ts_stub,
     make_fixture_repo,
     probe_context,
+    recording_runner,
 )
 
 
@@ -728,15 +729,6 @@ class TestGrammarSeamsTakeContext(unittest.TestCase):
         self._tmp.cleanup()
 
     @staticmethod
-    def _recording_runner(run):
-        calls = []
-
-        def runner(probe, ctx, timeout=None):
-            calls.append((probe, ctx, timeout))
-            return run
-        return runner, calls
-
-    @staticmethod
     def _failed_run(kind, detail):
         return pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(kind, detail))
 
@@ -752,7 +744,7 @@ class TestGrammarSeamsTakeContext(unittest.TestCase):
 
     def test_the_substrate_probe_runs_once_through_the_runner_under_the_ctx_bound(self):
         ctx = probe_context(substrate_timeout_s=0.4)
-        runner, calls = self._recording_runner(pcc.ProbeRun(0, "", ""))
+        runner, calls = recording_runner(pcc.ProbeRun(0, "", ""))
         self.assertEqual(pcc.grammar_substrate_usable(ctx, runner=runner), (True, ""))
         self.assertEqual(len(calls), 1)
         probe, called_ctx, timeout = calls[0]
@@ -762,7 +754,7 @@ class TestGrammarSeamsTakeContext(unittest.TestCase):
 
     def test_a_timeout_reason_names_the_ctx_bound(self):
         ctx = probe_context(substrate_timeout_s=0.4)
-        runner, _ = self._recording_runner(
+        runner, _ = recording_runner(
             self._failed_run(pcc.HarnessFailureKind.TIMEOUT, "timed out after 0.4 seconds")
         )
         usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner)
@@ -771,7 +763,7 @@ class TestGrammarSeamsTakeContext(unittest.TestCase):
 
     def test_a_launch_reason_names_the_ctx_binary_not_the_environment(self):
         ctx = probe_context(tree_sitter_bin="/ctx/ts")
-        runner, _ = self._recording_runner(
+        runner, _ = recording_runner(
             self._failed_run(pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file")
         )
         with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "/env/ts"}):

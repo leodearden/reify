@@ -3,11 +3,12 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the ProbeContext builders, the grammar-e2e and reify-e2e skip-guards (with the
-un-memoized grammar status it wraps),
-the measured cache-denial signature and the shared TREE_SITTER_BIN stub
-factories.  A fixture only one partition uses lives in that partition.  It
-imports no test file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
+constants, the ProbeContext builders and the recording fake runner, the
+grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
+wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
+cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
+fixture only one partition uses lives in that partition.  It imports no test
+file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
 one partition at a time with `python3 scripts/test_pcc_<area>.py`.
 """
 
@@ -15,9 +16,10 @@ import functools
 import importlib.util
 import os
 import shlex
-import shutil
 import sys
 import textwrap
+
+from _pdv_test_support import require_reify_binary
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +90,22 @@ def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
     return tmpdir
 
 
+def recording_runner(run=None):
+    """A fake ProbeRunner answering every probe with `run`, and its call list.
+
+    `run` defaults to a clean ProbeRun(0, "", "").  Each call appends
+    (probe, ctx, timeout), so a test can assert what was asked for, under
+    which context and bound, as well as how often.
+    """
+    answer = pcc.ProbeRun(0, "", "") if run is None else run
+    calls = []
+
+    def runner(probe, ctx, timeout=None):
+        calls.append((probe, ctx, timeout))
+        return answer
+    return runner, calls
+
+
 # ---------------------------------------------------------------------------
 # Grammar-e2e skip-guard — can a grammar probe run in this lane?
 # ---------------------------------------------------------------------------
@@ -152,16 +170,10 @@ def _require_grammar_substrate(test) -> None:
 def _require_reify_binary(test):
     """skipTest unless α would run a reify binary here; return the ctx it would use.
 
-    Asks α's own seam, so the skip and the CLI cannot disagree: with two
-    unvouched profile binaries α refuses (exit 64), and the skip carries that
-    refusal as its reason rather than probing whichever binary is stale.
+    The policy lives once, in _pdv_test_support.require_reify_binary; this asks
+    it about the α instance these partitions load.
     """
-    ctx = pcc.ProbeContext.from_environment()
-    if ctx.reify_bin is None:
-        test.skipTest(f"no trusted reify binary: {ctx.reify_bin_refusal}")
-    if shutil.which(ctx.reify_bin) is None:
-        test.skipTest("reify binary not built")
-    return ctx
+    return require_reify_binary(test, alpha=pcc)
 
 
 # ---------------------------------------------------------------------------
