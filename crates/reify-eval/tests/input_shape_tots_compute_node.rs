@@ -833,9 +833,10 @@ fn tots_refuses_a_length_joint_limit_max_force() {
     );
 }
 
-/// (d) A profile joint no `JointLimit` covers is refused (`Completed` Undef) —
-/// never solved against a substituted bound: with no `actuator_limits` field,
-/// with an empty list, and with a limit on a different joint only.
+/// (d) A profile joint no `JointLimit` covers is refused — `Failed` with the
+/// one Error naming `actuator_limits` and the joint, never solved against a
+/// substituted bound: with no `actuator_limits` field, with an empty list,
+/// and with a limit on a different joint only.
 #[test]
 fn tots_refuses_a_joint_no_actuator_limit_covers() {
     for (what, shaper) in [
@@ -860,13 +861,20 @@ fn tots_refuses_a_joint_no_actuator_limit_covers() {
             ),
         ),
     ] {
-        match shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper) {
-            ComputeOutcome::Completed {
-                result: Value::Undef,
-                ..
-            } => {}
-            other => panic!("{what}: expected Completed Undef, got {other:?}"),
-        }
+        let outcome = shape(p2p_profile(5.0, 0.0, 1.0, 0.5), shaper);
+        let ComputeOutcome::Failed { diagnostics, .. } = &outcome else {
+            panic!("{what}: expected Failed, got {outcome:?}");
+        };
+        let [error] = diagnostics.as_slice() else {
+            panic!("{what}: exactly one diagnostic expected, got {diagnostics:?}");
+        };
+        assert_eq!(error.severity, Severity::Error, "{what}");
+        assert_eq!(
+            error.message,
+            "input_shape: actuator_limits has no entry for profile joint 0; a TOTS shaper \
+             solves only the joints an actuator limit bounds",
+            "{what}"
+        );
     }
 }
 

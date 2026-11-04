@@ -355,10 +355,12 @@ fn run_tots(shaper_data: &StructureInstanceData, kind: TotsKind) -> Option<TotsO
 /// - the shaper must resolve to an [`ImpulseTrain`] via
 ///   [`build_train_for_shaper`] (ZV/ZVD/EI/Cascaded), or be a TOTS-family
 ///   shaper (`TOTSShaper` / `RevoluteTOTSShaper`, one per joint kind) whose
-///   fields read and whose SQP run is feasible. A refused field, any other
+///   fields read, whose actuator limits cover the stand-in's joint and whose
+///   SQP run is feasible. A refused field, an uncovered joint, any other
 ///   shaper or an infeasible TOTS problem returns `Value::Undef` (the
 ///   compute-node path, `trampoline::input_shape_value`, is the one that
-///   names a refused field).
+///   names a refused field or an uncovered joint: no Undef classifier covers
+///   this builtin).
 ///
 /// **Dispatch order**: the TOTS FAMILY is checked FIRST (λ arm), because
 /// `build_train_for_shaper` returns `Ok(None)` for every member and would

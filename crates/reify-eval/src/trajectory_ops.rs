@@ -221,7 +221,7 @@ mod tests {
 
 use std::sync::Arc;
 
-use reify_ir::arg_acceptance::FieldRejection;
+use reify_core::Diagnostic;
 use reify_ir::{OpaqueState, Value};
 use reify_stdlib::{InputShapeCacheKey, SimulateTrajectoryCacheKey};
 
@@ -327,11 +327,11 @@ fn undef_outcome() -> ComputeOutcome {
     }
 }
 
-/// `Failed` carrying exactly the one `DimensionedArgRejected` Error that
-/// names the refused field of `builtin`'s input.
-fn rejected_outcome(rejection: &FieldRejection, builtin: &str) -> ComputeOutcome {
+/// `Failed` carrying exactly the one Error that names why the input was
+/// refused.
+fn rejected_outcome(error: Diagnostic) -> ComputeOutcome {
     ComputeOutcome::Failed {
-        diagnostics: vec![rejection.to_error(builtin)],
+        diagnostics: vec![error],
         structured_detail: vec![],
     }
 }
@@ -387,7 +387,7 @@ pub fn simulate_trajectory_trampoline(
     // Delegate to the stdlib Value→Value composer (runs the full simulation).
     let result = match reify_stdlib::simulate_trajectory_value(profile, mech, modal) {
         Ok(result) => result,
-        Err(rejection) => return rejected_outcome(&rejection, "simulate_trajectory"),
+        Err(rejection) => return rejected_outcome(rejection.to_error("simulate_trajectory")),
     };
     if matches!(result, Value::Undef) {
         return undef_outcome();
@@ -413,8 +413,9 @@ pub fn simulate_trajectory_trampoline(
 /// Two `value_inputs`: `[profile, shaper]`.
 ///
 /// A field the readers refuse (a shaper limit, an actuator limit, a waypoint
-/// `t`) is `Failed` carrying the one `DimensionedArgRejected` Error naming it
-/// ([`rejected_outcome`]).
+/// `t`) is `Failed` carrying the one `DimensionedArgRejected` Error naming it,
+/// and a TOTS profile joint no actuator limit covers is `Failed` carrying the
+/// one Error naming `actuator_limits` and the joint ([`rejected_outcome`]).
 ///
 /// Cooperative cancellation: polls on entry.
 ///
@@ -451,7 +452,7 @@ pub fn input_shape_trampoline(
     // ── cache MISS ────────────────────────────────────────────────────────────
     let result = match reify_stdlib::input_shape_value(profile, shaper) {
         Ok(result) => result,
-        Err(rejection) => return rejected_outcome(&rejection, "input_shape"),
+        Err(fault) => return rejected_outcome(fault.to_error("input_shape")),
     };
     if matches!(result, Value::Undef) {
         return undef_outcome();
