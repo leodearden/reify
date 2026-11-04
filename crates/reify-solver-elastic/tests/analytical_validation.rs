@@ -118,7 +118,7 @@ use fea_harness::{
     solve_p1_pipeline, von_mises_of_tensor,
 };
 
-// ─── shared mesh and solver helpers ─────────────────────────────────────────
+// ─── cantilever fixtures and local helpers ──────────────────────────────────
 
 /// Mean transverse (y) displacement over the `end` nodes ≈ the neutral-axis tip
 /// deflection (the quantity 1-D beam theory predicts). Returned as a magnitude.

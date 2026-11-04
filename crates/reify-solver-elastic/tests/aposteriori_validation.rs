@@ -87,11 +87,7 @@
 //! # Shared FEA harness
 //!
 //! The box-mesh, BC, load and P1-solve helpers come from the shared
-//! `common/fea_harness.rs` module (`#[path]`-included), the same one
-//! `analytical_validation.rs` and `dwr_boundary_tests.rs` use, so the solve
-//! pipeline shape (`element_stiffness` -> `assemble_global_stiffness` ->
-//! `apply_dirichlet_row_elimination` -> `solve_cg`) is identical to the rest
-//! of the FEA validation suite.
+//! `common/fea_harness.rs` module.
 
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use reify_kernel_gmsh::{BackgroundSizeField, MeshingOptions, refine_volume_with_size_field};

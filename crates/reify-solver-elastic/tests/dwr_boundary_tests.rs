@@ -18,10 +18,7 @@
 //! # Shared FEA harness
 //!
 //! The box-mesh / BC / load helpers and the P1 stiffness assembly come from
-//! the shared `common/fea_harness.rs` module, the same one
-//! `analytical_validation.rs` and `aposteriori_validation.rs` use, so the
-//! mesh, BC and assembly shape is identical to the rest of the FEA validation
-//! suite.
+//! the shared `common/fea_harness.rs` module.
 //!
 //! One deliberate difference from `fea_harness::solve_p1_pipeline`:
 //! [`assemble_eliminate_and_solve`] RETAINS the assembled `K`, the eliminated
