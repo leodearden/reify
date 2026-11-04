@@ -2152,6 +2152,47 @@ structure MechFixed {
 }
 
 #[cfg(test)]
+mod test_datums {
+    use std::collections::HashMap;
+
+    use reify_ir::Value;
+
+    use super::RealizedDatums;
+
+    pub(super) fn point3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
+    }
+
+    pub(super) fn vec3v(x: f64, y: f64, z: f64) -> Value {
+        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
+    }
+
+    pub(super) fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
+        Value::Axis {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            direction: Box::new(vec3v(d.0, d.1, d.2)),
+        }
+    }
+
+    pub(super) fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
+        Value::Plane {
+            origin: Box::new(point3v(o.0, o.1, o.2)),
+            normal: Box::new(vec3v(n.0, n.1, n.2)),
+        }
+    }
+
+    /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
+    /// reason the tests using it live in-file rather than in `tests/`.
+    pub(super) fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
+        let mut operands = HashMap::new();
+        for (sub, member, v) in entries {
+            operands.insert(((*sub).to_string(), (*member).to_string()), v.clone());
+        }
+        RealizedDatums { operands }
+    }
+}
+
+#[cfg(test)]
 mod tests_static_verification {
     //! Kernel-free unit tests for the ZERO-AUTO static-verification arm — DIC α
     //! (task 5415).
@@ -2163,12 +2204,11 @@ mod tests_static_verification {
     //! read structure off the resulting templates; no geometry kernel is
     //! involved.
 
-    use std::collections::HashMap;
-
     use reify_core::{DiagnosticCode, Severity};
     use reify_ir::Value;
     use reify_test_support::compile_source_with_stdlib;
 
+    use super::test_datums::{axis_v, plane_v, point3v, realized};
     use super::{
         RealizedDatums, RelateScope, StaticRelateFacts, collect_relate_scope,
         verify_static_scope,
@@ -2380,28 +2420,6 @@ structure PerpendicularScope {
     // `dic_relate_static_violated` split (30, 20, 5 mm), so the kernel-free unit
     // and the OCCT e2e are pinning the same numbers.
 
-    fn point3v(x: f64, y: f64, z: f64) -> Value {
-        Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
-    }
-
-    fn vec3v(x: f64, y: f64, z: f64) -> Value {
-        Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-    }
-
-    fn axis_v(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
-        Value::Axis {
-            origin: Box::new(point3v(o.0, o.1, o.2)),
-            direction: Box::new(vec3v(d.0, d.1, d.2)),
-        }
-    }
-
-    fn plane_v(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
-        Value::Plane {
-            origin: Box::new(point3v(o.0, o.1, o.2)),
-            normal: Box::new(vec3v(n.0, n.1, n.2)),
-        }
-    }
-
     /// A `Frame` at `o` whose basis is a rotation of `deg` about `+z`. The basis is
     /// a unit quaternion, which is the only shape `frame_coincidence_residual`
     /// reads; `deg = 0` is the identity orientation.
@@ -2416,16 +2434,6 @@ structure PerpendicularScope {
                 z: half.sin(),
             }),
         }
-    }
-
-    /// Hand-build a [`RealizedDatums`] — its map is crate-private, which is the
-    /// reason this module lives in-file rather than in `tests/`.
-    fn realized(entries: &[(&str, &str, Value)]) -> RealizedDatums {
-        let mut operands = HashMap::new();
-        for (sub, member, v) in entries {
-            operands.insert(((*sub).to_string(), (*member).to_string()), v.clone());
-        }
-        RealizedDatums { operands }
     }
 
     /// The `dic_relate_static_violated` split, in metres.
