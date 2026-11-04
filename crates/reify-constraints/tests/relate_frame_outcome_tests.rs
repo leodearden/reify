@@ -19,7 +19,7 @@ use reify_constraints::relate_solve::{
 use reify_constraints::scaling::SolveScaling;
 use reify_constraints::trust_region::{RANGE_COSINE_TOLERANCE, SolveBudget};
 use reify_core::DiagnosticCode;
-use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
+use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, SolveStall, Value};
 
 // ── η #6675: typed termination causes and the null-space basis ───────────────
 //
@@ -146,7 +146,10 @@ fn a_one_step_budget_is_exhausted_not_infeasible() {
 
     let infeasible = outcome_of(&two_parallel_concentrics(), SolveBudget::default());
     let infeasible = failure_of(&infeasible);
-    assert_ne!(infeasible, failure_of(&outcome));
+    assert!(
+        matches!(infeasible, SolveFailureCause::Infeasible(_)),
+        "{infeasible:?}"
+    );
     assert_ne!(infeasible.code(), failure_of(&outcome).code());
 }
 
@@ -172,6 +175,32 @@ fn solve_result_adapter_codes_infeasible_and_reports_budget_as_no_progress() {
                 reason.contains("1 of 1"),
                 "the reason names the counts: {reason}"
             )
+        }
+        other => panic!("expected NoProgress, got {other:?}"),
+    }
+}
+
+/// A stall is a search failure, so the adapter reports `NoProgress` rendering
+/// it, never a coded `Infeasible`.
+#[test]
+fn solve_result_adapter_reports_a_stall_as_no_progress() {
+    let stall = SolveFailureCause::Stalled(SolveStall {
+        iterations: 7,
+        step_norm: 1e-12,
+        range_cosine: 0.5,
+        max_scaled_residual: 40.0,
+    });
+    let outcome = FrameSolveOutcome {
+        iterations: 7,
+        result: Err(stall.clone()),
+    };
+    match outcome.into_solve_result(&bolt_unknown()) {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains(&stall.to_string()),
+                "the reason renders the cause's own figures: {reason}"
+            );
+            assert!(reason.contains("`bolt`"), "{reason}");
         }
         other => panic!("expected NoProgress, got {other:?}"),
     }
