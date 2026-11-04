@@ -445,7 +445,7 @@ fn get_elastic_field(result: &Value, key: &str) -> Value {
 fn get_max_deflection(result: &Value) -> f64 {
     let disp_field = get_elastic_field(result, "displacement");
     let data = extract_sampled_field_data(&disp_field);
-    reify_eval::persistent_cache::max_deflection_magnitude(&data)
+    reify_compute_contract::max_deflection_magnitude(&data)
 }
 
 /// Extract iteration count from an `ElasticResult`.

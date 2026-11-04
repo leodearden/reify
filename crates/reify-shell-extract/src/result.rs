@@ -8,8 +8,8 @@
 //!
 //! # Wire-format precedent
 //!
-//! The encoding pipeline mirrors `reify_eval::persistent_cache::ElasticResult`
-//! verbatim (see `crates/reify-eval/src/persistent_cache.rs`):
+//! The encoding pipeline mirrors `reify_compute_contract::ElasticResult`
+//! verbatim (see `crates/reify-compute-contract/src/elastic_result.rs`):
 //! bincode 1.3 fixint-LE for the header, zstd 0.13 level-0 for the
 //! compressed body, bytemuck LE casts for the f64/u32 slabs. Reusing the
 //! precedent means every cacheable type in the engine shares one

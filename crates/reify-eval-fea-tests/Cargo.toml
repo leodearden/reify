@@ -21,6 +21,9 @@ reify-eval = { workspace = true, features = ["test-instrumentation"] }
 reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-core.workspace = true
 reify-ir.workspace = true
+# The tests name `ElasticResult` / `max_deflection_magnitude` from their
+# defining crate: OCCT-free, already in reify-eval's normal closure.
+reify-compute-contract.workspace = true
 # von_mises_sampled_stress_reduction_e2e.rs drives the analysis wrapper +
 # field reduction (`max(von_mises(<stress field>))`) through
 # `reify_expr::eval_expr` on hand-built `CompiledExpr`s rather than through
