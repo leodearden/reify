@@ -301,6 +301,17 @@ describe('meshManager edges-in-black overlay', () => {
     expect(edgesObjectsIn(scene).filter((o) => o.name === 'edges:A')).toHaveLength(1);
   });
 
+  it('enabling with a mesh already hidden or ghosted draws no overlay for it', () => {
+    mm.sync({ A: cube('A'), B: cube('B', 2), C: cube('C', 3) });
+    mm.setVisibility('A', 'hidden');
+    mm.setVisibility('B', 'ghost');
+
+    mm.setEdges(true);
+
+    expect([...mm.getEdgesOverlays().keys()]).toEqual(['C']);
+    expect(edgesObjectsIn(scene).map((o) => o.name)).toEqual(['edges:C']);
+  });
+
   it('follows the deformed shape and returns to the undeformed one', () => {
     const base = cube('A');
     const displaced = base.vertices.slice();
