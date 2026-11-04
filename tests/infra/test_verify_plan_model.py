@@ -219,10 +219,10 @@ class TestSourceDelta(unittest.TestCase):
 class TestSeamShellOptions(unittest.TestCase):
     """bashcall's lib seams run under the shell options verify.sh's call sites run under.
 
-    verify.sh sources its libs under `set -euo pipefail` and calls their
-    functions inside `$(...)` or under `||`, where errexit does not reach:
-    so nounset and pipefail hold in a call, errexit does not, and all three
-    hold while a lib is sourced.
+    verify.sh runs under `set -euo pipefail` and calls lib functions inside
+    `$(...)` or under `||`, where errexit does not reach: so nounset and
+    pipefail hold in a call and errexit does not. A lib whose sourcing ends
+    in a failing pipeline is not sourced.
     """
 
     LIB = "lib.sh"

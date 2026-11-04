@@ -7,7 +7,8 @@ run as a program. Each module declares the constants it uses, so a later
 --print-gates (PRD D15) can collect them from the modules. run, ask,
 read_export and source_delta each fork ONE `bash -c` per call; run_script
 forks the script itself. Paths, the function name and its arguments travel as argv
-and are never interpolated into the script text.
+and are never interpolated into the script text. A lib is sourced and called
+under the nounset and pipefail a `$(...)` inherits from verify.sh's options.
 
 A data file that cannot be read raises DataFileUnreadable whatever the cause.
 Each reader turns that into its own conservative value and a stderr warning.
@@ -21,8 +22,9 @@ from pathlib import Path
 from reify_verify import childproc
 from reify_verify.childproc import CallResult
 
-_SOURCE_AND_CALL = 'source "$1" || exit; shift; "$@"'
-_SOURCE_AND_PRINT = 'source "$1" || exit; printenv -- "$2" || exit 0'
+_VERIFY_LIB_OPTIONS = "set -uo pipefail; "
+_SOURCE_AND_CALL = _VERIFY_LIB_OPTIONS + 'source "$1" || exit; shift; "$@"'
+_SOURCE_AND_PRINT = _VERIFY_LIB_OPTIONS + 'source "$1" || exit; printenv -- "$2" || exit 0'
 _ENV_AROUND_SOURCE_END = "@@source_delta:end@@"
 _ENV_AROUND_SOURCE = (
     f'env -0 || exit; printf "\\0"; . "$1" >&2 || exit; env -0 || exit; printf "{_ENV_AROUND_SOURCE_END}\\0"'
