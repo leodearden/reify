@@ -17,23 +17,17 @@
 //!
 //! # Shared FEA harness
 //!
-//! The box-mesh / BC / load helpers and the P1 stiffness assembly come from
-//! the shared `common/fea_harness.rs` module.
-//!
-//! One deliberate difference from `fea_harness::solve_p1_pipeline`:
-//! [`assemble_eliminate_and_solve`] RETAINS the assembled `K`, the eliminated
-//! RHS and the deduplicated BC list, all three of which `solve_p1_pipeline`
-//! drops. The dual solve (§5.3) reuses exactly those three, so retaining them
-//! is the whole reason this pipeline exists rather than a call into the
-//! shared one.
+//! The box-mesh / BC / load helpers, the RHS scatter and the retaining
+//! assemble → eliminate → CG pipeline the dual solves reuse all come from the
+//! shared `common/fea_harness.rs` module.
 
 use faer::sparse::SparseRowMat;
 
 use reify_solver_elastic::{
     CgResult, CgSolverOptions, DirichletBc, IsotropicElastic, LocalDisplacementQoi,
     LocalNormalStressQoi, P1TetMeshRef, QuantityOfInterest, SolverMode, StressElement, ZzIndicator,
-    apply_dirichlet_row_elimination, compute_dual_weighted_indicator, compute_zz_indicator,
-    element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
+    compute_dual_weighted_indicator, compute_zz_indicator, element_stress_p1, solve_dual_cg,
+    tet_volume_p1,
 };
 
 use reify_solver_elastic::{
@@ -45,84 +39,10 @@ use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 #[path = "common/fea_harness.rs"]
 mod fea_harness;
 use fea_harness::{
-    assemble_p1_stiffness, box_p1_mesh, dedup_bcs, dirichlet_fix_face,
+    assemble_eliminate_and_solve, box_p1_mesh, dirichlet_fix_face,
     dirichlet_prescribe_boundary_field, distributed_tip_load, end_face_nodes, gather_u_p1,
+    rhs_from_point_loads,
 };
-
-// ─── dual-solve fixtures ────────────────────────────────────────────────────
-
-/// Scatter nodal point loads into a freshly zeroed global RHS of length
-/// `3 * n_nodes`.
-///
-/// The `raw_f` [`assemble_eliminate_and_solve`] wants is a whole RHS vector
-/// rather than a `(dof, value)` list, because BT2's fixture feeds it a QoI's
-/// `dual_load` output directly.
-fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec<f64> {
-    let mut f = vec![0.0_f64; 3 * n_nodes];
-    for &(dof, val) in point_loads {
-        f[dof] += val;
-    }
-    f
-}
-
-/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, RETAINING
-/// everything the dual solve needs.
-///
-/// Same pipeline shape as `fea_harness::solve_p1_pipeline`
-/// ([`assemble_p1_stiffness`] → `apply_dirichlet_row_elimination` →
-/// `solve_cg`), with one difference: it
-/// returns `K`, the ELIMINATED RHS and the deduplicated BC list alongside
-/// the `CgResult`, all three of which `solve_p1_pipeline` drops.
-///
-/// Each retained value has a caller in this file:
-/// * `K` — the dual solve reuses the *already row-eliminated* primal matrix
-///   verbatim (PRD §5.3), so no second assembly and no second elimination.
-/// * the eliminated RHS — BT1's reciprocity identity is stated against `fᵀ
-///   z_h` with `f` the eliminated RHS, not the raw one.
-/// * the deduplicated BC list — the dual load is zeroed at exactly the DOFs
-///   that were actually constrained, which is the deduplicated set.
-///
-/// `SolverMode::Deterministic` is fixed (not a parameter) so every fixture in
-/// this file is bit-stable and CI-safe; `opts` IS a parameter because BT3's
-/// patch fixture needs a tolerance tighter than the crate default (see its
-/// test doc).
-///
-/// # Panics
-///
-/// If `raw_f.len() != 3 * nodes.len()`.
-fn assemble_eliminate_and_solve(
-    nodes: &[[f64; 3]],
-    conns: &[[usize; 4]],
-    mat: &IsotropicElastic,
-    bcs: Vec<DirichletBc>,
-    raw_f: &[f64],
-    opts: CgSolverOptions,
-) -> (
-    SparseRowMat<usize, f64>,
-    Vec<f64>,
-    Vec<DirichletBc>,
-    CgResult,
-) {
-    let n_nodes = nodes.len();
-    assert_eq!(
-        raw_f.len(),
-        3 * n_nodes,
-        "raw_f.len() = {} but the system has 3 * {n_nodes} = {} DOFs",
-        raw_f.len(),
-        3 * n_nodes,
-    );
-
-    let mut k = assemble_p1_stiffness(nodes, conns, mat);
-
-    let mut f = raw_f.to_vec();
-    let mut bcs = bcs;
-    dedup_bcs(&mut bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
-
-    let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-
-    (k, f, bcs, result)
-}
 
 // ─── BT2/BT3 harness: one solve, both indicators ──────────────────────────
 

@@ -223,6 +223,76 @@ pub fn assemble_p1_stiffness(
     assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
 }
 
+/// Scatter nodal point loads into a freshly zeroed global RHS of length
+/// `3 * n_nodes`; loads on the same DOF sum.
+///
+/// [`assemble_eliminate_and_solve`] takes a whole RHS rather than a
+/// `(dof, value)` list so that a caller can equally pass it a load assembled
+/// another way, such as a quantity of interest's `dual_load`.
+pub fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec<f64> {
+    let mut f = vec![0.0_f64; 3 * n_nodes];
+    for &(dof, val) in point_loads {
+        f[dof] += val;
+    }
+    f
+}
+
+/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, RETAINING
+/// everything a dual (adjoint) solve over the same system needs.
+///
+/// Runs [`assemble_p1_stiffness`] → [`dedup_bcs`] →
+/// `apply_dirichlet_row_elimination` → `solve_cg`, and returns, alongside the
+/// `CgResult`:
+/// * `K`, already row-eliminated, so a dual solve reuses it verbatim with no
+///   second assembly and no second elimination.
+/// * the ELIMINATED RHS, which is the `f` that the reciprocity identity
+///   `J(u_h) == fᵀz_h` is stated against (`J` a quantity of interest, `u_h` the
+///   primal solution, `z_h` the dual solution), not the raw one.
+/// * the deduplicated BC list, i.e. the DOFs at which a dual load is zeroed:
+///   exactly those that were actually constrained.
+///
+/// The `CgResult` is not asserted on, so the caller decides what an unconverged
+/// solve means. `SolverMode::Deterministic` is fixed (not a parameter) for
+/// bit-stable, CI-safe results; `opts` IS a parameter so a caller can tighten
+/// the tolerance below the crate default.
+///
+/// # Panics
+///
+/// If `raw_f.len() != 3 * nodes.len()`.
+pub fn assemble_eliminate_and_solve(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    mat: &IsotropicElastic,
+    bcs: Vec<DirichletBc>,
+    raw_f: &[f64],
+    opts: CgSolverOptions,
+) -> (
+    SparseRowMat<usize, f64>,
+    Vec<f64>,
+    Vec<DirichletBc>,
+    CgResult,
+) {
+    let n_nodes = nodes.len();
+    assert_eq!(
+        raw_f.len(),
+        3 * n_nodes,
+        "raw_f.len() = {} but the system has 3 * {n_nodes} = {} DOFs",
+        raw_f.len(),
+        3 * n_nodes,
+    );
+
+    let mut k = assemble_p1_stiffness(nodes, conns, mat);
+
+    let mut f = raw_f.to_vec();
+    let mut bcs = bcs;
+    dedup_bcs(&mut bcs);
+    apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+    let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+    (k, f, bcs, result)
+}
+
 /// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system.
 ///
 /// Uses `SolverMode::Deterministic` for bit-stable, CI-safe results.
