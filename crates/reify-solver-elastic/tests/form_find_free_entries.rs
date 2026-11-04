@@ -2,9 +2,10 @@
 //! entries — `form_find_free` and `form_find_free_surfaces` — driven from the
 //! crate root only: the explicit-q sign, length, index, form-certification and
 //! recovery verdicts and the result's force signs; the GroupRatios search's
-//! closed-form recovery, non-convergence verdicts and group-spec guards; and the
-//! surface entry's input guards and line-only equivalence. Moved from
-//! `form_find_free.rs`'s unit tests by #9275.
+//! non-convergence verdicts and group-spec guards; and the surface entry's input
+//! guards and line-only equivalence. Moved from `form_find_free.rs`'s unit tests
+//! by #9275; the GroupRatios closed-form recovery golden is
+//! `tensegrity_t1b_form_find_free.rs`.
 
 use reify_solver_elastic::{
     ForceDensityInputError, ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult,
@@ -23,10 +24,7 @@ use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triple
 /// convention refines a guess, so recovery should gauge-fix to it; fixed
 /// offsets (no RNG) keep the dependent tests bit-stable.
 ///
-/// The same body as `perturbed_prism_guess` in `tensegrity_t1b_form_find_free.rs`
-/// under another name, so the `duplicated-test-helpers` ratchet, which matches
-/// by name, does not count this copy; hoisting the guess table into one home is
-/// owned by #8152.
+/// Twin of `tensegrity_t1b_form_find_free.rs::perturbed_prism_guess`; hoist owned by #8152.
 fn perturbed_twisted_prism() -> Vec<[f64; 3]> {
     const PERTURB: [[f64; 3]; 6] = [
         [0.0009, -0.0011, 0.0007],
@@ -257,67 +255,6 @@ fn form_find_free_explicit_populates_result_with_correct_force_signs() {
 }
 
 // ---- Adaptive GroupRatios force-density search (GroupRatios mode) ----
-
-#[test]
-fn group_ratios_search_recovers_closed_form_prism_relative_q() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-
-    // Seed near the *signs* of the closed form — struts compressive (−1),
-    // horizontals (the reference) and verticals tensile (+1) — but with
-    // magnitudes all 1, not the √3 closed form. The adaptive search must
-    // discover the relative magnitudes on its own.
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1, // horizontals held fixed as the scale gauge
-    };
-
-    let result = form_find_free(&guess, &members, &kinds, &spec)
-        .expect("group-ratio search must form-find the prism");
-
-    // Spectrum / convergence metadata: a valid 3-D form has nullity d+1 = 4.
-    assert_eq!(result.nullity, 4, "form-found prism must have nullity 4");
-    assert!(result.converged, "group-ratio solve must converge");
-
-    // Recovered *relative* densities: struts −√3, verticals +√3, horizontals
-    // pinned at the +1 reference. Every member in a group shares its ratio.
-    let s = 3.0_f64.sqrt();
-    for i in 0..3 {
-        assert!(
-            (result.force_densities[i] - (-s)).abs() < 1e-6,
-            "strut {i} relative q must be ≈ −√3, got {}",
-            result.force_densities[i],
-        );
-    }
-    for i in 3..9 {
-        assert!(
-            (result.force_densities[i] - 1.0).abs() < 1e-12,
-            "horizontal {i} is the reference group, must stay = 1, got {}",
-            result.force_densities[i],
-        );
-    }
-    for i in 9..12 {
-        assert!(
-            (result.force_densities[i] - s).abs() < 1e-6,
-            "vertical {i} relative q must be ≈ +√3, got {}",
-            result.force_densities[i],
-        );
-    }
-
-    // Force signs follow the recovered q: struts compressive, cables tensile.
-    for (idx, (&kind, &n_i)) in kinds.iter().zip(result.member_forces.iter()).enumerate() {
-        match kind {
-            MemberKind::Strut => assert!(
-                n_i < 0.0,
-                "strut {idx} must be compressive (N < 0), got {n_i}",
-            ),
-            MemberKind::Cable => {
-                assert!(n_i > 0.0, "cable {idx} must be tensile (N > 0), got {n_i}",)
-            }
-        }
-    }
-}
 
 #[test]
 fn group_ratios_search_all_positive_does_not_converge() {
