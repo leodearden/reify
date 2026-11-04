@@ -977,7 +977,12 @@ pub(crate) fn gradient_at_index(sdf: &SampledField, idx: [usize; 3]) -> [f64; 3]
             at[axis] = n;
             Some(sample_at_index(sdf, at))
         })
-        .expect("an index on a multi-sample axis has a grid neighbour on at least one side")
+        .unwrap_or_else(|| {
+            panic!(
+                "axis {axis} of length {len}: index {idx:?} has no on-grid neighbour \
+                 (an index on a multi-sample axis must have one on at least one side)"
+            )
+        })
     };
     [component(0), component(1), component(2)]
 }
@@ -1069,10 +1074,10 @@ pub(crate) fn precompute_gradient_grid(sdf: &SampledField, band_width: f64) -> V
                             }
                             // else: out-of-band; slot stays at the [0.0; 3]
                             // sentinel from the initial vec! allocation.
-                            // The consumer rejects out-of-band voxels at
-                            // line 470 before reading the cache (line 475),
-                            // so the sentinel is structurally unreachable
-                            // from downstream logic.
+                            // `compute_medial_mask`'s step (a) narrow-band
+                            // filter rejects out-of-band voxels before the
+                            // `gradient_grid_ref` read, so the sentinel is
+                            // structurally unreachable from downstream logic.
                         }
                     }
                 }
@@ -2219,14 +2224,15 @@ mod tests {
     ///
     /// **Why both branches matter.**
     /// *In-band correctness:* the producer-side gate and the consumer-side gate
-    /// in `compute_medial_mask` (line 470) both compare
+    /// in `compute_medial_mask`'s step (a) narrow-band filter both compare
     /// `sample_at_index(sdf, [i, j, k]).abs() <= band_width`. Pinning that
     /// in-band slots equal `gradient_at_index` exactly ensures there is no
     /// FP-rounding skew: the producer never skips a voxel the consumer
     /// would have read.
-    /// *Out-of-band sentinel:* the consumer rejects out-of-band voxels at
-    /// line 470 *before* indexing into the cache (line 475), so the `[0.0; 3]`
-    /// sentinel is structurally unreachable from downstream logic.  Pinning
+    /// *Out-of-band sentinel:* `compute_medial_mask`'s step (a) narrow-band
+    /// filter rejects out-of-band voxels *before* the `gradient_grid_ref`
+    /// read, so the `[0.0; 3]` sentinel is structurally unreachable from
+    /// downstream logic.  Pinning
     /// the sentinel confirms that skipping the stencil for out-of-band
     /// voxels is safe.
     ///
