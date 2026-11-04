@@ -1,7 +1,8 @@
 //! The FEA harness shared by this crate's FEA integration-test binaries: a
 //! structured box mesh generator and its Kuhn hex-to-tet split, Dirichlet-BC
-//! and point-load builders, P1 stiffness assembly and the assemble-and-CG-solve
-//! pipeline built on it, and the element-level post-processing
+//! and point-load builders, P1 stiffness assembly and the retaining
+//! assemble → eliminate → CG pipeline built on it, the displacement-only solve
+//! built on that pipeline, and the element-level post-processing
 //! (`gather_u_p1`, `von_mises_of_tensor`) that consumes a solve's output.
 //!
 //! Not a test binary. A consumer includes it with
@@ -293,9 +294,13 @@ pub fn assemble_eliminate_and_solve(
     (k, f, bcs, result)
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system.
+/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system, keeping only
+/// the displacement.
 ///
-/// Uses `SolverMode::Deterministic` for bit-stable, CI-safe results.
+/// This is [`assemble_eliminate_and_solve`] with the crate-default
+/// `CgSolverOptions`, an assert that the CG solve converged, and everything but
+/// `u` dropped. `bcs` is deduplicated in place: afterwards the caller's `Vec`
+/// holds the sorted, deduplicated list.
 ///
 /// # Returns
 ///
@@ -308,18 +313,16 @@ pub fn solve_p1_pipeline(
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
-    let mut k = assemble_p1_stiffness(nodes, conns, mat);
-
-    let mut f = vec![0.0_f64; 3 * nodes.len()];
-    for &(dof, val) in point_loads {
-        f[dof] += val;
-    }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    let (_, _, deduped, result) = assemble_eliminate_and_solve(
+        nodes,
+        conns,
+        mat,
+        std::mem::take(bcs),
+        &f,
+        CgSolverOptions::default(),
+    );
+    *bcs = deduped;
     assert!(
         result.converged,
         "solve_p1_pipeline: CG did not converge (iterations={})",
