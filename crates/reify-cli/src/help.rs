@@ -30,6 +30,8 @@ pub(crate) const GUI_USAGE: &str = "Usage: reify gui [--debug] <file>";
 
 pub(crate) const EXPLAIN_USAGE: &str = "Usage: reify explain <file>";
 
+pub(crate) const FIX_USAGE: &str = "Usage: reify fix --imports [--check] <file>...";
+
 /// What `main` runs for a subcommand. Only a [`SUBCOMMANDS`] entry constructs one, so a
 /// command with no help entry is a never-constructed variant rather than a silent gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +46,7 @@ pub(crate) enum Command {
     Gui,
     GuiDebug,
     Explain,
+    Fix,
     Dev,
     Cache,
 }
@@ -182,6 +185,21 @@ const SUBCOMMANDS: &[SubcommandHelp] = &[
         usage: EXPLAIN_USAGE,
         summary: "Print per-cell objective provenance: which objective chose each `auto` value",
         details: Details::None,
+    },
+    SubcommandHelp {
+        name: "fix",
+        command: Command::Fix,
+        synopsis: "fix --imports <file>...",
+        usage: FIX_USAGE,
+        summary: "Add the `import std.X` lines each file needs",
+        details: Details::Text(
+            "Refuses to write a file whose derived imports would leave a diagnostic the\n\
+            full standard library does not.\n\
+            \n\
+            Flags:\n  \
+            --imports  Add every missing `import std.X` line (required)\n  \
+            --check    Report missing imports without writing; fail if any are missing",
+        ),
     },
     SubcommandHelp {
         name: "dev",

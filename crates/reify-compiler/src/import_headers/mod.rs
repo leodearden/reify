@@ -85,6 +85,13 @@ pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -
     }
 }
 
+/// The module path of every `import` `parsed` declares, in any form.
+pub fn declared_imports(parsed: &ParsedModule) -> Vec<ModulePath> {
+    header_edit::declared_import_paths(parsed)
+        .filter_map(|dotted| ModulePath::from_dotted(dotted).ok())
+        .collect()
+}
+
 /// Every compiled stdlib module except `module`, in load order: the universe
 /// a stdlib module's own imports are derived against.
 pub fn stdlib_universe_excluding(module: &ModulePath) -> Vec<&'static CompiledModule> {

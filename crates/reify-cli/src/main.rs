@@ -100,6 +100,7 @@ fn main() -> ExitCode {
             cmd::gui::cmd_gui(&forwarded)
         }
         Command::Explain => cmd::explain::cmd_explain(subcommand_args),
+        Command::Fix => cmd::fix::cmd_fix(subcommand_args),
         Command::Dev => dev::cmd_dev(subcommand_args),
         Command::Cache => cache::cmd_cache(subcommand_args),
     }
@@ -128,6 +129,20 @@ fn report_parse_errors(rendered: Vec<String>, out: &mut impl std::io::Write) -> 
     ExitCode::FAILURE
 }
 
+/// The module path a file's own name gives it: its stem as a single segment.
+///
+/// file_stem() strips only the last extension: "foo.ri" → "foo". Dotted stems
+/// like "v1.2" (from a file named "v1.2.ri") yield a single-segment ModulePath
+/// ["v1.2"], which will mismatch a `module v1.2` declaration (parsed as ["v1","2"]).
+/// This is a known limitation: Reify module names are expected to be bare identifiers.
+pub(crate) fn module_path_for_file(path: &str) -> ModulePath {
+    let module_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unnamed");
+    ModulePath::single(module_name)
+}
+
 fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitCode> {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -137,16 +152,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
         }
     };
 
-    // file_stem() strips only the last extension: "foo.ri" → "foo". Dotted stems
-    // like "v1.2" (from a file named "v1.2.ri") yield a single-segment ModulePath
-    // ["v1.2"], which will mismatch a `module v1.2` declaration (parsed as ["v1","2"]).
-    // This is a known limitation: Reify module names are expected to be bare identifiers.
-    let module_name = std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unnamed");
-
-    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+    let parsed = reify_compiler::parse_with_stdlib(&source, module_path_for_file(path));
 
     if !parsed.errors.is_empty() {
         return Err(report_parse_errors(
@@ -158,7 +164,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
     let mut compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker);
 
     // Enforce module-path declaration (spec §7.1/§7.2, task γ).
-    // parsed.path == ModulePath::single(module_name) by construction (PRD D-6).
+    // parsed.path == module_path_for_file(path) by construction (PRD D-6).
     if let Some(diag) =
         reify_compiler::check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path)
     {
@@ -198,14 +204,7 @@ fn parse_and_compile_with_cfg(
         }
     };
 
-    // file_stem() strips only the last extension — same module-name derivation
-    // as parse_and_compile (see its comment for the dotted-stem limitation).
-    let module_name = std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unnamed");
-
-    let parsed = reify_compiler::parse_with_stdlib(&source, ModulePath::single(module_name));
+    let parsed = reify_compiler::parse_with_stdlib(&source, module_path_for_file(path));
 
     if !parsed.errors.is_empty() {
         return Err(report_parse_errors(
