@@ -418,6 +418,7 @@ const App: Component = () => {
 
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
+  const viewportDisplayStore = createViewportDisplayStore();
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
   const bucklingStore = createBucklingStore();
@@ -901,7 +902,6 @@ const App: Component = () => {
   }
 
   const layoutStore = createLayoutStore();
-  const viewportDisplayStore = createViewportDisplayStore();
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
