@@ -134,21 +134,22 @@ impl Pose {
         Self::default()
     }
 
-    /// The same placement with its rotation magnitude at most π: a rotation of
-    /// `θ` about `â` is the rotation of `θ − 2π·round(θ/2π)` about `â`. Keeps
-    /// the exponential map away from its singularity at `|θ| = 2π`, and makes
-    /// the Frame quaternion's `w = cos(θ/2) ≥ 0`.
-    fn with_wrapped_rotation(&self) -> Self {
+    /// The same placement with its rotation magnitude at most π — `None` when it
+    /// already is: a rotation of `θ` about `â` is the rotation of
+    /// `θ − 2π·round(θ/2π)` about `â`. Keeps the exponential map away from its
+    /// singularity at `|θ| = 2π`, and makes the Frame quaternion's
+    /// `w = cos(θ/2) ≥ 0`.
+    fn rewrapped(&self) -> Option<Self> {
         let angle = norm3(self.rotation);
         if angle <= std::f64::consts::PI {
-            return self.clone();
+            return None;
         }
         let turns = (angle / std::f64::consts::TAU).round();
         let wrapped = angle - std::f64::consts::TAU * turns;
-        Self {
+        Some(Self {
             translation: self.translation,
             rotation: scale3(self.rotation, wrapped / angle),
-        }
+        })
     }
 
     /// A copy with the `dof`-th Frame DOF nudged by `h` (DOF 0..3 = translation
@@ -467,7 +468,7 @@ pub fn max_relation_exceedance(
 /// Convert a solved [`Value::Frame`] (or [`Value::Transform`]) back into a [`Pose`]
 /// (translation + exponential-map rotation), the inverse of [`frame_value`].
 /// Returns `None` for any other value or a malformed frame.
-// G-allow: inverse of frame_value; round-trip consumers are the cross-crate tests (reify-constraints relate_solve/relate_scaling tests, reify-eval relate e2e); the production caller was removed when eval switched to FrameSolution.pose (#6675)
+// G-allow: inverse of frame_value; round-trip consumers are the cross-crate tests (reify-constraints relate_solve/relate_scaling tests, reify-eval relate e2e)
 pub fn pose_from_frame(v: &Value) -> Option<Pose> {
     match v {
         Value::Frame { origin, basis } => Some(Pose {
@@ -1435,8 +1436,10 @@ struct FrameProblem<'a> {
     relations: &'a [RelationInstance],
     unknown: &'a FrameUnknown,
     scaling: &'a SolveScaling,
-    /// The relation (index into `relations`) each residual row comes from.
-    row_relation: Vec<usize>,
+    /// How many residual rows each relation contributes. A residual form
+    /// branches only on its operands' shapes, so the count is the same at every
+    /// pose; [`LeastSquaresProblem::residual`] asserts it.
+    row_counts: Vec<usize>,
 }
 
 impl<'a> FrameProblem<'a> {
@@ -1445,19 +1448,15 @@ impl<'a> FrameProblem<'a> {
         unknown: &'a FrameUnknown,
         scaling: &'a SolveScaling,
     ) -> Self {
-        let row_relation = relations
+        let row_counts = relations
             .iter()
-            .enumerate()
-            .flat_map(|(i, rel)| {
-                let rows = relation_residual_rows(rel, unknown, &Pose::identity()).len();
-                std::iter::repeat_n(i, rows)
-            })
+            .map(|rel| relation_residual_rows(rel, unknown, &Pose::identity()).len())
             .collect();
         Self {
             relations,
             unknown,
             scaling,
-            row_relation,
+            row_counts,
         }
     }
 
@@ -1508,16 +1507,19 @@ impl LeastSquaresProblem for FrameProblem<'_> {
 
     fn residual(&self, x: &[f64]) -> Vec<f64> {
         let pose = self.pose(x);
-        let residual: Vec<f64> = self
-            .relations
-            .iter()
-            .flat_map(|rel| scaled_residual(rel, self.unknown, &pose, self.scaling))
-            .collect();
-        debug_assert_eq!(
-            residual.len(),
-            self.row_relation.len(),
-            "a relation's residual row count changed with the pose"
-        );
+        let mut residual = Vec::new();
+        for (index, (rel, &expected)) in self.relations.iter().zip(&self.row_counts).enumerate() {
+            let rows = scaled_residual(rel, self.unknown, &pose, self.scaling);
+            assert_eq!(
+                rows.len(),
+                expected,
+                "relation {index} (`{}`) has {} residual rows at {pose:?} but {expected} at \
+                 the identity pose: a residual form's row count must not depend on the pose",
+                rel.name,
+                rows.len()
+            );
+            residual.extend(rows);
+        }
         residual
     }
 
@@ -1530,13 +1532,23 @@ impl LeastSquaresProblem for FrameProblem<'_> {
             .collect()
     }
 
+    /// Wraps the rotation slots `x[3..]`; the translation slots, which no wrap
+    /// changes, keep their bits.
     fn normalize(&self, x: &mut [f64]) {
-        let wrapped = self.pose(x).with_wrapped_rotation();
-        x.copy_from_slice(&self.scaled(&wrapped));
+        if let Some(wrapped) = self.pose(x).rewrapped() {
+            x[3..].copy_from_slice(&self.scaled(&wrapped)[3..]);
+        }
     }
 
     fn row_source(&self, row: usize) -> ResidualSource {
-        ResidualSource::Relation(self.row_relation[row])
+        let mut rows_so_far = 0;
+        for (index, count) in self.row_counts.iter().enumerate() {
+            rows_so_far += count;
+            if row < rows_so_far {
+                return ResidualSource::Relation(index);
+            }
+        }
+        panic!("row {row} is past the {rows_so_far} residual rows of the relations")
     }
 }
 
