@@ -335,7 +335,7 @@ tasks:
       a second argument SHAPE alongside its first instead of the exhaustive match freezing
       in one shape per row forever; a row is reported at its most severe probe (worst_probe), because
       a shape that matches does not certify a shape never compared. AMENDED 2026-10-31 by task 7563
-      (14 tests / 14 passed) — the executor is now reify_expr::eval_expr over a synthesized
+      — the executor is now reify_expr::eval_expr over a synthesized
       FunctionCall (evaluate_call, row.name still passed as a VARIABLE), the path the engine evaluates
       calls through. For every shape reify-expr does not intercept it reaches
       reify_stdlib::eval_builtin through reify-expr's catch-all arm, so everything the old path

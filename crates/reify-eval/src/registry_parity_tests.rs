@@ -136,15 +136,9 @@
 //!   label against the registry (mutation Leg 5 below).
 //! - **The call is stamped with the type it is judged against.**
 //!   [`evaluate_call`] gives the call the row's DECLARED type as its
-//!   `result_type` (and the Sample call the declared codomain), as the compiler
-//!   stamps the resolver's answer in production. No reify-expr arm today's rows
-//!   reach reads it — the analysis intercepts and `sample` ignore it — but the
-//!   `fn_field`, `from_samples` and `restrict` intercepts take their domain and
-//!   codomain from it (`crates/reify-expr/src/lib.rs`). A row registered for
-//!   such an arm gets its static claim echoed into its runtime value, so its
-//!   Field codomain claim matches here by construction — the Grid backing
-//!   wraps its samples per that echoed label. Compare such a row against an
-//!   independently stamped type, or ledger it.
+//!   `result_type`, as the compiler does in production. A row whose reify-expr
+//!   arm reads `result_type` must be compared against an independently stamped
+//!   type, or ledgered.
 //! - **The residue is closed only for rows whose probes exist.** PRD §3
 //!   decision 12's residue is closed for the `Type::Field` branch of
 //!   `reduce_tensor_arg` (`von_mises`, `max_shear`, `principal_stresses`,
@@ -243,8 +237,8 @@
 use std::collections::HashSet;
 
 use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows_bound_by};
-use reify_core::{ContentHash, Type};
-use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value, ValueMap};
+use reify_core::Type;
+use reify_ir::{CompiledExpr, Value, ValueMap};
 use strum::{EnumCount, IntoEnumIterator};
 
 mod probes;
@@ -626,6 +620,20 @@ fn representative_probes_are_well_formed_for_every_row() {
                     "names no"
                 }
             );
+
+            // ...and that point lies in the declared Field's domain, under the
+            // same oracle as (c). A point of the wrong kind would make `sample`
+            // yield Value::Undef, and the sweep would report the row Vacuous
+            // for a fault in this file's probe data.
+            if let (Some(point), Type::Field { domain, .. }) = (&probe.sample_at, &declared) {
+                assert!(
+                    crate::value_type_kind_matches(point, domain, None),
+                    "{at}: the probe's sample point is mis-built — it does not \
+                     satisfy the declared Field's domain ({point:?} vs \
+                     {domain:?}), so its Sample leg would read Vacuous and \
+                     blame the row for this file's probe data"
+                );
+            }
         }
     }
 }
@@ -824,22 +832,8 @@ struct ExemptionEntry {
 /// `Type::StructureRef` arm compares `type_name` only, which is why
 /// `registry: None` suffices (see [`classify`]).
 ///
-/// # Measured at #7563: every Field probe classifies `Matches` on both legs
-///
-/// The four analysis rows' Callable and Grid Field probes, observed the same
-/// way (the domain is `Point3<Length>` throughout):
-///
-/// | row | Call leg: observed / declared | Sample leg: observed / declared |
-/// |---|---|---|
-/// | `von_mises` | `Field{source:VonMises}` / `Field<_, Scalar{PRESSURE}>` | `Scalar{PRESSURE}` / `Scalar{PRESSURE}` |
-/// | `max_shear` | `Field{source:MaxShear}` / `Field<_, Scalar{PRESSURE}>` | `Scalar{PRESSURE}` / `Scalar{PRESSURE}` |
-/// | `principal_stresses` | `Field{source:PrincipalStresses}` / `Field<_, List(Scalar{PRESSURE})>` | `List([Scalar{PRESSURE}; 3])` / `List(Scalar{PRESSURE})` |
-/// | `safety_factor` | `Field{source:SafetyFactor}` / `Field<_, Scalar{DIMENSIONLESS}>` | `Real(2.5)` / `Scalar{DIMENSIONLESS}` |
-///
-/// The Callable and Grid probes observed identical kinds on every leg: they
-/// differ in which reify-expr path produced the sample, not in what it
-/// produced, which is why mutation Leg 5 is needed to show they check
-/// different things.
+/// The Field probes (#7563) also classify `Matches` on both legs; their
+/// per-leg observations are recorded in that task's commit history.
 ///
 /// # Why the PRD's named seed entry cannot be here yet
 ///
@@ -956,20 +950,13 @@ fn adjudicate(
 /// comparison is tautological (see the module header's "What this harness
 /// cannot see"). No value cells are bound: every argument is a literal.
 fn evaluate_call(name: &str, args: Vec<(Value, Type)>, result_type: Type) -> Value {
-    let call = CompiledExpr {
-        kind: CompiledExprKind::FunctionCall {
-            function: ResolvedFunction {
-                name: name.to_string(),
-                qualified_name: format!("std::{name}"),
-            },
-            args: args
-                .into_iter()
-                .map(|(value, ty)| CompiledExpr::literal(value, ty))
-                .collect(),
-        },
+    let call = reify_test_support::std_call(
+        name,
+        args.into_iter()
+            .map(|(value, ty)| CompiledExpr::literal(value, ty))
+            .collect(),
         result_type,
-        content_hash: ContentHash::of_str(name),
-    };
+    );
     let no_bindings = ValueMap::new();
     reify_expr::eval_expr(&call, &reify_expr::EvalContext::simple(&no_bindings))
 }

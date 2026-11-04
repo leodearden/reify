@@ -134,12 +134,10 @@ fn field_sample_point() -> Value {
 /// A Callable-backed stress field: `Analytical`, with a lambda that ignores its
 /// coordinates and returns [`uniaxial_stress_tensor`] everywhere.
 ///
-/// Shape mirrors `make_constant_stress_field` in
+/// A copy of `make_constant_stress_field`'s shape in
 /// `crates/reify-expr/tests/field_analysis_tests.rs`, a separate integration
-/// test target that cannot be imported from here. **A copy, and a scope
-/// deferral**: the shared home for this and [`grid_stress_field`] is
-/// `reify_test_support`, already a dev-dependency of both reify-eval and
-/// reify-expr, and outside this task's lock set.
+/// test target that cannot be imported from here. The shared home in
+/// `reify_test_support`, for this and [`grid_stress_field`], is owned by #9679.
 fn callable_stress_field() -> (Value, Type) {
     let params = ["x", "y", "z"]
         .into_iter()
@@ -173,10 +171,10 @@ fn callable_stress_field() -> (Value, Type) {
 /// interpolated values PER THE WRAPPER'S `codomain_type`, so only this probe's
 /// Sample leg joins the codomain label reify-expr writes against the registry.
 ///
-/// Shape mirrors
+/// A copy of the grid in
 /// `sampled_backed_von_mises_wrapper_samples_a_regular3d_grid_at_point3_length_coordinates`
-/// in `crates/reify-expr/tests/field_analysis_tests.rs` — a copy, deferred to
-/// `reify_test_support` with [`callable_stress_field`].
+/// (`crates/reify-expr/tests/field_analysis_tests.rs`); its shared home is
+/// owned by #9679, with [`callable_stress_field`]'s.
 fn grid_stress_field() -> (Value, Type) {
     const NODES: usize = 8;
     let unit_axis = vec![0.0, 1.0];
