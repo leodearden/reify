@@ -1,10 +1,8 @@
 //! Cross-crate re-export compatibility pins for #4934, which moved the pure
 //! `ComputeFn` contract value types into the OCCT-free
 //! `reify-compute-contract` foundation crate. reify-eval still re-exports
-//! two of the moved clusters at its crate root (INV-2 / BT-3):
-//! `CancellationHandle`, and the compute-dispatch types (`ComputeFn`,
-//! `ComputeOutcome`, `DispatchError`, `RealizedContent`,
-//! `RealizationReadHandle`, `StructuredComputeDetail`).
+//! the `CancellationHandle` and compute-dispatch clusters (INV-2 / BT-3);
+//! each section below pins one.
 //!
 //! Each cluster below adds an IDENTITY assertion — a fn typed on
 //! `reify_compute_contract::X` invoked with a value built via the
