@@ -163,7 +163,10 @@ fn a_user_import_tier_definition_beats_a_std_one() {
 #[test]
 fn modules_are_sorted_by_dotted_path_and_names_sorted_and_deduplicated() {
     let universe = compile_universe(&[
-        ("std.fake.zeta", "structure def Zed { param z : Real = 1.0 }\n"),
+        (
+            "std.fake.zeta",
+            "structure def Zed { param z : Real = 1.0 }\n",
+        ),
         (
             "std.fake.alpha",
             "structure def Beta { param b : Real = 1.0 }\n\
