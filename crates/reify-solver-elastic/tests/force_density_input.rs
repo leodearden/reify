@@ -177,14 +177,18 @@ fn an_anchor_past_the_nodes_is_an_indexed_input_error() {
 
 #[test]
 fn a_surface_corner_past_the_nodes_is_an_indexed_input_error() {
-    let mut case = FdAnchoredCase::valid();
-    let n = case.node_count();
-    case.surfaces[0] = (0, 1, n);
-    case.assert_surface_entries_reject(ForceDensityInputError::IndexOutOfRange {
-        what: IndexedInput::SurfaceCorner { surface: 0 },
-        index: n,
-        len: n,
-    });
+    let valid = FdAnchoredCase::valid();
+    let (i, j, k) = valid.surfaces[0];
+    let n = valid.node_count();
+    for corners in [(n, j, k), (i, n, k), (i, j, n)] {
+        let mut case = FdAnchoredCase::valid();
+        case.surfaces[0] = corners;
+        case.assert_surface_entries_reject(ForceDensityInputError::IndexOutOfRange {
+            what: IndexedInput::SurfaceCorner { surface: 0 },
+            index: n,
+            len: n,
+        });
+    }
 }
 
 #[test]
@@ -526,19 +530,24 @@ fn a_free_member_endpoint_past_the_nodes_is_an_indexed_input_error() {
 
 #[test]
 fn a_free_surface_corner_past_the_nodes_is_an_indexed_input_error() {
-    let mut case = FdFreeCase::explicit();
-    let n = case.node_count();
-    case.surfaces[0] = (0, 1, n);
-    assert_eq!(
-        case.with_surfaces(),
-        Err(FreeFormError::Input(
-            ForceDensityInputError::IndexOutOfRange {
-                what: IndexedInput::SurfaceCorner { surface: 0 },
-                index: n,
-                len: n,
-            }
-        ))
-    );
+    let valid = FdFreeCase::explicit();
+    let (i, j, k) = valid.surfaces[0];
+    let n = valid.node_count();
+    for corners in [(n, j, k), (i, n, k), (i, j, n)] {
+        let mut case = FdFreeCase::explicit();
+        case.surfaces[0] = corners;
+        assert_eq!(
+            case.with_surfaces(),
+            Err(FreeFormError::Input(
+                ForceDensityInputError::IndexOutOfRange {
+                    what: IndexedInput::SurfaceCorner { surface: 0 },
+                    index: n,
+                    len: n,
+                }
+            )),
+            "corners {corners:?}"
+        );
+    }
 }
 
 #[test]
