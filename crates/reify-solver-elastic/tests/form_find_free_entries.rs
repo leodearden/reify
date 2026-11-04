@@ -2,15 +2,14 @@
 //! entries — `form_find_free` and `form_find_free_surfaces` — driven from the
 //! crate root only: the explicit-q form-certification and recovery verdicts and
 //! the result's force signs; the GroupRatios search's non-convergence verdicts;
-//! and the surface entry's third-corner surface-index boundary and line-only
-//! equivalence. The input contract these entries share is
-//! `tests/force_density_input.rs`. Moved from `form_find_free.rs`'s unit tests
-//! by #9275; the GroupRatios closed-form recovery golden is
-//! `tensegrity_t1b_form_find_free.rs`.
+//! and the surface entry's line-only equivalence. The input contract these
+//! entries share is `tests/force_density_input.rs`. Moved from
+//! `form_find_free.rs`'s unit tests by #9275; the GroupRatios closed-form
+//! recovery golden is `tensegrity_t1b_form_find_free.rs`.
 
 use reify_solver_elastic::{
-    ForceDensityInputError, ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult,
-    IndexedInput, MemberKind, form_find_free, form_find_free_surfaces,
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, MemberKind, form_find_free,
+    form_find_free_surfaces,
 };
 
 #[allow(dead_code)] // each test binary uses a subset of the shared fixtures
@@ -257,38 +256,6 @@ fn line_only_group_ratios_with_a_disconnected_cable_pair_does_not_converge() {
 }
 
 // ── δ (task 4415): surface-aware form_find_free_surfaces ──────────────────
-
-// (c) A surface triangle corner that indexes past the node array is
-// infeasible input — `assemble_surface_matrix` would panic on its
-// `nodes[gi]` index. The module contract promises infeasible input becomes
-// a clean typed error, never a panic.
-#[test]
-fn surfaces_free_out_of_range_index_is_index_out_of_range() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // Boundary index: 6 is the FIRST invalid index for the 6-node triplex,
-    // so this pins the `≥ n` comparison that a `> n` typo would let pass.
-    // The predicate ANDs three comparisons, so each sibling test puts the
-    // bad index in a different corner — THIRD here, first and second in the
-    // two anchored tests in tests/form_find_anchored_entries.rs — pinning all
-    // three between them.
-    let surfaces = vec![(0usize, 1usize, 6usize)];
-    let sigmas = vec![0.2];
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-
-    assert_eq!(
-        form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::SurfaceCorner { surface: 0 },
-            index: 6,
-            len: 6,
-        }),
-    );
-}
 
 // (d) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
 // must return a result that matches form_find_free in all line-only fields

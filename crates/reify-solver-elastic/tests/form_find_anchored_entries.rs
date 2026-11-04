@@ -1,18 +1,16 @@
 //! The public-entry contract of the anchored force-density form-finding
 //! entries — `form_find_anchored`, `form_find_anchored_surfaces` and
 //! `form_find_anchored_surfaces_aniso` — driven from the crate root only: the
-//! analytic FD-identity goldens, the empty-free-set and
-//! singular-reduced-stiffness verdicts, the isolated-free-node rejections, the
-//! first- and second-corner surface-index boundaries, the surface entry's
-//! line-only equivalence and the anisotropic entry's isotropic equivalence.
-//! The input contract these entries share is `tests/force_density_input.rs`.
-//! Moved from `form_find.rs`'s unit tests by #9275; the stencil and
-//! principal-stress tests stay there.
+//! analytic FD-identity goldens and the force-density echo, the empty-free-set
+//! and singular-reduced-stiffness verdicts, the isolated-free-node rejections,
+//! the surface entry's line-only equivalence and the anisotropic entry's
+//! isotropic equivalence. The input contract these entries share is
+//! `tests/force_density_input.rs`. Moved from `form_find.rs`'s unit tests by
+//! #9275; the stencil and principal-stress tests stay there.
 
 use reify_solver_elastic::{
-    AnisoFormFindError, AnisotropicSurfaceStress, ForceDensityInputError, FormFindError,
-    IndexedInput, MemberKind, form_find_anchored, form_find_anchored_surfaces,
-    form_find_anchored_surfaces_aniso,
+    AnisoFormFindError, AnisotropicSurfaceStress, FormFindError, MemberKind, form_find_anchored,
+    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
 use reify_test_support::tensegrity_fixtures::{TENT_ANCHORS, TENT_NODE_COORDS, TENT_TRIS};
 
@@ -301,35 +299,6 @@ fn tent_membrane() -> MembraneCase {
     (TENT_NODE_COORDS.to_vec(), surfaces, anchors)
 }
 
-// (c2) A surface triangle corner that indexes past `nodes` is infeasible
-// input — `assemble_combined_d` would panic on its `nodes[i]` index. PRD 8.1
-// promises a clean diagnostic, never a panic.
-#[test]
-fn surfaces_out_of_range_index_is_index_out_of_range() {
-    let (nodes, _surfaces, anchors) = tent_membrane();
-    // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
-    // this pins the `≥ n` comparison that a `> n` typo would let pass.
-    // The predicate ANDs three comparisons, so each sibling test puts the
-    // bad index in a different corner — FIRST here, second in the aniso
-    // test below, third in `form_find_free_surfaces`' test in
-    // tests/form_find_free_entries.rs — pinning all three between them.
-    let surfaces = vec![(5usize, 1usize, 2usize)];
-    let sigmas = vec![1.0];
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-
-    assert_eq!(
-        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-            .unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::SurfaceCorner { surface: 0 },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
 // (d) The pure-line path (empty surfaces) through the surface-aware entry
 // must return exactly the landed form_find_anchored result, with an empty
 // surface_stresses echo — the additive-extension invariant.
@@ -450,7 +419,7 @@ fn surfaces_solve_rejects_isolated_free_node_alongside_a_connected_one() {
     );
 }
 
-// ── ε (task 4416): form_find_anchored_surfaces_aniso guards + iso-equivalence ──
+// ── ε (task 4416): form_find_anchored_surfaces_aniso verdicts + iso-equivalence ──
 
 /// [`tent_membrane`] plus one isotropic-valued anisotropic prestress per
 /// triangle, for the aniso solve tests.
@@ -472,34 +441,6 @@ fn tent_aniso_fixture() -> (
         surfaces.len()
     ];
     (nodes, surfaces, prestress, anchors)
-}
-
-// (a2) A surface triangle corner that indexes past `nodes` is infeasible
-// input — the stencil scatter would panic on its `nodes[i]` index. Mirrors
-// the isotropic entry's guard.
-#[test]
-fn aniso_solve_out_of_range_surface_index_is_index_out_of_range() {
-    let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
-    // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
-    // this pins the `≥ n` comparison that a `> n` typo would let pass.
-    // The predicate ANDs three comparisons, so each sibling test puts the
-    // bad index in a different corner — SECOND here, first in the isotropic
-    // test above, third in `form_find_free_surfaces`' test in
-    // tests/form_find_free_entries.rs — pinning all three between them.
-    let surfaces = vec![(0usize, 5usize, 2usize)];
-    let pres = vec![prestress[0].clone()];
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(&nodes, &members, &kinds, &q, &surfaces, &pres, &anchors)
-            .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::SurfaceCorner { surface: 0 },
-            index: 5,
-            len: 5,
-        }),
-    );
 }
 
 // (e) All nodes anchored → EmptyFreeSet.
