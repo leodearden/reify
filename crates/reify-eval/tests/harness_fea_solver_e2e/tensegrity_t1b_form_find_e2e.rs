@@ -49,7 +49,7 @@ fn call_form_find_free(value_inputs: &[Value]) -> ComputeOutcome {
 ///     cables (indices 3–11) tensile (> 0)
 ///   - `force_densities` has 12 entries: struts ≈ −√3 (1e-6), horizontals = 1
 ///     (1e-12), verticals ≈ +√3 (1e-6) — backed by the kernel golden
-///     `reify-solver-elastic/tests/tensegrity_t1b_form_find_free.rs::group_ratios_form_finds_published_triplex_prism_equilibrium`
+///     `crates/reify-solver-elastic/tests/tensegrity_t1b_form_find_free.rs::group_ratios_form_finds_published_triplex_prism_equilibrium`
 ///
 /// Does NOT assert `converged` — callers should check that themselves before
 /// invoking this helper (the trampoline test reads it from the Completed result;
