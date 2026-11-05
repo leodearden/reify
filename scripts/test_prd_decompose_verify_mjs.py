@@ -1053,6 +1053,7 @@ _MJS_PHASES_MARK = "SCENARIO_PHASES:"
 _MJS_LOGS_MARK = "SCENARIO_LOGS:"
 _MJS_PIPELINE_ERRORS_MARK = "SCENARIO_PIPELINE_ERRORS:"
 _MJS_AGENT_CALLS_MARK = "SCENARIO_AGENT_CALLS:"
+_MJS_ERROR_MARK = "SCENARIO_ERROR:"
 
 
 def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
@@ -1067,6 +1068,10 @@ def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
 
     The harness records every phase the .mjs actually invokes, so a test can
     assert on stages that were SKIPPED as well as on the returned verdict.
+
+    A workflow body that THROWS prints the error marker instead of the result
+    marker and exits 1, so every rc == 0 helper still fails loudly on an
+    unexpected throw while _run_scenario_error reads an expected one.
     """
     mjs_abs = PDV_MJS.replace("\\", "\\\\")
     return f"""\
@@ -1078,6 +1083,7 @@ const PHASES_MARK = "{_MJS_PHASES_MARK}";
 const LOGS_MARK = "{_MJS_LOGS_MARK}";
 const PIPELINE_ERRORS_MARK = "{_MJS_PIPELINE_ERRORS_MARK}";
 const AGENT_CALLS_MARK = "{_MJS_AGENT_CALLS_MARK}";
+const ERROR_MARK = "{_MJS_ERROR_MARK}";
 
 // ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
 globalThis.__PHASES = [];
@@ -1141,8 +1147,14 @@ globalThis.workflow = async () => {{}};
 let src = readFileSync(MJS_PATH, "utf8");
 src = src.replace("export const meta", "const meta");
 const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
-const result = await new AsyncFunction(src)();
-console.log(RESULT_MARK + JSON.stringify(result));
+try {{
+    const result = await new AsyncFunction(src)();
+    console.log(RESULT_MARK + JSON.stringify(result));
+}} catch (e) {{
+    console.log(ERROR_MARK + JSON.stringify(String(e && e.message)));
+    console.error(e && e.stack);
+    process.exitCode = 1;
+}}
 console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
 console.log(LOGS_MARK + JSON.stringify(globalThis.__LOG_LINES));
 console.log(PIPELINE_ERRORS_MARK + JSON.stringify(globalThis.__PIPELINE_ERRORS));
@@ -1254,6 +1266,22 @@ class _MjsScenarioMixin:
                       if ln.startswith(_MJS_AGENT_CALLS_MARK)]
         self.assertTrue(call_lines, f"no agent-calls marker; stdout: {out!r}")
         return json.loads(call_lines[-1][len(_MJS_AGENT_CALLS_MARK):])
+
+    def _run_scenario_error(self, leaves_js: str, responses_js: str):
+        """Run a scenario whose workflow body must THROW; return (message, phases).
+
+        Cached the same way as _run_scenario_logs (see its docstring).
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 1, f"the workflow did not throw; node exited {rc}; stdout: {out!r}")
+        error_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_ERROR_MARK)]
+        ph_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_PHASES_MARK)]
+        self.assertTrue(error_lines, f"no error marker; stdout: {out!r}; stderr: {err!r}")
+        self.assertTrue(ph_lines, f"no phases marker; stdout: {out!r}")
+        message = json.loads(error_lines[-1][len(_MJS_ERROR_MARK):])
+        phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
+        return message, phases
 
 
 # ---------------------------------------------------------------------------
@@ -1829,6 +1857,127 @@ class TestMjsSchemaParity(unittest.TestCase, _MjsScenarioMixin):
             [prompt] = self._prompts(phase)
             with self.subTest(phase=phase):
                 self.assertTrue(_states_as_one_list(verdicts, prompt), verdicts)
+
+
+# ---------------------------------------------------------------------------
+# task #9772: the operator names α's reify binary through an args envelope
+# ---------------------------------------------------------------------------
+
+_ALPHA_RUNNER = "python3 scripts/prd-capability-check.py --json"
+
+
+def _role_prompts(calls, phase):
+    return [call["prompt"] for call in calls if call["phase"] == phase]
+
+
+class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
+    """args may be an envelope {leaves, reify_bin}.  Its reify_bin reaches
+    every α call the Prover and Adversary make as REIFY_BIN; without one the
+    α command stays bare, so a REIFY_BIN the session exported is what α
+    inherits."""
+
+    _REIFY_BIN = "/opt/reify/bin/reify"
+    _ENVELOPE_JS = ('{ leaves: [{ signal: "leaf a" }, { signal: "leaf b" }], '
+                    'reify_bin: "/opt/reify/bin/reify" }')
+
+    def _alpha_prompts(self, args_js, leaf_count):
+        """The prove and adversary prompts by phase, after checking that the
+        batch fanned out to `leaf_count` leaves."""
+        calls = self._run_scenario_agent_calls(args_js, self.VERIFIED_RESPONSES)
+        self.assertEqual(len(_role_prompts(calls, "enumerate")), leaf_count)
+        prompts = {phase: _role_prompts(calls, phase) for phase in ("prove", "adversary")}
+        for phase, phase_prompts in prompts.items():
+            self.assertEqual(len(phase_prompts), leaf_count, phase)
+        return prompts
+
+    def _assert_alpha_runs_with(self, prompts, prefix):
+        """Every α runner occurrence in every prompt carries the prefix."""
+        for phase, phase_prompts in prompts.items():
+            for prompt in phase_prompts:
+                with self.subTest(phase=phase):
+                    self.assertIn(prefix + _ALPHA_RUNNER, prompt)
+                    self.assertEqual(prompt.count(_ALPHA_RUNNER),
+                                     prompt.count(prefix + _ALPHA_RUNNER), prompt)
+
+    def _assert_alpha_runs_bare(self, prompts):
+        for phase, phase_prompts in prompts.items():
+            for prompt in phase_prompts:
+                with self.subTest(phase=phase):
+                    self.assertIn(_ALPHA_RUNNER, prompt)
+                    self.assertNotIn("REIFY_BIN=", prompt)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_envelope_fans_out_and_prefixes_every_alpha_call(self):
+        prompts = self._alpha_prompts(self._ENVELOPE_JS, 2)
+        self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_stringified_envelope_is_the_same_envelope(self):
+        prompts = self._alpha_prompts(f"JSON.stringify({self._ENVELOPE_JS})", 2)
+        self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_stringified_leaves_inside_an_envelope_fan_out(self):
+        args_js = ('{ leaves: JSON.stringify([{ signal: "str a" }, { signal: "str b" }]), '
+                   f'reify_bin: "{self._REIFY_BIN}" }}')
+        prompts = self._alpha_prompts(f"JSON.stringify({args_js})", 2)
+        self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_an_envelope_with_empty_leaves_is_the_empty_batch(self):
+        verdict, phases = self._run_scenario(
+            f'{{ leaves: [], reify_bin: "{self._REIFY_BIN}" }}', self.VERIFIED_RESPONSES)
+        empty_verdict, _ = self._run_scenario("[]", self.VERIFIED_RESPONSES)
+        self.assertEqual(phases, [])
+        self.assertEqual(verdict, empty_verdict)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_reify_bin_survives_a_real_shell(self):
+        path = "/tmp/a b/it's/reify"
+        args_js = f'{{ leaves: [{{ signal: "quoted leaf" }}], reify_bin: {json.dumps(path)} }}'
+        for phase, [prompt] in self._alpha_prompts(args_js, 1).items():
+            with self.subTest(phase=phase):
+                word = re.search(r"REIFY_BIN=(.+?) " + re.escape(_ALPHA_RUNNER), prompt)
+                self.assertIsNotNone(word, prompt)
+                shell = subprocess.run(
+                    ["bash", "-c", f"REIFY_BIN={word.group(1)} printenv REIFY_BIN"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(shell.stdout, path + "\n", shell.stderr)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_plain_leaf_array_leaves_alpha_bare(self):
+        self._assert_alpha_runs_bare(self._alpha_prompts('[{ signal: "plain leaf" }]', 1))
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_envelope_without_reify_bin_fans_out_and_leaves_alpha_bare(self):
+        args_js = '{ leaves: [{ signal: "env a" }, { signal: "env b" }] }'
+        self._assert_alpha_runs_bare(self._alpha_prompts(args_js, 2))
+
+    # Each malformed envelope, and the words its refusal must name.
+    _MALFORMED_ENVELOPES = (
+        ('{ leaves: [{ signal: "x" }], reify_bin: "target/debug/reify" }',
+         ("reify_bin", "target/debug/reify")),
+        ('{ leaves: [{ signal: "x" }], reify_bin: 42 }', ("reify_bin", "42")),
+        ('{ leaves: [{ signal: "x" }], reify_bin: "" }', ("reify_bin",)),
+        ('{ leaves: [{ signal: "x" }], reifyBin: "/opt/reify" }', ("reifyBin",)),
+        ('{ reify_bin: "/opt/reify" }', ("leaves",)),
+        ('{ leaves: null, reify_bin: "/opt/reify" }', ("leaves", "null")),
+        ('{ leaves: "", reify_bin: "/opt/reify" }', ("leaves", '""')),
+        ('{ leaves: "  ", reify_bin: "/opt/reify" }', ("leaves", '"  "')),
+        ('{ leaves: false, reify_bin: "/opt/reify" }', ("leaves", "false")),
+        ('{ leaves: 0 }', ("leaves", "0")),
+        ('{ leaves: 7 }', ("leaves", "7")),
+    )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_a_malformed_envelope_is_refused_before_any_agent_runs(self):
+        for args_js, named in self._MALFORMED_ENVELOPES:
+            with self.subTest(args=args_js):
+                message, phases = self._run_scenario_error(args_js, self.VERIFIED_RESPONSES)
+                for word in named:
+                    self.assertIn(word, message)
+                self.assertEqual(phases, [])
 
 
 if __name__ == "__main__":
