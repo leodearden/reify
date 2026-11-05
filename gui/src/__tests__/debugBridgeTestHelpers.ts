@@ -9,6 +9,7 @@ import { createRoot } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import { createLayoutStore, type LayoutStore } from '../stores/layoutStore';
+import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
 import type { DebugStores } from '../debug/types';
 
 /**
@@ -41,8 +42,8 @@ export function makeLayoutStore(): LayoutStore {
 }
 
 /**
- * A minimal DebugStores: idle engine, empty editor and selection, and a real
- * layout store. Enough for a debug-bridge test whose handlers drive the DOM
+ * A minimal DebugStores: idle engine, empty editor and selection, and real
+ * layout and viewport-display stores. Enough for a debug-bridge test whose handlers drive the DOM
  * rather than a store.
  */
 export function makeDebugStores(): DebugStores {
@@ -93,6 +94,7 @@ export function makeDebugStores(): DebugStores {
     },
     viewState: makeViewStateStoreMock(),
     layout: makeLayoutStore(),
+    viewportDisplay: createViewportDisplayStore(),
   };
 }
 

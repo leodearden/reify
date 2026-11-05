@@ -4,6 +4,7 @@ import type { Scene, PerspectiveCamera, WebGLRenderer } from 'three';
 import type { ViewStateStore } from '../stores/viewStateStore';
 import type { FeaModeStore } from '../stores/feaModeStore';
 import type { LayoutStore } from '../stores/layoutStore';
+import type { ViewportDisplayStore } from '../stores/viewportDisplayStore';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import type { EditorView } from '@codemirror/view';
 import { onMount, onCleanup } from 'solid-js';
@@ -62,6 +63,8 @@ export interface DebugStores {
   viewState: ViewStateStore;
   /** The real panel-layout store; its rows are LAYOUT_DIMENSIONS. */
   layout: LayoutStore;
+  /** The persisted viewport display preferences — edges-in-black. */
+  viewportDisplay: ViewportDisplayStore;
 }
 
 /** Three.js viewport references set by Viewport.tsx onMount. */

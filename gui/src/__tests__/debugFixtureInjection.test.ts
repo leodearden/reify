@@ -38,6 +38,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toPng } from 'html-to-image';
 import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import { makeLayoutStore, makeViewStateStoreMock } from './debugBridgeTestHelpers';
+import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
 import type { DebugStores } from '../debug/types';
 import { LAYOUT_DIMENSIONS, defaultLayout, type LayoutStore } from '../stores/layoutStore';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
@@ -96,6 +97,7 @@ function makeStores(layout: LayoutStore = makeLayoutStore()): DebugStores {
     },
     viewState: makeViewStateStoreMock(),
     layout,
+    viewportDisplay: createViewportDisplayStore(),
   };
 }
 
