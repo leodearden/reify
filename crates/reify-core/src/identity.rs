@@ -747,6 +747,12 @@ mod tests {
     }
 
     #[test]
+    fn to_dotted_output_parses_back_to_the_same_path() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(ModulePath::from_dotted(&path.to_dotted()), Ok(path));
+    }
+
+    #[test]
     fn resolution_node_id_as_hashmap_key() {
         let mut map = HashMap::new();
         let id1 = ResolutionNodeId::new("Bracket", 0);
