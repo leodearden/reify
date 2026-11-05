@@ -2602,7 +2602,9 @@ mod tests {
     // Cell resolution is shared by every value-cell entry point; see
     // try_get_value_cell_in_template's rustdoc. The not-found panic's
     // available-cells list and the defaultless-cell pass-through are pinned
-    // once, on get_value_cell_in_template, which owns them.
+    // once, on get_value_cell_in_template, which owns them. The ambiguity
+    // abort is pinned once too, on try_get_value_cell_in_template, which
+    // raises it.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
@@ -2696,18 +2698,15 @@ mod tests {
             .build()
     }
 
-    /// Pins that two value cells sharing a member name under different
-    /// entities panic, rather than silently resolving to the first declared.
-    #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_get_value_cell_in_panics_on_ambiguous_member() {
-        use reify_core::ModulePath;
-
-        let module = crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
-            .template(ambiguous_x_template())
-            .build();
-        super::get_value_cell_in(&module, "Bracket", "x");
-    }
+    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
+    /// `value_cells` and a first-match resolver would pick the wrong one.
+    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
+        structure def Vent { param area : Length = 1mm }
+        structure def Manifold {
+            sub v : Vent { area = auto }
+            let area = 2mm
+        }
+    "#;
 
     /// The module route to the same resolution as
     /// `test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell`
@@ -2823,6 +2822,33 @@ mod tests {
         );
     }
 
+    /// The shared ambiguity fixture: two value cells share member "x", under
+    /// entities "First" and "Second" of one "Bracket" template. Neither entity
+    /// is the template's own, so the own-cell tie-break cannot resolve "x" and
+    /// the lookup must abort rather than silently return one of the two.
+    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "First",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Second",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build()
+    }
+
     /// Pins that the not-found panic enumerates the template's actual cells
     /// as `entity.member`, rather than an empty or truncated list — that
     /// `; has: [...]` suffix is what makes a missing-cell failure diagnosable
@@ -2868,7 +2894,50 @@ mod tests {
         let _ = super::try_get_value_cell_in_template(&ambiguous_x_template(), "x");
     }
 
+    /// Pins that the ambiguity panic is actionable: it lists the colliding
+    /// `id.entity` values, in `value_cells` order. A maintainer who hits it
+    /// then learns which entities collided, not just that a collision
+    /// happened, and need not reproduce it by hand to disambiguate.
+    #[test]
+    #[should_panic(expected = "[\"First\", \"Second\"]")]
+    fn test_try_get_value_cell_in_template_ambiguity_panic_names_colliding_entities() {
+        let _ = super::try_get_value_cell_in_template(&ambiguous_x_template(), "x");
+    }
+
+    /// Two cells both claiming the template's own entity (`Bracket`) stay
+    /// ambiguous: picking the first of them would be silently wrong.
+    ///
+    /// Builder-only fixture — the compiler never emits two cells with one id.
+    #[test]
+    #[should_panic(expected = "ambiguous cell name")]
+    fn test_try_get_value_cell_in_template_panics_when_two_cells_claim_the_templates_own_entity() {
+        use reify_core::Type;
+        use reify_ir::{CompiledExpr, Value};
+
+        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
+            .param(
+                "Bracket",
+                "x",
+                Type::dimensionless_scalar(),
+                Some(CompiledExpr::literal(
+                    Value::Real(1.5),
+                    Type::dimensionless_scalar(),
+                )),
+            )
+            .param(
+                "Bracket",
+                "x",
+                Type::Int,
+                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .build();
+
+        let _ = super::try_get_value_cell_in_template(&template, "x");
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
+    // Not-found is pinned on get_value_cell_in_template and get_let_expr_in,
+    // has-no-default on get_let_expr_in; see the get_value_cell_in header.
 
     /// get_let_expr_in_template should return the default_expr of the named
     /// cell directly from a template the caller already holds (no module or
@@ -2888,75 +2957,6 @@ mod tests {
             "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
             expr.result_type
         );
-    }
-
-    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
-    /// `value_cells` and a first-match resolver would pick the wrong one.
-    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
-        structure def Vent { param area : Length = 1mm }
-        structure def Manifold {
-            sub v : Vent { area = auto }
-            let area = 2mm
-        }
-    "#;
-
-    /// Two value cells sharing member name "x" under different entities on
-    /// one "Bracket" template — the ambiguity fixture shared by the two
-    /// tests below. Both cells carry a default so a resolution failure can
-    /// only be the collision, never a missing default.
-    fn ambiguous_x_template() -> reify_compiler::TopologyTemplate {
-        use reify_core::Type;
-        use reify_ir::{CompiledExpr, Value};
-
-        crate::builders::TopologyTemplateBuilder::new("Bracket")
-            .param(
-                "First",
-                "x",
-                Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(
-                    Value::Real(1.5),
-                    Type::dimensionless_scalar(),
-                )),
-            )
-            .param(
-                "Second",
-                "x",
-                Type::Int,
-                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
-            )
-            .build()
-    }
-
-    /// The two panic branches of `get_let_expr_in_template` ("no value cell
-    /// named" / "has no default expr") are intentionally NOT re-tested here.
-    /// `get_let_expr_in_template` and `get_let_expr_in` both resolve through
-    /// the shared `try_get_value_cell_in_template` / `require_default_expr` primitives, and
-    /// `test_get_let_expr_in_panics_on_missing_cell` /
-    /// `test_get_let_expr_in_panics_on_missing_default_expr` below already
-    /// exercise both branches through those primitives — duplicating them at
-    /// this layer would add coverage of the new entry point only, not of new
-    /// behavior (task #5831 review).
-    ///
-    /// What IS specific to this layer: the ambiguity abort. This fixture's
-    /// colliding entities ("First", "Second") are neither the template's own
-    /// ("Bracket"), so the lookup must abort rather than silently return one
-    /// of the two.
-    #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_get_let_expr_in_template_panics_on_ambiguous_member() {
-        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
-    }
-
-    /// Pins that the ambiguity panic is actionable: it enumerates the
-    /// colliding `id.entity` values, in `value_cells` order, in its message.
-    /// Without this, a maintainer hitting the panic from
-    /// `test_get_let_expr_in_template_panics_on_ambiguous_member` learns only
-    /// that a collision occurred, not which entities collided — forcing them
-    /// to reproduce it by hand before they can disambiguate.
-    #[test]
-    #[should_panic(expected = "[\"First\", \"Second\"]")]
-    fn test_get_let_expr_in_template_ambiguity_panic_names_colliding_entities() {
-        let _ = super::get_let_expr_in_template(&ambiguous_x_template(), "x");
     }
 
     /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
@@ -3042,37 +3042,6 @@ mod tests {
             !message.contains("has no default expr"),
             "ambiguity must be reported before the missing default, got: {message}"
         );
-    }
-
-    /// Two cells both claiming the template's own entity (`Bracket`) stay
-    /// ambiguous: picking the first of them would be silently wrong.
-    ///
-    /// Builder-only fixture — the compiler never emits two cells with one id.
-    #[test]
-    #[should_panic(expected = "ambiguous cell name")]
-    fn test_lookup_panics_when_two_colliding_cells_claim_the_templates_own_entity() {
-        use reify_core::Type;
-        use reify_ir::{CompiledExpr, Value};
-
-        let template = crate::builders::TopologyTemplateBuilder::new("Bracket")
-            .param(
-                "Bracket",
-                "x",
-                Type::dimensionless_scalar(),
-                Some(CompiledExpr::literal(
-                    Value::Real(1.5),
-                    Type::dimensionless_scalar(),
-                )),
-            )
-            .param(
-                "Bracket",
-                "x",
-                Type::Int,
-                Some(CompiledExpr::literal(Value::Int(1), Type::Int)),
-            )
-            .build();
-
-        let _ = super::get_let_expr_in_template(&template, "x");
     }
 
     // ── get_let_expr_in ───────────────────────────────────────────────────
