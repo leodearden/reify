@@ -16,7 +16,8 @@
 //   Prover ‖ Adversary  — run concurrently:
 //     Prover:   receive premises inline; write to temp file; invoke
 //               `prd-decompose-verify.py bind` then `prd-capability-check.py
-//               --json`; return result records via RESULTS_SCHEMA
+//               --json` (REIFY_BIN-prefixed when args.reify_bin names a
+//               binary); return result records via RESULTS_SCHEMA
 //     Adversary: independent lens — hunt unlisted premises + falsifications;
 //               return its own α result records via RESULTS_SCHEMA
 //   Synthesize — agent receives combined records inline; writes to temp file;
@@ -262,6 +263,52 @@ function normalizeLeaves(rawArgs, warn) {
 }
 
 // ---------------------------------------------------------------------------
+// batchArgs — the args envelope {leaves, reify_bin} (task #9772)
+//
+// The operator, never an agent, names the reify binary α probes with: binary
+// trust is SHA identity (#8649), and this script cannot read files or env
+// (PRD §3 M4), so args is the only channel.  A non-array object (or a JSON
+// string of one) owning an envelope key is an envelope; anything else is the
+// leaf batch itself, as before.  Operator contract:
+// .claude/skills/prd/project.md, "Choosing the reify binary".
+// ---------------------------------------------------------------------------
+
+const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
+
+function batchEnvelope(rawArgs) {
+    let value = rawArgs;
+    if (typeof rawArgs === "string") {
+        try {
+            value = JSON.parse(rawArgs);
+        } catch (e) {
+            return null;
+        }
+    }
+    const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
+    return isObject && BATCH_ENVELOPE_KEYS.some(
+        key => Object.prototype.hasOwnProperty.call(value, key)) ? value : null;
+}
+
+function batchArgs(rawArgs, warn) {
+    const envelope = batchEnvelope(rawArgs);
+    if (envelope === null) {
+        return { leaves: normalizeLeaves(rawArgs, warn), reifyBin: null };
+    }
+    return { leaves: normalizeLeaves(envelope.leaves, warn), reifyBin: envelope.reify_bin ?? null };
+}
+
+function shellQuote(s) {
+    return "'" + s.replaceAll("'", "'\\''") + "'";
+}
+
+// The one home of the α command line the Prover and Adversary are told to run.
+const ALPHA_RUNNER = "python3 scripts/prd-capability-check.py --json";
+
+function alphaInvocation(reifyBin) {
+    return reifyBin === null ? ALPHA_RUNNER : `REIFY_BIN=${shellQuote(reifyBin)} ${ALPHA_RUNNER}`;
+}
+
+// ---------------------------------------------------------------------------
 // leafLabelFor — a leaf's display label (task #7369)
 //
 // SPOT: the single definition of "what a leaf is called for display purposes".
@@ -362,7 +409,8 @@ const _wfResult = await (async function runWorkflow() {
 
     // `args` is injected by the Workflow harness. Normalize defensively: args
     // has been observed arriving JSON-stringified (task #4960 mega-leaf trap).
-    const leaves = normalizeLeaves(args, log); // eslint-disable-line no-undef
+    const { leaves, reifyBin } = batchArgs(args, log); // eslint-disable-line no-undef
+    const alphaCommand = alphaInvocation(reifyBin);
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
@@ -511,7 +559,7 @@ Steps (use your own shell/file tools):
    Capture stdout (the probe-set JSON). If exit code != 0, return a HARNESS_ERROR record.
 3. Write the probe-set JSON to another temp file, e.g.:
      /tmp/pdv_probeset_${idx}.json
-4. Run: python3 scripts/prd-capability-check.py --json /tmp/pdv_probeset_${idx}.json
+4. Run: ${alphaCommand} /tmp/pdv_probeset_${idx}.json
    Capture the full stdout JSON. Parse the "results" array from it.
 5. Return {prover: [result_records...], adversary: []}.
 
@@ -542,7 +590,8 @@ ${premisesJson}
 
 Instructions:
 1. Are there any premises NOT listed above that should hold? If so, bind them
-   to probes and run them via prd-capability-check.py --json using your own tools.
+   to probes and run them using your own tools, with exactly:
+     ${alphaCommand} <your probe-set file>
 2. Are any of the enumerated premises stated with the WRONG polarity (e.g., a
    rejection premise bound to observation="absent" instead of "present")?
    Flag these as FAIL records.
