@@ -46,6 +46,13 @@ are deliberately unparseable or deliberately failing, because they are *probe* i
 whose expected observation is a rejection. Nothing in the repo compiles this directory
 wholesale.
 
+The tracked-`.ri` parse guard
+(`crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs`) skips this
+directory's undeclared fixtures unread, so adding a fixture stays inert. A fixture listed
+in its `MUST_ERROR_RI_FIXTURES` is read and must keep showing its declared fault; such a
+fixture is Rust-coupled, so it is registered in `scripts/verify.sh`'s
+`_RUST_COUPLED_RI_FIXTURES` like any other (PG-DRIFT reds otherwise).
+
 ## Committed-probe-set format (JSON)
 
 ```json
