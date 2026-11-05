@@ -6575,6 +6575,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: 'Agent repeatedly issued Bash calls (turns 39 and 48) after the harness denied Bash in don''t-ask mode, which fits an assumption of an unrestricted default toolset. Weak match: the digest does not show why the agent expected Bash to be available, and the origin phase is not evidenced.'
+  - date: '2026-11-04'
+    project: reify
+    session: 72fff1c1-25e4-4439-a478-72df03c2a2f5
+    origin_phase: unknown
+    manifested_phase: verify
+    note: Autonomous orchestrated-task session (don't-ask permission mode) kept issuing Bash calls for git diff, log, and ls-tree investigation after Bash was denied at turns 35, 60, and 74, following the post-merge verification failure. This matches the entry's assumption of an unrestricted default toolset in an autonomous role. The digest does not show the origin of the toolset assumption, so origin is unknown.
 - id: entry-cand-20260727-5
   title: Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work
   severity: medium
@@ -11838,6 +11844,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     evidence_quote: 'Bash({"command": "echo \"=== is_known_builtin ===\" && grep -rn \"fn is_known_builtin\" crates/reify-compiler/src/ && echo \"=== cube occurrences in crates ===\" && grep -rn ''\"cube\"'' crates/ | head -20 &...) -> [exit 1] Exit code 1\n=== is_known_builtin ==="'
+  - date: '2026-11-04'
+    project: reify
+    session: 25f645a4-24cc-460c-a117-6326793dd0a6
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'Partial match on mechanism: grep no-match exit 1 is surfaced as a tool_error (turn 825 and turn 832), with the reported exit code coming from grep rather than a real path or IO failure. The digest shows no && chain (turn 825 uses '';'' and a for loop), so the entry''s truncation mechanism is not directly evidenced; the match rests on the exit-1 no-match misread.'
 - id: entry-cand-20260914-19
   title: Agent invokes non-existent tool names (read_file, grep_search) instead of the harness's actual Read/Grep tools
   severity: medium
