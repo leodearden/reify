@@ -38,6 +38,8 @@ pub mod eval_queue;
 pub mod gui_state_schema;
 pub mod kernel_status;
 pub mod large_stack;
+#[cfg(feature = "gui")]
+pub mod launch_mode;
 pub mod lsp_bridge;
 pub mod mcp_context;
 pub mod new_file_template;
