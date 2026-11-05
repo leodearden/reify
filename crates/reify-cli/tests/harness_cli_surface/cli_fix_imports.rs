@@ -37,16 +37,16 @@ fn describe(output: &Output) -> String {
     )
 }
 
-fn write_plate(dir: &Path) -> String {
-    let file = dir.join("plate.ri");
-    fs::write(&file, PLATE).expect("write fixture");
+fn write_ri(dir: &Path, name: &str, source: &str) -> String {
+    let file = dir.join(name);
+    fs::write(&file, source).expect("write fixture");
     file.to_str().expect("utf-8 temp path").to_string()
 }
 
 #[test]
 fn check_reports_the_missing_imports_and_leaves_the_file_alone() {
     let dir = tempdir().expect("tempdir");
-    let file = write_plate(dir.path());
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
 
     let output = run_reify(&["fix", "--imports", "--check", &file]);
     assert!(!output.status.success(), "{}", describe(&output));
@@ -63,7 +63,7 @@ fn check_reports_the_missing_imports_and_leaves_the_file_alone() {
 #[test]
 fn fix_writes_the_header_once_and_the_fixed_file_checks_clean() {
     let dir = tempdir().expect("tempdir");
-    let file = write_plate(dir.path());
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
 
     let output = run_reify(&["fix", "--imports", &file]);
     assert!(output.status.success(), "{}", describe(&output));
@@ -88,7 +88,7 @@ fn fix_writes_the_header_once_and_the_fixed_file_checks_clean() {
 #[test]
 fn fix_without_a_fixer_flag_prints_its_usage() {
     let dir = tempdir().expect("tempdir");
-    let file = write_plate(dir.path());
+    let file = write_ri(dir.path(), "plate.ri", PLATE);
 
     let output = run_reify(&["fix", &file]);
     assert!(!output.status.success(), "{}", describe(&output));
