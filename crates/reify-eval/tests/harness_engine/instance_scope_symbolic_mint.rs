@@ -306,3 +306,68 @@ fn override_free_sub_reuses_through_a_selector_over_a_solid_param_default() {
          param default never minted `body`; Int(42) = the reuse gate declined)"
     );
 }
+
+/// Phase 1's scratch let must mint the same selector phase 2 commits.
+///
+/// Since #7511, `elaborate_child_params_only` evaluates the lets a param default
+/// reads as SCRATCH values (`Phase1Step::ScratchLet`). `p`'s default is a
+/// `ValueRef` to the selector let `s`, not a selector constructor, so the
+/// param-default mint cannot rescue it: only a minted scratch `body`/`s` makes
+/// `ScratchOuter.same.p` the template's Selector, and so lets the `@optimized`
+/// read of it reuse the template's dispatched value.
+#[test]
+fn phase1_scratch_let_mints_so_a_param_default_reading_a_selector_let_reuses() {
+    let source = r#"
+        @optimized("test::sel777")
+        fn sel_probe(s : FaceSelector) -> Int {
+            42
+        }
+
+        structure ScratchInner {
+            param len : Length = 10mm
+            let body = box(len, 10mm, 10mm)
+            let s = face(body, "x_max")
+            param p : FaceSelector = s
+            let r = sel_probe(p)
+        }
+
+        structure ScratchOuter {
+            sub same = ScratchInner()
+        }
+    "#;
+    let result = eval_with_const777(source, "test::sel777");
+
+    let template_p = cell(&result, "ScratchInner", "p");
+    assert!(
+        matches!(template_p, Value::Selector(_)),
+        "premise: template-scope ScratchInner.p must be a Selector, got {template_p:?}"
+    );
+    assert_eq!(
+        cell(&result, "ScratchInner", "r"),
+        &Value::Int(777),
+        "premise: template-scope ScratchInner.r must be the dispatched 777"
+    );
+
+    let instance_p = cell(&result, "ScratchOuter.same", "p");
+    assert!(
+        matches!(instance_p, Value::Selector(_)),
+        "ScratchOuter.same.p must be a Selector: Undef means phase 1's scratch \
+         `body`/`s` were not minted, got {instance_p:?}"
+    );
+    assert_eq!(
+        instance_p, template_p,
+        "ScratchOuter.same.p must equal the template's ScratchInner.p"
+    );
+    assert_eq!(
+        cell(&result, "ScratchOuter.same", "r"),
+        &Value::Int(777),
+        "ScratchOuter.same.r must reuse the template's dispatched 777 (Int(42) = \
+         the reuse gate declined on `p`)"
+    );
+    let warnings = decline_warnings(&result, "test::sel777");
+    assert!(
+        warnings.is_empty(),
+        "an override-free sub must not report a decline for test::sel777, got: \
+         {warnings:?}"
+    );
+}
