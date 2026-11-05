@@ -86,6 +86,7 @@ use crate::math_signatures::{
 };
 use crate::orientation_signatures::{ORIENTATION_DECOMPOSER_FN_NAMES, ORIENTATION_TYPED_FN_NAMES};
 use crate::relation_signatures::{RELATION_FN_NAMES, is_relation_shared_verb};
+use crate::trajectory_signatures::TRAJECTORY_SCALAR_INTRINSIC_NAMES;
 use crate::units::{
     AFFINE_ALGEBRA_NAMES, AFFINE_MAP_CONSTRUCTOR_NAMES, DATUM_CONSTRUCTOR_NAMES,
     DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
@@ -249,9 +250,11 @@ pub(crate) const FIRST_ARG_TYPED_NAMES: &[&str] = &[
 /// removing the group from this manifest is part of that task's diff, and
 /// `eval_deferred_names_are_disjoint_from_every_registered_family` is what
 /// turns a forgotten removal from a silent stale claim into a RED test.
-/// #5476 discharged the 13 `prb_*` ctors into `FLEXURE_CTOR_FN_NAMES`, so the
-/// dated "Derivation (2026-08-29)" counts above record that measurement, not
-/// this slice's current length.
+/// #5476 discharged the 13 `prb_*` ctors into `FLEXURE_CTOR_FN_NAMES`, and
+/// #8119 the two scalar trajectory intrinsics into
+/// `TRAJECTORY_SCALAR_INTRINSIC_NAMES`, so the dated "Derivation
+/// (2026-08-29)" counts above record that measurement, not this slice's
+/// current length.
 ///
 /// Case-sensitive: Reify function names are snake_case.
 pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
@@ -326,6 +329,9 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     // --- owner #6007 (registry τ5) -----------------------------------------
     // The `*_lower` / `*_at` spellings are the undeclared intrinsics the typed
     // `.ri` wrappers delegate to; τ5 registers the direct-eval names only.
+    // The two scalar-valued `*_at` intrinsics (`profile_duration_at`,
+    // `peak_deviation_at`) are typed by `TRAJECTORY_SCALAR_INTRINSIC_NAMES`
+    // (#8119); the list-valued rest remain deferred here.
     // `piecewise_polynomial` is a permanent `Value::Undef` stub that τ5
     // LEDGERS rather than types.
     "world",
@@ -340,7 +346,6 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "input_shape",
     "end_effector_track_at",
     "deviation_from_nominal_at",
-    "peak_deviation_at",
     "evaluate_profile",
     "evaluate_profile_at",
     "evaluate_profile_dot",
@@ -348,7 +353,6 @@ pub(crate) const EVAL_DEFERRED_BUILTIN_NAMES: &[&str] = &[
     "evaluate_profile_ddot",
     "evaluate_profile_ddot_at",
     "profile_duration",
-    "profile_duration_at",
     "piecewise_polynomial",
     // --- representation-tolerance constraint verb — owner #6010 (registry τ8) / #6944 ---
     // It lands as an `EnginePostProcess` row, per the #7035 ruling
@@ -413,6 +417,7 @@ const BUILTIN_NAME_FAMILIES: &[(&str, &[&str])] = &[
     family_row!(ORIENTATION_TYPED_FN_NAMES),
     family_row!(ORIENTATION_DECOMPOSER_FN_NAMES),
     family_row!(FLEXURE_CTOR_FN_NAMES),
+    family_row!(TRAJECTORY_SCALAR_INTRINSIC_NAMES),
     // Resolver-only families, promoted to slices by #5371.
     family_row!(DATUM_CONSTRUCTOR_NAMES),
     family_row!(SELECTOR_COMPOSITION_NAMES),
@@ -584,6 +589,7 @@ mod tests {
             "orient_slerp",
             "orient_to_euler",
             "prb_cantilever_beam",
+            "peak_deviation_at",
             "midplane",
             "intersect",
             "flat_map",

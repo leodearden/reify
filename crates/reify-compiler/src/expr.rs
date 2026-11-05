@@ -55,6 +55,7 @@ use crate::datum_projection::{
     datum_projection_result_type, datum_projection_unavailable_hint, DatumProjectionResolution,
     DATUM_PROJECTION_MEMBERS,
 };
+use crate::trajectory_signatures::trajectory_scalar_intrinsic_result_type;
 use reify_core::overload::slot_matches_wildcard_tier;
 
 /// Return a `CompiledExpr` poison literal (`Value::Undef, Type::Error`) for
@@ -3439,21 +3440,22 @@ fn compile_expr_guarded_with_expected_inner(
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
                     // `is_flexure_typed_fn` (task #5476) →
+                    // `trajectory_scalar_intrinsic_result_type` (task #8119) →
                     // `registry_result_type` (the builtin-signature registry,
                     // task #6001 α — one arm replacing the former
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
                     // `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
                     // `is_orientation_decomposer_fn` (tasks #6082/#6306) →
-                    // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829), the task-4278
-                    // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), the #4629 W2
-                    // `fea_envelope_result_type` family, and the task-#5476
-                    // `is_flexure_typed_fn` family are pinned disjoint in
-                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
-                    // so within this arm the ordering is unobservable — no name can
-                    // satisfy two predicates. `selector_composition_result_type` is
+                    // first-arg fallback. Every name family above is a
+                    // `BUILTIN_NAME_FAMILIES` row, and
+                    // `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
+                    // pins the rows pairwise disjoint; the registry arm is pinned
+                    // disjoint from every row by
+                    // `registry_rows_and_shared_verbs_are_disjoint_from_every_family`.
+                    // So within this arm the ordering is unobservable, save for the
+                    // allowlisted `union`/`difference` overlap:
+                    // `selector_composition_result_type` is
                     // arg-aware (returns None for CSG non-selector operands) so CSG
                     // `union`/`difference` still reach `is_geometry_function`.
                     // task 4118 γ — list-helper selector coercion (insertion
@@ -3821,6 +3823,10 @@ fn compile_expr_guarded_with_expected_inner(
                         // position in the ladder is unobservable. The one hard
                         // requirement is that it precede the first-arg fallback.
                         flexure_joint_type()
+                    } else if let Some(t) = trajectory_scalar_intrinsic_result_type(name) {
+                        // `profile_duration_at` / `peak_deviation_at` — see
+                        // trajectory_signatures.rs.
+                        t
                     } else if registry_owns(name)
                         && let Some(t) = registry_result_type(
                             name,
