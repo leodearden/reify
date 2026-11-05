@@ -174,8 +174,9 @@ REIFY_BIN="$PWD/target/debug/reify" python3 scripts/prd-capability-check.py --js
 ```
 
 The `REIFY_BIN` form is for when the runner will not choose a binary itself (exit
-64 above). Binary trust is SHA identity, and `scripts/reify-bin-freshness.sh`
-holds that rule.
+64 above). Name a binary built from the commit under test: `REIFY_BIN` is taken
+verbatim, never refused. Binary trust is SHA identity, and
+`scripts/reify-bin-freshness.sh` holds that rule.
 
 Each `--json` record also carries the typed probe outcome: `fixture` (as written
 in the probe set), `fixture_present` and `harness_failure`. The record contract is
