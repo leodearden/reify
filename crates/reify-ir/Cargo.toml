@@ -6,6 +6,7 @@ license.workspace = true
 description = "Compiled IR and runtime vocabulary for Reify (Phase 3 of docs/prds/core-ast-ir-layering.md task ζ)"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ast.workspace = true
 im.workspace = true

@@ -7,3 +7,4 @@ publish = false
 description = "Language-spec (Ring 1) conformance suite: fixture corpus + harness for docs/reify-language-spec.md. NOT reify-compiler/src/conformance (struct-ctor/GD&T field conformance) and NOT reify-kernel-conformance (kernel-pair seam matrix)."
 
 [dependencies]
+workspace-feature-union.workspace = true

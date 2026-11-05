@@ -6,6 +6,7 @@ license.workspace = true
 description = "Pure ComputeFn contract value types for Reify — OCCT-free foundation crate shared by reify-eval and future non-OCCT evaluation engines (task A / #4934)"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 # StructuredComputeDetail::Fea wraps reify_solver_elastic::FeaDiagnosticDetail

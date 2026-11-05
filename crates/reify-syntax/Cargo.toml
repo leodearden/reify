@@ -6,6 +6,7 @@ license.workspace = true
 description = "Tree-sitter parser producing ParsedModule AST"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ast.workspace = true
 tree-sitter.workspace = true

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Fidget SDF-Boolean kernel adapter"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ir.workspace = true
 reify-core.workspace = true
 inventory.workspace = true

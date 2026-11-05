@@ -7,6 +7,7 @@ publish = false
 description = "Engine-driven synthetic-mesh FEA e2e tests (OCCT-free; Lever P of docs/prds/reify-eval-fea-decomposition.md)"
 
 [dependencies]
+workspace-feature-union.workspace = true
 
 [dev-dependencies]
 # test-instrumentation gates Engine::cache_store()/cache_store_mut() (used by

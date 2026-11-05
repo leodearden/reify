@@ -2,8 +2,17 @@
   "schema": 1,
   "strata": [
     {
-      "name": "spine",
+      "name": "feature-union",
       "may_depend_on": [],
+      "packages": [
+        "workspace-feature-union"
+      ]
+    },
+    {
+      "name": "spine",
+      "may_depend_on": [
+        "feature-union"
+      ],
       "packages": [
         "reify-ast",
         "reify-build-utils",
@@ -20,6 +29,7 @@
     {
       "name": "language",
       "may_depend_on": [
+        "feature-union",
         "spine"
       ],
       "packages": [
@@ -35,6 +45,7 @@
     {
       "name": "kernel",
       "may_depend_on": [
+        "feature-union",
         "spine"
       ],
       "packages": [
@@ -49,6 +60,7 @@
     {
       "name": "solver",
       "may_depend_on": [
+        "feature-union",
         "spine"
       ],
       "packages": [
@@ -60,6 +72,7 @@
     {
       "name": "analysis",
       "may_depend_on": [
+        "feature-union",
         "spine",
         "language",
         "solver"
@@ -69,6 +82,7 @@
     {
       "name": "engine",
       "may_depend_on": [
+        "feature-union",
         "spine",
         "language",
         "kernel",
@@ -84,6 +98,7 @@
     {
       "name": "frontend",
       "may_depend_on": [
+        "feature-union",
         "spine",
         "language",
         "kernel",
@@ -101,6 +116,7 @@
     {
       "name": "test-support",
       "may_depend_on": [
+        "feature-union",
         "spine",
         "language",
         "kernel",
@@ -119,6 +135,7 @@
     {
       "name": "tooling",
       "may_depend_on": [
+        "feature-union",
         "spine",
         "language",
         "kernel",
@@ -150,6 +167,9 @@
           "reify-build-utils",
           "reify-core",
           "reify-ir"
+        ],
+        "strata": [
+          "feature-union"
         ]
       }
     },
@@ -164,6 +184,9 @@
         "packages": [
           "reify-core",
           "reify-ir"
+        ],
+        "strata": [
+          "feature-union"
         ]
       }
     },
@@ -176,6 +199,7 @@
       },
       "only": {
         "strata": [
+          "feature-union",
           "spine"
         ]
       }

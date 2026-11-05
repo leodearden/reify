@@ -22,6 +22,7 @@ description = "Manifold mesh-Boolean kernel adapter"
 test-fixtures = []
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 inventory.workspace = true
