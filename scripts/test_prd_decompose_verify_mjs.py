@@ -1053,6 +1053,7 @@ _MJS_PHASES_MARK = "SCENARIO_PHASES:"
 _MJS_LOGS_MARK = "SCENARIO_LOGS:"
 _MJS_PIPELINE_ERRORS_MARK = "SCENARIO_PIPELINE_ERRORS:"
 _MJS_AGENT_CALLS_MARK = "SCENARIO_AGENT_CALLS:"
+_MJS_ERROR_MARK = "SCENARIO_ERROR:"
 
 
 def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
@@ -1067,6 +1068,10 @@ def _mjs_scenario_source(leaves_js: str, responses_js: str) -> str:
 
     The harness records every phase the .mjs actually invokes, so a test can
     assert on stages that were SKIPPED as well as on the returned verdict.
+
+    A workflow body that THROWS prints the error marker instead of the result
+    marker and exits 1, so every rc == 0 helper still fails loudly on an
+    unexpected throw while _run_scenario_error reads an expected one.
     """
     mjs_abs = PDV_MJS.replace("\\", "\\\\")
     return f"""\
@@ -1078,6 +1083,7 @@ const PHASES_MARK = "{_MJS_PHASES_MARK}";
 const LOGS_MARK = "{_MJS_LOGS_MARK}";
 const PIPELINE_ERRORS_MARK = "{_MJS_PIPELINE_ERRORS_MARK}";
 const AGENT_CALLS_MARK = "{_MJS_AGENT_CALLS_MARK}";
+const ERROR_MARK = "{_MJS_ERROR_MARK}";
 
 // ── mock: agent(prompt, opts) — parameterized, and records each phase ────────
 globalThis.__PHASES = [];
@@ -1141,8 +1147,14 @@ globalThis.workflow = async () => {{}};
 let src = readFileSync(MJS_PATH, "utf8");
 src = src.replace("export const meta", "const meta");
 const AsyncFunction = Object.getPrototypeOf(async function () {{}}).constructor;
-const result = await new AsyncFunction(src)();
-console.log(RESULT_MARK + JSON.stringify(result));
+try {{
+    const result = await new AsyncFunction(src)();
+    console.log(RESULT_MARK + JSON.stringify(result));
+}} catch (e) {{
+    console.log(ERROR_MARK + JSON.stringify(String(e && e.message)));
+    console.error(e && e.stack);
+    process.exitCode = 1;
+}}
 console.log(PHASES_MARK + JSON.stringify(globalThis.__PHASES));
 console.log(LOGS_MARK + JSON.stringify(globalThis.__LOG_LINES));
 console.log(PIPELINE_ERRORS_MARK + JSON.stringify(globalThis.__PIPELINE_ERRORS));
@@ -1254,6 +1266,22 @@ class _MjsScenarioMixin:
                       if ln.startswith(_MJS_AGENT_CALLS_MARK)]
         self.assertTrue(call_lines, f"no agent-calls marker; stdout: {out!r}")
         return json.loads(call_lines[-1][len(_MJS_AGENT_CALLS_MARK):])
+
+    def _run_scenario_error(self, leaves_js: str, responses_js: str):
+        """Run a scenario whose workflow body must THROW; return (message, phases).
+
+        Cached the same way as _run_scenario_logs (see its docstring).
+        """
+        rc, out, err = _run_node_module(_mjs_scenario_source(leaves_js, responses_js))
+        self.assertEqual(
+            rc, 1, f"the workflow did not throw; node exited {rc}; stdout: {out!r}")
+        error_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_ERROR_MARK)]
+        ph_lines = [ln for ln in out.splitlines() if ln.startswith(_MJS_PHASES_MARK)]
+        self.assertTrue(error_lines, f"no error marker; stdout: {out!r}; stderr: {err!r}")
+        self.assertTrue(ph_lines, f"no phases marker; stdout: {out!r}")
+        message = json.loads(error_lines[-1][len(_MJS_ERROR_MARK):])
+        phases = json.loads(ph_lines[-1][len(_MJS_PHASES_MARK):])
+        return message, phases
 
 
 # ---------------------------------------------------------------------------
@@ -1907,6 +1935,25 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
     def test_envelope_without_reify_bin_fans_out_and_leaves_alpha_bare(self):
         args_js = '{ leaves: [{ signal: "env a" }, { signal: "env b" }] }'
         self._assert_alpha_runs_bare(self._alpha_prompts(args_js, 2))
+
+    # Each malformed envelope, and the words its refusal must name.
+    _MALFORMED_ENVELOPES = (
+        ('{ leaves: [{ signal: "x" }], reify_bin: "target/debug/reify" }',
+         ("reify_bin", "target/debug/reify")),
+        ('{ leaves: [{ signal: "x" }], reify_bin: 42 }', ("reify_bin", "42")),
+        ('{ leaves: [{ signal: "x" }], reify_bin: "" }', ("reify_bin",)),
+        ('{ leaves: [{ signal: "x" }], reifyBin: "/opt/reify" }', ("reifyBin",)),
+        ('{ reify_bin: "/opt/reify" }', ("leaves",)),
+    )
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_a_malformed_envelope_is_refused_before_any_agent_runs(self):
+        for args_js, named in self._MALFORMED_ENVELOPES:
+            with self.subTest(args=args_js):
+                message, phases = self._run_scenario_error(args_js, self.VERIFIED_RESPONSES)
+                for word in named:
+                    self.assertIn(word, message)
+                self.assertEqual(phases, [])
 
 
 if __name__ == "__main__":
