@@ -35,7 +35,8 @@ use crate::engine_helpers::collect_member_list;
 use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
 use crate::snapshot::Snapshot;
 use crate::symbolic_cell_mint::{
-    SymbolicMintOrder, SymbolicMintOutcome, SymbolicMintScope, mint_symbolic_if_undef,
+    RealizationSource, SymbolicMintOrder, SymbolicMintOutcome, SymbolicMintScope,
+    mint_symbolic_if_undef,
 };
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
@@ -8561,7 +8562,7 @@ impl Engine {
                                 &cell.id,
                                 cell.default_expr.as_ref(),
                                 &SymbolicMintScope {
-                                    template,
+                                    realizations: RealizationSource::Template(template),
                                     values: &values,
                                     functions: &self.functions,
                                     meta_map: &self.meta_map,
@@ -8759,7 +8760,7 @@ impl Engine {
                                 &cell.id,
                                 Some(expr),
                                 &SymbolicMintScope {
-                                    template,
+                                    realizations: RealizationSource::Template(template),
                                     values: &values,
                                     functions: &self.functions,
                                     meta_map: &self.meta_map,
@@ -10308,7 +10309,7 @@ impl Engine {
                         &cell.id,
                         cell.default_expr.as_ref(),
                         &SymbolicMintScope {
-                            template,
+                            realizations: RealizationSource::Template(template),
                             values,
                             functions,
                             meta_map,
@@ -10801,7 +10802,7 @@ impl Engine {
                         &cell_id,
                         Some(expr),
                         &SymbolicMintScope {
-                            template,
+                            realizations: RealizationSource::Template(template),
                             values,
                             functions,
                             meta_map,

@@ -16,7 +16,9 @@ use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::{EventJournal, TraceSource};
 use crate::snapshot::Snapshot;
-use crate::symbolic_cell_mint::{SymbolicMintOrder, SymbolicMintScope, mint_symbolic_if_undef};
+use crate::symbolic_cell_mint::{
+    RealizationSource, SymbolicMintOrder, SymbolicMintScope, mint_symbolic_if_undef,
+};
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
 /// the gate, its decline report, and the shape probe they share (task #6662).
@@ -1350,7 +1352,7 @@ fn eval_scratch_let(
             key,
             expr,
             &SymbolicMintScope {
-                template: child_template,
+                realizations: RealizationSource::Template(child_template),
                 values: scope,
                 functions,
                 meta_map,
@@ -1545,7 +1547,7 @@ fn elaborate_child_params_only<'f>(
                         &cell.id,
                         default_expr,
                         &SymbolicMintScope {
-                            template: child_template,
+                            realizations: RealizationSource::Template(child_template),
                             values: &scope,
                             functions,
                             meta_map,
@@ -1873,7 +1875,7 @@ fn elaborate_child_lets_only<'t, 'f>(
                     child_cell_id,
                     expr,
                     &SymbolicMintScope {
-                        template: child_template,
+                        realizations: RealizationSource::Template(child_template),
                         values: &child_values,
                         functions,
                         meta_map,

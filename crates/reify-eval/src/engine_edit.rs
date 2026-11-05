@@ -164,6 +164,10 @@ use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
     stale_realizations,
 };
+use crate::symbolic_cell_mint::{
+    RealizationSource, SymbolicMintOrder, SymbolicMintScope, mint_symbolic_if_undef,
+    project_instance_reads,
+};
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -1349,8 +1353,33 @@ impl Engine {
                 // are accumulated into `selector_mint_diagnostics` and drained
                 // into the function's `diagnostics` output below, matching
                 // edit_source's whole-module pass instead of dropping them.
+                let trace = extract_dependency_trace(expr);
                 let was_undef = matches!(val, Value::Undef);
-                let val = if was_undef {
+                let val = if was_undef
+                    && let Some(template) = new_snapshot.graph.sub_instance_template(&vcid.entity)
+                {
+                    // #8102: a sub-instance cell's expression is its template
+                    // declaration's, so it mints as the template's cell over the
+                    // instance's own values, as `unfold` mints it at `eval()`. A
+                    // realization's operations lower that same expression, so
+                    // projecting its reads gives the hash fold every cell it reads.
+                    let instance_values =
+                        project_instance_reads(&values, &vcid.entity, template, &trace.reads);
+                    mint_symbolic_if_undef(
+                        val,
+                        SymbolicMintOrder::for_kind(node.kind),
+                        &ValueCellId::new(template, &vcid.member),
+                        Some(expr),
+                        &SymbolicMintScope {
+                            realizations: RealizationSource::Graph(&new_snapshot.graph),
+                            values: &instance_values,
+                            functions: &functions,
+                            meta_map: &self.meta_map,
+                        },
+                        &mut selector_mint_diagnostics,
+                    )
+                    .value
+                } else if was_undef {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
                         vcid,
                         &new_snapshot.graph,
@@ -1400,7 +1429,6 @@ impl Engine {
                 // the pre-commit eval+mint span, it must NOT read this
                 // Duration for that purpose; it would need its own Custom
                 // payload recorded before the commit_cell_result call.
-                let trace = extract_dependency_trace(expr);
                 let commit_outcome = commit_cell_result(
                     CommitLegs {
                         values: &mut values,
@@ -2326,6 +2354,7 @@ impl Engine {
                 for i in 0..old_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    new_snapshot.graph.forget_sub_instance(&scoped_entity);
                     for (member, _, _, _) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         new_snapshot.graph.value_cells.remove(&scoped_id);
@@ -2356,6 +2385,9 @@ impl Engine {
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    new_snapshot
+                        .graph
+                        .record_sub_instance(scoped_entity.clone(), col_sub.structure_name.clone());
                     for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
@@ -4390,6 +4422,7 @@ impl Engine {
                 for i in 0..old_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    new_snapshot.graph.forget_sub_instance(&scoped_entity);
                     for (member, _, _, _) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         new_snapshot.graph.value_cells.remove(&scoped_id);
@@ -4434,6 +4467,9 @@ impl Engine {
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
+                    new_snapshot
+                        .graph
+                        .record_sub_instance(scoped_entity.clone(), col_sub.structure_name.clone());
                     for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
