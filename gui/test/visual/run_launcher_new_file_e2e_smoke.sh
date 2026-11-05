@@ -30,7 +30,14 @@ XDG_DATA_HOME="$(mktemp -d "${TMPDIR:-/tmp}/reify-launcher-smoke-data.XXXXXX")"
 export XDG_DATA_HOME
 export REIFY_LAUNCHER_SMOKE_SCENARIO=new
 
-e2e_smoke_run \
-    --name run_launcher_new_file_e2e_smoke \
-    --no-fixture \
-    --driver gui/test/visual/smoke_launcher_e2e.mjs
+# e2e_smoke_run exits the shell it runs in, so it runs in a subshell here and
+# the per-run data home is removed afterwards, whatever the outcome.
+rc=0
+(
+    e2e_smoke_run \
+        --name run_launcher_new_file_e2e_smoke \
+        --no-fixture \
+        --driver gui/test/visual/smoke_launcher_e2e.mjs
+) || rc=$?
+rm -rf "$XDG_DATA_HOME"
+exit "$rc"
