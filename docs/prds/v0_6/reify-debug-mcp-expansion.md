@@ -1,6 +1,8 @@
 # PRD: `reify-debug` MCP expansion — agent-grade GUI inspection + interaction surface
 
-**Status:** Draft · **Author session:** 2026-06-03 · **Milestone:** v0_6
+**Status:** **SHIPPED (v0.6)** — all 14 decomposition leaves landed (4293, 4294, 4295, 4296, 4297, 4298, 4299, 4300, 4301, 4302, 4303, 4304, 4305, 4307). The deferred half, true platform accessibility-tree auditing (§5, AX-1), is **excluded scope** held by the deferred tracker #4306, which stays deferred and does not block this stamp (Leo, 2026-10-19). · **Author session:** 2026-06-03 · **Milestone:** v0_6
+
+**The body below is the AS-AUTHORED design record.** Its substrate measurements, file:line anchors and decomposition metadata are dated 2026-06-03 pre-implementation evidence, retained as provenance for how the work was shaped; they are not current statements of fact about the code. **LIVE vs AS-AUTHORED:** §0 (the scope boundary) and §5 (the deferred AX-1 scope that #4306 holds) remain LIVE statements of what this PRD does and does not cover; every other section is AS-AUTHORED. The live tool contract is `docs/debug-mcp-contract.md`, not this PRD.
 **Consumer north-star:** an **agent assessing / debugging the reify-gui UI/UX** — "what is on screen, how is it laid out, how does it respond."
 **Substrate under change:** `gui/src-tauri/src/debug_server.rs` (tool-defs + dispatch), `gui/src/debug/bridge.ts` (frontend handlers), `gui/src/debug/types.ts` (ctx shape), `gui/test/visual/run.ts` (e2e harness), plus targeted exposure edits in `gui/src/App.tsx`, `gui/src/stores/`, `gui/src/panels/`, `gui/src/main.tsx`, `gui/src-tauri/capabilities/default.json`.
 **Forward stub for the deferred half:** true platform accessibility-tree auditing (§5, deferred tracker AX‑1).

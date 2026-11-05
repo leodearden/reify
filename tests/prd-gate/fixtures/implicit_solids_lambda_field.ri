@@ -1,0 +1,6 @@
+// nu negative (R26): an unannotated fn_field is typed Field<Real, ..>; implicit() and sdf_volume over it are refused with SdfInvalidArg.
+structure def LambdaSdf {
+    let f = fn_field(|p| p)
+    let body = implicit(f, vec3(30mm, 30mm, 30mm), 2mm)
+    let v = sdf_volume(f, vec3(30mm, 30mm, 30mm), 2mm)
+}

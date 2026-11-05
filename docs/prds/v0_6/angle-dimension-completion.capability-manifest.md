@@ -100,7 +100,7 @@ ran `target/debug/reify` (2026-08-05; interim commits docs-only). Sidecar twin:
   STEP cone semi-angle (`occt_wrapper.cpp` export_step; probe: `CONICAL_SURFACE` writes raw
   radians under OCCT's *default* radian unit), OCCT `angle_rad` FFI fields, SolveSpace
   `angle_deg` (degrees, `solvespace.rs:230`), MCP `set_parameter` (inbound bare f64 →
-  installed as SI radians silently, `mcp_context.rs:499-530`; schema text misdescribes),
+  installed as SI radians silently, `mcp_context.rs:499-530` *(the CLI host was deleted by bbfbc7dd29 (#6665))*; schema text misdescribes),
   dynamics `compliance_cell_f64` silent erasure (`dynamics/eval.rs:98-110`), 2π marshalling
   (`input_shape.rs:116-126`, `free_vibration.rs:25-31`). PASS.
 - **declaration-precedents** → `eigenvalue_to_frequency_hz` name+formula;
@@ -151,3 +151,11 @@ findings; each is adjudicated here (the gate's own resolution paths):
   signed channel exists today, so #6164's `.rotation` would be the first to hit it. PASS.
 - **consumer** → #6164's `.rotation` channel (ruled, pending) + honest legends for existing
   Pa channels. Recommend Leo wire 6164 → υ (P cannot mutate 6164 — session constraint). PASS.
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| α #6179 | `production-duplicate-drift-pinned` (`CURVATURE`, present) | + `crates/reify-eval/src/geometry_ops/` |

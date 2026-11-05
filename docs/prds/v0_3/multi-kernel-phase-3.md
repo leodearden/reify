@@ -509,6 +509,7 @@ Authored 2026-05-28 as the G3 follow-on (decision D on esc-3437-13, retiring boo
   - **Crates touched:** reify-kernel-openvdb (kernel_real.rs new FFI, register.rs).
 
 - **Task κ** — Fidget `Convert { from: Sdf } → Mesh` capability descriptor + FFI integration (fidget's `mesh_render`); per-op `IsoMeshOptions` hashed.
+  - **Status (2026-10-08):** kernel-level only; the `.ri` signal below is superseded by implicit-solids (`docs/prds/v0_6/implicit-solids.md`). Delivered at kernel level by #3441 but never reachable from `.ri`; the Fidget evaluator's live owner is #8411.
   - **Observable signal:** A `.ri` file declares `field def sphere_sdf : Point3<Length> -> Length = ...` (SDF closed form); a downstream consumer demands `Mesh`; CLI evaluation produces a Mesh value; viewport-debug-MCP confirms vertices > 0.
   - **Prereqs:** δ, ε.
   - **Crates touched:** reify-kernel-fidget (kernel.rs, register.rs).

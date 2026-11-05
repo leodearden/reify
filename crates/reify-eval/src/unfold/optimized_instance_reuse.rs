@@ -326,11 +326,11 @@ fn render_input_value(value: &Value) -> String {
 /// the template cell moved. `elaborate_child_lets_only` — the one reuse site
 /// that commits a trace at all — now pushes `{child_template}.{member}` onto
 /// the committed trace's `reads`, so the existing dirty machinery invalidates
-/// the instance cell whenever the template cell is rewritten. The other two
-/// reuse sites need no counterpart: phase 1.5's scratch arm writes only the
-/// in-memory `overlay` (phase 2 owns the commit), and
-/// `elaborate_child_params_only` commits `DependencyTrace::default()` for EVERY
-/// param, reused or not.
+/// the instance cell whenever the template cell is rewritten. The other reuse
+/// sites need no counterpart: the SCRATCH sites (phase 1.5's `overlay` and
+/// phase 1's `scope`, both via `eval_scratch_let`) write only in-memory maps
+/// (phase 2 owns the commit), and `elaborate_child_params_only` commits
+/// `DependencyTrace::default()` for EVERY param, reused or not.
 ///
 /// The geometry case DOES reach `Reuse` at `eval()`: an instance's geometry
 /// cell is minted with the TEMPLATE's realization id and an upstream hash over
@@ -345,7 +345,8 @@ fn render_input_value(value: &Value) -> String {
 /// crate's tests cannot mint. Tracked by #7184.
 ///
 /// `instance_values` is this instance's map (`child_values` in phase 2, the
-/// running `overlay` in phase 1.5); `global_values` is the global map holding
+/// running `overlay` in phase 1.5, the running `scope` in phase 1);
+/// `global_values` is the global map holding
 /// the template-scope pass's results. Both are keyed template-scoped, so the
 /// same `ValueCellId` addresses the two scopes' copies of one cell.
 ///
@@ -379,6 +380,24 @@ fn render_input_value(value: &Value) -> String {
 /// * a SKIPPED sub (non-nestable / cycle cut / unresolvable) contributes to
 ///   NEITHER map: phase 2's BFS is seeded from `elaborated_sub_names`, which
 ///   excludes exactly the subs phase 1.5 skipped.
+///
+/// Phase 1's scratch `scope` is a third map, and it DOES decide differently
+/// for a let that reads a sub member, because it holds no sub-member
+/// projections. The gate sees `(None, Some(_))`, declines without a report, and
+/// the call is body-inlined over the absent input. Phase 2 still reuses, so
+/// only the param defaults reading that let see the difference. Template scope
+/// evaluates those defaults before its subs too, with the call dispatched over
+/// the same absent input. MEASURED, in
+/// tests/harness_engine/instance_scope_param_default_order.rs:
+///
+/// * a trampoline that maps the absent input to Undef: the two scopes agree,
+///   with `p == Undef` at both
+///   (`param_default_reading_an_optimized_let_over_a_nested_sub_member_agrees_with_template`);
+/// * a trampoline that ignores its input: template `p == 777`, instance
+///   `p == Undef`, and no diagnostic
+///   (`known_divergence_param_default_reading_an_input_blind_optimized_let_over_a_sub_member`).
+///   Template scope's pre-sub value is overwritten by its post-sub pass, so
+///   there is nothing here to reuse. Tracked by #9498.
 pub(super) fn resolve_optimized_instance_cell<R>(
     expr: &reify_ir::CompiledExpr,
     optimized_names: &OptimizedNameIndex<'_>,
@@ -573,15 +592,15 @@ fn decline_message(key: &str, site: DeclineSite<'_>, cause: &DeclineCause) -> Op
 ///   Filtering on the structural cause rather than on the presence of a
 ///   text-matching Error keeps this independent of any other site's wording.
 /// * REGISTERED-TARGET GATE. Without it the warning fired, with actively
-///   misleading text, in the plain `reify check` shape — which registers NO
-///   trampolines — for every sub carrying a constructor override on a param an
-///   `@optimized` call reads. MEASURED: `Outer.a.r` got `Int(11)`, the correct
-///   per-instance body-inlined answer, alongside "falling back to
-///   body-inlining"; there was no dispatch to fall back FROM, and template
-///   scope had already emitted its own `no registered compute trampoline` Error
-///   for the same condition. `reify check` is the default CLI path, so that was
-///   a spurious warning on every model instantiating an `@optimized`-bearing
-///   structure with an override.
+///   misleading text, on an engine that registers NO trampolines (at the
+///   time, plain `reify check`) — for every sub carrying a constructor
+///   override on a param an `@optimized` call reads. MEASURED: `Outer.a.r`
+///   got `Int(11)`, the correct per-instance body-inlined answer, alongside
+///   "falling back to body-inlining"; there was no dispatch to fall back
+///   FROM, and template scope had already emitted its own `no registered
+///   compute trampoline` Error for the same condition. That was a spurious
+///   warning on every model instantiating an `@optimized`-bearing structure
+///   with an override.
 /// * PER-TEMPLATE-CELL DEDUPE. The decline is a fact about `(target, child
 ///   template, member)`, not about one instance: three subs of one template
 ///   with three distinct overrides are one authoring fact, and a keyed

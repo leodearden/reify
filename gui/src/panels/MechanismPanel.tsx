@@ -40,6 +40,11 @@ function currentSiToDisplay(si: number | null, kind: string): number | null {
   return siToDisplay(si, kind);
 }
 
+/** Format a display-unit joint value for reading: one decimal, mm or degrees. */
+function formatDisplayValue(display: number, kind: string): string {
+  return kind === 'prismatic' ? `${display.toFixed(1)} mm` : `${display.toFixed(1)}°`;
+}
+
 // ---------------------------------------------------------------------------
 // Inverse display→SI helpers (used by onScrubLocal so mechanismStore
 // receives SI values and its equality check with current_value_si fires)
@@ -100,44 +105,22 @@ const JointRow: Component<JointRowProps> = (props) => {
   const dimension = () => joint().dimension;
 
   /**
-   * Binding-aware param-cell-id resolver.
-   * - param_bound → binding.param_cell_id (String in Rust; non-nullable per wire contract)
-   * - literal_bound → binding.synth_param_name (the engine-session virtual param)
-   * - coupling_derived / fixed_no_motion → null (not scrubbable)
-   *
-   * This is the id passed to onPreviewParameter and onSetParameter, and used
-   * as the first arg to onScrubLocal; both cadences reuse it unchanged.
+   * The param cell this slider writes through, or null when none exists.
+   * Only param_bound has one; a literal-bound joint's synth name is not a cell
+   * id (docs/prds/v0_3/kinematic-constraints-completion.md §8.3).
    */
   const effectiveParamCellId = (): string | null => {
     const b = joint().binding;
-    if (b.kind === 'param_bound') return b.param_cell_id;
-    if (b.kind === 'literal_bound') return b.synth_param_name;
-    return null;
+    return b.kind === 'param_bound' ? b.param_cell_id : null;
   };
 
-  // Whether this joint supports scrubbing.
-  // Prismatic/revolute joints with a param binding OR a scrubbable literal binding
-  // are scrubbable; coupling and fixed joints are never scrubbable.
-  // param_bound is always scrubbable: param_cell_id is non-nullable (Rust String).
-  const isScrubbable = () => {
-    if (kind() !== 'prismatic' && kind() !== 'revolute') return false;
-    const b = joint().binding;
-    if (b.kind === 'param_bound') return true;
-    if (b.kind === 'literal_bound') return b.scrubbable === true;
-    return false;
-  };
+  const isScrubbable = () =>
+    (kind() === 'prismatic' || kind() === 'revolute') && effectiveParamCellId() !== null;
 
   /**
-   * Binding-aware current-SI value helper.
-   * Delegates to the exported `jointCurrentSi` from mechanismStore (single source of truth).
-   *
-   * - param_bound → binding.current_value_si ?? legacy current_value_si
-   * - literal_bound → binding.initial_value_si  (the AST literal baseline)
-   * - else → null
-   *
-   * Used for initialDisplay() and as the fallback for effectiveValueSi
-   * so that a literal-bound joint initializes from its literal baseline,
-   * not the null legacy current_value_si field.
+   * Binding-aware current-SI value, delegated to mechanismStore's `jointCurrentSi`:
+   * a param_bound joint's slider value, or a literal_bound joint's literal for
+   * its read-only badge.
    */
   const bindingCurrentSi = (): number | null => jointCurrentSi(joint());
 
@@ -309,6 +292,14 @@ const JointRow: Component<JointRowProps> = (props) => {
 
   const isLiteralBound = () => joint().binding.kind === 'literal_bound';
 
+  const readOnlyLabel = (): string => {
+    if (isLiteralBound()) {
+      const disp = siToDisplay(bindingCurrentSi(), kind());
+      return disp === null ? 'value unknown' : `literal ${formatDisplayValue(disp, kind())}`;
+    }
+    return kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)';
+  };
+
   return (
     <div
       class={styles.jointRow}
@@ -320,24 +311,28 @@ const JointRow: Component<JointRowProps> = (props) => {
         <span class={styles.jointKind}>{kind()}</span>
         <span class={styles.jointIndex}>#{joint().joint_index}</span>
         <span class={styles.jointDimension}>({dimension()})</span>
-        <Show when={isLiteralBound()}>
-          <span class={styles.literalBoundIcon} title="Literal-bound — scrub is session-only">~</span>
-        </Show>
       </div>
 
       <Show
         when={isScrubbable()}
         fallback={
           <div class={styles.jointReadOnly}>
-            <span class={styles.noSliderBadge}>
-              {kind() === 'coupling' ? 'coupling (derived)' : 'fixed (no motion)'}
+            <span
+              class={styles.noSliderBadge}
+              title={
+                isLiteralBound()
+                  ? 'No parameter drives this joint — bind it to a param to scrub it here'
+                  : undefined
+              }
+            >
+              {readOnlyLabel()}
             </span>
           </div>
         }
       >
         <input
           type="range"
-          class={`${styles.jointSlider}${isLiteralBound() ? ` ${styles.literalBoundSlider}` : ''}`}
+          class={styles.jointSlider}
           min={minDisplay()}
           max={maxDisplay()}
           step={kind() === 'prismatic' ? 1 : 0.1}
@@ -346,11 +341,7 @@ const JointRow: Component<JointRowProps> = (props) => {
           onChange={handleChange}
           aria-label={`${kind()} #${joint().joint_index} slider`}
         />
-        <span class={styles.sliderValue}>
-          {kind() === 'prismatic'
-            ? `${sliderValue().toFixed(1)} mm`
-            : `${sliderValue().toFixed(1)}°`}
-        </span>
+        <span class={styles.sliderValue}>{formatDisplayValue(sliderValue(), kind())}</span>
       </Show>
     </div>
   );

@@ -26,11 +26,13 @@ use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
+use crate::kernel_owner::{export_kernel_for_owners, resolve_owning_kernel_name};
 use crate::primitive_attribute_seed::{
     is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
     seed_primitive_attributes_for_handle,
 };
-use crate::realization_cache::{NO_OPTIONS, RealizationCache};
+use crate::realization_cache::{ConversionSlot, NO_OPTIONS, RealizationCache};
+use crate::sub_instance_scope::{direct_sub_instances, instance_value_overlay};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
 };
@@ -39,6 +41,7 @@ use crate::topology_attribute_propagation::{
     populate_extrude_attributes, populate_loft_attributes, populate_revolve_attributes,
     populate_sweep_attributes, propagate_attributes_via_brepalgoapi_history,
 };
+use crate::volume_mesh_sources::{MeshedVolume, VolumeMeshSources};
 use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult};
 
 /// The four build/tessellate entry-point "surfaces" whose per-build engine
@@ -102,6 +105,24 @@ pub(crate) enum BuildSurface {
 /// reify-ir / reify-config `KernelId` consolidation.
 fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
+}
+
+/// The kernel-map key serving a conversion stage sourced on `source`, or
+/// `None` when no entry serves it.
+///
+/// Narrower than [`resolve_owning_kernel_name`]: its default-kernel fallback
+/// is taken only for the default kernel's own identity, so a stage sourced on
+/// any other kernel missing from the map fails rather than running on an
+/// unrelated kernel's handle-id space.
+fn conversion_source_key<'a, V>(
+    kernels: &BTreeMap<String, V>,
+    source: KernelId,
+    default_kernel_name: &'a str,
+) -> Option<&'a str> {
+    let key = resolve_owning_kernel_name(kernels, source, default_kernel_name);
+    let serves_source = key == source.as_registry_name()
+        || source == kernel_id_for_registry_name(default_kernel_name);
+    serves_source.then_some(key)
 }
 
 /// Forward a solid-level `TopologyAttribute` entry across the OCCT->Manifold
@@ -266,6 +287,22 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
+/// What [`Engine::execute_realization_ops`] hands back for its caller to apply
+/// after the call — writes that need state the executor cannot borrow.
+#[derive(Default)]
+struct ExecutedRealization {
+    /// Task 4744 β step-20: the source bundle the NEXT tick's morph needs, for
+    /// the caller to store in `Engine::morph_source`. `Some` only when a morph
+    /// producer is active AND this realization produced a VolumeMesh.
+    morph_source: Option<crate::morph_producer::MorphSource>,
+    /// The gmsh VolumeMesh the VolumeMesh edge appended as this realization's
+    /// terminal, paired with the handle it meshed from; `Some` exactly when that
+    /// edge ran. The VolumeMesh is an extra representation for an FEA consumer;
+    /// the body's geometry is still the meshed-from handle, so Phase-B egress
+    /// reads it ([`VolumeMeshSources::record_and_resolve_terminal`]).
+    volume_mesh: Option<MeshedVolume>,
+}
+
 /// Bundle of the positional inputs `Engine::execute_realization_ops` reads
 /// from. Input-side twin of [`RealizationOutputs`] above (task 3119 → task
 /// 5054 ζ): together the two structs are the executor's full parameter
@@ -381,12 +418,11 @@ struct RealizationOpsInput<'a> {
     // `resolve_selector_to_list`. `None` (the default) means "no snapshot" and
     // is fail-OPEN — an absent repr skips the gate and falls through to the
     // generic-error path, exactly as the tessellate-path hydration call site
-    // already does (`tessellate_from_values`' `realized_reprs_tess`). The
-    // `build` surface (`build_with_geometry_output`) overrides it with the same
-    // `realized_reprs_snapshot` it already threads into
+    // already does (`tessellate_from_values`' `realized_reprs_tess`). The two
+    // build surfaces (`build_with_geometry_output`, `build_snapshot`) override
+    // it with the same `realized_reprs_snapshot` they thread into
     // `hydrate_value_cell_in_loop`, so a cell-hydrated selector and an
-    // inline-argument selector are gated identically there. `build_snapshot`
-    // runs no `HydrateCell` walk at all, so it keeps the fail-open default.
+    // inline-argument selector are gated identically there.
     realized_reprs: Option<&'a HashMap<RealizationNodeId, ReprKind>>,
 }
 
@@ -572,6 +608,71 @@ enum BuildStep {
     HydrateCell(reify_core::ValueCellId),
 }
 
+/// Order one template's realizations and value cells for the build walk.
+///
+/// With a UnifiedDag `schedule`, the order is `run_unified_pass`'s global Kahn
+/// order filtered to THIS template's nodes, so a curated selector cell is
+/// hydrated before the realization that consumes it. Any realization the
+/// schedule does not cover (residue downstream of a cycle, a node with no trace
+/// entry) is then appended in declaration order, so every realization still runs
+/// exactly once. `demanded_rids` guards that fallback (β, task 4738): on the
+/// selective path a hidden body's realization is deliberately absent from the
+/// schedule, and re-adding it would execute it and defeat the kernel-time
+/// saving; `None` (full scope) appends all.
+///
+/// Without a schedule (LegacyMultiPass) the walk is declaration order with no
+/// `HydrateCell` steps.
+fn template_build_steps(
+    template: &reify_compiler::TopologyTemplate,
+    schedule: Option<&[NodeId]>,
+    demanded_rids: Option<&HashSet<&RealizationNodeId>>,
+) -> Vec<BuildStep> {
+    let Some(schedule) = schedule else {
+        return (0..template.realizations.len())
+            .map(BuildStep::Realize)
+            .collect();
+    };
+    let mut steps: Vec<BuildStep> = Vec::new();
+    let mut realized: HashSet<usize> = HashSet::new();
+    for node in schedule {
+        match node {
+            NodeId::Realization(rid) if rid.entity == template.name => {
+                if let Some(r_idx) = template.realizations.iter().position(|r| r.id == *rid) {
+                    steps.push(BuildStep::Realize(r_idx));
+                    realized.insert(r_idx);
+                }
+            }
+            NodeId::Value(vid) if vid.entity == template.name => {
+                steps.push(BuildStep::HydrateCell(vid.clone()));
+            }
+            _ => {}
+        }
+    }
+    for (r_idx, realization) in template.realizations.iter().enumerate() {
+        if !realized.contains(&r_idx)
+            && demanded_rids.is_none_or(|rids| rids.contains(&realization.id))
+        {
+            steps.push(BuildStep::Realize(r_idx));
+        }
+    }
+    steps
+}
+
+/// Everything [`Engine::hydrate_value_cell_in_loop`] reads to resolve one value
+/// cell of `template` at its `HydrateCell` step; each build walk fills it from
+/// its own sources.
+struct CellHydrationInputs<'a> {
+    template: &'a reify_compiler::TopologyTemplate,
+    named_steps: &'a HashMap<String, KernelHandle>,
+    /// The kernel the ladder runs on, looked up in the walk's kernel map.
+    kernel_name: &'a str,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+    table: &'a TopologyAttributeTable,
+    realization_read_cells: &'a HashSet<reify_core::ValueCellId>,
+    realized_reprs: &'a HashMap<RealizationNodeId, ReprKind>,
+}
+
 /// Task 3441 / 3814: seed compound-key entries `<sub>.<member> → handle` from
 /// each non-collection sub's completed snapshot in `module_named_steps`.
 ///
@@ -598,8 +699,9 @@ enum BuildStep {
 ///   regression test.
 ///
 /// No entries are produced for collection subs (compile-side blocks those),
-/// or for subs whose child template isn't yet in `module_named_steps`
-/// (forward-declared / recursive; fall through to the runtime error path).
+/// for subs whose child template isn't yet in `module_named_steps`
+/// (forward-declared / recursive; fall through to the runtime error path),
+/// or for a guarded sub whose guard eval declined.
 ///
 /// On the override path, kernel errors / compile errors for a realization's
 /// ops append a `Diagnostic::error` to `diagnostics` (mirroring
@@ -644,8 +746,6 @@ fn seed_cross_sub_named_steps(
     diagnostics: &mut Vec<Diagnostic>,
     templates: &[reify_compiler::TopologyTemplate],
 ) {
-    use reify_core::identity::ValueCellId;
-
     // Same-call dedup: (child_template_name, args_fingerprint, realization_name) → handle.
     // Two subs of the same child with identical override declarations share one
     // kernel-op sequence per invocation of this helper.  Uses Debug format of
@@ -663,7 +763,10 @@ fn seed_cross_sub_named_steps(
             // ── no-args path (existing behaviour) ───────────────────────────
             if let Some(child_snapshot) = module_named_steps.get(&sub.structure_name) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", sub.name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(&sub.name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -679,7 +782,17 @@ fn seed_cross_sub_named_steps(
                 None => continue,
             };
 
-            // 2. Obtain the default kernel.  The entry-point guards in
+            // 2. Build the per-instance overlay: `values` with each arg's
+            //    `"<parent>.<sub>"` scoped cell moved onto the child template's
+            //    own param cell.  A guard-declined sub has no instance, so
+            //    nothing to re-realize.
+            let Some(values_override) =
+                instance_value_overlay(&template.name, sub, child_template, values)
+            else {
+                continue;
+            };
+
+            // 3. Obtain the default kernel.  The entry-point guards in
             //    `build` / `build_snapshot` / `tessellate_from_values` all
             //    verify `kernels.contains_key(default_kernel_name)` before
             //    entering the template loop, so this is unreachable when the
@@ -689,46 +802,7 @@ fn seed_cross_sub_named_steps(
                 None => continue,
             };
 
-            // 3. Build per-instance overlay: clone the global `values` map
-            //    and overwrite `ValueCellId(child_template.name, param_name)`
-            //    with the scoped override value already computed by
-            //    `unfold.rs::elaborate_child_instance` and stored at
-            //    `ValueCellId("<parent>.<sub_name>", param_name)`.
-            //
-            //    Invariant: for every `(param_name, _)` in `sub.args`, a
-            //    scoped cell `ValueCellId("<parent>.<sub>", param_name)` MUST
-            //    exist in `values` — `elaborate_child_params_only` in
-            //    `crates/reify-eval/src/unfold.rs:292-358` populates it
-            //    unconditionally (override present → override value; absent →
-            //    default value from child template).  A missing key means the
-            //    eval phase failed to populate that cell before `build` was
-            //    called, which would be a bug in the eval pipeline.
-            let mut values_override = values.clone();
             let args_fingerprint = format!("{:?}", sub.args);
-            for (param_name, _) in &sub.args {
-                let scoped_key = ValueCellId::new(
-                    format!("{}.{}", template.name, sub.name),
-                    param_name.as_str(),
-                );
-                // `elaborate_child_params_only` guarantees this key exists.
-                // The debug_assert catches regressions in test builds; in
-                // release the silent fallback keeps child-template defaults.
-                debug_assert!(
-                    values.contains(&scoped_key),
-                    "expected scoped override cell {:?} in values map (populated by \
-                     unfold.rs::elaborate_child_params_only for sub {}.{} param {}); \
-                     missing cell means eval phase failed to seed this param before build",
-                    scoped_key,
-                    template.name,
-                    sub.name,
-                    param_name,
-                );
-                if let Some(val) = values.get(&scoped_key) {
-                    let child_key =
-                        ValueCellId::new(child_template.name.as_str(), param_name.as_str());
-                    values_override.insert(child_key, val.clone());
-                }
-            }
 
             // 4. Re-execute each named realization against the override values.
             //    Delegates to `realize_overridden_instance_into` — the shared
@@ -798,7 +872,10 @@ fn realize_overridden_instance_into(
             realization_name.to_string(),
         );
         if let Some(&cached) = per_call_dedup.get(&dedup_key) {
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), cached);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                cached,
+            );
             continue;
         }
 
@@ -856,7 +933,10 @@ fn realize_overridden_instance_into(
                 kernel: kernel_id_for_registry_name(default_kernel_name),
                 id: final_handle_id,
             };
-            named_steps.insert(format!("{}.{}", binding_prefix, realization_name), final_handle);
+            named_steps.insert(
+                crate::sub_instance_scope::scoped_step_key(binding_prefix, realization_name),
+                final_handle,
+            );
             per_call_dedup.insert(dedup_key, final_handle);
         }
     }
@@ -950,7 +1030,10 @@ fn seed_cross_let_named_steps(
             // ── no-args path: copy the def's shared snapshot ────────────────
             if let Some(child_snapshot) = module_named_steps.get(def_name.as_str()) {
                 for (member, handle) in child_snapshot {
-                    named_steps.insert(format!("{}.{}", binding_name, member), *handle);
+                    named_steps.insert(
+                        crate::sub_instance_scope::scoped_step_key(binding_name, member),
+                        *handle,
+                    );
                 }
             }
         } else {
@@ -1031,7 +1114,8 @@ fn seed_cross_let_named_steps(
 /// When `sub b = Bar(len: 600mm)` is surfaced via the containment walk, the
 /// child's default Phase-A handles (built against `len = 200mm`) give the wrong
 /// geometry.  This helper re-executes every realization in `child_template`
-/// against a per-instance value overlay (same override-scope construction as
+/// against the per-instance value overlay
+/// (`sub_instance_scope::instance_value_overlay`, shared with
 /// `seed_cross_sub_named_steps`) and returns one `Option<KernelHandle>` per
 /// realization index, aligned with `terminal_handles[child_idx]`.
 ///
@@ -1041,8 +1125,14 @@ fn seed_cross_let_named_steps(
 /// is deferred.
 ///
 /// Returns `None` for realizations that fail (compile or kernel error) or
-/// produce no geometry.  On success, the terminal `KernelHandle` is tagged
+/// produce no geometry, and for every realization of a guarded sub whose
+/// guard eval declined.  On success, the terminal `KernelHandle` is tagged
 /// with the default kernel's `KernelId` via `kernel_id_for_registry_name`.
+///
+/// The row alone does not tell a declined instance from one with no
+/// geometry, so the walk still recurses into a declined sub's subtree.
+/// Returning the verdict, so the walk can skip that subtree, is owned by
+/// #9547.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn realize_sub_override_handles(
     parent_name: &str,
@@ -1055,8 +1145,6 @@ pub(crate) fn realize_sub_override_handles(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Option<KernelHandle>> {
-    use reify_core::identity::ValueCellId;
-
     debug_assert!(
         !sub.args.is_empty(),
         "realize_sub_override_handles called for arg-free sub {}.{}; \
@@ -1067,24 +1155,15 @@ pub(crate) fn realize_sub_override_handles(
 
     let n = child_template.realizations.len();
 
+    let Some(values_override) = instance_value_overlay(parent_name, sub, child_template, values)
+    else {
+        return vec![None; n];
+    };
+
     let kernel = match geometry_kernels.get_mut(default_kernel_name) {
         Some(k) => k.as_mut(),
         None => return vec![None; n],
     };
-
-    // Build per-instance value overlay: clone the global map and overlay
-    // `ValueCellId(parent.sub, param)` → `ValueCellId(child, param)` for
-    // each constructor arg.  `elaborate_child_instance` guarantees the
-    // scoped cells exist; a missing key keeps the child's existing default.
-    let mut values_override = values.clone();
-    for (param_name, _) in &sub.args {
-        let scoped_key =
-            ValueCellId::new(format!("{}.{}", parent_name, sub.name), param_name.as_str());
-        if let Some(val) = values.get(&scoped_key) {
-            let child_key = ValueCellId::new(child_template.name.as_str(), param_name.as_str());
-            values_override.insert(child_key, val.clone());
-        }
-    }
 
     // v0.1 boundary: empty child named-steps (no nested sub-of-sub propagation).
     let child_named_steps: HashMap<String, KernelHandle> = HashMap::new();
@@ -2110,16 +2189,17 @@ fn substitute_op_parents(
     }
 }
 
-/// Cache-key `entity` id for a cross-kernel conversion intermediate (task 4050
-/// step-12).
+/// The [`ConversionSlot`] of a cross-kernel conversion intermediate (task 4050
+/// step-12): which input of its owning realization it converts.
 ///
 /// The conversion executor tessellates each BRep input handle of an op and
 /// ingests the result into the target kernel, producing a Mesh intermediate
-/// that is cached (keyed `(entity, Mesh, per_stage_tol, NO_OPTIONS)`) so a later
-/// realization can reuse it instead of re-tessellating. The `entity` component
-/// must be both DISTINCT per input (so an op's N inputs cache as N separate
-/// intermediates — no within-realization clobber) AND STABLE across identical
-/// rebuilds of the same realization (so the reuse hit fires).
+/// that is cached (keyed `(RealizationCache::intermediate_key(entity, slot),
+/// Mesh, per_stage_tol, NO_OPTIONS)`) so a later realization can reuse it
+/// instead of re-tessellating. The slot must be both DISTINCT per input (so an
+/// op's N inputs cache as N separate intermediates — no within-realization
+/// clobber) AND STABLE across identical rebuilds of the same realization (so
+/// the reuse hit fires).
 ///
 /// For a same-realization `Step` input — the only shape the v0.3-ε fixtures
 /// exercise — the input's *local step index* (its position in
@@ -2128,33 +2208,31 @@ fn substitute_op_parents(
 /// steps. A cross-realization (`Sub`) input is absent from
 /// `realization_step_ids` and falls back to the input handle id, which is
 /// itself a stable cached-terminal handle (the producing realization re-hits
-/// its own terminal cache on rebuild and hands back the same id). The `#`
-/// separator cannot occur in a DSL entity identifier, so the synthesised key
-/// can never collide with a real entity's terminal-cache key.
+/// its own terminal cache on rebuild and hands back the same id).
 ///
-/// **Cross-realization keying invariant.** The synthesised key embeds
-/// `realization_entity` but NOT the realization's index within its template, so
+/// **Cross-realization keying invariant.** The intermediate's owner is
+/// `realization_id.entity`, NOT the realization's index within its template, so
 /// two realizations that share an entity name (differing only by index) would
-/// generate identical intermediate keys for their first conversion input. This
-/// is deliberately consistent with the TERMINAL cache keying — the post-loop
-/// `realization_cache.insert(&realization_id.entity, …)` likewise keys on
-/// `entity` alone — and BOTH rely on the same invariant: within a single build a
-/// realization's `entity` uniquely identifies it in the cache (distinct cached
-/// realizations carry distinct entity names). If that invariant is ever weakened
-/// (e.g. multiple indexed realizations of one entity become independently
-/// cacheable), this key AND the terminal key must additionally incorporate
-/// `realization_id.index`; they must change together to stay consistent.
-fn conversion_intermediate_entity_id(
-    realization_entity: &str,
+/// share an intermediate key for their first conversion input. This is
+/// deliberately consistent with the TERMINAL cache keying — the post-loop
+/// `realization_cache.insert_terminal(&realization_id.entity, …)` likewise keys
+/// on `entity` alone — and BOTH rely on the same invariant: within a single
+/// build a realization's `entity` uniquely identifies it in the cache (distinct
+/// cached realizations carry distinct entity names). If that invariant is ever
+/// weakened (e.g. multiple indexed realizations of one entity become
+/// independently cacheable), the owner AND the terminal key must additionally
+/// incorporate `realization_id.index`; they must change together to stay
+/// consistent.
+fn conversion_slot(
     input_handle: GeometryHandleId,
     realization_step_ids: &[GeometryHandleId],
-) -> String {
+) -> ConversionSlot {
     match realization_step_ids
         .iter()
         .position(|id| *id == input_handle)
     {
-        Some(idx) => format!("{realization_entity}#conv-step{idx}"),
-        None => format!("{realization_entity}#conv-ext{}", input_handle.0),
+        Some(idx) => ConversionSlot::Step(idx),
+        None => ConversionSlot::External(input_handle),
     }
 }
 
@@ -2176,12 +2254,8 @@ fn conversion_intermediate_entity_id(
 /// **No `Convert` arm.** `Operation::Convert { from }` is the only
 /// `Operation` shape that does not correspond to a `GeometryOp` variant:
 /// representation conversion (BRep→Mesh tessellation, Mesh→Sdf rasterisation,
-/// …) is *not* an op the compiler emits today. Conversion-stage execution is
-/// deferred to task ζ (#3437, Manifold execute arm) + new cross-kernel
-/// mesh-ingest trait surface. ε surfaces non-empty dispatch plans as a
-/// diagnostic rather than executing them (see PRD §8 design decision).
-// Wired into `execute_realization_ops` in step-8 (#3436).
-#[allow(dead_code)]
+/// …) is *not* an op the compiler emits today. Conversion stages run inside
+/// the dispatch plan, in `execute_realization_ops`'s conversion executor.
 fn geometry_op_to_operation(op: &GeometryOp) -> Operation {
     // Classification is pure data: look up the L1 descriptor table and read
     // `operation`. Split's row has `operation: None`, which reproduces the
@@ -2416,8 +2490,10 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
 /// Used by `available_for_op`'s cross-realization name resolution (task
 /// 5033 Gap #2 Gap A) to look up a `GeomRef::Sub(name)` parent's produced
 /// repr in `named_step_reprs` when it names a DIFFERENT, already-completed
-/// realization rather than a step local to this one.
-fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
+/// realization rather than a step local to this one, and by
+/// `realization_staleness` to find the realizations that read another
+/// entity's geometry.
+pub(crate) fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
     let mut refs = Vec::new();
     match op {
         CompiledGeometryOp::Boolean { left, right, .. } => {
@@ -2994,6 +3070,81 @@ fn plan_output_repr(
         .map(|(_, r)| *r)
 }
 
+/// Phase-B product export shared by [`Engine::build_snapshot`] and
+/// `build_with_geometry_output`: serialize the (non-empty) `product_bodies`
+/// through the kernel that OWNS them — one body directly, several as a
+/// compound assembled on that kernel. Bodies owned by different kernels cannot
+/// form one compound (a compound takes ids in a single kernel's id space), so
+/// that case is an Error diagnostic and no geometry, in every format. Mesh
+/// formats could instead tessellate each body on its owner and merge the
+/// meshes; that is task #8916.
+fn export_product_bodies(
+    geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    default_kernel_name: &str,
+    product_bodies: &[crate::geometry_ops::ExportBody],
+    values: &ValueMap,
+    format: ExportFormat,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<u8>> {
+    debug_assert!(
+        !product_bodies.is_empty(),
+        "callers handle the no-product-body case themselves"
+    );
+    let owner = match export_kernel_for_owners(
+        geometry_kernels,
+        product_bodies.iter().map(|body| body.kernel),
+        default_kernel_name,
+    ) {
+        Ok(owner) => owner,
+        Err(mixed) => {
+            diagnostics.push(Diagnostic::error(mixed.to_string()));
+            return None;
+        }
+    };
+    let kernel = geometry_kernels
+        .get_mut(owner)
+        .expect("the resolved owner is a key of the kernel map");
+    let (handle, color) = match product_bodies {
+        [body] => {
+            // δ (task #4763): thread the body's material color via
+            // export_with_options so the 3MF arm writes <basematerials>.
+            let color =
+                resolve_export_body_color(values, &body.entity_path, body.handle_id, diagnostics);
+            (body.handle_id, color)
+        }
+        bodies => {
+            // v1 LIMITATION: a compound has no single per-body color.
+            let ids: Vec<GeometryHandleId> = bodies.iter().map(|body| body.handle_id).collect();
+            match kernel.make_compound(&ids) {
+                Ok(compound) => (compound.id, None),
+                Err(e) => {
+                    diagnostics.push(Diagnostic::error(format!("compound assembly error: {}", e)));
+                    return None;
+                }
+            }
+        }
+    };
+    let mut output = Vec::new();
+    match kernel.export_with_options(
+        handle,
+        format,
+        &reify_ir::ExportOptions {
+            step_schema: reify_ir::StepSchema::default(),
+            color,
+            include_materials: false,
+            include_colors: false,
+        },
+        &mut output,
+    ) {
+        // include_* false → W_3MF_NO_MATERIALS never fires, so warnings are empty.
+        Ok(_warnings) => Some(output),
+        Err(e) => {
+            diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
+            None
+        }
+    }
+}
+
 /// Scan `values` for a [`reify_ir::Value::StructureInstance`] whose `geometry`
 /// field is a [`reify_ir::Value::GeometryHandle`] with `kernel_handle == handle`
 /// AND which carries a `material` field (i.e. it is a Physical body with a
@@ -3106,6 +3257,40 @@ fn resolve_instance_color(
 /// (`build_with_geometry_output` and `build_snapshot`) and threaded through
 /// every call that loop makes.
 ///
+/// The redispatch-once signal lives here too, for the same reason: see
+/// [`RedispatchPassState::redispatched`], whose doc is the one statement of
+/// how it differs from the node's `realization_inputs`.
+///
+/// COST OF THAT SCOPE, stated as plainly as `failed_pretessellations`' cost is
+/// above. Build-scoping makes the redispatch UNCONDITIONAL PER BUILD: every
+/// compute node with a kernel-backed geometry arg is re-dispatched once on
+/// every `build_snapshot`, whether or not anything upstream moved.
+/// `run_compute_dispatch` has no in-memory result cache: its only
+/// short-circuit is the persistent lookup (`persistent_lookup`), and that is
+/// live in production, because reify-cli's `configured_eval_engine` attaches a
+/// persistent cache by default. The cost therefore has two shapes:
+///
+///   * No cache attached: an idle warm rebuild re-runs every
+///     geometry-consuming `@optimized` trampoline (an FEA solve, a mesh morph)
+///     from scratch, O(such nodes) per tick.
+///   * Cache attached: this pass dispatches every node under ONE shared
+///     persistent key (the `ContentHash(0)` at its `run_compute_dispatch`
+///     call). For a target in `PERSISTABLE_TARGETS` such as
+///     `solver::elastic_static`, the warm redispatch would hit the entry the
+///     cold build persisted and silently return the pre-tick result. This is
+///     reasoned from the code path, not measured.
+///
+/// Neither shape is a live regression: `build_snapshot` has no non-test
+/// callers today, and the shared key's cold-path hazard predates this scope.
+/// Before `build_snapshot` acquires a production caller, two things must
+/// happen, in order. First, the shared key is fixed, owned by #7052. Second,
+/// the per-build cost is paid down by a FRESHNESS gate, owned by #7576: skip
+/// when the output cell's cache freshness is `Final` and no realization in the
+/// node's `realization_inputs` moved on this tick. That record is a superset of
+/// what the node reads (see `redispatched`), so such a gate errs toward
+/// re-dispatching. It must NOT be built by widening `redispatched`'s lifetime:
+/// a signal that outlives the build closes later builds to the node.
+///
 /// COVERAGE, stated honestly. `failed_pretessellations` and
 /// `contentless_skips` are each pinned by a counterfactual test in
 /// `reify-eval/tests/harness_engine/redispatch_template_order_regression.rs`
@@ -3130,6 +3315,30 @@ struct RedispatchPassState {
     /// each dispatches to. Deduplicated by node id — a node skipped by three
     /// trailing templates is recorded once.
     contentless_skips: HashMap<reify_core::ComputeNodeId, String>,
+    /// Compute nodes this BUILD has already redispatched: the Phase-1 candidate
+    /// gate of [`Engine::redispatch_geometry_consuming_compute_nodes`], and the
+    /// only "already done" signal that pass reads. Build-lifetime by
+    /// construction, so the next build re-admits every node.
+    ///
+    /// The same write also extends the node's
+    /// `ComputeNodeData::realization_inputs`, which answers a different
+    /// question on a different lifetime. That field is the GRAPH-lifetime
+    /// DEPENDENCY RECORD: `deps.rs` builds reverse edge #10 (Realization →
+    /// Compute) from it, and `compute_cache_key` folds it into the key. Nothing
+    /// may read it as an "already done" flag. The graph outlives the build:
+    /// `edit_param` carries it forward, and `build_snapshot` reuses it without
+    /// calling `eval()`. Such a read would therefore close every later build to
+    /// the node.
+    ///
+    /// The record is a SUPERSET of what the node currently reads, not an exact
+    /// copy. The write unions rather than replaces, because a replacing write
+    /// would drop the edge of an arg that went symbolic on this build and
+    /// under-evict on a later edit. A realization that a value-selected arg
+    /// stopped reading therefore stays recorded: for example
+    /// `order_probe(if flag then a else b)` after `edit_param(flag)` keeps `a`.
+    /// That errs toward over-eviction, the safe direction. A reader that needs
+    /// exact consumption must not take it from that field.
+    redispatched: HashSet<reify_core::ComputeNodeId>,
 }
 
 impl RedispatchPassState {
@@ -3283,7 +3492,7 @@ impl Engine {
             geometry_kernels: _,   // registered kernels
             default_kernel_name: _, // default-kernel selection
             repr_capable_kernel: _, // construction-recorded kernel capability (task 6169)
-            solver: _,             // fallback constraint solver
+            solve_stage: _,        // constructor-named solve profile + fallback solver
             cache: _,              // node cache (engine-scoped config)
             prelude: _,            // 'static compiled prelude
             prelude_functions: _,  // pre-flattened prelude fns
@@ -3325,6 +3534,7 @@ impl Engine {
             solvers: _,            // named solver registry
             warm_pool: _,          // warm-start state pool (cross-edit)
             realization_cache: _,  // task 2874 engine-scoped realization cache
+            volume_mesh_sources: _, // VolumeMesh meshed-from records (span builds; full cache flush only)
             cumulative_eval_cache_totals: _, // task 4152 lifetime eval-cache totals
             solver_progress_sink: _, // per-iteration progress hook
             active_solve_cancel: _,  // in-flight solve cancellation hook
@@ -3460,6 +3670,28 @@ impl Engine {
         self.mark_demand_pruned_pending();
         let state = self.eval_state.as_ref()?;
 
+        // Under UnifiedDag, walk the FULL `run_unified_pass` schedule so a
+        // curated selector cell is hydrated before the realization consuming it,
+        // as build() does. Not demand-scoped: build_snapshot realizes every
+        // realization. The pass's E_EVAL_CYCLE / E_EVAL_UNRESOLVED diagnostics
+        // are forwarded below, as build() forwards them: a snapshot need not
+        // follow a build(), and a cycle's residue realizations still run here
+        // in declaration order.
+        let unified_pass = match self.build_scheduler {
+            crate::engine_fixpoint::BuildScheduler::UnifiedDag => Some(
+                crate::engine_fixpoint::run_unified_pass(&state.snapshot.graph, &state.trace_map),
+            ),
+            crate::engine_fixpoint::BuildScheduler::LegacyMultiPass => None,
+        };
+        let (unified_schedule, unified_pass_diagnostics) = match unified_pass {
+            Some(pass) => (Some(pass.schedule), pass.diagnostics),
+            None => (None, Vec::new()),
+        };
+        let realization_read_cells = match unified_schedule {
+            Some(_) => self.realization_read_cells(),
+            None => HashSet::new(),
+        };
+
         // Build ValueMap from snapshot values
         let mut values = ValueMap::new();
         for (id, (val, _det)) in state.snapshot.values.iter() {
@@ -3469,6 +3701,7 @@ impl Engine {
         // Check constraints (guard-aware)
         let (constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
+        diagnostics.extend(unified_pass_diagnostics);
 
         // Task 2874: emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
@@ -3621,7 +3854,32 @@ impl Engine {
                     &mut diagnostics,
                     &module.templates,
                 );
-                for (r_idx, realization) in template.realizations.iter().enumerate() {
+                let build_steps = template_build_steps(template, unified_schedule.as_deref(), None);
+                let realized_reprs_for_hydration =
+                    Engine::realized_reprs_snapshot(&self.eval_state);
+                for build_step in &build_steps {
+                    let (r_idx, realization) = match build_step {
+                        BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
+                        BuildStep::HydrateCell(cell_id) => {
+                            Engine::hydrate_value_cell_in_loop(
+                                cell_id,
+                                &CellHydrationInputs {
+                                    template,
+                                    named_steps: &named_steps,
+                                    kernel_name: name,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                    table: &self.topology_attribute_table,
+                                    realization_read_cells: &realization_read_cells,
+                                    realized_reprs: &realized_reprs_for_hydration,
+                                },
+                                &mut values,
+                                &mut self.geometry_kernels,
+                                &mut diagnostics,
+                            );
+                            continue;
+                        }
+                    };
                     // Task 2874, step-6 wiring: per-realization demanded
                     // tolerance for the cache-key triple `(entity_id,
                     // ReprKind::BRep, demanded_tol)`. Priority chain is
@@ -3658,7 +3916,7 @@ impl Engine {
                         source: self.morph_source.get(&realization.id),
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
-                    let morph_source_out = Engine::execute_realization_ops(
+                    let executed = Engine::execute_realization_ops(
                         RealizationOpsInput::new(
                             &mut self.geometry_kernels,
                             &registry_borrowed,
@@ -3712,7 +3970,9 @@ impl Engine {
                         // L2 selector gate, resolved once above the template
                         // loop. Only the build paths opt in; tessellate/query
                         // keep the fail-open `true` default.
-                        .with_module_binds_selector(module_binds_selector_flag),
+                        .with_module_binds_selector(module_binds_selector_flag)
+                        // Same repr snapshot as the HydrateCell arm above, as in build().
+                        .with_realized_reprs(Some(&realized_reprs_for_hydration)),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -3723,10 +3983,12 @@ impl Engine {
                         ),
                     );
                     // θ (task 4361): record this realization's terminal handle
-                    // by (t_idx, r_idx) for the Phase-B export walk, mirroring
-                    // build()'s terminal_handles bookkeeping (:2803).
-                    if step_handles.len() > handle_start_snap {
-                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    // by (t_idx, r_idx) for the Phase-B export walk.
+                    if let Some(terminal) = self.volume_mesh_sources.record_and_resolve_terminal(
+                        &step_handles[handle_start_snap..],
+                        executed.volume_mesh,
+                    ) {
+                        terminal_handles[t_idx][r_idx] = Some(terminal);
                     }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. The
@@ -3788,8 +4050,11 @@ impl Engine {
                     // bundle (returned by the executor) for the NEXT tick's
                     // morph. `store_morph_source` needs `&mut self`; safe here —
                     // the executor's disjoint field borrows have all released.
-                    if let Some(src) = morph_source_out {
+                    if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
+                    }
+                    if unified_schedule.is_some() {
+                        self.hydrate_after_realize(template, &named_steps, &mut values, version_id);
                     }
                 }
                 // Step-8 (task ε / 3436): the post-process helpers operate on
@@ -3899,7 +4164,7 @@ impl Engine {
             // content guard skipped and that no later template's pass rescued.
             // Emitted here — after the loop — so a node redispatched for real
             // during its own template is not reported.
-            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
+            Self::emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // Only emit the summary diagnostic when ops were actually declared
@@ -3912,8 +4177,9 @@ impl Engine {
                 None
             } else {
                 // θ (task 4361): mirror build()'s Phase-B export walk — collect
-                // placed-product BRep handles via collect_export_bodies_walk, then
-                // export only the product (default_visible) bodies.  This replaces
+                // placed product bodies, each tagged with its owning kernel, via
+                // collect_export_bodies_walk, then export only the product
+                // (default_visible) bodies through export_product_bodies.  This replaces
                 // the old `*step_handles.last()` single-handle export that did not
                 // assemble a compound for multi-entity modules (the §6 export bug).
                 let export_bodies = Self::collect_export_bodies_walk(
@@ -3942,81 +4208,14 @@ impl Engine {
                         }
                         None
                     }
-                    1 => {
-                        // δ (task #4763): thread body color via export_with_options.
-                        let mut output = Vec::new();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get(name)
-                            .expect("default kernel must remain in the map for export");
-                        let body_color = resolve_export_body_color(
-                            &values,
-                            &product_bodies[0].entity_path,
-                            product_bodies[0].handle_id,
-                            &mut diagnostics,
-                        );
-                        match default_kernel.export_with_options(
-                            product_bodies[0].handle_id,
-                            format,
-                            &reify_ir::ExportOptions {
-                                step_schema: reify_ir::StepSchema::default(),
-                                color: body_color,
-                                include_materials: false,
-                                include_colors: false,
-                            },
-                            &mut output,
-                        ) {
-                            Ok(_warnings) => Some(output),
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
-                                None
-                            }
-                        }
-                    }
-                    _ => {
-                        let ids: Vec<GeometryHandleId> =
-                            product_bodies.iter().map(|b| b.handle_id).collect();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get_mut(name)
-                            .expect("default kernel must remain in the map for compound export");
-                        match default_kernel.make_compound(&ids) {
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "compound assembly error: {}",
-                                    e
-                                )));
-                                None
-                            }
-                            Ok(compound) => {
-                                let mut output = Vec::new();
-                                let default_kernel = self
-                                    .geometry_kernels
-                                    .get(name)
-                                    .expect("default kernel must remain in the map for export");
-                                match default_kernel.export_with_options(
-                                    compound.id,
-                                    format,
-                                    &reify_ir::ExportOptions {
-                                        step_schema: reify_ir::StepSchema::default(),
-                                        color: None,
-                                        include_materials: false,
-                                        include_colors: false,
-                                    },
-                                    &mut output,
-                                ) {
-                                    Ok(_warnings) => Some(output),
-                                    Err(e) => {
-                                        diagnostics.push(Diagnostic::error(format!(
-                                            "export error: {}",
-                                            e
-                                        )));
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    _ => export_product_bodies(
+                        &mut self.geometry_kernels,
+                        name,
+                        &product_bodies,
+                        &values,
+                        format,
+                        &mut diagnostics,
+                    ),
                 }
             }
         } else {
@@ -4505,56 +4704,14 @@ impl Engine {
                     &module.templates,
                 );
                 // Task 4358 ε: order this template's realizations + selector/query
-                // value-cells for the build walk. Under UnifiedDag the order is
-                // `run_unified_pass`'s global Kahn schedule filtered to THIS
-                // template's nodes (so a curated selector cell is hydrated before
-                // the realization that consumes it); any realization not covered by
-                // the schedule (e.g. residue downstream of a cycle, or a node with
-                // no trace entry) is appended in declaration order so every
-                // realization still runs exactly as legacy would. Under
-                // LegacyMultiPass the order is simply declaration order with NO
-                // interleaved HydrateCell steps — byte-identical to before.
-                let build_steps: Vec<BuildStep> = match unified_pass.as_ref() {
-                    Some(pass) => {
-                        let mut steps: Vec<BuildStep> = Vec::new();
-                        let mut realized: HashSet<usize> = HashSet::new();
-                        for node in &pass.schedule {
-                            match node {
-                                NodeId::Realization(rid) if rid.entity == template.name => {
-                                    if let Some(r_idx) =
-                                        template.realizations.iter().position(|r| r.id == *rid)
-                                    {
-                                        steps.push(BuildStep::Realize(r_idx));
-                                        realized.insert(r_idx);
-                                    }
-                                }
-                                NodeId::Value(vid) if vid.entity == template.name => {
-                                    steps.push(BuildStep::HydrateCell(vid.clone()));
-                                }
-                                _ => {}
-                            }
-                        }
-                        for r_idx in 0..template.realizations.len() {
-                            if !realized.contains(&r_idx) {
-                                // β (task 4738) step-4: demand guard mirrors the one
-                                // in tessellate_from_values. Under build() full_scope
-                                // is always true → demanded_rids_build=None → append
-                                // all (byte-identical, step-3(b) guard). The
-                                // defensive selective branch: skip hidden realizations
-                                // not in the demand cone.  `demanded_rids_build` is
-                                // pre-extracted above so no per-iteration clone.
-                                let rid = &template.realizations[r_idx].id;
-                                if demanded_rids_build.as_ref().is_none_or(|rids| rids.contains(rid)) {
-                                    steps.push(BuildStep::Realize(r_idx));
-                                }
-                            }
-                        }
-                        steps
-                    }
-                    None => (0..template.realizations.len())
-                        .map(BuildStep::Realize)
-                        .collect(),
-                };
+                // value-cells for the build walk (see `template_build_steps`).
+                // Under build() full_scope is always true → demanded_rids_build
+                // is None → every uncovered realization is appended.
+                let build_steps = template_build_steps(
+                    template,
+                    unified_pass.as_ref().map(|p| p.schedule.as_slice()),
+                    demanded_rids_build.as_ref(),
+                );
                 // Fail-closed region gate (task #4812, P0β): build the repr
                 // snapshot once before the step loop. Reprs from bodies in PRIOR
                 // templates are already in eval_state at this point. Reprs
@@ -4579,37 +4736,20 @@ impl Engine {
                             // ended); the post-process block below re-runs the same
                             // passes over all cells, so this is an additive early
                             // hydration, not the sole resolution site.
-                            //
-                            // Robustness (reviewer): degrade to SKIPPING this early
-                            // hydration rather than aborting the whole build if the
-                            // default kernel is somehow absent mid-walk. The invariant
-                            // holds today — `name` was `contains_key`-checked at the top
-                            // of this geometry_output block — so a miss is only reachable
-                            // via a future refactor that removes a kernel mid-walk, not a
-                            // runtime condition; `debug_assert!` surfaces it in dev/test.
-                            // Skipping is safe precisely because the hydration is additive:
-                            // the whole-template post-process below re-runs the same passes
-                            // over every cell, so the cell still resolves before export —
-                            // only the in-loop timing is lost (a downstream curated fillet
-                            // would fall back to its all-edges path, the pre-ε behaviour).
-                            let Some(kernel) = self.geometry_kernels.get_mut(name) else {
-                                debug_assert!(
-                                    false,
-                                    "default kernel must remain in the map across the schedule walk"
-                                );
-                                continue;
-                            };
                             Engine::hydrate_value_cell_in_loop(
-                                template,
                                 cell_id,
-                                &named_steps,
+                                &CellHydrationInputs {
+                                    template,
+                                    named_steps: &named_steps,
+                                    kernel_name: name,
+                                    functions: &self.functions,
+                                    meta_map: &self.meta_map,
+                                    table: &self.topology_attribute_table,
+                                    realization_read_cells: &realization_read_cells,
+                                    realized_reprs: &realized_reprs_for_hydration,
+                                },
                                 &mut values,
-                                &self.functions,
-                                &self.meta_map,
-                                kernel.as_mut(),
-                                &self.topology_attribute_table,
-                                &realization_read_cells,
-                                &realized_reprs_for_hydration,
+                                &mut self.geometry_kernels,
                                 &mut diagnostics,
                             );
                             continue;
@@ -4643,7 +4783,7 @@ impl Engine {
                         source: self.morph_source.get(&realization.id),
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
-                    let morph_source_out = Engine::execute_realization_ops(
+                    let executed = Engine::execute_realization_ops(
                         RealizationOpsInput::new(
                             &mut self.geometry_kernels,
                             &registry_borrowed,
@@ -4713,10 +4853,12 @@ impl Engine {
                         ),
                     );
                     // T7 (task 3905): record this realization's terminal handle
-                    // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
-                    // the tessellate_from_values Phase-A bookkeeping.
-                    if step_handles.len() > handle_start {
-                        terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                    // by (t_idx, r_idx) for the Phase-B export walk.
+                    if let Some(terminal) = self.volume_mesh_sources.record_and_resolve_terminal(
+                        &step_handles[handle_start..],
+                        executed.volume_mesh,
+                    ) {
+                        terminal_handles[t_idx][r_idx] = Some(terminal);
                     }
                     // Step-10 (task ε / 3436): persist the executor's terminal
                     // [`ReprKind`] into the snapshot graph node. See the
@@ -4772,46 +4914,11 @@ impl Engine {
                     // (returned by the executor) for the NEXT tick's morph.
                     // `store_morph_source` needs `&mut self`; safe here — the
                     // executor's disjoint field borrows have all released.
-                    if let Some(src) = morph_source_out {
+                    if let Some(src) = executed.morph_source {
                         self.store_morph_source(realization.id.clone(), src);
                     }
-                    // Task 4358 ε: per-realization geometry-handle hydration slice
-                    // (UnifiedDag only). `post_process_geometry_handle_cells` skips
-                    // realizations whose name is not yet in `named_steps`, so calling
-                    // it after EACH realization hydrates only the just-completed
-                    // ones — making a freshly-produced body's `values` cell visible
-                    // to a selector / geometry-query cell scheduled next (the
-                    // HydrateCell step above). It writes no diagnostics and re-inserts
-                    // the same handle, so it is idempotent with the whole-template
-                    // call in the post-process block below. Skipped under
-                    // LegacyMultiPass (`unified_pass` is `None`), so that path keeps
-                    // its single post-loop hydration and stays byte-identical.
-                    //
-                    // COST (reviewer): the helper loops over ALL of the template's
-                    // realizations each call (short-circuiting those not yet in
-                    // `named_steps`), so invoking it after every Realize makes the
-                    // per-realization hydration O(R²)-over-realizations across a
-                    // template with R realizations, vs. Legacy's single O(R) post-loop
-                    // call. The re-work is purely idempotent (re-inserting already
-                    // resolved handles + re-recording the same freshness cache nodes),
-                    // so it is correctness-neutral, and acceptable for the typical
-                    // small-R template. If profiling ever shows it dominating on a
-                    // many-realization, many-handle-cell template, restrict this call
-                    // to the just-completed realization (the helper would need a
-                    // single-realization filter param threaded through its 3 call
-                    // sites — build / build_snapshot / tessellate_from_values) rather
-                    // than rescanning the full realization list each iteration.
                     if unified_pass.is_some() {
-                        Engine::post_process_geometry_handle_cells(
-                            template,
-                            &named_steps,
-                            &mut values,
-                            &self.functions,
-                            &self.meta_map,
-                            &mut self.cache,
-                            &mut self.realization_handles,
-                            version_id,
-                        );
+                        self.hydrate_after_realize(template, &named_steps, &mut values, version_id);
                     }
                 }
                 // GHR-γ step-6: hydrate Type::Geometry value cells with real
@@ -4932,7 +5039,7 @@ impl Engine {
             // content guard skipped and that no later template's pass rescued.
             // Emitted here — after the loop — so a node redispatched for real
             // during its own template is not reported.
-            self.emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
+            Self::emit_contentless_redispatch_warnings(&redispatch_pass_state, &mut diagnostics);
 
             if step_handles.is_empty() {
                 // No geometry handles available — nothing to export.
@@ -4954,9 +5061,10 @@ impl Engine {
                 // calls `build_outputs` issues itself.
                 None
             } else {
-                // T7 (task 3905) Phase-B export walk: collect placed-product
-                // BRep handles via the containment-tree surfacing walk, then
-                // export only the product (default_visible == true) bodies.
+                // T7 (task 3905) Phase-B export walk: collect placed product
+                // bodies, each tagged with its owning kernel, via the
+                // containment-tree surfacing walk, then export only the product
+                // (default_visible == true) bodies through export_product_bodies.
                 // This replaces the old *step_handles.last() single-handle
                 // export that did not honor surfacing, composed transforms, or
                 // aux exclusion.
@@ -4988,94 +5096,14 @@ impl Engine {
                         }
                         None
                     }
-                    1 => {
-                        // Single product body — export directly (preserves
-                        // single-solid STEP byte-compatibility for bracket.ri etc.).
-                        // δ (task #4763): resolve the body's material color and thread
-                        // it via export_with_options so the 3MF arm writes <basematerials>.
-                        // include_* false → W_3MF_NO_MATERIALS never fires on this path
-                        // (back-compat; DSL flags only apply on the declarative path).
-                        let mut output = Vec::new();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get(name)
-                            .expect("default kernel must remain in the map for export");
-                        let body_color = resolve_export_body_color(
-                            &values,
-                            &product_bodies[0].entity_path,
-                            product_bodies[0].handle_id,
-                            &mut diagnostics,
-                        );
-                        match default_kernel.export_with_options(
-                            product_bodies[0].handle_id,
-                            format,
-                            &reify_ir::ExportOptions {
-                                step_schema: reify_ir::StepSchema::default(),
-                                color: body_color,
-                                include_materials: false,
-                                include_colors: false,
-                            },
-                            &mut output,
-                        ) {
-                            Ok(_warnings) => Some(output), // include_* false → warnings always empty
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!("export error: {}", e)));
-                                None
-                            }
-                        }
-                    }
-                    _ => {
-                        // Multiple product bodies — assemble a compound then export.
-                        // v1 LIMITATION: a compound has no single per-body color; color:None.
-                        let ids: Vec<GeometryHandleId> =
-                            product_bodies.iter().map(|b| b.handle_id).collect();
-                        let default_kernel = self
-                            .geometry_kernels
-                            .get_mut(name)
-                            .expect("default kernel must remain in the map for compound export");
-                        // On compound-assembly error, push the diagnostic and
-                        // fall through with no geometry output.  The canonical
-                        // BuildResult construction at the end of build() handles
-                        // all remaining fields — avoids a duplicate struct literal
-                        // that would silently drift on future field additions
-                        // (reviewer_comprehensive / robustness suggestion).
-                        match default_kernel.make_compound(&ids) {
-                            Err(e) => {
-                                diagnostics.push(Diagnostic::error(format!(
-                                    "compound assembly error: {}",
-                                    e
-                                )));
-                                None
-                            }
-                            Ok(compound) => {
-                                let mut output = Vec::new();
-                                let default_kernel = self
-                                    .geometry_kernels
-                                    .get(name)
-                                    .expect("default kernel must remain in the map for export");
-                                match default_kernel.export_with_options(
-                                    compound.id,
-                                    format,
-                                    &reify_ir::ExportOptions {
-                                        step_schema: reify_ir::StepSchema::default(),
-                                        color: None, // compound: no single per-body color
-                                        include_materials: false,
-                                        include_colors: false,
-                                    },
-                                    &mut output,
-                                ) {
-                                    Ok(_warnings) => Some(output),
-                                    Err(e) => {
-                                        diagnostics.push(Diagnostic::error(format!(
-                                            "export error: {}",
-                                            e
-                                        )));
-                                        None
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    _ => export_product_bodies(
+                        &mut self.geometry_kernels,
+                        name,
+                        &product_bodies,
+                        &values,
+                        format,
+                        &mut diagnostics,
+                    ),
                 }
             }
         } else {
@@ -5594,6 +5622,14 @@ impl Engine {
                 // (6) Emit one file via the default kernel's export_with_options(); isolate
                 //     a kernel failure as an error diagnostic + continue.
                 //
+                //     Unlike the Phase-B product export (`export_product_bodies`),
+                //     which serializes each body through the kernel that owns it,
+                //     this path cannot route by owner: the subject's
+                //     `Value::GeometryHandle` carries a kernel-local id and no owning
+                //     kernel, so a subject realized on a non-default kernel exports
+                //     whatever shape that id names on the default kernel. Carrying
+                //     the owner on the subject is task #6366.
+                //
                 // (6a) Resolve per-body color (δ, task #4763 B7/B8): scan values for a
                 //      Physical body whose geometry handle matches `handle_id` and has a
                 //      material; resolve its appearance color. None for geometry with no
@@ -5716,13 +5752,16 @@ impl Engine {
     ///
     /// Runs the same Phase-A realization execution and Phase-B
     /// `surface_export_bodies` walk as [`Self::build`], resolves the two placed
-    /// handles by `entity_path` (product bodies only: `default_visible == true`),
-    /// and issues `GeometryQuery::Distance{from, to}` via the default kernel.
+    /// bodies by `entity_path` (product bodies only: `default_visible == true`),
+    /// and issues `GeometryQuery::Distance{from, to}` via the kernel that owns
+    /// both of them.
     ///
     /// Returns `Some(d)` where `d` is the BRepExtrema minimum distance in metres,
     /// or `None` if either path is unresolvable, no geometry kernel is configured,
-    /// or the distance query fails (with a warning diagnostic). Consistent with the
-    /// `kernel_distance` error-handling convention.
+    /// the two bodies live on different kernels (a query cannot span two
+    /// kernel-local id spaces), or the distance query fails (with a warning
+    /// diagnostic). Consistent with the `kernel_distance` error-handling
+    /// convention.
     ///
     /// Uses the engine's `RealizationCache` — if `build()` was called first on the
     /// same module the Phase-A kernel ops are served from cache and this method
@@ -5817,7 +5856,7 @@ impl Engine {
                 let mut kernel_error: Option<ErrorRef> = None;
                 let mut produced_repr_out: Option<ReprKind> = None;
                 let handle_start = step_handles.len();
-                Engine::execute_realization_ops(
+                let executed = Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         &mut self.geometry_kernels,
                         &registry_borrowed,
@@ -5871,8 +5910,11 @@ impl Engine {
                         &mut produced_repr_out,
                     ),
                 );
-                if step_handles.len() > handle_start {
-                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                if let Some(terminal) = self.volume_mesh_sources.record_and_resolve_terminal(
+                    &step_handles[handle_start..],
+                    executed.volume_mesh,
+                ) {
+                    terminal_handles[t_idx][r_idx] = Some(terminal);
                 }
                 // Kernel errors are recorded in diagnostics by execute_realization_ops;
                 // the distance query will simply find no handle for failed realizations.
@@ -5901,16 +5943,16 @@ impl Engine {
             Some((path_a, path_b)),
         );
 
-        // Resolve the two product (default_visible == true) handles by entity_path.
-        let find_handle = |path: &str| -> Option<GeometryHandleId> {
+        // Resolve the two product (default_visible == true) bodies by entity_path.
+        let find_body = |path: &str| {
             export_bodies
                 .iter()
                 .find(|b| b.default_visible && b.entity_path == path)
-                .map(|b| b.handle_id)
         };
-        let handle_a = find_handle(path_a);
-        let handle_b = find_handle(path_b);
-        let (Some(from), Some(to)) = (handle_a, handle_b) else {
+        let (found_a, found_b) = (find_body(path_a), find_body(path_b));
+        let (Some(body_a), Some(body_b)) = (found_a, found_b) else {
+            let handle_a = found_a.map(|b| b.handle_id);
+            let handle_b = found_b.map(|b| b.handle_id);
             diagnostics.push(Diagnostic::warning(format!(
                 "distance_between_placed: could not resolve product handle(s) \
                  (path_a={path_a:?} → {handle_a:?}, path_b={path_b:?} → {handle_b:?})"
@@ -5918,15 +5960,25 @@ impl Engine {
             return None;
         };
 
-        // Issue GeometryQuery::Distance on the placed handles.
+        // Handle ids are kernel-local, so the query runs on the kernel that
+        // owns both bodies.
+        let owner_a = resolve_owning_kernel_name(&self.geometry_kernels, body_a.kernel, &name);
+        let owner_b = resolve_owning_kernel_name(&self.geometry_kernels, body_b.kernel, &name);
+        if owner_a != owner_b {
+            diagnostics.push(Diagnostic::warning(format!(
+                "distance_between_placed: {path_a:?} is owned by kernel {owner_a:?} and \
+                 {path_b:?} by kernel {owner_b:?}; a distance query cannot span two kernels"
+            )));
+            return None;
+        }
         let kernel = self
             .geometry_kernels
-            .get(name.as_str())
-            .expect("default kernel must remain in the map");
+            .get(owner_a)
+            .expect("an owning kernel name resolves to a key of the kernel map");
         crate::geometry_ops::kernel_distance(
             kernel.as_ref(),
-            from,
-            to,
+            body_a.handle_id,
+            body_b.handle_id,
             &mut diagnostics,
             "distance_between_placed",
         )
@@ -6053,12 +6105,16 @@ impl Engine {
     /// All three build/tessellate sites call this helper (step-2 wires the two
     /// tessellate sites; step-4 wires `build_with_geometry_output`) so the
     /// demand-seam is single and future changes touch one place.
+    /// `build_snapshot` deliberately bypasses it and walks the full schedule,
+    /// since it realizes every realization regardless of demand.
     /// Compute the demand-scoped unified pass schedule and seed.
     ///
-    /// `hash_exempt`: realizations whose input-cone hash is unchanged (returned
-    /// by `refresh_and_gate_demanded_realizations`). On the selective path these
-    /// are excluded from the seed so `tessellate_from_values` skips them and
-    /// avoids redundant re-dispatch. Empty on the full-scope / cold path.
+    /// `hash_exempt`: realizations the hash gate's verdict
+    /// (`realization_staleness::hash_gate_verdict`, applied by
+    /// `refresh_and_gate_demanded_realizations`) lets this pass skip. On the
+    /// selective path these are excluded from the seed so
+    /// `tessellate_from_values` skips them and avoids redundant re-dispatch.
+    /// Empty on the full-scope / cold path.
     fn demand_scoped_unified_pass(
         &self,
         hash_exempt: &HashSet<NodeId>,
@@ -6092,7 +6148,7 @@ impl Engine {
             // absent from the seed and excluded from the schedule.
             //
             // δ (task 4740) step-6: also exclude `hash_exempt` realizations —
-            // those whose input-cone hash is unchanged (populated by
+            // those the hash gate's verdict exempts (populated by
             // refresh_and_gate_demanded_realizations). Excluding them means
             // tessellate_from_values skips their kernel ops, achieving "reuse"
             // without requiring a populated realization cache.
@@ -6148,8 +6204,8 @@ impl Engine {
     /// available for hydration.
     ///
     /// Returns an empty set when `eval_state` is absent (pre-eval or
-    /// `LegacyMultiPass` with no eval state).  Callers gate on
-    /// `unified_pass.is_some()` before calling to preserve the "empty under
+    /// `LegacyMultiPass` with no eval state).  Callers gate on having a
+    /// UnifiedDag schedule before calling to preserve the "empty under
     /// LegacyMultiPass" invariant while sharing the iteration.
     fn realization_read_cells(&self) -> HashSet<reify_core::ValueCellId> {
         let Some(state) = self.eval_state.as_ref() else {
@@ -6284,6 +6340,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
+            &mut self.volume_mesh_sources,
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
@@ -6625,6 +6682,7 @@ impl Engine {
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
         realization_cache: &mut RealizationCache<KernelHandle>,
+        volume_mesh_sources: &mut VolumeMeshSources,
         demanded_tols: &[Vec<Option<f64>>],
         tessellation_budgets: &[Vec<f64>],
         // Task ε (3436) step-12: per-build dispatch-count instrumentation
@@ -6777,91 +6835,38 @@ impl Engine {
                 &module.templates,
             );
             // θ (task 4361) step-6: order this template's realizations + selector/
-            // query value-cells for the tessellate walk.  Under UnifiedDag the order
-            // is `run_unified_pass`'s global Kahn schedule filtered to THIS template's
-            // nodes; any realization not covered by the schedule is appended in
-            // declaration order so every realization still runs exactly once.
-            // Under LegacyMultiPass the order is declaration order with NO interleaved
-            // HydrateCell steps — byte-identical to the pre-θ behaviour.
-            // Mirrors build()'s and build_snapshot()'s `build_steps` pattern.
-            let build_steps: Vec<BuildStep> = match unified_pass {
-                Some(pass) => {
-                    let mut steps: Vec<BuildStep> = Vec::new();
-                    let mut realized: HashSet<usize> = HashSet::new();
-                    for node in &pass.schedule {
-                        match node {
-                            NodeId::Realization(rid) if rid.entity == template.name => {
-                                if let Some(r_idx) =
-                                    template.realizations.iter().position(|r| r.id == *rid)
-                                {
-                                    steps.push(BuildStep::Realize(r_idx));
-                                    realized.insert(r_idx);
-                                }
-                            }
-                            NodeId::Value(vid) if vid.entity == template.name => {
-                                steps.push(BuildStep::HydrateCell(vid.clone()));
-                            }
-                            _ => {}
-                        }
-                    }
-                    for r_idx in 0..template.realizations.len() {
-                        if !realized.contains(&r_idx) {
-                            // β (task 4738) step-2: demand guard on the
-                            // "uncovered realization" fallback. Under
-                            // selective demand a hidden body's realization is
-                            // deliberately excluded from the seed/schedule;
-                            // the unguarded append would re-add and execute
-                            // it, defeating the kernel-time saving. Guard:
-                            // `demanded_rids = None` (full scope / build) →
-                            // append all (byte-identical); `Some(rids)` →
-                            // append only if the realization is in the cone.
-                            // `demanded_rids` is pre-extracted above so this
-                            // lookup requires no per-iteration clone.
-                            let rid = &template.realizations[r_idx].id;
-                            if demanded_rids.as_ref().is_none_or(|rids| rids.contains(rid)) {
-                                steps.push(BuildStep::Realize(r_idx));
-                            }
-                        }
-                    }
-                    steps
-                }
-                None => (0..template.realizations.len())
-                    .map(BuildStep::Realize)
-                    .collect(),
-            };
+            // query value-cells for the tessellate walk — the same
+            // `template_build_steps` build() and build_snapshot() use.
+            let build_steps = template_build_steps(
+                template,
+                unified_pass.map(|p| p.schedule.as_slice()),
+                demanded_rids.as_ref(),
+            );
+            // tessellate_from_values is a static fn without snapshot access, so
+            // the hydration ladder gets an empty repr map (fail-open: the gate is
+            // skipped for an unknown repr, preserving today's tessellation
+            // behaviour).
+            let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> = HashMap::new();
             for build_step in &build_steps {
                 let (r_idx, realization) = match build_step {
                     BuildStep::Realize(r_idx) => (*r_idx, &template.realizations[*r_idx]),
                     BuildStep::HydrateCell(cell_id) => {
                         // θ (4361 step-6): early hydration of selector / geometry-query
                         // value cells before consuming realizations (UnifiedDag only).
-                        // Mirrors build_snapshot's HydrateCell handling; degrade to
-                        // SKIP rather than abort if the kernel is absent (additive
-                        // hydration — the per-template post-process block below
-                        // re-runs the same passes over every cell).
-                        let Some(kernel) = geometry_kernels.get_mut(default_kernel_name) else {
-                            debug_assert!(
-                                false,
-                                "default kernel must remain in the map across the schedule walk"
-                            );
-                            continue;
-                        };
-                        // tessellate_from_values is a static fn without snapshot
-                        // access; pass an empty map (fail-open: gate skipped for
-                        // unknown repr, preserving today's tessellation behaviour).
-                        let realized_reprs_tess: HashMap<RealizationNodeId, ReprKind> =
-                            HashMap::new();
                         Engine::hydrate_value_cell_in_loop(
-                            template,
                             cell_id,
-                            &named_steps,
+                            &CellHydrationInputs {
+                                template,
+                                named_steps: &named_steps,
+                                kernel_name: default_kernel_name,
+                                functions,
+                                meta_map,
+                                table: topology_attribute_table,
+                                realization_read_cells,
+                                realized_reprs: &realized_reprs_tess,
+                            },
                             values,
-                            functions,
-                            meta_map,
-                            kernel.as_mut(),
-                            topology_attribute_table,
-                            realization_read_cells,
-                            &realized_reprs_tess,
+                            geometry_kernels,
                             diagnostics,
                         );
                         continue;
@@ -6917,7 +6922,7 @@ impl Engine {
                     .get(&r_idx)
                     .copied()
                     .unwrap_or(ReprKind::BRep);
-                Engine::execute_realization_ops(
+                let executed = Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         geometry_kernels,
                         registry,
@@ -6979,8 +6984,11 @@ impl Engine {
                 // is `Copy`; `step_handles` outlives this iteration so the
                 // handle stays valid for Phase B (the kernel sessions in
                 // `geometry_kernels` live for the whole call).
-                if step_handles.len() > handle_start {
-                    terminal_handles[t_idx][r_idx] = step_handles.last().copied();
+                if let Some(terminal) = volume_mesh_sources.record_and_resolve_terminal(
+                    &step_handles[handle_start..],
+                    executed.volume_mesh,
+                ) {
+                    terminal_handles[t_idx][r_idx] = Some(terminal);
                 }
             }
             // Step-8 (task ε / 3436): re-borrow the default kernel from the
@@ -7462,12 +7470,7 @@ impl Engine {
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
         mut outputs: RealizationOutputs<'_>,
-        // Task 4744 β step-20: returns the source-bundle stash for this
-        // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
-        // it was meshed from) when a morph producer is active, so the caller can
-        // store it for the NEXT tick's morph. `None` whenever no producer is
-        // registered or no VolumeMesh was produced (every off-build call site).
-    ) -> Option<crate::morph_producer::MorphSource> {
+    ) -> ExecutedRealization {
         let RealizationOpsInput {
             kernels,
             registry,
@@ -7504,7 +7507,7 @@ impl Engine {
             is_terminal_realization,
             &mut outputs,
         ) {
-            return None;
+            return ExecutedRealization::default();
         }
         let RealizationOutputs {
             step_handles,
@@ -7523,6 +7526,10 @@ impl Engine {
         // so every `disabled()` call site (no producer) returns `None` and is
         // byte-identical. Populated in the success branch's VolumeMesh dispatch.
         let mut morph_source_stash: Option<crate::morph_producer::MorphSource> = None;
+        // Set by the VolumeMesh edge, at the moment it appends a gmsh VolumeMesh,
+        // to that VolumeMesh paired with the handle it meshed from (see
+        // `ExecutedRealization`).
+        let mut volume_mesh: Option<MeshedVolume> = None;
         // Task 4050 step-8: the per-op `available` set is no longer a hoisted
         // loop-invariant `{BRep}` constant — it is derived per op from the
         // reprs of that op's resolved input handles (`realization_step_reprs`,
@@ -7641,16 +7648,21 @@ impl Engine {
         let mut realization_step_reprs: Vec<ReprKind> = Vec::with_capacity(operations.len());
         // Task 4050 step-12: per-realization log of intermediate-cache keys the
         // conversion executor inserted, so step-14's rollback branch can drop
-        // exactly those keys (atomic with `step_handles.truncate(handle_start)`).
-        // Each entry is `(entity, repr, per_stage_tol, options_hash)`. The
+        // exactly those entries (atomic with `step_handles.truncate(handle_start)`).
+        // Each entry is `(slot, repr, per_stage_tol, options_hash)`; the owner is
+        // this realization's entity. The
         // options_hash is `NO_OPTIONS` for a Tessellate-sourced intermediate and
         // `surface_options_content_hash(iso, adaptive)` for a MarchingCubes-sourced
-        // one (task γ / 5001) — rollback must remove the EXACT key Phase 2
+        // one (task γ / 5001) — rollback must remove the EXACT entry Phase 2
         // inserted, so the log carries whichever hash was used. On the success
         // path the inserts stay committed so later same-build realizations reuse
         // them.
-        let mut intermediate_cache_inserts: Vec<(String, ReprKind, f64, reify_core::ContentHash)> =
-            Vec::new();
+        let mut intermediate_cache_inserts: Vec<(
+            ConversionSlot,
+            ReprKind,
+            f64,
+            reify_core::ContentHash,
+        )> = Vec::new();
         // Task #3443 (S6): track whether the KernelPragmaUnsatisfiable warning
         // has already been emitted for this realization. The pragma is
         // module-scoped and applies uniformly to all ops; emitting once per
@@ -8018,7 +8030,7 @@ impl Engine {
                                 // ── Phase 1: validate stages + find source ────────
                                 // Walk the chain as a VALIDATION gate. Each stage
                                 // must classify as a known ConversionProjection:
-                                // - Tessellate: records the source kernel name (the
+                                // - Tessellate: records the source kernel (the
                                 //   kernel that tessellates BRep → Mesh).
                                 // - Voxelize: realised by ingest_mesh on plan.kernel
                                 //   below; no separate action needed here.
@@ -8028,13 +8040,13 @@ impl Engine {
                                 // chains (e.g. Mesh→Voxel before BRep→Mesh) would
                                 // silently mis-key the intermediate cache under the
                                 // single-recipe executor.
-                                let mut tessellate_source: Option<&'static str> = None;
+                                let mut tessellate_source: Option<KernelId> = None;
                                 // Task γ (5001): the MarchingCubes counterpart of
                                 // `tessellate_source` above — records the source
                                 // kernel of an at-most-one Voxel→Mesh stage. Phase 2
                                 // below picks whichever of the two is `Some` (the
                                 // gate after this loop guarantees exactly one is).
-                                let mut marching_cubes_source: Option<&'static str> = None;
+                                let mut marching_cubes_source: Option<KernelId> = None;
                                 // prev_to tracks the prior stage's output repr for
                                 // the contiguity check below.
                                 let mut prev_to: Option<ReprKind> = None;
@@ -8093,8 +8105,7 @@ impl Engine {
                                                      in v0.3-β",
                                                 ));
                                             } else {
-                                                tessellate_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                tessellate_source = Some(*stage_kernel);
                                             }
                                         }
                                         Some(ConversionProjection::Voxelize) => {
@@ -8132,8 +8143,7 @@ impl Engine {
                                                      in v0.3-γ",
                                                 ));
                                             } else {
-                                                marching_cubes_source =
-                                                    Some((*stage_kernel).as_registry_name());
+                                                marching_cubes_source = Some(*stage_kernel);
                                             }
                                         }
                                     }
@@ -8185,16 +8195,22 @@ impl Engine {
                                 if conversion_error.is_none() {
                                     // Phase 1's gate above guarantees exactly one of
                                     // these is `Some`.
-                                    let (source_name, from_marching_cubes) =
+                                    let (source_kernel, from_marching_cubes) =
                                         match (tessellate_source, marching_cubes_source) {
-                                            (Some(name), None) => (name, false),
-                                            (None, Some(name)) => (name, true),
+                                            (Some(kernel), None) => (kernel, false),
+                                            (None, Some(kernel)) => (kernel, true),
                                             _ => unreachable!(
                                                 "checked above: exactly one of \
                                                  tessellate_source/marching_cubes_source \
                                                  is Some"
                                             ),
                                         };
+                                    let source_name = source_kernel.as_registry_name();
+                                    let source_key = conversion_source_key(
+                                        kernels,
+                                        source_kernel,
+                                        default_kernel_name,
+                                    );
                                     // Task γ (5001): extract the marching-cubes
                                     // options from `geom_op` when it is the
                                     // options-carrying `GeometryOp::Surface` (task
@@ -8221,25 +8237,29 @@ impl Engine {
                                     // per-parent loop since it does not depend on
                                     // `pid`.
                                     let options_hash = if from_marching_cubes {
-                                        kernels.get(source_name).map_or(NO_OPTIONS, |src| {
-                                            src.surface_options_content_hash(
-                                                surface_iso_level,
-                                                surface_adaptive,
-                                            )
-                                        })
+                                        source_key.and_then(|key| kernels.get(key)).map_or(
+                                            NO_OPTIONS,
+                                            |src| {
+                                                src.surface_options_content_hash(
+                                                    surface_iso_level,
+                                                    surface_adaptive,
+                                                )
+                                            },
+                                        )
                                     } else {
                                         NO_OPTIONS
                                     };
                                     'convert: for &pid in &parents {
                                         // Task 4050 step-12: the intermediate cache
-                                        // key for THIS input — distinct per input
-                                        // (stable across rebuilds; see
-                                        // `conversion_intermediate_entity_id`).
-                                        let intermediate_entity = conversion_intermediate_entity_id(
-                                            &realization_id.entity,
-                                            pid,
-                                            &realization_step_ids,
-                                        );
+                                        // slot and key for THIS input — distinct per
+                                        // input (stable across rebuilds; see
+                                        // `conversion_slot`).
+                                        let slot = conversion_slot(pid, &realization_step_ids);
+                                        let intermediate_key =
+                                            RealizationCache::<KernelHandle>::intermediate_key(
+                                                &realization_id.entity,
+                                                slot,
+                                            );
                                         // Task #4636: forward the source solid's
                                         // attribute (recorded by
                                         // `record_solid_attribute` at the seed site
@@ -8264,59 +8284,17 @@ impl Engine {
                                         // non-primitive parent), degrading
                                         // gracefully to the existing Discarded path.
                                         //
-                                        // Robustness note (reviewer amendment,
-                                        // task #4636): the source `KernelHandle`
-                                        // built below assumes
-                                        // `kernel_id_for_registry_name(source_name)`
-                                        // equals the `op_kernel` the seed site
-                                        // (above, `record_solid_attribute`)
-                                        // recorded `pid`'s entry under — if
-                                        // those ever disagree for the same
-                                        // `pid`, `forward_solid_attribute_on_ingest`'s
-                                        // `table.lookup` silently misses,
-                                        // indistinguishable from a legitimately
-                                        // non-seeded parent (zero signal either
-                                        // way). `source_name` is always
-                                        // `stage_kernel.as_registry_name()` for
-                                        // a real `KernelId` drawn from
-                                        // `plan.conversions` above (never an
-                                        // arbitrary/unregistered string), and
-                                        // `KernelId::as_registry_name` /
-                                        // `from_registry_name` are documented
-                                        // exact inverses (reify-core
-                                        // `kernel.rs`) — so the debug_assert
-                                        // below pins that
-                                        // `kernel_id_for_registry_name`'s
-                                        // `unwrap_or(KernelId::Occt)` fallback
-                                        // never actually fires here. What it
-                                        // canNOT verify locally is the deeper
-                                        // half of the invariant: that the
-                                        // dispatcher's chosen `stage_kernel`
-                                        // for converting `pid` is the SAME
-                                        // kernel that originally produced/
-                                        // seeded `pid`. That correspondence is
-                                        // a property of the dispatcher's
-                                        // planning logic (`src/dispatcher.rs`),
-                                        // out of this loop's scope to assert —
-                                        // a future dispatcher change that
-                                        // planned a conversion stage against a
-                                        // different source kernel than the one
-                                        // that produced a given parent would
-                                        // still silently degrade this forward.
-                                        debug_assert!(
-                                            KernelId::from_registry_name(source_name).is_some(),
-                                            "conversion source kernel name {source_name:?} is not \
-                                             a registered KernelId — kernel_id_for_registry_name \
-                                             would silently fall back to KernelId::Occt here, \
-                                             degrading attribute forwarding below with zero signal",
-                                        );
+                                        // The forward assumes `pid` was seeded
+                                        // under `source_kernel`, the dispatcher's
+                                        // stage kernel. That correspondence is the
+                                        // dispatcher's to keep and is not checked
+                                        // here; a mismatch degrades to a silent
+                                        // lookup miss.
                                         let mut forward_and_track =
                                             |target: KernelHandle,
                                              diagnostics: &mut Vec<Diagnostic>| {
                                                 let source = KernelHandle {
-                                                    kernel: kernel_id_for_registry_name(
-                                                        source_name,
-                                                    ),
+                                                    kernel: source_kernel,
                                                     id: pid,
                                                 };
                                                 // Release-mode-visible companion to
@@ -8365,7 +8343,7 @@ impl Engine {
                                         // target-kernel handle (Copy); reuse its id
                                         // and skip the redundant production+ingest.
                                         if let Some(&cached) = realization_cache.lookup(
-                                            &intermediate_entity,
+                                            &intermediate_key,
                                             terminal_to,
                                             per_stage_tol,
                                             options_hash,
@@ -8389,7 +8367,9 @@ impl Engine {
                                         // different error types (`TessError` /
                                         // `GeometryError`), so each arm maps its error
                                         // to `String` before the two branches unify.
-                                        let mesh = match kernels.get(source_name) {
+                                        let mesh_source =
+                                            source_key.and_then(|key| kernels.get(key));
+                                        let mesh = match mesh_source {
                                             Some(src) => {
                                                 let produced = if from_marching_cubes {
                                                     src.realize_mesh_from_voxel(
@@ -8507,28 +8487,30 @@ impl Engine {
                                                     id: handle.id,
                                                 };
                                                 // **Task 4152: this is the UNCOUNTED
-                                                // insert.** Plain `insert`, so it does
-                                                // not move
+                                                // insert.** `insert_intermediate`
+                                                // does not move
                                                 // `CacheStats::realization_entries`.
                                                 // These are per-step conversion
                                                 // intermediates *within* one
-                                                // realization (keyed
-                                                // `"{entity}#conv-step{N}"`), not
-                                                // realizations — the OCCT→gmsh
-                                                // VolumeMesh route passes through here,
-                                                // so counting them would break the
-                                                // "one body, one entry" contract. The
-                                                // terminal site below uses
-                                                // `insert_terminal`.
-                                                realization_cache.insert(
-                                                    &intermediate_entity,
+                                                // realization, not realizations —
+                                                // the OCCT→gmsh VolumeMesh route
+                                                // passes through here, so counting
+                                                // them would break the "one body,
+                                                // one entry" contract. The terminal
+                                                // site below uses `insert_terminal`.
+                                                // Recording the owner puts the
+                                                // intermediate in the realization's
+                                                // eviction family (γ #4730).
+                                                realization_cache.insert_intermediate(
+                                                    &realization_id.entity,
+                                                    slot,
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
                                                     intermediate_handle,
                                                 );
                                                 intermediate_cache_inserts.push((
-                                                    intermediate_entity,
+                                                    slot,
                                                     terminal_to,
                                                     per_stage_tol,
                                                     options_hash,
@@ -8993,16 +8975,23 @@ impl Engine {
         if rolled_back {
             step_handles.truncate(handle_start);
             // Task 4050 step-14: atomic intermediate-cache rollback. Drop every
-            // intermediate key this realization inserted (step-12) so a failed
+            // intermediate this realization inserted (step-12) so a failed
             // realization leaves NO cache entry behind — its handle truncation
             // and its cache mutations roll back together (PRD §9 OQ9,
-            // provisional). `remove` is an exact-tolerance delete that no-ops on
-            // an absent key, so it is safe even if a key was never committed.
+            // provisional). `remove_intermediate` is an exact-tolerance delete
+            // that no-ops on an absent entry, so it is safe even if an entry was
+            // never committed, and it keeps the owner's family exact.
             // The SUCCESS branch below deliberately does NOT drain this log: a
             // completed realization's intermediates stay committed so later
             // same-build realizations reuse them (step-11's reuse requirement).
-            for (entity, repr, tol, options_hash) in &intermediate_cache_inserts {
-                realization_cache.remove(entity, *repr, *tol, *options_hash);
+            for (slot, repr, tol, options_hash) in &intermediate_cache_inserts {
+                realization_cache.remove_intermediate(
+                    &realization_id.entity,
+                    *slot,
+                    *repr,
+                    *tol,
+                    *options_hash,
+                );
             }
         } else {
             // Fully-successful realization. Three things land here, all keyed
@@ -9185,6 +9174,9 @@ impl Engine {
             // (`build` / `build_snapshot`) then sets `produced_kernel` from
             // `step_handles.last().kernel` and `realization_handles[node]` from
             // the same handle, so the read side (`volume_mesh()`) is unchanged.
+            // Phase-B egress instead reads the handle the edge meshed from,
+            // which each push records, paired with the VolumeMesh, in
+            // `volume_mesh`.
             //
             // Element order is fixed to P1 for α (design_decision 6);
             // consumer-driven order is the FEA/morph arm's concern. The
@@ -9224,9 +9216,10 @@ impl Engine {
             // (byte-identical to pre-step-20). Honest-degrade to `None` on any
             // extraction failure.
             //
-            // (kernel registry name, face handles, edge handles, vertex handles);
-            // aliased to tame clippy::type_complexity.
+            // (terminal handle, kernel registry name, face handles, edge handles,
+            // vertex handles); aliased to tame clippy::type_complexity.
             type BRepTerminalSlices = (
+                KernelHandle,
                 String,
                 Vec<GeometryHandleId>,
                 Vec<GeometryHandleId>,
@@ -9238,17 +9231,15 @@ impl Engine {
                     && is_terminal_realization
                     && let Some(&terminal) = step_handles[handle_start..].last()
                 {
-                    let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                        terminal.kernel.as_registry_name().to_string()
-                    } else {
-                        default_kernel_name.to_string()
-                    };
+                    let terminal_name =
+                        resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name)
+                            .to_string();
                     match kernels.get_mut(&terminal_name) {
                         Some(src) => {
                             let faces = src.extract_faces(terminal.id).unwrap_or_default();
                             let edges = src.extract_edges(terminal.id).unwrap_or_default();
                             let vertices = src.extract_vertices(terminal.id).unwrap_or_default();
-                            Some((terminal_name, faces, edges, vertices))
+                            Some((terminal, terminal_name, faces, edges, vertices))
                         }
                         None => None,
                     }
@@ -9256,7 +9247,7 @@ impl Engine {
                     None
                 };
             // ── Morph arm: fires only on the warm path (a prior source exists) ─
-            if let Some((terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
+            if let Some((terminal, terminal_name, faces, edges, vertices)) = brep_terminal.as_ref()
                 && let (Some(producer), Some(source), Some(new_graph)) =
                     (morph_io.producer, morph_io.source, morph_io.new_graph)
                 && let Some(kernel) = kernels.get(terminal_name.as_str())
@@ -9287,10 +9278,11 @@ impl Engine {
                             let stash_vm = mesh.clone();
                             match gmsh.store_volume_mesh(mesh) {
                                 Ok(id) => {
-                                    step_handles.push(KernelHandle {
-                                        kernel: KernelId::Gmsh,
+                                    volume_mesh = Some(MeshedVolume::push_gmsh_terminal(
+                                        step_handles,
                                         id,
-                                    });
+                                        *terminal,
+                                    ));
                                     last_produced_repr = Some(ReprKind::VolumeMesh);
                                     morph_stored = true;
                                     produced_vm = Some(stash_vm);
@@ -9319,19 +9311,8 @@ impl Engine {
                 // on its source kernel (`&self`; the owned result releases the
                 // borrow before the gmsh borrow below — non-conflicting
                 // sequential `kernels.get()` immutable borrows).
-                // The terminal handle is keyed in `kernels` by the name the
-                // per-op loop produced it under — that is `default_kernel_name`
-                // for a primitive box realization (the same key the centroid
-                // block above resolves via `kernels.get_mut(default_kernel_name)`).
-                // The `KernelHandle::kernel` registry name can differ from that
-                // map key (e.g. a synthetic default-kernel holder), so prefer the
-                // terminal's own registry name only when it is actually a key,
-                // else fall back to `default_kernel_name`.
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name()
-                } else {
-                    default_kernel_name
-                };
+                let terminal_name =
+                    resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name);
                 let surface = match kernels.get(terminal_name) {
                     Some(src) => match src.tessellate(terminal.id, tol) {
                         Ok(mesh) => Some(mesh),
@@ -9454,10 +9435,11 @@ impl Engine {
                                         let stash_vm = vm.clone();
                                         match gmsh.store_volume_mesh(vm) {
                                         Ok(id) => {
-                                            step_handles.push(KernelHandle {
-                                                kernel: KernelId::Gmsh,
+                                            volume_mesh = Some(MeshedVolume::push_gmsh_terminal(
+                                                step_handles,
                                                 id,
-                                            });
+                                                terminal,
+                                            ));
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             stored = true;
                                             produced_vm = Some(stash_vm);
@@ -9514,10 +9496,11 @@ impl Engine {
                                     let stash_vm = vm.clone();
                                     match gmsh.store_volume_mesh(vm) {
                                         Ok(id) => {
-                                            step_handles.push(KernelHandle {
-                                                kernel: KernelId::Gmsh,
+                                            volume_mesh = Some(MeshedVolume::push_gmsh_terminal(
+                                                step_handles,
                                                 id,
-                                            });
+                                                terminal,
+                                            ));
                                             last_produced_repr = Some(ReprKind::VolumeMesh);
                                             produced_vm = Some(stash_vm);
                                         }
@@ -9586,14 +9569,8 @@ impl Engine {
                 && let Some(&terminal) = step_handles[handle_start..].last()
             {
                 let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
-                // Same registry-name-vs-map-key dance as the VolumeMesh edge
-                // above (backward-compat sentinel mode keys OCCT's handle under
-                // `default_kernel_name`, not `"occt"`).
-                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
-                    terminal.kernel.as_registry_name()
-                } else {
-                    default_kernel_name
-                };
+                let terminal_name =
+                    resolve_owning_kernel_name(kernels, terminal.kernel, default_kernel_name);
                 let surface = match kernels.get(terminal_name) {
                     Some(src) => match src.tessellate(terminal.id, tol) {
                         Ok(mesh) => Some(mesh),
@@ -9650,7 +9627,7 @@ impl Engine {
             // clone cheaply (persistent maps / small records). Returned to the
             // caller, which writes it into `Engine::morph_source` (needs
             // `&mut self`, unavailable here).
-            if let (Some((_, faces, edges, vertices)), Some(vm), Some(new_graph)) =
+            if let (Some((_, _, faces, edges, vertices)), Some(vm), Some(new_graph)) =
                 (brep_terminal, produced_vm, morph_io.new_graph)
             {
                 morph_source_stash = Some(crate::morph_producer::MorphSource {
@@ -9718,8 +9695,8 @@ impl Engine {
                     // insert is accepted. This site is the one the counter is
                     // defined by: a terminal realization that genuinely produced
                     // and cached new geometry. The conversion-intermediate insert
-                    // (search `intermediate_cache_inserts`) stays on plain
-                    // `insert` and is deliberately NOT counted.
+                    // (search `intermediate_cache_inserts`) uses the uncounted
+                    // `insert_intermediate` and is deliberately NOT counted.
                     realization_cache.insert_terminal(
                         &realization_id.entity,
                         resolved_repr,
@@ -9756,10 +9733,10 @@ impl Engine {
                 }
             }
         }
-        // Task 4744 β step-20: hand the caller the source-bundle stash (Some only
-        // when a morph producer is active AND this realization produced a
-        // VolumeMesh; None on every off-build/no-producer call site).
-        morph_source_stash
+        ExecutedRealization {
+            morph_source: morph_source_stash,
+            volume_mesh,
+        }
     }
 
     /// Returns the `VersionId` of the current eval round — the id stamped into
@@ -9974,28 +9951,73 @@ impl Engine {
         }
     }
 
+    /// Task 4358 ε: hydrate the bodies realized so far into `values`, right after
+    /// a `Realize` step of a UnifiedDag build walk, so a selector or
+    /// geometry-query cell scheduled next (its `HydrateCell` step) sees the
+    /// freshly produced body.
+    ///
+    /// Callers run it only while walking a UnifiedDag schedule. Under
+    /// LegacyMultiPass the walk keeps its single post-loop
+    /// [`Engine::post_process_geometry_handle_cells`] call and stays
+    /// byte-identical.
+    ///
+    /// `post_process_geometry_handle_cells` skips a realization whose name is not
+    /// yet in `named_steps`, writes no diagnostics and re-inserts the same
+    /// handle, so this slice is idempotent with the whole-template call each walk
+    /// makes after its loop.
+    ///
+    /// COST: every call rescans all of the template's realizations, so a walk
+    /// over R realizations does O(R²) work against Legacy's single O(R) pass.
+    /// The repeated work only re-inserts resolved handles and re-records the
+    /// same freshness cache nodes, so it does not change the result, and R is
+    /// small in practice. If profiling ever shows it dominating, restrict this
+    /// slice to the just-completed realization here rather than rescanning the
+    /// whole list.
+    fn hydrate_after_realize(
+        &mut self,
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        version: VersionId,
+    ) {
+        Engine::post_process_geometry_handle_cells(
+            template,
+            named_steps,
+            values,
+            &self.functions,
+            &self.meta_map,
+            &mut self.cache,
+            &mut self.realization_handles,
+            version,
+        );
+    }
+
     /// Post-hydration re-dispatch pass for `@optimized` ComputeNodes that
     /// consume a Solid body (task #4726 / esc-3787-23 root cause).
     ///
     /// Called immediately AFTER `post_process_geometry_handle_cells` in both
     /// `build()` and `build_snapshot()`. Finds ComputeNodes in the snapshot
-    /// graph with EMPTY `realization_inputs` (because the body arg was `Undef`
-    /// at the original dispatch — geometry lets have no value cell until
-    /// `post_process_geometry_handle_cells` hydrates them) and whose re-evaluated
-    /// args now include at least one `Value::GeometryHandle`. For each such
-    /// node it:
+    /// graph not yet redispatched in this build
+    /// (`RedispatchPassState::redispatched`) whose re-evaluated args include at
+    /// least one kernel-backed `Value::GeometryHandle` (on a cold build the
+    /// body arg was `Undef` at the original dispatch — geometry lets have no
+    /// value cell until `post_process_geometry_handle_cells` hydrates them).
+    /// For each such node it:
     ///
     ///   1. Re-evaluates the arg_values from the cell's `default_expr`.
     ///   2. Re-builds `realization_inputs` via `build_compute_realization_inputs`.
-    ///   3. Updates the existing `ComputeNodeData.realization_inputs` in the
-    ///      snapshot graph (step-1 assertion: non-empty after build).
+    ///   3. Unions them into the existing `ComputeNodeData.realization_inputs`
+    ///      in the snapshot graph (step-1 assertion: non-empty after build).
     ///   4. Re-runs `run_compute_dispatch` and overwrites the cell value in both
     ///      `values` and `eval_state.snapshot.values` (step-3: non-degraded field).
     ///
-    /// Gate (narrow regression scope): only nodes with `realization_inputs.is_empty()`
-    /// AND at least one arg evaluating to a KERNEL-BACKED
+    /// Gate (narrow regression scope): only nodes this BUILD has not already
+    /// redispatched (`pass_state.redispatched`) AND with at least one arg
+    /// evaluating to a KERNEL-BACKED
     /// `Value::GeometryHandle { kernel_handle: Some(_), .. }` are re-dispatched.
     /// Non-geometry `@optimized` nodes (FEA scalar-dims, dynamics) are untouched.
+    /// The first half of that gate is build-scoped; see
+    /// [`RedispatchPassState::redispatched`].
     ///
     /// The `kernel_handle: Some(_)` requirement states the intent of task
     /// #5951's fix (A) at the gate. MEASURED, it is a REDUNDANT narrowing:
@@ -10006,7 +10028,8 @@ impl Engine {
     /// and caught by the `realization_inputs.is_empty()` bail, and a
     /// kernel-backed-but-contentless node is caught by the content guard. Keep
     /// it as the cheap early-out that names the invariant; do NOT rely on it as
-    /// the only thing standing between a symbolic handle and the latch. The
+    /// the only thing standing between a symbolic handle and a content-free
+    /// write. The
     /// half of fix (A) that IS independently load-bearing is the downgrade —
     /// see the `realization_probe_args` call below, pinned by
     /// `a_symbolic_sibling_arg_is_kept_out_of_realization_inputs`.
@@ -10017,14 +10040,14 @@ impl Engine {
     /// a geometry-consuming one, this runs while that consumer's body is still
     /// a SYMBOLIC `kernel_handle: None` placeholder (minted by
     /// `mint_symbolic_geometry_handles_into_values`). Accepting such a
-    /// placeholder as "hydrated" wrote a content-free `realization_inputs`,
-    /// which tripped the one-shot `realization_inputs.is_empty()` candidate
-    /// gate above and permanently stranded the node's degraded first-dispatch
-    /// result — silently, because the `ReprKind::BRep` arm of
+    /// placeholder as "hydrated" would write a content-free
+    /// `realization_inputs` and mark the node redispatched, stranding it on its
+    /// degraded first-dispatch result for the rest of the build. The strand
+    /// would be silent, because the `ReprKind::BRep` arm of
     /// `project_realization_read_handle` is identity-only by design (PRD §4 D1)
-    /// and emits no diagnostic. Skipping the candidate instead leaves
-    /// `realization_inputs` EMPTY, so the later post-hydration pass for the
-    /// consumer's own template still fires.
+    /// and emits no diagnostic. Skipping the candidate instead leaves the node
+    /// un-redispatched, so the later post-hydration pass for the consumer's own
+    /// template still fires.
     ///
     /// `pass_state` is the BUILD-scoped [`RedispatchPassState`] — created once
     /// before the per-template loop and threaded through every call it makes.
@@ -10070,9 +10093,8 @@ impl Engine {
 
             let mut cands: Vec<Candidate> = Vec::new();
             for (c_id, node_data) in state.snapshot.graph.compute_nodes.iter() {
-                // Only re-dispatch nodes that got EMPTY realization_inputs at
-                // the original dispatch (body was Undef → no handle).
-                if !node_data.realization_inputs.is_empty() {
+                // At most once per BUILD; see `RedispatchPassState::redispatched`.
+                if pass_state.redispatched.contains(c_id) {
                     continue;
                 }
                 if node_data.output_value_cells.is_empty() {
@@ -10142,10 +10164,11 @@ impl Engine {
             // placeholder minted by `mint_symbolic_geometry_handles_into_values`
             // for a body that has not realized yet — which is exactly what this
             // per-template pass sees for a consumer declared AFTER the template
-            // currently being built. Treating it as hydrated wrote a
-            // content-free `realization_inputs` and latched the Phase-1
-            // candidate gate, stranding the node forever. `continue`ing leaves
-            // that gate untripped so a later pass can do the real work.
+            // currently being built. Treating it as hydrated would write a
+            // content-free `realization_inputs` and mark the node
+            // redispatched, stranding it for the rest of the build.
+            // `continue`ing leaves it unmarked so a later pass can do the real
+            // work.
             //
             // This narrowing is DEFENCE IN DEPTH, not the load-bearing half of
             // the fix — see the fn doc for the measurement. It is kept because
@@ -10283,26 +10306,28 @@ impl Engine {
             // Task #5951: the second precondition on the write below, and the
             // durable invariant behind it.
             //
-            // Phase 1's `realization_inputs.is_empty()` candidate gate is a
-            // ONE-SHOT LATCH: the moment this pass records non-empty inputs,
-            // every later per-template call skips the node forever. So the
-            // latch must only ever be tripped by a write that actually carried
-            // realized content. If every rebuilt handle projects to `None`,
-            // this pass has nothing to deliver — Part A's pre-tessellation
-            // above could not populate the projection store, so the trampoline
-            // would run on an empty body exactly as it did at first dispatch.
-            // Writing anyway buys nothing and costs everything: the node is
-            // stranded on its degraded first-dispatch result (for the stdlib
-            // inline-fallback shape, a silently empty result), permanently and
-            // with NO diagnostic — the `ReprKind::BRep` arm of
+            // Phase 1's candidate gate is tripped by the write below and by
+            // nothing else, so that write ends this node's redispatch for the
+            // rest of the build. The invariant is therefore that the gate is
+            // ONLY EVER TRIPPED BY A WRITE THAT ACTUALLY CARRIED REALIZED
+            // CONTENT.
+            //
+            // If every rebuilt handle projects to `None`, this pass has nothing
+            // to deliver — Part A's pre-tessellation above could not populate
+            // the projection store, so the trampoline would run on an empty
+            // body exactly as it did at first dispatch. Writing anyway buys
+            // nothing and costs everything: the node is stranded on its
+            // degraded first-dispatch result for the rest of the build (for
+            // the stdlib inline-fallback shape, a silently empty result) with
+            // NO diagnostic — the `ReprKind::BRep` arm of
             // `project_realization_read_handle` is identity-only by design
             // (PRD §4 D1) and `degrade_projection`'s Warning is never reached.
             //
             // `continue`ing instead leaves the node a redispatch candidate, so
             // a later per-template call — or a later build tick — can still do
-            // the real work. That converts a permanent silent strand into a
-            // retried one, and it holds for ANY future path into this pass,
-            // not just the symbolic-handle door the gate above closes.
+            // the real work. That converts a silent strand into a retried one,
+            // and it holds for ANY future path into this pass, not just the
+            // symbolic-handle door the gate above closes.
             //
             // `proj_diags` are extended above and deliberately left alone: this
             // guard suppresses a WRITE, never a diagnostic the projection
@@ -10340,17 +10365,42 @@ impl Engine {
                 continue;
             }
 
-            // Step 1: update the snapshot ComputeNodeData's realization_inputs.
-            // This is the non-empty-realization_inputs gate (step-1 test).
+            // Record the dispatch on both lifetimes: the node's graph-lifetime
+            // dependency record, and this build's `redispatched` set (see
+            // `RedispatchPassState::redispatched` for why they are separate
+            // and why the record is a superset). Both sit AFTER the content
+            // guard above, so a contentless node stays a candidate for trailing
+            // templates. Both sit BEFORE `run_compute_dispatch` below, so a
+            // dispatch that fails in its `Err(_)` arm is not retried by a
+            // trailing template.
+            //
+            // The record is UNIONED, never replaced. The incoming set comes
+            // from `realization_probe_args`, which drops any arg whose handle
+            // is symbolic, so a replacing write would narrow a mixed-arg node's
+            // record from [A, B] to [A] on a build where B failed to realize.
+            // `deps.rs` builds reverse edge #10 from this field, so a later
+            // `edit_param` moving B would then under-evict this node.
+            //
+            // The union keeps no id the field did not already hold, so it adds
+            // no `compute_cache_key` lookup a write-once record would not have
+            // made. The `contains` check keeps the list duplicate-free, which
+            // that function's `debug_assert!` requires.
             if let Some(state) = self.eval_state.as_mut()
                 && let Some(node) = state.snapshot.graph.get_compute_node_mut(&cand.c_id)
             {
-                node.realization_inputs = realization_inputs;
+                for rid in realization_inputs {
+                    if !node.realization_inputs.contains(&rid) {
+                        node.realization_inputs.push(rid);
+                    }
+                }
+                pass_state.redispatched.insert(cand.c_id.clone());
             }
             // `state` mut-borrow dropped.
 
-            // Re-dispatch.  Use ContentHash(0) for the persistent-cache key:
-            // the cache dir is None in all current tests so the key is inert.
+            // Re-dispatch under this pass's shared `ContentHash(0)` persistent
+            // key. That key is NOT inert: reify-cli attaches a persistent cache
+            // by default. The fix is owned by #7052; see `RedispatchPassState`'s
+            // cost note.
             let cancel = crate::graph::CancellationHandle::new();
             match self.run_compute_dispatch(
                 &cand.c_id,
@@ -10396,9 +10446,15 @@ impl Engine {
     /// `build_with_geometry_output` and `build_snapshot` — not from inside the
     /// pass, which runs per template. A node skipped while an earlier template
     /// was building may well be redispatched for real during its own
-    /// template's call; only a node whose `realization_inputs` are STILL empty
-    /// at the end of the build is genuinely stranded, so only that node is
-    /// reported. One `Severity::Warning` per node, never per template call.
+    /// template's call, so the reported set is `contentless_skips` MINUS
+    /// `redispatched`: skipped in this build and never rescued in this build.
+    /// One `Severity::Warning` per node, never per template call.
+    ///
+    /// Both terms are build-scoped. The node's `realization_inputs` must not
+    /// stand in for either (see [`RedispatchPassState::redispatched`]): a node
+    /// that tessellated in an earlier build and projects nothing in this one
+    /// still carries the earlier record, yet is stranded for this whole build.
+    /// Pinned by `a_warm_rebuild_that_loses_tessellation_still_reports_the_strand`.
     ///
     /// Why this exists: the guard's stated intent is that the strand becomes
     /// *retried* rather than permanent. For a body that can never project
@@ -10414,27 +10470,16 @@ impl Engine {
     /// Emission order is sorted by `(entity, index)`: `compute_nodes` is an
     /// `im::HashMap`, whose iteration order is not stable across processes.
     fn emit_contentless_redispatch_warnings(
-        &self,
         pass_state: &RedispatchPassState,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         if pass_state.contentless_skips.is_empty() {
             return;
         }
-        let Some(state) = self.eval_state.as_ref() else {
-            return;
-        };
         let mut stranded: Vec<(&reify_core::ComputeNodeId, &String)> = pass_state
             .contentless_skips
             .iter()
-            .filter(|(c_id, _)| {
-                state
-                    .snapshot
-                    .graph
-                    .compute_nodes
-                    .get(*c_id)
-                    .is_some_and(|n| n.realization_inputs.is_empty())
-            })
+            .filter(|(c_id, _)| !pass_state.redispatched.contains(*c_id))
             .collect();
         stranded
             .sort_by(|(a, _), (b, _)| a.entity.cmp(&b.entity).then_with(|| a.index.cmp(&b.index)));
@@ -10711,9 +10756,12 @@ impl Engine {
     /// an in-walk symbolic `GeometryHandle` with a byte-identical
     /// `upstream_values_hash` (GHR-β invariant preserved).
     ///
-    /// The lookup key is `RealizationNodeData.geometry_cell` — the graph-side link
-    /// from a realization to its backing `Type::Geometry` value cell, set at
-    /// graph-construction time in `EvaluationGraph::from_templates`.
+    /// The lookup key is `RealizationNodeData.geometry_cell`, set at
+    /// graph-construction time in `EvaluationGraph::from_templates`. It answers
+    /// only for a SCALAR `Type::Geometry` cell. A geometry-list cell is linked
+    /// N:1 (task #5385), and for length 1 that is indistinguishable from 1:1 by
+    /// link count; its value is never one element's handle, but is assembled by
+    /// the list regroup and by `tessellate_snapshot`'s baseline mint.
     pub(crate) fn mint_symbolic_geometry_handle_for_cell_from_graph(
         cell_id: &reify_core::identity::ValueCellId,
         graph: &crate::graph::EvaluationGraph,
@@ -10728,6 +10776,13 @@ impl Engine {
             values.get(cell_id),
             Some(Value::GeometryHandle { kernel_handle: Some(_), .. })
         ) {
+            return None;
+        }
+        if graph
+            .value_cells
+            .get(cell_id)
+            .is_none_or(|cell| cell.cell_type != reify_core::Type::Geometry)
+        {
             return None;
         }
         // Find the realization whose geometry_cell link points at this cell.
@@ -11101,20 +11156,42 @@ impl Engine {
     /// in [`Engine::run_post_processes`] MUST change together — see the matching
     /// "SYNC REQUIREMENT" note on that function. A divergence would change which
     /// helper wins for a given cell only under UnifiedDag, only in-loop.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # A missing kernel skips the cell
+    ///
+    /// If `inputs.kernel_name` is not in `geometry_kernels`, the cell is skipped
+    /// rather than the walk aborted. Today that cannot happen (every walk checks
+    /// the kernel is registered before it starts, and the executor never removes
+    /// one), so a miss is a refactor bug and is `debug_assert!`ed. Skipping is
+    /// safe because this hydration is additive: each walk's whole-template
+    /// post-process re-runs the same ladder over every cell, so only the in-loop
+    /// timing is lost and a downstream curated fillet falls back to its pre-ε
+    /// all-edges path.
     fn hydrate_value_cell_in_loop(
-        template: &reify_compiler::TopologyTemplate,
         cell_id: &reify_core::ValueCellId,
-        named_steps: &HashMap<String, KernelHandle>,
+        inputs: &CellHydrationInputs<'_>,
         values: &mut ValueMap,
-        functions: &[CompiledFunction],
-        meta_map: &HashMap<String, HashMap<String, String>>,
-        kernel: &mut dyn GeometryKernel,
-        table: &TopologyAttributeTable,
-        realization_read_cells: &HashSet<reify_core::ValueCellId>,
-        realized_reprs: &HashMap<RealizationNodeId, ReprKind>,
+        geometry_kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         diagnostics: &mut Vec<Diagnostic>,
     ) {
+        let CellHydrationInputs {
+            template,
+            named_steps,
+            kernel_name,
+            functions,
+            meta_map,
+            table,
+            realization_read_cells,
+            realized_reprs,
+        } = *inputs;
+        let Some(kernel) = geometry_kernels.get_mut(kernel_name) else {
+            debug_assert!(
+                false,
+                "default kernel must remain in the map across the schedule walk"
+            );
+            return;
+        };
+        let kernel = kernel.as_mut();
         let Some(cell) = template.value_cells.iter().find(|c| &c.id == cell_id) else {
             return;
         };
@@ -11404,6 +11481,17 @@ impl Engine {
             diagnostics,
             templates,
         );
+        // Sub-instance copies of kinematic-query cells. Must run BEFORE
+        // `post_process_derived_lets` so a parent let over
+        // `self.<sub>.<kinematic-cell>` folds in the same fixpoint.
+        Engine::post_process_cross_sub_kinematic_queries(
+            template,
+            named_steps,
+            values,
+            kernel,
+            diagnostics,
+            templates,
+        );
         // task 4229: re-evaluate Let cells whose expressions depend on
         // topology-selector-derived cells (e.g. `moi_principal =
         // eigenvalues(moment_of_inertia)` where `moment_of_inertia` was just
@@ -11511,13 +11599,17 @@ impl Engine {
         diagnostics: &mut Vec<Diagnostic>,
     ) {
         // Iterate `values` directly without snapshotting (parallels the
-        // `post_process_kinematic_queries` sibling above). Safe because
-        // topology-selector helpers do not chain through value cells —
-        // each helper's args resolve to either a let-bound `Value::Point`
-        // already populated by `eval_expr` or a `named_steps` handle
-        // populated by `execute_realization_ops`, never to another
-        // topology-selector cell, so an earlier patch in this loop cannot
-        // influence a later dispatch's input.
+        // `post_process_kinematic_queries` sibling above), so a patch made
+        // earlier in this loop IS visible to a later dispatch. That matters
+        // because relational selectors chain through value cells: a face
+        // argument (`adjacent_faces(b, top)`, `shared_edges(top, f)`) and a
+        // `flat_map` list argument read another selector cell's resolved value
+        // from `values`. Here such a read sees the resolved value only when the
+        // producing cell is declared first. Under UnifiedDag the HydrateCell
+        // walk has already resolved every cell in schedule (dependency) order,
+        // so this pass only re-runs it; under LegacyMultiPass this pass is the
+        // sole resolution and a consumer declared before its producer keeps
+        // its pure-eval value.
         for cell in &template.value_cells {
             let default_expr = match &cell.default_expr {
                 Some(e) => e,
@@ -11536,9 +11628,8 @@ impl Engine {
                 // node (and `IndexAccess` over a selector) resolves a typed
                 // `Value::Selector` cell to a `Value::List<Geometry>` HERE. The
                 // inner selector is reconstructed INLINE from its nested
-                // FunctionCall, so the "do not chain through value cells"
-                // invariant above is preserved — no dependency on another
-                // selector cell already being patched in this loop.
+                // FunctionCall, so the coercion itself adds no dependency on
+                // another selector cell already being patched in this loop.
                 //
                 // Task 4536: `table` carries the realized body's recorded
                 // topology attributes so a `mid_surface(body)` (`ByRole`) leaf
@@ -11628,13 +11719,12 @@ impl Engine {
     /// material.density`) — but a geometry-query leaf can't resolve without a
     /// kernel there, so the cell folds to `Value::Undef`.
     ///
-    /// This pass re-attempts that fold with kernel access. For each
-    /// non-collection sub-component, for each of the child template's OWN
-    /// value cells that is still `Undef` at its scoped id, this takes the
-    /// child cell's `default_expr` and rescopes every `ValueRef` (via
-    /// [`reify_ir::CompiledExpr::map_value_refs`]) whose entity is the child
-    /// template's own name to the sub-instance's scoped entity, then
-    /// dispatches the rescoped expression exactly like the per-DEF fold
+    /// This pass re-attempts that fold with kernel access. For each direct
+    /// sub instance ([`crate::sub_instance_scope`] owns the enumeration and
+    /// the rescoping rule), for each of the child template's OWN value cells
+    /// that is still `Undef` at its scoped id, this rescopes the child cell's
+    /// `default_expr` onto the instance, then dispatches the rescoped
+    /// expression exactly like the per-DEF fold
     /// ([`crate::geometry_ops::try_eval_geometry_query`]):
     ///
     ///   - A rescoped geometry-query leaf's arg (e.g.
@@ -11672,42 +11762,18 @@ impl Engine {
         // `post_process_derived_lets` / `post_process_feature_datum_projections`).
         let mut candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = Vec::new();
 
-        for sub in &template.sub_components {
-            // Collection subs have no single scoped entity to fold into (each
-            // element would need its own indexed scope); out of scope here,
-            // mirroring `seed_cross_sub_named_steps`'s no-collection-subs
-            // contract.
-            if sub.is_collection {
-                continue;
-            }
-            let Some(child_template) =
-                reify_compiler::find_template(templates, &sub.structure_name)
-            else {
-                continue;
-            };
-            let scoped_entity = format!("{}.{}", template.name, sub.name);
-            let child_entity = child_template.name.as_str();
-
-            for child_cell in &child_template.value_cells {
+        for instance in direct_sub_instances(template, templates, values) {
+            for child_cell in &instance.child_template().value_cells {
                 let Some(default_expr) = &child_cell.default_expr else {
                     continue;
                 };
-                let scoped_id = reify_core::ValueCellId::new(
-                    scoped_entity.clone(),
-                    child_cell.id.member.as_str(),
-                );
+                let scoped_id = instance.scoped_id(&child_cell.id.member);
                 if values.get(&scoped_id).is_some_and(|v| !v.is_undef()) {
                     // Already folded (e.g. a Param cell populated by
                     // `elaborate_child_params_only`) — nothing to do.
                     continue;
                 }
-                let rescoped = default_expr.clone().map_value_refs(&mut |id| {
-                    if id.entity == child_entity {
-                        reify_core::ValueCellId::new(scoped_entity.clone(), id.member)
-                    } else {
-                        id
-                    }
-                });
+                let rescoped = instance.rescope(default_expr);
                 // Skip CrossSubGeometryRef expressions — same guard as
                 // `post_process_derived_lets`; that variant `unreachable!()`s in
                 // `reify_expr::eval_expr` outside a bare-let top level.
@@ -11730,6 +11796,59 @@ impl Engine {
             ) {
                 values.insert(scoped_id, value);
             }
+        }
+    }
+
+    /// Dispatch the kinematic-query helpers for each direct sub instance's
+    /// copies of its child template's cells, writing at the instance-scoped id
+    /// `ValueCellId("<parent>.<sub>", member)`. The pure eval pass leaves those
+    /// copies `Undef` because kernel values only exist in the build phase. Each
+    /// instance resolves against its own handles, so a param override is
+    /// honoured. One level deep, collection subs excluded; the rescoping rule
+    /// lives in [`crate::sub_instance_scope`].
+    ///
+    /// Each instance re-runs expressions the child template's own
+    /// [`Engine::post_process_kinematic_queries`] already ran, so its
+    /// diagnostics go through [`merge_sub_instance_diagnostics`].
+    fn post_process_cross_sub_kinematic_queries(
+        template: &reify_compiler::TopologyTemplate,
+        named_steps: &HashMap<String, KernelHandle>,
+        values: &mut ValueMap,
+        kernel: &mut dyn GeometryKernel,
+        diagnostics: &mut Vec<Diagnostic>,
+        templates: &[reify_compiler::TopologyTemplate],
+    ) {
+        let mut pose_cache: HashMap<
+            (reify_ir::GeometryHandleId, [u64; 4], [u64; 3]),
+            reify_ir::GeometryHandleId,
+        > = HashMap::new();
+        for instance in direct_sub_instances(template, templates, values) {
+            let steps = instance.named_steps_view(named_steps);
+            let mut instance_diagnostics = Vec::new();
+            for cell in &instance.child_template().value_cells {
+                let Some(default_expr) = cell
+                    .default_expr
+                    .as_ref()
+                    .filter(|e| calls_kinematic_query(e))
+                else {
+                    continue;
+                };
+                if let Some(value) = crate::geometry_ops::try_eval_kinematic_query(
+                    &instance.rescope(default_expr),
+                    &steps,
+                    values,
+                    kernel,
+                    &mut instance_diagnostics,
+                    &mut pose_cache,
+                ) {
+                    values.insert(instance.scoped_id(&cell.id.member), value);
+                }
+            }
+            merge_sub_instance_diagnostics(
+                diagnostics,
+                instance_diagnostics,
+                instance.scoped_entity(),
+            );
         }
     }
 
@@ -12061,24 +12180,21 @@ impl Engine {
     /// The refreshed values are written back to `snapshot.values` so the copy loop
     /// in `tessellate_snapshot` picks up the CURRENT param-derived scalars.
     ///
-    /// **Part C — hash gate:** for each DEMANDED realization, computes the current
-    /// input-cone hash (`compute_realization_upstream_values_hash`) against the just-
-    /// refreshed snapshot values and compares to the stored
-    /// `RealizationNodeData.input_cone_hash`.  If the hashes DIFFER (inputs changed),
-    /// `realization_cache.clear_entity` drops stale geometry so
-    /// `tessellate_from_values` is forced to re-execute.  If SAME, the cached
-    /// geometry is still valid and is reused (no re-dispatch → `last_dispatch_count`
-    /// stays 0).  The stored hash is updated to the current value in both cases.
+    /// **Part C — hash gate:** comparing each DEMANDED realization's current
+    /// input-cone hash (`compute_realization_upstream_values_hash`, over the
+    /// just-refreshed snapshot values) with its stored
+    /// `RealizationNodeData.input_cone_hash` yields the `moved` set, and every
+    /// demanded hash is re-stamped. `realization_staleness::hash_gate_verdict`
+    /// closes `moved` over `GeomRef::Sub` consumers, their producers and hidden
+    /// stale realizations; its families are evicted, its hidden stale stamps
+    /// cleared, and its exempt set returned for the
+    /// `demand_scoped_unified_pass` seed filter (the "reuse" branch).
     ///
-    /// **NOTE (esc-4740-29):** the "clear on hash mismatch" branch is currently a
-    /// no-op in practice — `clear_realization_cache()` at `edit_param` entry already
-    /// drops all entries, so the entity bucket will be empty when we call
-    /// `clear_entity`.  The method is wired now so the logic is correct when
-    /// eviction γ (task 4730) lands selective cache retention.
-    /// Returns exempt realizations: those whose input-cone hash is UNCHANGED
-    /// (`stored == Some(current_hash)`). These are excluded from the
-    /// `demand_scoped_unified_pass` seed so they are not re-dispatched when
-    /// inputs haven't changed (the "reuse" branch of the hash gate).
+    /// **NOTE (esc-4740-29, resolved by γ #4730):** edits no longer flush the
+    /// whole cache; they evict only the families their own compare found stale
+    /// and retain the rest. A mismatch found HERE — for instance on a cell Part B
+    /// just refreshed, which the edit-time compare saw as `Pending` — therefore
+    /// evicts genuinely retained geometry.
     fn refresh_and_gate_demanded_realizations(
         &mut self,
         module: &CompiledModule,
@@ -12197,12 +12313,7 @@ impl Engine {
                 // guard, with no test pinning it either way. Untested
                 // behaviour change plus inert motivation ⇒ removed.
                 //
-                // The real defect on the geometry-list side — under selective
-                // demand a second no-op `tessellate_snapshot` returns
-                // `[Undef; n]` where the first returned live handles, while full
-                // scope returns live handles both times — is filed separately as
-                // task #6460 (escalation esc-5385-5) and is NOT addressed by
-                // anything at this line.
+                // List cells are re-derived by `tessellate_snapshot`'s baseline mint (#6460).
                 if !new_val.is_undef() {
                     // Preserve existing DeterminacyState from snapshot.values.
                     let det = existing
@@ -12235,24 +12346,11 @@ impl Engine {
         };
 
         // Two-phase: collect decisions, then apply mutations.
-        //
-        // `entities_to_clear` uses a HashSet keyed on `realization_decl.id.entity`
-        // (the actual cache key — see the cross-realization keying invariant at
-        // engine_build.rs:1663) rather than `tmpl.name`.  For simple top-level
-        // templates the two are identical, but for sub/indexed entities they may
-        // diverge, and using the wrong key would silently miss the cache entry when
-        // eviction γ (task 4730) lands selective retention.  The HashSet also
-        // deduplicates: a template with N demanded realizations all having stale
-        // inputs would otherwise produce N identical `clear_entity` calls.
-        let mut entities_to_clear: HashSet<String> = HashSet::new();
+        let mut demanded: HashSet<reify_core::RealizationNodeId> = HashSet::new();
+        let mut moved: HashSet<reify_core::RealizationNodeId> = HashSet::new();
         let mut hash_updates: Vec<(reify_core::RealizationNodeId, [u8; 32])> = Vec::new();
-        // Exempt realizations: those whose input-cone hash is UNCHANGED
-        // (stored == Some(current_hash)). Returned to the caller so
-        // demand_scoped_unified_pass can exclude them from the selective seed,
-        // preventing unnecessary re-dispatch when inputs haven't changed.
-        let mut exempt: HashSet<NodeId> = HashSet::new();
 
-        {
+        let verdict = {
             // Immutable borrows: eval_state, demand, functions, meta_map —
             // all disjoint; NLL allows their simultaneous use.
             let state = self.eval_state.as_ref().unwrap();
@@ -12276,28 +12374,26 @@ impl Engine {
                         .get(&realization_decl.id)
                         .and_then(|n| n.input_cone_hash);
                     if stored != Some(current_hash) {
-                        // Inputs changed (or no stored hash yet): invalidate stale
-                        // geometry so tessellate_from_values re-executes.
-                        // Forward-looking: currently a no-op since edit_param's
-                        // clear_realization_cache already removed the entry
-                        // (esc-4740-29).
-                        // Key on `realization_decl.id.entity` — the actual cache key
-                        // (invariant at engine_build.rs:1663), NOT `tmpl.name`.
-                        entities_to_clear.insert(realization_decl.id.entity.clone());
-                    } else {
-                        // Inputs unchanged: exempt from re-dispatch this tessellate.
-                        exempt.insert(node);
+                        moved.insert(realization_decl.id.clone());
                     }
+                    demanded.insert(realization_decl.id.clone());
                     // Always record the new hash (even if hash was unchanged, to
                     // ensure the stored hash is set after the first tessellate).
                     hash_updates.push((realization_decl.id.clone(), current_hash));
                 }
             }
-        }
+            crate::realization_staleness::hash_gate_verdict(
+                &demanded,
+                &moved,
+                &state.reverse_index,
+                &state.snapshot.graph,
+            )
+        };
 
-        // Apply: clear stale cache entries + update stored hashes.
-        for entity in &entities_to_clear {
-            self.realization_cache.clear_entity(entity);
+        // Apply: evict stale families, stamp the demanded realizations, and
+        // clear the stamps of stale realizations this pass will not run.
+        for entity in &verdict.evict_entities {
+            self.realization_cache.evict_family(entity);
         }
         if let Some(state) = self.eval_state.as_mut() {
             for (real_id, new_hash) in hash_updates {
@@ -12305,8 +12401,17 @@ impl Engine {
                     node_data.input_cone_hash = Some(new_hash);
                 }
             }
+            for real_id in &verdict.unstamp {
+                if let Some(node_data) = state.snapshot.graph.realizations.get_mut(real_id) {
+                    node_data.input_cone_hash = None;
+                }
+            }
         }
-        exempt
+        verdict
+            .exempt
+            .into_iter()
+            .map(NodeId::Realization)
+            .collect()
     }
 
     /// Tessellate realizations from the current snapshot values, without
@@ -12318,6 +12423,17 @@ impl Engine {
     /// companion to `tessellate_realizations()`: after `edit_param()` updates
     /// values, call `tessellate_snapshot()` to get updated meshes without a
     /// cold restart.
+    ///
+    /// A geometry-backed cell whose realizations this pass does NOT execute
+    /// (hidden, or hash-exempt because their inputs are unchanged) carries the
+    /// symbolic eval-path handle (`kernel_handle: None`) minted from the
+    /// current values — scalar and list cells alike. Hydration upgrades a
+    /// scalar cell to a kernel-backed handle when its realization executes,
+    /// but a list cell only when EVERY element executes: hash exemption is
+    /// per realization while the list regroup is all-or-nothing, so a partly
+    /// re-executed list is served wholly symbolic, its executed elements
+    /// included. Geometry-list cases: reify-eval
+    /// `tests/harness_cache/selective_demand_redemand_staleness.rs`.
     pub fn tessellate_snapshot(&mut self, module: &CompiledModule) -> Option<TessellateResult> {
         // Reset all per-build engine state through the single exhaustive-
         // destructure choke-point (#5069, INV-BUILD-1). Placed at the TOP:
@@ -12342,8 +12458,8 @@ impl Engine {
         // realization recompute on the input-cone hash.  Must run AFTER
         // `mark_demand_pruned_pending` (which identifies Pending cells) and BEFORE
         // the snapshot-values copy below (so the copy picks up fresh scalars).
-        // Returns the exempt set (realizations with unchanged input-cone hash) for
-        // the demand_scoped_unified_pass seed filter below.
+        // Returns the hash gate's exempt set for the demand_scoped_unified_pass
+        // seed filter below.
         let hash_exempt = self.refresh_and_gate_demanded_realizations(module);
         let state = self.eval_state.as_ref()?;
 
@@ -12385,10 +12501,29 @@ impl Engine {
         for (id, (val, _det)) in state.snapshot.values.iter() {
             values.insert(id.clone(), val.clone());
         }
+        // The symbolic geometry baseline `build` / `tessellate_realizations`
+        // get from `check().values`, re-derived from the CURRENT values: a
+        // geometry-list cell's snapshot entry is only its pre-hydration
+        // `[Undef; n]` placeholder, so without this a list whose realizations
+        // this pass does not execute (hash-exempt or hidden) would ship that
+        // placeholder (task #6460).
+        Engine::mint_symbolic_geometry_handles_into_values(
+            module,
+            &mut values,
+            &self.functions,
+            &self.meta_map,
+        );
 
         // Check constraints (guard-aware)
-        let (constraint_results, mut diagnostics) =
+        let (mut constraint_results, mut diagnostics) =
             self.check_constraints_against_templates(module, &values, Some(&state.snapshot.values));
+        // The measurements this surface never takes (engine_viewport_attribution.rs).
+        self.attribute_viewport_unmeasured(
+            module,
+            &values,
+            &mut constraint_results,
+            &mut diagnostics,
+        );
 
         // Task 2874 (amendment): emit imported-tolerance-promise diagnostics
         // (`ImportedTolerancePromiseInsufficient` / `InputTolerancePromiseIsZero`)
@@ -12432,6 +12567,7 @@ impl Engine {
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
+            &mut self.volume_mesh_sources,
             &demanded_tols,
             &tessellation_budgets,
             &mut self.last_dispatch_count,
@@ -13799,6 +13935,46 @@ fn arg_contains_cross_sub_geometry_ref(expr: &reify_ir::CompiledExpr) -> bool {
     found
 }
 
+/// Returns `true` if `expr` calls a kinematic-query helper
+/// ([`reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES`]) at any depth. That
+/// covers every shape [`crate::geometry_ops::try_eval_kinematic_query`]
+/// dispatches, a direct helper call or a `flat_map` whose lambda wraps one,
+/// so a cell that fails this test is not worth rescoping for it.
+fn calls_kinematic_query(expr: &reify_ir::CompiledExpr) -> bool {
+    let mut found = false;
+    expr.walk(&mut |e| {
+        if let reify_ir::CompiledExprKind::FunctionCall { function, .. } = &e.kind
+            && reify_compiler::GEOMETRY_KINEMATIC_QUERY_NAMES.contains(&function.name.as_str())
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Folds one sub instance's diagnostics into `diagnostics`. A diagnostic that
+/// is already there (same severity and message, usually from the child
+/// template's own pass over the same expression) is dropped. Any other is
+/// kept, with `scoped_entity` added to its message so the reader knows which
+/// instance raised it.
+fn merge_sub_instance_diagnostics(
+    diagnostics: &mut Vec<Diagnostic>,
+    instance_diagnostics: Vec<Diagnostic>,
+    scoped_entity: &str,
+) {
+    for mut diagnostic in instance_diagnostics {
+        let tagged = format!("{} (sub-instance `{scoped_entity}`)", diagnostic.message);
+        let already_reported = diagnostics.iter().any(|d| {
+            d.severity == diagnostic.severity
+                && (d.message == diagnostic.message || d.message == tagged)
+        });
+        if !already_reported {
+            diagnostic.message = tagged;
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
 /// Returns `true` if `expr` is a top-level `FunctionCall` to `fits_build_volume`.
 ///
 /// Used by [`Engine::harvest_dfm_let_diagnostics`] to identify DFMSeverityBridge
@@ -13866,7 +14042,7 @@ fn compute_realization_upstream_values_hash(
 /// walk can call it using graph-resident `RealizationNodeData.operations`
 /// (which is the same type but is not wrapped in a `RealizationDecl`).
 ///
-/// `pub(crate)` for the same reason: `engine_edit.rs`'s
+/// `pub(crate)` for the same reason: `realization_staleness.rs`'s
 /// `compute_changed_realizations` (selective-realization-eviction task β)
 /// recomputes the input-cone hash over graph-resident ops and compares it
 /// against α's stored `RealizationNodeData.input_cone_hash`. PRD D1 forbids a
@@ -13957,6 +14133,9 @@ mod populate_local_feature_tests;
 
 #[cfg(test)]
 mod dispatch_volume_mesh_tests;
+
+#[cfg(test)]
+mod conversion_source_key_tests;
 
 /// Produce an info-level diagnostic when a swept body is meshed with P1
 /// hex/wedge despite the user requesting `element_order = P2`.
@@ -14071,6 +14250,10 @@ mod post_process_cross_sub_value_cells_tests;
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
 
+// ── mint_symbolic_geometry_handle_for_cell_from_graph cell-shape guard (#6460) ─
+#[cfg(test)]
+mod geometry_cell_mint_from_graph_tests;
+
 // ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
 //
 // White-box pin (direct private-field access from this submodule of the crate
@@ -14094,7 +14277,7 @@ mod reset_per_build_state_tests {
     /// A fresh kernel-less `Engine` with one seeded entry in every per-build
     /// reset class plus representative must-survive fields.
     fn seeded_engine() -> Engine {
-        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         let rid = RealizationNodeId::new("Seed", 0);
 
         // ── reset-EVERY-surface ───────────────────────────────────────────

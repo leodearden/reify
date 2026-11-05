@@ -57,9 +57,9 @@ use crate::assembly::{
 };
 use crate::boundary::{DirichletBc, apply_dirichlet_row_elimination, apply_point_load};
 use crate::constitutive::IsotropicElastic;
+use crate::elements::shell_frame::{build_shell_frame, plane_stress_d};
 use crate::form_find::MemberKind;
 use crate::geometric_stiffness::{MembranePrestress, bar_tangent_stiffness, membrane_tangent_stiffness};
-use crate::shell_assembly::{build_shell_frame, plane_stress_d};
 use crate::shell_kinematics::shell_kinematics;
 use crate::solver::{CgSolverOptions, SolverMode, solve_cg};
 use crate::tensegrity_load::BarMember;
@@ -790,7 +790,7 @@ mod tests {
         let e = 1000.0_f64;
         let mat = nu_zero_material(e);
         let (exx, eyy, gam) = (0.001_f64, 0.002_f64, 0.003_f64);
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
         let tilted = [
             apply_q(&q, UNIT_TRI[0]),
             apply_q(&q, UNIT_TRI[1]),

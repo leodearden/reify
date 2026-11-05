@@ -233,7 +233,7 @@ Plan-Step Counts table is edited and no fifth shape is added. Confirmed by
 running `tests/infra/test_verify_throughput.sh` green with the sentinel
 UNBUMPED rather than by asserting it. The narrower new coverage lives where it
 can be counted directly: `(b15)` in
-`tests/infra/test_compute_trampoline_registration_wired.sh` and scenario `GV-7`
+`tests/infra/test_verify_gui_feature_test_pass.sh` and scenario `GV-7`
 in `tests/infra/test_verify_scope.sh` count the gui-feature pass itself rather
 than whole-plan non-comment lines._
 

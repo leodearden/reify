@@ -61,14 +61,20 @@ Optimization directives can appear in purpose declarations or inline. `minimize`
 
 **Objectives take no `where` guard.** Neither `minimize X where C` nor
 `where C { minimize X }` is supported. The suffix form parses but the compiler
-DISCARDS the guard silently — the objective then runs unopposed and drives your
-`auto` params to their bounds while the build reports success. Express the
-predicate as a separate `constraint` member instead:
+DISCARDS the guard silently: the objective runs as if unguarded, and every
+command that resolves `auto` (`reify check`, `build`, `eval` and the rest; see
+the `solving` chunk) reports success with a value that ignores the guard.
+Measured: `minimize thickness where thickness > limit`, with `limit` 5mm and
+`thickness` bracketed to [2mm, 6mm], resolves `thickness` to 4mm, and
+`reify check` and `reify build` both exit 0. Express the predicate as a
+separate `constraint` member instead:
 
 ```reify-fragment
 constraint peak_stress < material.yield_stress
 minimize mass
 ```
+
+How objectives choose `auto` values, and what they do not reach yet: the `solving` chunk — topic `solving` of `reify_language_reference`.
 
 ## Quantifiers
 
@@ -82,4 +88,8 @@ Vacuous falsity: `exists x in []: P(x)` evaluates to `false`.
 
 ## Constraint Status
 
-Constraints have a satisfaction status: `satisfied`, `violated`, or `indeterminate` (when inputs are `undef`).
+Constraints have a satisfaction status: `satisfied`, `violated`, or `indeterminate`.
+
+Every indeterminate verdict carries its cause, such as `undefined inputs: Flange.radius`. A cause is EXPECTED when an input is deliberately unfinished, such as an unbound param. It is UNEXPECTED when a mechanism failed to deliver a value, such as a solve that failed. Plain `reify check` reports indeterminate constraints and exits 0 for them; it fails on errors, such as an infeasible solve. `reify check --strict` fails on any indeterminate constraint.
+
+Letting the solver choose a value with `auto`, and which commands resolve it: the `solving` chunk — topic `solving` of `reify_language_reference`.

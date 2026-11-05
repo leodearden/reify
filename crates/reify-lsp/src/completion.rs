@@ -157,6 +157,7 @@ pub fn compute_completions_in_context(
         }
         CursorContext::StructureBody { ref structure_name } => {
             push_keywords(&mut items, BODY_KEYWORDS);
+            push_keywords(&mut items, CONTEXTUAL_BODY_KEYWORDS);
             push_keywords(&mut items, EXPR_KEYWORDS);
             push_builtins(&mut items);
             push_type_names(&mut items);
@@ -255,17 +256,14 @@ const DIMENSIONLESS_NORMAL_NOTE: &str =
 /// gated families named in task 6450's own description — patterns,
 /// translate/rotate_around, revolve, line_segment, arc, helix, interp,
 /// bezier, nurbs poles, ... — have no entry here at all, so naming them
-/// would invent a residual with no surface). The full "deliberately NOT
-/// gated" enumeration lives in `arg_acceptance`'s module doc — cited, not
-/// restated here (G7).
+/// would invent a residual with no surface).
 ///
-/// RESIDUAL: this table is a snapshot of the families gated as of task 5750
-/// (leaf η — see `builtin_signatures.rs`'s module doc, which attributes the
-/// PRIMITIVE/PROFILE compile-layer slots this table mirrors to that task),
-/// taken before the units-length-gate-completion PRD's closure guard (task
-/// ι) has landed to close the gated set by construction. TODO(#5752): once ι
-/// lands, re-check this table against its allowlist — the gated set can
-/// still grow via ι's downstream siblings.
+/// Which positions are gated, and which are deliberately left bare, is pinned
+/// by reify-eval's units-length closure guard
+/// (crates/reify-eval/tests/harness_geometry/units_length_closure_guard.rs).
+/// This table mirrors that guard's verdicts for the `01-geometry` rows, and
+/// `tests::length_gated_tables_stay_in_sync` reds when a `01-geometry`
+/// signature types a slot `Length` without a row here.
 const LENGTH_GATED_EXAMPLES: &[(&str, &str, Option<&'static str>)] = &[
     ("box", "box(20mm, 10mm, 30mm)", None),
     ("cylinder", "cylinder(5mm, 20mm)", None),
@@ -475,6 +473,12 @@ pub(crate) const BODY_KEYWORDS: &[&str] = &[
     "where",
 ];
 
+/// Statement keywords that the grammar reads as keywords only at the head of a
+/// body statement; anywhere else they stay ordinary identifiers
+/// (`let chain = a < b`). They complete beside [`BODY_KEYWORDS`] but are not
+/// reserved words, so, unlike that list, rename accepts them as new names.
+pub(crate) const CONTEXTUAL_BODY_KEYWORDS: &[&str] = &["chain"];
+
 /// Keywords valid inside expressions (conditions, values, operators).
 pub(crate) const EXPR_KEYWORDS: &[&str] =
     &["if", "then", "else", "and", "or", "not", "true", "false"];
@@ -497,8 +501,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     // --- 01-geometry: solid geometry primitives ---
     BuiltinFunctionInfo {
         name: "box",
-        signature: "box(width: Length, height: Length, depth: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -515,8 +519,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "box_centered",
-        signature: "box_centered(width: Length, depth: Length, height: Length) -> Solid",
-        doc: "Creates a rectangular box solid centred at the origin.",
+        signature: "box_centered(size_x: Length, size_y: Length, size_z: Length) -> Solid",
+        doc: "Creates a rectangular box solid centred at the origin. size_x/size_y/size_z are the X/Y/Z extents (the positional width, depth, height).",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -1170,6 +1174,23 @@ mod tests {
         // (a top-level keyword) is not expected here after position-aware narrowing.
     }
 
+    /// The completion lists are UX tables over the language's keywords: every
+    /// word they offer is a `reify_syntax::KEYWORDS` row. Membership only — the
+    /// lists may offer rename-accepted words, so rename policy is not checked.
+    #[test]
+    fn completion_keywords_are_keyword_table_rows() {
+        for w in TOP_LEVEL_KEYWORDS
+            .iter()
+            .chain(BODY_KEYWORDS)
+            .chain(EXPR_KEYWORDS)
+        {
+            assert!(
+                reify_syntax::lookup_keyword(w).is_some(),
+                "completion offers {w:?}, which is not a reify_syntax::KEYWORDS row"
+            );
+        }
+    }
+
     #[test]
     fn completions_include_scope_identifiers() {
         let source = reify_test_support::bracket_source();
@@ -1411,8 +1432,8 @@ mod tests {
     /// added to `LENGTH_GATED_EXAMPLES` alone would ship a doc claim with no
     /// behavioural pin at all, and a typo'd or stale `LENGTH_GATED_EXAMPLES`
     /// key is simply never looked up by `builtin_doc_with_length_gate_note`'s
-    /// `find` and never reds. All three are exactly the failure modes the
-    /// TODO(#5752) residual anticipates as the gated set grows.
+    /// `find` and never reds. All three are failure modes that open up as the
+    /// gated set grows.
     #[test]
     fn length_gated_tables_stay_in_sync() {
         let example_names: HashSet<&str> = LENGTH_GATED_EXAMPLES
@@ -1656,6 +1677,55 @@ mod tests {
         }
     }
 
+    /// The editor names box's parameters the way a diagnostic names them, in
+    /// the same order.
+    ///
+    /// `served` is the parameter list completion advertises; `compiler` is the
+    /// slot each `ArgTypeMismatch` blames for a bare `<name>(1, 2, 3)`, in
+    /// emission order. An author told "box: size_y argument expects Length"
+    /// must find `size_y` at that position in the signature popup.
+    #[test]
+    fn box_signatures_name_the_compiler_slots_in_order() {
+        let source = reify_test_support::bracket_source();
+        let items = compute_completions(source, &test_uri(), Position::new(1, 0));
+
+        for name in ["box", "box_centered"] {
+            let signature = served_signature(&items, name);
+            let params = signature
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once(')'))
+                .map(|(params, _)| params)
+                .unwrap_or_else(|| panic!("{name}: signature has no parameter list: {signature}"));
+            let served: Vec<&str> = params
+                .split(',')
+                .map(|param| param.split(':').next().unwrap_or(param).trim())
+                .collect();
+
+            let compiled = reify_test_support::compile_source(&format!(
+                "structure def S {{\n    let b = {name}(1, 2, 3)\n}}\n"
+            ));
+            let compiler: Vec<&str> = compiled
+                .diagnostics
+                .iter()
+                .filter(|d| d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch))
+                .filter_map(|d| reify_test_support::named_length_argument(&d.message))
+                .collect();
+
+            assert_eq!(
+                compiler.len(),
+                3,
+                "{name}: a bare {name}(1, 2, 3) should blame three LENGTH slots; \
+                 diagnostics: {:#?}",
+                compiled.diagnostics
+            );
+            assert_eq!(
+                served, compiler,
+                "{name}: the served signature `{signature}` must name the slots \
+                 the compiler's diagnostics name, in order"
+            );
+        }
+    }
+
     #[test]
     fn re_im_not_in_builtin_completions() {
         // re, im, real, imag are method-only accessors, not standalone builtins.
@@ -1858,6 +1928,82 @@ mod tests {
         assert!(
             !keyword_labels.contains(&"import"),
             "body should NOT include 'import'"
+        );
+    }
+
+    fn keyword_labels(items: &[CompletionItem]) -> Vec<&str> {
+        items
+            .iter()
+            .filter(|i| i.kind == Some(CompletionItemKind::KEYWORD))
+            .map(|k| k.label.as_str())
+            .collect()
+    }
+
+    /// `chain` starts a body statement, so it completes where one can begin and
+    /// nowhere inside an expression.
+    #[test]
+    fn completion_offers_chain_keyword_where_a_body_statement_can_start() {
+        let source = reify_test_support::bracket_source();
+        // Line 6 is the empty line between params and lets, inside the body.
+        let in_body = compute_completions(source, &test_uri(), Position::new(6, 0));
+        assert!(
+            keyword_labels(&in_body).contains(&"chain"),
+            "a body statement position should include 'chain'"
+        );
+
+        let source = "structure Foo {\n    let x = \n}";
+        // Line 1, col 12 is after "    let x = " — inside the expression.
+        let in_expression = compute_completions(source, &test_uri(), Position::new(1, 12));
+        assert!(
+            !keyword_labels(&in_expression).contains(&"chain"),
+            "an expression position should NOT include 'chain'"
+        );
+    }
+
+    /// A contextual keyword is an identifier everywhere but at the head of a body
+    /// statement, so, unlike the reserved [`BODY_KEYWORDS`], it stays a legal
+    /// rename target. Both halves are checked: rename accepts the name, and the
+    /// parser reads the renamed buffer back clean.
+    #[test]
+    fn contextual_body_keywords_remain_legal_rename_targets() {
+        let source = "structure S {\n    param a: Length = 1mm\n    let total = a * 2\n    constraint total > 0mm\n}";
+        let parse = |text: &str| reify_syntax::parse(text, reify_core::ModulePath::single("test"));
+        let parsed = parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture must parse clean: {:?}",
+            parsed.errors
+        );
+        let on_total = crate::convert::offset_to_position(
+            source,
+            source.find("total").expect("fixture declares `total`") as u32,
+        );
+        let rename_to = |new_name: &str| {
+            crate::references::compute_rename(source, &parsed, &test_uri(), on_total, new_name)
+        };
+
+        assert!(
+            CONTEXTUAL_BODY_KEYWORDS.contains(&"chain"),
+            "`chain` is the contextual keyword this test exists for"
+        );
+        for keyword in CONTEXTUAL_BODY_KEYWORDS {
+            assert!(
+                rename_to(keyword).is_some(),
+                "renaming a binding to the contextual keyword `{keyword}` must be accepted"
+            );
+            let renamed = parse(&source.replace("total", keyword));
+            assert!(
+                renamed.errors.is_empty(),
+                "`{keyword}` must re-parse clean as an identifier: {:?}",
+                renamed.errors
+            );
+        }
+
+        // A reserved body keyword is still refused, so the acceptance above is
+        // down to the keyword being contextual and not to the cursor position.
+        assert!(
+            rename_to("let").is_none(),
+            "a reserved keyword must stay refused as a rename target"
         );
     }
 

@@ -20,7 +20,8 @@
 use crate::common::compile_with_stdlib_helper;
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity};
-use reify_ir::{CompiledExpr, CompiledExprKind, Value};
+use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::get_let_expr_in;
 
 /// The two-param `Result<T, E>` enum shared across inference tests (identical
 /// fixture to `enum_generic_ir_lowering_tests.rs` / `generic_enum_pattern_binder_tests.rs`).
@@ -55,29 +56,6 @@ fn has_error_code(module: &CompiledModule, code: DiagnosticCode) -> bool {
         .diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error && d.code == Some(code))
-}
-
-/// Locate the compiled default/init expr of the named value cell (`param` or
-/// `let`) on the `Widget` structure's `TopologyTemplate`. Mirrors the
-/// `outline_default` helper in `variant_construction_check_tests.rs` — used
-/// to inspect whether a construction actually assembled a clean `Value::Enum`
-/// or was suppressed to the `Value::Undef` poison/typed-placeholder, rather
-/// than merely inferring suppression from the presence of *some* Error
-/// diagnostic.
-fn widget_value_cell<'a>(module: &'a CompiledModule, member: &str) -> &'a CompiledExpr {
-    let widget = module
-        .templates
-        .iter()
-        .find(|t| t.name == "Widget")
-        .expect("Widget template should be present in module.templates");
-    let cell = widget
-        .value_cells
-        .iter()
-        .find(|vc| vc.id.member == member)
-        .unwrap_or_else(|| panic!("Widget should declare a '{member}' value cell"));
-    cell.default_expr
-        .as_ref()
-        .unwrap_or_else(|| panic!("'{member}' value cell should carry a compiled default_expr"))
 }
 
 /// step-1 (RED): a generic-variant construction supplying a bare type-param
@@ -154,7 +132,7 @@ fn same_param_twice_conflict_is_flagged() {
     // default_expr directly to confirm it is the Value::Undef poison/
     // typed-placeholder (compile_variant_construct's checks_start guard)
     // rather than a clean Literal(Value::Enum).
-    match &widget_value_cell(&module, "p").kind {
+    match &get_let_expr_in(&module, "Widget", "p").kind {
         CompiledExprKind::Literal(Value::Undef) => {}
         other => panic!(
             "a same-param-twice conflict must suppress clean value assembly — expected \

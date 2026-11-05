@@ -6,12 +6,52 @@
 > (`stdlib/tolerancing.ri`: `DimensionalTolerance`, GD&T traits, `Fit`). What is missing is
 > the *analysis* that propagates those tolerances along a dimension chain and reports the
 > resulting gap distribution — worst-case, statistical (RSS), and Monte-Carlo. This PRD adds
-> that analysis as a set of stdlib builtins surfaced through `reify eval`, mirroring the
-> existing stress-analysis builtin pattern (`stdlib/analysis.ri` + `reify-stdlib/src/analysis.rs`).
+> that analysis as a set of stdlib builtins surfaced through `reify eval`.
 
-Status: contract (B+H). Authored 2026-05-27 in a `/prd` spec-gap-filling batch.
+Status: **SHIPPED** — all seven decomposition leaves landed: T1 #3996, T2 #3998, T3 #4007,
+T4 #4001, T5 #4011, T6 #4004, T7 #4014 (the T7 integration gate closed 2026-05-31; the module
+began with `a6586bfcb7`, 2026-05-27). Authored 2026-05-27 in a `/prd` spec-gap-filling batch
+as a contract (B+H).
 Resolves spec §18 deferred item #7 ("Tolerance stack-up analysis — RSS, worst-case, Monte
 Carlo; requires assembly graph + statistics").
+
+The body below is the AS-AUTHORED design record. Where it says "new", "adds" or "proposed" it
+describes the plan, not the tree; they are not current statements of fact. What is LIVE (kept
+current, because `crates/reify-stdlib/src/stackup.rs`, `stackup/rng.rs` and the examples defer
+to it): §0 (scope boundary), §3 (the math and its premises; the §3.3 contract list as amended
+by **Landed deviations 1–3**), §4.1 (dispatch shape), §4.2–4.3 (result keys, invariants) as
+amended by **Landed deviations** below, §4.4 (error semantics) as amended by **Landed
+deviation 2**, and §5 (explicit-chain scoping). AS-AUTHORED: §1, §2, §6, §7 (its sketch was
+realized as the unit and CLI tests in `stackup.rs` and
+`reify-cli/tests/harness_cli/cli_stackup_*.rs`), §8 (a record of what landed), §9, §10 and the
+DESIGN FORKS / RESOLVED DECISIONS blocks.
+
+**Landed deviations** (measured against `stackup::eval_stackup`, its tests and `reify eval` on
+2026-10-08).
+The numeric contracts hold: worst-case and RSS are asserted to 1e-12 relative (INV-2), the
+`monte_carlo_stackup` result is bit-identical at a fixed seed (INV-3) and pinned by a
+regression golden at N=100k, seed 42, and
+`crates/reify-cli/tests/harness_cli/cli_stackup_3part.rs` asserts that
+`examples/tolerance-stackup-3part.ri`'s MC σ is within 2% of its RSS σ. Three places differ
+from the text below:
+
+1. **`seed` is positional, not a named argument.** `monte_carlo_stackup(chain, samples, seed,
+   spec_min?, spec_max?, sigma_level?)` takes its arguments by position, as the example does
+   (`monte_carlo_stackup(chain, 100000, 42, 2.5mm, 3.5mm)`). The `seed: 42` colon form of §2
+   and §3.3 is not what ships.
+2. **`E_StackupSeedRequired` was never implemented.** A call with fewer than three arguments
+   is an arity miss and a non-`Int` seed returns `Value::Undef`; neither emits a stackup
+   diagnostic (`stackup::diagnose` returns `None` below three arguments and lists a non-`Int`
+   seed under "Not diagnosed"). `reify eval` prints the cell as `undef` and exits 0, where §7.5
+   promised `E_StackupSeedRequired` on stderr and exit 1. The determinism guarantee holds —
+   there is no wall-clock or default seed — but the §3.3 item 1 and §7.5 claim of a seed-less
+   error diagnostic is unmet. That is an open gap, not a decision to drop the diagnostic:
+   #8344 tracks it. The shipped diagnostics are `E_StackupEmptyChain`,
+   `E_StackupDimMismatch`, `E_StackupBadSign` and `E_StackupBadSamples`.
+3. **Each contributor draws from its own sub-stream.** Every contributor's xoshiro256** is
+   seeded from `seed ^ (index · 0x9E3779B97F4A7C15)`, rather than one stream consumed in
+   contributor-then-draw order (§3.3 item 3). Results stay deterministic; the exact stream
+   is an implementation detail, pinned by the golden.
 
 ---
 
@@ -28,8 +68,8 @@ must not touch the second:
 The two share the word "tolerance" and nothing else. `tolerance_budget.rs` allocates a
 realization-error budget across kernel conversion stages (an RSS-*looking* combine in
 `tolerance_combine.rs` is over **conversion errors**, not design dimensions). This PRD's RSS
-is over **design dimensional deviations**. Code lives in a **new** module
-`reify-stdlib/src/stackup.rs`; it neither imports nor is imported by the budget machinery.
+is over **design dimensional deviations**. Code lives in its own module,
+`reify-stdlib/src/stackup.rs` (with the PRNG in `stackup/rng.rs`); it neither imports nor is imported by the budget machinery.
 
 `per-purpose-tolerance.md` (v0.2) explicitly lists stack-up analysis as out of its scope and
 points here (its "Out of scope" §). We build *on top of* the `stdlib/tolerancing.ri`
@@ -42,7 +82,7 @@ declaration types, not on the kernel-tolerance machinery.
 **Named consumer: a mechanical designer running `reify eval <assembly>.ri` to check that a
 stacked fit/gap stays in spec across accumulated tolerance.** The user-observable surface is
 the `reify eval` CLI, which "evaluates and prints every top-level value cell"
-(`reify-cli/src/main.rs:2056`, `cmd_eval`). After this PRD, a `.ri` model with
+(`cmd_eval` in `reify-cli/src/main.rs`). After this PRD, a `.ri` model with
 
 ```reify
 let result = stackup_rss(chain)
@@ -63,11 +103,10 @@ Every mechanism this PRD introduces names that consumer:
 
 No mechanism is an in-engine seam (kernel module / dispatcher / realization-kind / ComputeNode
 dispatch), so the engine-integration-norm §3 sub-check does **not** apply — these are pure
-stdlib builtins on the `eval_builtin` dispatch chain (`reify-stdlib/src/lib.rs:225`), exactly
-like `von_mises` / `safety_factor` (`reify-stdlib/src/analysis.rs:27`, reached from the
-`eval_builtin` arm at `lib.rs:253`). That dispatch chain is the existing, catalogued surface;
-this PRD adds one arm (`stackup::eval_stackup`). Pending #6001 that chain is *not* retired; §4.1
-states the post-#6001 shape and carries this file's single re-point obligation.
+stdlib builtins on the `reify_stdlib::eval_builtin` dispatch chain, reached through a family arm
+like the other family dispatchers on it (`numeric::eval_numeric`, `fea::eval_fea`). That
+dispatch chain is the existing, catalogued surface; this PRD added one arm
+(`stackup::eval_stackup`). #6001 did not retire that chain; §4.1 states the dispatch shape.
 
 ---
 
@@ -91,20 +130,20 @@ GR-040 preserved: no method-call syntax (`x.foo()`); all analysis is free-functi
 (`seed: 42`), per the language convention.
 
 **Substrate that already exists** (each verified in-tree):
-- `reify eval` value-cell printing — `reify-cli/src/main.rs:2056` (`cmd_eval` prints
+- `reify eval` value-cell printing — `cmd_eval` in `reify-cli/src/main.rs` (prints
   `id = value` for every top-level cell, sorted).
-- `eval_builtin` free-function dispatch chain — `reify-stdlib/src/lib.rs:225`; analysis-arm
-  pattern at `analysis::eval_analysis` (`reify-stdlib/src/analysis.rs:27`, dispatched from the
-  arm at `lib.rs:253`), returning `Value::from_real_scalar`, `Value::List`, `Value::Map`.
-  Pending #6001 the `analysis` and `parse` families migrate off this chain onto registry rows;
-  the rest of it, including everything this PRD adds, stays. Shape and re-point obligation: §4.1.
-- `Value::Map(BTreeMap<Value,Value>)`, `Value::List`, `Value::Scalar` (dimensioned) —
-  `reify-ir/src/value.rs:993+` (`Scalar` at `:999`, `List` at `:1017`, `Map` at `:1101`).
+- `reify_stdlib::eval_builtin` free-function dispatch chain — the family-arm pattern
+  `if let Some(v) = <family>::eval_<family>(name, args)`, returning `Value::from_real_scalar`,
+  `Value::List`, `Value::Map`. The parse and analysis families moved off this chain onto
+  registry rows (#6001, `87b744b189`); the rest of it, including everything this PRD adds,
+  stays. Shape: §4.1.
+- `Value::Map(BTreeMap<Value,Value>)`, `Value::List`, `Value::Scalar` (dimensioned) — variants
+  of `reify_ir::Value` (`reify-ir/src/value.rs`).
   The multi-field result is a `Value::Map` keyed by string
   (deterministic `BTreeMap` ordering, so `reify eval` prints stable output).
-- `reify-compiler/stdlib/tolerancing.ri:35` `DimensionalTolerance` (`nominal`, `upper_deviation`,
-  `lower_deviation`, `tolerance_band`) — the declaration substrate this PRD's `Contributor`
-  reuses / aligns with.
+- `structure def DimensionalTolerance` in `reify-compiler/stdlib/tolerancing.ri` (`nominal`,
+  `upper_deviation`, `lower_deviation`, `tolerance_band`) — the declaration substrate this PRD's
+  `Contributor` reuses / aligns with.
 - `Length` / dimensioned literals (`0.1mm`), `enum`, `trait`, `constraint`, list literals —
   all in `examples/*.ri`.
 
@@ -212,27 +251,24 @@ G6 cautionary precedents (esc-3453 guessed-5%, esc-3770 impossible-exactness) de
 
 ### 4.1 Builtin signatures (Rust side, `reify-stdlib/src/stackup.rs`)
 
-Each name below is dispatched by a `stackup::eval_stackup` arm on the `eval_builtin` chain
-(`reify-stdlib/src/lib.rs:225`), mirroring `analysis::eval_analysis`
-(`reify-stdlib/src/analysis.rs:27`, arm at `lib.rs:253`) — the shape that exists on main today.
+Each name below is dispatched by a `stackup::eval_stackup` family arm on the name-string chain
+of `reify_stdlib::eval_builtin`. That arm sits behind the chain's registry-first
+`registry_dispatch::try_dispatch` hop: a registry `None` falls through to the family arms
+exactly as any family's decline does, and `eval_builtin`'s own comment calls the shape
+"registry-first coexistence".
 
-**Pending #6001** (builtin-signature-registry leaf α; in flight on `task/6001`, unlanded as of
-2026-09-11): that task does **not** retire the name-string chain. `eval_builtin` survives
-(`lib.rs:226` there) and gains a registry-first `registry_dispatch::try_dispatch` hop ahead of
-the 23 family dispatchers that remain — `stackup::eval_stackup` among them — with a registry
-`None` falling through exactly as any other family's decline does; that branch's own comment
-calls the shape "registry-first coexistence". A name leaves the chain only when it is registered
-as a `BindingKind::EvalBuiltin` row in `crates/reify-builtins/src/registry.rs` with its eval
-kernel bound by an arm in the exhaustive `crates/reify-stdlib/src/registry_dispatch.rs::dispatch`
-match over `EvalBuiltinId`. Measured on `task/6001` @3100d29849, only parse + analysis have
-migrated (7 `EvalBuiltinId` variants) and **no stackup name is a row** — so the dispatch-arm
-shape above is what this PRD's builtins get under #6001 as it stands, and registering them as
-rows instead would be a separate, later migration. Re-check when #6001 lands. **This paragraph
-is this file's single #6001 re-point site** — §1, §2, §7.1 and RESOLVED DECISIONS defer here
-rather than restating it.
+#6001 (builtin-signature-registry leaf α; merged to main in `87b744b189`, 2026-09-12) did
+**not** retire that chain. It moved only the parse and analysis families off it: their names are
+`BindingKind::EvalBuiltin` rows in `crates/reify-builtins/src/registry.rs`, each eval kernel
+bound by an arm in the exhaustive `crates/reify-stdlib/src/registry_dispatch.rs::dispatch` match
+over `EvalBuiltinId`. It registered no stackup name, so the family arm above is the dispatch
+shape for this PRD's builtins, and registering them as rows instead would be a separate, later
+migration — its producer-side signal would be the exhaustive `EvalBuiltinId` match **failing to
+compile** for a row with no arm. This paragraph is this file's single statement of the dispatch
+shape — §1, §2, §7.1 and RESOLVED DECISIONS defer here rather than restating it.
 
 ```text
-eval_stackup(name, args) -> Option<Value>     // arm on the eval_builtin chain (lib.rs:225)
+eval_stackup(name, args) -> Option<Value>     // family arm on the eval_builtin chain
   "stackup_worst_case"  (chain: List<Contributor>)                        -> Map
   "stackup_rss"         (chain: List<Contributor>, sigma_level?: Real=3)  -> Map
   "monte_carlo_stackup" (chain: List<Contributor>,
@@ -278,10 +314,11 @@ its entries.
 
 ### 4.4 Error semantics
 Diagnostic codes (user-facing, surfaced via `reify eval` stderr like other eval diagnostics):
-`E_StackupSeedRequired`, `E_StackupEmptyChain`, `E_StackupDimMismatch`,
-`E_StackupBadSign` (sign ∉ {+1,−1}), `E_StackupBadSamples` (samples ≤ 0). Malformed
-contributor maps ⇒ the builtin returns `Value::Undef` *and* emits the matching diagnostic
-(mirrors the `Value::Undef` fall-through in `analysis.rs`).
+`E_StackupSeedRequired` (never shipped — see **Landed deviation 2**), `E_StackupEmptyChain`,
+`E_StackupDimMismatch`, `E_StackupBadSign` (sign ∉ {+1,−1}), `E_StackupBadSamples`
+(samples ≤ 0). Malformed contributor maps ⇒ the builtin returns `Value::Undef` *and* emits the
+matching diagnostic (the `Value::Undef` half is `reify_stdlib::eval_builtin`'s own contract for
+wrong argument types or counts).
 
 ---
 
@@ -341,7 +378,7 @@ The decomposition is a vertical slice (§8) with a final integration-gate exampl
 
 | # | Seam | Producer side | Consumer side |
 |---|---|---|---|
-| 7.1 | builtin ↔ eval dispatch | `eval_stackup` returns `Some(Value::Map)` for each name, `None` for unknown (so `eval_builtin` falls through). Unchanged by #6001 (§4.1); *only if* these names are later registered as rows does the producer-side signal become the exhaustive `EvalBuiltinId` match **failing to compile** for a row with no arm | `eval_builtin("stackup_rss", …)` (`lib.rs:225` chain) routes to it and yields the Map; an unknown stackup-ish name ⇒ `Value::Undef`. Unchanged by #6001 — the consumer-side observable is the same under either shape (§4.1) |
+| 7.1 | builtin ↔ eval dispatch | `eval_stackup` returns `Some(Value::Map)` for each name, `None` for unknown (so `eval_builtin` falls through). Unchanged by #6001; for the producer-side signal under a later migration of these names to registry rows, see §4.1 | `eval_builtin("stackup_rss", …)` (the `eval_builtin` chain) routes to it and yields the Map; an unknown stackup-ish name ⇒ `Value::Undef`. Unchanged by #6001 — the consumer-side observable is the same under either shape (§4.1) |
 | 7.2 | stdlib `.ri` ↔ builtin | a `Contributor`/`contributor(...)` value is a Map with the §4.1 keys | the builtin reads the map; a malformed map ⇒ `E_StackupDimMismatch` + `Value::Undef` |
 | 7.3 | math ↔ hand-calc (RSS/worst-case) | builtins compute per §3.1/§3.2 | a 3-part golden `.ri` evaluated by `reify eval` prints `worst_case_band`, `rss_sigma` equal to hand-computed values to 1e-12 |
 | 7.4 | MC determinism | `monte_carlo_stackup` uses the vendored seeded PRNG | two evals at the same seed print bit-identical `mc_sigma`/`mc_mean`; a different seed differs; convergence: MC-σ within 2% of RSS-σ at samples=100k (derived SE basis §3.3) |
@@ -352,7 +389,7 @@ CLI). The example task (T7) is the integration gate that ties them end-to-end.
 
 ---
 
-## §8 — Integration DAG (proposed; not yet filed)
+## §8 — Integration DAG (as authored; all leaves landed — see the Status header for task IDs)
 
 Each leaf names its **user-observable signal** (G2). Minimum end-to-end vertical slice
 (C-as-integration-gate spine): **T1 → T2 → T3 → T7** (value shape → worst-case+rss math →
@@ -493,11 +530,11 @@ override:
 
 ## RESOLVED DECISIONS
 
-- Builtins live in a **new `reify-stdlib/src/stackup.rs`**, dispatched via a new
-  `stackup::eval_stackup` arm in `eval_builtin` (`lib.rs:225`) — mirrors `analysis.rs` exactly.
-  What is decided here, and holds under either dispatch shape, is that the builtins get their own
-  `stackup.rs` rather than being folded into `analysis.rs`. #6001 does not supersede that; for
-  the dispatch shape under it, see §4.1.
+- Builtins live in their own `reify-stdlib/src/stackup.rs`, dispatched via a
+  `stackup::eval_stackup` arm in `eval_builtin`. What is decided here, and holds under either
+  dispatch shape, is the module layout: the builtins get their own `stackup.rs` rather than being
+  folded into `analysis.rs`. #6001 does not supersede that; for the dispatch shape under it, see
+  §4.1.
   **Zero contact** with the kernel-tolerance budget machinery (§0).
 - Observable surface is **`reify eval`** value-cell printing (no new CLI subcommand needed).
 - Result is a **`Value::Map`** (deterministic key order, self-describing).

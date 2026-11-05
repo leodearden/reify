@@ -1,5 +1,6 @@
 use reify_mcp::context::MockToolContext;
 use reify_mcp::registry::ToolRegistry;
+use reify_mcp::tools::language_chunks::{available_topics, get_chunk};
 use reify_mcp::tools::register_all_tools;
 // ToolError not used directly — reference tool returns Ok for all cases
 
@@ -10,26 +11,6 @@ fn setup_registry() -> ToolRegistry {
 }
 
 // === reify_language_reference ===
-
-const ALL_TOPICS: &[&str] = &[
-    "collections",
-    "connect",
-    "constraints",
-    "enums",
-    "fields",
-    "functions",
-    "geometry",
-    "guards",
-    "occurrences",
-    "parameters",
-    "purposes",
-    "stdlib",
-    "structures",
-    "syntax",
-    "traits",
-    "types",
-    "units",
-];
 
 #[test]
 fn language_reference_syntax_returns_content() {
@@ -60,7 +41,26 @@ fn language_reference_all_topics_return_non_empty_content() {
     let registry = setup_registry();
     let ctx = MockToolContext::default();
 
-    for topic in ALL_TOPICS {
+    let help = registry
+        .call_tool(
+            "reify_language_reference",
+            serde_json::json!({"topic": "foobar"}),
+            &ctx,
+        )
+        .expect("an unknown topic should succeed with the help content");
+    let help_content = help["content"]
+        .as_str()
+        .expect("help content should be a string");
+
+    // A row dropped from CHUNKS is caught by reify-compiler's fence_gate check 4
+    // (its chunk file goes unserved), not here: this loop reads the registry.
+    let topics = available_topics();
+    assert!(
+        !topics.is_empty(),
+        "available_topics() is empty, so this loop would pass vacuously"
+    );
+
+    for topic in topics {
         let result = registry
             .call_tool(
                 "reify_language_reference",
@@ -80,6 +80,15 @@ fn language_reference_all_topics_return_non_empty_content() {
             content.len() > 100,
             "content for '{topic}' too short: {} chars",
             content.len()
+        );
+        assert_ne!(
+            content, help_content,
+            "topic '{topic}' served the unknown-topic help instead of a chunk"
+        );
+        assert_eq!(
+            Some(content),
+            get_chunk(topic),
+            "the tool must serve topic '{topic}' verbatim from the registry"
         );
     }
 }

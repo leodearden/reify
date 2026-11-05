@@ -63,6 +63,30 @@ pub struct GridSpec {
     pub counts: [usize; 3],
 }
 
+impl GridSpec {
+    /// Uniform node spacing along each axis, `(bounds_max - bounds_min) /
+    /// counts`, with a zero count read as one interval.
+    pub(crate) fn spacing(&self) -> [f64; 3] {
+        std::array::from_fn(|i| {
+            (self.bounds_max[i] - self.bounds_min[i]) / self.counts[i].max(1) as f64
+        })
+    }
+
+    /// Node coordinates along each axis: `linspace_inclusive` over the bounds
+    /// at [`GridSpec::spacing`].
+    ///
+    /// # Panics
+    ///
+    /// If `linspace_inclusive` rejects an axis, e.g. `bounds_min >= bounds_max`.
+    pub(crate) fn axis_grids(&self) -> [Vec<f64>; 3] {
+        let spacing = self.spacing();
+        std::array::from_fn(|i| {
+            reify_ir::sampled::linspace_inclusive(self.bounds_min[i], self.bounds_max[i], spacing[i])
+                .expect("GridSpec::axis_grids: linspace_inclusive failed — check that bounds_min < bounds_max and counts > 0")
+        })
+    }
+}
+
 /// Resample a nodal field defined on a P1-tet mesh onto a regular 3D grid.
 ///
 /// # Arguments
@@ -107,6 +131,7 @@ pub fn resample_nodal_to_grid(
 /// Used in tests to assert O(grid·log elems) complexity via deterministic
 /// count comparisons.  The public [`resample_nodal_to_grid`] is a thin
 /// wrapper that calls this and discards the stats.
+// G-allow: same-file caller only (resample_nodal_to_grid is a thin wrapper over it); audit counts cross-file refs
 pub fn resample_nodal_to_grid_instrumented(
     nodes: &[[f64; 3]],
     elems: &[[usize; 4]],
@@ -116,21 +141,7 @@ pub fn resample_nodal_to_grid_instrumented(
     name: &str,
     tol: f64,
 ) -> (SampledField, ResampleStats) {
-    let [nx, ny, nz] = grid.counts;
-    // Spacing per axis: (max-min)/count
-    let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
-    let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
-    let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
-    let spacing = vec![sx, sy, sz];
-
-    // Build per-axis grid coordinates via linspace_inclusive.
-    let axis_grids: Vec<Vec<f64>> = (0..3)
-        .map(|i| {
-            let sp = spacing[i];
-            reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], sp)
-                .expect("resample_nodal_to_grid_instrumented: linspace_inclusive failed — check that bounds_min < bounds_max and counts > 0")
-        })
-        .collect();
+    let axis_grids = grid.axis_grids();
 
     let nx1 = axis_grids[0].len();
     let ny1 = axis_grids[1].len();
@@ -150,7 +161,7 @@ pub fn resample_nodal_to_grid_instrumented(
                 let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
 
                 // BVH locate: returns (min-index containing element, point_in_tet_p1 count).
-                let (elem_opt, tests) = idx.locate_counted(nodes, elems, p, tol);
+                let (elem_opt, tests) = idx.locate_counted(p);
                 total_tests += tests as u64;
 
                 match elem_opt {
@@ -193,8 +204,8 @@ pub fn resample_nodal_to_grid_instrumented(
         kind: SampledGridKind::Regular3D,
         bounds_min: grid.bounds_min.to_vec(),
         bounds_max: grid.bounds_max.to_vec(),
-        spacing,
-        axis_grids,
+        spacing: grid.spacing().to_vec(),
+        axis_grids: Vec::from(axis_grids),
         interpolation: InterpolationKind::Linear,
         data,
         oob_emitted: AtomicBool::new(false),
@@ -236,6 +247,7 @@ pub fn resample_multi_nodal_to_grid(
 /// counts locate evaluations per grid point (independent of field count).
 /// The public [`resample_multi_nodal_to_grid`] is a thin wrapper that calls
 /// this and discards the stats.
+// G-allow: same-file caller only (resample_multi_nodal_to_grid is a thin wrapper over it); audit counts cross-file refs
 pub fn resample_multi_nodal_to_grid_instrumented(
     nodes: &[[f64; 3]],
     elems: &[[usize; 4]],
@@ -243,20 +255,7 @@ pub fn resample_multi_nodal_to_grid_instrumented(
     grid: &GridSpec,
     tol: f64,
 ) -> (Vec<SampledField>, ResampleStats) {
-    let [nx, ny, nz] = grid.counts;
-    let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
-    let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
-    let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
-    let spacing = vec![sx, sy, sz];
-
-    let axis_grids: Vec<Vec<f64>> = (0..3)
-        .map(|i| {
-            let sp = spacing[i];
-            reify_ir::sampled::linspace_inclusive(grid.bounds_min[i], grid.bounds_max[i], sp)
-                .expect("resample_multi_nodal_to_grid_instrumented: linspace_inclusive failed — \
-                         check that bounds_min < bounds_max and counts > 0")
-        })
-        .collect();
+    let axis_grids = grid.axis_grids();
 
     let nx1 = axis_grids[0].len();
     let ny1 = axis_grids[1].len();
@@ -280,7 +279,7 @@ pub fn resample_multi_nodal_to_grid_instrumented(
             for iz in 0..nz1 {
                 let p = [axis_grids[0][ix], axis_grids[1][iy], axis_grids[2][iz]];
 
-                let (elem_opt, tests) = idx.locate_counted(nodes, elems, p, tol);
+                let (elem_opt, tests) = idx.locate_counted(p);
                 total_tests += tests as u64;
 
                 match elem_opt {
@@ -328,8 +327,8 @@ pub fn resample_multi_nodal_to_grid_instrumented(
             kind: SampledGridKind::Regular3D,
             bounds_min: grid.bounds_min.to_vec(),
             bounds_max: grid.bounds_max.to_vec(),
-            spacing: spacing.clone(),
-            axis_grids: axis_grids.clone(),
+            spacing: grid.spacing().to_vec(),
+            axis_grids: axis_grids.to_vec(),
             interpolation: InterpolationKind::Linear,
             data,
             oob_emitted: AtomicBool::new(false),
@@ -440,6 +439,7 @@ pub struct GridMissReport {
 /// if `sf.data.len()` is not `n_grid · stride` — all of which indicate the field
 /// was not produced by the `resample_*` entry points this instrument is a
 /// sibling of.
+// G-allow: grid-miss instrument (task #6154 (done)); its cross-crate caller is crates/reify-eval/tests/solve_elastic_static_body_e2e.rs, a tests/ file this audit excludes
 pub fn classify_grid_misses(sf: &SampledField, stride: usize) -> GridMissReport {
     assert!(stride > 0, "classify_grid_misses: stride must be > 0");
     assert_eq!(
@@ -837,59 +837,9 @@ mod bvh_tests {
         resample_nodal_to_grid_instrumented,
     };
     use crate::interpolation::barycentric_p1;
+    use crate::interpolation::test_meshes::make_box_of_tets;
 
     // ── Fixtures ─────────────────────────────────────────────────────────────
-
-    /// Build a Freudenthal box-of-tets: M³ hexes → 6·M³ tets tiling [0,1]³.
-    ///
-    /// Node index: `ix*(M+1)²+iy*(M+1)+iz`; physical coords: `(ix/M, iy/M, iz/M)`.
-    /// Per-hex Freudenthal decomposition uses the (1,1,1)-corner diagonal n6,
-    /// matching the existing 6-tet fixture in `tests::resample_data_ordering_…`.
-    ///
-    /// Hexes are emitted x-outer/z-inner, 6 consecutive tets each, so hex
-    /// `(cx,cy,cz)` owns `elems[6*((cx*M + cy)*M + cz) .. +6]` — relied on by
-    /// `miss_diag_tests` to punch a coverage hole in one specific hex.
-    ///
-    /// `pub(super)` so the sibling `miss_diag_tests` module can reuse this one
-    /// reference tiling rather than authoring a second tet fixture (#6154).
-    pub(super) fn make_box_of_tets(m: usize) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
-        let m1 = m + 1;
-        let mut nodes = Vec::with_capacity(m1 * m1 * m1);
-        for ix in 0..=m {
-            for iy in 0..=m {
-                for iz in 0..=m {
-                    nodes.push([
-                        ix as f64 / m as f64,
-                        iy as f64 / m as f64,
-                        iz as f64 / m as f64,
-                    ]);
-                }
-            }
-        }
-        let node = |ix: usize, iy: usize, iz: usize| ix * m1 * m1 + iy * m1 + iz;
-        let mut elems = Vec::with_capacity(6 * m * m * m);
-        for cx in 0..m {
-            for cy in 0..m {
-                for cz in 0..m {
-                    let n0 = node(cx, cy, cz);
-                    let n1 = node(cx + 1, cy, cz);
-                    let n2 = node(cx + 1, cy + 1, cz);
-                    let n3 = node(cx, cy + 1, cz);
-                    let n4 = node(cx, cy, cz + 1);
-                    let n5 = node(cx + 1, cy, cz + 1);
-                    let n6 = node(cx + 1, cy + 1, cz + 1);
-                    let n7 = node(cx, cy + 1, cz + 1);
-                    elems.push([n0, n1, n2, n6]);
-                    elems.push([n0, n2, n3, n6]);
-                    elems.push([n0, n5, n1, n6]);
-                    elems.push([n0, n3, n7, n6]);
-                    elems.push([n0, n4, n5, n6]);
-                    elems.push([n0, n7, n4, n6]);
-                }
-            }
-        }
-        (nodes, elems)
-    }
 
     /// Grid spanning slightly beyond [0,1]³ so it includes interior, shared-face
     /// boundary, AND outside (NaN) grid points.
@@ -899,6 +849,21 @@ mod bvh_tests {
             bounds_max: [1.1, 1.1, 1.1],
             counts: [5, 5, 5],
         }
+    }
+
+    /// Every point of `grid`, on the production resamplers' own
+    /// [`GridSpec::axis_grids`], x outermost and z innermost.
+    fn grid_points(grid: &GridSpec) -> Vec<[f64; 3]> {
+        let [ax, ay, az] = grid.axis_grids();
+        let mut points = Vec::with_capacity(ax.len() * ay.len() * az.len());
+        for &x in &ax {
+            for &y in &ay {
+                for &z in &az {
+                    points.push([x, y, z]);
+                }
+            }
+        }
+        points
     }
 
     /// Linear-scan oracle mirroring the old `resample_nodal_to_grid` loop
@@ -915,50 +880,35 @@ mod bvh_tests {
         grid: &GridSpec,
         tol: f64,
     ) -> (Vec<f64>, u64) {
-        let [nx, ny, nz] = grid.counts;
-        let sx = (grid.bounds_max[0] - grid.bounds_min[0]) / nx.max(1) as f64;
-        let sy = (grid.bounds_max[1] - grid.bounds_min[1]) / ny.max(1) as f64;
-        let sz = (grid.bounds_max[2] - grid.bounds_min[2]) / nz.max(1) as f64;
-        let ax = reify_ir::sampled::linspace_inclusive(grid.bounds_min[0], grid.bounds_max[0], sx)
-            .unwrap();
-        let ay = reify_ir::sampled::linspace_inclusive(grid.bounds_min[1], grid.bounds_max[1], sy)
-            .unwrap();
-        let az = reify_ir::sampled::linspace_inclusive(grid.bounds_min[2], grid.bounds_max[2], sz)
-            .unwrap();
-        let n_grid = ax.len() * ay.len() * az.len();
-        let mut data = Vec::with_capacity(n_grid * stride);
+        let points = grid_points(grid);
+        let mut data = Vec::with_capacity(points.len() * stride);
         let mut count = 0u64;
-        for &x in &ax {
-            for &y in &ay {
-                for &z in &az {
-                    let p = [x, y, z];
-                    let mut found = false;
-                    'scan: for conn in elems {
-                        let phys4: [[f64; 3]; 4] = [
-                            nodes[conn[0]],
-                            nodes[conn[1]],
-                            nodes[conn[2]],
-                            nodes[conn[3]],
-                        ];
-                        let bary = barycentric_p1(&phys4, p);
-                        count += 1;
-                        if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
-                            for c in 0..stride {
-                                let val = bary[0] * nodal_values[conn[0] * stride + c]
-                                    + bary[1] * nodal_values[conn[1] * stride + c]
-                                    + bary[2] * nodal_values[conn[2] * stride + c]
-                                    + bary[3] * nodal_values[conn[3] * stride + c];
-                                data.push(val);
-                            }
-                            found = true;
-                            break 'scan;
-                        }
+        for p in points {
+            let mut found = false;
+            'scan: for conn in elems {
+                let phys4: [[f64; 3]; 4] = [
+                    nodes[conn[0]],
+                    nodes[conn[1]],
+                    nodes[conn[2]],
+                    nodes[conn[3]],
+                ];
+                let bary = barycentric_p1(&phys4, p);
+                count += 1;
+                if bary.iter().all(|&b| b >= -tol && b <= 1.0 + tol) {
+                    for c in 0..stride {
+                        let val = bary[0] * nodal_values[conn[0] * stride + c]
+                            + bary[1] * nodal_values[conn[1] * stride + c]
+                            + bary[2] * nodal_values[conn[2] * stride + c]
+                            + bary[3] * nodal_values[conn[3] * stride + c];
+                        data.push(val);
                     }
-                    if !found {
-                        for _ in 0..stride {
-                            data.push(f64::NAN);
-                        }
-                    }
+                    found = true;
+                    break 'scan;
+                }
+            }
+            if !found {
+                for _ in 0..stride {
+                    data.push(f64::NAN);
                 }
             }
         }
@@ -1158,7 +1108,7 @@ mod bvh_tests {
 #[cfg(test)]
 mod miss_diag_tests {
     // These imports drive the RED compile error in step-1; they resolve in step-2.
-    use super::bvh_tests::make_box_of_tets;
+    use crate::interpolation::test_meshes::make_box_of_tets;
     use super::{GridSpec, classify_grid_misses, nearest_miss_margin, resample_nodal_to_grid};
 
     /// Stride-3 nodal values. The classifier reads only NaN-ness, so the actual

@@ -1,0 +1,11 @@
+// compiler-declaration-passes PRD §2.1 / leaf β: the control for
+// decl_passes_forward_geometry_alias.ri (same members, referent declared first).
+// Main and after β: `reify check` exits 1 with
+// "comparison `>` left operand must be a comparable kind, got `Geometry`".
+module decl_passes_backward_geometry_alias
+
+structure Part {
+    let base = box(10mm, 10mm, 10mm)
+    let shifted = base
+    constraint shifted > 0
+}

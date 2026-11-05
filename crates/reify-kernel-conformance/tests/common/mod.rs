@@ -91,16 +91,16 @@ pub fn occt_boolean_reversed() -> reify_ir::Mesh {
     let mut kernel = OcctKernel::new();
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box_a creation should succeed");
     let box_b_raw = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box_b_raw creation should succeed");
     let box_b = kernel
@@ -128,9 +128,9 @@ pub fn occt_fillet() -> reify_ir::Mesh {
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(10.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(10.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("box creation should succeed");
     let edges = kernel
@@ -185,9 +185,9 @@ pub fn occt_box_solid() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(30.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(20.0e-3),
+            size_z: Value::Real(30.0e-3),
         })
         .expect("box creation should succeed");
     (kernel, h.id)

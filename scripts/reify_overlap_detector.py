@@ -3,43 +3,56 @@
 Implements the dark_factory:γ OverlapFootprintDetector seam (PRD
 dark-factory/plans/two-layer-merge-queue-prd.md §5.1, task κ #4750).
 
-Footprint members (established incrementally across steps 2/4/6):
-  ``crate:<name>``   — every crate in the reverse-dependency closure of
-                       crate-mapped changed paths.
-  ``path:<p>``       — every non-crate / unmapped path (preserves the
+Footprint members:
+  ``crate:<name>``   — every crate in the reverse-dependency closure of the
+                       changed paths' seed crates, plus every unioned crate.
+  ``path:<p>``       — every changed path that seeds no crate (preserves the
                        textual-conflict⇒overlap invariant).
   ``\\x00ALL\\x00``  — sentinel for workspace-global files or cargo failures.
 
-Rule parity with affected-crates-lib.sh
-----------------------------------------
-``_is_global`` and ``_file_to_crate`` mirror the bash equivalents in
-``scripts/affected-crates-lib.sh`` verbatim.  Keep them in sync: if you add
-a new global path or crate location on one side, update the other.
-``scripts/test_reify_overlap_detector.py::TestRuleParityWithAffectedCratesLib``
-asserts the Python rules cover the known cases from the bash script so a
-future one-sided edit trips a test.
+Path attribution
+----------------
+Whether a path is global, and which crates it seeds or unions, comes from
+``reify_path_attribution.py``, the mirror of ``scripts/affected-crates-lib.sh``'s
+per-path rules. Their parity is enforced by
+``tests/infra/test_affected_crates_lib.sh``'s OVERLAP-MIRROR-PARITY guard.
 
-Deliberate divergence — unmapped non-global paths:
-  Bash: ``docs/**``, ``gui/src/**`` → ``_is_noncrate`` → path skipped
-        (contributes no member to the affected-crate set).  Any other
-        unmapped, non-global path (Makefile, flake.nix,
-        ``.github/workflows/**``, a new root build.rs, etc.) may also
-        be skipped or fail-wided (→ ALL) by bash for unknown root files.
-  Python: ALL such unmapped non-global paths → ``path:<p>`` member
-          emitted (making the reify footprint a superset of the
-          ``DefaultPathOverlapDetector`` footprint, not a superset of
-          the bash ``affected_crates()`` result).
+Cost of the corpus edge: an ``examples/*.ri`` edit seeds every corpus reader,
+so its footprint is wide. That over-reports overlap, which is the safe
+direction.
 
-  The maintained contract is:
+Deliberate divergence
+---------------------
+Attribution matches bash exactly; the detector differs from bash in two places.
 
-      default.overlaps(A, B) ⇒ reify.overlaps(A, B)
+(A) Unattributed paths. Bash splits a path no rule attributes into skip
+    (``_is_noncrate``: ``reify_is_inert_path``'s docs/**, *.md, *.yaml,
+    *.yml, plus gui/src/** and tests/infra/**) versus C5 ALL for anything
+    else. The detector collapses both into a ``path:<p>`` member, making its
+    footprint a superset of the ``DefaultPathOverlapDetector`` footprint.
 
-  which holds because any shared ``path:<p>`` member in the default
-  detector is also present in the reify footprint.  Two changesets
-  touching DIFFERENT unknown build-affecting root files (e.g. Makefile
-  vs flake.nix) are reported non-overlapping by reify where bash would
-  fail-wide — an intentional, documented narrowing relative to bash
-  (PRD §5.1).
+    Task 7427's widening of the inert class to *.md/*.yaml/*.yml is NOT
+    ported. It answers verify narrowing's question ("which crates' tests can
+    this diff break"), not overlap's ("do these two changesets interact"):
+    porting it would drop ``path:README.md``, so two changesets editing the
+    same README.md would be reported non-overlapping, breaking
+    textual-conflict⇒overlap (PRD §5.1).
+
+    The maintained contract is:
+
+        default.overlaps(A, B) ⇒ reify.overlaps(A, B)
+
+    which holds because any shared ``path:<p>`` member in the default
+    detector is also present in the reify footprint.  Two changesets
+    touching DIFFERENT unknown build-affecting root files (e.g. Makefile
+    vs flake.nix) are reported non-overlapping by reify where bash would
+    fail-wide — an intentional, documented narrowing relative to bash
+    (PRD §5.1).
+
+(B) Closure model. ``_reverse_closure`` walks every dependency kind
+    transitively: a superset of bash's dev-dep-non-transitive
+    ``_reify_compile_closure``, so it can over-report overlap but never
+    under-report it.
 
 Orchestrator-side wiring (register_overlap_detector("reify", ...) at startup)
 is activated at deploy by ξ (reify #4751) + ν (dark_factory #1897), not here.
@@ -58,6 +71,8 @@ from orchestrator.overlap_footprint import (
     register_overlap_detector,
 )
 
+import reify_path_attribution as rpa
+
 # Project root: two directory levels above this file (scripts/ → reify/).
 _REIFY_ROOT = Path(__file__).resolve().parent.parent
 
@@ -65,54 +80,13 @@ _REIFY_ROOT = Path(__file__).resolve().parent.parent
 _ALL = "\x00ALL\x00"
 
 
-def _is_global(path: str) -> bool:
-    """Return True for C4 workspace-global files (§5, affected-crates-lib.sh).
-
-    Mirrors ``_is_global()`` in ``scripts/affected-crates-lib.sh``.  If you
-    add a new global path here, add it there too (and vice versa).
-
-    Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
-    rust-toolchain, rust-toolchain.toml.
-
-    Note: bash uses the shell glob ``rust-toolchain*`` which would also match
-    hypothetical variants like ``rust-toolchain.custom``.  Python matches only
-    the two known concrete filenames; they agree on all real files in the repo.
-    """
-    if path in ("Cargo.toml", "Cargo.lock"):
-        return True
-    if path.startswith(".cargo/"):
-        return True
-    if path.startswith("tree-sitter-reify/"):
-        return True
-    if path in ("rust-toolchain", "rust-toolchain.toml"):
-        return True
-    return False
-
-
-def _file_to_crate(path: str) -> str | None:
-    """Map a crate-owned path to its crate name (§5 rules), or None.
-
-    Mirrors ``_file_to_crate()`` in ``scripts/affected-crates-lib.sh``.  If
-    you add a new crate location here, add it there too (and vice versa).
-
-      crates/<name>/**  →  <name>
-      gui/src-tauri/**  →  reify-gui
-    """
-    if path.startswith("crates/"):
-        rest = path[len("crates/"):]
-        slash = rest.find("/")
-        if slash > 0:
-            return rest[:slash]
-    if path.startswith("gui/src-tauri/"):
-        return "reify-gui"
-    return None
-
-
 def _reverse_closure(metadata: dict, seed_crate_names: set) -> set:
     """Compute the inclusive reverse-dependency closure for seed_crate_names.
 
-    Mirrors the BFS algorithm embedded in affected-crates-lib.sh:_reverse_closure.
-    Returns a set of crate NAMES (not IDs) within workspace_members.
+    Walks every dependency kind transitively, a superset of
+    affected-crates-lib.sh's closure (module docstring, "Deliberate
+    divergence" (B)). Returns a set of crate NAMES (not IDs) within
+    workspace_members.
     """
     members = set(metadata["workspace_members"])
     id_to_name: dict = {p["id"]: p["name"] for p in metadata["packages"]}
@@ -175,11 +149,8 @@ def _default_metadata_loader() -> dict:
 class CrateGraphOverlapDetector:
     """Crate-graph-aware OverlapFootprintDetector for the reify workspace.
 
-    Footprint members = {crate:<name>} ∪ {path:<p>} ∪ {_ALL (if global/error)}.
-
-    Step-4: footprint() now performs crate mapping + reverse closure.
-    Non-crate paths still get path: members (textual-conflict⇒overlap invariant).
-    Global-file ALL sentinel and cargo-failure fail-wide are added in step-6.
+    Footprint members = {crate:<name>} ∪ {path:<p>} ∪ {_ALL (if global/error)};
+    the algorithm is footprint()'s.
     """
 
     def __init__(self, metadata_loader=None):
@@ -221,60 +192,55 @@ class CrateGraphOverlapDetector:
     def footprint(self, changed_paths: Sequence) -> Footprint:
         """Return the overlap footprint for the given changed paths.
 
-        Algorithm (final form):
         1. Any workspace-global path → _ALL sentinel (C4 fail-wide).
-        2. Partition remaining paths into crate-mapped seeds and unmapped.
-        3. Unmapped paths → ``path:<p>`` members (superset invariant).
-        4. Call metadata_loader; on any exception → _ALL sentinel (C5 fail-wide).
-        5. BFS reverse closure of seed crates → ``crate:<name>`` members.
+        2. A path that seeds no crate → a ``path:<p>`` member (superset
+           invariant); seed crates accumulate.
+        3. Reverse closure of the seeds → ``crate:<name>`` members; a loader
+           exception or an unresolvable seed → _ALL (C5 fail-wide).
+        4. Unioned crates (a manifest's DAG-gate crate) → ``crate:<name>``
+           members, outside the closure.
         """
-        paths = list(changed_paths)
+        attributions = {p: rpa.attribute(p) for p in changed_paths}
+        if any(a.is_global for a in attributions.values()):
+            return Footprint(members=frozenset({_ALL}))
+
         members: set = set()
-
-        # ── C4: global file → ALL sentinel (touches entire workspace) ────────
-        for p in paths:
-            if _is_global(p):
-                members.add(_ALL)
-                return Footprint(members=frozenset(members))
-
-        # ── Partition: crate-mapped seeds vs. unmapped raw paths ─────────────
         seed_crates: set = set()
-        for p in paths:
-            crate = _file_to_crate(p)
-            if crate is not None:
-                seed_crates.add(crate)
+        unioned_crates: set = set()
+        for path, attribution in attributions.items():
+            if attribution.seed_crates:
+                seed_crates |= attribution.seed_crates
             else:
-                # Non-crate / unmapped path: add as path: member so that the
-                # textual-conflict⇒overlap invariant holds for all file types
-                # (a pure crate-set would give empty for docs/**, violating §5.1).
-                members.add(f"path:{p}")
+                members.add(f"path:{path}")
+            unioned_crates |= attribution.unioned_crates
 
-        # ── Crate reverse closure; C5: cargo failure or unresolvable seed → ALL ─
         if seed_crates:
-            try:
-                if self._metadata_cache is None:
-                    with self._metadata_lock:
-                        if self._metadata_cache is None:
-                            self._metadata_cache = self._metadata_loader()
-                metadata = self._metadata_cache
-                closure = _reverse_closure(metadata, seed_crates)
-            except Exception:
-                members.add(_ALL)
-            else:
-                for crate_name in closure:
-                    members.add(f"crate:{crate_name}")
-                # _reverse_closure is INCLUSIVE: a seed name that maps to a
-                # workspace-member ID is returned in the closure.  Any name NOT
-                # in the closure either (a) is absent from packages/name_to_ids
-                # (new crate not yet in metadata) or (b) has an id in packages
-                # but is not in workspace_members (workspace-excluded).  In
-                # either case the reverse-dep blast radius is unbounded — fail
-                # wide via the _ALL sentinel (C5) to uphold the
-                # textual-conflict⇒overlap invariant (PRD §5.1).
-                if seed_crates - closure:
-                    members.add(_ALL)
-
+            members |= self._closure_members(seed_crates)
+        members |= {f"crate:{c}" for c in unioned_crates}
         return Footprint(members=frozenset(members))
+
+    def _closure_members(self, seed_crates: set) -> set:
+        """``crate:<name>`` for the seeds' reverse closure, or _ALL (C5)."""
+        try:
+            if self._metadata_cache is None:
+                with self._metadata_lock:
+                    if self._metadata_cache is None:
+                        self._metadata_cache = self._metadata_loader()
+            closure = _reverse_closure(self._metadata_cache, seed_crates)
+        except Exception:
+            return {_ALL}
+        members = {f"crate:{c}" for c in closure}
+        # _reverse_closure is INCLUSIVE: a seed name that maps to a
+        # workspace-member ID is returned in the closure.  Any name NOT
+        # in the closure either (a) is absent from packages/name_to_ids
+        # (new crate not yet in metadata) or (b) has an id in packages
+        # but is not in workspace_members (workspace-excluded).  In
+        # either case the reverse-dep blast radius is unbounded — fail
+        # wide via the _ALL sentinel (C5) to uphold the
+        # textual-conflict⇒overlap invariant (PRD §5.1).
+        if seed_crates - closure:
+            members.add(_ALL)
+        return members
 
     def overlaps(self, a: Footprint, b: Footprint) -> bool:
         """Return True iff footprints a and b overlap (re-verify required).

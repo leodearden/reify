@@ -100,7 +100,7 @@ fn composed_stiffness_evals_with_two_field_source_kinds() {
     let compiled = parse_and_compile_with_stdlib(&source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No eval-level errors.
@@ -156,7 +156,7 @@ fn composed_stiffness_constraints_all_satisfied() {
     let compiled = parse_and_compile_with_stdlib(&source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No eval-level errors.

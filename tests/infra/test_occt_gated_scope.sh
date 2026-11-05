@@ -31,6 +31,15 @@ source "$REPO_ROOT/scripts/occt-scope-lib.sh"
 
 CRATE_LIST="$REPO_ROOT/scripts/occt-touching-crates.txt"
 
+# Hermeticity: these two knobs move (CLI) or wholesale replace (TEST_THREADS) the
+# test-threads pool scripts/gen-nextest-config.sh derives, so an inherited value
+# would shift every derivation assertion below (17g/17j pin the pool at 1 and trip
+# the generator's "exceeds" branch under an inherited CLI value of 2).  Unset once
+# here rather than per generator call site: every later site that needs one of them
+# sets it inline for that single invocation.  Not `env -i`, which would drop
+# PATH/TMPDIR and change what is under test.
+unset REIFY_NEXTEST_CLI_TEST_THREADS REIFY_NEXTEST_TEST_THREADS
+
 echo "=== OCCT gated scope tests ==="
 
 # ---------------------------------------------------------------------------

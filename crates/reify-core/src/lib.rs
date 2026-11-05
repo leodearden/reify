@@ -29,6 +29,7 @@ pub mod overload;
 pub mod panic_payload;
 pub mod persistent_cache;
 pub mod primitives;
+pub mod scalar_tolerance;
 pub mod source_location;
 pub mod spanned_ident;
 pub mod ty;
@@ -70,6 +71,6 @@ pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;
 pub use units::{
-    BUILTIN_UNITS, RI_COMPOUND_BASE_SYMBOLS, ri_compound_unit_expr, ri_emittable_units,
-    unit_symbol_to_si,
+    BUILTIN_UNITS, RI_COMPOUND_BASE_SYMBOLS, RI_NAMED_DERIVED_SYMBOLS, ri_compound_unit_expr,
+    ri_emittable_units, unit_symbol_to_si,
 };

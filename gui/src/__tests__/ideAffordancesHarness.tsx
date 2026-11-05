@@ -614,7 +614,7 @@ export async function setupBridgeHarness(): Promise<HarnessSetup> {
       selection: selectionStore as DebugStores['selection'],
       claude: { state: { messages: [], sessionStatus: 'idle', currentMessageId: null } },
       viewState,
-      layout: layoutStore as DebugStores['layout'],
+      layout: layoutStore,
     };
   });
 

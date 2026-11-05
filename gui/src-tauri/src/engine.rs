@@ -836,7 +836,26 @@ fn is_stdlib_path(p: &str) -> bool {
     p == "std" || p.starts_with("std.")
 }
 
-/// Build the `(error_string, diag_infos)` payload for an error result.
+/// What a successful compile produced, in one order everywhere.
+pub(crate) struct CompiledSource {
+    pub(crate) parsed: reify_ast::ParsedModule,
+    pub(crate) compiled: CompiledModule,
+}
+
+/// Why a compile was rejected.
+///
+/// Not the session's stored [`CompileFailure`]: that record also carries the
+/// failure's [`CompileFailureKind`], which only the session can know, and is
+/// built from this one by `record_compile_failure`.
+pub(crate) struct CompileRejection {
+    /// `"{prefix}: msg1; msg2; …"`, e.g. `"Parse errors: …"` /
+    /// `"Compile errors: …"` — the reload entry points' `Err` string.
+    pub(crate) message: String,
+    /// The same errors in structured form, for the diagnostics panel.
+    pub(crate) diags: Vec<DiagnosticInfo>,
+}
+
+/// Build the [`CompileRejection`] for an error result.
 ///
 /// Centralises the mechanical pattern shared by all parse- and compile-error
 /// return sites in `compile_single_file_with_stdlib` and
@@ -845,18 +864,19 @@ fn is_stdlib_path(p: &str) -> bool {
 /// wire payload.
 ///
 /// `prefix` becomes the leading label (e.g. `"Parse errors"`, `"Compile errors"`).
-/// The returned string has the form `"{prefix}: msg1; msg2; …"`, preserving the
+/// The message has the form `"{prefix}: msg1; msg2; …"`, preserving the
 /// wire-format invariant the function docstrings promise.
 fn build_err_payload(
     prefix: &str,
     diags: &[Diagnostic],
     file_path: &str,
     source: &str,
-) -> (String, Vec<DiagnosticInfo>) {
+) -> CompileRejection {
     let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-    let error_string = format!("{}: {}", prefix, msgs.join("; "));
-    let diag_infos = diagnostics_to_info(diags, file_path, source);
-    (error_string, diag_infos)
+    CompileRejection {
+        message: format!("{}: {}", prefix, msgs.join("; ")),
+        diags: diagnostics_to_info(diags, file_path, source),
+    }
 }
 
 /// Synthesize [`Diagnostic`] values from a slice of [`reify_syntax::ParseError`]s
@@ -869,7 +889,7 @@ fn parse_errs_to_payload(
     errors: &[reify_ast::ParseError],
     file_path: &str,
     source: &str,
-) -> (String, Vec<DiagnosticInfo>) {
+) -> CompileRejection {
     let synthetic_diags: Vec<Diagnostic> = errors
         .iter()
         .map(|e| Diagnostic::error(e.message.clone()).with_label(DiagnosticLabel::new(e.span, "")))
@@ -877,15 +897,45 @@ fn parse_errs_to_payload(
     build_err_payload("Parse errors", &synthetic_diags, file_path, source)
 }
 
+/// Reject `compiled` if any of its diagnostics is an error.
+///
+/// The one compile-error filter both compile helpers share: the rejection
+/// carries only the `Severity::Error` diagnostics, under the
+/// `"Compile errors"` prefix, keyed by `module_key(module_name)`.
+fn reject_compile_errors(
+    compiled: CompiledModule,
+    module_name: &str,
+    source: &str,
+) -> Result<CompiledModule, CompileRejection> {
+    if !compiled
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return Ok(compiled);
+    }
+    let error_diags: Vec<Diagnostic> = compiled
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    Err(build_err_payload(
+        "Compile errors",
+        &error_diags,
+        &module_key(module_name),
+        source,
+    ))
+}
+
 /// Parse and compile a single-file source string using the stdlib prelude.
 ///
-/// Returns `(ParsedModule, CompiledModule)` on success, or an `Err` containing
-/// a human-readable error string (preserving the existing `"Parse errors: …"` /
-/// `"Compile errors: …"` format so existing substring assertions remain valid)
-/// **and** a `Vec<DiagnosticInfo>` with the same errors in structured form.
-/// The structured payload is used by callers to populate
-/// `EngineSession::compile_failure` (via `record_compile_failure`) so `build_gui_state`
-/// can surface the failure in the diagnostics panel.
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`]
+/// whose message preserves the existing `"Parse errors: …"` /
+/// `"Compile errors: …"` format (so existing substring assertions remain
+/// valid) and whose diagnostics carry the same errors in structured form.
+/// Callers store those diagnostics in `EngineSession::compile_failure` (via
+/// `record_compile_failure`) so `build_gui_state` can surface the failure in
+/// the diagnostics panel.
 ///
 /// This is the single-file counterpart to `compile_entry_with_imports`.  It is
 /// called by both `load_from_source` (which always uses the single-file path) and
@@ -893,7 +943,7 @@ fn parse_errs_to_payload(
 fn compile_single_file_with_stdlib(
     content: &str,
     module_name: &str,
-) -> Result<(reify_ast::ParsedModule, CompiledModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<CompiledSource, CompileRejection> {
     // Prelude-aware parse so stdlib enum references like `CorrosionClass.C5`
     // disambiguate to `EnumAccess` rather than `MemberAccess`.  See task 2525.
     let parsed = reify_compiler::parse_with_stdlib(content, ModulePath::single(module_name));
@@ -905,30 +955,17 @@ fn compile_single_file_with_stdlib(
         &parsed,
         &reify_constraints::SimpleConstraintChecker,
     );
-    let has_errors = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error);
-    if has_errors {
-        let error_diags: Vec<Diagnostic> = compiled
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        let file_path = module_key(module_name);
-        return Err(build_err_payload(
-            "Compile errors",
-            &error_diags,
-            &file_path,
-            content,
-        ));
-    }
-    Ok((parsed, compiled))
+    let compiled = reject_compile_errors(compiled, module_name, content)?;
+    Ok(CompiledSource { parsed, compiled })
 }
 
 /// Parse and compile `source` with multi-file import resolution.
 ///
 /// This is the compile-side of `load_file`'s multi-file flow (task 3228 v1).
+/// Returns the [`CompiledSource`] on success, or a [`CompileRejection`] in the
+/// same shape and message format as `compile_single_file_with_stdlib`'s (an
+/// import that fails to compile is reported under its own
+/// `"Compile errors in import '…'"` prefix, keyed by the import's file).
 ///
 /// `reify_compiler::module_dag::compile_project_with_entry_source` (at
 /// module_dag.rs:607) covers most of the same scaffolding — parse,
@@ -988,7 +1025,7 @@ fn compile_entry_with_imports(
     entry_path: &Path,
     source: &str,
     module_name: &str,
-) -> Result<(CompiledModule, reify_ast::ParsedModule), (String, Vec<DiagnosticInfo>)> {
+) -> Result<CompiledSource, CompileRejection> {
     // Parse with stdlib enum pre-seeding (same as load_from_source / update_source).
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(module_name));
     if !parsed.errors.is_empty() {
@@ -1081,31 +1118,12 @@ fn compile_entry_with_imports(
         .collect();
 
     let ctx = reify_compiler::PreludeContext::new(&prelude_refs);
-    let mut compiled = reify_compiler::compile_with_prelude_context_checked(
+    let compiled = reify_compiler::compile_with_prelude_context_checked(
         &parsed,
         &ctx,
         &reify_constraints::SimpleConstraintChecker,
     );
-
-    // Surface compile errors.
-    let has_errors = compiled
-        .diagnostics
-        .iter()
-        .any(|d| d.severity == Severity::Error);
-    if has_errors {
-        let error_diags: Vec<Diagnostic> = compiled
-            .diagnostics
-            .into_iter()
-            .filter(|d| d.severity == Severity::Error)
-            .collect();
-        let file_path = module_key(module_name);
-        return Err(build_err_payload(
-            "Compile errors",
-            &error_diags,
-            &file_path,
-            source,
-        ));
-    }
+    let mut compiled = reject_compile_errors(compiled, module_name, source)?;
 
     // Merge pub templates from direct (1-hop) non-stdlib imports into the entry's
     // compiled.templates so that reify_eval::Engine::eval / unfold can find them
@@ -1134,7 +1152,7 @@ fn compile_entry_with_imports(
         &merge_inputs,
     );
 
-    Ok((compiled, parsed))
+    Ok(CompiledSource { parsed, compiled })
 }
 
 impl EngineSession {
@@ -1535,15 +1553,15 @@ impl EngineSession {
     /// and the no-interruption limitation.
     fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
         // Task 5212 (bound OCCT native-shape memory across reloads): every
-        // whole-file reload entry (load_file / update_source / load_from_source)
-        // funnels through here exactly once, so this is the single place to
-        // reset the geometry kernels — freeing the previous design's resident
-        // native shapes — AND clear the realization cache. Both are required:
-        // reloads preserve prior module identity, so build-2 entities collide on
-        // entity_id with build-1 and would otherwise cache-hit a build-1
-        // KernelHandle whose shape this reset just evicted → InvalidReference →
-        // broken render; clearing the cache forces a fresh re-execution against
-        // the reset kernel. Idempotent no-op on a cold engine (first load).
+        // reload funnels through here exactly once, from `reload_compiled`, so
+        // this is the single place to reset the geometry kernels — freeing the
+        // previous design's resident native shapes — AND clear the realization
+        // cache. Both are required: reloads preserve prior module identity, so
+        // build-2 entities collide on entity_id with build-1 and would otherwise
+        // cache-hit a build-1 KernelHandle whose shape this reset just evicted →
+        // InvalidReference → broken render; clearing the cache forces a fresh
+        // re-execution against the reset kernel. Idempotent no-op on a cold
+        // engine (first load).
         //
         // Placement: the reset must live on THIS funnel, not deeper in the
         // pipeline. tessellate_snapshot / execute_realization_ops also run on
@@ -1600,10 +1618,12 @@ impl EngineSession {
 
     /// The single post-engine-call telemetry choke-point (INV-GUI-2).
     ///
-    /// Every engine-mutating entry point (`check_and_emit_for_test`,
-    /// `load_from_source`, `preview_parameter`, `load_file`, `update_source`,
-    /// `load_from_compiled`) calls this ONE method after committing state,
-    /// instead of hand-rolling its own copy of the five-call emit sequence.
+    /// Every engine-mutating entry point calls this ONE method after committing
+    /// state, instead of hand-rolling its own copy of the five-call emit
+    /// sequence: the reload entry points (`load_from_source`, `load_file`,
+    /// `update_source`, `load_from_compiled`) reach it through
+    /// [`Self::reload_compiled`]; `preview_parameter` and
+    /// `check_and_emit_for_test` call it directly.
     /// Collapsing to a single call site means every entry point fires the
     /// full quintet in the same order. There is no separate structural
     /// source-introspection guard for this; the invariant is enforced by each
@@ -2130,12 +2150,14 @@ impl EngineSession {
         out
     }
 
-    /// Create a new EngineSession with the given constraint checker and optional geometry kernel.
+    /// Create a new EngineSession with the given solver posture, constraint
+    /// checker and optional geometry kernel.
     pub fn new(
+        posture: reify_eval::SolverPosture,
         checker: Box<dyn ConstraintChecker>,
         kernel: Option<Box<dyn GeometryKernel>>,
     ) -> Self {
-        Self::from_engine(Engine::new(checker, kernel))
+        Self::from_engine(Engine::new(posture, checker, kernel))
     }
 
     /// Create a new EngineSession using the inventory-based kernel registry.
@@ -2149,19 +2171,20 @@ impl EngineSession {
     /// - the production solver (below).
     ///
     /// Unit tests that require a mock or failing kernel should continue to
-    /// use `EngineSession::new(checker, Some(Box::new(MockGeometryKernel::new())))` —
+    /// use `EngineSession::new(posture, checker, Some(Box::new(MockGeometryKernel::new())))` —
     /// the kernel-injection seam is preserved for that use-case.
     ///
     /// ## Production solver
     ///
-    /// The production solver set (`SolverRegistry::production()`: DimensionalSolver +
-    /// geometric SolveSpaceSolver) is installed here — the only place where the
-    /// documented production-binary boot path runs.  Deliberately NOT installed in
-    /// the shared `from_engine`/`EngineSession::new` path so that `new`-based unit
-    /// tests keep `solver = None` and are unperturbed.
+    /// The engine is constructed `SolverPosture::Solve(ResolutionProfile::FRESH)`,
+    /// which wires the production solver set (`SolverRegistry::production()`:
+    /// DimensionalSolver + geometric SolveSpaceSolver). `EngineSession::new` takes
+    /// its posture from the caller instead, so `new`-based unit tests name theirs.
     pub fn with_registered_kernel(checker: Box<dyn ConstraintChecker>) -> Self {
-        let mut engine = Engine::with_registered_kernel(checker)
-            .with_solver(Box::new(reify_constraints::SolverRegistry::production()));
+        let mut engine = Engine::with_registered_kernel(
+            reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+            checker,
+        );
         engine.ensure_openvdb_kernel();
         Self::from_engine(engine)
     }
@@ -2172,33 +2195,14 @@ impl EngineSession {
         source: &str,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let (parsed, compiled) =
-            compile_single_file_with_stdlib(source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, source, module_name);
-                msg
-            })?;
-
-        // Evaluate + check constraints (borrows compiled by shared ref, so all
-        // field mutations can safely be deferred until after check() returns).
-        // check_with_solve_slot fires the SolveCancellationSink lifecycle around
-        // engine.check() — publish handle before, clear after (task γ/4086).
-        let check_result = self.check_with_solve_slot(&compiled);
-
-        // Atomically commit all state after check() succeeds.
         // Preserve file_path: load_from_source has no file on disk; keep any
         // existing file_path from a prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, source, FilePathUpdate::Preserve);
-
-        // Emit auto-resolve events after committing state.
-        //
-        // Cross-cutting ordering invariant: all four mutating entry points
-        // (load_from_source, load_file, update_source, preview_parameter) emit AFTER all
-        // session state mutations are committed.  Combined with `core.commit_state` /
-        // `core.commit_check` writing `last_check` unconditionally, a panic during state
-        // commit cannot leak phantom auto-resolve events to the GUI.
-        self.post_engine_call_telemetry();
-
-        self.build_gui_state()
+        self.reload(
+            compile_single_file_with_stdlib(source, module_name),
+            module_name,
+            source,
+            FilePathUpdate::Preserve,
+        )
     }
 
     /// The shared cell lookup: the declared [`reify_core::Type`] of the value
@@ -3183,21 +3187,14 @@ impl EngineSession {
             .and_then(|s| s.to_str())
             .unwrap_or("unnamed");
 
-        let (compiled, parsed) =
-            compile_entry_with_imports(path, &source, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, &source, module_name);
-                msg
-            })?;
-        // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
-        let check_result = self.check_with_solve_slot(&compiled);
-        // Atomically commit all five core fields in a single call.
-        // `path.to_path_buf()` is evaluated as a call argument — before the callee body
-        // runs — so a panic in `to_path_buf()` lands in the pre-commit window: none of
-        // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
-        self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
-        // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.post_engine_call_telemetry();
-        self.build_gui_state()
+        // `path.to_path_buf()` is evaluated as a call argument — before reload
+        // runs — so a panic in it lands in the pre-commit window: nothing is written.
+        self.reload(
+            compile_entry_with_imports(path, &source, module_name),
+            module_name,
+            &source,
+            FilePathUpdate::Set(path.to_path_buf()),
+        )
     }
 
     /// Update source code and re-evaluate from scratch.
@@ -3236,40 +3233,66 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path().map(|p| p.to_path_buf()) {
+        let compiled = match self.core.file_path().map(Path::to_path_buf) {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
             // imports.  Both module_name and the project-root anchor come from
             // self.file_path.  See task 3318 (item 3), task 3228, and task 3370.
-            let (compiled, parsed) = compile_entry_with_imports(&entry_path, content, module_name)
-                .map_err(|(msg, diags)| {
-                    self.record_compile_failure(diags, content, module_name);
-                    msg
-                })?;
-            (parsed, compiled)
-        } else {
-            // Single-file flow — no prior load_file means no project_root anchor;
-            // delegate to compile_single_file_with_stdlib (shared with load_from_source).
-            compile_single_file_with_stdlib(content, module_name).map_err(|(msg, diags)| {
-                self.record_compile_failure(diags, content, module_name);
-                msg
-            })?
+            Some(entry_path) => compile_entry_with_imports(&entry_path, content, module_name),
+            // Single-file flow — no prior load_file means no project_root anchor.
+            None => compile_single_file_with_stdlib(content, module_name),
         };
 
-        // Parse+compile succeeded — run check() before mutating any state, so
-        // that a panic in check() leaves the session completely unchanged.
-        // check_with_solve_slot fires the SolveCancellationSink lifecycle (task γ/4086).
-        let check_result = self.check_with_solve_slot(&compiled);
-
-        // Atomically commit all state after check() succeeds.
         // Preserve file_path: update_source does not change which file is loaded;
         // Preserve keeps the file_path set by the prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
+        self.reload(compiled, module_name, content, FilePathUpdate::Preserve)
+    }
 
-        // Emit AFTER all state is committed — cross-cutting ordering invariant.
+    /// The one reload pipeline, shared by every whole-file entry point
+    /// (`load_from_source`, `load_file`, `update_source`).
+    ///
+    /// A rejected compile is recorded for the diagnostics panel (see
+    /// [`Self::record_compile_failure`]) and its message returned as the `Err`;
+    /// nothing else is touched — no check, no commit, no telemetry. An accepted
+    /// compile runs [`Self::reload_compiled`], then builds the new state.
+    fn reload(
+        &mut self,
+        compiled: Result<CompiledSource, CompileRejection>,
+        module_name: &str,
+        source: &str,
+        file: FilePathUpdate,
+    ) -> Result<GuiState, String> {
+        match compiled {
+            Ok(compiled) => {
+                self.reload_compiled(compiled, module_name, source, file);
+                self.build_gui_state()
+            }
+            Err(rejection) => {
+                self.record_compile_failure(rejection.diags, source, module_name);
+                Err(rejection.message)
+            }
+        }
+    }
+
+    /// Reload's post-compile half up to the build: check, commit, emit.
+    ///
+    /// The one place a reload runs [`Self::check_with_solve_slot`]. Check runs
+    /// before any state is written, so a panic in it leaves the session
+    /// unchanged. Telemetry fires only after [`Self::commit_state`] has
+    /// committed everything — so a panic during the commit cannot leak phantom
+    /// events to the GUI, and every emitter reads the freshly committed
+    /// `last_check`. The build is left to the caller so `load_from_compiled`
+    /// can break `module_name` before it.
+    fn reload_compiled(
+        &mut self,
+        compiled: CompiledSource,
+        module_name: &str,
+        source: &str,
+        file: FilePathUpdate,
+    ) {
+        let check_result = self.check_with_solve_slot(&compiled.compiled);
+        self.commit_state(compiled, check_result, module_name, source, file);
         self.post_engine_call_telemetry();
-
-        self.build_gui_state()
     }
 
     /// Route failure diagnostics into `compile_failure` based on whether a prior successful
@@ -3424,18 +3447,17 @@ impl EngineSession {
     /// Callers **must** only invoke this after both compilation and `check()` have
     /// succeeded — invoking it on a partially-valid state would violate the invariant.
     ///
-    /// The field assignment was previously duplicated in `load_from_source`
-    /// and `update_source`; centralising it here prevents the two sites from
-    /// drifting apart.
+    /// [`Self::reload_compiled`] is the one caller, so every commit — compiled
+    /// or injected by `load_from_compiled` — runs this one reset list.
     fn commit_state(
         &mut self,
-        parsed: reify_ast::ParsedModule,
-        compiled: CompiledModule,
+        compiled: CompiledSource,
         check_result: CheckResult,
         module_name: &str,
         source: &str,
         file_path: FilePathUpdate,
     ) {
+        let CompiledSource { parsed, compiled } = compiled;
         // Commit the five canonical core fields atomically via CoreState::commit_state.
         // A panic between the core commit and the cache updates below leaves core fields
         // consistent (at new values) while caches may be stale — that is tolerated per
@@ -4459,8 +4481,8 @@ impl EngineSession {
         // See design decision: "Terminal-mechanism filter narrows the suggestion
         // text to body() consumption only."
         //
-        // When `parsed_cache` is `None` (test-injection without a full parse/compile
-        // cycle), the consumed-idents set is empty and every mechanism cell passes —
+        // When `parsed_cache` is `None` (`inject_compiled_for_test` without a full
+        // parse/compile cycle), the consumed-idents set is empty and every mechanism cell passes —
         // preserving the pre-filter behaviour for legacy test helpers.  A WARN event
         // is emitted *once per call* in this case so a future regression that
         // accidentally drops `parsed_cache` (e.g. a load path that forgets to
@@ -4796,6 +4818,7 @@ impl EngineSession {
 
         // Phase 4: evaluate with a lightweight preview engine (SimpleConstraintChecker, no kernel).
         let mut preview_engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(reify_constraints::SimpleConstraintChecker),
             None, // no geometry kernel — preview is values + constraints only
         );
@@ -4972,9 +4995,8 @@ impl EngineSession {
     /// Unlike [`Self::get_containing_definition`] and
     /// [`Self::get_entity_at_source_location`], this method does NOT gate on
     /// `resolve_source()` and carries no `debug_assert!` on the caches: spans
-    /// come straight from the AST, and `parsed_cache` is legitimately `None` on
-    /// a `load_from_compiled`-injected session. Plain `as_ref()?` is the correct
-    /// degradation.
+    /// come straight from the AST, and `parsed_cache` is legitimately `None`
+    /// before the first load. Plain `as_ref()?` is the correct degradation.
     pub fn resolve_param_default_span(&self, cell_id_str: &str) -> Option<reify_core::SourceSpan> {
         self.resolve_param_default_expr(cell_id_str).map(|e| e.span)
     }
@@ -5112,6 +5134,29 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Read a bare `Value::Int`/`Value::Real` held by a cell whose declared type
+/// is dimensioned as the `Value::Scalar` reify-eval's dimension wildcard makes
+/// of it: the number IS the canonical SI magnitude. Why such a value reaches a
+/// dimensioned cell at all: [`parse_value_string_for_cell`]'s doc. Every other
+/// value, and any value in an undimensioned cell, is returned as-is.
+fn value_as_declared(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> std::borrow::Cow<'_, Value> {
+    use std::borrow::Cow;
+    match (val, declared) {
+        (Value::Int(i), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *i as f64,
+            dimension,
+        }),
+        (Value::Real(r), Some(dimension)) => Cow::Owned(Value::Scalar {
+            si_value: *r,
+            dimension,
+        }),
+        _ => Cow::Borrowed(val),
+    }
+}
+
 /// Format the four display fields a `ValueData` cell derives directly from its
 /// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
 /// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
@@ -5123,7 +5168,16 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
 /// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
 /// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
 /// exactly as `format_value` renders the value itself.
-fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+///
+/// `declared` is the cell's [`declared_scalar_dimension`]. A bare Int/Real in
+/// a declared-dimensioned cell is formatted as that dimension's SI magnitude
+/// (see [`value_as_declared`]), so the badge survives a bare-number edit.
+fn format_determined_cell(
+    val: &Value,
+    declared: Option<DimensionVector>,
+) -> (String, String, Option<f64>, String) {
+    let val = value_as_declared(val, declared);
+    let val = val.as_ref();
     let (value, unit) = format_value(val);
     let (si_value, dim) = match display_scalar(val) {
         Some((s, d)) => (Some(s), Some(d)),
@@ -5131,6 +5185,20 @@ fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) 
     };
     let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
     (value, unit, si_value, dimension)
+}
+
+/// Every value cell of `module`, keyed by id, with its
+/// [`declared_scalar_dimension`] — one pass, so a caller formatting many cells
+/// pays one lookup per cell rather than a scan of every template.
+fn declared_dimension_index(
+    module: &CompiledModule,
+) -> HashMap<&ValueCellId, Option<DimensionVector>> {
+    module
+        .templates
+        .iter()
+        .flat_map(|t| &t.value_cells)
+        .map(|vc| (&vc.id, declared_scalar_dimension(&vc.cell_type)))
+        .collect()
 }
 
 fn build_values(
@@ -5142,7 +5210,13 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
+            let declared = declared_scalar_dimension(&cell.cell_type);
+            let (formatted_value, unit, si_value, dimension) =
+                format_determined_cell(&val, declared);
+            let declared_dimension = declared
+                .and_then(|d| d.canonical_name())
+                .unwrap_or("")
+                .to_string();
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -5165,12 +5239,13 @@ fn build_values(
             // the GUI displays the last good number, NOT the current
             // un-recomputed one (arch §8 prune-safety scenario 3 — "the displayed
             // number equals the last good value"). Computed ONLY for Pending
-            // cells; final/intermediate/failed cells carry `None`. Formatted via
-            // `format_value(..).0` (value part only), matching `value` above.
+            // cells; final/intermediate/failed cells carry `None`. Read through
+            // `value_as_declared` and formatted via `format_value(..).0` (value
+            // part only), matching `value` above.
             let last_substantive_value = if freshness == "pending" {
                 engine.and_then(|e| {
                     e.last_substantive_value(&NodeId::Value(cell.id.clone()))
-                        .map(|v| format_value(&v).0)
+                        .map(|v| format_value(&value_as_declared(&v, declared)).0)
                 })
             } else {
                 None
@@ -5211,6 +5286,7 @@ fn build_values(
                 last_substantive_value,
                 dimension,
                 si_value,
+                declared_dimension,
             });
         }
     }
@@ -5445,6 +5521,10 @@ fn surface_geometry_derived_cells(
     // tracked-pattern comment, since the curator assigns the task id asynchronously
     // and a cite must resolve to a live task to be valid.
     let mut dispatched_entities: Option<HashSet<String>> = None;
+    // Task #6962: the declared dimension each surfaced cell is formatted under,
+    // built LAZILY on the first surfaced cell for the same reason as
+    // `dispatched_entities`.
+    let mut declared_dimensions: Option<HashMap<&ValueCellId, Option<DimensionVector>>> = None;
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -5493,7 +5573,12 @@ fn surface_geometry_derived_cells(
                 }
             }
         };
-        let (value, unit, si_value, dimension) = format_determined_cell(&val);
+        let declared = declared_dimensions
+            .get_or_insert_with(|| declared_dimension_index(module))
+            .get(&id)
+            .copied()
+            .flatten();
+        let (value, unit, si_value, dimension) = format_determined_cell(&val, declared);
         cell.value = value;
         cell.unit = unit;
         cell.determinacy = format_determinacy(DeterminacyState::Determined);
@@ -6297,11 +6382,9 @@ fn extract_joint_descriptor(joint_val: &Value, joint_index: usize) -> Option<Joi
         "coupling" => JointBinding::CouplingDerived {
             source_joint: String::new(), // source detection deferred to ζ work
         },
-        "prismatic" | "revolute" => JointBinding::LiteralBound {
-            synth_param_name: format!("__joint_{joint_index}_v"),
-            initial_value_si: None,
-            scrubbable: true,
-        },
+        "prismatic" | "revolute" => {
+            JointBinding::literal_bound(format!("__joint_{joint_index}_v"), None)
+        }
         _ => JointBinding::FixedNoMotion, // conservative default for unknown kinds
     };
 
@@ -6593,11 +6676,10 @@ fn resolve_driving_params_from_ast(
                             // Refine the binding to LiteralBound using the joint cell name
                             // (not the index-based default) — first-wins guard.
                             if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
-                                jd.binding = JointBinding::LiteralBound {
-                                    synth_param_name: format!("__joint_{joint_cell_name}_v"),
+                                jd.binding = JointBinding::literal_bound(
+                                    format!("__joint_{joint_cell_name}_v"),
                                     initial_value_si,
-                                    scrubbable: true,
-                                };
+                                );
                             }
                         }
                     }
@@ -7367,6 +7449,14 @@ impl EngineSession {
         self.consumed_idents_cache.as_ref()
     }
 
+    /// Return the retained geometry-derived panel values.
+    ///
+    /// Intended only for tests that need to inspect cache state without widening
+    /// the production API.  Mirrors the style of `consumed_idents_cache_for_test`.
+    pub(crate) fn geometry_derived_cache_for_test(&self) -> &HashMap<ValueCellId, Value> {
+        &self.geometry_derived_cache
+    }
+
     /// Replace the consumed-idents cache with `cache`, for testing purposes.
     ///
     /// Used by `get_mechanism_descriptors_reads_from_consumed_idents_cache` to
@@ -7411,23 +7501,26 @@ impl EngineSession {
     /// compilation.
     ///
     /// Source-bypassing analog of [`EngineSession::load_from_source`]: runs
-    /// `check_with_solve_slot`, commits the core fields via
-    /// [`CoreState::commit_state`], then immediately clears `module_name` via
-    /// [`CoreState::break_module_name`] so that `resolve_source()` returns `None`.
-    /// Emits the four event families and returns [`GuiState`].
+    /// reload's post-compile half ([`Self::reload_compiled`] — check, commit,
+    /// telemetry, with the one reset list every reload uses) over the parse of
+    /// the empty source it commits. `source_map` gets
+    /// `module_key(module_name) -> ""`, and the parse caches hold that empty
+    /// parse. It then clears `module_name` via
+    /// [`CoreState::break_module_name`] so that `resolve_source()` returns
+    /// `None`, and only then builds the returned [`GuiState`] — so that state,
+    /// like every later build on the session, is built over the unresolved
+    /// source.
     ///
     /// Distinct from [`EngineSession::inject_compiled_for_test`], which sets
     /// `compiled` ONLY.  Use `load_from_compiled` when tests need `compiled` and
     /// `last_check` both populated (e.g. to drive `get_entity_tree`).
     ///
     /// **Parse-dependent APIs degrade gracefully to `None`/`[]` on an injected
-    /// session.**  Because `break_module_name` is called after `commit_state`,
+    /// session.**  Because `break_module_name` runs after the commit,
     /// `resolve_source()` returns `None`, so [`get_containing_definition`],
     /// [`get_entity_at_source_location`], and [`get_source_location`] all
-    /// short-circuit at their `resolve_source()?` guard — before the
-    /// `debug_assert!(parsed_cache.is_some() && line_offsets_cache.is_some(), …)`
-    /// in those methods.  The production invariant "resolve_source succeeds ⟹
-    /// parsed_cache and line_offsets_cache are `Some`" remains vacuously true.
+    /// short-circuit at their `resolve_source()?` guard, and never look up the
+    /// injected module's spans in the empty source.
     ///
     /// `get_diagnostics` also degrades safely because it early-exits on empty
     /// diagnostics before calling `resolve_source`.  **Injected modules must
@@ -7436,45 +7529,19 @@ impl EngineSession {
     /// `debug_assert` (the "resolve_source returned None with non-empty
     /// diagnostics" path exercised by
     /// `get_diagnostics_debug_asserts_when_module_name_broken`).
-    ///
-    /// `build_gui_state` explicitly tolerates `parsed_cache = None` for
-    /// test-injected sessions (the `parsed_cache` check in `build_gui_state` is
-    /// warn-only), so [`GuiState`] is still returned correctly.
     pub(crate) fn load_from_compiled(
         &mut self,
         compiled: CompiledModule,
         module_name: &str,
     ) -> Result<GuiState, String> {
-        let check_result = self.check_with_solve_slot(&compiled);
-        // Commit the five core fields via CoreState::commit_state.
-        // Empty source: there is no on-disk text; source_map gets
-        // module_key(module_name) -> "".
-        self.core.commit_state(
-            compiled,
-            check_result,
+        let parsed = reify_compiler::parse_with_stdlib("", ModulePath::single(module_name));
+        self.reload_compiled(
+            CompiledSource { parsed, compiled },
             module_name,
             "",
             FilePathUpdate::Preserve,
         );
-        // Immediately break module_name so resolve_source() returns None.
-        // This ensures get_containing_definition / get_entity_at_source_location /
-        // get_source_location short-circuit at resolve_source()? BEFORE their
-        // debug_assert on the (None) parse caches, preserving the invariant
-        // "resolve_source succeeds => parsed_cache & line_offsets_cache are Some"
-        // vacuously.  source_map is left intact so build_gui_state's `files`
-        // output is byte-identical to before.
         self.core.break_module_name();
-        // Replicate the cache resets from the commit_state cache-reset block.
-        // parsed_cache and line_offsets_cache stay None (no parse available).
-        self.def_preview_cache.clear();
-        self.parsed_cache = None;
-        self.line_offsets_cache = None;
-        self.consumed_idents_cache = None;
-        self.reserved_param_warned.clear();
-        self.compile_failure = None;
-        self.last_reload_error = None;
-        // Emit ordering mirrors the emit-ordering block in load_from_source.
-        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
@@ -8010,6 +8077,23 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
     ty
 }
 
+/// The dimension a cell's DECLARED type requires of a supplied value: its
+/// [`unwrap_optional`] type, if that is a non-dimensionless `Type::Scalar`.
+///
+/// The one definition of "a dimensioned cell" — consumed by the bare-number
+/// gate in [`parse_value_string_for_cell`], by `build_values`'
+/// `ValueData.declared_dimension`, and by [`format_determined_cell`]'s reading
+/// of a bare number — so the panel's input gate and the backend's agree by
+/// construction (task #6962).
+/// `!is_dimensionless()` is explicit so a `param x : Real` (compiled to
+/// `Scalar { DIMENSIONLESS }`) is never treated as dimensioned.
+pub(crate) fn declared_scalar_dimension(cell_type: &reify_core::Type) -> Option<DimensionVector> {
+    match unwrap_optional(cell_type) {
+        reify_core::Type::Scalar { dimension } if !dimension.is_dimensionless() => Some(*dimension),
+        _ => None,
+    }
+}
+
 /// Parse a value string for a SPECIFIC declared cell type (task #5757).
 ///
 /// The one thing the context-free [`parse_value_string`] cannot do: **refuse a
@@ -8040,8 +8124,12 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///
 /// Each conjunct, and what pins it:
 ///
-///   * `unwrap_optional` first, so an `Option<Length>` cell is gated like a
-///     `Length` one — `parse_value_string_for_cell_gates_through_an_option_wrapper`;
+///   * [`declared_scalar_dimension`] — the cell's declared, `Option`-peeled,
+///     non-dimensionless dimension, the same fact the panel's gate reads as
+///     `ValueData.declared_dimension`. An `Option<Length>` cell is gated like a
+///     `Length` one (`parse_value_string_for_cell_gates_through_an_option_wrapper`),
+///     and a `param x : Real` (`Scalar { DIMENSIONLESS }`) stays ungated even if
+///     a dimensionless quantity ever gains a curated ladder;
 ///   * only `Value::Int` / `Value::Real` are refused; every other variant falls
 ///     through to reify-eval's own `TypeKindMismatch` / `DimensionMismatch`,
 ///     notably `Value::Bool`, whose message an existing test depends on;
@@ -8050,12 +8138,7 @@ fn unwrap_optional(ty: &reify_core::Type) -> &reify_core::Type {
 ///     both ungated for the same reason, pinned together by
 ///     `parse_value_string_for_cell_keys_the_gate_on_expressibility_not_on_namedness`
 ///     because keying on `canonical_name().is_some()` would read as an
-///     equivalent refactor and split them;
-///   * `!dimension.is_dimensionless()` is explicit even though every covered
-///     dimension is non-dimensionless by construction, so a future curated
-///     ladder for a dimensionless quantity cannot silently start gating every
-///     ratio slider. `param x : Real` compiles to
-///     `Type::Scalar { DIMENSIONLESS }` and falls on the permissive side.
+///     equivalent refactor and split them.
 ///
 /// THE MESSAGE IS BUILT FROM THE LADDER DATA THE GATE JUST CONSULTED, so it can
 /// only name a rung this index parses — pinned across every curated ladder by
@@ -8079,10 +8162,9 @@ pub(crate) fn parse_value_string_for_cell(
     let s = s.trim();
     let value = parse_value_string(s)?;
 
-    if let reify_core::Type::Scalar { dimension } = unwrap_optional(cell_type)
-        && !dimension.is_dimensionless()
+    if let Some(dimension) = declared_scalar_dimension(cell_type)
         && matches!(value, Value::Int(_) | Value::Real(_))
-        && let Some((expected, rung)) = dimension_requires_unit(dimension)
+        && let Some((expected, rung)) = dimension_requires_unit(&dimension)
     {
         return Err(format!(
             "expects {expected}, got the bare number '{s}'; pass a dimensioned \
@@ -8253,56 +8335,35 @@ fn expr_kind_name(kind: &reify_ast::ExprKind) -> &'static str {
 /// rename within one directory is atomic, so every reader sees the whole old
 /// file or the whole new one and that failure mode does not exist.
 ///
-/// Four details that are load-bearing rather than incidental:
+/// Contract:
 ///
-/// * **Symlinks are followed, not replaced.** `rename(2)` does NOT follow a
-///   symlink at its destination, so renaming straight over `path` would DELETE
-///   a symlinked `.ri` and leave a regular file in its place, while the file
-///   the link pointed at kept the pre-edit content forever — and the caller's
-///   divergence guard could not notice, because `fs::read_to_string` follows
-///   the link and would keep comparing against the (matching) target's bytes.
-///   `path` is therefore resolved through [`std::fs::canonicalize`] first and
-///   the write goes to the RESOLVED file, matching the write-through behaviour
-///   a plain `fs::write` would have had. A path that cannot be canonicalized
-///   (it does not exist yet, say) falls back to itself unchanged.
-/// * **Same directory.** `rename` is only atomic within a filesystem, so the
-///   temp lives beside the resolved target — not in `/tmp`, and not beside the
-///   symlink when those differ.
-/// * **`.tmp` suffix, plus pid AND a process-local sequence number.** The GUI's
-///   watcher filters on the `.ri` extension (`watcher.rs`), so a `.tmp` sibling
-///   never reads as a design file appearing in the project. The pid keeps two
-///   PROCESSES writing the same design off one temp path, and the sequence
-///   number does the same for two `EngineSession`s inside ONE process, which
-///   share a pid. The rename itself DOES fire a watch event for the resolved
-///   path — the watcher accepts `Modify(_)`, which covers inotify's
-///   rename-into-place — so hot reload still works; through a symlink the event
-///   lands on the target's directory rather than the link's, which the
-///   authoritative in-process recompile (D7) already covers.
-/// * **Permissions are carried over** from the file being replaced, so a
-///   design the user made read-only-for-group (or otherwise chmod'd) does not
-///   silently come back with the process umask's mode. Best-effort: a
-///   permission read/write failure is not worth failing the edit over.
-///
-/// The temp is removed on every failure path, so a failed write leaves no
-/// litter next to the user's design.
-///
-/// Contents are `sync_all`ed before the rename, and the containing DIRECTORY is
-/// synced after it, so the replacement survives a power loss rather than merely
-/// being atomic against concurrent readers. The directory sync is best-effort:
-/// not every filesystem permits opening a directory for sync, and a design edit
-/// that already reached the page cache is not worth failing over one.
+/// * **Symlinks are followed, not replaced.** `rename(2)` does not follow a
+///   symlink at its destination, so renaming over `path` would replace a
+///   symlinked `.ri` with a regular file and leave the link's target stale —
+///   invisibly to the caller's divergence guard, which reads through the link.
+///   `path` is resolved through [`std::fs::canonicalize`] and the write goes to
+///   the RESOLVED file; a path that cannot be resolved is used as given.
+/// * **The temp is a sibling of the resolved target** (rename is only atomic
+///   within one filesystem), named `<file>.<random>.tmp` and created
+///   exclusively, so no two writers ever share one. Its extension is never
+///   `ri`, so the GUI's watcher (`watcher.rs`) never mistakes it for a design;
+///   the rename itself still fires a `Modify` event for the target, so hot
+///   reload keeps working.
+/// * **The replaced file's permissions are carried over**, best-effort, onto
+///   the open temp. A fresh temp is created `0o600`, so without this every
+///   write-back would narrow the design's mode, not merely drop a user's chmod.
+/// * **No litter on failure.** `NamedTempFile`'s `Drop` removes the temp on
+///   every error path. It cannot after a SIGKILL between creating the temp and
+///   the rename (no destructor runs) — the same residual
+///   `reify_eval::persistent_cache::write_entry` documents.
+/// * **Durable.** Contents and mode are synced before the rename; the
+///   directory is synced after it, best-effort (not every filesystem permits
+///   it, and an edit already in the page cache is not worth failing over).
+/// * **It fails before the rename or not at all.** The caller's rollback relies
+///   on this: an `Err` means the design on disk is untouched.
 fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Disambiguates temp paths between two `EngineSession`s in ONE process,
-    /// which the pid alone cannot: they would otherwise race on the same name
-    /// and one would `create`-truncate the other's half-written temp.
-    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-    // See the doc comment: rename(2) would otherwise destroy a symlinked `.ri`
-    // and orphan its target. Fall back to `path` when it cannot be resolved —
-    // there is then no link to follow and nothing this can improve on.
     let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
 
     let file_name = target.file_name().ok_or_else(|| {
@@ -8311,55 +8372,37 @@ fn write_file_atomically(path: &Path, content: &str) -> std::io::Result<()> {
             "path has no file name to write",
         )
     })?;
-    let mut tmp_name = file_name.to_os_string();
-    tmp_name.push(format!(
-        ".{}.{}.tmp",
-        std::process::id(),
-        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let tmp_path = target.with_file_name(tmp_name);
-
-    let write_and_rename = || -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp_path)?;
-        file.write_all(content.as_bytes())?;
-        // Order the contents before the rename: a rename that lands while the
-        // data is still only in the page cache would publish an empty or
-        // partial file to a reader that crosses the same crash.
-        file.sync_all()?;
-        drop(file);
-
-        // Best-effort mode preservation — see the doc comment. Deliberately
-        // ignores errors: failing an otherwise-good edit because a mode could
-        // not be copied would be the wrong trade.
-        if let Ok(meta) = std::fs::metadata(&target)
-            && meta.is_file()
-        {
-            let _ = std::fs::set_permissions(&tmp_path, meta.permissions());
-        }
-
-        std::fs::rename(&tmp_path, &target)?;
-
-        // Durability, not atomicity: the rename is already atomic against a
-        // concurrent reader, but the DIRECTORY entry it rewrote can still be
-        // lost to a power cut until the directory itself is synced. Mirrors
-        // `reify_eval::persistent_cache::write_entry`. Best-effort by design —
-        // see the doc comment.
-        if let Some(parent) = target.parent()
-            && let Ok(dir) = std::fs::File::open(parent)
-        {
-            let _ = dir.sync_all();
-        }
-        Ok(())
+    // One directory for both the temp and the post-rename sync: a relative
+    // fallback path like `part.ri` has an EMPTY parent, which `File::open`
+    // cannot open.
+    let dir = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     };
 
-    let result = write_and_rename();
-    if result.is_err() {
-        // The rename is what consumes the temp, so any failure before it (or a
-        // failed rename itself) leaves the temp behind. Remove it rather than
-        // littering the user's project directory with one file per failure.
-        let _ = std::fs::remove_file(&tmp_path);
+    let mut prefix = file_name.to_os_string();
+    prefix.push(".");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&prefix)
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    tmp.write_all(content.as_bytes())?;
+
+    // An fchmod on the open fd: unlike `Builder::permissions`, it is not
+    // filtered by the umask, and it lands before the sync below.
+    if let Ok(meta) = std::fs::metadata(&target)
+        && meta.is_file()
+    {
+        let _ = tmp.as_file().set_permissions(meta.permissions());
     }
-    result
+    tmp.as_file().sync_all()?;
+
+    tmp.persist(&target).map_err(|e| e.error)?;
+
+    if let Ok(dir_handle) = std::fs::File::open(dir) {
+        let _ = dir_handle.sync_all();
+    }
+    Ok(())
 }
 
 /// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).

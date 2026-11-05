@@ -1323,6 +1323,75 @@ fn build_user_function_call_expr(
     }
 }
 
+/// [`instantiate_return_type`] for a `CompiledFunction` callee.
+fn instantiate_call_return_type(
+    callee: &CompiledFunction,
+    call_name: &str,
+    arg_types: &[Type],
+    call_span: SourceSpan,
+) -> Result<Type, Diagnostic> {
+    instantiate_return_type(
+        !callee.type_params.is_empty(),
+        callee.params.iter().map(|(_, t)| t),
+        &callee.return_type,
+        call_name,
+        arg_types,
+        call_span,
+    )
+}
+
+/// The type a call yields once unification over `arg_types` binds its type
+/// parameters (task 4231 β); a non-generic callee keeps its `declared_return`
+/// (INV-6/D10). `arg_types` may be a strict prefix of `declared_params` (a
+/// default-padded call): trailing defaulted slots bind nothing, since a slot
+/// carrying a type parameter has no valid default (`FnParamDefaultTypeMismatch`
+/// at the definition). `Err` is the diagnostic to poison the call with: a
+/// double-binding (`E_FALLBACK_TYPE` for the recovery combinators, contract C-3
+/// in `docs/prds/v0_6/result-and-fallback.md`; else `E_FN_TYPE_ARG_CONFLICT`) or
+/// a BARE unbound type-/dimension-param result. A NESTED unbound param such as
+/// `Field<D, Real>` is tolerated: an enclosing call pins it (B5).
+fn instantiate_return_type<'p>(
+    is_generic: bool,
+    declared_params: impl IntoIterator<Item = &'p Type>,
+    declared_return: &Type,
+    call_name: &str,
+    arg_types: &[Type],
+    call_span: SourceSpan,
+) -> Result<Type, Diagnostic> {
+    if !is_generic {
+        return Ok(declared_return.clone());
+    }
+    let mut subst: std::collections::HashMap<String, Type> = std::collections::HashMap::new();
+    for (declared, arg_ty) in declared_params.into_iter().zip(arg_types.iter()) {
+        if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst) {
+            let (code, prefix) = if is_fallback_combinator(call_name) {
+                (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
+            } else {
+                (DiagnosticCode::FnTypeArgConflict, "")
+            };
+            let message = format!(
+                "{}conflicting type arguments for type parameter \
+                 '{}' in call to '{}': {} vs {}",
+                prefix, conflict.param, call_name, conflict.existing, conflict.incoming
+            );
+            return Err(Diagnostic::error(message)
+                .with_code(code)
+                .with_label(DiagnosticLabel::new(call_span, "conflicting type argument")));
+        }
+    }
+    let substituted = type_resolution::substitute_type_params(declared_return, &subst);
+    if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
+        return Err(Diagnostic::error(format!(
+            "cannot infer type argument(s) for generic call to '{}': \
+             result type is undetermined",
+            call_name
+        ))
+        .with_code(DiagnosticCode::FnTypeArgUnresolved)
+        .with_label(DiagnosticLabel::new(call_span, "unresolved type argument")));
+    }
+    Ok(substituted)
+}
+
 /// Compile an `Expr` from the AST into a `CompiledExpr`, with guard context.
 ///
 /// When `current_guard` is Some, references to names guarded by a different
@@ -3151,85 +3220,12 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                         emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                     }
-                    // Generic call (task 4231 β): infer type arguments by unifying
-                    // each declared param type against the concrete arg type, then
-                    // substitute the bound type parameters into the return type.
-                    // Non-generic fns (empty type_params) keep the exact
-                    // return_type.clone() path bit-for-bit unchanged (INV-6/D10).
-                    let result_type = if matched_fn.type_params.is_empty() {
-                        matched_fn.return_type.clone()
-                    } else {
-                        let mut subst: std::collections::HashMap<String, Type> =
-                            std::collections::HashMap::new();
-                        for ((_, declared), arg_ty) in
-                            matched_fn.params.iter().zip(arg_types.iter())
+                    let result_type =
+                        match instantiate_call_return_type(matched_fn, name, &arg_types, expr.span)
                         {
-                            // A type-param double-binding to two different types is
-                            // a call-site type-argument conflict (PRD D2 / §4.2).
-                            // For recovery combinators (unwrap_or / or_default /
-                            // fallback / get_or — the default-must-match-element
-                            // family), emit E_FALLBACK_TYPE + mnemonic (contract
-                            // C-3, PRD docs/prds/v0_6/result-and-fallback.md).
-                            // For all other generic fns, emit E_FN_TYPE_ARG_CONFLICT
-                            // bit-for-bit unchanged.  Both paths poison the call via
-                            // make_poison_literal (D3: result_type = Type::Error
-                            // inference sentinel, not a payload).
-                            if let Err(conflict) = type_compat::unify(declared, arg_ty, &mut subst)
-                            {
-                                let (code, prefix) = if is_fallback_combinator(name) {
-                                    (DiagnosticCode::FallbackType, "E_FALLBACK_TYPE: ")
-                                } else {
-                                    (DiagnosticCode::FnTypeArgConflict, "")
-                                };
-                                let message = format!(
-                                    "{}conflicting type arguments for type parameter \
-                                     '{}' in call to '{}': {} vs {}",
-                                    prefix,
-                                    conflict.param,
-                                    name,
-                                    conflict.existing,
-                                    conflict.incoming
-                                );
-                                return make_poison_literal(
-                                    diagnostics,
-                                    Diagnostic::error(message)
-                                        .with_code(code)
-                                        .with_label(DiagnosticLabel::new(
-                                            expr.span,
-                                            "conflicting type argument",
-                                        )),
-                                );
-                            }
-                        }
-                        let substituted = type_resolution::substitute_type_params(
-                            &matched_fn.return_type,
-                            &subst,
-                        );
-                        // A BARE top-level unbound type-param or dimension-param
-                        // means nothing pinned the result type (e.g. `make<T>() -> T`
-                        // called as `make()`, or `mk<Q: Dimension>(k: Real) -> Scalar<Q>`
-                        // called as `mk(3.0)` — Q undetermined): the call yields a
-                        // wholly-undetermined type → error + poison (task ζ / D8).
-                        // A NESTED unbound param (e.g. `Field<TypeParam(D), Real>`)
-                        // is TOLERATED — it is pinned by an enclosing call (B5,
-                        // PRD §8 / D3-decision).
-                        if matches!(substituted, Type::TypeParam(_) | Type::ScalarParam(_)) {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "cannot infer type argument(s) for generic call to '{}': \
-                                     result type is undetermined",
-                                    name
-                                ))
-                                .with_code(DiagnosticCode::FnTypeArgUnresolved)
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "unresolved type argument",
-                                )),
-                            );
-                        }
-                        substituted
-                    };
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                     build_user_function_call_expr(name, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -3260,7 +3256,6 @@ fn compile_expr_guarded_with_expected_inner(
                     if let Some((padded_fn, default_exprs)) =
                         try_default_padding(&named_candidates, &arg_types)
                     {
-                        let result_type = padded_fn.return_type.clone();
                         // Deprecation check: mirror the Resolved arm — warn if the
                         // padded function is @deprecated.
                         if let Some(msg) = deprecation_message(&padded_fn.annotations) {
@@ -3272,6 +3267,12 @@ fn compile_expr_guarded_with_expected_inner(
                                 diagnostics,
                             );
                         }
+                        let result_type = match instantiate_call_return_type(
+                            padded_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let mut padded_args = compiled_args;
                         padded_args.extend(default_exprs);
                         return build_user_function_call_expr(name, padded_args, result_type);
@@ -3290,7 +3291,12 @@ fn compile_expr_guarded_with_expected_inner(
                         if let Some(msg) = deprecation_message(&matched_fn.annotations) {
                             emit_deprecation_warning("function", name, msg, expr.span, diagnostics);
                         }
-                        let result_type = matched_fn.return_type.clone();
+                        let result_type = match instantiate_call_return_type(
+                            matched_fn, name, &arg_types, expr.span,
+                        ) {
+                            Ok(result_type) => result_type,
+                            Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                        };
                         let coerced_args: Vec<CompiledExpr> = compiled_args
                             .into_iter()
                             .zip(matched_fn.params.iter())
@@ -3312,6 +3318,14 @@ fn compile_expr_guarded_with_expected_inner(
                     // mismatch, tag with SelectorKindMismatch so both the composition
                     // path (BT1, units.rs) and the param-binding path (BT6) carry the
                     // same DiagnosticCode. Message and label are unchanged.
+                    //
+                    // task 5476 (PRD placeholder-type-eradication-ratchet §3.3 /
+                    // INV-SF-6): the GENERAL no-match — everything the 4581 predicate
+                    // does not claim — carries NoMatchingOverload
+                    // (E_NO_MATCHING_OVERLOAD). The selector branch above keeps
+                    // priority; this only fills in the previously-untagged else.
+                    // Message and label stay byte-identical in both branches, so only
+                    // the code distinguishes them.
                     let base_diag = Diagnostic::error(format!(
                         "no matching overload for {}({}), candidates: {}",
                         name,
@@ -3329,7 +3343,7 @@ fn compile_expr_guarded_with_expected_inner(
                     ) {
                         base_diag.with_code(DiagnosticCode::SelectorKindMismatch)
                     } else {
-                        base_diag
+                        base_diag.with_code(DiagnosticCode::NoMatchingOverload)
                     };
                     make_poison_literal(diagnostics, diag)
                 }
@@ -3424,17 +3438,20 @@ fn compile_expr_guarded_with_expected_inner(
                     // `infer_list_helper_return_type` → `is_dynamics_query` →
                     // `is_dynamics_constructor` → `is_affine_map_constructor` →
                     // `is_math_typed_fn` → `is_joint_typed_fn` →
+                    // `is_flexure_typed_fn` (task #5476) →
                     // `registry_result_type` (the builtin-signature registry,
                     // task #6001 α — one arm replacing the former
                     // `is_analysis_typed_fn` and `is_parse_typed_fn` arms) →
                     // `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
+                    // `is_orientation_decomposer_fn` (tasks #6082/#6306) →
                     // first-arg fallback. The five geometry-name families plus the
                     // RBD-β `is_dynamics_query` family (task 3829), the task-4278
                     // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), and the #4629 W2
-                    // `fea_envelope_result_type` family are pinned disjoint in
-                    // `units.rs::tests::*_are_disjoint_from_other_families`,
+                    // `is_field_op` family (task 4219), the #4629 W2
+                    // `fea_envelope_result_type` family, and the task-#5476
+                    // `is_flexure_typed_fn` family are pinned disjoint in
+                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
                     // so within this arm the ordering is unobservable — no name can
                     // satisfy two predicates. `selector_composition_result_type` is
                     // arg-aware (returns None for CSG non-selector operands) so CSG
@@ -3478,6 +3495,15 @@ fn compile_expr_guarded_with_expected_inner(
                     // and the shared verbs `angle`/`distance` are policed only in
                     // their arity-3 DRIVE form (a no-op for the arity-2 query forms).
                     relation_signatures::check_relation_arg_types(
+                        name,
+                        &compiled_args,
+                        expr.span,
+                        diagnostics,
+                    );
+
+                    // Task 6249: a third diagnostic-only check, with the same
+                    // contract as the two above.
+                    math_signatures::check_forward_trig_arg_dimensions(
                         name,
                         &compiled_args,
                         expr.span,
@@ -3654,7 +3680,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // at eval time. Uniform `StructureRef("MassProperties")`
                         // result (mirrors the `is_dynamics_query` arm above).
                         // Pinned disjoint from all sibling families by
-                        // `dynamics_constructor_names_are_disjoint_from_other_families`.
+                        // `builtin_name_families_are_pairwise_disjoint`.
                         Type::StructureRef("MassProperties".to_string())
                     } else if is_affine_map_constructor(name) {
                         // affine_scale / affine_shear_* / affine_translate /
@@ -3731,8 +3757,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // variant with a best-effort `n` when the shape is not
                         // statically determinable. Both slices are pinned disjoint
                         // from the geometry/dynamics families AND from each other
-                        // (units.rs `math_typed_fn_names_are_disjoint_from_other_families`
-                        // + `math_operation_fn_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         // NOTE: `determinant(AffineMap)` → Real is served by the
                         // earlier `affine_map_algebra_result_type` arm above, so
@@ -3759,6 +3784,43 @@ fn compile_expr_guarded_with_expected_inner(
                         // families by the units.rs disjointness test, so this
                         // arm's position in the ladder is unobservable.
                         joint_ctor_result_type(name, &compiled_args)
+                    } else if is_flexure_typed_fn(name) {
+                        // PRB flexure constructor family (placeholder-ratchet α,
+                        // PRD docs/prds/v0_6/placeholder-type-eradication-ratchet.md
+                        // §3.2, task #5476). All 13 prb_* ctors set the cell type
+                        // up-front to the nominal StructureRef("FlexureJoint") so
+                        // `flexure_compliance(joint: FlexureJoint)` matches a real
+                        // ctor result and REJECTS every bare literal through the
+                        // exact-equality overload filter (type_compat.rs).
+                        //
+                        // Falling through to the first-arg fallback instead
+                        // mis-types a flexure joint as its first geometric
+                        // argument's type — e.g. Scalar[LENGTH] from
+                        // notch_radius — which is exactly the placeholder PRD §2
+                        // names as the root cause: it made a bare `5mm`
+                        // statically indistinguishable from a real joint.
+                        //
+                        // Runtime stays Value::Map (esc-3845-91): StructureRef is
+                        // a representable cell type and value_type_kind_matches is
+                        // not enforced on let-cells. These cells already carry the
+                        // first-arg Scalar[LENGTH] mismatch today, so StructureRef
+                        // is strictly more correct. PRD §7.1's rejection of the
+                        // typed-joints migration is NOT reopened.
+                        //
+                        // Unlike the joint arm above, this family is name- AND
+                        // argument-agnostic — all 13 map to the one marker type,
+                        // so there is no Coupling-style args-aware branch. That
+                        // is why the resolver is a ZERO-ARG `flexure_joint_type()`
+                        // rather than the joint family's `(name, args)` shape:
+                        // neither would be consulted, and a signature that
+                        // accepts them would imply a dispatch that does not
+                        // exist.
+                        //
+                        // The family is pinned disjoint from all sibling families
+                        // by the units.rs disjointness test, so this arm's
+                        // position in the ladder is unobservable. The one hard
+                        // requirement is that it precede the first-arg fallback.
+                        flexure_joint_type()
                     } else if registry_owns(name)
                         && let Some(t) = registry_result_type(
                             name,
@@ -3782,7 +3844,7 @@ fn compile_expr_guarded_with_expected_inner(
                         //
                         // Folding parse into the analysis POSITION is
                         // unobservable: `units.rs`'s
-                        // `registry_row_names_are_disjoint_from_legacy_families`
+                        // `builtin_name_families_are_pairwise_disjoint`
                         // pins every row name absent from every legacy sibling
                         // family slice, so at most one arm can ever claim a
                         // given name.
@@ -3799,9 +3861,16 @@ fn compile_expr_guarded_with_expected_inner(
                         // 3), so arg TYPES cross the boundary, not
                         // `CompiledExpr`s.
                         //
-                        // `None` means "not a registry row", so unseeded names
-                        // fall through to the arms below exactly as before —
-                        // I-REG-3's pre-ω carve-out. The call stays a
+                        // The fall-through is the `registry_owns` miss: an
+                        // unregistered name, an arity-overload group or a
+                        // Relation row reaches the arms below exactly as
+                        // before — I-REG-3's pre-ω carve-out. Past the guard,
+                        // `None` would mean an `ArgAware` resolver declined;
+                        // none does today, pinned by `harness_builtin_registry`'s
+                        // `registry_result_type_is_total_over_every_name_registry_owns`.
+                        // That failed `let Some` is where τ-numeric wires
+                        // `E_BuiltinArgShape` (PRD §3 decision 5) instead of
+                        // falling through silently. The call stays a
                         // `FunctionCall`: eval is untouched.
                         t
                     } else if is_fea_envelope_query(name) {
@@ -3828,7 +3897,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // which is the same set `fea_envelope_result_type` matches
                         // on — so the `expect` is infallible here.
                         // The family is pinned disjoint from all sibling families
-                        // by `fea_envelope_names_are_disjoint_from_other_families`
+                        // by `builtin_name_families_are_pairwise_disjoint`
                         // in `units.rs`, so arm position is unobservable.
                         fea_envelope_result_type(name).expect(
                             "is_fea_envelope_query guarantees fea_envelope_result_type is Some",
@@ -3859,7 +3928,7 @@ fn compile_expr_guarded_with_expected_inner(
                         // laplacian lives in `reify-expr`; fn_field/from_samples/
                         // restrict/compose arrive in tasks β/γ/δ.  The FIELD_OP
                         // family is pinned disjoint from all sibling families
-                        // (units.rs `field_op_names_are_disjoint_from_other_families`),
+                        // (units.rs `builtin_name_families_are_pairwise_disjoint`),
                         // so this arm's position in the ladder is unobservable.
                         t
                     } else if is_orientation_typed_fn(name) {
@@ -3894,26 +3963,30 @@ fn compile_expr_guarded_with_expected_inner(
                         // units.rs disjointness test, so this arm's position in
                         // the ladder is unobservable.
                         orientation_typed_fn_result_type(name)
-                    } else if is_orientation_euler_fn(name) {
-                        // Euler DECOMPOSER (task #6082):
-                        // orient_to_euler(Orientation<3>, EulerConvention)
-                        //   → List<Angle>, the 3-element Value::List of ANGLE
-                        //   scalars eval actually returns. Typing it so is what
-                        //   lets the result flow into a `List<Angle>` parameter.
+                    } else if is_orientation_decomposer_fn(name) {
+                        // Orientation/transform DECOMPOSERS (tasks #6082,
+                        // #6306): orient_log, orient_to_euler,
+                        // orient_to_axis_angle, transform_log. The same two
+                        // eval dispatchers as the producer arm above, but these
+                        // return a rigid motion's COORDINATES (Vector3<Angle>,
+                        // List<Angle>, and two nominal StructureRefs over a
+                        // Value::Map) rather than the motion itself.
                         //
-                        // Its CONSTRUCTOR counterpart orient_euler is NOT in
-                        // this family — it is a fixed-nominal-type producer
-                        // already typed Orientation(3) by the #5344 arm above,
-                        // so that arm wins and this one never sees it. The two
-                        // slices are pinned disjoint in units.rs
-                        // (`orientation_euler_fn_names_are_disjoint_from_other_families`),
-                        // which also makes this arm's ladder position
-                        // unobservable.
+                        // This REPLACES the first-arg fallback below, whose
+                        // mistyping here was SILENT: all four take arguments,
+                        // so the zero-arg warning never fired. Task 5344
+                        // sharpened it, since orient_log(q) then inherited q's
+                        // Orientation(3). The two Map members rely on the joint
+                        // arm's StructureRef cell-typing safety argument
+                        // (esc-3845-91).
                         //
-                        // Rationale for the module split, and why neither name
-                        // may be declared as a bodied `.ri pub fn` instead:
-                        // see orientation_signatures.rs.
-                        orientation_euler_result_type(name)
+                        // Membership and every result-type ruling live ONCE, on
+                        // ORIENTATION_DECOMPOSER_FN_NAMES. The family is pinned
+                        // disjoint from every sibling (constructor family
+                        // included) by
+                        // `unresolved_function.rs::builtin_name_families_are_pairwise_disjoint`,
+                        // so this arm's ladder position is unobservable.
+                        orientation_decomposer_result_type(name)
                     } else {
                         // TERMINAL FIRST-ARG FALLBACK — the open end of the
                         // ladder. Any callee no arm above claimed is typed as
@@ -6243,7 +6316,7 @@ fn compile_expr_guarded_with_expected_inner(
         // receiver and requires a structure type `S`; (ii) prepends the compiled
         // object as the bound `self` argument; (iii) validates (trait, method)
         // and types the call from the trait contract threaded into
-        // `scope.trait_assoc_fn_return_types` — the per-conformer CompiledFunction
+        // `scope.trait_assoc_fn_overloads` — the per-conformer CompiledFunction
         // is registered into the module function table only by the post-entity
         // pass, so it is not yet resolvable via overload here. Override-beats-
         // default falls out of the per-conformer symbol routing over δ's table.
@@ -6341,17 +6414,12 @@ fn compile_expr_guarded_with_expected_inner(
             //         (`reify_core::overload::slot_matches_wildcard_tier`) plus the
             //         exact-match tie-break; no head tier, NO Int→Real. (ε #3943)
             //
-            //         `is_generic` is held OPEN (#6505): `CompiledAssocFnSig` records
-            //         no type-param list, and a sig's type-param scope is fn-level ∪
-            //         trait-level (entity.rs's default-fn re-resolution when filling
-            //         `trait_assoc_fn_overloads`), so the free-fn
-            //         `!f.type_params.is_empty()` notion would misclassify a
-            //         trait-generic method as non-generic. Holding it open cannot widen
-            //         a non-generic sig: TypeParam/ScalarParam leaves only resolve from
-            //         a non-empty type-param scope. Pinned by
+            //         `is_generic` is the candidate's own (a non-empty fn ∪ trait
+            //         type-param scope, `AssocFnDispatchCandidate`). Pinned by
             //         `dispatch_trait_generic_{type,dim}_param_slot_is_a_wildcard` and
             //         `dispatch_concrete_param_slot_rejects_mismatched_arg` in
             //         tests/harness_traits/trait_assoc_fn_overload_tests.rs.
+            let symbol = instance_assoc_fn_symbol(&conformer, trait_name, method);
             let overloads = scope
                 .trait_assoc_fn_overloads
                 .get(trait_name.as_str())
@@ -6395,7 +6463,7 @@ fn compile_expr_guarded_with_expected_inner(
                             )),
                     );
                 }
-                Some(sigs) => {
+                Some(candidates) => {
                     // Overload resolution: match compiled arg types against non-self
                     // params. `compiled_args` holds only the non-self args (the self
                     // receiver is compiled separately and prepended in step (6)).
@@ -6409,30 +6477,28 @@ fn compile_expr_guarded_with_expected_inner(
                     if arg_types.contains(&Type::Error) {
                         return propagate_poison();
                     }
-                    let genericity_unrecorded_so_held_open = true;
-                    let matches: Vec<&CompiledAssocFnSig> = sigs
+                    let matches: Vec<&AssocFnDispatchCandidate> = candidates
                         .iter()
-                        .filter(|sig| {
-                            sig.params.len() == arg_types.len()
-                                && sig.params.iter().zip(arg_types.iter()).all(
-                                    |(param_ty, arg_ty)| {
-                                        slot_matches_wildcard_tier(
-                                            param_ty,
-                                            arg_ty,
-                                            genericity_unrecorded_so_held_open,
-                                        )
-                                    },
-                                )
+                        .filter(|c| {
+                            let params = &c.sig().params;
+                            params.len() == arg_types.len()
+                                && params
+                                    .iter()
+                                    .zip(arg_types.iter())
+                                    .all(|(param_ty, arg_ty)| {
+                                        slot_matches_wildcard_tier(param_ty, arg_ty, c.is_generic())
+                                    })
                         })
                         .collect();
                     // Tiebreak: prefer candidates with ALL exact matches (no
                     // wildcard relaxation), mirroring `resolve_function_overload`'s
                     // exact-match tiebreak.
-                    let exact: Vec<&CompiledAssocFnSig> = matches
+                    let exact: Vec<&AssocFnDispatchCandidate> = matches
                         .iter()
                         .copied()
-                        .filter(|sig| {
-                            sig.params
+                        .filter(|c| {
+                            c.sig()
+                                .params
                                 .iter()
                                 .zip(arg_types.iter())
                                 .all(|(param_ty, arg_ty)| param_ty == arg_ty)
@@ -6440,15 +6506,32 @@ fn compile_expr_guarded_with_expected_inner(
                         .collect();
                     let resolved = if exact.is_empty() { matches } else { exact };
                     match resolved.len() {
-                        // Exactly one match — type from the resolved overload.
-                        1 => resolved[0].return_type.clone(),
+                        // Exactly one match — type from the resolved overload's
+                        // return type, instantiated against the arg types.
+                        1 => {
+                            let candidate = resolved[0];
+                            match instantiate_return_type(
+                                candidate.is_generic(),
+                                &candidate.sig().params,
+                                &candidate.sig().return_type,
+                                &symbol,
+                                &arg_types,
+                                expr.span,
+                            ) {
+                                Ok(ty) => ty,
+                                Err(diagnostic) => {
+                                    return make_poison_literal(diagnostics, diagnostic);
+                                }
+                            }
+                        }
                         // Ambiguous: ≥2 overloads match — emit AmbiguousCall + poison
                         // (anti-cascade). Mirrors the free-fn OverloadResolution::Ambiguous
                         // arm at ~expr.rs:2516 in message shape and DiagnosticLabel.
                         _ if resolved.len() > 1 => {
                             let candidate_sigs: Vec<String> = resolved
                                 .iter()
-                                .map(|sig| {
+                                .map(|c| {
+                                    let sig = c.sig();
                                     format!(
                                         "fn {}(self{}) -> {}",
                                         method,
@@ -6559,7 +6642,6 @@ fn compile_expr_guarded_with_expected_inner(
             //     symbol is the sole source of truth shared with the registration
             //     pass; eval resolves it via find_matching_compiled_function
             //     (exact self-type match).
-            let symbol = instance_assoc_fn_symbol(&conformer, trait_name, method);
             let mut call_args = Vec::with_capacity(compiled_args.len() + 1);
             call_args.push(compiled_object);
             call_args.extend(compiled_args);
@@ -6625,7 +6707,12 @@ fn compile_expr_guarded_with_expected_inner(
                             diagnostics,
                         );
                     }
-                    let result_type = matched_fn.return_type.clone();
+                    let result_type = match instantiate_call_return_type(
+                        matched_fn, &symbol, &arg_types, expr.span,
+                    ) {
+                        Ok(result_type) => result_type,
+                        Err(diagnostic) => return make_poison_literal(diagnostics, diagnostic),
+                    };
                     build_user_function_call_expr(&symbol, compiled_args, result_type)
                 }
                 OverloadResolution::Ambiguous(candidates) => {
@@ -10373,6 +10460,90 @@ structure S {
             Type::Int,
             "`[1, 2, 3].sum` must resolve to the List's element type (Int), got: {:?}",
             get_let_expr(&m, "y").result_type
+        );
+    }
+
+    /// The GENERAL `OverloadResolution::NoMatch` poison Error carries
+    /// `DiagnosticCode::NoMatchingOverload` (`E_NO_MATCHING_OVERLOAD`), and its
+    /// rendered message is byte-identical to the pre-#5476 text.
+    ///
+    /// A nominal (structure-typed) param called with a bare dimensioned literal
+    /// is the plainest general no-match: it is not a `Selector`→`Selector` kind
+    /// mismatch, so it must take the `else` branch of the NoMatch arm's code
+    /// conditional. The verbatim message assertion is the mechanical form of the
+    /// task's "message text unchanged" contract — a future edit that improves the
+    /// wording has to come here and say so, rather than silently breaking every
+    /// consumer that greps the string.
+    ///
+    /// PRD `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 /
+    /// INV-SF-6 (task #5476).
+    #[test]
+    fn no_matching_overload_error_carries_no_matching_overload_code() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure def Marker { }
+pub fn takes_marker(m: Marker) -> Real { 1.0 }
+structure def Probe { let x = takes_marker(5mm) }
+"#;
+        let compiled = compile_source(source);
+        let err = the_one_error(&compiled.diagnostics);
+
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::NoMatchingOverload),
+            "the general no-match poison Error must carry NoMatchingOverload, got: {:?}",
+            err
+        );
+        assert_eq!(
+            err.message,
+            "no matching overload for takes_marker(Scalar[m]), \
+             candidates: takes_marker(Marker) -> Real",
+            "the NoMatch message text must be unchanged by the code tagging"
+        );
+    }
+
+    /// Non-clobber guard for the code added above: when the no-match is
+    /// specifically a wrong-kind `Selector`→`Selector` param mismatch,
+    /// `coerce::is_selector_kind_mismatch_nomatch` holds and the diagnostic keeps
+    /// `DiagnosticCode::SelectorKindMismatch` — it must NOT be overwritten with
+    /// `NoMatchingOverload`.
+    ///
+    /// `edges(b)` is `Selector(Edge)`; `f`'s param is `FaceSelector` =
+    /// `Selector(Face)`. Same arity, non-generic, every other param equal — the
+    /// exact shape `is_selector_kind_mismatch_nomatch` looks for. This pins the
+    /// task 4581 / esc-4120-17 BT1↔BT6 code-uniformity contract, which is what
+    /// makes the composition path (`units.rs`) and this param-binding path report
+    /// one code. GREEN before #5476 and must stay GREEN after.
+    #[test]
+    fn selector_kind_mismatch_nomatch_keeps_its_own_code() {
+        use reify_test_support::compile_source_with_stdlib;
+
+        let source = r#"module test.selector_kind_nomatch
+pub fn takes_face(f: FaceSelector) -> Real { 1.0 }
+structure def Probe {
+    let b = box(10mm, 10mm, 10mm)
+    let x = takes_face(edges(b))
+}
+"#;
+        let compiled = compile_source_with_stdlib(source);
+        let nomatch: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.starts_with("no matching overload for takes_face"))
+            .collect();
+        assert_eq!(
+            nomatch.len(),
+            1,
+            "expected exactly one no-match diagnostic for takes_face, got: {:?}",
+            compiled.diagnostics
+        );
+        assert_eq!(
+            nomatch[0].code,
+            Some(DiagnosticCode::SelectorKindMismatch),
+            "a wrong-kind Selector→Selector no-match must KEEP SelectorKindMismatch \
+             and must not be clobbered with NoMatchingOverload, got: {:?}",
+            nomatch[0]
         );
     }
 }

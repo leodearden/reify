@@ -81,6 +81,7 @@ fn build_occt_unified(source: &str) -> BuildResult {
     // diagnostics internally — a second assert! here is dead code (can never fire).
     let compiled = parse_and_compile_with_stdlib(source);
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(reify_kernel_occt::OcctKernelHandle::spawn())),
     );

@@ -29,7 +29,7 @@ fn eval_source(source: &str) -> EvalResult {
     );
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&compiled)
 }
 
@@ -394,7 +394,7 @@ fn geometry_list_element_k_is_the_realization_unrolled_at_index_k() {
         .collect();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let actual = assert_geometry_handle_list(&result, "S", "holes", 3);
 

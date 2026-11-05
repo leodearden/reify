@@ -456,6 +456,7 @@ pub fn eval_representation_within(
                 } else {
                     ""
                 };
+                // Full precision: `reify check --verbose` (docs/notes/precision-refine-envelope-calibration.md §4).
                 let diag = Diagnostic::error(format!(
                     "RepresentationWithin: sampled facet deviation {achieved:.3e} m \
                      exceeds bound {eff:.3e} m{floor_note} for {}",

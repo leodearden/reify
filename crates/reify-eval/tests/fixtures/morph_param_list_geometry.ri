@@ -1,0 +1,13 @@
+// Fixture for morph_arm_e2e.rs's task-7486 pin: `items` is a Param-kind
+// List<Geometry> leaf that differs on a pure `width` tick. Why its default is a
+// list literal: structural_classifier.rs, `### List<Geometry>` note on
+// `classify_cell`.
+
+structure MorphParamListGeometry {
+    param width: Length = 10mm
+    param depth: Length = 10mm
+    param height: Length = 10mm
+
+    let body = box(width, depth, height)
+    param items: List<Geometry> = [body]
+}

@@ -62,10 +62,11 @@ impl Engine {
     /// row of `is_promise_insufficient`'s truth table ("both zero → sufficient").
     ///
     /// See [`crate::tolerance_promise`] for the strict-`<` rationale, the full
-    /// truth table (pinned by `tests/tolerance_import_promise.rs`), and PRD
-    /// cross-references. Auto-emission from `build()` / `build_snapshot()` is
-    /// deferred to the dispatcher (sibling task 2649); this method is the public
-    /// query single-entry-point.
+    /// truth table (pinned by `tests/harness_tolerance/tolerance_import_promise.rs`),
+    /// and PRD cross-references. This method is the public query
+    /// single-entry-point; `build()` / `build_snapshot()` reach it through
+    /// `Engine::emit_imported_tolerance_promise_diagnostics_for_module`, which
+    /// forwards each emitted diagnostic into `BuildResult.diagnostics`.
     pub fn check_imported_tolerance_promise(
         &self,
         input_template_name: &str,
@@ -158,7 +159,7 @@ impl Engine {
     ///
     /// Both bounds are folded by
     /// [`crate::tolerance_combine::combine_demanded_tolerance`]. Each row
-    /// is pinned by an integration test in `tests/tolerance_combine.rs`:
+    /// is pinned by an integration test in `tests/harness_tolerance/tolerance_combine.rs`:
     ///
     /// | output_bound | purpose_bound | demanded_tolerance_for_output | scenario       | pinned by                                                     |
     /// |--------------|---------------|-------------------------------|----------------|---------------------------------------------------------------|
@@ -225,7 +226,7 @@ impl Engine {
     /// helper's contract is to **forward whatever the dispatcher emits**, with
     /// no code-filtering — both branches must reach `BuildResult.diagnostics`
     /// so production-side observability matches the unit-test surface in
-    /// `tests/tolerance_import_promise.rs`.
+    /// `tests/harness_tolerance/tolerance_import_promise.rs`.
     ///
     /// # Empty cases
     ///

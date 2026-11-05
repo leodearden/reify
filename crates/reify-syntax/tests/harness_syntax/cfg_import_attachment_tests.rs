@@ -125,3 +125,39 @@ fn cfg_before_structure_does_not_leak_to_later_import() {
     );
 }
 
+/// A `#cfg` before a refused (malformed) import is consumed by that import, not carried
+/// forward to gate the next, well-formed one.
+#[test]
+fn cfg_before_a_refused_import_does_not_leak_to_the_next_import() {
+    let source = "#cfg(linux)\nimport a.b.{C D}\nimport c.d";
+    let module = parse_module(source);
+    assert!(
+        module
+            .errors
+            .iter()
+            .any(|e| e.message.starts_with("invalid import: ")),
+        "`{source}`: expected the malformed import to be refused, got errors: {:?}",
+        module.errors
+    );
+
+    let imports: Vec<&ImportDecl> = module
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            Declaration::Import(i) => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        imports.len(),
+        1,
+        "`{source}`: expected only the well-formed import, got declarations: {:?}",
+        module.declarations
+    );
+    assert_eq!(imports[0].path, "c.d", "`{source}`");
+    assert!(
+        imports[0].cfg_predicates.is_empty(),
+        "`{source}`: the #cfg before a refused import must not leak to the next import, got {:?}",
+        imports[0].cfg_predicates
+    );
+}

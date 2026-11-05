@@ -161,7 +161,7 @@ assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn
 
 # ---------------------------------------------------------------------------
 # Arm D — DRIFT GUARD: REIFY_GIT_ENV_SCRUB_VARS is EXACTLY the
-# workspace's canonical Rust answer, crates/reify-test-support/src/git_env.rs's
+# workspace's canonical Rust answer, crates/reify-git-env/src/lib.rs's
 # REPO_REDIRECT_VARS.
 #
 # DERIVED from that source on every infra run, never a second hardcoded copy —
@@ -182,9 +182,9 @@ assert "B5: reify_git_env_scrub_prefix is defined in the sourcing shell" _has_fn
 echo ""
 echo "--- D: bash scrub list EQUALS Rust's REPO_REDIRECT_VARS (derive-from-source) ---"
 
-GIT_ENV_RS="$REPO_ROOT/crates/reify-test-support/src/git_env.rs"
+GIT_ENV_RS="$REPO_ROOT/crates/reify-git-env/src/lib.rs"
 
-assert "D0: crates/reify-test-support/src/git_env.rs exists (the derivation's source)" \
+assert "D0: crates/reify-git-env/src/lib.rs exists (the derivation's source)" \
     test -f "$GIT_ENV_RS"
 
 # Comment lines are stripped BEFORE the string capture so a future comment
@@ -367,7 +367,7 @@ assert "C5: ... and unchanged in size ($_C_IDX_SIZE_BEFORE -> ${_C_IDX_SIZE_AFTE
 echo ""
 echo "--- C-PRESERVE: the scrub leaves the non-redirect git vars alone ---"
 
-# The three classes git_env.rs's rationale names, spelled out in full:
+# The three classes reify-git-env's REPO_REDIRECT_VARS rationale names, in full:
 #   GIT_AUTHOR_* / GIT_COMMITTER_* — commit determinism (all six, not just NAME)
 #   GIT_CONFIG_*                   — harness isolation
 #   GIT_TRACE                      — debuggability
@@ -523,9 +523,11 @@ assert "E3: ... positioned between the timeout and the bash it wraps" \
 # TWO normalizations are applied to run_all.sh's source before counting, in
 # this order, and each is load-bearing:
 #
-#   1. FOLD LINE CONTINUATIONS — so a spawn whose `reify_git_env_scrub` sits on
-#      the preceding physical line (the `env -u REIFY_RUN_ALL_MEMBER_SUBSET`
-#      site does exactly that) is counted as the one logical statement it is.
+#   1. FOLD LINE CONTINUATIONS — so a spawn whose scrub sits on a preceding
+#      physical line is counted as the one logical statement it is. Today's
+#      one site (`_ra_spawn_member`) carries the scrub as
+#      `$(reify_git_env_scrub_prefix)` on the spawn's own line, because its
+#      member runs under GNU timeout, which cannot exec a shell function.
 #   2. DROP COMMENT LINES — a bare `grep` for the invocation shape cannot tell
 #      an executable statement from prose, and run_all.sh is heavily commented,
 #      including a block that discusses the member spawns directly. The first
@@ -537,15 +539,17 @@ assert "E3: ... positioned between the timeout and the bash it wraps" \
 #      into a silent pass — F1/F4's floors only catch a DROP in visible sites,
 #      not a site the pattern was narrowed past.
 #
-# Both floors are floors, not equalities: run_all.sh gaining a seventh spawn
-# site must not red these arms, but losing the ability to SEE the sites (a
-# reshaped invocation the pattern no longer matches) must.
+# The spawn floor is 1: task 8681 routed every member spawn through
+# _ra_spawn_member, and the adoption-ratchet row member-spawn-site holds the
+# ceiling at 1. Both floors are floors, not equalities: run_all.sh gaining a
+# spawn site must not red these arms, but losing the ability to SEE the sites
+# (a reshaped invocation the pattern no longer matches) must.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- F: every run_all.sh member spawn and own git call carries the scrub ---"
 
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
-_F_SPAWN_FLOOR=6
+_F_SPAWN_FLOOR=1
 _F_GIT_FLOOR=7
 
 _F_LOGICAL="$(sed -e :a -e '/\\$/N; s/\\\n//; ta' "$RUN_ALL" \
@@ -611,7 +615,7 @@ assert "F3b: NO scrubbed variable reached the member (got: ${_F3_REPORT_TEXT//$'
 # Benign today only because CWD happens to be REPO_ROOT and the relative
 # `.git/index` therefore names the same repo — not a property to rest on (under
 # `git commit --only` GIT_INDEX_FILE names a TEMPORARY index; see
-# crates/reify-test-support/src/git_env.rs's own analysis).
+# crates/reify-git-env/src/lib.rs's own analysis).
 #
 # The capture is ANY `git` word, not the `git -C "` shape the seven sites happen
 # to use today.  A narrower pattern would be blind in the DANGEROUS direction: a

@@ -35,6 +35,7 @@ type DiagTriple = (Option<DiagnosticCode>, String, Severity);
 fn build_under(source: &str, scheduler: BuildScheduler) -> Vec<DiagTriple> {
     let compiled = compile_source(source);
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

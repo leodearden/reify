@@ -1,0 +1,5 @@
+// B4: feature giving > 256 Mi voxels (extent 10 m at feature 1mm).
+structure def ImplicitBudget {
+    let f = sdf_sphere(5mm)
+    let body = implicit(f, vec3(10000mm, 10000mm, 10000mm), 1mm)
+}

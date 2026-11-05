@@ -1,0 +1,13 @@
+module auto_reach_conn_constrained_free_type
+trait Signal {}
+
+structure ConnFreeC {
+    param gain : Length = auto(free)
+    constraint self.gain == 10mm
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnFreeC { gain = auto }
+}

@@ -377,3 +377,70 @@ fn builder_param_with_solver_hints() {
     );
     assert_eq!(cell.solver_hints[0].collection, "bolt_lengths");
 }
+
+// ── Task #8300: an annotation line after a value-ended member ───────────────
+//
+// The annotation must attach to the FOLLOWING member, not be joined onto the
+// preceding member's expression as an ad-hoc selector. The repros are the CLI
+// e2e fixtures, shared so every layer reads the same source.
+
+const HINT_AFTER_VALUED_PARAM: &str =
+    include_str!("../../../reify-cli/tests/fixtures/annotation_after_valued_param.ri");
+const HINT_AFTER_LET_CATALOG: &str =
+    include_str!("../../../reify-cli/tests/fixtures/annotation_after_let_catalog.ri");
+const HINT_AFTER_CONSTRAINT: &str =
+    include_str!("../../../reify-cli/tests/fixtures/annotation_after_constraint.ri");
+
+/// Compiles `source` and asserts the discrete_set hint lands on cell `b` only.
+fn assert_hint_attaches_to_b(source: &str, collection: &str, unhinted: &str) {
+    let module = compile_source_with_stdlib(source);
+    assert!(
+        errors_only(&module).is_empty(),
+        "errors: {:?}",
+        errors_only(&module)
+    );
+    let continuation: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| reify_syntax::member_continuation::is_member_continuation_message(&d.message))
+        .collect();
+    assert!(
+        continuation.is_empty(),
+        "unexpected member-continuation diagnostics: {continuation:?}"
+    );
+
+    let cells = &module.templates[0].value_cells;
+    let cell = |member: &str| {
+        cells
+            .iter()
+            .find(|c| c.id.member == member)
+            .unwrap_or_else(|| panic!("no value cell `{member}`"))
+    };
+    let b = cell("b");
+    assert_eq!(b.solver_hints.len(), 1, "hints on b: {:?}", b.solver_hints);
+    assert_eq!(
+        b.solver_hints[0].kind,
+        reify_compiler::SolverHintKind::DiscreteSet
+    );
+    assert_eq!(b.solver_hints[0].collection, collection);
+    assert!(
+        cell(unhinted).solver_hints.is_empty(),
+        "hints on {unhinted}: {:?}",
+        cell(unhinted).solver_hints
+    );
+}
+
+#[test]
+fn solver_hint_after_a_valued_param_attaches_to_the_next_param() {
+    assert_hint_attaches_to_b(HINT_AFTER_VALUED_PARAM, "standard_bolt_lengths", "a");
+}
+
+#[test]
+fn solver_hint_after_a_let_catalog_attaches_to_the_next_param() {
+    assert_hint_attaches_to_b(HINT_AFTER_LET_CATALOG, "sizes", "sizes");
+}
+
+#[test]
+fn solver_hint_after_a_constraint_attaches_to_the_next_param() {
+    assert_hint_attaches_to_b(HINT_AFTER_CONSTRAINT, "standard_bolt_lengths", "a");
+}

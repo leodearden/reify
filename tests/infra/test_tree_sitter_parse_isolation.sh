@@ -51,7 +51,7 @@
 # _resolve_tree_sitter_bin(), so the literal string never appears anywhere.
 # Text alone would therefore be false confidence about the very caller this task
 # exists to fix. Block D is the structural half that covers it, paired with the
-# behavioural half in scripts/test_prd_capability_check.py
+# behavioural half in scripts/test_pcc_grammar_cache.py
 # (TestGrammarCacheIsolation / TestGrammarCacheHome), which runs a real probe
 # against a stub that echoes the XDG_CACHE_HOME the CHILD was handed.
 #

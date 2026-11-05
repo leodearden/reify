@@ -4260,6 +4260,8 @@ name = "reify-audit"
 version = "0.1.0"
 dependencies = [
  "reify-audit",
+ "reify-git-env",
+ "reify-syntax",
  "reify-test-support",
  "rusqlite",
  "serde",
@@ -4272,7 +4274,11 @@ dependencies = [
 name = "reify-build-utils"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
+ "serde",
+ "syn 2.0.117",
  "tempfile",
+ "toml 0.8.2",
 ]
 
 [[package]]
@@ -4290,6 +4296,7 @@ dependencies = [
  "libc",
  "reify-build-utils",
  "reify-compiler",
+ "reify-compute-contract",
  "reify-config",
  "reify-constraints",
  "reify-core",
@@ -4302,7 +4309,6 @@ dependencies = [
  "reify-kernel-occt",
  "reify-kernel-openvdb",
  "reify-lsp",
- "reify-mcp",
  "reify-mesh-morph",
  "reify-runtime",
  "reify-stdlib",
@@ -4324,10 +4330,13 @@ dependencies = [
  "reify-builtins",
  "reify-compiler",
  "reify-config",
+ "reify-constraints",
  "reify-core",
  "reify-eval",
  "reify-expr",
+ "reify-git-env",
  "reify-ir",
+ "reify-mcp",
  "reify-syntax",
  "reify-test-support",
  "stacker",
@@ -4378,7 +4387,6 @@ dependencies = [
  "reify-core",
  "reify-expr",
  "reify-ir",
- "reify-stdlib",
  "reify-test-support",
  "tracing",
 ]
@@ -4467,6 +4475,7 @@ name = "reify-eval-fea-tests"
 version = "0.1.0"
 dependencies = [
  "reify-compiler",
+ "reify-compute-contract",
  "reify-constraints",
  "reify-core",
  "reify-eval",
@@ -4509,8 +4518,17 @@ version = "0.1.0"
 name = "reify-geometry"
 version = "0.1.0"
 dependencies = [
+ "reify-core",
  "reify-ir",
  "reify-test-support",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "reify-git-env"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -4518,6 +4536,7 @@ name = "reify-gui"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "notify",
  "reify-ast",
  "reify-build-utils",
@@ -4570,9 +4589,12 @@ dependencies = [
  "reify-eval",
  "reify-ir",
  "reify-kernel-conformance",
+ "reify-kernel-fidget",
  "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
+ "reify-kernel-openvdb",
+ "strum 0.26.3",
 ]
 
 [[package]]
@@ -4741,6 +4763,7 @@ dependencies = [
  "reify-build-utils",
  "reify-ir",
  "reify-kernel-gmsh",
+ "reify-solver-elastic",
  "reify-test-support",
  "tracing",
 ]
@@ -4770,6 +4793,7 @@ version = "0.1.0"
 dependencies = [
  "reify-ast",
  "reify-core",
+ "reify-git-env",
  "reify-test-support",
  "tree-sitter",
  "tree-sitter-reify",
@@ -4785,6 +4809,7 @@ dependencies = [
  "reify-core",
  "reify-eval",
  "reify-expr",
+ "reify-git-env",
  "reify-ir",
  "reify-syntax",
  "serde_json",

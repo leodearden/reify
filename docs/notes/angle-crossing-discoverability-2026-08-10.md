@@ -587,6 +587,21 @@ listed entry that turns Satisfied fails as stale — which is why the gate's own
 doc comment insists `EXPECTED_INDETERMINATE` is **not** a `SKIP_SET`: it
 exempts no file from anything, it just asserts a different expected status.
 
+> **Stale since 2026-08-28 — marked 2026-10-11 by #7371; the sixth-pass text
+> above is left as authored.** Its parenthetical "the pure value-eval surface
+> this gate and `reify check` run on" stopped being true of `reify check` when
+> #5748 (merge `f4d18741fd`) put geometry-bearing modules on a kernel-backed
+> engine: on an OCCT build, `reify check examples/best_practices/clearance_oracle.ri`
+> reports all five constraints OK, exit 0 (verified 2026-10-11 @ `a030ee7528`,
+> release binary). The gate's own surface — kernel-less
+> `check_source_with_stdlib` — is unchanged, so its two `clearance_oracle.ri`
+> `EXPECTED_INDETERMINATE` entries are unaffected; the live statement of the
+> divergence is in the doc comments on `constraint_statuses` and
+> `EXPECTED_INDETERMINATE` in
+> `crates/reify-eval/tests/harness_corpus_gates/best_practices_constraint_gate.rs`.
+> `angle_crossings.ri` carries no geometry, so `reify check` still runs it on
+> the gate's surface and the Scope note's "same check" below holds.
+
 This closes the expiry the fourth pass flagged: **"No CI gate runs `reify
 check` over this corpus" is now false** — a gate does (hard-failing unless
 `REIFY_BEST_PRACTICES_CONSTRAINT_BYPASS` is set, which downgrades all

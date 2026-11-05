@@ -36,7 +36,7 @@ use reify_test_support::parse_and_compile;
 /// Build a fresh `Engine` with the real constraint checker (mirrors
 /// `fresh_engine()` in warm_state_donation.rs).
 fn fresh_engine() -> Engine {
-    Engine::new(Box::new(SimpleConstraintChecker), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None)
 }
 
 fn bracket_source() -> &'static str {

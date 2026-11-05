@@ -90,7 +90,8 @@ Cross-PRD notes:
 - **single-file-pre-state-real** → PASS *(probe, D3)*. `reify eval`/`build` use
   `parse_and_compile` (`reify-cli/main.rs:173`, no import DAG): importing entry
   yields `import "parts" not resolved by this entry point` + unknown-structure
-  error today.
+  error today. **[Amended 2026-10-22, υ #8775 BLK-1]**
+  delivered check `single-file-pre-state-real` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: its future home is the `cmd_eval` / `cmd_build` entry points, which moved to `crates/reify-cli/src/cmd/eval.rs` and `crates/reify-cli/src/cmd/build.rs`.
 - **cfg-threading-substrate** → PASS. `check`'s `--cfg` threading
   (`build_cfg_set`, conditional-compilation.md landed) is the mechanism D-4
   reuses; semantics unchanged.

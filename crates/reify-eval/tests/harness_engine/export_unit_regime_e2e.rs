@@ -37,6 +37,7 @@
 //! downstream crates cannot see `reify-kernel-occt`'s compile-time `has_occt`
 //! cfg.
 
+use reify_test_support::stl_bytes::binary_stl_aabb;
 use reify_test_support::{MockConstraintChecker, parse_and_compile_with_stdlib};
 
 /// The per-axis AABB of every 3D `CARTESIAN_POINT` in a STEP file.
@@ -81,52 +82,6 @@ fn cartesian_point_aabb(step_text: &str) -> ([f64; 3], [f64; 3], usize) {
     (min, max, n_points)
 }
 
-/// The per-axis AABB of every vertex in a binary STL payload.
-///
-/// Binary STL is 80 header bytes, a `u32` triangle count at 80..84, then a
-/// 50-byte record per triangle: a 12-byte facet normal, 9 f32 vertex
-/// coordinates, and a 2-byte attribute count.
-///
-/// As with [`cartesian_point_aabb`], an extent is the right invariant to
-/// measure: it survives everything that legitimately varies — the tessellator's
-/// triangle count, facet ordering, and where the box is centred — while
-/// remaining a strictly physical quantity, so it fails loudly on a unit-regime
-/// error and on nothing else. Facet normals are skipped rather than checked:
-/// they are dimensionless unit directions, invariant under the uniform positive
-/// metre→millimetre scale, so they carry no regime signal.
-///
-/// Returns `(min, max, n_triangles)`.
-fn binary_stl_aabb(bytes: &[u8]) -> ([f32; 3], [f32; 3], usize) {
-    assert!(
-        bytes.len() >= 84,
-        "a binary STL must carry at least an 80-byte header and a u32 count, got {} bytes",
-        bytes.len()
-    );
-    let n_triangles = u32::from_le_bytes(bytes[80..84].try_into().unwrap()) as usize;
-    assert_eq!(
-        bytes.len(),
-        84 + 50 * n_triangles,
-        "binary STL byte length must equal 84 + 50*count"
-    );
-
-    let mut min = [f32::INFINITY; 3];
-    let mut max = [f32::NEG_INFINITY; 3];
-    for tri in 0..n_triangles {
-        for v in 0..3usize {
-            let vbase = 84 + tri * 50 + 12 + v * 12;
-            for axis in 0..3usize {
-                let raw: [u8; 4] = bytes[vbase + axis * 4..vbase + axis * 4 + 4]
-                    .try_into()
-                    .unwrap();
-                let coord = f32::from_le_bytes(raw);
-                min[axis] = min[axis].min(coord);
-                max[axis] = max[axis].max(coord);
-            }
-        }
-    }
-    (min, max, n_triangles)
-}
-
 /// A `box(30mm, 20mm, 10mm)` exported to STEP must declare millimetres AND
 /// carry millimetre coordinates: 30 × 20 × 10 in the file, not 0.030 × 0.020
 /// × 0.010.
@@ -162,6 +117,7 @@ fn dsl_millimetre_literals_round_trip_to_millimetre_step_coordinates() {
 
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -271,6 +227,7 @@ fn dsl_millimetre_literals_round_trip_to_millimetre_stl_coordinates() {
 
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         Some(Box::new(kernel)),
     );
@@ -288,9 +245,10 @@ fn dsl_millimetre_literals_round_trip_to_millimetre_stl_coordinates() {
             )
         });
 
-    let (min, max, n_triangles) = binary_stl_aabb(&artifact.bytes);
+    let aabb = binary_stl_aabb(&artifact.bytes);
+    let (min, max) = (aabb.min, aabb.max);
     assert!(
-        n_triangles > 0,
+        aabb.triangles > 0,
         "expected at least one triangle in the STL export, found none"
     );
 

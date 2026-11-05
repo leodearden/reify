@@ -25,12 +25,17 @@ use std::collections::{HashMap, HashSet};
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, comparable_datum_operands,
-    max_relation_residual, ResidualRow, ResidualUnit, partition_driving_set, pose_from_frame,
-    solve_frame, static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelationInstance, RelationPartition, ResidualRow, Twist,
+    comparable_datum_operands, frame_value, max_relation_exceedance, partition_driving_set,
+    solve_frame_outcome, solve_scaling, static_relation_residuals,
 };
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
+use reify_constraints::trust_region::SolveBudget;
 use reify_core::{Diagnostic, DiagnosticCode, Type, ValueCellId};
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, SolveResult, Value, ValueMap};
+use reify_ir::{
+    CompiledExpr, CompiledExprKind, ExportFormat, InfeasibilityCertificate, NonFiniteEvaluation,
+    ResidualSource, SolveFailureCause, Value, ValueMap,
+};
 
 use crate::Engine;
 
@@ -506,22 +511,38 @@ pub struct RelateSolution {
     /// (e.g. `"bolt"`). Empty when the scope has no auto subs, or when the driving
     /// set was infeasible (no placement — see [`diagnostics`](Self::diagnostics)).
     pub poses: HashMap<String, Value>,
-    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension).
+    /// DOF spent by the driving set = its combined Jacobian rank (exact codimension),
+    /// measured at the SOLVED placement when the solve converged and at the seed
+    /// witness otherwise.
     pub spent: u32,
     /// Residual DOF left free = `6 − spent` (the Frame freedoms the relations leave
-    /// open, e.g. spin about a shared axis).
+    /// open, e.g. spin about a shared axis). On a converged solve this equals
+    /// `free_twists.len()`: both come from the one factorization at the solution.
     pub free: u32,
     /// Number of relations in the driving set (the maximal independent subset that
-    /// was handed to the solver).
+    /// was handed to the solver). Unlike [`spent`](Self::spent), the partition is
+    /// read at the SEED witness: a relation whose rows all sit at a crest there
+    /// counts as redundant even when it would drive at the solution (#9716).
     pub driving: usize,
     /// Number of relations in the redundant remainder (verified post-solve as
-    /// geometry-backed assertions, never solved).
+    /// geometry-backed assertions, never solved). Read at the seed, like
+    /// [`driving`](Self::driving).
     pub redundant: usize,
     /// Verification diagnostics: a redundant-remainder relation violated at the
-    /// solved placement (step-14), or a driving-set conflict (the solver's
-    /// `Infeasible` report; step-16 refines it into a minimal conflict set). An
-    /// `Error` here fails the build.
+    /// solved placement (step-14), or a failed solve of the driving set (one
+    /// diagnostic coded by its [`failure`](Self::failure)'s cause; a certified
+    /// infeasibility is rendered as a minimal conflict set). An `Error` here fails
+    /// the build.
     pub diagnostics: Vec<Diagnostic>,
+    /// Why the driving-set solve failed, or `None` when it did not run or
+    /// converged — the typed value behind the failure diagnostic, so consumers
+    /// never parse its text.
+    pub failure: Option<SolveFailureCause>,
+    /// The Frame freedoms the relations leave open at the SOLVED placement, one
+    /// [`Twist`] per [`free`](Self::free) DOF (the null space of the solve's
+    /// Jacobian there) — the data #4388's DOF ledger names geometrically. Empty
+    /// when unsolved.
+    pub free_twists: Vec<Twist>,
     /// The per-relation consumption ledger of a ZERO-AUTO scope's static
     /// verification (DIC α, task 5415), or `None` when this solution came from the
     /// auto-ful solve path.
@@ -577,8 +598,8 @@ fn link(adj: &mut HashMap<String, Vec<String>>, a: &str, b: &str) {
 /// StructureRef), method, [] }` (η step-8/10) — distinct from a `<sub>.<member>`
 /// `IndexAccess` (which [`decode_operand`] owns). So a no-arg `MethodCall` on a
 /// `StructureRef`-typed receiver is the `self` anchor operand. Mirrors the
-/// self-datum discriminator the compiler's `classify` / eval's
-/// `try_eval_self_datum_projection` use.
+/// self-datum discriminator the compiler's `classify` / reify-expr's
+/// `eval_self_datum_projection` use.
 ///
 /// The member name is carried rather than a bare `bool` so the zero-auto verifier
 /// can NAME the operand (`self.frame`) it could not compare against; the two
@@ -741,12 +762,13 @@ fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
 ///    which datums MOVE with the auto Frame vs which are fixed anchors).
 /// 2. **Partition** at the seed witness into driving + redundant
 ///    ([`partition_driving_set`]); report `spent`/`free`.
-/// 3. **Solve** the driving set for the auto Frame ([`solve_frame`]). On
-///    [`SolveResult::Solved`] the solved Frame is recorded in `poses`; on
-///    [`SolveResult::Infeasible`] the driving set is inconsistent — a
-///    [`minimal_infeasible_subset`] is derived and rendered as a geometric
-///    [`conflict_diagnostic`] (minimal conflict set + conflicting magnitudes +
-///    newest-declared primary), never the solver's internal message (step-16).
+/// 3. **Solve** the driving set for the auto Frame ([`solve_frame_outcome`]). A
+///    solved Frame is recorded in `poses` with its free twists; a failed solve
+///    records its typed cause in `failure` and one diagnostic coded by it
+///    ([`failure_diagnostic`]). A certified infeasibility is rendered as the
+///    geometric conflict narrative of a [`minimal_infeasible_subset`] (minimal
+///    conflict set + conflicting magnitudes + newest-declared primary) with the
+///    solver's certificate and blamed relations (step-16).
 /// 4. **Verify** each redundant-remainder relation against the SOLVED placement
 ///    within the assertion tolerance — satisfied ⇒ silent (B2). A *violated*
 ///    remainder relation that shares a datum operand with a driving relation pins
@@ -763,6 +785,17 @@ fn unconsumable_relation_diagnostic(source: usize) -> Diagnostic {
 /// float grounding is η (#4387). This solves the single auto unknown against the
 /// fixed anchors. A scope with no auto unknown returns an empty solution.
 pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> RelateSolution {
+    solve_relate_scope_within(scope, realized, SolveBudget::default())
+}
+
+/// [`solve_relate_scope`] with the driving-set solve (and its conflict search)
+/// limited to `budget`.
+// G-allow: pub for the cross-crate B9 budget-exhaustion tests in tests/relate_solve_e2e.rs; the production caller, solve_relate_scope, is same-file, and the orphan audit counts only cross-file call sites
+pub fn solve_relate_scope_within(
+    scope: &RelateScope,
+    realized: &RealizedDatums,
+    budget: SolveBudget,
+) -> RelateSolution {
     // ζ scope: exactly one `at auto` unknown. No auto sub ⇒ nothing to solve.
     let Some(auto) = scope.auto_unknowns.first() else {
         return RelateSolution::default();
@@ -816,10 +849,13 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // datums already encode the target, so identity is the correct witness here.
     let seed = Pose::identity();
 
-    // 2. Partition at the witness into driving + redundant; the rank-revealing
-    //    tolerance is tied to the solver-convergence tol (design §4).
-    let partition =
-        partition_driving_set(instances, &frame_unknown, &seed, tol.solver_convergence());
+    // ONE scaling for the whole scope, over every instance at the seed, so the
+    // partition, the solve, the conflict search and the re-check share one `L`.
+    let scaling = solve_scaling(instances, &frame_unknown, &seed, tol);
+
+    // 2. Partition at the witness into driving + redundant, by the rank of the
+    //    scaled Jacobian.
+    let partition = partition_driving_set(instances, &frame_unknown, &seed, &scaling);
 
     let mut solution = RelateSolution {
         spent: partition.spent,
@@ -833,55 +869,43 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     // 3. Solve ONLY the driving set for the auto Frame.
     let driving_rels: Vec<RelationInstance> =
         partition.driving.iter().map(|&i| instances[i].clone()).collect();
-    let result = solve_frame(&driving_rels, &frame_unknown, &seed, tol.solver_convergence());
+    let outcome = solve_frame_outcome(&driving_rels, &frame_unknown, &seed, &scaling, budget);
 
-    let solved_pose = match result {
-        // The solver's `unique` flag is intentionally not consumed here. For strict
-        // `at auto` a residual non-gauge DOF surfaces as `unique:false` — the
-        // under-determined signal — but ζ does NOT fail the build on it: the §1 bolt
-        // leaves a residual spin DOF about the shank axis and must still build (the
-        // gauge DOF is seeded to a concrete value). ζ's contract is to PRODUCE the
-        // data — the residual DOF count is already carried in `solution.free` — and
+    let solved_pose = match outcome.result {
+        // The solution's rank is intentionally not judged here. For strict `at auto`
+        // a residual non-gauge DOF is under-determination, but ζ does NOT fail the
+        // build on it: the §1 bolt leaves a residual spin DOF about the shank axis
+        // and must still build (the gauge DOF is seeded to a concrete value). ζ's
+        // contract is to PRODUCE the data — `solution.free` and `free_twists` — and
         // θ (#4388) renders the `W_UNDERDETERMINED` ledger from it.
-        SolveResult::Solved { values, .. } => {
-            // Record each solved Frame as the auto sub's pose (keyed by sub-instance
-            // name); the build pass (step-18) writes these back for placement.
-            for (cell, frame) in &values {
-                solution.poses.insert(cell.entity.clone(), frame.clone());
-            }
+        Ok(frame) => {
+            // Record the solved Frame as the auto sub's pose (keyed by sub-instance
+            // name); the build pass (step-18) writes it back for placement.
             solution
                 .poses
-                .get(&frame_unknown.sub)
-                .and_then(pose_from_frame)
+                .insert(frame_unknown.sub.clone(), frame_value(&frame.pose));
+            // The DOF count has ONE home on a converged solve: the factorization at
+            // the solution that also yields the null space. The seed partition can
+            // read a relation at its crest as rank-deficient there.
+            solution.spent = frame.rank as u32;
+            solution.free = frame.null_space.len() as u32;
+            solution.free_twists = frame.null_space;
+            Some(frame.pose)
         }
-        SolveResult::Infeasible { .. } => {
-            // The driving set is geometrically inconsistent. Derive the MINIMAL
-            // inconsistent subset (the smallest set of driving relations that is
-            // still infeasible) and render a geometric conflict diagnostic — naming
-            // the conflict set, its conflicting magnitudes, and the newest-declared
-            // member as primary. The solver's own message is discarded: ζ speaks
-            // geometry, never libslvs internals. No placement, so the remainder is
-            // not verified.
-            let conflict = minimal_infeasible_subset(
-                instances,
-                &partition.driving,
-                &frame_unknown,
-                &seed,
-                tol.solver_convergence(),
-            );
-            solution.diagnostics.push(conflict_diagnostic(&conflict, &built, &frame_unknown.sub));
-            None
-        }
-        SolveResult::NoProgress { reason } => {
-            // `solve_frame` maps non-convergence to `Infeasible`, so this arm is
-            // defensive. Emit the geometric "seed too far" guidance (the wrong-root /
-            // under-determined `seed:` ledger is θ's surface, #4388).
-            solution.diagnostics.push(Diagnostic::error(format!(
-                "the relations on `{}` did not converge to a placement ({reason}); the \
-                 seed configuration may be too far from a solution — try an \
-                 `auto(seed = …)` nearer the intended placement",
-                frame_unknown.sub
-            )));
+        Err(cause) => {
+            // No placement, so the remainder is not verified.
+            let context = FailureContext {
+                built: &built,
+                partition: &partition,
+                unknown: &frame_unknown,
+                seed: &seed,
+                scaling: &scaling,
+                budget,
+            };
+            solution
+                .diagnostics
+                .push(failure_diagnostic(&cause, &context));
+            solution.failure = Some(cause);
             None
         }
     };
@@ -890,9 +914,15 @@ pub fn solve_relate_scope(scope: &RelateScope, realized: &RealizedDatums) -> Rel
     if let Some(pose) = solved_pose {
         for &i in &partition.redundant {
             let rel = &instances[i];
-            let resid =
-                max_relation_residual(std::slice::from_ref(rel), &frame_unknown, &pose);
-            if resid <= tol.assertion() {
+            // Each row against the assertion rung for its own unit, the metre rung
+            // scaled with the scope's `L` (PRD §7.3 "Coherence at every scale").
+            let exceedance = max_relation_exceedance(
+                std::slice::from_ref(rel),
+                &frame_unknown,
+                &pose,
+                |u| scaling.assertion_rung(u),
+            );
+            if exceedance <= 1.0 {
                 // Satisfied within the assertion tolerance ⇒ silent (a consistent
                 // redundant relation, B2): an opt-in lint hook only, no diagnostic.
                 continue;
@@ -999,9 +1029,10 @@ enum StaticVerdict {
 ///    relation name / operand-kind combination. Never folded into "satisfied".
 ///    Arm 4 runs first so this arm's reason is only ever given for a genuinely
 ///    UNMODELLED combination;
-/// 6. otherwise each row against the assertion rung for ITS OWN unit
-///    ([`assertion_rung`]): every row within ⇒ verified (silent), any row beyond ⇒
-///    violated.
+/// 6. otherwise each row against the ABSOLUTE assertion rung for ITS OWN unit
+///    ([`RelateTolerance::absolute_assertion_rung`], which says why it does not
+///    scale with the model): every row within ⇒ verified (silent), any row beyond
+///    ⇒ violated.
 ///
 /// The counts therefore always sum to the scope's relation count, which is what
 /// makes a silently-skipped relation impossible to hide.
@@ -1025,7 +1056,7 @@ enum StaticVerdict {
 /// [`fmt_residual`] in the unit the residual row carries: mm for a length row,
 /// degrees for an orientation row, and a bare number for a direction/dot/cosine
 /// row, which has no length reading at all. That same unit tag also selects the
-/// rung the row is JUDGED against ([`assertion_rung`]) — rendering a row in one
+/// rung the row is JUDGED against ([`RelateTolerance::absolute_assertion_rung`]) — rendering a row in one
 /// unit while thresholding it in another would leave the category error in place
 /// where it does the most damage, since a static violation FAILS the build. [`conflict_diagnostic`] is deliberately NOT reused: it
 /// needs an auto sub and a driving/redundant partition that a zero-auto scope does
@@ -1207,26 +1238,13 @@ fn static_verdict(
     let (dominant, exceedance) = rows
         .iter()
         .copied()
-        .map(|row| (row, row.value.abs() / assertion_rung(row.unit, &tol)))
+        .map(|row| (row, row.value.abs() / tol.absolute_assertion_rung(row.unit)))
         .reduce(|m, r| if r.1 > m.1 { r } else { m })
         .expect("rows is non-empty — the empty case returned Unverifiable above");
     if exceedance <= 1.0 {
         StaticVerdict::Verified
     } else {
         StaticVerdict::Violated(dominant, inst)
-    }
-}
-
-/// The assertion rung a residual row is judged against — the one for ITS unit.
-///
-/// The three rungs are all derived from [`RelateTolerance`]'s single base length
-/// (see [`RelateTolerance::assertion_angle`]), so they move together under an edit
-/// to the hierarchy and cannot drift into three independent hand-picked epsilons.
-fn assertion_rung(unit: ResidualUnit, tol: &RelateTolerance) -> f64 {
-    match unit {
-        ResidualUnit::Length => tol.assertion(),
-        ResidualUnit::Angle => tol.assertion_angle(),
-        ResidualUnit::Dimensionless => tol.assertion_dimensionless(),
     }
 }
 
@@ -1255,7 +1273,7 @@ fn self_anchor_operand_name(rel: &CompiledExpr) -> Option<String> {
 /// dominant `concentric` row for the B1 fixture is `−0.03`, which read out as "off
 /// by −30 mm" — and "off by" states a distance from satisfaction, which has no
 /// direction a reader can act on. Unsigned is also the pre-existing convention on
-/// this path: `max_relation_residual` accumulates `r.abs()`, and every other
+/// this path: `max_relation_exceedance` folds `|r_i|`, and every other
 /// reader-facing magnitude here is a magnitude. Taken ONCE, here, so all three arms
 /// agree rather than each remembering.
 fn fmt_residual(row: ResidualRow) -> String {
@@ -1426,8 +1444,8 @@ pub fn solve_scopes(
 struct ScopeInstances<'a> {
     /// The built instances, contiguous and in source order — the shape every
     /// `reify_constraints::relate_solve` entry point (`partition_driving_set`,
-    /// `solve_frame`, `max_relation_residual`, `minimal_infeasible_subset`) expects
-    /// and returns POSITIONS into.
+    /// `solve_frame_outcome`, `max_relation_exceedance`) and
+    /// `minimal_infeasible_subset` expect and return POSITIONS into.
     instances: Vec<RelationInstance>,
     /// `sources[i]` is the `scope.relations` index `instances[i]` was built from,
     /// strictly increasing in `i` — `build_relation_instances` debug-asserts both
@@ -1663,6 +1681,11 @@ fn describe_operands(rel: &CompiledExpr) -> String {
 /// geometry; θ #4388 renders the polished `reify explain` ledger / spans / badge from
 /// the same data).
 fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &str) -> Diagnostic {
+    Diagnostic::error(conflict_message(conflict, built, auto_sub))
+}
+
+/// The geometric explanation [`conflict_diagnostic`] renders for `conflict`.
+fn conflict_message(conflict: &[usize], built: &ScopeInstances, auto_sub: &str) -> String {
     // primary = newest-declared = greatest SOURCE index among the conflict set. Both
     // call sites guarantee `conflict` is non-empty: `minimal_infeasible_subset`
     // returns an infeasible pair or falls back to the non-empty driving set, and the
@@ -1694,33 +1717,110 @@ fn conflict_diagnostic(conflict: &[usize], built: &ScopeInstances, auto_sub: &st
         " — these cannot both be satisfied. `{primary_name}` is the newest-declared \
          relation, flagged as the primary conflict; remove or relax it."
     ));
+    msg
+}
 
-    Diagnostic::error(msg)
+/// What [`failure_diagnostic`] needs to render a failed driving-set solve in the
+/// scope's own terms.
+struct FailureContext<'s, 'a> {
+    built: &'s ScopeInstances<'a>,
+    partition: &'s RelationPartition,
+    unknown: &'s FrameUnknown,
+    seed: &'s Pose,
+    scaling: &'s SolveScaling,
+    budget: SolveBudget,
+}
+
+/// The one diagnostic of a failed driving-set solve, coded by its cause
+/// ([`SolveFailureCause::code`]):
+/// - a certified infeasibility — the geometric conflict narrative of the
+///   [`minimal_infeasible_subset`], the solver's certificate, and the driving
+///   relations whose rows remain violated;
+/// - budget exhaustion — the counts and step-norm trend, with the seed guidance;
+/// - a non-finite evaluation — the driving relation whose row it was;
+/// - a stall (or any later cause) — the cause's own figures.
+fn failure_diagnostic(cause: &SolveFailureCause, context: &FailureContext) -> Diagnostic {
+    let sub = &context.unknown.sub;
+    let message = match cause {
+        SolveFailureCause::Infeasible(certificate) => {
+            let conflict = minimal_infeasible_subset(context);
+            format!(
+                "{} The solver certified it: {cause}; violated: {}.",
+                conflict_message(&conflict, context.built, sub),
+                blamed_relations(certificate, context)
+            )
+        }
+        SolveFailureCause::BudgetExhausted(_) => format!(
+            "the relations on `{sub}` did not converge to a placement: {cause}. The seed \
+             configuration may be too far from a solution — try an `auto(seed = …)` \
+             nearer the intended placement"
+        ),
+        SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            source: ResidualSource::Relation(driving_position),
+            ..
+        }) => format!(
+            "the relations on `{sub}` could not be solved: {cause}, in {}",
+            driving_relation_label(*driving_position, context)
+        ),
+        _ => format!("the relations on `{sub}` could not be solved: {cause}"),
+    };
+    Diagnostic::error(message).with_code(cause.code())
+}
+
+/// The driving relations `certificate` blames, most violated first, each named
+/// with its operands (e.g. `` `flush` (bolt.seat_plane and plate.wall_plane) ``).
+fn blamed_relations(certificate: &InfeasibilityCertificate, context: &FailureContext) -> String {
+    let mut blamed: Vec<usize> = Vec::new();
+    for blame in &certificate.blame {
+        let ResidualSource::Relation(driving_position) = blame.source else {
+            continue;
+        };
+        if !blamed.contains(&driving_position) {
+            blamed.push(driving_position);
+        }
+    }
+    blamed
+        .iter()
+        .map(|&position| driving_relation_label(position, context))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The driving relation at `driving_position` named with its operands (e.g.
+/// `` `flush` (bolt.seat_plane and plate.wall_plane) ``).
+fn driving_relation_label(driving_position: usize, context: &FailureContext) -> String {
+    let instance = context.partition.driving[driving_position];
+    format!(
+        "`{}` ({})",
+        context.built.instances[instance].name,
+        describe_operands(context.built.relation(instance))
+    )
 }
 
 /// Derive a MINIMAL inconsistent subset of the driving relations (ζ step-16).
 ///
-/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve: the
-/// first pair that is still [`SolveResult::Infeasible`] on its own is returned as the
-/// minimal conflict set. If no pair is infeasible (a conflict that genuinely needs
-/// ≥3 relations), falls back to the whole driving set. Returns INSTANCE positions
-/// (into `instances`), the same shape [`conflict_diagnostic`] expects. Bounded by
-/// the driving-set size, which is `≤ 6` for a single Frame unknown — the pairwise
-/// search is cheap.
-fn minimal_infeasible_subset(
-    instances: &[RelationInstance],
-    driving: &[usize],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    tol: f64,
-) -> Vec<usize> {
+/// Tries each driving PAIR (the smallest non-trivial conflict) via a re-solve within
+/// the scope's budget: the first pair whose own solve is CERTIFIED infeasible is
+/// returned as the minimal conflict set — a pair that merely ran out of budget or
+/// stalled proves nothing and is not blamed. If no pair is certified (a conflict
+/// that genuinely needs ≥3 relations), falls back to the whole driving set. Returns
+/// INSTANCE positions (into `built.instances`), the shape [`conflict_message`]
+/// expects. Bounded by the driving-set size, which is `≤ 6` for a single Frame
+/// unknown — the pairwise search is cheap.
+fn minimal_infeasible_subset(context: &FailureContext) -> Vec<usize> {
+    let instances = &context.built.instances;
+    let driving = &context.partition.driving;
     for (a, &i) in driving.iter().enumerate() {
         for &j in &driving[a + 1..] {
             let pair = [instances[i].clone(), instances[j].clone()];
-            if matches!(
-                solve_frame(&pair, unknown, seed, tol),
-                SolveResult::Infeasible { .. }
-            ) {
+            let outcome = solve_frame_outcome(
+                &pair,
+                context.unknown,
+                context.seed,
+                context.scaling,
+                context.budget,
+            );
+            if matches!(outcome.result, Err(SolveFailureCause::Infeasible(_))) {
                 return vec![i, j];
             }
         }
@@ -2440,8 +2540,8 @@ structure PerpendicularScope {
         // to pass the signed value straight to `fmt_mm`, so the Error read "off by
         // −30 mm". A residual's sign is an artefact of operand order and tangent-
         // frame choice; "off by" is a distance from satisfaction and has no
-        // direction to carry. `max_relation_residual` is the sibling convention
-        // (it accumulates `r.abs()`).
+        // direction to carry. `max_relation_exceedance` is the sibling convention
+        // (it folds `|r_i|`).
         assert!(
             d.message.contains("off by 30 mm") && d.message.contains("off by 5 mm"),
             "both measured magnitudes must render unsigned, in mm; got {:?}",
@@ -2459,6 +2559,32 @@ structure PerpendicularScope {
                 violated: 2,
                 unverifiable: 0,
             })
+        );
+    }
+
+    /// A static scope is held to the ABSOLUTE metre rung however large the model:
+    /// a 5e-5 m `flush` miss among datums spread over 20 m is a violation, although
+    /// a solved scope of that size accepts it under its `L`-scaled rung.
+    #[test]
+    fn verify_static_scope_holds_a_large_model_to_the_absolute_metre_rung() {
+        let miss = 5e-5;
+        let datums = realized(&[
+            ("bush", "bore_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "boss_axis", axis_v((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("bush", "seat_plane", plane_v((20.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ("plate", "top_plane", plane_v((0.0, 0.0, miss), (0.0, 0.0, 1.0))),
+        ]);
+        let solution = verify_static_scope(&scope("StaticScope"), &datums);
+        assert_eq!(
+            solution.static_facts,
+            Some(StaticRelateFacts {
+                verified: 1,
+                violated: 1,
+                unverifiable: 0,
+            }),
+            "`concentric` holds and the 5e-5 m `flush` miss exceeds the absolute \
+             1e-5 m rung; got {:?}",
+            solution.diagnostics
         );
     }
 

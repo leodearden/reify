@@ -9,10 +9,11 @@
 //! A pure isotropic membrane (surface stress σ > 0, no struts/cables) spanning a
 //! fixed boundary form-finds to a **minimal surface** (area-stationary, vanishing
 //! mean curvature). The classic closed-form minimal surface of revolution between
-//! two coaxial rings is the **catenoid** `r(z) = c·cosh(z/c)`. This golden builds
-//! a triangulated catenoid tube at a coarse and a finer resolution, seeds the
-//! free interior nodes on the analytic catenoid plus a small deterministic
-//! perturbation, solves, and checks two honest signals:
+//! two coaxial rings is the **catenoid** `r(z) = c·cosh(z/c)`. This golden takes
+//! the shared triangulated catenoid tube (`reify_test_support::tensegrity_fixtures`)
+//! at a coarse and a finer resolution, its free interior nodes seeded on the
+//! analytic catenoid plus a small deterministic perturbation, solves, and checks
+//! two honest signals:
 //!
 //!   1. **Equilibrium residual** `‖(D x)_free‖ / scale ~ 1e-9` — the PRIMARY
 //!      honest signal. At a force-density fixed point the net force on every free
@@ -46,97 +47,9 @@
 //! the cotangent fixed point (the method is left to the kernel, PRD §11 Q1).
 
 use reify_solver_elastic::{MemberKind, form_find_anchored_surfaces};
-
-// ---------------------------------------------------------------------------
-// Catenoid geometry
-// ---------------------------------------------------------------------------
-
-/// Catenoid waist parameter `c` in `r(z) = c·cosh(z/c)` (minimum radius, at the
-/// waist `z = 0`).
-const C: f64 = 1.0;
-
-/// Half-height: the two fixed boundary rings sit at `z = ±H`. With `c = 1`,
-/// `H/c = 0.8` keeps the patch on the STABLE, globally-area-minimizing catenoid
-/// branch (well below the `t·tanh(t) = 1 ⇒ t ≈ 1.2` existence limit and the
-/// `t ≈ 1.056` Goldschmidt two-disk threshold), so the form-finding has a clean
-/// minimum to settle into.
-const H: f64 = 0.8;
-
-/// Analytic catenoid radius at height `z`.
-fn catenoid_radius(z: f64) -> f64 {
-    C * (z / C).cosh()
-}
-
-/// Deterministic, RNG-free perturbation in `[-1, 1]` keyed on two indices. (RNG
-/// is unavailable to workflow/golden code and would break reproducibility; a
-/// fixed trig hash gives a stable, well-spread jitter.)
-fn jitter(a: usize, b: usize) -> f64 {
-    ((a as f64) * 12.9898 + (b as f64) * 78.233).sin()
-}
-
-/// Build a structured, triangulated catenoid tube.
-///
-/// `n_theta` nodes per azimuthal ring; `n_axial` axial segments (so `n_axial + 1`
-/// rings, from `z = -H` to `z = +H`). The top and bottom rings are anchored
-/// exactly on the analytic catenoid (the fixed boundary of the BVP); the interior
-/// rings are free, seeded on the analytic catenoid plus a small deterministic
-/// radial + axial perturbation so the solve must genuinely move them back.
-///
-/// Returns `(nodes, surfaces, anchors, free_indices)`.
-#[allow(clippy::type_complexity)]
-fn build_catenoid_tube(
-    n_theta: usize,
-    n_axial: usize,
-    perturb: f64,
-) -> (
-    Vec<[f64; 3]>,
-    Vec<(usize, usize, usize)>,
-    Vec<usize>,
-    Vec<usize>,
-) {
-    let n_rings = n_axial + 1;
-    let node_id = |ring: usize, j: usize| ring * n_theta + (j % n_theta);
-    let mut nodes = vec![[0.0_f64; 3]; n_rings * n_theta];
-    let mut anchors = Vec::new();
-    let mut free = Vec::new();
-
-    for ring in 0..n_rings {
-        let z = -H + 2.0 * H * (ring as f64) / (n_axial as f64);
-        let r_true = catenoid_radius(z);
-        let is_boundary = ring == 0 || ring == n_rings - 1;
-        for j in 0..n_theta {
-            let theta = 2.0 * std::f64::consts::PI * (j as f64) / (n_theta as f64);
-            let id = node_id(ring, j);
-            if is_boundary {
-                // Anchors stay EXACTLY on the catenoid — the fixed BVP data.
-                nodes[id] = [r_true * theta.cos(), r_true * theta.sin(), z];
-                anchors.push(id);
-            } else {
-                // Free interior node: seed on the catenoid + small perturbation
-                // (radial via jitter(ring,j), axial via the swapped-index phase).
-                let r = r_true + perturb * jitter(ring, j);
-                let dz = 0.5 * perturb * jitter(j, ring);
-                nodes[id] = [r * theta.cos(), r * theta.sin(), z + dz];
-                free.push(id);
-            }
-        }
-    }
-
-    // Triangulate each quad between adjacent rings (consistent diagonal split).
-    let mut surfaces = Vec::new();
-    for ring in 0..n_axial {
-        for j in 0..n_theta {
-            let a = node_id(ring, j);
-            let b = node_id(ring, j + 1);
-            let c = node_id(ring + 1, j);
-            let d = node_id(ring + 1, j + 1);
-            surfaces.push((a, b, c));
-            surfaces.push((b, d, c));
-        }
-    }
-
-    (nodes, surfaces, anchors, free)
-}
+use reify_test_support::tensegrity_fixtures::{
+    CATENOID_SEED_PERTURB, CatenoidTube, catenoid_radius, catenoid_tube,
+};
 
 // ---------------------------------------------------------------------------
 // Self-contained vector + cotangent-Laplacian helpers.
@@ -277,10 +190,13 @@ struct MeshResult {
 }
 
 fn solve_and_measure(n_theta: usize, n_axial: usize, sigma: f64) -> MeshResult {
-    // Small perturbation off the catenoid — large enough that the solve must do
-    // real work, small enough to stay in the catenoid's basin of attraction.
-    const PERTURB: f64 = 0.02;
-    let (nodes, surfaces, anchors, free) = build_catenoid_tube(n_theta, n_axial, PERTURB);
+    let CatenoidTube {
+        nodes,
+        surfaces,
+        anchors,
+        free,
+        ..
+    } = catenoid_tube(n_theta, n_axial, CATENOID_SEED_PERTURB);
     let sigmas = vec![sigma; surfaces.len()];
     // Pure membrane: no struts / cables.
     let members: Vec<(usize, usize)> = vec![];

@@ -20,10 +20,6 @@
  * Vitest-free by construction, like its siblings here: a plain read, with every
  * `expect` in the importing `.test.ts` files. No `.test.` segment, so vitest's
  * default include does not collect it as a suite.
- *
- * `readDebugServerSource` still carries its own copy of the idiom — toolDefNames.ts
- * is outside task 6723's locked scope, and repointing it here is filed as
- * follow-up work.
  */
 import { readFileSync } from 'node:fs';
 import * as path from 'node:path';

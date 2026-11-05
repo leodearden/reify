@@ -24,15 +24,14 @@
 //! `unresolved_function_corpus_sweep` (task #5371) joined later, on subsystem rather
 //! than batch: it compiles every committed `.ri` under the corpus roots and asserts
 //! none calls a name the compiler does not know. That is the same question
-//! `examples_smoke` and `ctor_conformance_corpus_survey` ask of the same corpus, so
-//! it belongs beside them. It reads no `common` helper, so the 0-`external_lines`
-//! property above still holds.
+//! `examples_smoke` asks of the same corpus, so it belongs beside it. (The
+//! ctor-conformance corpus survey asks it too, but lives in its own
+//! `harness_ctor_conformance_survey` unit since #7709.) It reads no `common` helper,
+//! so the 0-`external_lines` property above still holds.
 #[path = "harness_compilation_surface/compile_api_tests.rs"]
 mod compile_api_tests;
 #[path = "harness_compilation_surface/compile_builder_smoke_tests.rs"]
 mod compile_builder_smoke_tests;
-#[path = "harness_compilation_surface/ctor_conformance_corpus_survey.rs"]
-mod ctor_conformance_corpus_survey;
 #[path = "harness_compilation_surface/doc_propagation_tests.rs"]
 mod doc_propagation_tests;
 #[path = "harness_compilation_surface/examples_smoke.rs"]

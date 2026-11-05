@@ -1,5 +1,5 @@
 import { type Component, createSignal, createMemo, For, Show, onCleanup } from 'solid-js';
-import type { ConstraintData, ValueData } from '../types';
+import type { ConstraintData, ConstraintStatus, ValueData } from '../types';
 import { registerDebugPanel } from '../debug/types';
 import styles from './ConstraintPanel.module.css';
 
@@ -10,25 +10,25 @@ export interface ConstraintPanelProps {
   onAskClaude?: (context: string) => void;
 }
 
-const STATUS_PRIORITY: Record<string, number> = {
+const STATUS_PRIORITY: Record<ConstraintStatus, number> = {
   violated: 0,
   indeterminate: 1,
   satisfied: 2,
 };
 
-function statusIcon(status: string): string {
+function statusIcon(status: ConstraintStatus): string {
   switch (status) {
     case 'satisfied': return '\u2713';
     case 'violated': return '\u2717';
-    default: return '?';
+    case 'indeterminate': return '?';
   }
 }
 
-function statusTitle(status: string): string {
+function statusTitle(status: ConstraintStatus): string {
   switch (status) {
     case 'satisfied': return 'Satisfied \u2014 constraint holds';
     case 'violated': return 'Violated \u2014 constraint is not met';
-    default: return 'Indeterminate \u2014 not yet evaluated';
+    case 'indeterminate': return 'Indeterminate \u2014 not yet evaluated';
   }
 }
 
@@ -40,16 +40,12 @@ export const ConstraintPanel: Component<ConstraintPanelProps> = (props) => {
 
   const sortedConstraints = createMemo(() => {
     const list = Object.values(props.constraints);
-    return list.sort((a, b) => {
-      const pa = STATUS_PRIORITY[a.status] ?? 1;
-      const pb = STATUS_PRIORITY[b.status] ?? 1;
-      return pa - pb;
-    });
+    return list.sort((a, b) => STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]);
   });
 
   const isEmpty = createMemo(() => Object.keys(props.constraints).length === 0);
 
-  function isExpandable(status: string): boolean {
+  function isExpandable(status: ConstraintStatus): boolean {
     return status !== 'satisfied';
   }
 

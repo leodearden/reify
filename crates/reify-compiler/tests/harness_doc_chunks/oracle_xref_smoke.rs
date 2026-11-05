@@ -58,7 +58,7 @@
 //! # No new chunk scanner
 //!
 //! Sections are read through `chunk_markdown.rs`'s `section_body`, call names
-//! through `call_scan.rs`'s `call_sites` and `called_names`, and their registry
+//! through `call_scan.rs`'s `calls` and `called_names`, and their registry
 //! through `callable_registries.rs`'s `registry_family` and
 //! `phantom_name_panic`, parameterised by `chunk_path` so a `constraints.md`
 //! failure names `constraints.md`. The ONE
@@ -66,7 +66,7 @@
 //! beside the prose model that shares its comment grammar, and is still pinned
 //! directly by the unit tests at the foot of this file.
 
-use crate::call_scan::{call_sites, called_names};
+use crate::call_scan::{called_names, calls};
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_io::{CONSTRAINTS_CHUNK_PATH, GEOMETRY_CHUNK_PATH, STDLIB_CHUNK_PATH, read_chunk};
 use crate::chunk_markdown::section_body;
@@ -162,7 +162,7 @@ const MAXIMUM_XREF_WORDS: usize = 150;
 ///    or coverage defect, and a fixer who sees this line first is spared chasing
 ///    the symptom.
 /// 2. **Call-form coverage.** Every [`REQUIRED_ORACLE_CALL_FORMS`] entry must
-///    appear as a CALL, via [`call_sites`] — the same
+///    appear as a CALL, via [`calls`] — the same
 ///    open-paren-and-balanced-parens rule `geometry.md`'s own coverage scan uses.
 ///    The paren is the whole discriminator: `distance` is an ordinary English
 ///    noun AND the argument name in `extrude(profile, distance)`, so a region
@@ -215,7 +215,7 @@ fn xref_region_violations(region: &str, chunk_path: &str) -> Vec<String> {
     }
 
     for name in REQUIRED_ORACLE_CALL_FORMS.iter().copied() {
-        if call_sites(&prose, name).is_empty() {
+        if !calls(&prose, name) {
             out.push(format!(
                 "{chunk_path}'s `{ORACLE_XREF_MARKER}` region never names `{name}(` as a CALL \
                  FORM. The open paren is the point: a reader who has only seen the bare word \

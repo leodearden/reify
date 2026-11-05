@@ -59,7 +59,7 @@ fn box_eval_yields_symbolic_geometry_handle() {
     );
 
     // Engine::eval — kernel-free, no build.
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     let cell_id = ValueCellId::new("Widget", "body");
@@ -113,7 +113,7 @@ fn eval_and_build_handles_are_content_hash_equal() {
     let cell_id = ValueCellId::new("Widget", "body");
 
     // Path A: pure eval (no kernel) — symbolic handle (kernel_handle = None).
-    let mut eval_engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut eval_engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let eval_result = eval_engine.eval(&compiled);
     let eval_value = eval_result.values.get_or_undef(&cell_id);
     let (eval_rr, eval_uvh) = match &eval_value {
@@ -135,7 +135,7 @@ fn eval_and_build_handles_are_content_hash_equal() {
     // Path B: build with mock kernel — realized handle (kernel_handle = Some).
     let kernel = MockGeometryKernel::new();
     let mut build_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+        Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     let build_result = build_engine.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -206,7 +206,7 @@ fn eval_upstream_values_hash_is_cross_run_stable() {
     let cell_id = ValueCellId::new("Widget", "body");
 
     // Run 1 — fresh Engine.
-    let mut engine1 = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine1 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result1 = engine1.eval(&compiled);
     let value1 = result1.values.get_or_undef(&cell_id);
     let (uvh1, ch1) = match &value1 {
@@ -218,7 +218,7 @@ fn eval_upstream_values_hash_is_cross_run_stable() {
     };
 
     // Run 2 — separate Engine instance, same compiled module.
-    let mut engine2 = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine2 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result2 = engine2.eval(&compiled);
     let value2 = result2.values.get_or_undef(&cell_id);
     let (uvh2, ch2) = match &value2 {

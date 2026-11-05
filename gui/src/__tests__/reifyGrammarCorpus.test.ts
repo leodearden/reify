@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { foldNodeProp, indentNodeProp } from '@codemirror/language';
 import { EditorState } from '@codemirror/state';
 import type { SyntaxNode } from '@lezer/common';
@@ -20,6 +18,7 @@ import {
   punctuationSpans,
   sourceOfNodeNamed,
 } from './lezerProbeHelpers';
+import { readFixture } from './repoFixtures';
 
 /**
  * Corpus test for the GUI Lezer grammar (`gui/src/editor/reify.grammar`).
@@ -29,15 +28,9 @@ import {
  * the Lezer port, the editor silently degrades (error nodes, lost
  * highlighting) with nothing in CI to notice. This file parses REAL committed
  * `.ri` fixtures — not reduced-subset snippets — and asserts they produce zero
- * error nodes.
+ * error nodes. The corpus-wide drift ledger lives in
+ * `reifyGrammarCorpusLedger.test.ts`.
  */
-
-/** Repo root, three levels up from `gui/src/__tests__/`. */
-const REPO_ROOT = join(__dirname, '../../..');
-
-function readFixture(relPath: string): string {
-  return readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-}
 
 /**
  * Node types that group two operands under an infix operator.
@@ -999,7 +992,7 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
     expect(countErrorNodes('trait Measurable { param mass : Mass }')).toBe(0);
   });
 
-  // Corpus-attested: examples/m9_trait_conformance.ri:15 — a trait body carries
+  // Corpus-attested: examples/m9_trait_conformance.ri:14 — a trait body carries
   // the same member forms a structure body does.
   it('parses a trait body with param, let and constraint members', () => {
     expect(
@@ -1012,7 +1005,7 @@ describe('reify.grammar snippets — trait and fn declarations', () => {
     expect(countErrorNodes('trait Seal : Costed { }')).toBe(0);
   });
 
-  // Corpus-attested: examples/m9_trait_conformance.ri:54
+  // Corpus-attested: examples/m9_trait_conformance.ri:53
   // (`trait Physical : Measurable + Weighable {`).
   it('parses a multi-bound refinement `: Measurable + Weighable`', () => {
     expect(countErrorNodes('trait Physical : Measurable + Weighable { }')).toBe(0);
@@ -1351,7 +1344,8 @@ describe('reify.grammar snippets — lambdas and @ selectors', () => {
  */
 describe('reify.grammar snippets — auto forms', () => {
   // Corpus-attested 9x: examples/continuous_cost_min.ri:62,
-  // examples/best_practices/discrete_choice.ri:65, and seven more.
+  // examples/best_practices/discrete_choice.ri (DiscreteChoice.side), and seven
+  // more.
   it('parses `param thickness : Length = auto(free)`', () => {
     expect(countErrorNodes('structure def F { param thickness : Length = auto(free) }')).toBe(0);
   });
@@ -1473,7 +1467,8 @@ describe('reify.grammar snippets — port, connect, chain, forall', () => {
     expect(countErrorNodes('structure def F { port p : Fluid }')).toBe(0);
   });
 
-  // Corpus-attested: examples/integration_corner_cases.ri:45.
+  // The bodyless DIRECTIONAL form (same optional-direction rule as above); no
+  // longer corpus-attested since #7809.
   it('parses the bodyless directional `port output : out FullTrait`', () => {
     expect(countErrorNodes('structure def F { port output : out FullTrait }')).toBe(0);
   });
@@ -2604,7 +2599,8 @@ describe('reify.grammar snippets — relate blocks', () => {
  * examples/m9_integration.ri turn clean on this family alone. The other four
  * each keep a second, out-of-scope blocker (`some(u)`, `meta.material`,
  * `meta.project`, a member-level `@annotation`), so their error counts drop but
- * they stay off EXPECTED_CLEAN — see the MEASUREMENT block above it.
+ * they stay off EXPECTED_CLEAN — see the MEASUREMENT blocks in
+ * reifyGrammarCorpusLedger.test.ts.
  *
  * THE SHAPE THAT MAKES THIS FAMILY HARD is a body whose repeat mixes items
  * carrying an OPTIONAL TAIL (`ParamDeclaration`, `LetDeclaration`, `Pragma`)
@@ -2651,7 +2647,7 @@ describe('reify.grammar snippets — constraint def', () => {
   });
 
   /**
-   * Corpus-attested verbatim: examples/integration_corner_cases.ri:57-59. The
+   * Corpus-attested verbatim: examples/integration_corner_cases.ri:56-58. The
    * predicate repeat is zero-or-more, so a body of params alone is legal —
    * the case that would break if the body were written `params* predicates+`.
    */
@@ -3225,7 +3221,7 @@ describe('reify.grammar snippets — `chain` stays a legal ordinary identifier',
  * apart; that is the reason it exists.
  */
 describe('reify.grammar snippets — a ReservedWord in call position', () => {
-  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:99.
+  // Corpus-attested VERBATIM: examples/integration_corner_cases.ri:98.
   it('parses `some(u)`', () => {
     expect(countErrorNodes('structure def S { let s = some(u) }')).toBe(0);
   });
@@ -3974,8 +3970,9 @@ describe('reify.grammar snippets — derived sub arm', () => {
   /**
    * THE HEADLINE SIGNAL. The committed PRD fixture parses clean in the GUI
    * parser too, so the editor stops rendering the file as broken. Its path is
-   * also added to EXPECTED_CLEAN below, which is what makes the drift ledger
-   * hold it clean from here on.
+   * also added to reifyGrammarCorpus.expected-clean.json, which is what makes
+   * the drift ledger (reifyGrammarCorpusLedger.test.ts) hold it clean from
+   * here on.
    */
   it('parses the adt_mirror_of_arm.ri fixture clean', () => {
     expect(countErrorNodes(readFixture('tests/prd-gate/fixtures/adt_mirror_of_arm.ri'))).toBe(0);
@@ -4177,7 +4174,8 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
    * Admitting it HERE would make the GUI accept what neither the authoritative
    * grammar nor the compiler does — a third dialect, which is exactly what the
    * `AutoTypeArg` note in reify.grammar already forbids. The file stays off the
-   * ledger deliberately; see the MEASUREMENT block below.
+   * ledger deliberately; see the MEASUREMENT blocks in
+   * reifyGrammarCorpusLedger.test.ts.
    */
   it('still refuses a top-level param, which is why arrow_type.ri is not clean', () => {
     for (const src of [
@@ -4193,9 +4191,9 @@ describe('reify.grammar — measured non-gaps, pinned so they stay measured', ()
    * FAMILY 12's third one-off, "chained comparison `a < b < c < d`". Does not
    * exist either. Measured: 0 errors in both binding and constraint position.
    *
-   * examples/integration_corner_cases.ri:131 is `let chain = a < b < c < d`,
+   * examples/integration_corner_cases.ri:130 is `let chain = a < b < c < d`,
    * and every error on that line came from `chain` — which round 2 had promoted
-   * to a hard `kw<>` — not from the comparison. Lines 133-135 were cascade.
+   * to a hard `kw<>` — not from the comparison. Lines 132-134 were cascade.
    * Round 4's family 1 (`chain` back to `ekw<>`) is the whole fix.
    *
    * The `leftOperandOf` assertion pins the GROUPING, not just the absence of
@@ -4896,693 +4894,4 @@ describe('reifyLanguage — fold and indent coverage', () => {
     expect(spans).toContain('}');
     expect(spans).toContain('.{');
   });
-});
-
-// ── Corpus drift ledger ──────────────────────────────────────────────────
-//
-// The GUI Lezer grammar is a hand-maintained subset of the authoritative
-// tree-sitter-reify/grammar.js. Nothing in CI previously noticed when the
-// language moved ahead of it, so the editor degraded silently. This ledger
-// makes that drift visible.
-//
-// MEASUREMENT (task 5907). The reference prototype for this task was measured
-// over a NON-RECURSIVE walk of the two corpus roots — 146 + 71 = 217 files —
-// and moved them from 7 clean to 57 clean (39 examples + 18 prd-gate
-// fixtures). This ledger walks both roots RECURSIVELY, which picks up
-// subdirectories such as examples/auto/ and examples/best_practices/ for a
-// total of 329 files. The delta landed here measures:
-//
-//   top-level only : 57 / 217  (39 examples + 18 fixtures) — reproduces the
-//                              reference prototype exactly
-//   recursive      : 90 / 329  (the 57 above, plus 33 in subdirectories)
-//
-// MEASUREMENT (task 5927), the catch-up round that inherited this ledger.
-// Fifteen form families were ported, each in its own commit that extended the
-// pinned set below, taking it from 90 to 301 of the same 329 files:
-//
-//   named call arguments · collection literals + index access · keyword
-//   logical operators · range expressions · type parameters + trait bounds ·
-//   the rich `sub` forms · unit expressions + value-level `^` · trait and fn
-//   declarations · lambdas + `@` selectors · parameterized `auto` +
-//   auto_type_arg · port/connect/chain/forall + the quantifier expression ·
-//   match/enum/variant construction · field def/purpose/unit/type alias/
-//   default/meta/pragma/annotation · radix/imaginary/interpolated literals
-//
-// That round left the set at 302 paths, not 301, and the extra one was NOT a
-// grammar gain: the corpus itself grew to 330 files while that task was in
-// flight (`examples/whole_model_cost_min.ri`), and the new file parses clean.
-// Its final measurement is therefore 302 / 330. The fifteenth family is worth
-// zero files — radix, imaginary and interpolated literals already parsed with
-// zero error nodes under the `QuantityLiteral` / `String` catch-alls, so that
-// slice was taken for node SHAPE (an editor cannot style what it cannot name)
-// and is guarded by explicit non-regression assertions above rather than by
-// any movement here.
-//
-// MEASUREMENT (task 5941), catch-up round 3. Five families were ported, taking
-// the pinned set from 302 to 309 of 330 — and the arithmetic is worth stating
-// plainly, because only TWO of the five moved it at all:
-//
-//   relate blocks              +5   the whole ledger movement, less two
-//   constraint def             +2
-//   variant construction in argument position   0
-//   sub_relate_block                            0
-//   match_arm_decl_block                        0
-//
-// The three zero-movement families are taken for node SHAPE, the same
-// justification 5927 recorded for the literal families, and are guarded by the
-// node-name assertions in their slices above rather than by any movement here.
-// For two of them that guarding is the ONLY guarding there is, because the
-// wrong reading parses clean: an argument-position construction could have been
-// widened into `primaryExpression` and silently swallowed a `match`/`where`/
-// `connect` body, and a `sub_relate_block` resolved with precedence instead of
-// the `~poseWhere` marker would silently have stolen every post-pose `where`
-// from `GuardedBlock`. Neither would have shown up as an error node.
-//
-// FOUR OF THE SIX `constraint def` FILES DID NOT TURN CLEAN, and their absence
-// below is not a regression. Each keeps a second, out-of-scope blocker — in
-// order: `some(u)`, `meta.material`, `meta.project`, and a member-level
-// `@annotation`. Their error counts did drop (integration_corner_cases 9→7,
-// integration_full_v01 14→5, m11_annotations 18→10, m9_combined 9→4), which is
-// real progress that this pinned set is deliberately unable to express.
-//
-// MEASUREMENT (task 5950), catch-up round 4. Round 3 handed on twelve families,
-// derived from each not-clean file's FIRST blocker. Ten of them were real and
-// were ported; one is owned elsewhere; two did not exist. The pinned set moved
-// from 309 to 327 of 330:
-//
-//   `chain` demoted to `ekw<>`                 +2
-//   a `ReservedWord` in CALL position          +3
-//   the `%` operator                           +1
-//   `priv param`                               +1
-//   `auto` as a NAMED-ARGUMENT value           +1
-//   a member-level `Annotation`                +1
-//   `meta` demoted to `ekw<>`                  +2
-//   `::` in EXPRESSION position                +3
-//   `keyed_member_block`                       +2
-//   `joint_definition`                         +1
-//   `·` unit multiplication                    +1
-//                                             ────
-//                                              +18
-//
-// TWO OF THOSE CREDITS ARE THE LAST OF TWO CHANGES, not the only one, and the
-// column would mislead without saying so: integration_corner_cases.ri needed
-// BOTH `chain` and the `ReservedWord` callee, and integration_full_v01.ri
-// needed BOTH the callee and `meta`. Each file is credited to the change that
-// FINISHED it. A per-family delta cannot be additive when a file has two
-// blockers; naming the two is cheaper than implying they were independent.
-//
-// WHERE ROUND 3'S FORECAST WAS WRONG — three of its twelve entries, all three
-// found by measuring rather than by trusting the list, and all three now pinned
-// by tests above so the next round does not re-litigate them:
-//
-//   - "two stackup files" was not a list-literal gap. It was `chain`, which
-//     round 2 had promoted to a hard `kw<>`; that is context-free in Lezer, so
-//     `chain` stopped being a legal identifier in three committed files. A
-//     self-inflicted regression, and the cheapest fix in the round.
-//   - "three remaining one-offs" was two. Chained comparison `a < b < c < d`
-//     already parsed with zero errors in both binding and constraint position;
-//     integration_corner_cases.ri:131 is `let chain = …`, so its errors were
-//     the keyword above and :133-135 were cascade.
-//   - "arrow (function) types in a param annotation" was already reachable —
-//     `FunctionType` has been in the grammar all along.
-//
-// WHY THE LAST THREE FILES REMAIN — one line each, because a bare count is
-// not a finding and "which three, and why" is. Named in KNOWN_NOT_CLEAN
-// below, which the ledger checks rather than trusts:
-//
-//   - arrow_type.ri — NOT A GRAMMAR GAP AT ALL. Its `param` is at TOP LEVEL,
-//     and `param` is not a top-level declaration in tree-sitter's
-//     `_declaration` (grammar.js:134) or in the compiler's `lower_source_file`
-//     (crates/reify-syntax/src/ts_parser.rs:299). Admitting it here would make
-//     the editor accept what neither of those does — a third dialect. The
-//     fixture's own header declares it a deliberate FAIL probe. Both halves are
-//     pinned above: the member-position arrow type IS clean, and the top-level
-//     `param` MUST error.
-//   - shear_angles_vec3_angle_param_pre.ri and shear_angles_vec3_wrongq_ctrl.ri
-//     — both error solely on the local binding name `out`: `let out =
-//     f(axis)`. Measured: `let out = 1` inside a `structure def` block yields
-//     2 error nodes where `let q = 1` yields 0, and `param out : Length =
-//     1mm` also yields 2 — the Vector3<Angle> parameter beside it is not
-//     implicated (`fn f(v : Vector3<Angle>) -> Real { 1.0 }` parses clean).
-//     `out` is a hard `kw<>`, reserved for the `port out` direction form —
-//     the same self-inflicted class as round 4's `chain`/`meta` demotions to
-//     `ekw<>`. Grammar CAPABILITY, owned by the #5907 series, not coverage;
-//     both stay unpinned here.
-//
-// THE ARITHMETIC ABOVE IS INHERITED, AND EVERY DENOMINATOR IN IT IS STALE BY
-// CONSTRUCTION — each was a snapshot of the corpus on the day its round ran,
-// and the corpus keeps growing every round after. #6605 re-measured through
-// the ledger's own walk and closed the gap those stale snapshots kept
-// finding: the pinned set below IS the full measured-clean set as of this
-// commit. The LIVE arithmetic is printed by this test's own failure message
-// (`measured N clean of M …; K clean files are not pinned`) — read it off a
-// run, never off this or any other comment.
-//
-// AND NOTE WHAT THIS BLOCK DELIBERATELY DOES NOT CONTAIN. The per-production
-// reasoning for every change above — why `ekw<>` and not `kw<>`, why the
-// callee and not the `ReservedWord` list, why `·` cannot escape `unitOp` —
-// lives on the productions themselves in reify.grammar. #5941 was amended
-// TWICE to stop this file restating them (`eb2394f2cd`, `05e5c50eac`); read
-// the grammar, not a second copy that drifts.
-//
-// `variant_construction` left round 3's inherited list before round 4 began:
-// argument position is now admitted.
-// The narrowing that remains is `primaryExpression` only, it is deliberate, and
-// the note on that production in reify.grammar prices it — see also the pin
-// above asserting that expression-position `Name { … }` must STILL error.
-//
-// AND ONE KNOWN DIVERGENCE, which is not a gap and must not be "fixed" blindly.
-// Underscore-separated DECIMAL literals did not get their own node: `1_000_000`
-// still lexes as `QuantityLiteral` (`1` + unit `_000_000`). The companion-token
-// trick that made `0xDEAD_BEEF` one `RadixLiteral` cannot be reused, because
-// lezer token precedence beats longest match: a separator-aware `Number`
-// ordered above `QuantityLiteral` takes `1_000` out of the ATTESTED `1_000mm`
-// (examples/numeric_separators.ri:17) and strands the `mm`, turning a
-// committed line into an error node. Zero ledger impact either way; pinned by
-// shape tests above so it stays visible. See the fuller accounting on the
-// `Number` token in reify.grammar, which prices the full trade.
-//
-// WHY A PINNED SET AND NOT A COUNT. An absolute floor (`clean.length >= 90`)
-// is coupled to corpus INVENTORY, not to grammar capability: deleting or
-// renaming a currently-clean `.ri` — a routine refactor with no grammar
-// involvement — would fail with "the grammar regressed", a false accusation
-// whose obvious fix (lower the floor) also masks any genuine regression
-// landing alongside it. Conversely, adding 50 unparseable examples would keep
-// a count green while coverage rotted. So the ledger pins the SET instead:
-// every path below is expected to parse clean, filtered by what still exists
-// on disk. Removals drop out naturally, a genuine regression names the exact
-// file that stopped parsing, and a coverage gain is a visible one-line
-// addition here. Whether every clean file is pinned is measured and reported
-// in the failure message below (`unpinnedClean`) but deliberately not gated —
-// gating it would force every future clean prd-gate fixture into a matching
-// _GUI_COUPLED_RI_FIXTURES edit with no grammar change behind it. The three
-// files named above ARE gated: KNOWN_NOT_CLEAN below asserts each still fails
-// to parse, so a capability gain reads as a failure instead of a stale
-// exclusion.
-//
-// #6605: coverage, not capability. No production in reify.grammar changed;
-// every path pinned by this round already parsed clean and was simply
-// unlisted.
-const EXPECTED_CLEAN = [
-  'examples/ad_hoc_face_selector.ri',
-  'examples/affine_tapered_spacer.ri',
-  'examples/ambient_default_material/ambient_default_surface.ri',
-  'examples/anisotropic_bar.ri',
-  'examples/appearance_surface.ri',
-  'examples/appearance_viewport_egress.ri',
-  'examples/aspect_massive.ri',
-  'examples/auto/bearing_computed_default_unevaluated.ri',
-  'examples/auto/bearing_constraint_select.ri',
-  'examples/auto/bearing_resolved_value.ri',
-  'examples/auto/bearing_unsat.ri',
-  'examples/auto/bounded_fallback_unsound.ri',
-  'examples/auto_binding_sites.ri',
-  'examples/bearing_auto_seal.ri',
-  'examples/best_practices/angle_crossings.ri',
-  'examples/best_practices/bolt_circle.ri',
-  'examples/best_practices/clearance_oracle.ri',
-  'examples/best_practices/dimensioned_arguments.ri',
-  'examples/best_practices/discrete_choice.ri',
-  'examples/best_practices/hollow_primitives.ri',
-  'examples/best_practices/negation.ri',
-  'examples/best_practices/symmetry_mirror.ri',
-  'examples/bom_lifecycle.ri',
-  'examples/bracket.ri',
-  'examples/buckling_column_p2.ri',
-  'examples/buckling_column_smoke.ri',
-  'examples/buckling_multi_case_smoke.ri',
-  'examples/complex_abs_arg.ri',
-  'examples/complex_div.ri',
-  'examples/complex_literals.ri',
-  'examples/complex_numbers.ri',
-  'examples/complex_transcendental.ri',
-  'examples/conditional_compilation/main.ri',
-  'examples/conditional_compilation/platform_linux.ri',
-  'examples/conditional_compilation/platform_wasm.ri',
-  'examples/continuous_cost_min.ri',
-  'examples/cost_aggregation.ri',
-  'examples/cost_robustness_tradeoff.ri',
-  'examples/cost_subtree_aggregate.ri',
-  'examples/datum_projections.ri',
-  'examples/determinacy_intrinsics.ri',
-  'examples/differential_field_ops.ri',
-  'examples/dimensional_chains.ri',
-  'examples/dimensional_consistency.ri',
-  'examples/dimensionless_unification.ri',
-  'examples/drivebelt_trait_bounds.ri',
-  'examples/dynamics/closed_2prismatic_idyn.ri',
-  'examples/dynamics/closed_4bar_idyn.ri',
-  'examples/dynamics/pendulum_idyn.ri',
-  'examples/dynamics/toolhead_motor_sizing.ri',
-  'examples/error_messages.ri',
-  'examples/extrude_infinite.ri',
-  'examples/fdm_bracket.ri',
-  'examples/fea_bracket_member_access.ri',
-  'examples/fea_bracket_minimize_mass.ri',
-  'examples/fea_cantilever_smoke.ri',
-  'examples/fea_multi_case_bracket.ri',
-  'examples/fea_multi_case_smoke.ri',
-  'examples/fea_pressure_smoke.ri',
-  'examples/fea_shell_channels.ri',
-  'examples/fea_shell_flexure.ri',
-  'examples/fea_shell_too_thick_annotated.ri',
-  'examples/fea_shell_too_thick_auto.ri',
-  'examples/fields/compose.ri',
-  'examples/fields/composed_stiffness.ri',
-  'examples/fields/fn_field.ri',
-  'examples/fields/from_samples.ri',
-  'examples/fields/pointwise_field_combinators.ri',
-  'examples/fields/restrict.ri',
-  'examples/fields/spatial_ops.ri',
-  'examples/fields/std_fields_surface.ri',
-  'examples/fields_analysis.ri',
-  'examples/flexures/cantilever_beam_prb.ri',
-  'examples/flexures/double_parallelogram.ri',
-  'examples/flexures/notch_hinge_circular_prb.ri',
-  'examples/flexures/parallelogram_stage.ri',
-  'examples/flexures/printer_z_compliant_mount.ri',
-  'examples/flexures/yield_warning.ri',
-  'examples/gdt_conformance_satisfied.ri',
-  'examples/gdt_conformance_violated.ri',
-  'examples/generate_bolt_circle.ri',
-  'examples/generics/container.ri',
-  'examples/generics/dim_param.ri',
-  'examples/generics/identity.ri',
-  'examples/generics/unbound_param.ri',
-  'examples/geometric_relations/bolt_plate.ri',
-  'examples/geometric_relations/construction_datum.ri',
-  'examples/geometric_relations/feature_datum_axis.ri',
-  'examples/geometric_relations/global_float.ri',
-  'examples/geometric_relations/tangent_roller.ri',
-  'examples/half_space.ri',
-  'examples/imported_field/openvdb_stress.ri',
-  'examples/integration_corner_cases.ri',
-  'examples/integration_full_v01.ri',
-  'examples/interpolation.ri',
-  'examples/io_export.ri',
-  'examples/io_formats.ri',
-  'examples/joint_dof_self_check.ri',
-  'examples/kernel_queries/adjacent_faces.ri',
-  'examples/kernel_queries/all_queries_walk.ri',
-  'examples/kernel_queries/angle_smoke.ri',
-  'examples/kernel_queries/box_edges.ri',
-  'examples/kernel_queries/box_faces.ri',
-  'examples/kernel_queries/contains_box.ri',
-  'examples/kernel_queries/curvature_smoke.ri',
-  'examples/kernel_queries/directional_selectors.ri',
-  'examples/kernel_queries/distance_box_point.ri',
-  'examples/kernel_queries/filtered_edges.ri',
-  'examples/kernel_queries/geo_equiv_smoke.ri',
-  'examples/kernel_queries/intersects_smoke.ri',
-  'examples/kernel_queries/length_perimeter.ri',
-  'examples/kernel_queries/moment_of_inertia_box.ri',
-  'examples/kernel_queries/normal_smoke.ri',
-  'examples/keyed_forall.ri',
-  'examples/keyed_vents.ri',
-  'examples/kinematic/counter_mass_balance.ri',
-  'examples/kinematic/dock_pickup.ri',
-  'examples/kinematic/four_bar_singular.ri',
-  'examples/kinematic/relate_mounted_fourbar.ri',
-  'examples/kinematic/relate_mounted_revolute.ri',
-  'examples/kinematic/revolute_pivot_offset.ri',
-  'examples/kinematic/spatial_linkage_oriented.ri',
-  'examples/kleene_e2e.ri',
-  'examples/large_assembly.ri',
-  'examples/linalg.ri',
-  'examples/list_helpers.ri',
-  'examples/litter_tray.ri',
-  'examples/load_case.ri',
-  'examples/m10_combined.ri',
-  'examples/m10_connect_advanced.ri',
-  'examples/m10_geometric_types.ri',
-  'examples/m10_purpose_activation.ri',
-  'examples/m11_annotations.ri',
-  'examples/m11_field_calculus.ri',
-  'examples/m5_collection_ops.ri',
-  'examples/m5_combined_all.ri',
-  'examples/m5_connect_chain.ri',
-  'examples/m5_function_safety_factor.ri',
-  'examples/m5_geometry.ri',
-  'examples/m5_geometry_flange.ri',
-  'examples/m5_guarded_enum.ri',
-  'examples/m5_guarded_head_type.ri',
-  'examples/m5_occurrence_process.ri',
-  'examples/m5_purpose.ri',
-  'examples/m5_trait_rigid.ri',
-  'examples/m5_trait_structure.ri',
-  'examples/m5_user_function.ri',
-  'examples/m6_data_carrying_enum.ri',
-  'examples/m6_data_carrying_enum_undef.ri',
-  'examples/m6_fallback_recovery.ri',
-  'examples/m6_generic_enum.ri',
-  'examples/m6_result_fallback.ri',
-  'examples/m6_result_recovery.ri',
-  'examples/m8_materials.ri',
-  'examples/m8_ports.ri',
-  'examples/m8_tolerancing.ri',
-  'examples/m8_units.ri',
-  'examples/m9_combined.ri',
-  'examples/m9_constraint_def.ri',
-  'examples/m9_determinacy.ri',
-  'examples/m9_integration.ri',
-  'examples/m9_trait_conformance.ri',
-  'examples/material_appearance_library.ri',
-  'examples/materials_starter_library.ri',
-  'examples/math_linalg.ri',
-  'examples/modal/cantilever_beam_modes.ri',
-  'examples/modal/printer_gantry_modes.ri',
-  'examples/modal/simply_supported_beam_modes.ri',
-  'examples/modal/transient_step_response.ri',
-  'examples/module_visibility/consumer.ri',
-  'examples/module_visibility/mismatch_variant.ri',
-  'examples/module_visibility/producer.ri',
-  'examples/modulo_index_wrap.ri',
-  'examples/multi_aspect_objective.ri',
-  'examples/multi_aspect_objective_mixed.ri',
-  'examples/multi_kernel/attribute_selectors.ri',
-  'examples/multi_kernel/manifold_boolean.ri',
-  'examples/multi_kernel/pragma_override.ri',
-  'examples/multi_kernel/voxel_to_mesh.ri',
-  'examples/multi_kernel/voxel_to_mesh_iso.ri',
-  'examples/multi_load_bracket.ri',
-  'examples/multi_pane_viewport.ri',
-  'examples/numeric_and_range_literals.ri',
-  'examples/numeric_separators.ri',
-  'examples/objective_inheritance.ri',
-  'examples/option_map_or.ri',
-  'examples/parametric_rate_cross_module.ri',
-  'examples/parametric_vec3_cross_module.ri',
-  'examples/pattern_arbitrary_transforms.ri',
-  'examples/pattern_composition.ri',
-  'examples/perforated_plate.ri',
-  'examples/process/std_process_dfm.ri',
-  'examples/process/std_process_dfm_metrology.ri',
-  'examples/process/std_process_dfm_thickness.ri',
-  'examples/radix_literals.ri',
-  'examples/representation_within.ri',
-  'examples/rigid_mass_props_smoke.ri',
-  'examples/selectors/relational_selectors_v2.ri',
-  'examples/selectors/selector_vocabulary_v2_leaves.ri',
-  'examples/selectors/single_face_by_normal.ri',
-  'examples/selectors/vertices_index_coercion.ri',
-  'examples/shells/thin_walled_bracket.ri',
-  'examples/single_sided_range.ri',
-  'examples/solid-param-direct.ri',
-  'examples/solver_optimality_unproven.ri',
-  'examples/spec-shape-physical.ri',
-  'examples/stdlib/constants.ri',
-  'examples/stdlib/fields.ri',
-  'examples/stdlib/ports_breadth.ri',
-  'examples/stdlib/ports_domains.ri',
-  'examples/stdlib/ports_mechanical.ri',
-  'examples/stdlib/ports_prelude.ri',
-  'examples/stdlib/process.ri',
-  'examples/structural_query_bom.ri',
-  'examples/structural_query_children_members.ri',
-  'examples/structural_query_descendants.ri',
-  'examples/structural_query_filter.ri',
-  'examples/structural_traits_dimensioned.ri',
-  'examples/structure-instance.ri',
-  'examples/sub_placement_assembly.ri',
-  'examples/surface_finish_3mf.ri',
-  'examples/surface_finish_cost.ri',
-  'examples/surface_finish_functional.ri',
-  'examples/surface_finish_viewport.ri',
-  'examples/sweep_degenerate.ri',
-  'examples/tensegrity_cable_net.ri',
-  'examples/tensegrity_membrane_formfind.ri',
-  'examples/tensegrity_membrane_patch.ri',
-  'examples/tensegrity_pavilion.ri',
-  'examples/tensegrity_t_prism.ri',
-  'examples/tolerance-stackup-3part.ri',
-  'examples/tolerance-stackup-rss.ri',
-  'examples/tolerancing/gdt_illegal_modifier.ri',
-  'examples/tolerancing/gdt_legality_rfs.ri',
-  'examples/tolerancing/gdt_oracle_inside.ri',
-  'examples/tolerancing/gdt_oracle_outside.ri',
-  'examples/tolerancing/gdt_pass_weave.ri',
-  'examples/tolerancing/gdt_removed_2018.ri',
-  'examples/tolerancing/gdt_zones.ri',
-  'examples/tolerancing/std_tolerancing_surface.ri',
-  'examples/tolerancing/vc_bolt_pattern_clearance.ri',
-  'examples/tolerancing/vc_bolt_pattern_interference.ri',
-  'examples/tolerancing/vc_boundary_solid.ri',
-  'examples/topology_selectors/all_topology_selectors_wiring.ri',
-  'examples/topology_selectors/block_inertia.ri',
-  'examples/topology_selectors/bottom_deck_selectors.ri',
-  'examples/topology_selectors/fillet_top_edges.ri',
-  'examples/trait_assoc_fn_cylinder.ri',
-  'examples/trait_assoc_fn_overload.ri',
-  'examples/trait_assoc_fn_static.ri',
-  'examples/trait_assoc_type_material.ri',
-  'examples/trait_assoc_type_qualified.ri',
-  'examples/trait_hierarchy.ri',
-  'examples/trajectory/ei_robustness.ri',
-  'examples/trajectory/gcode_import_smoke.ri',
-  'examples/trajectory/printer_print_envelope.ri',
-  'examples/trajectory/tots_optimal_ptp.ri',
-  'examples/trajectory/zv_shaped_ramp.ri',
-  'examples/trajectory/zvd_robustness.ri',
-  'examples/type_hygiene/type_hygiene_surface.ri',
-  'examples/undef_self_describing.ri',
-  'examples/unit_expressions.ri',
-  'examples/whole_model_cost_min.ri',
-  'examples/whole_model_joint_drive.ri',
-  'tests/prd-gate/fixtures/adt_mirror_of_arm.ri',
-  'tests/prd-gate/fixtures/adt_relation_verbs.ri',
-  'tests/prd-gate/fixtures/adv_beta_undef_arith_control.ri',
-  'tests/prd-gate/fixtures/adv_beta_v7_degraded_arith.ri',
-  'tests/prd-gate/fixtures/adv_beta_v7_pm_is_real_zero.ri',
-  'tests/prd-gate/fixtures/adv_ivf_undef_ctor_arg_check_silent.ri',
-  'tests/prd-gate/fixtures/adv_ivf_undef_flow_constraint_indeterminate_exit0.ri',
-  'tests/prd-gate/fixtures/angle_crossing_idiom.ri',
-  'tests/prd-gate/fixtures/bare_angle_silently_accepted.ri',
-  'tests/prd-gate/fixtures/collection_expr_index_resolves.ri',
-  'tests/prd-gate/fixtures/collection_sub_at_placement_rejected.ri',
-  'tests/prd-gate/fixtures/collection_sub_member_cell_consumable.ri',
-  'tests/prd-gate/fixtures/collection_sub_per_member_cells.ri',
-  'tests/prd-gate/fixtures/collection_sub_value_position_undef_baseline.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri',
-  'tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri',
-  'tests/prd-gate/fixtures/compose_fn_field_resolves.ri',
-  'tests/prd-gate/fixtures/compose_middle_type_mismatch_rejected.ri',
-  'tests/prd-gate/fixtures/compose_one_arg_rejected.ri',
-  'tests/prd-gate/fixtures/cost_min_money_objective.ri',
-  'tests/prd-gate/fixtures/cost_robustness_tradeoff_form.ri',
-  'tests/prd-gate/fixtures/cross_sub_geometry_ref.ri',
-  'tests/prd-gate/fixtures/curvature_rad_literal.ri',
-  'tests/prd-gate/fixtures/damped_material_mixin_conformance.ri',
-  'tests/prd-gate/fixtures/damped_material_preset_conformance.ri',
-  'tests/prd-gate/fixtures/dce_runtime_payload.ri',
-  'tests/prd-gate/fixtures/dcr_dimension_rejection_channel_fires.ri',
-  'tests/prd-gate/fixtures/dcr_fn_force_param_already_rejects.ri',
-  'tests/prd-gate/fixtures/dcr_langsurface_crossdim_silent.ri',
-  'tests/prd-gate/fixtures/dcr_load_ctor_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_load_retype_target_resolves.ri',
-  'tests/prd-gate/fixtures/dcr_material_dimension_correct.ri',
-  'tests/prd-gate/fixtures/dcr_material_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_reader_ctor_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_shaper_frequency_dimension_silent.ri',
-  'tests/prd-gate/fixtures/dcr_solver_load_dropped_bare.ri',
-  'tests/prd-gate/fixtures/dcr_solver_load_dropped_dimensioned.ri',
-  'tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri',
-  'tests/prd-gate/fixtures/driver_contract_allow_indeterminate.ri',
-  'tests/prd-gate/fixtures/driver_contract_dfm_measurement_arm.ri',
-  'tests/prd-gate/fixtures/driver_contract_eval_blind_to_violation.ri',
-  'tests/prd-gate/fixtures/driver_contract_geometry_test_indeterminate.ri',
-  'tests/prd-gate/fixtures/driver_contract_header_mismatch.ri',
-  'tests/prd-gate/fixtures/driver_contract_report_blind_to_violation.ri',
-  'tests/prd-gate/fixtures/driver_parity_auto_ctl.ri',
-  'tests/prd-gate/fixtures/driver_parity_eq_plus_ineq.ri',
-  'tests/prd-gate/fixtures/driver_parity_one_sided_auto.ri',
-  'tests/prd-gate/fixtures/driver_parity_relate_conflict.ri',
-  'tests/prd-gate/fixtures/driver_parity_two_sided_auto.ri',
-  'tests/prd-gate/fixtures/dwr_cantilever_energy.ri',
-  'tests/prd-gate/fixtures/dwr_cantilever_qoi.ri',
-  'tests/prd-gate/fixtures/dwr_qoi_readback.ri',
-  'tests/prd-gate/fixtures/dwr_qoi_without_adaptive.ri',
-  'tests/prd-gate/fixtures/engine_build_hardening_kappa_mixed_kernel_selector.ri',
-  'tests/prd-gate/fixtures/expected_type_pushdown_arg.ri',
-  'tests/prd-gate/fixtures/expected_type_pushdown_let.ri',
-  'tests/prd-gate/fixtures/faces_by_normal_symbolic_eval_silent.ri',
-  'tests/prd-gate/fixtures/forall_collection_resolves.ri',
-  'tests/prd-gate/fixtures/forall_range_domain_rejected.ri',
-  'tests/prd-gate/fixtures/frame_to_frame_resolves.ri',
-  'tests/prd-gate/fixtures/frame_to_frame_transform3_nomatch.ri',
-  'tests/prd-gate/fixtures/geometry_let_selector_consumer.ri',
-  'tests/prd-gate/fixtures/geometry_let_selector_consumer_edit.ri',
-  'tests/prd-gate/fixtures/gui_purpose_surface.ri',
-  'tests/prd-gate/fixtures/hand_placed_twin_two_subs_eval.ri',
-  'tests/prd-gate/fixtures/indexed_sub_bare_member_resolves.ri',
-  'tests/prd-gate/fixtures/indexed_sub_coll_arm_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_forall_range_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_inst_arm_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_oob_computed_silent_undef.ri',
-  'tests/prd-gate/fixtures/indexed_sub_oob_literal_silent_undef.ri',
-  'tests/prd-gate/fixtures/indexed_sub_self_member_misrouted.ri',
-  'tests/prd-gate/fixtures/indexed_sub_self_member_nogeom_unsupported.ri',
-  'tests/prd-gate/fixtures/indexed_sub_silent_undef_baseline.ri',
-  'tests/prd-gate/fixtures/indexed_sub_spec_arm_baseline.ri',
-  'tests/prd-gate/fixtures/instantiation_value_flow_probe.ri',
-  'tests/prd-gate/fixtures/ir_clean_eval.ri',
-  'tests/prd-gate/fixtures/ivf_override_violates_constraint.ri',
-  'tests/prd-gate/fixtures/jacobian_column_members.ri',
-  'tests/prd-gate/fixtures/numeric_floor_bare_baseline.ri',
-  'tests/prd-gate/fixtures/numeric_floor_dimensioned_silent_accept.ri',
-  'tests/prd-gate/fixtures/numeric_floor_two_arg_parses.ri',
-  'tests/prd-gate/fixtures/numeric_sinh_bare_baseline.ri',
-  'tests/prd-gate/fixtures/numeric_sinh_dimensioned_silent_accept.ri',
-  'tests/prd-gate/fixtures/objective_inherit_ambiguous.ri',
-  'tests/prd-gate/fixtures/orient_axis_angle_member_parses.ri',
-  'tests/prd-gate/fixtures/orient_to_axis_angle_call_resolves.ri',
-  'tests/prd-gate/fixtures/parse_length_match_resolves.ri',
-  'tests/prd-gate/fixtures/pnrg_cost_split_sphere.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_cone.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_fillet_blend.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_loft.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_nurbs_surface.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_pipe.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_sphere.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_spline.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_sweep.ri',
-  'tests/prd-gate/fixtures/pnrg_envelope_torus.ri',
-  'tests/prd-gate/fixtures/posed_subs_distance_query_unresolvable.ri',
-  'tests/prd-gate/fixtures/purpose_nested_structure.ri',
-  'tests/prd-gate/fixtures/quantifier_expr_int_domain_resolves.ri',
-  'tests/prd-gate/fixtures/quantifier_expr_member_access_rejected.ri',
-  'tests/prd-gate/fixtures/quantifier_expr_range_domain_rejected.ri',
-  'tests/prd-gate/fixtures/r3b_displacement_at_selector_grammar.ri',
-  'tests/prd-gate/fixtures/raw_lambda_material_field_rejected.ri',
-  'tests/prd-gate/fixtures/revolute_silent_accept.ri',
-  'tests/prd-gate/fixtures/rotational_closure_prestate.ri',
-  'tests/prd-gate/fixtures/scalar_codomain_mismatch.ri',
-  'tests/prd-gate/fixtures/self_collection_count_redirect_rejected.ri',
-  'tests/prd-gate/fixtures/shear_angles_component_deg_compare_pre.ri',
-  'tests/prd-gate/fixtures/shear_angles_field_decl_pre.ri',
-  'tests/prd-gate/fixtures/shift_invert_modal_shifted.ri',
-  'tests/prd-gate/fixtures/shift_invert_modal_unshifted.ri',
-  'tests/prd-gate/fixtures/single_sub_pose_resolves.ri',
-  'tests/prd-gate/fixtures/sketch_auto_seed_target.ri',
-  'tests/prd-gate/fixtures/sketch_aux_let_premise.ri',
-  'tests/prd-gate/fixtures/sketch_block_target.ri',
-  'tests/prd-gate/fixtures/solver_unification_ineq_eq_penalty_offset.ri',
-  'tests/prd-gate/fixtures/solver_unification_ineq_eq_two_sided_control.ri',
-  'tests/prd-gate/fixtures/solver_unification_tangent_silent_accept.ri',
-  'tests/prd-gate/fixtures/spec_conformance_directive_block.ri',
-  'tests/prd-gate/fixtures/ssc_ineq_bracketed_strict.ri',
-  'tests/prd-gate/fixtures/ssc_refuted_pair.ri',
-  'tests/prd-gate/fixtures/ssc_single_root_free.ri',
-  'tests/prd-gate/fixtures/ssc_two_roots_free.ri',
-  'tests/prd-gate/fixtures/ssc_two_roots_strict.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_buckling_mode_coexist.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_mode_member.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_mode_member_modal.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_qualified_expr.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
-  'tests/prd-gate/fixtures/stdlib_ns_std_nonexistent_import.ri',
-  'tests/prd-gate/fixtures/stdlib_units_import_resolves.ri',
-  'tests/prd-gate/fixtures/subbody_objective_ignored.ri',
-  'tests/prd-gate/fixtures/transform3_unresolved.ri',
-  'tests/prd-gate/fixtures/typeparam_member_access.ri',
-  'tests/prd-gate/fixtures/uncons_box_no_error.ri',
-  'tests/prd-gate/fixtures/unit_curated_labels_ascii.ri',
-  'tests/prd-gate/fixtures/unit_middot_mul.ri',
-  'tests/prd-gate/fixtures/unit_nm_torque_immediate.ri',
-  'tests/prd-gate/fixtures/unknown_fn_silent_accept_baseline.ri',
-  'tests/prd-gate/fixtures/value_clean_eval_cells.ri',
-];
-
-// pg-drift-dir:allow — reviewed directory walk (task 6435). This ledger is the
-// one tracked consumer that globs tests/prd-gate/fixtures/ rather than naming
-// leaves. It does NOT void verify.sh's "adding a fixture is inert" premise:
-// the expectation below is asserted only over EXPECTED_CLEAN ∩ on-disk, so an
-// unpinned new fixture shifts diagnostic counters and nothing more. The pinned
-// subset IS gated — see _GUI_COUPLED_RI_FIXTURES in scripts/verify.sh and the
-// PG-DRIFT-GUI scenario in tests/infra/test_verify_scope.sh.
-const CORPUS_ROOTS = ['examples', 'tests/prd-gate/fixtures']; // pg-drift-dir:allow — reviewed, see above
-
-function collectRiFiles(relDir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(join(REPO_ROOT, relDir), { withFileTypes: true })) {
-    const rel = `${relDir}/${entry.name}`;
-    if (entry.isDirectory()) out.push(...collectRiFiles(rel));
-    else if (entry.name.endsWith('.ri')) out.push(rel);
-  }
-  return out;
-}
-
-// The three files named in "WHY THE LAST THREE FILES REMAIN" above — checked
-// below against the live not-clean set instead of only asserted in prose, so
-// a grammar change that starts parsing one of them clean fails loudly rather
-// than leaving a stale exclusion.
-const KNOWN_NOT_CLEAN = [
-  'tests/prd-gate/fixtures/arrow_type.ri',
-  'tests/prd-gate/fixtures/shear_angles_vec3_angle_param_pre.ri',
-  'tests/prd-gate/fixtures/shear_angles_vec3_wrongq_ctrl.ri',
-];
-
-// Wall-clock for the ledger below. The walk itself is fast — 329 files parse
-// in ~0.75 s when this file runs alone — but under the full suite (159 test
-// files across parallel workers) it is CPU-starved and overran vitest's 15 s
-// default, so the timeout is raised explicitly rather than left to chance.
-const LEDGER_TIMEOUT_MS = 120_000;
-
-describe('reify.grammar — corpus drift ledger', () => {
-  it('still parses every committed .ri that is expected to parse clean', () => {
-    // The walk and all ~329 parses live INSIDE the `it`, not in the describe
-    // body: a throw at collection time (a fixture removed mid-walk, an
-    // unreadable file, a pathological input) would otherwise take down every
-    // unrelated slice and snippet test in this file with an error that does
-    // not even name the offending path.
-    const allFiles = CORPUS_ROOTS.flatMap(collectRiFiles).sort();
-    const cleanSet = new Set(
-      allFiles.filter((p) => {
-        // A file that cannot be read or parsed counts as not-clean rather than
-        // aborting the suite.
-        try {
-          return countErrorNodes(readFixture(p)) === 0;
-        } catch {
-          return false;
-        }
-      }),
-    );
-
-    // Paths that have since been deleted or renamed drop out silently — this
-    // ledger tracks grammar capability, not corpus inventory.
-    const stillPresent = EXPECTED_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
-    const regressed = stillPresent.filter((p) => !cleanSet.has(p));
-
-    // Clean but NOT pinned — the ledger's blind spot, reported alongside the
-    // regression list so the coverage gap is always a measured number rather
-    // than a prose claim that goes stale (#5495 μ; the comment block above used
-    // to assert completeness it did not have).
-    const pinnedSet = new Set(EXPECTED_CLEAN);
-    const unpinnedClean = [...cleanSet].filter((p) => !pinnedSet.has(p));
-
-    expect(
-      regressed,
-      `These committed .ri files parsed with zero error nodes but no longer do — ` +
-        `the grammar regressed:\n${regressed.map((p) => `  ${p}`).join('\n')}\n` +
-        `(measured ${cleanSet.size} clean of ${allFiles.length} committed .ri files; ` +
-        `${stillPresent.length} of the ${EXPECTED_CLEAN.length} pinned paths still exist on disk; ` +
-        `${unpinnedClean.length} clean files are not pinned by this ledger)`,
-    ).toEqual([]);
-
-    // The converse of `regressed`: KNOWN_NOT_CLEAN names files this ledger
-    // currently expects to fail, so if the grammar gains the capability to
-    // parse one of them, that must fail loudly here rather than leave "WHY
-    // THE LAST THREE FILES REMAIN" above silently wrong.
-    const knownNotCleanPresent = KNOWN_NOT_CLEAN.filter((p) => existsSync(join(REPO_ROOT, p)));
-    const capabilityGained = knownNotCleanPresent.filter((p) => cleanSet.has(p));
-
-    expect(
-      capabilityGained,
-      `These files are listed in KNOWN_NOT_CLEAN ("WHY THE LAST THREE FILES ` +
-        `REMAIN" above) but now parse with zero error nodes — move each into ` +
-        `EXPECTED_CLEAN and drop it from KNOWN_NOT_CLEAN:\n` +
-        `${capabilityGained.map((p) => `  ${p}`).join('\n')}`,
-    ).toEqual([]);
-  }, LEDGER_TIMEOUT_MS);
 });

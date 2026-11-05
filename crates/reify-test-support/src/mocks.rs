@@ -2721,9 +2721,9 @@ mod tests {
     fn mock_geometry_kernel_tracks_ops() {
         let mut kernel = MockGeometryKernel::new();
         let op = GeometryOp::Box {
-            width: Value::length(0.08),
-            height: Value::length(0.1),
-            depth: Value::length(0.005),
+            size_x: Value::length(0.08),
+            size_y: Value::length(0.1),
+            size_z: Value::length(0.005),
         };
 
         let handle = kernel.execute(&op).unwrap();
@@ -2947,9 +2947,9 @@ mod tests {
             .unwrap();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
 
@@ -2988,9 +2988,9 @@ mod tests {
             .unwrap();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
         kernel
@@ -3024,9 +3024,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let base = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
 
@@ -3090,9 +3090,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let base = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
 
@@ -3155,9 +3155,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let left = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
         let right = kernel
@@ -3188,9 +3188,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let left = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
         let right = kernel
@@ -3222,9 +3222,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let left = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
         let right = kernel
@@ -3273,9 +3273,9 @@ mod tests {
             kernel = kernel.with_bbox_result(GeometryHandleId(2), payload);
         }
         let unit_box = GeometryOp::Box {
-            width: Value::length(1.0),
-            height: Value::length(1.0),
-            depth: Value::length(1.0),
+            size_x: Value::length(1.0),
+            size_y: Value::length(1.0),
+            size_z: Value::length(1.0),
         };
         let left = kernel.execute(&unit_box).unwrap();
         let right = kernel.execute(&unit_box).unwrap();
@@ -3416,9 +3416,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let profile = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.001),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.001),
             })
             .unwrap();
 
@@ -3444,9 +3444,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let profile = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.05),
-                depth: Value::length(0.001),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.05),
+                size_z: Value::length(0.001),
             })
             .unwrap();
 
@@ -3554,16 +3554,16 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.05),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.05),
             })
             .unwrap();
         let plane = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(1.0),
-                height: Value::length(1.0),
-                depth: Value::length(0.001),
+                size_x: Value::length(1.0),
+                size_y: Value::length(1.0),
+                size_z: Value::length(0.001),
             })
             .unwrap();
 
@@ -3632,9 +3632,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
 
@@ -3669,9 +3669,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.01),
-                height: Value::length(0.01),
-                depth: Value::length(0.01),
+                size_x: Value::length(0.01),
+                size_y: Value::length(0.01),
+                size_z: Value::length(0.01),
             })
             .unwrap();
 
@@ -3745,9 +3745,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.05),
-                height: Value::length(0.05),
-                depth: Value::length(0.05),
+                size_x: Value::length(0.05),
+                size_y: Value::length(0.05),
+                size_z: Value::length(0.05),
             })
             .unwrap();
 
@@ -3779,9 +3779,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.01),
-                height: Value::length(0.01),
-                depth: Value::length(0.01),
+                size_x: Value::length(0.01),
+                size_y: Value::length(0.01),
+                size_z: Value::length(0.01),
             })
             .unwrap();
 
@@ -3825,9 +3825,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.01),
-                height: Value::length(0.01),
-                depth: Value::length(0.01),
+                size_x: Value::length(0.01),
+                size_y: Value::length(0.01),
+                size_z: Value::length(0.01),
             })
             .unwrap();
 
@@ -3865,9 +3865,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
 
@@ -3894,9 +3894,9 @@ mod tests {
         let mut kernel = MockGeometryKernel::new();
         let target = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.1),
-                depth: Value::length(0.1),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.1),
+                size_z: Value::length(0.1),
             })
             .unwrap();
 
@@ -4146,9 +4146,9 @@ mod tests {
         // Create a box
         let box_h = kernel
             .execute(&GeometryOp::Box {
-                width: Value::length(0.1),
-                height: Value::length(0.2),
-                depth: Value::length(0.05),
+                size_x: Value::length(0.1),
+                size_y: Value::length(0.2),
+                size_z: Value::length(0.05),
             })
             .unwrap();
         assert_eq!(box_h.id, GeometryHandleId(1));
@@ -4750,9 +4750,9 @@ mod tests {
     fn failing_kernel_execute_returns_err() {
         let mut kernel = FailingMockGeometryKernel;
         let op = GeometryOp::Box {
-            width: Value::length(0.08),
-            height: Value::length(0.1),
-            depth: Value::length(0.005),
+            size_x: Value::length(0.08),
+            size_y: Value::length(0.1),
+            size_z: Value::length(0.005),
         };
         let result = kernel.execute(&op);
         assert!(result.is_err());

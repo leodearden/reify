@@ -1,0 +1,17 @@
+module occt_internals_fillet_translated_disjoint_union
+
+// PRD evidence fixture: docs/prds/v0_6/occt-crate-internals.md, leaf ζ (ReprPolicy).
+// A union of two disjoint boxes is a Compound, and fillet rejects it. Measured
+// on main 8e6ffcac9d (2026-10-12, target/debug/reify): v_direct = undef with
+// "local-feature operation requires a BRepKind::Solid input shape, got
+// Compound", but v_moved = 0.0000019511740277818842 m^3, because translate()
+// re-stamps the Compound as Solid. After ζ both are rejected the same way.
+structure def Probe {
+    let a = box(10mm, 10mm, 10mm)
+    let b = translate(box(10mm, 10mm, 10mm), 100mm, 0mm, 0mm)
+    let u = union(a, b)
+    let direct = fillet(u, 1mm)
+    let moved = fillet(translate(u, 0mm, 0mm, 10mm), 1mm)
+    let v_direct = volume(direct)
+    let v_moved = volume(moved)
+}

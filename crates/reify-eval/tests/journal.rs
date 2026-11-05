@@ -13,7 +13,7 @@ use reify_test_support::mocks::MockConstraintChecker;
 fn eval_populates_journal() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     engine.eval(&module);
 
@@ -57,7 +57,7 @@ fn eval_populates_journal() {
         if events.len() >= 2 {
             let first_started = events
                 .iter()
-                .position(|e| matches!(e.kind, EventKind::Started));
+                .position(|e| matches!(e.kind, EventKind::Started { .. }));
             let first_completed = events
                 .iter()
                 .position(|e| matches!(e.kind, EventKind::Completed { .. }));
@@ -73,7 +73,7 @@ fn eval_populates_journal() {
 fn edit_param_records_journal_events() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     engine.eval(&module);
@@ -114,7 +114,7 @@ fn edit_param_records_journal_events() {
     // Verify Started precedes Completed for volume in edit_param
     let started_pos = volume_events
         .iter()
-        .position(|e| matches!(e.kind, EventKind::Started));
+        .position(|e| matches!(e.kind, EventKind::Started { .. }));
     let completed_pos = volume_events
         .iter()
         .position(|e| matches!(e.kind, EventKind::Completed { .. }));
@@ -146,7 +146,7 @@ fn edit_param_records_journal_events() {
             .collect();
         let has_started = param_edit_events
             .iter()
-            .any(|e| matches!(e.kind, EventKind::Started));
+            .any(|e| matches!(e.kind, EventKind::Started { .. }));
         assert!(
             !has_started,
             "{} should NOT have Started events in edit_param version",
@@ -161,7 +161,7 @@ fn edit_param_records_journal_events() {
 fn eval_cached_records_cache_hit_events() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // First call: cold start — should record Started/Completed
     let v0 = VersionId(0);
@@ -175,7 +175,7 @@ fn eval_cached_records_cache_hit_events() {
     let cold_width = engine.journal().events_for_node(&width_node);
     let has_started = cold_width
         .iter()
-        .any(|e| matches!(e.kind, EventKind::Started));
+        .any(|e| matches!(e.kind, EventKind::Started { .. }));
     assert!(has_started, "cold start should have Started for width");
 
     // Second call with same version: should get CacheHit via fast path
@@ -220,7 +220,7 @@ fn eval_cached_records_cache_hit_events() {
         .collect();
     let dirty_has_started = dirty_events
         .iter()
-        .any(|e| matches!(e.kind, EventKind::Started));
+        .any(|e| matches!(e.kind, EventKind::Started { .. }));
     let dirty_has_cache_hit = dirty_events
         .iter()
         .any(|e| matches!(e.kind, EventKind::CacheHit));

@@ -46,7 +46,7 @@ vi.mock('../bridge', () => ({
   onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
 }));
 
-import { convertRawGuiState } from '../types';
+import { convertRawGuiState, CONSTRAINT_STATUSES } from '../types';
 import type { ConstraintData, RawGuiState } from '../types';
 import { createEngineStore } from '../stores/engineStore';
 import { ConstraintPanel } from '../panels/ConstraintPanel';
@@ -136,6 +136,16 @@ function badgeFor(container: HTMLElement, nodeId: string): HTMLElement {
   return badge;
 }
 
+describe('constraint verdict wire contract — the frontend’s closed set is exactly the engine’s', () => {
+  it('CONSTRAINT_STATUSES equals the set of tokens engine.rs emits, in both directions', () => {
+    // The cases below prove every engine token is accepted and rendered; this
+    // closes the other direction: the union carries no token the producer
+    // never emits (e.g. one left stale by a Rust rename).
+    const emitted = new Set(extractVerdictTokens(readEngineSource()).values());
+    expect(emitted).toStrictEqual(new Set(CONSTRAINT_STATUSES));
+  });
+});
+
 describe('constraint verdict wire contract — ConstraintPanel renders the engine’s own tokens', () => {
   it('the Satisfied verdict renders ✓ and data-status="satisfied"', () => {
     const badge = badgeFor(renderPanel(), SATISFIED_ID);
@@ -164,8 +174,9 @@ describe('constraint verdict wire contract — StatusBar counts the engine’s o
     const count = (status: string): string | null =>
       container.querySelector(`[data-status="${status}"]`)?.textContent ?? null;
 
-    // `constraintSummary` buckets anything it does not recognise as
-    // indeterminate, so a casing desync shows up here as 0 / 0 / 3.
+    // A casing or vocabulary desync never reaches this count: it throws at
+    // convertRawGuiState in this file's beforeAll, naming the token, which
+    // fails every case here.
     expect(count('satisfied')).toBe('1');
     expect(count('violated')).toBe('1');
     expect(count('indeterminate')).toBe('1');
@@ -181,9 +192,9 @@ describe('constraint verdict wire contract — the violated-first sort', () => {
     // cases above anchor on `data-testid="constraint-row-<node_id>"` instead of
     // asserting DOM order.
     //
-    // It doubles as a desync detector: STATUS_PRIORITY is keyed lower-case and
-    // falls back to `?? 1`, so under a PascalCase payload every row scores 1,
-    // the sort is a no-op, and this reads back in payload order instead.
+    // A casing or vocabulary desync never reaches this sort: it throws at
+    // convertRawGuiState in this file's beforeAll, naming the token, which
+    // fails every case here.
     const ids = [...renderPanel().querySelectorAll('[data-testid^="constraint-row-"]')].map((e) =>
       e.getAttribute('data-testid')?.replace('constraint-row-', ''),
     );

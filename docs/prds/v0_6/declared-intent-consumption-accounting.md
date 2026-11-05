@@ -19,7 +19,7 @@ A designer who declares intent the engine cannot or does not consume today gets 
 ### §0.1 — What this is NOT (G4 boundaries, fixed by the spawn brief + sibling PRDs)
 
 - **NOT the exit-code gate (INV-SF-2).** Error-severity-vs-exit-code coherence (e.g. the investigation's relate operand-type-error-exits-0 finding) is owned by the sibling "eradicate silent undef" PRD's severity gate. This PRD emits correctly-coded, correctly-severitied diagnostics and lets that gate own process exit codes. The ONE exception: mechanism D's inert class fails `reify check` through check's **native constraint-outcome path** (`check_fails`, `main.rs:2299-2305`) — an outcome-class change, not a severity-gate change.
-- **NOT the discrete-solve capability.** CpSat registration/default-ON, `DiscreteFirstFallback` routing, let-tracing, `Int`/`discrete_set` domains, and minimize-over-discrete actually *solving* are owned by `discrete-cost-minimisation.md` (PRD 2, authored 2026-07-24, task/5396). This PRD owns only the **accounting**: mechanism B derives its verdicts from the **live registry contents**, so it is truthful before AND after PRD 2 lands (§3 decision 2).
+- **NOT the discrete-solve capability.** CpSat registration/default-ON, `DiscreteFirstFallback` routing, let-tracing, `Int`/`discrete_set` domains, and minimize-over-discrete actually *solving* are owned by `discrete-cost-minimisation.md` (PRD 2, authored 2026-07-24, task/5396). This PRD owns only the **accounting**: mechanism B derives its verdicts from the **live registry contents**, so it is truthful before AND after PRD 2 lands (§3 decision 2). *(2026-10-08: `discrete_set` catalogs are owned by `docs/prds/v0_6/catalog-membership-constraint.md` — membership is the constraint `x in C`.)*
 - **NOT objective routing.** The component-0 fallback (`registry.rs:208-210`) and objective-side transitive coupling into the *solve* are PRD 2 α's fold/let-tracing territory; mechanism C reads transitive reachability (via landed `build_dependent_cells`, #5188) but changes no routing (§3 decision 3).
 - **NOT undef provenance (INV-SF-1) or placeholder types (INV-SF-5)** — sibling PRDs from the same investigation.
 - **NOT deep relate diagnostics.** The DOF ledger, `reify explain`, and `UndefCause::SolveFailed` refinements for auto-ful relate scopes are #4388 (geometric-relations θ, pending). Mechanism A owns only the zero-auto arm.
@@ -215,7 +215,7 @@ Bare-B+H-light shape; Greek labels, task IDs at decompose. **Test-layout note (d
 ## §9 — Out of scope for this PRD
 
 - Exit-code semantics for Error diagnostics (INV-SF-2) → sibling silent-undef PRD. (ζ's inert-fails-check rides the native outcome path only.)
-- Discrete/mixed solve capability, CpSat wiring, let-tracing, `Int`/`discrete_set` domains → PRD 2 (task/5396).
+- Discrete/mixed solve capability, CpSat wiring, let-tracing, `Int`/`discrete_set` domains → PRD 2 (task/5396). *(2026-10-08: `discrete_set` → `docs/prds/v0_6/catalog-membership-constraint.md`.)*
 - Objective-only component construction (making unconstrained `minimize` solve) — C diagnoses its absence; building it is a follow-up capability with no current owner (candidate future PRD; noted in η's spec prose as a named gap).
 - Deep relate diagnostics for auto-ful scopes (DOF ledger, `reify explain`) → #4388.
 - Uniqueness honesty (continuous #5388; discrete PRD 2 b4).

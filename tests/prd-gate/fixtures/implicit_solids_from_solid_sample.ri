@@ -1,0 +1,6 @@
+// B13: sdf_from_solid(box, 1mm) sampled at origin.
+structure def FromSolidSample {
+    let a = box(20mm, 20mm, 20mm)
+    let f = sdf_from_solid(a, 1mm)
+    let s0 = sample(f, point3(0mm, 0mm, 0mm))
+}

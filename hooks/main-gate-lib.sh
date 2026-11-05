@@ -2,18 +2,19 @@
 # hooks/main-gate-lib.sh — shared helpers for the main-branch landing gate.
 #
 # Sourced by hooks/pre-commit, hooks/pre-merge-commit, hooks/reference-transaction
-# and scripts/land.sh. Implements a tiny file-sentinel handshake so the
+# and scripts/main-gate-mark.sh. Implements a tiny file-sentinel handshake so the
 # reference-transaction tripwire can tell a *sanctioned* move of refs/heads/main
-# (one made right after a verify gate passed, or via scripts/land.sh) from an
-# *unsanctioned* one (a raw `git update-ref` / `git reset` / fast-forward that
-# skips the pre-commit / pre-merge-commit verify gates entirely — the exact gap
-# through which an unverified GUI-typecheck break reached main).
+# (one made right after a verify gate passed) from an *unsanctioned* one (a raw
+# `git update-ref` / `git reset` / fast-forward that skips the pre-commit /
+# pre-merge-commit verify gates entirely — the exact gap through which an
+# unverified GUI-typecheck break reached main).
 #
 # Why a file and not an env var: git fires sibling hook processes that do not
 # share an environment, so the sanctioning step (pre-commit / pre-merge-commit /
-# land.sh) and the consuming step (reference-transaction) cannot hand off a flag
-# in memory. The sentinel lives in the *common* git dir (git rev-parse
-# --git-common-dir) so it is one shared location across every linked worktree.
+# scripts/main-gate-mark.sh) and the consuming step (reference-transaction)
+# cannot hand off a flag in memory. The sentinel lives in the *common* git dir
+# (git rev-parse --git-common-dir) so it is one shared location across every
+# linked worktree.
 
 # main_gate_sentinel — path to the one-shot "this main move is sanctioned" marker.
 main_gate_sentinel() {
@@ -29,11 +30,41 @@ main_gate_logfile() {
     echo "$(git rev-parse --git-common-dir)/reify-main-gate.log"
 }
 
-# main_gate_mark — create the sentinel. Called ONLY after a verify gate passes
-# (pre-commit / pre-merge-commit) or by scripts/land.sh just before its
-# sanctioned merge. An empty file is enough; presence is the signal.
+# main_gate_tip — print the refs/heads/main oid a token binds to (non-zero on an
+# unborn main).
+main_gate_tip() {
+    git rev-parse --verify --quiet refs/heads/main
+}
+
+# main_gate_mark — write the sentinel holding the main tip it sanctions a move
+# FROM. Called ONLY after a verify gate passes. Published by rename so a reader
+# never sees a half-written token; a failed publish removes its temp file and
+# returns 1. An unborn main writes nothing and returns 0: hooks that end with
+# this call must not fail a commit over it.
 main_gate_mark() {
-    : > "$(main_gate_sentinel)"
+    local _tip _sentinel _tmp
+    _tip="$(main_gate_tip)" || return 0
+    _sentinel="$(main_gate_sentinel)"
+    _tmp="${_sentinel}.tmp.$$"
+    { printf '%s\n' "$_tip" > "$_tmp" && mv -f "$_tmp" "$_sentinel"; } || { rm -f "$_tmp"; return 1; }
+}
+
+# main_gate_unmark — compare-and-delete: remove the sentinel only when it holds
+# the token a mark would write now (cleanup after a failed CAS), never a token
+# bound to another tip. Always returns 0.
+main_gate_unmark() {
+    local _sentinel _tip
+    _sentinel="$(main_gate_sentinel)"
+    [ -e "$_sentinel" ] || return 0
+    _tip="$(main_gate_tip)" || return 0
+    [ "$(main_gate_token)" = "$_tip" ] && rm -f "$_sentinel"
+    return 0
+}
+
+# main_gate_token — print the sentinel's token: the main tip the mark was bound
+# to. An empty token matches no tip, so an unbound mark sanctions nothing.
+main_gate_token() {
+    cat "$(main_gate_sentinel)" 2>/dev/null
 }
 
 # main_gate_log MSG — append a timestamped line to the audit log and echo it to

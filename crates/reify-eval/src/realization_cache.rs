@@ -65,11 +65,22 @@
 //! keeping the API decoupled from the internal storage shape and preserving the
 //! allocation-free read path.  Task 2641 may upgrade to `&RealizationNodeId` if richer
 //! identity is needed.
+//!
+//! ## Families (γ #4730, PRD `docs/prds/v0_6/selective-realization-eviction.md` D4)
+//!
+//! An entity's *family* is everything a re-execution of that entity's realization
+//! must not reuse: its terminal entry under every repr kind, options hash and
+//! tolerance, plus every cross-kernel conversion intermediate it owns. Intermediates
+//! are cached under a key derived from `(owner, ConversionSlot)` by
+//! [`RealizationCache::intermediate_key`] — the single home of that grammar — and
+//! inserted through [`RealizationCache::insert_intermediate`], which records the
+//! owner in a structured index. [`RealizationCache::evict_family`] removes the whole
+//! family through that index, never by parsing key strings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reify_core::ContentHash;
-use reify_ir::ReprKind;
+use reify_ir::{GeometryHandleId, ReprKind};
 
 use crate::tolerance_bucket::ToleranceBucket;
 
@@ -84,6 +95,19 @@ use crate::tolerance_bucket::ToleranceBucket;
 /// once the option structs expose `ContentHash` output.  Grep for
 /// `NO_OPTIONS` to locate every replacement target.
 pub const NO_OPTIONS: ContentHash = ContentHash(0);
+
+/// Which input of its owning realization a cross-kernel conversion intermediate
+/// converts — the second half of an intermediate's cache identity (the first is
+/// the owning realization's entity; see [`RealizationCache::intermediate_key`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConversionSlot {
+    /// An input produced by the owning realization itself, identified by its
+    /// local step index — stable across identical rebuilds.
+    Step(usize),
+    /// An input produced outside the owning realization (a cross-realization
+    /// `Sub` operand), identified by its kernel handle id.
+    External(GeometryHandleId),
+}
 
 /// Cache keyed by `(entity_id, repr_kind, options_hash, tol: f64)`.
 ///
@@ -100,6 +124,18 @@ pub struct RealizationCache<V> {
     /// Monotonic lifetime count of NEW *terminal* realization entries.
     /// See [`RealizationCache::realization_entries`] for the full contract.
     terminal_entries: usize,
+    /// Owner entity → the intermediate keys it inserted through
+    /// [`RealizationCache::insert_intermediate`]. Family membership is read from
+    /// here, so [`RealizationCache::evict_family`] never parses a key.
+    ///
+    /// Invariant: every listed key holds at least one entry, and no owner lists
+    /// an empty set. Only a removal can empty a key, so
+    /// [`remove_intermediate`](Self::remove_intermediate) prunes a key it
+    /// empties, [`evict_family`](Self::evict_family) and [`clear`](Self::clear)
+    /// drop whole families, and every removal re-checks the invariant in debug
+    /// builds. Soft-capacity eviction never empties a key: a bucket evicts only
+    /// when it is over capacity.
+    intermediates_by_owner: HashMap<String, HashSet<String>>,
 }
 
 impl<V> RealizationCache<V> {
@@ -108,6 +144,7 @@ impl<V> RealizationCache<V> {
         Self {
             buckets: HashMap::new(),
             terminal_entries: 0,
+            intermediates_by_owner: HashMap::new(),
         }
     }
 
@@ -119,12 +156,13 @@ impl<V> RealizationCache<V> {
     /// - **Monotonic.** Incremented only by an *accepted* [`insert_terminal`](Self::insert_terminal)
     ///   (one that returns `true`, i.e. genuinely realized and cached new geometry).
     ///   Never decremented — not by [`remove`](Self::remove), not by
-    ///   [`clear_entity`](Self::clear_entity), and not by the whole-cache
+    ///   [`evict_family`](Self::evict_family), and not by the whole-cache
     ///   [`clear`](Self::clear). No method on this type can lower the count. See
     ///   [`clear`](Self::clear) for why that survives the whole-cache flush by
     ///   construction.
-    /// - **Terminal only.** Plain [`insert`](Self::insert) — the intermediate
-    ///   cross-kernel conversion path — is deliberately NOT counted. Conversion
+    /// - **Terminal only.** [`insert_intermediate`](Self::insert_intermediate) —
+    ///   the cross-kernel conversion path — and plain [`insert`](Self::insert)
+    ///   are deliberately NOT counted. Conversion
     ///   intermediates are steps *within* one realization, not realizations.
     /// - **NOT a live size.** This is deliberately not [`len`](Self::len): each
     ///   [`ToleranceBucket`] caps at `SOFT_CAPACITY` and evicts its loosest entry
@@ -139,8 +177,10 @@ impl<V> RealizationCache<V> {
     /// Drops every cached entry, leaving the cache empty.
     ///
     /// This is the whole-cache flush behind
-    /// [`Engine::clear_realization_cache`](crate::Engine::clear_realization_cache)
-    /// (and therefore behind every `edit_param` / `edit_source`).
+    /// [`Engine::clear_realization_cache`](crate::Engine::clear_realization_cache),
+    /// the public escape hatch and the GUI whole-file reload. Edits do not
+    /// call it: `edit_param` / `edit_source` evict only stale families
+    /// through [`evict_family`](Self::evict_family).
     ///
     /// **Monotonicity holds by construction.** The flush clears `buckets`
     /// in place and structurally cannot reach `terminal_entries`, so the
@@ -148,9 +188,8 @@ impl<V> RealizationCache<V> {
     /// [`realization_entries`](Self::realization_entries) survives it without
     /// any save/restore dance at the call site. Reseating the whole struct to
     /// [`RealizationCache::new`] instead would zero the counter — that is
-    /// exactly what this method exists to make impossible. Because
-    /// `edit_param` / `edit_source` flush on every edit, a reset-on-flush
-    /// counter would be zeroed constantly and useless for cross-edit
+    /// exactly what this method exists to make impossible: a reset-on-flush
+    /// counter would be zeroed by every reload and useless for cross-reload
     /// measurement.
     ///
     /// Pinned by `clear_empties_the_cache_but_preserves_realization_entries`
@@ -159,6 +198,7 @@ impl<V> RealizationCache<V> {
     /// `tests/harness_tolerance/tolerance_wiring_e2e.rs`.
     pub fn clear(&mut self) {
         self.buckets.clear();
+        self.intermediates_by_owner.clear();
     }
 
     /// Inserts a **terminal realization** at `(entity, repr_kind, options_hash, tol)`,
@@ -172,7 +212,8 @@ impl<V> RealizationCache<V> {
     ///
     /// This is the counted half of a deliberate split. The realization pipeline has
     /// exactly two cache-insert sites: the cross-kernel *conversion intermediate*
-    /// site uses plain [`insert`](Self::insert) and is uncounted, while the terminal
+    /// site uses [`insert_intermediate`](Self::insert_intermediate) and is
+    /// uncounted, while the terminal
     /// realization site (gated on `is_terminal_realization`, in `engine_build.rs`)
     /// uses this method. Keeping the split in two named methods — rather than a
     /// boolean parameter — makes it explicit at every call site which side it is on.
@@ -204,10 +245,11 @@ impl<V> RealizationCache<V> {
     /// `options_hash = ContentHash(0)` is the "no options" sentinel (PRD §4).
     ///
     /// **Uncounted path.** This does NOT move
-    /// [`realization_entries`](Self::realization_entries) — it is the
-    /// intermediate/conversion insert. Use
+    /// [`realization_entries`](Self::realization_entries). Use
     /// [`insert_terminal`](Self::insert_terminal) at the terminal-realization site
-    /// so the realization is counted.
+    /// so the realization is counted, and
+    /// [`insert_intermediate`](Self::insert_intermediate) for a conversion
+    /// intermediate so [`evict_family`](Self::evict_family) can reach it.
     ///
     /// **Allocation discipline:** the entity `String` key is allocated at most once per
     /// `(entity, repr_kind)` pair, regardless of `options_hash`.  Subsequent inserts at
@@ -281,9 +323,11 @@ impl<V> RealizationCache<V> {
     ///
     /// Mirrors [`lookup`](Self::lookup)'s key navigation but with `get_mut`, and
     /// delegates the bucket-local removal to [`ToleranceBucket::remove`] — an
-    /// **exact** tolerance match, NOT partial-order satisfaction. Used by the
-    /// intermediate-cache rollback (task 4050 step-14): a failed realization
-    /// drops exactly the keys it inserted, leaving every sibling slot intact.
+    /// **exact** tolerance match, NOT partial-order satisfaction.
+    ///
+    /// For a terminal entry. A conversion intermediate is removed through
+    /// [`remove_intermediate`](Self::remove_intermediate), which also keeps its
+    /// owner's family exact.
     ///
     /// Now-empty inner maps are left in place (cheap; `is_empty`/`len` already
     /// tolerate empty buckets), mirroring the no-prune policy elsewhere in the
@@ -294,7 +338,8 @@ impl<V> RealizationCache<V> {
     /// In debug builds, panics if `tol` is NaN, infinite, or negative (forwards
     /// [`ToleranceBucket::remove`]'s precondition) — but only once an actual
     /// bucket is reached; an absent `(entity, repr_kind, options_hash)` returns
-    /// `None` before any tolerance check.
+    /// `None` before any tolerance check. Also panics in debug builds if this
+    /// removes the last entry of an owned intermediate key.
     pub fn remove(
         &mut self,
         entity: &str,
@@ -302,26 +347,146 @@ impl<V> RealizationCache<V> {
         tol: f64,
         options_hash: ContentHash,
     ) -> Option<V> {
+        let removed = self.remove_exact(entity, repr_kind, tol, options_hash);
+        self.debug_assert_owned_keys_hold_entries();
+        removed
+    }
+
+    fn remove_exact(
+        &mut self,
+        key: &str,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+    ) -> Option<V> {
         self.buckets
             .get_mut(&repr_kind)
-            .and_then(|inner| inner.get_mut(entity))
+            .and_then(|inner| inner.get_mut(key))
             .and_then(|by_options| by_options.get_mut(&options_hash))
             .and_then(|b| b.remove(tol))
     }
 
-    /// Remove ALL cached entries for `entity` across every `ReprKind` and tolerance.
+    /// Whether any bucket under `key` still holds an entry.
+    fn holds_any_entry(&self, key: &str) -> bool {
+        self.buckets
+            .values()
+            .filter_map(|inner| inner.get(key))
+            .any(|by_options| by_options.values().any(|b| !b.is_empty()))
+    }
+
+    /// Checks the `intermediates_by_owner` invariant in debug builds.
+    fn debug_assert_owned_keys_hold_entries(&self) {
+        #[cfg(debug_assertions)]
+        for (owner, keys) in &self.intermediates_by_owner {
+            debug_assert!(
+                !keys.is_empty(),
+                "{owner} lists an empty intermediate family"
+            );
+            for key in keys {
+                debug_assert!(
+                    self.holds_any_entry(key),
+                    "{owner}'s family lists intermediate key {key:?}, which holds no entry: \
+                     remove a conversion intermediate through `remove_intermediate`"
+                );
+            }
+        }
+    }
+
+    /// The cache key of the conversion intermediate that `owner`'s realization
+    /// produced for input `slot` — the single home of the intermediate key
+    /// grammar.
     ///
-    /// Used by the δ (task 4740) re-demand hash gate to invalidate stale geometry
-    /// for a realization whose input-cone hash has changed (i.e. the upstream scalar
-    /// values that feed the geometry ops have been updated since the last dispatch).
-    /// This is a forward-looking path: until eviction γ (task 4730) lands selective
-    /// retention, `clear_realization_cache()` at `edit_param` entry already removes
-    /// all entries, so `clear_entity` is currently a no-op in practice (the entity's
-    /// bucket will be empty).  The method is added now so the hash gate can be
-    /// wired correctly without a follow-up (esc-4740-29).
-    pub fn clear_entity(&mut self, entity: &str) {
+    /// The key is stable across identical rebuilds of the owning realization (so
+    /// a rebuild reuses the intermediate) and distinct per slot. It embeds a `#`,
+    /// which cannot occur in a DSL entity identifier, so it never collides with a
+    /// real entity's terminal key.
+    pub fn intermediate_key(owner: &str, slot: ConversionSlot) -> String {
+        match slot {
+            ConversionSlot::Step(idx) => format!("{owner}#conv-step{idx}"),
+            ConversionSlot::External(handle) => format!("{owner}#conv-ext{}", handle.0),
+        }
+    }
+
+    /// Inserts the conversion intermediate `owner`'s realization produced for
+    /// input `slot`, at `(intermediate_key(owner, slot), repr_kind, options_hash,
+    /// tol)`, and records it as part of `owner`'s family.
+    ///
+    /// Uncounted: an intermediate is a step *within* one realization, so this
+    /// never moves [`realization_entries`](Self::realization_entries). Returns
+    /// [`insert`](Self::insert)'s accepted/dominated verdict.
+    pub fn insert_intermediate(
+        &mut self,
+        owner: &str,
+        slot: ConversionSlot,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+        val: V,
+    ) -> bool {
+        let key = Self::intermediate_key(owner, slot);
+        let inserted = self.insert(&key, repr_kind, tol, options_hash, val);
+        match self.intermediates_by_owner.get_mut(owner) {
+            Some(keys) => {
+                keys.insert(key);
+            }
+            None => {
+                self.intermediates_by_owner
+                    .insert(owner.to_owned(), HashSet::from([key]));
+            }
+        }
+        inserted
+    }
+
+    /// Removes the conversion intermediate `owner`'s realization cached for
+    /// input `slot` at *exactly* `(repr_kind, tol, options_hash)` — see
+    /// [`remove`](Self::remove) for the exact-match semantics. Used by the
+    /// intermediate-cache rollback (task 4050 step-14): a failed realization
+    /// drops exactly the intermediates it inserted, leaving every sibling slot
+    /// intact.
+    ///
+    /// When this empties the slot's key, the key also leaves `owner`'s family,
+    /// so the family lists only keys the cache still holds.
+    pub fn remove_intermediate(
+        &mut self,
+        owner: &str,
+        slot: ConversionSlot,
+        repr_kind: ReprKind,
+        tol: f64,
+        options_hash: ContentHash,
+    ) -> Option<V> {
+        let key = Self::intermediate_key(owner, slot);
+        let removed = self.remove_exact(&key, repr_kind, tol, options_hash);
+        if !self.holds_any_entry(&key)
+            && let Some(keys) = self.intermediates_by_owner.get_mut(owner)
+        {
+            keys.remove(&key);
+            if keys.is_empty() {
+                self.intermediates_by_owner.remove(owner);
+            }
+        }
+        self.debug_assert_owned_keys_hold_entries();
+        removed
+    }
+
+    /// Evicts `entity`'s whole family: its terminal entries under every
+    /// `ReprKind`, options hash and tolerance, and every conversion intermediate
+    /// it owns (see the module docs, "Families").
+    ///
+    /// Called by selective realization eviction at the `edit_param` /
+    /// `edit_source` compare sites for every entity an edit made stale, and by
+    /// the re-demand hash gate (task 4740) for a realization whose input-cone
+    /// hash moved. A no-op for an absent entity. Never touches
+    /// [`realization_entries`](Self::realization_entries).
+    pub fn evict_family(&mut self, entity: &str) {
+        let owned = self
+            .intermediates_by_owner
+            .remove(entity)
+            .unwrap_or_default();
         for by_entity in self.buckets.values_mut() {
             by_entity.remove(entity);
+            for key in &owned {
+                by_entity.remove(key);
+            }
         }
     }
 
@@ -975,8 +1140,9 @@ mod tests {
     ///
     /// This is the split that makes B9's "exactly 1" achievable: the
     /// OCCT→gmsh VolumeMesh route caches per-step conversion intermediates
-    /// (`engine_build.rs`, keys `"{entity}#conv-step{N}"`) through `insert`,
-    /// and those are steps *within* one realization, not realizations.
+    /// (`engine_build.rs`) through `insert_intermediate`, which delegates to
+    /// `insert`, and those are steps *within* one realization, not
+    /// realizations.
     #[test]
     fn plain_insert_never_increments_realization_entries() {
         let mut cache = RealizationCache::<u32>::new();
@@ -1000,13 +1166,28 @@ mod tests {
     }
 
     /// (e) The counter is a LIFETIME metric, not a live size: neither `remove`
-    /// nor `clear_entity` decrements it.
+    /// nor `evict_family` decrements it, and an owned conversion intermediate
+    /// is never counted on the way in.
     #[test]
-    fn remove_and_clear_entity_do_not_decrement_realization_entries() {
+    fn remove_and_evict_family_do_not_decrement_realization_entries() {
+        use super::ConversionSlot;
+
         let mut cache = RealizationCache::<u32>::new();
         assert!(cache.insert_terminal("Body", ReprKind::Mesh, 0.01, ContentHash(0), 1));
         assert!(cache.insert_terminal("Other", ReprKind::Mesh, 0.01, ContentHash(0), 2));
-        assert_eq!(cache.realization_entries(), 2);
+        assert!(cache.insert_intermediate(
+            "Other",
+            ConversionSlot::Step(0),
+            ReprKind::Mesh,
+            0.01,
+            ContentHash(0),
+            3,
+        ));
+        assert_eq!(
+            cache.realization_entries(),
+            2,
+            "an owned conversion intermediate must not be counted as a realization"
+        );
 
         assert_eq!(
             cache.remove("Body", ReprKind::Mesh, 0.01, ContentHash(0)),
@@ -1019,13 +1200,260 @@ mod tests {
             "`remove` must NOT decrement the monotonic lifetime counter"
         );
 
-        cache.clear_entity("Other");
+        cache.evict_family("Other");
         assert_eq!(
             cache.realization_entries(),
             2,
-            "`clear_entity` must NOT decrement the monotonic lifetime counter"
+            "`evict_family` must NOT decrement the monotonic lifetime counter"
         );
-        assert!(cache.is_empty(), "both entries should now be gone");
+        assert!(cache.is_empty(), "every entry should now be gone");
+    }
+
+    // ---------------------------------------------------------------------
+    // γ (#4730): `evict_family` — the keyed eviction primitive behind
+    // selective realization eviction (PRD
+    // `docs/prds/v0_6/selective-realization-eviction.md` D4). An entity's
+    // FAMILY is its terminal key under every repr kind, options hash and
+    // tolerance, PLUS every cross-kernel conversion intermediate it owns:
+    // those intermediates are keyed stably across rebuilds, so leaving one
+    // behind would hand a re-executed realization its OLD converted input.
+    // ---------------------------------------------------------------------
+
+    /// Every repr-kind, tolerance and options-hash slot of the evicted entity
+    /// goes; a sibling entity is untouched.
+    #[test]
+    fn evict_family_removes_every_repr_tol_and_options_variant_of_the_entity() {
+        use super::NO_OPTIONS;
+
+        let mut cache = RealizationCache::<u32>::new();
+        // Looser first: a looser insert behind a tighter one is a dominated hit.
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-4, NO_OPTIONS, 1));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-6, NO_OPTIONS, 2));
+        assert!(cache.insert_terminal("A", ReprKind::Mesh, 1e-6, NO_OPTIONS, 3));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-6, ContentHash(7), 4));
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-6, NO_OPTIONS, 5));
+
+        cache.evict_family("A");
+
+        assert_eq!(cache.lookup("A", ReprKind::BRep, 1e-4, NO_OPTIONS), None);
+        assert_eq!(cache.lookup("A", ReprKind::BRep, 1e-6, NO_OPTIONS), None);
+        assert_eq!(cache.lookup("A", ReprKind::Mesh, 1e-6, NO_OPTIONS), None);
+        assert_eq!(
+            cache.lookup("A", ReprKind::BRep, 1e-6, ContentHash(7)),
+            None
+        );
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-6, NO_OPTIONS),
+            Some(&5),
+            "a sibling entity's family must survive"
+        );
+        assert_eq!(cache.len(), 1, "only B's entry may remain");
+    }
+
+    /// The family includes the conversion intermediates the entity OWNS, and
+    /// membership is by owner, never by name prefix: evicting "A" leaves "AB"
+    /// whole.
+    #[test]
+    fn evict_family_removes_the_entitys_conversion_intermediates_but_not_a_name_prefix_sibling() {
+        use super::{ConversionSlot, NO_OPTIONS};
+        use reify_ir::GeometryHandleId;
+
+        let tol = 1e-6;
+        let step0 = ConversionSlot::Step(0);
+        let ext42 = ConversionSlot::External(GeometryHandleId(42));
+        let key = |owner: &str, slot| RealizationCache::<u32>::intermediate_key(owner, slot);
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", step0, ReprKind::Mesh, tol, NO_OPTIONS, 1));
+        assert!(cache.insert_intermediate("A", ext42, ReprKind::Mesh, tol, NO_OPTIONS, 2));
+        assert!(cache.insert_intermediate("AB", step0, ReprKind::Mesh, tol, NO_OPTIONS, 3));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, tol, NO_OPTIONS, 4));
+        assert!(cache.insert_terminal("AB", ReprKind::BRep, tol, NO_OPTIONS, 5));
+        assert_eq!(
+            cache.lookup(&key("A", step0), ReprKind::Mesh, tol, NO_OPTIONS),
+            Some(&1),
+            "premise: an owned intermediate is servable through its key"
+        );
+
+        cache.evict_family("A");
+
+        assert_eq!(
+            cache.lookup(&key("A", step0), ReprKind::Mesh, tol, NO_OPTIONS),
+            None
+        );
+        assert_eq!(
+            cache.lookup(&key("A", ext42), ReprKind::Mesh, tol, NO_OPTIONS),
+            None
+        );
+        assert_eq!(cache.lookup("A", ReprKind::BRep, tol, NO_OPTIONS), None);
+        assert_eq!(
+            cache.lookup(&key("AB", step0), ReprKind::Mesh, tol, NO_OPTIONS),
+            Some(&3),
+            "a name-prefix sibling's intermediate must survive"
+        );
+        assert_eq!(
+            cache.lookup("AB", ReprKind::BRep, tol, NO_OPTIONS),
+            Some(&5),
+            "a name-prefix sibling's terminal must survive"
+        );
+    }
+
+    /// PRD D4/§6 "tolerance interplay": evicting one family leaves a
+    /// survivor's tolerance partial order exactly as it was.
+    #[test]
+    fn evict_family_composes_with_the_tolerance_partial_order_of_survivors() {
+        use super::NO_OPTIONS;
+        use crate::tolerance_bucket::SOFT_CAPACITY;
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-4, NO_OPTIONS, 40));
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-6, NO_OPTIONS, 60));
+        assert!(cache.insert_terminal("A", ReprKind::BRep, 1e-6, NO_OPTIONS, 1));
+        let survivor_len = cache.bucket_len("B", ReprKind::BRep, NO_OPTIONS);
+        assert_eq!(survivor_len, 2);
+
+        cache.evict_family("A");
+
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-5, NO_OPTIONS),
+            Some(&60),
+            "a tighter survivor entry satisfies a looser request"
+        );
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-3, NO_OPTIONS),
+            Some(&40),
+            "the loosest satisfying survivor entry is served"
+        );
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-7, NO_OPTIONS),
+            None,
+            "no survivor entry is tight enough"
+        );
+        assert_eq!(
+            cache.bucket_len("B", ReprKind::BRep, NO_OPTIONS),
+            survivor_len
+        );
+
+        for (i, tol) in [1e-7, 1e-8, 1e-9, 1e-10].into_iter().enumerate() {
+            assert!(cache.insert_terminal("B", ReprKind::BRep, tol, NO_OPTIONS, i as u32));
+        }
+        assert_eq!(
+            cache.bucket_len("B", ReprKind::BRep, NO_OPTIONS),
+            SOFT_CAPACITY,
+            "the survivor bucket still caps at SOFT_CAPACITY"
+        );
+    }
+
+    #[test]
+    fn evict_family_on_an_absent_entity_is_a_no_op() {
+        use super::NO_OPTIONS;
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_terminal("B", ReprKind::BRep, 1e-6, NO_OPTIONS, 1));
+        let before = cache.len();
+
+        cache.evict_family("Absent");
+
+        assert_eq!(cache.len(), before);
+        assert_eq!(
+            cache.lookup("B", ReprKind::BRep, 1e-6, NO_OPTIONS),
+            Some(&1)
+        );
+    }
+
+    /// After the whole-cache `clear`, intermediate ownership recorded before
+    /// it must not linger: an intermediate inserted after the flush is still
+    /// reached by `evict_family`.
+    #[test]
+    fn clear_also_forgets_intermediate_ownership() {
+        use super::{ConversionSlot, NO_OPTIONS};
+
+        let slot = ConversionSlot::Step(0);
+        let key = RealizationCache::<u32>::intermediate_key("A", slot);
+
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 1));
+        cache.clear();
+        assert!(cache.is_empty());
+
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 2));
+        cache.evict_family("A");
+
+        assert_eq!(cache.lookup(&key, ReprKind::Mesh, 1e-6, NO_OPTIONS), None);
+        assert!(cache.is_empty());
+    }
+
+    /// The rollback removes one exact entry; the slot's other entry stays
+    /// servable and stays in the owner's family.
+    #[test]
+    fn remove_intermediate_keeps_the_slot_in_the_family_while_it_holds_an_entry() {
+        use super::{ConversionSlot, NO_OPTIONS};
+
+        let slot = ConversionSlot::Step(0);
+        let key = RealizationCache::<u32>::intermediate_key("A", slot);
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-4, NO_OPTIONS, 1));
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 2));
+
+        assert_eq!(
+            cache.remove_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            Some(2)
+        );
+        assert_eq!(
+            cache.lookup(&key, ReprKind::Mesh, 1e-4, NO_OPTIONS),
+            Some(&1)
+        );
+
+        cache.evict_family("A");
+        assert!(
+            cache.is_empty(),
+            "the surviving entry is still A's to evict"
+        );
+    }
+
+    /// Removing a slot's last entry also drops the slot from its owner's
+    /// family; the removal's own invariant check would panic otherwise.
+    #[test]
+    fn remove_intermediate_of_the_last_entry_leaves_the_family_exact() {
+        use super::{ConversionSlot, NO_OPTIONS};
+        use reify_ir::GeometryHandleId;
+
+        let step0 = ConversionSlot::Step(0);
+        let ext7 = ConversionSlot::External(GeometryHandleId(7));
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", step0, ReprKind::Mesh, 1e-6, NO_OPTIONS, 1));
+        assert!(cache.insert_intermediate("A", ext7, ReprKind::Mesh, 1e-6, NO_OPTIONS, 2));
+
+        assert_eq!(
+            cache.remove_intermediate("A", step0, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            Some(1)
+        );
+        assert_eq!(
+            cache.remove_intermediate("A", ext7, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            Some(2)
+        );
+        assert!(cache.is_empty());
+        assert_eq!(
+            cache.remove_intermediate("A", ext7, ReprKind::Mesh, 1e-6, NO_OPTIONS),
+            None,
+            "a second rollback of the same slot is a no-op"
+        );
+    }
+
+    /// Redundant enforcement of the ownership invariant: a plain `remove` that
+    /// empties an owned intermediate key is rejected in debug builds.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "remove_intermediate")]
+    fn plain_remove_of_an_owned_intermediates_last_entry_is_rejected() {
+        use super::{ConversionSlot, NO_OPTIONS};
+
+        let slot = ConversionSlot::Step(0);
+        let key = RealizationCache::<u32>::intermediate_key("A", slot);
+        let mut cache = RealizationCache::<u32>::new();
+        assert!(cache.insert_intermediate("A", slot, ReprKind::Mesh, 1e-6, NO_OPTIONS, 1));
+
+        cache.remove(&key, ReprKind::Mesh, 1e-6, NO_OPTIONS);
     }
 
     /// (e2) The whole-cache flush behind `Engine::clear_realization_cache`

@@ -17,19 +17,27 @@
 //! - ```` ```reify-schematic ```` signature listings (Prelude, Solid Primitives,
 //!   2D profiles, GD&T zones, Free-form) — `schematic_listing_gate.rs` pairs
 //!   every listed form with a call in a compile-verified signature fixture.
-//! - Signatures in unfenced prose and tables (`extrude`, `revolve`, the queries,
-//!   the topology selectors) — `unfenced_signature_gate.rs`, the same way.
+//! - Signatures in unfenced prose and tables (`extrude`, `revolve`, the oracle
+//!   queries) — `unfenced_signature_gate.rs`, the same way.
+//! - Concrete idioms in unfenced prose (e.g.
+//!   `intersects(box(10mm, 10mm, 10mm), bracket)`) — `prose_idiom_gate.rs`
+//!   compiles each one, its metavariables left unbound.
 //! - ```` ```reify ```` worked examples — `fence_gate.rs` compiles every one
 //!   verbatim and holds their count exact;
 //!   `geometry_reify_fences_call_every_worked_example_form` requires the forms
-//!   that need a worked example to be called in one.
+//!   that need a worked example to be called in one. This file reads their
+//!   calls through `doc_forms.rs`'s `fence_call_forms`, which holds every fence
+//!   to a shape stricter than compiling clean — see its doc.
 //! - Cited tests and examples — `chunk_cite_gate.rs` resolves every cite;
 //!   `geometry_chunk_example_citations_hold_against_the_real_examples` holds the
 //!   GD&T section's claim about its cited example.
 //!
-//! This file owns the rest: the oracle, measurement and topology-selector
-//! families checked against the compiler's registries, and their documented
-//! arities cross-checked against the worked fences.
+//! This file owns the rest: the interference/clearance oracle checked against
+//! the compiler's registries with its documented arities cross-checked against
+//! the worked fences, the length-argument catalogue's names, and the GD&T
+//! section's worked-example claim. The measurement queries and the topology
+//! selectors have their own chunks and their own modules,
+//! `measurement_chunk_smoke.rs` and `topology_chunk_smoke.rs`.
 //!
 //! # What is NOT established
 //!
@@ -68,28 +76,29 @@
 //! invokes (that comment declines to require a leading backtick precisely so the
 //! call form may be rewrapped, bolded, or tabulated freely).
 //!
-//! `oracle_signature_arities_match_the_compiling_fences` requires each of
-//! the five oracle names to carry a literal `-> <Type>` immediately after a
-//! balanced call form somewhere in the section. **`-> <Type>` after the call form
-//! is therefore a PINNED notation for those five names, and a markdown table with
-//! the return type in its own column (`| min_clearance(s, id_a, id_b) | Length |`)
-//! is RED even though no capability regressed.** That is a deliberate trade, not
-//! an oversight: the `->` is the ONLY thing separating a documented SIGNATURE from
+//! `oracle_signature_arities_match_the_compiling_fences` requires each of the
+//! five oracle names to carry a signature written as ONE code span holding the
+//! whole `name(params) -> Type`, in the section's unfenced prose. **That single
+//! span is therefore a PINNED notation for those five names: an un-backticked
+//! signature, one split across spans, or a markdown table with the return type
+//! in its own column (`| min_clearance(s, id_a, id_b) | Length |`) is RED even
+//! though no capability regressed.** That is a deliberate trade, not an
+//! oversight: the `->` is the ONLY thing separating a documented SIGNATURE from
 //! the traps subsection's prose mentions of unsupported forms
-//! (`min_clearance(a, b)`, `min_clearance(s, id, id)`), which must not be held to
-//! the fences. Widening the scan to accept a table cell would re-admit those. If
-//! the section is ever tabulated, widen `documented_signature_arities` in the same
-//! commit — and re-check that the trap prose still reads as prose.
+//! (`min_clearance(a, b)`, `min_clearance(s, id, id)`), which must not be held
+//! to the fences. Widening the scan to accept a table cell would re-admit those.
+//! If the section is ever tabulated, widen `documented_signature_arities` in the
+//! same commit — and re-check that the trap prose still reads as prose.
 
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
-use crate::call_scan::{call_sites, called_names, strip_reify_comments};
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::{assert_cited_paths_resolve, cited_source_paths};
 use crate::chunk_io::{GEOMETRY_CHUNK_PATH as CHUNK_PATH, read_chunk, repo_root, report};
-use crate::chunk_markdown::{
-    catalogue_table_names, catalogue_table_rows, marker_closed_region, section_body,
-    tagged_fence_bodies,
+use crate::chunk_markdown::{catalogue_table_names, catalogue_table_rows, section_body};
+use crate::doc_forms::{
+    arity_drift, call_forms, callee_names, documented_signature_arities, fence_arities,
+    fence_call_forms,
 };
 
 // --- Interference & clearance oracle: chunk <-> compiler-registry guard ---
@@ -162,77 +171,6 @@ const LENGTH_ARGS_SECTION_MARKER: &str = "<!-- LENGTH-ARGS-SECTION -->";
 /// Human-readable name of [`LENGTH_ARGS_SECTION_MARKER`]'s section. Panic text
 /// only; nothing matches on it.
 const LENGTH_ARGS_SECTION_TITLE: &str = "### Dimensioned arguments";
-
-/// Marker that OPENS the MEASUREMENT / mass-property section — the one that
-/// documents [`reify_compiler::GEOMETRY_QUERY_NAMES`] as call forms. Matched
-/// BYTE-EXACTLY on the trimmed line, exactly as [`ORACLE_SECTION_MARKER`] is,
-/// and for the identical reason: the anchor must be inert so the heading's
-/// wording stays free to change.
-///
-/// Scoping matters here more than anywhere else in this file, because the names
-/// in this family are the ones a chunk-wide scan cannot distinguish. `volume`
-/// and `area` are ordinary English words that already appeared in this repo's
-/// chunks as HAND-COMPUTED parameter arithmetic (`structures.md`'s
-/// `let volume = thickness * width * width`), and `contains` is also the
-/// `List`/`Set`/`Range` method documented in the `collections` chunk. An
-/// unscoped word scan is satisfied by every one of those while teaching a reader
-/// nothing about the kernel query — which is precisely the misdirection task
-/// 5581 exists to remove, so the SECTION is what gets scanned.
-const MEASUREMENT_SECTION_MARKER: &str = "<!-- MEASUREMENT-SECTION -->";
-
-/// Human-readable name of [`MEASUREMENT_SECTION_MARKER`]'s section. Panic text
-/// only; nothing matches on it.
-const MEASUREMENT_SECTION_TITLE: &str = "## Measurement & Mass-Property Queries";
-
-/// Marker that OPENS the `undef`-TRAP region inside the measurement section —
-/// the three traps (arg shape, binder scope, no OCCT) that explain why a query
-/// silently yields `Value::Undef`. Matched BYTE-EXACTLY on the trimmed line,
-/// exactly as every other marker here is, and for the identical reason: the
-/// anchor must be inert so the heading's wording stays free.
-///
-/// This is the one marker scoping a region for a FORBIDDEN direction rather than
-/// a required one, and the scoping is what makes that safe. The chunk writes
-/// `volume(...)` legitimately all over the measurement section — the signature
-/// list, the worked fence, the fence's own hoist annotation — so a chunk-wide
-/// "no hoisted call form" scan would be RED against entirely correct prose. Only
-/// these three traps claim that an inline geometry argument yields `undef`, so
-/// only they are scanned.
-///
-/// PAIRED WITH [`NOT_HOISTED_TRAP_END_MARKER`], and read through
-/// [`marker_closed_region`] rather than [`section_body`], because "to the next
-/// `##` heading" is NOT the extent this scan wants. `section_body` does not stop
-/// at a `### ` heading and has no end-marker notion, so the unclosed region ran
-/// past the traps and swallowed the section's closing **Worked reference**
-/// paragraph — text that is not about `undef` at all, where a perfectly correct
-/// future sentence ("it calls `volume(part)` on a filleted body") would have
-/// gone RED. The closing marker is what makes the docstring above a description
-/// of the real extent instead of an aspiration.
-const NOT_HOISTED_TRAP_MARKER: &str = "<!-- NOT-HOISTED-TRAP -->";
-
-/// Marker that CLOSES [`NOT_HOISTED_TRAP_MARKER`]'s region, immediately after the
-/// third trap. Matched byte-exactly on the trimmed line, and its ABSENCE panics
-/// — see [`marker_closed_region`].
-const NOT_HOISTED_TRAP_END_MARKER: &str = "<!-- /NOT-HOISTED-TRAP -->";
-
-/// Human-readable name of [`NOT_HOISTED_TRAP_MARKER`]'s region. Panic text only;
-/// nothing matches on it.
-const NOT_HOISTED_TRAP_TITLE: &str = "### Eval status, and when a query yields `undef`";
-
-/// Marker that OPENS the TOPOLOGY-SELECTOR catalogue section — the one that
-/// documents [`reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES`] as a table.
-/// Matched BYTE-EXACTLY on the trimmed line, as every other marker here is.
-///
-/// Scoping is what makes the scan mean anything for THIS family in particular:
-/// `edges` and `faces` already appear all over this chunk as the fillet / chamfer
-/// / shell ARGUMENT name (`fillet(solid, edges, radius)`), where they say nothing
-/// about the selector that produces such a list. The catalogue is the one place
-/// they are documented as callable selectors, so the catalogue is what is
-/// scanned.
-const TOPOLOGY_SECTION_MARKER: &str = "<!-- TOPOLOGY-SECTION -->";
-
-/// Human-readable name of [`TOPOLOGY_SECTION_MARKER`]'s section. Panic text
-/// only; nothing matches on it.
-const TOPOLOGY_SECTION_TITLE: &str = "## Topology Selectors";
 
 /// FORM A oracle names — dispatched through the kinematic-query post-process
 /// and taking `(Snapshot, ...)` arguments. `is_geometry_kinematic_query` is a
@@ -329,10 +267,10 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     // TYPOGRAPHY: writing the same call form as `**`min_clearance`**(s, …)`, or
     // moving it into a markdown table cell, would go RED with zero capability
     // regression and a panic claiming the oracle is undocumented. Per the house
-    // rule this file inherits, prose formatting is not the subject. (The ONE
-    // exception, `-> <Type>`, is stated in the module doc's "The one doc-FORMAT
-    // pin this file does impose" — read it before tabulating this section.) The real
-    // weight is carried by (b) below, by `section_body`'s anti-vacuity panic, and
+    // rule this file inherits, prose formatting is not the subject. (For the ONE
+    // exception, see the module doc's "The one doc-FORMAT pin this file does
+    // impose" before re-typesetting this section.) The real weight is carried by
+    // (b) below, by `section_body`'s anti-vacuity panic, and
     // by `geometry_reify_fences_call_every_worked_example_form`'s per-name
     // sentinels, which require each call form inside a COMPILING fence — a strictly stronger
     // property than any string match here.
@@ -377,271 +315,9 @@ fn interference_oracle_names_documented_in_geometry_chunk() {
     }
 }
 
-/// Every member of the geometry-QUERY registry must be documented as a call form
-/// in the chunk's measurement section.
-///
-/// THE REGISTRY IS ITERATED DIRECTLY, not mirrored into a local list plus a
-/// set-equality guard the way [`KINEMATIC_ORACLE_NAMES`] is. That two-test shape
-/// exists so a failure can distinguish "the registry grew" from "the doc
-/// shrank", and at three names it is cheap. At fifteen — and at the thirty-one of
-/// `topology_selector_family_documented_in_geometry_chunk` — the mirror becomes
-/// its own drift surface: a hand-copied list that must be edited in lockstep with
-/// the registry it claims to reproduce. Iterating the registry collapses both
-/// halves into one check with strictly less to maintain, and keeps the
-/// distinguishing power where it is actually read: the panic message below names
-/// the offending registry member and both remedies.
-///
-/// A CALL FORM (`name(`) rather than a bare word, and that needle is doing real
-/// work here rather than mirroring a convention. `volume`, `area`, `centroid` and
-/// `contains` all already appear as bare words elsewhere in the chunk corpus —
-/// `volume` as `structures.md`'s hand-computed `thickness * width * width`,
-/// `contains` as the `List`/`Set`/`Range` method in the `collections` chunk — so
-/// a word-boundary scan (which is exactly what the out-of-band PDOCCOVER detector
-/// in `crates/reify-audit/src/pdoccover.rs` performs) reports them DOCUMENTED
-/// while a reader learns nothing about the kernel query. The open paren is what
-/// separates a query from a noun.
-///
-/// No leading backtick is required, for the reason
-/// `interference_oracle_names_documented_in_geometry_chunk` states at length: the
-/// house rule this file inherits forbids pinning doc TYPOGRAPHY. The one
-/// exception — the `-> <Type>` notation — is imposed only on the whole-handle
-/// four, by `measurement_signature_arities_match_the_compiling_fences`.
-///
-/// Anti-vacuity comes free from [`section_body`], which panics when its marker is
-/// absent, so deleting the section is RED rather than silently green.
-#[test]
-fn measurement_query_family_documented_in_geometry_chunk() {
-    let markdown = read_chunk(CHUNK_PATH);
-    let section = section_body(
-        &markdown,
-        MEASUREMENT_SECTION_MARKER,
-        CHUNK_PATH,
-        MEASUREMENT_SECTION_TITLE,
-    );
-
-    for name in reify_compiler::GEOMETRY_QUERY_NAMES {
-        let call_form = format!("{name}(");
-        assert!(
-            section.contains(&call_form),
-            "{CHUNK_PATH}'s `{MEASUREMENT_SECTION_TITLE}` section does not document the geometry \
-             query `{name}` as a call form ({call_form}...). The chunk is what the in-GUI \
-             assistant retrieves, so an undocumented query reads to it as a MISSING CAPABILITY: \
-             asked for a part's mass or its centre of area it will hand-compute the figure from \
-             the parameters instead of asking the kernel, and silently return a number that no \
-             longer describes the realized geometry once a feature is added (task 5581). Either \
-             document the call form in that section, or — if the builtin itself is gone — remove \
-             `{name}` from reify_compiler::GEOMETRY_QUERY_NAMES, which is iterated directly here \
-             and is the sole source of this list."
-        );
-    }
-}
-
-/// The `undef` traps must illustrate themselves with a query the compile-time
-/// inline-arg hoist does NOT cover.
-///
-/// A registry-driven CONSISTENCY guard, not a prose pin: nothing here asserts on
-/// wording. The only claim is that whatever call the trap region exhibits is
-/// drawn from OUTSIDE `reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES`, which
-/// is iterated directly (no local mirror) so a name entering or leaving the
-/// hoisted set moves this check with it.
-///
-/// THE DEFECT THIS CLOSES was live in this chunk. The arg-shape trap illustrated
-/// "an inline geometry argument yields `undef`" with
-/// `volume(box(10mm, 10mm, 10mm))` — but `volume` is one of the four names the
-/// very next sentence exempts, and the worked fence twenty lines above says that
-/// same inline form WORKS. So the section contradicted itself twice over, and the
-/// chunk is served VERBATIM to the in-GUI assistant: a trap in this shape does not
-/// merely confuse, it asserts a behaviour the compiler does not have, and the
-/// assistant then rewrites working code to dodge an imaginary hazard.
-///
-/// THE CALL FORM is the needle, deliberately. The carve-out sentence names all
-/// four as bare backticked identifiers (`` `volume` ``, `` `area` ``, …) and must
-/// stay exactly as it is — naming them is the carve-out's whole job. Only a call
-/// form `name(` makes the false claim, so only a call form is forbidden.
-///
-/// SCOPED TO THE THREE TRAPS, and closed at both ends by
-/// [`marker_closed_region`]. The region is exactly what claims that an inline
-/// geometry argument yields `undef`; the section's closing **Worked reference**
-/// paragraph sits outside it deliberately, because a correct sentence there
-/// naming `volume(part)` is not this test's business.
-///
-/// ANTI-VACUITY IS EXPLICIT here rather than inherited. The two markers'
-/// panic-on-absent covers a DELETED region, but a forbidden-direction assertion
-/// is trivially satisfied by an EMPTY one, so gutting the illustrative call
-/// would otherwise go green. The floor therefore requires at least one surviving
-/// call form drawn from `GEOMETRY_QUERY_NAMES` MINUS the whole-handle four —
-/// computed from the two registries rather than hardcoded, so swapping
-/// `perimeter` for `max_deviation` in the prose keeps this correct.
-#[test]
-fn the_undef_trap_example_is_a_query_the_hoist_does_not_cover() {
-    let markdown = read_chunk(CHUNK_PATH);
-    let region = marker_closed_region(
-        &markdown,
-        NOT_HOISTED_TRAP_MARKER,
-        NOT_HOISTED_TRAP_END_MARKER,
-        CHUNK_PATH,
-        NOT_HOISTED_TRAP_TITLE,
-    );
-
-    for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
-        let call_form = format!("{name}(");
-        assert!(
-            !region.contains(&call_form),
-            "{CHUNK_PATH}'s `{NOT_HOISTED_TRAP_TITLE}` region exhibits `{call_form}…` as its \
-             example of a call that yields `undef`, but `{name}` is one of \
-             reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES: the task-5345 inline-arg hoist \
-             (crates/reify-compiler/src/units.rs:937, pinned by \
-             geometry_query_inline_arg_tests.rs::compile_inline_volume_torus_hoists_into_realization) \
-             desugars an inline geometry argument to `{name}` into a synthetic let, so that call \
-             resolves. The example therefore contradicts the very carve-out the next sentence \
-             grants — and this chunk is served verbatim to the in-GUI assistant, which would read \
-             it as a behaviour the compiler does not have and steer designers away from a form \
-             that works. Illustrate the trap with a query the hoist does not cover (any member of \
-             GEOMETRY_QUERY_NAMES outside that four — `perimeter`, `curvature`, `normal`, \
-             `length`, `feature`, or any of the multi-arg queries). Naming `{name}` as a bare \
-             backticked identifier in the carve-out sentence is fine and untouched by this check; \
-             only the call form is forbidden."
-        );
-    }
-
-    let not_hoisted: Vec<&str> = reify_compiler::GEOMETRY_QUERY_NAMES
-        .iter()
-        .copied()
-        .filter(|name| !reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES.contains(name))
-        .collect();
-    assert!(
-        not_hoisted
-            .iter()
-            .any(|name| region.contains(&format!("{name}("))),
-        "{CHUNK_PATH}'s `{NOT_HOISTED_TRAP_TITLE}` region no longer exhibits ANY query call form \
-         at all, so the forbidden-direction check above passes vacuously — an empty region \
-         satisfies it exactly as well as a correct one does. The region's job is to SHOW a call \
-         that silently yields `undef`; a trap that names no call teaches nothing. Restore an \
-         illustrative call drawn from one of {not_hoisted:?} (GEOMETRY_QUERY_NAMES minus the \
-         hoisted whole-handle four, computed here from both registries so this list follows the \
-         compiler)."
-    );
-}
-
-/// Minimum CATALOGUE ROWS the TOPOLOGY-SELECTOR table must carry.
-///
-/// The EXACT live length of `reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES`
-/// (31 today), not a round number under it. The coverage half of
-/// [`topology_selector_family_documented_in_geometry_chunk`] cannot catch a
-/// gutted table on its own — reformatting the table into prose bullets empties
-/// [`catalogue_table_rows`] and the coverage loop then compares against an empty
-/// set. The floor is what makes that RED.
-///
-/// A DERIVED value would be better and is deliberately not used: asserting
-/// `rows.len() >= GEOMETRY_TOPOLOGY_SELECTOR_NAMES.len()` reads as tighter but is
-/// strictly weaker as a floor, because a row documenting one selector under two
-/// names (the shared-cell shape `catalogue_table_rows` supports) legitimately
-/// makes rows FEWER than names. Keeping the number literal keeps the two claims
-/// independent, which is the point of having both.
-///
-/// RE-MEASUREMENT PROTOCOL: see [`MINIMUM_FN_CITES`], which states it once for
-/// every `MINIMUM_*` floor in this file. Raise this WITH the table; never lower
-/// it to go green.
-const MINIMUM_TOPOLOGY_CATALOGUE_ROWS: usize = 31;
-
-/// Every member of the topology-selector registry must have a CATALOGUE ROW, and
-/// every catalogue row must name a real selector.
-///
-/// BOTH DIRECTIONS, because each catches a different rot. Coverage (registry →
-/// table) catches a selector landing in `units.rs` that the chunk never learns
-/// about — the in-GUI assistant then cannot reach it and falls back to indexing
-/// `faces(...)` by hand. Registry truth (table → registry) catches the failure
-/// that has actually happened in this repo: the 2026-07-24 language review found
-/// `rotate(geo, axis, angle)` and `translate(geo, vector)` documented at
-/// signatures the compiler had never been shown (tasks #5347 / #5364). A phantom
-/// selector is worse than a missing one, because the reader has no reason to
-/// doubt it.
-///
-/// A TABLE rather than the measurement section's call-form prose, and that is a
-/// scanner decision rather than a style one: [`catalogue_table_rows`] already
-/// exists to read exactly this shape (it backs the length-argument catalogue),
-/// and a 31-entry family rendered as prose is unreadable for the human as well as
-/// unscannable for the test. The registry is iterated DIRECTLY here for the same
-/// reason `measurement_query_family_documented_in_geometry_chunk` iterates its
-/// own: at 31 names a hand-copied mirror is a bigger drift surface than the thing
-/// it guards.
-#[test]
-fn topology_selector_family_documented_in_geometry_chunk() {
-    let markdown = read_chunk(CHUNK_PATH);
-    // Panics if the marker is gone, so deleting the section is RED rather than
-    // vacuously green — the same anti-vacuity guarantee the oracle scan relies on.
-    let section = section_body(
-        &markdown,
-        TOPOLOGY_SECTION_MARKER,
-        CHUNK_PATH,
-        TOPOLOGY_SECTION_TITLE,
-    );
-
-    let rows = catalogue_table_rows(&section);
-    assert!(
-        rows.len() >= MINIMUM_TOPOLOGY_CATALOGUE_ROWS,
-        "only {} catalogue row(s) found in {CHUNK_PATH}'s `{TOPOLOGY_SECTION_TITLE}` table — \
-         expected at least {MINIMUM_TOPOLOGY_CATALOGUE_ROWS}. Either rows were deleted, or the \
-         table was reformatted into a shape this scan cannot read: a catalogue row is a \
-         `|`-leading line whose FIRST cell backticks the selector it is about. Without the rows \
-         the coverage check below compares against an empty set and protects nothing. Rows seen: \
-         {rows:?}",
-        rows.len()
-    );
-
-    let table_names = catalogue_table_names(&rows);
-
-    // (a) COVERAGE — registry → table.
-    for name in reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES {
-        assert!(
-            table_names.iter().any(|n| n == name),
-            "{CHUNK_PATH}'s `{TOPOLOGY_SECTION_TITLE}` catalogue has no row for the topology \
-             selector `{name}`. The chunk is what the in-GUI assistant retrieves, so a selector \
-             missing from this table reads to it as a MISSING CAPABILITY: it will index \
-             `faces(...)` positionally, or hand-roll a filter, instead of calling the selector \
-             that exists (task 5581). Add a row whose FIRST cell backticks `{name}`, or — if the \
-             builtin itself is gone — remove it from \
-             reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES, which is iterated directly here \
-             and is the sole source of this list. Names the table does carry: {table_names:?}"
-        );
-    }
-
-    // (b) REGISTRY TRUTH — table → registry. A row naming something that is not
-    // a selector sends an author to write a call the compiler will not accept,
-    // and — because a `structure def` body types an unresolved call from its
-    // first argument — often will not even say so.
-    for name in &table_names {
-        if reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES.contains(&name.as_str()) {
-            continue;
-        }
-        // Split by WHY it is not a selector, so the panic names the actual
-        // remedy. `phantom_name_panic` is the shared voice for "no registry has
-        // this name at all"; a name that IS real but lives in a sibling family
-        // is a different (and more confusing) mistake, and gets told so.
-        match registry_family(name) {
-            None => panic!(
-                "{}",
-                phantom_name_panic(
-                    CHUNK_PATH,
-                    "the topology-selector catalogue table's first column",
-                    name
-                )
-            ),
-            Some(family) => panic!(
-                "{CHUNK_PATH}'s `{TOPOLOGY_SECTION_TITLE}` catalogue has a row for `{name}`, \
-                 which is a real builtin but belongs to {family}, NOT \
-                 GEOMETRY_TOPOLOGY_SELECTOR_NAMES. The families are disjoint by construction and \
-                 dispatch differently, so documenting one here teaches a reader the wrong \
-                 result type and the wrong resolution stage. Move the row to the section that \
-                 owns {family}, or drop it."
-            ),
-        }
-    }
-}
-
-/// Every form the chunk teaches by worked example — the query family, and the
+/// Every form the chunk teaches by worked example — the oracle family, and the
 /// constructors whose argument shapes prose alone cannot convey — is CALLED,
-/// outside a comment, by one of geometry.md's ```` ```reify ```` fences.
+/// in parsed code, by one of geometry.md's ```` ```reify ```` fences.
 ///
 /// That is what makes each form compile-verified: the fence gate
 /// (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`) compiles every
@@ -668,110 +344,42 @@ fn geometry_reify_fences_call_every_worked_example_form() {
     // `distance(` is included even though the module doc singles it out as the
     // only name with (indirect) discriminating power — precisely BECAUSE of
     // that: without a sentinel the FORM B fence could lose its `distance(` call
-    // and the scrape would still pass, quietly retiring the one claim
+    // and this check would still pass, quietly retiring the one claim
     // `bogus_query_name_feeding_a_comparison_is_an_error` is the control for.
     //
-    // Scanned COMMENT-FREE. The FORM A fence's own `// MUST be let-bound.
-    // Writing `constraint min_clearance(s, id_a, id_b) > 2mm`` annotation
-    // otherwise satisfies the `min_clearance(` sentinel by itself, so deleting
-    // the fence's real call would leave this green while the panic text below
-    // still promised the form was compile-verified. See `strip_reify_comments`.
-    //
-    // The whole-handle measurement four join the list for a reason specific to
-    // them (task 5581): `volume`, `area` and `centroid` are the names this chunk
-    // corpus previously carried only as HAND-COMPUTED parameter arithmetic
-    // (`structures.md`'s `let volume = thickness * width * width`), so a
-    // documented call form that the compiler rejects would be indistinguishable,
-    // to a reader, from the arithmetic it is meant to replace. Requiring each
-    // inside a COMPILING fence is what makes the replacement credible.
+    // Read through the PARSER, so only a call the compiler sees counts. The FORM
+    // A fence's own `// MUST be let-bound. Writing `constraint min_clearance(s,
+    // id_a, id_b) > 2mm`` annotation is a comment, never a call form, so
+    // deleting the fence's real call goes RED here rather than leaving the
+    // annotation to stand in for it; a string literal holding call text is no
+    // call either. The match is by exact callee name, so `area` is never
+    // satisfied by a `surface_area` call.
     //
     // The three constructors are the ones whose argument SHAPES the chunk
     // teaches by worked example because a signature listing cannot convey them
     // (task #5926): `half_space`'s unbounded result intersected back to a
     // bounded solid, `nurbs_surface`'s nested control net beside flat knot
     // vectors, and `nurbs`'s bare-number and Length slots side by side.
-    let code: Vec<String> = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH)
-        .iter()
-        .map(|fence| strip_reify_comments(fence))
-        .collect();
+    let called = callee_names(&fence_call_forms(&markdown, CHUNK_PATH));
     for sentinel in [
-        "min_clearance(",
-        "interferes(",
-        "interferes_with(",
-        "intersects(",
-        "distance(",
-        "volume(",
-        "area(",
-        "centroid(",
-        "bounding_box(",
-        "half_space(",
-        "nurbs_surface(",
-        "nurbs(",
+        "min_clearance",
+        "interferes",
+        "interferes_with",
+        "intersects",
+        "distance",
+        "half_space",
+        "nurbs_surface",
+        "nurbs",
     ] {
         assert!(
-            code.iter().any(|fence| fence.contains(sentinel)),
-            "anti-vacuity: no ```reify fence in {CHUNK_PATH} contains `{sentinel}` OUTSIDE A \
-             COMMENT — the worked examples no longer compile-verify that form, so a documented \
-             call form the compiler outright rejects would ship unnoticed. (A call form \
-             mentioned only in a fence's `//` annotation does not count; it is never \
-             compiled.)"
+            called.iter().any(|name| name == sentinel),
+            "anti-vacuity: no ```reify fence in {CHUNK_PATH} calls `{sentinel}` — the worked \
+             examples no longer compile-verify that form, so a documented call form the compiler \
+             outright rejects would ship unnoticed. (A call form mentioned only in a fence's `//` \
+             annotation or a string literal does not count; it is never compiled.) Fence call \
+             names: {called:?}"
         );
     }
-}
-
-/// The arities `name` is DOCUMENTED at in `section`, read off its
-/// `name(<args>) -> <Type>` signature forms.
-///
-/// The `->` is what separates a SIGNATURE from a mere mention, and the
-/// distinction is load-bearing: the traps subsection deliberately writes
-/// `min_clearance(a, b)` (the unsupported 2-arg overload) and
-/// `min_clearance(s, id, id)` (the self-pair rider) as prose. Neither is a
-/// contract the fences should be held to.
-fn documented_signature_arities(section: &str, name: &str) -> Vec<usize> {
-    // Comment-free first: the section body includes the fence lines, so an
-    // annotated call form inside a fence comment must not read as a documented
-    // signature either.
-    let section = strip_reify_comments(section);
-    call_sites(&section, name)
-        .into_iter()
-        .filter(|(_, after)| section[*after..].trim_start().starts_with("->"))
-        .map(|(arity, _)| arity)
-        .collect()
-}
-
-/// Every way the arities `name` is `documented` at and the arities the
-/// compiling fences call it at (`exercised`) have drifted apart, in either
-/// direction, one actionable line each.
-fn arity_drift(name: &str, documented: &[usize], exercised: &[usize]) -> Vec<String> {
-    const FIX: &str = "The fences are what actually compile, so fix whichever of the two is \
-                       wrong — a designer copies whichever they read first.";
-    let distinct = |arities: &[usize]| {
-        let mut arities = arities.to_vec();
-        arities.sort_unstable();
-        arities.dedup();
-        arities
-    };
-    let documented = distinct(documented);
-    let exercised = distinct(exercised);
-
-    let mut drift = Vec::new();
-    for arity in documented.iter().filter(|arity| !exercised.contains(arity)) {
-        drift.push(format!(
-            "{CHUNK_PATH} documents `{name}` at {arity} argument(s), but no ```reify fence calls \
-             it at that arity (fence call arities: {exercised:?}). Either the documented \
-             signature is a phantom the compiler was never shown, or a fence drifted off the form \
-             it demonstrates. {FIX}"
-        ));
-    }
-    for arity in exercised.iter().filter(|arity| !documented.contains(arity)) {
-        drift.push(format!(
-            "a ```reify fence in {CHUNK_PATH} calls `{name}` at {arity} argument(s), but no \
-             `{name}(…) -> <Type>` signature documents that arity (documented arities: \
-             {documented:?}). Either the fence demonstrates a form the section never states, or \
-             the section lost the signature. {FIX}"
-        ));
-    }
-    drift
 }
 
 /// The oracle section's documented signature arities and the arities its
@@ -795,121 +403,30 @@ fn oracle_signature_arities_match_the_compiling_fences() {
         CHUNK_PATH,
         ORACLE_SECTION_TITLE,
     );
-    let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
+    let fence_forms = fence_call_forms(&markdown, CHUNK_PATH);
 
     let mut drift = Vec::new();
     for name in KINEMATIC_ORACLE_NAMES.iter().chain(GEOMETRY_ORACLE_NAMES) {
-        let documented = documented_signature_arities(&section, name);
-        // Anti-vacuity. A signature form that loses its `-> <Type>` annotation
-        // would otherwise drop out of this check silently instead of failing it.
+        let documented = documented_signature_arities(&section, name, CHUNK_PATH);
+        // Anti-vacuity. A signature form that loses its `-> <Type>` annotation,
+        // or stops being one whole code span, would otherwise drop out of this
+        // check silently instead of failing it.
         assert!(
             !documented.is_empty(),
             "{CHUNK_PATH}'s `{ORACLE_SECTION_TITLE}` section documents no `{name}(…) -> <Type>` \
              signature form, so nothing pins that name's arity and this check would pass \
-             vacuously for it. Restore the `-> <Type>` return annotation on the call form."
+             vacuously for it. Restore the signature as ONE backticked `{name}(…) -> <Type>` \
+             code span in the section's prose, return annotation included."
         );
 
-        // Comment-free fence bodies: a call form that appears only in a `//`
-        // annotation is not an exercised form (see `strip_reify_comments`).
-        let in_fences: Vec<usize> = fences
-            .iter()
-            .map(|fence| strip_reify_comments(fence))
-            .flat_map(|fence| {
-                call_sites(&fence, name)
-                    .into_iter()
-                    .map(|(arity, _)| arity)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let in_fences = fence_arities(&fence_forms, name);
 
-        drift.extend(arity_drift(name, &documented, &in_fences));
+        drift.extend(arity_drift(CHUNK_PATH, name, &documented, &in_fences));
     }
     report(
         &format!(
             "`{ORACLE_SECTION_TITLE}` signature arities that drifted from the compiling ```reify \
              fences"
-        ),
-        &drift,
-    );
-}
-
-/// The MEASUREMENT section's documented whole-handle signature arities and the
-/// arities its compiling fences call those names at must be the SAME set, drift
-/// in either direction reported together.
-///
-/// Twin of [`oracle_signature_arities_match_the_compiling_fences`], and
-/// deliberately the same shape rather than a generalisation of it: the two scope
-/// different sections and different name sets, and folding them into one
-/// parameterised helper would put the section marker, the name set and the
-/// panic's subject all behind arguments, which is how a failure ends up naming
-/// the wrong section.
-///
-/// SCOPED TO `WHOLE_HANDLE_GEOMETRY_QUERY_NAMES` — four names, not the fifteen
-/// `measurement_query_family_documented_in_geometry_chunk` covers. That is a
-/// deliberate stop, not an oversight. The property needs a fence that actually
-/// CALLS the name, and the whole-handle four share one realized-handle dispatch
-/// path, so a single `structure def` over one let-bound solid exercises all four.
-/// The other eleven do not fit that fence: `curvature`/`normal` need a hydrated
-/// face or edge sub-handle, `geo_equiv` needs a dimensioned Length tolerance at
-/// arity 3, and `max_deviation` needs two let-bound geometries on a separate
-/// dispatch path. Covering them would need several fences of setup and would
-/// couple this doc gate to argument-DIMENSION semantics, which the oracle guard
-/// explicitly leaves unchecked. Name coverage for all fifteen is already total;
-/// this adds arity precision where it is cheap and unambiguous.
-///
-/// The registry const is reached through the crate root
-/// (`reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES`, re-exported at
-/// `lib.rs`), never `reify_compiler::units::…` — `mod units` is private, so the
-/// latter does not compile from an integration test.
-#[test]
-fn measurement_signature_arities_match_the_compiling_fences() {
-    let markdown = read_chunk(CHUNK_PATH);
-    let section = section_body(
-        &markdown,
-        MEASUREMENT_SECTION_MARKER,
-        CHUNK_PATH,
-        MEASUREMENT_SECTION_TITLE,
-    );
-    let fences = tagged_fence_bodies(&markdown, "reify", CHUNK_PATH);
-
-    let mut drift = Vec::new();
-    for name in reify_compiler::WHOLE_HANDLE_GEOMETRY_QUERY_NAMES {
-        let documented = documented_signature_arities(&section, name);
-        // Anti-vacuity, per name. Without it, a name that lost its `-> <Type>`
-        // annotation — or was dropped from the signature list entirely — would
-        // silently contribute zero assertions instead of failing.
-        assert!(
-            !documented.is_empty(),
-            "{CHUNK_PATH}'s `{MEASUREMENT_SECTION_TITLE}` section documents no `{name}(…) -> \
-             <Type>` signature form, so nothing pins that name's arity and this check would pass \
-             vacuously for it. Restore the `-> <Type>` return annotation on the call form. (The \
-             `->` is what separates a SIGNATURE from a prose mention; see the module doc's \"The \
-             one doc-FORMAT pin this file does impose\".)"
-        );
-
-        // Comment-free fence bodies: a call form appearing only in a `//`
-        // annotation is not an exercised form. That matters here specifically —
-        // the measurement fence's own annotation writes
-        // `volume(box(60mm, 40mm, 8mm))` to illustrate the inline-arg hoist, at
-        // the same arity 1 as the real call, so without stripping it the fence
-        // could lose `let v = volume(plate)` and stay green.
-        let in_fences: Vec<usize> = fences
-            .iter()
-            .map(|fence| strip_reify_comments(fence))
-            .flat_map(|fence| {
-                call_sites(&fence, name)
-                    .into_iter()
-                    .map(|(arity, _)| arity)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        drift.extend(arity_drift(name, &documented, &in_fences));
-    }
-    report(
-        &format!(
-            "`{MEASUREMENT_SECTION_TITLE}` signature arities that drifted from the compiling \
-             ```reify fences"
         ),
         &drift,
     );
@@ -943,19 +460,21 @@ const MINIMUM_CATALOGUE_ROWS: usize = 9;
 ///
 /// # What is actually scanned
 ///
-/// TWO INDEPENDENT SETS, because [`called_names`] alone did not reach the
-/// catalogue this test is named for. That scanner harvests an identifier only
-/// where it is immediately followed by `(`, and the table writes eight of its
-/// nine constructors as a bare backticked name — so DELETING EVERY TABLE ROW
-/// left this test green, all three sentinels still satisfied by the ```reify
-/// fence below the table (measured; only the `helix(radius, pitch, height)` row
-/// was ever visible). The advertised reach was the reach a future editor would
-/// rely on, so the scan was widened rather than the docstring narrowed:
+/// TWO INDEPENDENT SETS, because a call scan alone did not reach the catalogue
+/// this test is named for. The table writes eight of its nine constructors as a
+/// bare backticked name, not a call — so when the section was read for call
+/// forms only, DELETING EVERY TABLE ROW left this test green, all three
+/// sentinels still satisfied by the ```reify fence below the table (measured;
+/// only the `helix(radius, pitch, height)` row was ever visible). The advertised
+/// reach was the reach a future editor would rely on, so the scan was widened
+/// rather than the docstring narrowed:
 ///
 ///   - [`catalogue_table_rows`] harvests the TABLE's first column, floored at
 ///     [`MINIMUM_CATALOGUE_ROWS`] so deleting rows is RED;
-///   - [`called_names`] harvests the section's CALL FORMS, floored at
-///     [`MINIMUM_SECTION_CALL_NAMES`] so rewriting the fence into prose is RED.
+///   - [`fence_call_forms`] harvests the CALLS of the section's ```reify fence,
+///     read off its parsed AST, floored at [`MINIMUM_SECTION_CALL_NAMES`] so
+///     rewriting the fence into prose is RED. A call written in the section's
+///     prose or in a fence comment is never compiled, so it never counts.
 ///
 /// Every name from either set faces the same registry assertion, and the three
 /// sentinels are asserted against BOTH — the table must NAME them and the fence
@@ -982,7 +501,8 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
 
     let table_rows = catalogue_table_rows(&section);
     let table_names = catalogue_table_names(&table_rows);
-    let called = called_names(&strip_reify_comments(&section));
+    let section_label = format!("{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section");
+    let called = callee_names(&fence_call_forms(&section, &section_label));
 
     // Anti-vacuity, one floor per set. The ROW floor catches a deleted or
     // gutted catalogue table — the case that used to pass silently. The CALL
@@ -998,10 +518,10 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
     );
     assert!(
         called.len() >= MINIMUM_SECTION_CALL_NAMES,
-        "only {} distinct call name(s) found in {CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` \
-         section — expected at least {MINIMUM_SECTION_CALL_NAMES}. The worked forms were \
-         rewritten into prose without call forms, so the section demonstrates nothing a compiler \
-         has seen. Names seen: {called:?}",
+        "only {} distinct call name(s) found in the ```reify fence of {CHUNK_PATH}'s \
+         `{LENGTH_ARGS_SECTION_TITLE}` section — expected at least {MINIMUM_SECTION_CALL_NAMES}. \
+         The worked forms were cut from the fence or rewritten into prose, so the section \
+         demonstrates nothing a compiler has seen. Names seen: {called:?}",
         called.len()
     );
 
@@ -1021,8 +541,8 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
         );
         assert!(
             called.iter().any(|n| n == sentinel),
-            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section no longer CALLS `{sentinel}` \
-             outside a comment, so the row that names it is no longer demonstrated by anything \
+            "{CHUNK_PATH}'s `{LENGTH_ARGS_SECTION_TITLE}` section's ```reify fence no longer \
+             CALLS `{sentinel}`, so the row that names it is no longer demonstrated by anything \
              the compiler has accepted. Call names seen: {called:?}"
         );
     }
@@ -1041,20 +561,20 @@ fn documented_call_names_in_the_length_section_are_real_registry_entries() {
     }
 }
 
-/// Minimum distinct CALL names the LENGTH-ARGUMENTS section's worked forms must
-/// carry, as the anti-vacuity floor on the [`called_names`] half.
+/// Minimum distinct CALL names the LENGTH-ARGUMENTS section's ```reify fence
+/// must carry, as the anti-vacuity floor on the [`fence_call_forms`] half.
 ///
 /// SEPARATE from [`MINIMUM_CATALOGUE_ROWS`], and deliberately so: this floors
 /// the FENCE, which is a different claim from the table's coverage — a section
 /// can tabulate a constructor it never demonstrates, and demonstrate one it
 /// never tabulates — so it keeps its own number instead of tracking the table's.
 ///
-/// That number is the EXACT live count of 8 (`helix`, `translate`, `cylinder`,
-/// `rotate_around`, `polygon`, `interp`, `nurbs`, `scale`), under the same
-/// contract as [`MINIMUM_FN_CITES`]: at a floor under live, calls can be deleted
-/// from the worked forms while this stays green. See that constant for the
-/// re-measurement protocol.
-const MINIMUM_SECTION_CALL_NAMES: usize = 8;
+/// That number is the EXACT live count of 7 calls in the fence (`helix`,
+/// `translate`, `cylinder`, `rotate_around`, `polygon`, `interp`, `nurbs`),
+/// under the same contract as [`MINIMUM_FN_CITES`]: at a floor under live,
+/// calls can be deleted from the worked forms while this stays green. See that
+/// constant for the re-measurement protocol.
+const MINIMUM_SECTION_CALL_NAMES: usize = 7;
 
 /// Names the length-arguments section may call that are in none of
 /// `callable_registries.rs`'s `CALLABLE_NAME_REGISTRIES`, each with its
@@ -1150,10 +670,6 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 /// the sentence and lands a floor under live. The panic text prints the whole
 /// live cite list, so the failure itself is the re-measurement surface.
 ///
-/// Task 5581's two new sections raised all three (from 13/6/4) by citing their
-/// own chunk guards, the eval tests that pin the measurement family's runtime
-/// behaviour, and the two worked `.ri` walks a reader is sent to next.
-///
 /// WHY EXACT — a measured incident, not a principle. With the cite floor one
 /// below live, dropping trap 5's `single_body_self_pair_excluded` row left
 /// fn_cites=8, rs_paths=5 and ri_paths=4 — every floor still green while that
@@ -1164,9 +680,9 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 /// The `.ri` floor covers the worked references a designer is sent to next;
 /// losing one is the same discoverability regression task 5389 closed.
 ///
-/// RE-MEASUREMENT PROTOCOL, for every `MINIMUM_*` floor in this file and in
-/// `units_chunk_smoke.rs` — stated once, here, and cross-referenced rather than
-/// copied. These floors are hand-maintained and NOTHING detects their drift:
+/// RE-MEASUREMENT PROTOCOL, for every `MINIMUM_*` floor in this file and in its
+/// sibling chunk modules and corpus gates — stated once, here, and
+/// cross-referenced rather than copied. These floors are hand-maintained and NOTHING detects their drift:
 /// adding a SYNC row, a cite, a catalogue row or a fence call name silently
 /// widens the gap between floor and live, and the check stays green while its
 /// own docstring still claims to be exact. To re-measure one, set it to 999, run
@@ -1179,9 +695,9 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 /// That masking is not hypothetical: it is why a first pass over these ten
 /// floors found two of the four that had gone stale, and a one-at-a-time sweep
 /// found all four.
-const MINIMUM_FN_CITES: usize = 26;
-const MINIMUM_RS_FILES: usize = 12;
-const MINIMUM_RI_FILES: usize = 10;
+const MINIMUM_FN_CITES: usize = 14;
+const MINIMUM_RS_FILES: usize = 8;
+const MINIMUM_RI_FILES: usize = 8;
 
 /// Every test the chunk cites as PINNING a runtime claim must still exist.
 ///
@@ -1237,11 +753,10 @@ const GDT_ZONE_CONSTRUCTORS: &[&str] =
 /// that had none. This assertion is what keeps it that way. Whether the cite
 /// RESOLVES is `chunk_cite_gate.rs`'s `every_path_cited_by_any_chunk_resolves`.
 ///
-/// "Calls" is read off the example's CODE — [`called_names`] over
-/// [`strip_reify_comments`] — so a header comment that merely names a
-/// constructor cannot satisfy the claim: describing a call instead of making
-/// one is the laundering-a-gap-into-a-coverage-claim failure this guard exists
-/// to catch.
+/// "Calls" is read off the example's parsed AST — [`call_forms`] — so a header
+/// comment that merely names a constructor cannot satisfy the claim: describing
+/// a call instead of making one is the laundering-a-gap-into-a-coverage-claim
+/// failure this guard exists to catch.
 #[test]
 fn geometry_chunk_example_citations_hold_against_the_real_examples() {
     let geometry_md = read_chunk(CHUNK_PATH);
@@ -1262,7 +777,7 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
         std::fs::read_to_string(repo_root().join(GDT_ZONES_EXAMPLE)).unwrap_or_else(|e| {
             panic!("{GDT_ZONES_EXAMPLE} must be readable ({e}) — it is cited by {CHUNK_PATH}")
         });
-    let called = called_names(&strip_reify_comments(&example_src));
+    let called = callee_names(&call_forms(&example_src, GDT_ZONES_EXAMPLE));
     let absent: Vec<&str> = GDT_ZONE_CONSTRUCTORS
         .iter()
         .copied()
@@ -1276,82 +791,5 @@ fn geometry_chunk_example_citations_hold_against_the_real_examples() {
          to {GDT_ZONES_EXAMPLE} (preferred: the example is the artifact designers actually run), \
          or narrow the chunk's claim to the constructors the example does exercise.",
         absent.join(", ")
-    );
-}
-
-/// The example scan's discriminating power: a constructor named only in a
-/// header comment is not called, and a real call survives even with a trailing
-/// comment on its line.
-#[test]
-fn example_call_scan_ignores_a_constructor_named_only_in_a_comment() {
-    let described = "// zone_slab(face, width) — face offset ±width/2, capped into a slab\n\
-                     let body = box(10mm, 10mm, 10mm)\n";
-    assert!(
-        !called_names(&strip_reify_comments(described)).contains(&"zone_slab".to_string()),
-        "a header comment DESCRIBING the call must not satisfy the \"this example exercises \
-         the constructor\" claim"
-    );
-
-    let called = "// this header names no constructor at all\n\
-                  let slab = zone_slab(rectangle(width: 40mm, height: 20mm), 2mm) // ±1mm\n";
-    assert!(
-        called_names(&strip_reify_comments(called)).contains(&"zone_slab".to_string()),
-        "a real call is CODE: stripping comments must leave it standing, including when a \
-         trailing comment follows it on the same line"
-    );
-}
-
-// --- arity_drift unit tests --------------------------------------------------
-
-#[test]
-fn arity_drift_reports_a_documented_arity_no_fence_calls() {
-    let drift = arity_drift("interferes", &[1, 2], &[1]);
-
-    assert_eq!(drift.len(), 1, "got {drift:#?}");
-    assert!(
-        drift[0].contains("`interferes`") && drift[0].contains("at 2 argument(s)"),
-        "the line must name the documented form no fence exercises, got: {}",
-        drift[0]
-    );
-}
-
-#[test]
-fn arity_drift_reports_a_fence_arity_no_signature_documents() {
-    let drift = arity_drift("distance", &[2], &[2, 3]);
-
-    assert_eq!(drift.len(), 1, "got {drift:#?}");
-    for needle in ["`distance`", "at 3 argument(s)", "[2]"] {
-        assert!(
-            drift[0].contains(needle),
-            "the line must name the undocumented fence arity and the documented set \
-             (`{needle}`), got: {}",
-            drift[0]
-        );
-    }
-}
-
-#[test]
-fn arity_drift_is_silent_on_equal_sets_whatever_the_duplicates() {
-    assert_eq!(arity_drift("volume", &[1], &[1]), Vec::<String>::new());
-    assert_eq!(
-        arity_drift("volume", &[1, 1], &[1, 1, 1]),
-        Vec::<String>::new(),
-        "a form documented twice or called by several fences is still one arity"
-    );
-    assert_eq!(
-        arity_drift("min_clearance", &[3, 1], &[1, 3]),
-        Vec::<String>::new(),
-        "order does not matter"
-    );
-}
-
-#[test]
-fn arity_drift_reports_both_directions_at_once() {
-    let drift = arity_drift("min_clearance", &[3], &[2]);
-
-    assert_eq!(
-        drift.len(),
-        2,
-        "a documented 3 no fence calls AND a fence 2 nothing documents, got {drift:#?}"
     );
 }

@@ -1,4 +1,7 @@
 // writer.cpp — build a test STEP assembly via XDE and write it out.
+//
+// Usage: ./writer                     writes test_assembly.step (the Container assembly)
+//        ./writer --rotated <out.step> writes the rotated-occurrence assembly (Frame)
 #include <XCAFApp_Application.hxx>
 #include <XCAFDoc_ShapeTool.hxx>
 #include <XCAFDoc_DocumentTool.hxx>
@@ -7,16 +10,23 @@
 #include <TDF_Label.hxx>
 #include <TDF_LabelSequence.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
 #include <STEPCAFControl_Writer.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <TCollection_ExtendedString.hxx>
 #include <Interface_Static.hxx>
+#include <cmath>
+#include <cstring>
 #include <iostream>
+#include <string>
 
 static TopoDS_Shape makeBoxMM(double dx, double dy, double dz)
 {
@@ -30,11 +40,59 @@ static TopLoc_Location locAt(double x, double y, double z)
     return TopLoc_Location(t);
 }
 
-int main()
+// Rotate `deg` degrees about `axis` through the origin, then translate by (x, y, z).
+static TopLoc_Location locRot(const gp_Dir& axis, double deg, double x, double y, double z)
+{
+    gp_Trsf rotation;
+    rotation.SetRotation(gp_Ax1(gp_Pnt(0.0, 0.0, 0.0), axis), deg * M_PI / 180.0);
+    gp_Trsf translation;
+    translation.SetTranslation(gp_Vec(x, y, z));
+    return TopLoc_Location(translation * rotation);
+}
+
+static TopLoc_Location locRotZ(double deg, double x, double y, double z)
+{
+    return locRot(gp_Dir(0.0, 0.0, 1.0), deg, x, y, z);
+}
+
+static void setName(const TDF_Label& label, const char* name)
+{
+    TDataStd_Name::Set(label, TCollection_ExtendedString(name));
+}
+
+static Handle(TDocStd_Document) newXcafDocument()
 {
     Handle(XCAFApp_Application) app = XCAFApp_Application::GetApplication();
     Handle(TDocStd_Document) doc;
     app->NewDocument("MDTV-XCAF", doc);
+    return doc;
+}
+
+static int writeStepMM(const Handle(TDocStd_Document)& doc, const char* path)
+{
+    // Ensure STEP writer emits millimetres explicitly (file's own unit declaration).
+    Interface_Static::SetCVal("write.step.unit", "MM");
+
+    STEPCAFControl_Writer writer;
+    writer.SetNameMode(true);
+    if (!writer.Transfer(doc, STEPControl_AsIs))
+    {
+        std::cerr << "Transfer FAILED\n";
+        return 1;
+    }
+    IFSelect_ReturnStatus stat = writer.Write(path);
+    if (stat != IFSelect_RetDone)
+    {
+        std::cerr << "Write FAILED, status=" << (int)stat << "\n";
+        return 1;
+    }
+    std::cout << "Wrote " << path << " OK\n";
+    return 0;
+}
+
+static int writeContainerAssembly()
+{
+    Handle(TDocStd_Document) doc = newXcafDocument();
 
     Handle(XCAFDoc_ShapeTool) shapeTool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
 
@@ -106,23 +164,60 @@ int main()
     TDataStd_Name::Set(weldmentCompLabel, TCollection_ExtendedString("Weldment-1"));
 
     shapeTool->UpdateAssemblies();
+    return writeStepMM(doc, "test_assembly.step");
+}
 
-    // Ensure STEP writer emits millimetres explicitly (file's own unit declaration).
-    Interface_Static::SetCVal("write.step.unit", "MM");
+// Rotated occurrences (incl. a rotated sub-assembly), two distinct products both
+// named "Pin", a zero-solid (face-only) product, and an unreferenced second root.
+static int writeRotatedAssembly(const char* path)
+{
+    Handle(TDocStd_Document) doc = newXcafDocument();
+    Handle(XCAFDoc_ShapeTool) shapeTool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
 
-    STEPCAFControl_Writer writer;
-    writer.SetNameMode(true);
-    if (!writer.Transfer(doc, STEPControl_AsIs))
-    {
-        std::cerr << "Transfer FAILED\n";
-        return 1;
-    }
-    IFSelect_ReturnStatus stat = writer.Write("test_assembly.step");
-    if (stat != IFSelect_RetDone)
-    {
-        std::cerr << "Write FAILED, status=" << (int)stat << "\n";
-        return 1;
-    }
-    std::cout << "Wrote test_assembly.step OK\n";
-    return 0;
+    // Asymmetric so a 90 deg turn is visible in a placed bbox.
+    TDF_Label bracketLabel = shapeTool->AddShape(makeBoxMM(100.0, 50.0, 20.0), false);
+    setName(bracketLabel, "Bracket");
+
+    TDF_Label pinALabel = shapeTool->AddShape(makeBoxMM(10.0, 10.0, 60.0), false);
+    setName(pinALabel, "Pin");
+
+    TDF_Label hingeLabel = shapeTool->NewShape();
+    setName(hingeLabel, "Hinge");
+    setName(shapeTool->AddComponent(hingeLabel, pinALabel, locRotZ(45.0, 5.0, 0.0, 0.0)), "Pin-1");
+
+    TDF_Label frameLabel = shapeTool->NewShape();
+    setName(frameLabel, "Frame");
+    setName(shapeTool->AddComponent(frameLabel, bracketLabel, locRotZ(90.0, 200.0, 0.0, 0.0)), "Bracket-1");
+    setName(shapeTool->AddComponent(frameLabel, hingeLabel,
+                                    locRot(gp_Dir(1.0, 0.0, 0.0), 30.0, 0.0, 100.0, 50.0)),
+            "Hinge-1");
+
+    // A SECOND, distinct product that is also named "Pin".
+    TDF_Label pinBLabel = shapeTool->AddShape(makeBoxMM(8.0, 8.0, 40.0), false);
+    setName(pinBLabel, "Pin");
+    setName(shapeTool->AddComponent(frameLabel, pinBLabel, locAt(300.0, 300.0, 0.0)), "Pin-2");
+
+    // A product with no solids: one planar face.
+    TopoDS_Shape face =
+        BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)), 0.0, 50.0, 0.0, 30.0).Shape();
+    TDF_Label labelLabel = shapeTool->AddShape(face, false);
+    setName(labelLabel, "Label");
+    setName(shapeTool->AddComponent(frameLabel, labelLabel, locAt(0.0, 0.0, 200.0)), "Label-1");
+
+    // Referenced by no component, so it reads back as a second free root.
+    TDF_Label spareLabel = shapeTool->AddShape(makeBoxMM(20.0, 20.0, 20.0), false);
+    setName(spareLabel, "Spare");
+
+    shapeTool->UpdateAssemblies();
+    return writeStepMM(doc, path);
+}
+
+int main(int argc, char** argv)
+{
+    if (argc == 1)
+        return writeContainerAssembly();
+    if (argc == 3 && std::strcmp(argv[1], "--rotated") == 0)
+        return writeRotatedAssembly(argv[2]);
+    std::cerr << "usage: " << argv[0] << " [--rotated <out.step>]\n";
+    return 2;
 }

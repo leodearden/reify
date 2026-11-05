@@ -17,8 +17,8 @@
 //   - `ModalResult`        — solver-output container (part, modes, BCs,
 //                            damping, mass-/stiffness-matrix-norms)
 //   - `ModalOptions`       — solver-input knobs (n_modes, BCs, damping,
-//                            sigma, tol, max_iters, reference_direction,
-//                            element_order)
+//                            shift_frequency, tol, max_iters,
+//                            reference_direction, element_order)
 //
 // Module placement: `std.modal.analysis` is the v0.3 sibling reserved by
 // `std.trajectory`'s header — "registered last … ready for the planned
@@ -39,11 +39,14 @@
 //      → `0.00000001`.
 //   2. `ModalResult.part`, `ForcingTimeHistory.part`, and
 //      `DisplacementTimeHistory.part` are now typed `Part`, a minimal opaque
-//      marker declared in this module (task 4578, per
+//      marker declared in this module (introduced by #4578, per
 //      `stdlib-surface-type-substrate.md` §12 open-question-3 — see
 //      `structure def Part` below for the full path and rationale). `Part`
-//      will be grown into a full geometry+material+topology structure in a
-//      later task; the single-module opaque form is non-blocking for task ζ.
+//      identity is a join key, not a payload: convergence of `.part` on the
+//      analysed body's `GeometryHandleRef` (the `CarriedTopology.part`
+//      identity channel) is owned by #7097, and no geometry+material+topology
+//      fields are grown on `Part` (`result-field-vacuity-closure.md` §2.1);
+//      the single-module opaque form is non-blocking for task ζ.
 //   3. `Mode.frequency : Frequency` carries the natural-frequency dimension
 //      (`Frequency` = s⁻¹, a registered named dimension). Tightened from the
 //      former `Real` placeholder once `Frequency` gained a named scalar alias
@@ -345,8 +348,11 @@ structure def Mode {
 // declared zero-field here so all three `part : Part` params (ModalResult,
 // ForcingTimeHistory, DisplacementTimeHistory) resolve to the same nominal type
 // within this module, without depending on the F foundation / task 4574. The
-// actual geometry+material+topology fields will be grown in a later task.
-// Single-module (modal_analysis.ri only); cite task 4578.
+// "then grow" path is superseded: convergence of `.part` on the
+// `GeometryHandleRef` join key is owned by #7097, and no
+// geometry+material+topology payload is grown on `Part`
+// (docs/prds/v0_6/result-field-vacuity-closure.md §2.1).
+// Single-module (modal_analysis.ri only); introduced by #4578.
 structure def Part { }
 
 // ── ModalResult ──────────────────────────────────────────────────────────────
@@ -368,8 +374,9 @@ structure def Part { }
 //
 // Field semantics (PRD §4.1):
 //   part                 — the analysed part. Typed `Part` (declared in this
-//                          module, task 4578). Opaque marker in this phase;
-//                          grows to full geometry+material+topology later.
+//                          module, #4578). Opaque marker in this phase;
+//                          identity convergence on the `GeometryHandleRef`
+//                          join key is owned by #7097.
 //                          Consumer task ζ reads `.modes`, not `.part`.
 //   modes                — the computed modal eigenpairs, one `Mode` per
 //                          extracted mode, ordered ascending by frequency.
@@ -439,13 +446,12 @@ structure def ModalResult {
 //                          Required at construction (no default in this wave;
 //                          a trait-typed `= NoDamping()` default is deferred
 //                          per plan design-decision-5).
-//   sigma               — spectral-shift origin (in eigenvalue units;
-//                          dimensionless). Default `0.0` (added later) targets
-//                          the smallest-|λ| cluster (lowest-frequency modes).
-//                          Explicitly NOT constrained: a shift can physically
-//                          be anywhere on the real line (mirrors
-//                          BucklingOptions.sigma).
-//   tol                 — eigensolver convergence tolerance. Default 1e-9
+//   shift_frequency     — the frequency (Hz, not rad/s) the eigensolver
+//                          targets; the solver shifts to λ = (2π·f)² via
+//                          `frequency_hz_to_eigenvalue`. Default `0Hz` = the
+//                          lowest modes. Accepted costs and per-path honor
+//                          status: PRD §4.3.
+//   tol                — eigensolver convergence tolerance. Default 1e-9
 //                          (added later) encoded as the decimal literal
 //                          `0.000000001` — Reify's number grammar has no
 //                          scientific notation (same convention as
@@ -514,7 +520,7 @@ structure def ModalOptions {
     param n_modes : Int = 10
     param boundary_conditions : List<Support>
     param damping : DampingDescriptor
-    param sigma : Real = 0.0
+    param shift_frequency : Frequency = 0Hz
     param tol : Real = 0.000000001            // = 1e-9 (no scientific notation in Reify grammar)
     param max_iters : Int = 200               // PRD §4.3 — NOT 1000 (modal converges faster than buckling)
     param reference_direction : Vector3<Dimensionless>
@@ -545,12 +551,10 @@ structure def ModalOptions {
     // Same task-2544 rationale as above.
     constraint max_iters > 0
     // NOTE — explicitly NOT constrained:
-    //   sigma               : Real                  — spectral-shift origin;
-    //                          any real is physically valid (negative shifts
-    //                          target the negative side of the spectrum).
-    //                          `sigma >= 0` would wrongly forbid that, so the
-    //                          contract stays open (mirrors
-    //                          BucklingOptions.sigma).
+    //   shift_frequency     : Frequency             — the conversion squares
+    //                          it, so f and −f select the same λ; a `>= 0Hz`
+    //                          constraint would add a failure mode with no
+    //                          physical content.
     //   reference_direction : Vector3<Dimensionless> — the `norm() > 0`
     //                          invariant is a method-call on Vector3, NOT a
     //                          scalar predicate, so it is NOT expressible in
@@ -871,9 +875,9 @@ structure def SampledForce : ForcingFunction {
 //
 // Param semantics (PRD §5.1):
 //   part    — the Part on which the forcing history acts. Typed `Part`
-//             (declared in this module, task 4578); opaque marker in this
-//             phase, grown later. Consumer tasks θ/ι locate the DOF assembly
-//             via this Part at runtime.
+//             (declared in this module, #4578); opaque marker in this
+//             phase, identity convergence on the `GeometryHandleRef` join
+//             key owned by #7097. Not read by the trampolines.
 //   sources — list of forcing sources that sum linearly at each (t, location)
 //             pair per PRD §12.5 resolved-question ("sources sum linearly; no
 //             cross-source coupling in modal superposition"). Encoded as
@@ -940,7 +944,9 @@ structure def ForcingTimeHistory {
 //
 // Field semantics (PRD §5.2):
 //   part         — the analysed part. Typed `Part` (declared in this module,
-//                  task 4578). Echoed from the modal result by the trampoline.
+//                  #4578). Emitted by the trampoline as a fresh opaque
+//                  placeholder, not re-echoed from `modal_result.part`;
+//                  re-echo of the identity is owned by #7097.
 //   modal_result — the `ModalResult` the response was integrated against, echoed
 //                  verbatim so `displacement_at` can read each mode's `shape`
 //                  (Φ_i) for the projection coefficient Φ_i[node]·direction

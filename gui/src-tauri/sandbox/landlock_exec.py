@@ -5,7 +5,7 @@
 #   dark-factory removed. Upstream redirects the claude CLI's OAuth/session state to a
 #   per-task CLAUDE_CONFIG_DIR inside the worktree; reify's GUI sidecar sets no such
 #   variable (compute_sidecar_env in gui/src-tauri/src/claude_bridge.rs emits only
-#   REIFY_WORKSPACE / REIFY_LANDLOCK_EXEC / REIFY_DEBUG_PORT), so dropping the grant
+#   REIFY_WORKSPACE / REIFY_LANDLOCK_EXEC / REIFY_DEBUG_MCP_URL), so dropping the grant
 #   would leave that state read-only. Guarded by tests/infra/test_landlock_exec_refer.sh.
 """Landlock-restrict-self wrapper: apply a ruleset, then execvp the inner command.
 

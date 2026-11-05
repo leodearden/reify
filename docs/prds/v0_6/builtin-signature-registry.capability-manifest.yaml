@@ -450,6 +450,17 @@ tasks:
     delivered_check:
       kind: manual
       reason: CI-run assertion set; not a single stable pattern
+  - name: registry-test-shims-gone
+    binding: producer (this leaf) — gap-fill K9-D4 (2026-10-16, plans/gap-fill-deliberation-reify-20261016.md
+      uncontested block); __registry_result_type_for_test / __registry_owns_for_test and the
+      pub use units::{...} registry_drift_tests widening deleted once the drift test is final
+    verdict: OPEN
+    delivered_check:
+      kind: grep
+      pattern: __registry_(result_type|owns)_for_test
+      paths:
+      - crates/reify-compiler/src
+      expect: absent
 - label: rho
   task_id: 6016
   title: docs-truth leaves — best-practices exemplar + cheatsheet index + discoverability

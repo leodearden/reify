@@ -1,6 +1,6 @@
 # PRD: `std.materials` §6 — restore the documented parameter surface & constraints
 
-**Status:** draft · **Authored:** 2026-06-02 · **Milestone:** v0_6
+**Status: SHIPPED.** All 5 decomposition leaves have landed — α #4239, β #4240, γ #4241, δ #4242, ε #4243. **Authored:** 2026-06-02 · **Milestone:** v0_6 · shipped-status recorded 2026-10-18. **The body below is the AS-AUTHORED design record** — its substrate measurements, "today" surface descriptions and task-state remarks (e.g. the §6 cross-PRD rows) are dated 2026-06-02 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — no production code defers to this document; the restored `std.materials` surface is stated by `docs/reify-stdlib-reference.md` §6, reconciled by ε #4243.
 **Closes gap-register cluster:** P12 materials-breadth (`docs/architecture-audit/stdlib-reference-gap-register-2026-06-01.md`)
 **Source doc:** `docs/reify-stdlib-reference.md` §6 (`std.materials`)
 **Approach:** bare **B** (self-contained declarative stdlib feature; not a high-stakes seam — see §5 G5).

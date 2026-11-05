@@ -26,7 +26,7 @@
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
 use reify_ir::{ExportFormat, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{errors_only, parse_and_compile_with_stdlib, scalar_si};
 
 // ── Source fixture ────────────────────────────────────────────────────────────
 //
@@ -85,7 +85,7 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     Some(engine.build(&compiled, ExportFormat::Step))
 }
 
@@ -95,12 +95,7 @@ fn point3_si(value: &Value, what: &str) -> [f64; 3] {
         Value::Point(components) if components.len() == 3 => {
             let mut out = [0.0_f64; 3];
             for (i, comp) in components.iter().enumerate() {
-                out[i] = match comp {
-                    Value::Scalar { si_value, .. } => *si_value,
-                    other => {
-                        panic!("{what}: component {i} should be Scalar<Length>, got {other:?}")
-                    }
-                };
+                out[i] = scalar_si(comp, &format!("{what}: component {i}"));
             }
             out
         }

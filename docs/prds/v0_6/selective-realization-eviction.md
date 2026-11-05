@@ -332,3 +332,32 @@ syntax).
    eviction is correct but coarse if one entity's realizations have independent input cones.
    **Suggested:** start at the entity family (D4); narrow to per-`RealizationNodeId` only if the
    differential corpus shows over-eviction. Decide during γ.
+
+## 12. Measured status — `edit_param`'s classification fold (2026-10-10)
+
+`edit_param` classifies with the **full** input-cone fold (`compute_changed_realizations` over every
+realization), the same fold `edit_source` uses. #6925 had also landed #6086: a *scoped* fold that
+folded only the realizations whose `extract_realization_dependencies(..).reads` cells moved, checked
+against the full fold by a debug-only assert. Leo reverted it on 2026-10-10
+(esc-review-20261010T034552-3, option E; #8459, merge 807a0b7186):
+
+- **Unsound.** `build()` stamps `input_cone_hash` over its build-local values. Those values carry
+  geometry-query and selector lets hydrated in the build loop (`let v = volume(base)`), and none of
+  them reach `snapshot.values`. A diff of snapshot cells therefore misses a consumer whose query
+  moved, and release served a stale handle for it. The stamp/compare mismatch itself is #8460;
+  until it lands, the full fold over-reports such consumers after every `build()` (over-eviction,
+  never stale).
+- **No measured benefit.** Release, real OCCT, the largest designs in the repo:
+  - printer_v01 (54 realizations): the full fold takes 1.0–2.0 ms, about 4–6 % of `edit_param`'s
+    23–36 ms.
+  - 26-, 16- and 8-realization designs: the scoped fold was *slower* than the full fold.
+
+**Re-open trigger.** Reconsider a scoped fold only if the full fold exceeds ~10 % of `edit_param`
+wall time on a design with ≥ 200 realizations, measured in release on the GUI preview path. A re-land
+must be sound by construction:
+- each stamp records the cells its own fold actually read, and the pre-filter consults that record,
+  not a separately extracted read set;
+- the scoped-vs-full check is not debug-only.
+
+D1/D4 keyed eviction, the realization dirty cone and `edit_source`'s union with `diff_realizations`
+are unchanged.

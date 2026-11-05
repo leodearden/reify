@@ -1,0 +1,19 @@
+module kernel_interface_query_reply_oracle
+
+// S10 leaves η₁–η₆ oracle: `reify eval` output must stay byte-identical across the
+// typed-reply rollout (point, bbox, closest point, surface-kind selector, extremal_by_bbox).
+structure def Probe {
+    let b      = translate(box(10mm, 20mm, 30mm), 1mm, 2mm, 3mm)
+    let c      = centroid(b)
+    let bb     = bounding_box(b)
+    let p      = point3(50mm, 0mm, 0mm)
+    let cp     = closest_point(p, b)
+    let plane  = "Plane"
+    let plain  = "Plain"
+    let fp     = faces_by_surface_kind(b, plane)
+    let fbad   = faces_by_surface_kind(b, plain)
+    let ax     = "Z"
+    let sense  = "Max"
+    let etol   = 0.001mm
+    let topb   = extremal_by_bbox(b, ax, sense, etol)
+}

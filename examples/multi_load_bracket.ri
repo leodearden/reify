@@ -155,7 +155,8 @@ structure MultiLoadBracket {
     // LRFD-style design combination: 1.4·D (transport, dead/inertial) +
     // 1.7·L (operating, live). `linear_combine` is the linear-elastic
     // superposition primitive — valid only for linear-elastic results,
-    // documented at `crates/reify-compiler/stdlib/fea_multi_case.ri:96-103`.
+    // documented in the `linear_combine` entry of
+    // `crates/reify-compiler/stdlib/fea_multi_case.ri`'s header.
     let lrfd = linear_combine(
         results,
         map{"transport" => 1.4, "operating" => 1.7},

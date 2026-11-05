@@ -527,7 +527,8 @@ echo "--- Section F: verify.sh's own subprocesses run on the ambient loader path
 # PATH stays BEHIND the shim dir because apply_env() sources $HOME/.cargo/env
 # (prior art, read not sourced: tests/infra/nextest_absent_lib.sh:22-53).
 SHIM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-ld-shim-6392.XXXXXX")"
-trap 'rm -rf "$SHIM_DIR"' EXIT INT TERM HUP
+# The ONE exit trap for the whole file; Section G's NLP_FIX joins it once made.
+trap 'rm -rf "$SHIM_DIR" ${NLP_FIX:+"$NLP_FIX"}' EXIT INT TERM HUP
 SHIM_LOG="$SHIM_DIR/records.tsv"
 mkdir -p "$SHIM_DIR/bin" "$SHIM_DIR/real"
 : > "$SHIM_LOG"
@@ -703,5 +704,306 @@ assert "the phase-boundary export's right-hand side is a SINGLE bare variable re
     test -n "$_EXPORT_REF"
 assert "SPOT: the phase-boundary export and the ENV_LINES advertisement read the SAME variable, so what --print-plan promises is what the plan loop actually runs under — retargeting the export at any other DEFINED variable (set -u catches a typo, never a real name) would drop OCCT from every cargo plan line while every other section stayed green; export reads '\$${_EXPORT_REF:-<none>}', ENV_LINES advertises '\$${_ADVERT_REF:-<none>}'" \
     test "$_EXPORT_REF" = "$_ADVERT_REF"
+
+# ---------------------------------------------------------------------------
+# Section G: the shared loader-path helper scripts/lib_native_ld_path.sh
+# (task 8654).
+#
+# The helper decides, per consumer class, which native-dep dirs a process puts
+# on LD_LIBRARY_PATH. Its two roots are read at CALL time from
+# REIFY_NATIVE_LD_SNAP_DIR / REIFY_NATIVE_LD_DEPS_DIR, so every case points
+# them at fixture dirs and asserts by EQUALITY, whatever this host installs.
+# Each case runs in a `set -euo pipefail` child because the launchers that
+# source the lib run under those options: an absent-dir path returning
+# non-zero would abort them.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section G: the loader-path helper scripts/lib_native_ld_path.sh ---"
+
+LIB_NATIVE_LD_PATH="$REPO_ROOT/scripts/lib_native_ld_path.sh"
+NLP_FIX="$(mktemp -d "${TMPDIR:-/tmp}/reify-native-ld-8654.XXXXXX")"
+NLP_SNAP="$NLP_FIX/snap"
+NLP_DEPS_TK="$NLP_FIX/deps-tk"
+NLP_DEPS_EMPTY="$NLP_FIX/deps-empty"
+NLP_ABSENT="$NLP_FIX/absent"
+mkdir -p "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_DEPS_EMPTY"
+: > "$NLP_DEPS_TK/libTKernel.so.7.9"
+
+# The marker _nlp_exec takes for "run with LD_LIBRARY_PATH unset", and the
+# value a child prints when it is still unset (exported to every child).
+NLP_UNSET="<UNSET>"
+
+NLP_CHILD_CALL='set -euo pipefail; source "$1"; shift; "$@"'
+NLP_CHILD_PREPEND='set -euo pipefail; source "$1"; native_ld_path_prepend "$2"; printf "%s" "${LD_LIBRARY_PATH-$NLP_UNSET}"'
+NLP_PRINT_LD='printf "%s" "${LD_LIBRARY_PATH-$NLP_UNSET}"'
+
+# _nlp_exec <snap-root> <deps-root> <inherited LD_LIBRARY_PATH | $NLP_UNSET>
+#           <cmd...>
+# Runs cmd unpiped under exactly those roots and that inherited loader path,
+# leaving _NLP_OUT / _NLP_ERR / _NLP_RC in this shell (main-shell globals, as
+# count_plan_lines does).
+_NLP_OUT=""
+_NLP_ERR=""
+_NLP_RC=0
+_nlp_exec() {
+    local snap="$1" deps="$2" inherited="$3"
+    shift 3
+    local -a env_cmd=(env -u LD_LIBRARY_PATH)
+    if [ "$inherited" != "$NLP_UNSET" ]; then
+        env_cmd=(env LD_LIBRARY_PATH="$inherited")
+    fi
+    _NLP_RC=0
+    _NLP_OUT="$("${env_cmd[@]}" NLP_UNSET="$NLP_UNSET" \
+        REIFY_NATIVE_LD_SNAP_DIR="$snap" REIFY_NATIVE_LD_DEPS_DIR="$deps" \
+        "$@" 2>"$NLP_FIX/stderr")" || _NLP_RC=$?
+    _NLP_ERR="$(<"$NLP_FIX/stderr")"
+}
+
+# _nlp_run <snap-root> <deps-root> <inherited> <child-script> <args...>
+# _nlp_exec of a bash child that has sourced the helper.
+_nlp_run() {
+    local snap="$1" deps="$2" inherited="$3" script="$4"
+    shift 4
+    _nlp_exec "$snap" "$deps" "$inherited" bash -c "$script" _ "$LIB_NATIVE_LD_PATH" "$@"
+}
+
+# One-line rendering of a captured multi-line value for an assert label.
+_nlp_show() { printf '%s' "${1//$'\n'/\\n}"; }
+
+_nlp_got() { [ "$_NLP_RC" -eq 0 ] && [ "$_NLP_OUT" = "$1" ]; }
+
+_nlp_rejected_bogus() {
+    [ "$_NLP_RC" -ne 0 ] && [ -z "$_NLP_OUT" ] \
+        && contains "$_NLP_ERR" "bogus" \
+        && contains "$_NLP_ERR" "cargo-target" \
+        && contains "$_NLP_ERR" "workspace-bin"
+}
+
+# G1/G2: both roots present.
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs cargo-target
+assert "G1: cargo-target lists the deps dir, then the snap dir, in loader search order (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got "$NLP_DEPS_TK"$'\n'"$NLP_SNAP"
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs workspace-bin
+assert "G2: workspace-bin lists the snap dir only — never the deps prefix, even when it holds libTKernel (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got "$NLP_SNAP"
+
+# G3: snap absent.
+_nlp_run "$NLP_ABSENT" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs cargo-target
+assert "G3: cargo-target with no snap dir lists the deps dir alone (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got "$NLP_DEPS_TK"
+_nlp_run "$NLP_ABSENT" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs workspace-bin
+assert "G3: workspace-bin with no snap dir lists nothing and returns 0 under set -e (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got ""
+
+# G4: the deps dir exists but holds no libTKernel.so*.
+_nlp_run "$NLP_ABSENT" "$NLP_DEPS_EMPTY" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs cargo-target
+assert "G4: cargo-target skips a deps dir with no libTKernel.so* — the library, not the dir, gates it (rc $_NLP_RC, got '$(_nlp_show "$_NLP_OUT")')" \
+    _nlp_got ""
+
+# G5: an unknown class is refused loudly.
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_CALL" native_ld_path_dirs bogus
+assert "G5: an unknown class fails with empty stdout and a stderr line naming it and both valid classes (rc $_NLP_RC, stdout '$(_nlp_show "$_NLP_OUT")', stderr '$(_nlp_show "$_NLP_ERR")')" \
+    _nlp_rejected_bogus
+
+# G6: the prepend wrapper puts the class block ahead of the inherited value.
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$LD_AMBIENT_SENTINEL" "$NLP_CHILD_PREPEND" cargo-target
+assert "G6: prepend cargo-target yields <deps>:<snap>:<inherited> (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_DEPS_TK:$NLP_SNAP:$LD_AMBIENT_SENTINEL"
+_nlp_run "$NLP_SNAP" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_PREPEND" cargo-target
+assert "G6: prepend cargo-target onto an unset LD_LIBRARY_PATH yields <deps>:<snap> with no trailing colon (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_DEPS_TK:$NLP_SNAP"
+
+# G7: nothing to prepend leaves LD_LIBRARY_PATH exactly as it was.
+_nlp_run "$NLP_ABSENT" "$NLP_ABSENT" "$NLP_UNSET" "$NLP_CHILD_PREPEND" cargo-target
+assert "G7: prepend with both roots absent leaves an unset LD_LIBRARY_PATH unset — no export of an empty value (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_UNSET"
+_nlp_run "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_CHILD_PREPEND" cargo-target
+assert "G7: prepend with both roots absent leaves an inherited LD_LIBRARY_PATH verbatim (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$LD_AMBIENT_SENTINEL"
+
+# G8: the leads predicate (a launcher's fixed-point test) matches the class's
+# dirs in order, each as a whole colon-delimited component.
+NLP_CHILD_LEADS='set -euo pipefail; source "$1"; if native_ld_path_leads "$2" "$3"; then printf yes; else printf no; fi'
+# _nlp_leads_is <snap-root> <class> <value> <yes|no>
+_nlp_leads_is() {
+    _nlp_run "$1" "$NLP_DEPS_TK" "$NLP_UNSET" "$NLP_CHILD_LEADS" "$2" "$3"
+    _nlp_got "$4"
+}
+assert "G8: cargo-target leads '<deps>:<snap>:<rest>'" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_DEPS_TK:$NLP_SNAP:/usr/lib" yes
+assert "G8: cargo-target leads exactly '<deps>:<snap>'" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_DEPS_TK:$NLP_SNAP" yes
+assert "G8: cargo-target does not lead '<snap>:<deps>' — order matters" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_SNAP:$NLP_DEPS_TK" no
+assert "G8: cargo-target does not lead '<deps>:<snap>-old' — a sibling dir is not the snap dir" \
+    _nlp_leads_is "$NLP_SNAP" cargo-target "$NLP_DEPS_TK:$NLP_SNAP-old" no
+assert "G8: a class with no dirs leads every value, even an empty one" \
+    _nlp_leads_is "$NLP_ABSENT" workspace-bin "" yes
+
+# ---------------------------------------------------------------------------
+# Section H: the cargo target runner .cargo/run-with-occt.sh (task 8654).
+#
+# .cargo/config.toml names it as the runner for every binary cargo/nextest
+# runs, so it is the cargo-target class's main consumer. Invoked by absolute
+# path, exactly as cargo does, over Section G's fixture roots.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section H: the cargo target runner .cargo/run-with-occt.sh ---"
+
+OCCT_RUNNER="$REPO_ROOT/.cargo/run-with-occt.sh"
+
+_nlp_exec "$NLP_SNAP" "$NLP_DEPS_TK" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" bash -c "$NLP_PRINT_LD"
+assert "H1: the runner hands its command <deps>:<snap>:<inherited> — the cargo-target dirs ahead of the inherited loader path (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$NLP_DEPS_TK:$NLP_SNAP:$LD_AMBIENT_SENTINEL"
+
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" bash -c "$NLP_PRINT_LD"
+assert "H2: with both roots absent the runner prepends nothing — the inherited loader path arrives verbatim (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got "$LD_AMBIENT_SENTINEL"
+
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" bash -c 'exit 7'
+assert "H3: the runner execs its command, so the command's exit status is the runner's (want 7, got $_NLP_RC)" \
+    test "$_NLP_RC" -eq 7
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$OCCT_RUNNER" printf '%s|' 'a b' c
+assert "H3: the runner passes argv through unsplit (rc $_NLP_RC, got '$_NLP_OUT')" \
+    _nlp_got 'a b|c|'
+
+# H4: a runner whose helper is missing must refuse, not exec a test binary on a
+# silently short loader path (which would die naming libgmsh, not the helper).
+mkdir -p "$NLP_FIX/repo/.cargo"
+cp -p "$OCCT_RUNNER" "$NLP_FIX/repo/.cargo/run-with-occt.sh"
+_nlp_runner_failed_closed() {
+    [ "$_NLP_RC" -ne 0 ] && ! contains "$_NLP_OUT" "RAN" \
+        && contains "$_NLP_ERR" "lib_native_ld_path.sh"
+}
+_nlp_exec "$NLP_ABSENT" "$NLP_ABSENT" "$LD_AMBIENT_SENTINEL" "$NLP_FIX/repo/.cargo/run-with-occt.sh" bash -c 'echo RAN'
+assert "H4: a runner copy with no scripts/lib_native_ld_path.sh beside it fails closed, naming the helper, and never runs its command (rc $_NLP_RC, stdout '$_NLP_OUT', stderr '$(_nlp_show "$_NLP_ERR")')" \
+    _nlp_runner_failed_closed
+
+# ---------------------------------------------------------------------------
+# Section I: adoption ratchet — no hand-rolled LD_LIBRARY_PATH prepend outside
+# the loader-path helper (task 8654).
+#
+# A construct lint in the tests/infra/README.md sense: a prepend decides which
+# libraries every child process resolves, so a new one must go through
+# native_ld_path_prepend. The fixture repo proves the count both flags and
+# clears before it is trusted on the real tree.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section I: no hand-rolled LD_LIBRARY_PATH prepend outside the loader-path helper ---"
+
+# Every *.sh path allowed a hand-rolled prepend, with the exact number it
+# holds; any other path is allowed none. Exact, not a ceiling, so a removed
+# prepend fails here until its row is lowered.
+declare -A _LD_PREPEND_ALLOWED=(
+    [scripts/lib_native_ld_path.sh]=1  # the helper's own prepend
+    [scripts/lib_gui_launch.sh]=1      # the tbb pin, prepended last so it leads
+    [scripts/verify.sh]=2              # _PLAN_LD_LIBRARY_PATH, until S18's Python rewrite deletes both and this row
+)
+
+# An assignment to any *LD_LIBRARY_PATH name whose value puts text ahead of a
+# reference to one: a $VAR, a ${VAR} or a literal dir, quoted or bare. The
+# leading text may not hold a double quote, so an append (the reference first)
+# or a plain set (no reference) does not match.
+_LD_PREPEND_ERE='LD_LIBRARY_PATH="?[^"[:space:]]+\$\{?[A-Za-z_]*LD_LIBRARY_PATH'
+
+# git with the ambient repository environment stripped: a hook-exported
+# GIT_INDEX_FILE outranks `git -C` (task 7106).
+_nlp_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE git "$@"
+}
+
+# _count_ld_prepends <repo-root> — sets _LD_PREPEND_RC (git grep's rc: 0 match,
+# 1 none, >=2 error), _LD_PREPEND_MATCHES (one "path:line:text" per line),
+# _LD_PREPEND_EXCESS (" path=N" for every path holding more prepends than it is
+# allowed) and _LD_PREPEND_STALE (" path=N" for every allowed path holding
+# fewer).
+_LD_PREPEND_RC=0
+_LD_PREPEND_MATCHES=""
+_LD_PREPEND_EXCESS=""
+_LD_PREPEND_STALE=""
+_count_ld_prepends() {
+    local _line _path
+    local -A _count=()
+    _LD_PREPEND_RC=0
+    _LD_PREPEND_MATCHES="$(_nlp_git -C "$1" grep -nE "$_LD_PREPEND_ERE" -- '*.sh')" || _LD_PREPEND_RC=$?
+    while IFS= read -r _line; do
+        [ -n "$_line" ] || continue
+        _path="${_line%%:*}"
+        _count[$_path]=$((${_count[$_path]:-0} + 1))
+    done <<< "$_LD_PREPEND_MATCHES"
+    _LD_PREPEND_EXCESS=""
+    for _path in "${!_count[@]}"; do
+        if [ "${_count[$_path]}" -gt "${_LD_PREPEND_ALLOWED[$_path]:-0}" ]; then
+            _LD_PREPEND_EXCESS="$_LD_PREPEND_EXCESS $_path=${_count[$_path]}"
+        fi
+    done
+    _LD_PREPEND_STALE=""
+    for _path in "${!_LD_PREPEND_ALLOWED[@]}"; do
+        if [ "${_count[$_path]:-0}" -lt "${_LD_PREPEND_ALLOWED[$_path]}" ]; then
+            _LD_PREPEND_STALE="$_LD_PREPEND_STALE $_path=${_count[$_path]:-0}"
+        fi
+    done
+}
+
+_ld_prepend_scan_ran() { [ "$_LD_PREPEND_RC" -le 1 ]; }
+_ld_prepend_excess_has() { _ld_prepend_scan_ran && contains "$_LD_PREPEND_EXCESS" " $1"; }
+_ld_prepend_excess_lacks() { _ld_prepend_scan_ran && ! contains "$_LD_PREPEND_EXCESS" " $1="; }
+_ld_prepend_none_over() { _ld_prepend_scan_ran && [ -z "$_LD_PREPEND_EXCESS" ]; }
+
+# _nlp_assign <lhs> <rhs> — prints "<lhs>=<rhs>". The fixture lines are joined
+# here, so this file never matches the pattern it tests.
+_nlp_assign() { printf '%s=%s\n' "$1" "$2"; }
+_nlp_ratchet_commit() {
+    _nlp_git -C "$NLP_RATCHET_REPO" add -A
+    _nlp_git -C "$NLP_RATCHET_REPO" -c user.name=t -c user.email=t@invalid -c core.hooksPath=/dev/null \
+        -c commit.gpgsign=false commit -q -m "$1"
+}
+
+# I1, sensitivity: every prepend form flags, the forms that are not prepends do
+# not, and an allowed path over its count flags too.
+NLP_RATCHET_REPO="$NLP_FIX/ratchet-repo"
+_nlp_git init -q "$NLP_RATCHET_REPO"
+mkdir -p "$NLP_RATCHET_REPO/scripts"
+{
+    _nlp_assign 'export LD_LIBRARY_PATH' '"$D${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+    _nlp_assign 'LD_LIBRARY_PATH' '"${D}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+    _nlp_assign 'export LD_LIBRARY_PATH' '"/opt/reify-deps/lib:$LD_LIBRARY_PATH"'
+    _nlp_assign 'LD_LIBRARY_PATH' '/opt/x:${LD_LIBRARY_PATH:-}'
+    _nlp_assign '_PLAN_LD_LIBRARY_PATH' '"$d${_PLAN_LD_LIBRARY_PATH:+:$_PLAN_LD_LIBRARY_PATH}"'
+} > "$NLP_RATCHET_REPO/prepends.sh"
+{
+    _nlp_assign 'export LD_LIBRARY_PATH' '"${LD_LIBRARY_PATH:-}:/opt/x"'
+    _nlp_assign 'export LD_LIBRARY_PATH' '"$X"'
+    _nlp_assign 'LD_LIBRARY_PATH' '""'
+} > "$NLP_RATCHET_REPO/not-prepends.sh"
+{
+    _nlp_assign 'export LD_LIBRARY_PATH' '"$PIN${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+    _nlp_assign 'export LD_LIBRARY_PATH' '"$SNAP${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+} > "$NLP_RATCHET_REPO/scripts/lib_gui_launch.sh"
+_nlp_ratchet_commit flag
+_count_ld_prepends "$NLP_RATCHET_REPO"
+assert "I1: all five prepend forms flag — \$VAR, \${VAR}, quoted and bare literal dirs, any *LD_LIBRARY_PATH name (over:${_LD_PREPEND_EXCESS:- none}, git grep rc $_LD_PREPEND_RC)" \
+    _ld_prepend_excess_has "prepends.sh=5"
+assert "I1: an append, a plain set and a scrub do not flag (over:${_LD_PREPEND_EXCESS:- none})" \
+    _ld_prepend_excess_lacks "not-prepends.sh"
+assert "I1: an allowed path holding a second prepend beyond its allowance flags (over:${_LD_PREPEND_EXCESS:- none})" \
+    _ld_prepend_excess_has "scripts/lib_gui_launch.sh=2"
+assert "I1: an allowance with fewer prepends than its row reports as stale (under:${_LD_PREPEND_STALE:- none})" \
+    contains "$_LD_PREPEND_STALE" " scripts/verify.sh=0"
+
+_nlp_git -C "$NLP_RATCHET_REPO" rm -q prepends.sh
+_nlp_assign 'export LD_LIBRARY_PATH' '"$PIN${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' > "$NLP_RATCHET_REPO/scripts/lib_gui_launch.sh"
+_nlp_ratchet_commit clear
+_count_ld_prepends "$NLP_RATCHET_REPO"
+assert "I1: the ratchet clears once each path is back within its allowance (over:${_LD_PREPEND_EXCESS:- none}, git grep rc $_LD_PREPEND_RC)" \
+    _ld_prepend_none_over
+
+# I2, the real tree.
+_count_ld_prepends "$REPO_ROOT"
+assert "I2: no *.sh path holds more hand-rolled LD_LIBRARY_PATH prepends than its _LD_PREPEND_ALLOWED row — route a new one through native_ld_path_prepend (scripts/lib_native_ld_path.sh); over:${_LD_PREPEND_EXCESS:- none}, git grep rc $_LD_PREPEND_RC, matches:
+$_LD_PREPEND_MATCHES" \
+    _ld_prepend_none_over
+assert "I2: every _LD_PREPEND_ALLOWED row is still exact — lower a row when its prepend goes; under:${_LD_PREPEND_STALE:- none}" \
+    test -z "$_LD_PREPEND_STALE"
 
 test_summary

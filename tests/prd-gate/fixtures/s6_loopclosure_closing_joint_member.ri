@@ -1,0 +1,15 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): reading the runtime key
+// `closing_joint` through the declared LoopClosure type is a compile error today (C7; pi corrects the declaration).
+// Before-image measured at main e217c0f30b (2026-10-13); expected today: reify check exits 1.
+module s6_loopclosure_closing_joint_member
+
+structure def Kinematic {
+    let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
+    let j_x = prismatic(vec3(1, 0, 0), 0mm .. 500mm)
+    let j_b = prismatic(vec3(1, 0, 0), 0mm .. 2000mm)
+    let m1  = body(mechanism(), "solid_a", j_a)
+    let m2  = body(m1, "solid_b", j_x, j_a)
+    let m2b = body(m2, "solid_c", j_b)
+    let m3  = body(m2b, "solid_d", j_x, j_b)
+    let cj  = m3.loop_closures[0].closing_joint
+}

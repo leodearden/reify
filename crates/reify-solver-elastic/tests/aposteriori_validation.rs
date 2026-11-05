@@ -84,156 +84,27 @@
 //! heuristically stable across gmsh versions/platforms — kept off the
 //! always-on gate to avoid a cross-version flake, not for runtime cost.
 //!
-//! # Reused FEA harness
+//! # Shared FEA harness
 //!
-//! The procedural box-mesh + Dirichlet/load helpers below are ported from
-//! `tests/analytical_validation.rs` (task #2928's harness) rather than
-//! re-implemented, so the solve pipeline shape (`element_stiffness` ->
-//! `assemble_global_stiffness` -> `apply_dirichlet_row_elimination` ->
-//! `solve_cg`) is identical to the rest of the FEA validation suite.
+//! The box-mesh, BC, load and P1-solve helpers come from the shared
+//! `common/fea_harness.rs` module.
 
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 use reify_kernel_gmsh::{BackgroundSizeField, MeshingOptions, refine_volume_with_size_field};
 use reify_solver_elastic::{
-    AdaptiveEstimate, AdaptiveProblem, AssemblyElement, AssemblyMode, BudgetReason, CgResult,
-    CgSolverOptions, ConvergenceStatus, DORFLER_THETA, DirichletBc, ElementOrder, ElementStiffness,
-    IsotropicElastic, RefineError, RefinementBudget, SolverMode, StressElement,
-    apply_dirichlet_row_elimination, assemble_global_stiffness, compute_zz_indicator,
-    element_stiffness, element_stress_p1, mark_dorfler, recover_nodal_stress_p1,
-    refine_marked_elements, run_adaptive_refinement, solve_cg, tet_volume_p1,
+    AdaptiveEstimate, AdaptiveProblem, BudgetReason,
+    ConvergenceStatus, DORFLER_THETA, DirichletBc, IsotropicElastic, RefineError,
+    RefinementBudget, StressElement, compute_zz_indicator, element_stress_p1, mark_dorfler,
+    recover_nodal_stress_p1, refine_marked_elements, run_adaptive_refinement, tet_volume_p1,
 };
+use reify_test_support::mesh_fixtures::prismatic_box_mesh;
 
-// ─── ported FEA harness helpers (tests/analytical_validation.rs, task 2928) ─
-
-/// Split a hex cell into 6 tetrahedra via the Kuhn triangulation.
-///
-/// Ported verbatim from `tests/analytical_validation.rs`; private dependency
-/// of [`box_p1_mesh`].
-fn kuhn_split_hex_to_six_tets(c: [usize; 8]) -> [[usize; 4]; 6] {
-    [
-        [c[0], c[1], c[2], c[6]],
-        [c[0], c[1], c[5], c[6]],
-        [c[0], c[3], c[2], c[6]],
-        [c[0], c[3], c[7], c[6]],
-        [c[0], c[4], c[5], c[6]],
-        [c[0], c[4], c[7], c[6]],
-    ]
-}
-
-/// Build a structured P1 tet mesh for a rectangular box `[0,Lx] x [0,Ly] x
-/// [0,Lz]` with `nx x ny x nz` hex cells (each Kuhn-split into 6 tets).
-///
-/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
-/// step-3 both as the cantilever control fixture and as the procedural seed
-/// for the cheap box-shaped `convergence_status` fixture (step-17/18).
-fn box_p1_mesh(
-    lx: f64,
-    ly: f64,
-    lz: f64,
-    nx: usize,
-    ny: usize,
-    nz: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
-    let nnx = nx + 1;
-    let nny = ny + 1;
-    let nnz = nz + 1;
-
-    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
-    for iz in 0..nnz {
-        for iy in 0..nny {
-            for ix in 0..nnx {
-                nodes.push([
-                    ix as f64 * lx / nx as f64,
-                    iy as f64 * ly / ny as f64,
-                    iz as f64 * lz / nz as f64,
-                ]);
-            }
-        }
-    }
-
-    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * nny * nnx + iy * nnx + ix };
-
-    let mut connectivity = Vec::with_capacity(6 * nx * ny * nz);
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let c = [
-                    node_idx(ix, iy, iz),
-                    node_idx(ix + 1, iy, iz),
-                    node_idx(ix + 1, iy + 1, iz),
-                    node_idx(ix, iy + 1, iz),
-                    node_idx(ix, iy, iz + 1),
-                    node_idx(ix + 1, iy, iz + 1),
-                    node_idx(ix + 1, iy + 1, iz + 1),
-                    node_idx(ix, iy + 1, iz + 1),
-                ];
-                for tet in kuhn_split_hex_to_six_tets(c) {
-                    connectivity.push(tet);
-                }
-            }
-        }
-    }
-
-    (nodes, connectivity)
-}
-
-/// Build Dirichlet BCs to fix all 3 DOFs on nodes within `tol` of
-/// `nodes[n][axis] == value`.
-///
-/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
-/// step-3 to clamp the cantilever's `x=0` face.
-fn dirichlet_fix_face(nodes: &[[f64; 3]], axis: usize, value: f64, tol: f64) -> Vec<DirichletBc> {
-    let mut bcs = Vec::new();
-    for (node, n) in nodes.iter().enumerate() {
-        if (n[axis] - value).abs() < tol {
-            for dof_idx in 0..3_usize {
-                bcs.push(DirichletBc {
-                    dof: node * 3 + dof_idx,
-                    value: 0.0,
-                });
-            }
-        }
-    }
-    bcs
-}
-
-/// Indices of every node on the free-end face `x = l` (within `tol`).
-///
-/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
-/// step-3 to identify the cantilever's loaded/measured end face.
-fn end_face_nodes(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<usize> {
-    nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| (n[0] - l).abs() < tol)
-        .map(|(i, _)| i)
-        .collect()
-}
-
-/// Distribute a transverse shear resultant `f_mag` (in -y) equally over the
-/// `end` nodes — a set of nodal point loads whose resultant is exactly
-/// `-f_mag` at `x = l`. By Saint-Venant the equal split is immaterial to the
-/// tip deflection (only the resultant matters far from the end).
-///
-/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
-/// step-3 to load the cantilever's free end.
-fn distributed_tip_load(end: &[usize], f_mag: f64) -> Vec<(usize, f64)> {
-    let per = f_mag / end.len() as f64;
-    end.iter().map(|&n| (n * 3 + 1, -per)).collect()
-}
-
-/// Compute von Mises stress from a 3x3 Cauchy stress tensor.
-///
-/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
-/// step-15/16 to track the peak von Mises across the plate-with-hole
-/// refinement sequence (compared against the analytical Kirsch SCF).
-fn von_mises_of_tensor(s: &[[f64; 3]; 3]) -> f64 {
-    let (s11, s22, s33) = (s[0][0], s[1][1], s[2][2]);
-    let (s12, s23, s13) = (s[0][1], s[1][2], s[0][2]);
-    let v = 0.5 * ((s11 - s22).powi(2) + (s22 - s33).powi(2) + (s33 - s11).powi(2))
-        + 3.0 * (s12.powi(2) + s23.powi(2) + s13.powi(2));
-    v.sqrt()
-}
+#[path = "common/fea_harness.rs"]
+mod fea_harness;
+use fea_harness::{
+    box_p1_mesh, dirichlet_fix_face, dirichlet_prescribe_boundary_field, distributed_tip_load,
+    end_face_nodes, gather_u_p1, solve_p1_pipeline, von_mises_of_tensor,
+};
 
 // ─── step-1/2: pure, no-FEA convergence-study helpers ──────────────────────
 //
@@ -366,99 +237,6 @@ fn characteristic_size_from_volume_recovers_cube_root_edge_proxy_for_known_tet_v
 // `AdaptiveProblem::solve_and_estimate` through the real pipeline. `refine`
 // is a `todo!()` stub until step-6 — step-3/4 is scoped to
 // `solve_and_estimate` only (see plan step-5/6 for `refine`).
-
-/// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet from
-/// the global displacement vector, in element-local node order.
-///
-/// Ported verbatim from `tests/analytical_validation.rs`.
-fn gather_u_p1(u: &[f64], conn: &[usize; 4]) -> [f64; 12] {
-    let mut ue = [0.0_f64; 12];
-    for (k, &node) in conn.iter().enumerate() {
-        ue[3 * k] = u[3 * node];
-        ue[3 * k + 1] = u[3 * node + 1];
-        ue[3 * k + 2] = u[3 * node + 2];
-    }
-    ue
-}
-
-/// Deduplicate Dirichlet BCs (`apply_dirichlet_row_elimination` panics on
-/// duplicate DOF indices in debug builds).
-///
-/// Ported verbatim from `tests/analytical_validation.rs`.
-fn dedup_bcs(bcs: &mut Vec<DirichletBc>) {
-    bcs.sort_by_key(|bc| bc.dof);
-    if cfg!(debug_assertions) {
-        for w in bcs.windows(2) {
-            if w[0].dof == w[1].dof {
-                assert_eq!(
-                    w[0].value, w[1].value,
-                    "dedup_bcs: conflicting values at DOF {} ({} vs {})",
-                    w[0].dof, w[0].value, w[1].value,
-                );
-            }
-        }
-    }
-    bcs.dedup_by_key(|bc| bc.dof);
-}
-
-/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system. Uses
-/// `SolverMode::Deterministic` for bit-stable, CI-safe results.
-///
-/// Ported verbatim from `tests/analytical_validation.rs::solve_p1_pipeline`
-/// — the exact pipeline shape [`FeaAdaptiveProblem::solve_and_estimate`]
-/// reuses.
-///
-/// # Returns
-///
-/// Displacement vector `u` of length `3 * nodes.len()`.
-fn solve_p1_pipeline(
-    nodes: &[[f64; 3]],
-    conns: &[[usize; 4]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
-    mat: &IsotropicElastic,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
-    let ke_list: Vec<ElementStiffness> = conns
-        .iter()
-        .map(|conn| {
-            let elem_nodes: Vec<[f64; 3]> = conn.iter().map(|&i| nodes[i]).collect();
-            element_stiffness(ElementOrder::P1, &elem_nodes, mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = conns
-        .iter()
-        .zip(ke_list.iter())
-        .enumerate()
-        .map(|(i, (conn, ke))| AssemblyElement {
-            id: i,
-            connectivity: conn.as_slice(),
-            k_e: ke,
-        })
-        .collect();
-
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
-
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads {
-        f[dof] += val;
-    }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
-    );
-    result.u().to_vec()
-}
 
 /// One characteristic size per element of `(nodes, conns)`, in element
 /// order, via [`characteristic_size_from_volume`] of each tet's
@@ -733,43 +511,6 @@ fn dummy_surface() -> Mesh {
     }
 }
 
-/// Prescribe the full 3-DOF displacement `field(x)` on every node lying on
-/// any of the six bounding planes of `[0,lx]x[0,ly]x[0,lz]` (within `tol`).
-///
-/// Ported verbatim from `tests/analytical_validation.rs`. Used starting
-/// step-3 for the Zienkiewicz constant-strain patch-test fixture:
-/// prescribing the exact linear field `u = (gamma·y, 0, 0)` on the whole
-/// boundary makes the interior solution that same field (P1 tets represent
-/// it exactly), yielding a uniform stress state and — the property this
-/// suite's patch test checks — a ~zero Z-Z indicator.
-fn dirichlet_prescribe_boundary_field(
-    nodes: &[[f64; 3]],
-    lx: f64,
-    ly: f64,
-    lz: f64,
-    tol: f64,
-    field: impl Fn([f64; 3]) -> [f64; 3],
-) -> Vec<DirichletBc> {
-    let mut bcs = Vec::new();
-    for (node, &p) in nodes.iter().enumerate() {
-        let on_boundary = p[0].abs() < tol
-            || (p[0] - lx).abs() < tol
-            || p[1].abs() < tol
-            || (p[1] - ly).abs() < tol
-            || p[2].abs() < tol
-            || (p[2] - lz).abs() < tol;
-        if on_boundary {
-            for (dof_idx, &val) in field(p).iter().enumerate() {
-                bcs.push(DirichletBc {
-                    dof: node * 3 + dof_idx,
-                    value: val,
-                });
-            }
-        }
-    }
-    bcs
-}
-
 /// Cantilever-style box fixture: `[0,2]x[0,1]x[0,1]`, clamped at `x=0`,
 /// distributed shear load at the free end `x=2`. A non-uniform (bending)
 /// stress state, exercising the "real" (not patch-test) wiring path.
@@ -887,46 +628,6 @@ fn fea_adaptive_problem_solve_and_estimate_patch_test_yields_near_zero_indicator
 // the `todo!()` stub from step-4 — `problem.refine(&marked)` panics at
 // runtime (a legitimate RED: the test binary compiles, this ONE test fails).
 // GREEN lands in step-6.
-
-/// Closed-surface box mesh `[0,Lx] x [0,Ly] x [0,Lz]` (8 vertices, 12
-/// outward-winding triangles). Generalizes the unit-cube fixture from
-/// `crates/reify-kernel-gmsh/tests/refine_volume_tests.rs` to arbitrary box
-/// dimensions; winding convention copied verbatim. Needed starting step-5:
-/// unlike the step-3/4 `dummy_surface` placeholder (never touched by
-/// `solve_and_estimate`), `refine` performs a REAL remesh from `surface`, so
-/// a genuine closed, outward-wound boundary is required.
-fn box_surface_mesh(lx: f64, ly: f64, lz: f64) -> Mesh {
-    let (lxf, lyf, lzf) = (lx as f32, ly as f32, lz as f32);
-    Mesh {
-        #[rustfmt::skip]
-        vertices: vec![
-            0.0,  0.0,  0.0, // 0
-            lxf,  0.0,  0.0, // 1
-            lxf,  lyf,  0.0, // 2
-            0.0,  lyf,  0.0, // 3
-            0.0,  0.0,  lzf, // 4
-            lxf,  0.0,  lzf, // 5
-            lxf,  lyf,  lzf, // 6
-            0.0,  lyf,  lzf, // 7
-        ],
-        #[rustfmt::skip]
-        indices: vec![
-            // -Z bottom (outward = -Z, CW from +Z view)
-            0, 2, 1,  0, 3, 2,
-            // +Z top
-            4, 5, 6,  4, 6, 7,
-            // -Y front
-            0, 1, 5,  0, 5, 4,
-            // +Y back
-            3, 7, 6,  3, 6, 2,
-            // -X left
-            0, 4, 7,  0, 7, 3,
-            // +X right
-            1, 2, 6,  1, 6, 5,
-        ],
-        normals: None,
-    }
-}
 
 /// Seed an initial [`VolumeMesh`] from a closed `surface` via a UNIFORM
 /// background size field — the real-gmsh counterpart to the procedural
@@ -1089,7 +790,7 @@ fn avg_size_in_region(
 /// [`mark_dorfler`] marks a geometrically-coherent subset there.
 fn refine_test_box_problem() -> FeaAdaptiveProblem {
     let (lx, ly, lz) = (1.0_f64, 1.0, 1.0);
-    let surface = box_surface_mesh(lx, ly, lz);
+    let surface = prismatic_box_mesh(lx as f32, ly as f32, lz as f32);
     let options = MeshingOptions {
         mesh_size: Some(0.25),
         deterministic: true,
@@ -1342,7 +1043,7 @@ impl<P: AdaptiveProblem> AdaptiveProblem for RecordingProblem<P> {
 fn cantilever_gmsh_problem() -> FeaAdaptiveProblem {
     let (lx, ly, lz) = (2.0_f64, 1.0, 1.0);
     let mesh_size = 0.25_f64;
-    let surface = box_surface_mesh(lx, ly, lz);
+    let surface = prismatic_box_mesh(lx as f32, ly as f32, lz as f32);
     let options = MeshingOptions {
         mesh_size: Some(mesh_size),
         deterministic: true,
@@ -1661,7 +1362,7 @@ const L_SHAPE_MESH_SIZE: f64 = 0.163;
 /// `leg_a`, width `leg_t`, `leg_t < leg_a`) extruded along z from `0` to
 /// `lz` — the classic re-entrant (reflex, 270°) corner elasticity-singularity
 /// benchmark. Cross-section vertices, CCW in the xy-plane (outward `+Z` for
-/// the top cap, mirroring [`box_surface_mesh`]'s winding convention):
+/// the top cap, mirroring [`prismatic_box_mesh`]'s winding convention):
 ///
 /// ```text
 ///  y
@@ -1682,9 +1383,9 @@ const L_SHAPE_MESH_SIZE: f64 = 0.163;
 /// triangle's vertices all satisfy `y <= leg_t` (the `(v0,v1,v2)`/`(v0,v2,v3)`
 /// pair) or `x <= leg_t` (the `(v0,v3,v4)`/`(v0,v4,v5)` pair) — so none
 /// crosses into the removed `(leg_t,leg_a] x (leg_t,leg_a]` notch — giving a
-/// valid, non-overlapping decomposition of the cap. Side walls use the same
-/// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern
-/// as [`box_surface_mesh`]: for a CCW polygon, the outward normal of edge
+/// valid, non-overlapping decomposition of the cap. Side walls use the
+/// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern:
+/// for a CCW polygon, the outward normal of edge
 /// `(p_i, p_{i+1})` is that edge's direction rotated -90 deg, a rule that
 /// stays correct at the reflex corner too (independent of local convexity),
 /// so all 6 side faces come out consistently outward-wound.
@@ -2274,7 +1975,7 @@ fn distributed_axial_load(end: &[usize], axis: usize, f_mag: f64) -> Vec<(usize,
 /// quarter-circle arc's facet count.
 ///
 /// Cross-section vertices, CCW in the xy-plane (outward `+Z` for the top cap,
-/// mirroring [`box_surface_mesh`]/[`l_prism_surface_mesh`]'s winding
+/// mirroring [`prismatic_box_mesh`]/[`l_prism_surface_mesh`]'s winding
 /// convention), fan apex `v0 = (half_width, half_height)` (the far corner
 /// from the hole):
 ///
@@ -2302,7 +2003,7 @@ fn distributed_axial_load(end: &[usize], axis: usize, f_mag: f64) -> Vec<(usize,
 /// [`l_prism_surface_mesh`]'s fan reasoning (there star-shaped from `v0` for
 /// an analogous reflex-corner domain). Side walls use the same
 /// `(bottom_i,bottom_{i+1},top_{i+1})`, `(bottom_i,top_{i+1},top_i)` pattern
-/// as [`box_surface_mesh`]/[`l_prism_surface_mesh`].
+/// as [`l_prism_surface_mesh`].
 fn plate_with_hole_surface_mesh(
     half_width: f64,
     half_height: f64,
@@ -2574,27 +2275,13 @@ fn plate_with_hole_indicator_localizes_and_peak_von_mises_approaches_kirsch_scf_
 // always-on fixture ([`cantilever_gmsh_problem`], step-7/8's fixture) so this
 // section stays "small mesh, <=1 refine" per the module doc's cheap-vs-heavy
 // split. `Stalled` is intentionally NOT covered here: it is already
-// unit-pinned at the `adaptive.rs` level with synthetic values
-// (`is_stalled_*` in `src/adaptive.rs`'s test module).
+// unit-pinned with synthetic values in `tests/adaptive_refinement_tests.rs`
+// and in `src/adaptive.rs`'s test module (`is_stalled_*`).
 //
-// RED (step-17): scenario (i) below originally set `max_dofs` to
-// `seed.n_dofs + 1` — "just above" the seed dof count, per this step's
-// literal wording — so iteration 0's `n_dofs >= max_dofs` check did NOT fire
-// and the loop refined once before re-checking, which failed: got
-// `NotConverged { reason: Stalled }`, not `MaxDofs`.
-//
-// GREEN (this commit) resolves what that naive setup actually measures:
-// `cantilever_gmsh_problem`'s global indicator drops by <=10% from iteration
-// 0 to iteration 1 (measured during impl), so `is_stalled` — termination
-// precedence #2, ABOVE `MaxDofs` at #4, see `run_adaptive_refinement`'s own
-// doc comment — fires first and reports `Stalled` before the post-refine dof
-// count is ever compared against the budget. Per that same doc comment
-// ("being at/over the ceiling means the next refine necessarily exceeds
-// it"), the `MaxDofs` check does not require an actual refine to have run
-// first — setting `max_dofs` to EXACTLY `seed.n_dofs` trips it on iteration
-// 0's very first check, before the stall check is even reachable (`prev_global`
-// is `None` on the first iteration regardless of `max_dofs`). This is the
-// deterministic form of "the dof budget cap is exercised" the scenario needs.
+// The `MaxDofs` scenario sets `max_dofs` to EXACTLY `seed.n_dofs`, so the dof
+// ceiling binds on iteration 0's very first check, before any refine — the
+// deterministic form of "the dof budget cap is exercised", independent of how
+// far this fixture's indicator drops under refinement.
 
 /// `run_adaptive_refinement` must report `NotConverged { reason: MaxDofs }`
 /// when the dof budget is tight around the seed mesh.
@@ -2617,8 +2304,7 @@ fn convergence_status_reports_max_dofs_when_next_refine_would_exceed_budget() {
         max_refinement_iterations: 5, // > 0: doesn't let the iteration cap preempt this
         // AT (not "just above") the seed dof count: trips MaxDofs on
         // iteration 0's very first check, before any refine and before the
-        // stall check is even reachable — see the section comment above for
-        // why "+1" instead falls through to Stalled on this fixture.
+        // stall check is even reachable — see the section comment above.
         max_dofs: seed.n_dofs,
     };
 

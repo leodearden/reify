@@ -12,6 +12,8 @@ import type {
   DisplayStyleData,
   ValueData,
   ConstraintData,
+  ConstraintStatus,
+  RawConstraintData,
   SourceLocation,
   FileData,
   GuiState,
@@ -21,7 +23,6 @@ import type {
   ConstraintUpdate,
   DiagnosticInfo,
   EntityTreeNode,
-  MorphStats,
 } from '../types';
 import { convertRawMesh } from '../types';
 
@@ -306,6 +307,34 @@ const constraintWithLabel: ConstraintData = {
   parameter_ids: ['cell_003'],
 };
 
+const constraintIndeterminate: ConstraintData = {
+  node_id: 'constraint_003',
+  expression: 'depth > 0',
+  status: 'indeterminate',
+  label: null,
+  parameter_ids: [],
+};
+void constraintIndeterminate;
+
+// --- ConstraintData.status is the closed verdict union ---
+const _status: ConstraintStatus = constraint.status;
+void _status;
+
+// --- RawConstraintData.status is open on the wire (checked at runtime) ---
+const wireToken: string = 'satisfied';
+const rawConstraint: RawConstraintData = {
+  node_id: 'constraint_004',
+  expression: 'width > 0',
+  status: wireToken,
+  label: null,
+  parameter_ids: [],
+};
+void rawConstraint;
+
+// @ts-expect-error ConstraintData.status is the closed lower-case union; a PascalCase variant name is not a token
+const _pascalStatus: ConstraintData = { node_id: 'c', expression: 'e', status: 'Satisfied', label: null, parameter_ids: [] };
+void _pascalStatus;
+
 // --- SourceLocation ---
 const loc: SourceLocation = {
   file_path: 'bracket.ri',
@@ -423,36 +452,6 @@ type AssertTrue<T extends true> = T;
 type _AssertBuildContextHandledFieldsExhaustive = AssertTrue<
   Equals<(typeof BUILD_CONTEXT_HANDLED_FIELDS)[number], keyof Required<MessageContext>>
 >;
-
-// --- MorphStats (GR-016 θ morph_stats RPC response) ---
-// (a) Fully-populated form.
-const morphStats: MorphStats = {
-  morph_count: 7,
-  remesh_count: 3,
-  last_rejection_reason: 'Ineligible(StructuralChange)',
-};
-void morphStats;
-
-// (b) last_rejection_reason omitted (skip-serializing on Rust side → undefined here).
-const morphStatsNoReason: MorphStats = {
-  morph_count: 0,
-  remesh_count: 0,
-};
-void morphStatsNoReason;
-
-// (c) morph_count is required (omitting it is a type error).
-// @ts-expect-error morph_count is a required field
-const _missingMorphCount: MorphStats = {
-  remesh_count: 0,
-};
-void _missingMorphCount;
-
-// (d) remesh_count is required.
-// @ts-expect-error remesh_count is a required field
-const _missingRemeshCount: MorphStats = {
-  morph_count: 0,
-};
-void _missingRemeshCount;
 
 // --- AppearanceDirective + DisplayStyleData (PRD-2 γ, task #4772) ---
 // RED until AppearanceDirective/DisplayStyleData are added to types.ts (step-6).

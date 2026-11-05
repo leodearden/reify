@@ -9,11 +9,12 @@
 //! # Unconditional registration
 //!
 //! Both the `cfg(has_occt)` real `OcctKernel` (in `lib.rs`) and the
-//! `cfg(not(has_occt))` stub `OcctKernel` (in `stubs.rs`) impl
-//! [`reify_types::WarmStartable`], so the registration is meaningful in both
-//! build modes. Mirrors the unconditional submission pattern used by
-//! `reify-kernel-manifold/src/register.rs`. The registry tracks kind presence,
-//! not impl quality.
+//! `cfg(not(has_occt))` stub `OcctKernel` (in `stubs.rs`) implement
+//! [`reify_types::WarmStartable`] as the trait no-op (`warm_state` is `None`,
+//! `with_warm_state` does nothing), so both build modes register alike. The
+//! registration keeps `NodeKind::Realization` in the coextension registry,
+//! which tracks kind presence, not impl quality. Mirrors the unconditional
+//! submission pattern used by `reify-kernel-manifold/src/register.rs`.
 
 use reify_ir::{NodeKind, WarmStartableRegistration};
 

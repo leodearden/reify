@@ -1,0 +1,457 @@
+//! Invariant R: every unit label a display surface prints reads back, through the compiler, to
+//! the same dimension and the same SI scale. PRD
+//! `docs/prds/v0_6/angle-units-surface-convergence.md` §5 C2; task μ in §12.
+//!
+//! The four surfaces are `Display for DimensionVector`, `DimensionVector::to_display_units`,
+//! `reify_ir::dimension_unit_label` and the `reify_core::unit_ladders()` rungs.
+
+use std::collections::HashMap;
+use std::fmt;
+
+use reify_compiler::CompiledModule;
+use reify_core::{DimensionLadder, DimensionVector, NAMED_DIMENSIONS, unit_ladders};
+use reify_ir::{CompiledExprKind, Value, dimension_unit_label};
+use reify_test_support::{compile_source_with_stdlib_allow_parse_errors, errors_only};
+use strum::IntoEnumIterator;
+
+/// Invariant R's relative scale bound (PRD §5 C2). Not exact equality: `1g/cm^3` reads back as
+/// `999.9999999999999`.
+const SCALE_REL_TOL: f64 = 1e-12;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+enum Surface {
+    DimensionDisplay,
+    ToDisplayUnits,
+    DimensionUnitLabel,
+    UnitLadderRung,
+}
+
+/// One label a surface prints for a dimension, with the SI value of `1{label}` that the
+/// surface associates with it.
+#[derive(Debug, Clone, PartialEq)]
+struct Emission {
+    surface: Surface,
+    dimension_name: &'static str,
+    dimension: DimensionVector,
+    label: String,
+    si_scale: f64,
+}
+
+/// The first conjunct of Invariant R that an emission fails.
+#[derive(Debug, Clone, PartialEq)]
+enum Breach {
+    Unreadable(String),
+    WrongDimension { read: DimensionVector },
+    WrongScale { read: f64 },
+}
+
+#[derive(Debug)]
+struct Violation {
+    emission: Emission,
+    breach: Breach,
+}
+
+#[derive(Debug, Default)]
+struct Report {
+    unexpected: Vec<Violation>,
+    stale_blocks: Vec<KnownBlock>,
+}
+
+impl fmt::Display for Violation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Emission {
+            surface,
+            dimension_name,
+            dimension,
+            label,
+            si_scale,
+        } = &self.emission;
+        write!(
+            f,
+            "{surface:?} {dimension_name} ({dimension}) `{label}` at scale {si_scale:e}: "
+        )?;
+        match &self.breach {
+            Breach::Unreadable(message) => write!(f, "does not compile: {message}"),
+            Breach::WrongDimension { read } => write!(f, "reads back as dimension {read}"),
+            Breach::WrongScale { read } => write!(f, "reads back at scale {read:e}"),
+        }
+    }
+}
+
+impl fmt::Display for Report {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "{} emission(s) fail Invariant R; {} KNOWN_BLOCKS row(s) are stale:",
+            self.unexpected.len(),
+            self.stale_blocks.len()
+        )?;
+        for violation in &self.unexpected {
+            writeln!(f, "  {violation}")?;
+        }
+        for block in &self.stale_blocks {
+            writeln!(
+                f,
+                "  {} (owner {}): no emission it blocks fails any more; delete this KNOWN_BLOCKS row",
+                block.dimension, block.owner
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Every label the four surfaces print, each with the scale that surface gives it.
+fn surface_emissions() -> Vec<Emission> {
+    let from_named_dimensions = NAMED_DIMENSIONS
+        .iter()
+        .flat_map(|&(dimension, name)| named_dimension_emissions(dimension, name));
+    let from_ladders = unit_ladders().into_iter().flat_map(ladder_rung_emissions);
+    from_named_dimensions.chain(from_ladders).collect()
+}
+
+/// S1 to S3 for one `NAMED_DIMENSIONS` row. Each scale is the surface's own claim: S2's comes
+/// from the same `to_display_units` call as its label, and S1 and S3 label the raw SI magnitude.
+fn named_dimension_emissions(
+    dimension: DimensionVector,
+    dimension_name: &'static str,
+) -> [Emission; 3] {
+    let emission = |surface, label: String, si_scale| Emission {
+        surface,
+        dimension_name,
+        dimension,
+        label,
+        si_scale,
+    };
+    let (shown, display_label) = dimension.to_display_units(1.0);
+    [
+        emission(Surface::DimensionDisplay, dimension.to_string(), 1.0),
+        emission(
+            Surface::ToDisplayUnits,
+            display_label.into_owned(),
+            1.0 / shown,
+        ),
+        emission(
+            Surface::DimensionUnitLabel,
+            dimension_unit_label(&dimension).into_owned(),
+            1.0,
+        ),
+    ]
+}
+
+/// S4: one emission per rung of a curated ladder, at the rung's own scale.
+fn ladder_rung_emissions(ladder: DimensionLadder) -> Vec<Emission> {
+    let (dimension, dimension_name) = NAMED_DIMENSIONS
+        .iter()
+        .copied()
+        .find(|&(_, name)| name == ladder.dimension)
+        .unwrap_or_else(|| {
+            panic!(
+                "unit ladder `{}` names no NAMED_DIMENSIONS row",
+                ladder.dimension
+            )
+        });
+    ladder
+        .units
+        .into_iter()
+        .map(|rung| Emission {
+            surface: Surface::UnitLadderRung,
+            dimension_name,
+            dimension,
+            label: rung.label,
+            si_scale: rung.si_scale,
+        })
+        .collect()
+}
+
+/// What `1{label}` compiles to: its SI value and dimension, or why it does not compile.
+type ReadBack = Result<(f64, DimensionVector), String>;
+
+/// Compiles `1{label}` with the stdlib prelude, the path a typed-in value takes: parse, lower,
+/// then registry-first unit resolution. Compile diagnostics become `Err`, so an unreadable label
+/// is reported without stopping the sweep.
+fn resolve_unit_literal(label: &str) -> ReadBack {
+    let source = format!("structure def S {{ let x = 1{label} }}");
+    let module = compile_source_with_stdlib_allow_parse_errors(&source);
+    let errors = errors_only(&module);
+    if !errors.is_empty() {
+        let messages: Vec<&str> = errors.iter().map(|d| d.message.as_str()).collect();
+        return Err(messages.join("; "));
+    }
+    match probe_cell_expr(&module) {
+        Some(CompiledExprKind::Literal(Value::Scalar {
+            si_value,
+            dimension,
+        })) => Ok((*si_value, *dimension)),
+        Some(other) => Err(format!(
+            "`1{label}` compiled to {other:?}, not a scalar literal"
+        )),
+        None => Err(format!(
+            "`1{label}` compiled without errors but left no cell `x` with a default expression"
+        )),
+    }
+}
+
+fn probe_cell_expr(module: &CompiledModule) -> Option<&CompiledExprKind> {
+    let default_expr = module
+        .templates
+        .iter()
+        .find(|template| template.name == "S")?
+        .value_cells
+        .iter()
+        .find(|cell| cell.id.member == "x")?
+        .default_expr
+        .as_ref()?;
+    Some(&default_expr.kind)
+}
+
+/// False when either scale is NaN.
+fn scales_agree(read: f64, claimed: f64) -> bool {
+    (read - claimed).abs() <= SCALE_REL_TOL * read.abs().max(claimed.abs())
+}
+
+fn first_breach(emission: &Emission, read_back: &ReadBack) -> Option<Breach> {
+    match read_back {
+        Err(message) => Some(Breach::Unreadable(message.clone())),
+        Ok((_, read_dimension)) if *read_dimension != emission.dimension => {
+            Some(Breach::WrongDimension {
+                read: *read_dimension,
+            })
+        }
+        Ok((read_scale, _)) if !scales_agree(*read_scale, emission.si_scale) => {
+            Some(Breach::WrongScale { read: *read_scale })
+        }
+        Ok(_) => None,
+    }
+}
+
+fn violations(emissions: &[Emission]) -> Vec<Violation> {
+    let mut read_backs: HashMap<&str, ReadBack> = HashMap::new();
+    emissions
+        .iter()
+        .filter_map(|emission| {
+            let read_back = read_backs
+                .entry(emission.label.as_str())
+                .or_insert_with(|| resolve_unit_literal(&emission.label));
+            first_breach(emission, read_back).map(|breach| Violation {
+                emission: emission.clone(),
+                breach,
+            })
+        })
+        .collect()
+}
+
+/// A violation that is known and owned, so it does not fail the gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct KnownBlock {
+    dimension: DimensionVector,
+    owner: &'static str,
+}
+
+impl KnownBlock {
+    /// Absorbs a violation only when its label is the composed Display spelling of this block's
+    /// dimension, whichever surface printed it. A label spelled any other way, such as a curated
+    /// ladder rung, stays gated.
+    fn absorbs(&self, violation: &Violation) -> bool {
+        violation.emission.dimension == self.dimension
+            && violation.emission.label == self.dimension.to_string()
+    }
+}
+
+/// Rational-exponent Display spelling, blocked on #9236, which deletes this row.
+const KNOWN_BLOCKS: &[KnownBlock] = &[KnownBlock {
+    dimension: DimensionVector::FRACTURE_TOUGHNESS,
+    owner: "#9236",
+}];
+
+fn invariant_r_report(emissions: &[Emission], blocks: &[KnownBlock]) -> Report {
+    let (blocked, unexpected): (Vec<Violation>, Vec<Violation>) = violations(emissions)
+        .into_iter()
+        .partition(|violation| blocks.iter().any(|block| block.absorbs(violation)));
+    let stale_blocks = blocks
+        .iter()
+        .filter(|block| !blocked.iter().any(|violation| block.absorbs(violation)))
+        .copied()
+        .collect();
+    Report {
+        unexpected,
+        stale_blocks,
+    }
+}
+
+fn injected_rung(
+    dimension_name: &'static str,
+    dimension: DimensionVector,
+    label: &str,
+    si_scale: f64,
+) -> Emission {
+    Emission {
+        surface: Surface::UnitLadderRung,
+        dimension_name,
+        dimension,
+        label: label.to_string(),
+        si_scale,
+    }
+}
+
+fn corpus_with(injected: impl IntoIterator<Item = Emission>) -> Vec<Emission> {
+    let mut corpus = surface_emissions();
+    corpus.extend(injected);
+    corpus
+}
+
+/// The sweep cannot go silently empty: every surface contributes, and S1 covers every row of
+/// `NAMED_DIMENSIONS`. Counts come from the slice, never from a number written here.
+fn assert_corpus_covers_every_surface(corpus: &[Emission]) {
+    for surface in Surface::iter() {
+        assert!(
+            corpus.iter().any(|emission| emission.surface == surface),
+            "no emission came from {surface:?}, so the sweep proves nothing about that surface"
+        );
+    }
+    let display_emissions = corpus
+        .iter()
+        .filter(|emission| emission.surface == Surface::DimensionDisplay)
+        .count();
+    assert_eq!(
+        display_emissions,
+        NAMED_DIMENSIONS.len(),
+        "`Display for DimensionVector` must be swept once per NAMED_DIMENSIONS row"
+    );
+}
+
+#[test]
+fn every_label_a_unit_surface_emits_reads_back_to_its_dimension_and_scale() {
+    let corpus = surface_emissions();
+    assert_corpus_covers_every_surface(&corpus);
+
+    let report = invariant_r_report(&corpus, KNOWN_BLOCKS);
+
+    assert!(
+        report.unexpected.is_empty() && report.stale_blocks.is_empty(),
+        "Invariant R does not hold over the unit-display surfaces:\n{report}"
+    );
+}
+
+#[test]
+fn a_non_ascii_label_injected_into_the_corpus_fails_the_gate() {
+    let corpus = corpus_with([injected_rung(
+        "Density",
+        DimensionVector::MASS_DENSITY,
+        "kg/m³",
+        1.0,
+    )]);
+
+    let report = invariant_r_report(&corpus, KNOWN_BLOCKS);
+
+    let [violation] = report.unexpected.as_slice() else {
+        panic!("the gate must report exactly the injected `kg/m³` rung; got:\n{report}");
+    };
+    assert_eq!(violation.emission.label, "kg/m³");
+    assert!(
+        matches!(violation.breach, Breach::Unreadable(_)),
+        "a superscript label is a parse failure, not a dimension or scale mismatch; got {:?}",
+        violation.breach
+    );
+}
+
+#[test]
+fn each_conjunct_of_invariant_r_fails_the_gate_on_its_own() {
+    let corpus = corpus_with([
+        // Names no declared unit, so the label does not compile.
+        injected_rung("Volume", DimensionVector::VOLUME, "qq", 1e-3),
+        // Reads back as Length·Mass, so the claimed Mass is the wrong dimension.
+        injected_rung("Mass", DimensionVector::MASS, "kg·m", 1.0),
+        // Reads back as 1e-3 m, so the claimed scale of 1.0 is wrong.
+        injected_rung("Length", DimensionVector::LENGTH, "mm", 1.0),
+    ]);
+
+    let report = invariant_r_report(&corpus, KNOWN_BLOCKS);
+
+    let [unreadable, wrong_dimension, wrong_scale] = report.unexpected.as_slice() else {
+        panic!("the gate must report exactly the three injected rungs; got:\n{report}");
+    };
+    assert_eq!(unreadable.emission.label, "qq");
+    assert!(
+        matches!(unreadable.breach, Breach::Unreadable(_)),
+        "an undeclared unit symbol must fail the first conjunct; got {:?}",
+        unreadable.breach
+    );
+    assert_eq!(wrong_dimension.emission.label, "kg·m");
+    assert!(
+        matches!(wrong_dimension.breach, Breach::WrongDimension { .. }),
+        "a readable label of another dimension must fail the second conjunct; got {:?}",
+        wrong_dimension.breach
+    );
+    assert_eq!(wrong_scale.emission.label, "mm");
+    assert!(
+        matches!(wrong_scale.breach, Breach::WrongScale { .. }),
+        "a readable label of the right dimension and the wrong scale must fail the third \
+         conjunct; got {:?}",
+        wrong_scale.breach
+    );
+}
+
+/// Stands in for a `KNOWN_BLOCKS` row, so the block-mechanism tests keep their meaning when the
+/// real list is empty.
+const FIXTURE_BLOCK: KnownBlock = KnownBlock {
+    dimension: DimensionVector::MASS,
+    owner: "fixture",
+};
+
+/// Mass's composed Display spelling claimed at `si_scale`. `1kg` reads back at 1.0, so any other
+/// claim breaches Invariant R.
+fn mass_display_emission(si_scale: f64) -> Emission {
+    let mass = DimensionVector::MASS;
+    Emission {
+        surface: Surface::DimensionDisplay,
+        dimension_name: "Mass",
+        dimension: mass,
+        label: mass.to_string(),
+        si_scale,
+    }
+}
+
+#[test]
+fn a_known_blocked_label_is_not_reported_as_unexpected() {
+    let corpus = [mass_display_emission(2.0)];
+
+    let report = invariant_r_report(&corpus, &[FIXTURE_BLOCK]);
+
+    assert!(
+        report.unexpected.is_empty() && report.stale_blocks.is_empty(),
+        "a violation the block absorbs is neither an unexpected violation nor evidence of a \
+         stale block; got:\n{report}"
+    );
+}
+
+#[test]
+fn a_known_block_does_not_absorb_another_label_of_its_dimension() {
+    let corpus = [
+        mass_display_emission(2.0),
+        injected_rung("Mass", DimensionVector::MASS, "qq", 1.0),
+    ];
+
+    let report = invariant_r_report(&corpus, &[FIXTURE_BLOCK]);
+
+    let [violation] = report.unexpected.as_slice() else {
+        panic!("only the composed Display spelling may be absorbed; got:\n{report}");
+    };
+    assert_eq!(violation.emission.label, "qq");
+}
+
+#[test]
+fn a_known_block_whose_label_no_longer_fails_is_reported_stale() {
+    let corpus = [mass_display_emission(1.0)];
+
+    let report = invariant_r_report(&corpus, &[FIXTURE_BLOCK]);
+
+    assert_eq!(
+        report.stale_blocks,
+        [FIXTURE_BLOCK],
+        "a block with no failing emission must be reported stale"
+    );
+    assert!(
+        report.unexpected.is_empty(),
+        "a label that reads back to its dimension and scale is not a violation; got:\n{report}"
+    );
+}

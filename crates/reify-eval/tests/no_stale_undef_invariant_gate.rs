@@ -620,6 +620,7 @@ fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_disciplin
     // discipline every real caller follows — to empirically settle whether
     // the checker itself would exempt the resulting cell.
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         None,
     );
@@ -1156,7 +1157,7 @@ const TRAJECTORY_SIMULATE_PROBE_SRC: &str = r#"structure TrajectorySimulateProbe
         n_modes: 1,
         boundary_conditions: [root],
         damping: NoDamping(),
-        sigma: 0.0,
+        shift_frequency: 0Hz,
         tol: 0.000000001,
         max_iters: 200,
         reference_direction: vec3(0.0, 0.0, 1.0),

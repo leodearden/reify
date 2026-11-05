@@ -4,15 +4,19 @@
 //!
 //! Reads units.md through the binary's shared scanners rather than scanners of
 //! its own: fences through `chunk_markdown.rs`'s `tagged_fence_bodies`, cites
-//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, call names
-//! through `call_scan.rs`'s comment-aware `strip_reify_comments` /
-//! `called_names`, and their registry through `callable_registries.rs`. What
-//! "compiles clean" means is `module_compile.rs`'s.
+//! through `chunk_cite_gate.rs`'s `assert_cited_paths_resolve`, the call names
+//! of its ```` ```reify ```` fences through `doc_forms.rs`'s AST walk
+//! (`fence_call_forms` / `callee_names`), and their registry through
+//! `callable_registries.rs`. What "compiles clean" means is
+//! `module_compile.rs`'s; `fence_call_forms` holds every ```` ```reify ```` fence
+//! to a shape stricter than that — see its doc.
 //!
 //! What this file DOES own is the handful of helpers no sibling has a use for —
-//! `assert_module_compiles`, `rejected_form_rows`, `wrap_form`,
-//! `named_length_argument`, `squash_whitespace` — the last four pinned directly
-//! by the "Scanner unit tests" block at the bottom.
+//! `assert_module_compiles`, `rejected_form_rows`, `strip_reify_comments`,
+//! `wrap_form`, `squash_whitespace` — the last four pinned directly by the
+//! "Scanner unit tests" block at the bottom. Reading the blamed slot out of a
+//! LENGTH-slot rejection is `reify_test_support::named_length_argument`, shared
+//! with reify-lsp's box-signature differential and unit-tested where it lives.
 //!
 //! # What this file guards
 //!
@@ -44,27 +48,32 @@
 //!
 //! - **No prose is pinned.** Nothing here matches a sentence, a heading, or an
 //!   ordering. The only structural pins are the byte-exact fence info strings
-//!   (```` ```reify ```` / ```` ```reify-rejected ````) and the one-cite-per-line
-//!   format, all of which are house convention precisely so the surrounding
-//!   wording stays free to change.
+//!   (```` ```reify ```` / ```` ```reify-rejected ````), the one-cite-per-line
+//!   format, and the inert `<!-- LENGTH-ARGS-XREF -->` marker with the backticked
+//!   topic its region must name, all of which are house convention precisely so
+//!   the surrounding wording stays free to change.
 //! - **Compile-acceptance is a parse/shape/slot result, not a full signature
 //!   check.** A `structure def` body types an unresolved call from its FIRST
 //!   argument's `result_type`, so an unknown call NAME is not itself an error —
 //!   which is why property 2 above exists as a separate registry assertion
 //!   rather than being folded into the fence compile.
-//! - **The `check`-vs-`eval` EXIT-CODE asymmetry the chunk documents is NOT
-//!   pinned here.** It is a CLI-level property; this harness compiles in-process
-//!   and never runs the binary. The chunk marks those rows UNPINNED for exactly
-//!   that reason, and `cited_test_paths_in_the_units_chunk_resolve` only checks
-//!   that the eval-side cites it DOES make resolve to real tests.
+//! - **Where `reify check` stops on these forms is NOT pinned here.** It is a
+//!   CLI-level property; this harness compiles in-process and never runs the
+//!   binary. It is pinned at the CLI seam by
+//!   crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs, which the
+//!   chunk cites, and `cited_test_paths_in_the_units_chunk_resolve` checks that
+//!   those cites resolve.
+
+use std::path::Path;
 
 use reify_core::units::LENGTH_MIGRATION_HINT;
+use reify_test_support::{LENGTH_SLOT_DIAGNOSTIC_MARKER, named_length_argument};
 
-use crate::call_scan::{called_names, strip_reify_comments};
 use crate::callable_registries::{phantom_name_panic, registry_family};
 use crate::chunk_cite_gate::assert_cited_paths_resolve;
-use crate::chunk_io::{UNITS_CHUNK_PATH, read_chunk};
-use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_io::{GEOMETRY_CHUNK_PATH, UNITS_CHUNK_PATH, read_chunk};
+use crate::chunk_markdown::{section_body, tagged_fence_bodies};
+use crate::doc_forms::{callee_names, fence_call_forms};
 use crate::module_compile::{ModuleCompile, compile_module};
 
 /// Info string of the fences that MUST compile clean.
@@ -143,44 +152,6 @@ fn squash_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// The compile layer's marker phrase for a LENGTH-slot rejection, as emitted by
-/// `reify_compiler::builtin_signatures` (see its
-/// `"box: width argument expects Length, got Int; …"` template).
-///
-/// A LOCAL CONST, NOT AN IMPORTED ONE, and knowably second-best: the sibling
-/// migration-hint assertion is made BY REFERENCE to
-/// `reify_core::units::LENGTH_MIGRATION_HINT`, so a D9 rewording moves the
-/// constant and every consumer together. This phrase has no such constant behind
-/// it, so a rewording to an equally-valid shape — e.g. the eval layer's own
-/// `missing or non-Length argument '<arg>' for <op>` — would make
-/// [`assert_rejected_as_documented`] fail with "no Error message contains …"
-/// while the gate and the chunk were both perfectly correct.
-///
-/// Exporting a const from `builtin_signatures.rs` is the real fix and is left
-/// UNDONE ON PURPOSE: that file is outside task 5759's locked scope. What is
-/// done here instead is to name the phrase once and unit-test the extraction
-/// that reads it ([`named_length_argument_reads_the_argument_out_of_a_message`]),
-/// so the brittleness is at least visible and localised to one line.
-const LENGTH_SLOT_DIAGNOSTIC_MARKER: &str = " argument expects Length";
-
-/// The ARGUMENT NAME a LENGTH-slot rejection blames, or `None` if `message` is
-/// not one.
-///
-/// The token immediately before [`LENGTH_SLOT_DIAGNOSTIC_MARKER`]: in
-/// `"box: width argument expects Length, got Int; …"` that is `width`. Split out
-/// of [`assert_rejected_as_documented`] so it can be pinned directly by a unit
-/// test over a synthetic message rather than only through the live compiler,
-/// which is this file's convention for every hand-rolled text scan (see
-/// `call_scan.rs`'s "Scanner unit tests" block).
-fn named_length_argument(message: &str) -> Option<&str> {
-    let before = message.split(LENGTH_SLOT_DIAGNOSTIC_MARKER).next()?;
-    if before.len() == message.len() {
-        // No marker present — `split` yielded the whole string unchanged.
-        return None;
-    }
-    before.split_whitespace().next_back()
-}
-
 /// Wrap one documented FORM in the minimal compilable module the rejected-forms
 /// block is written against.
 ///
@@ -222,6 +193,74 @@ fn rejected_form_rows(markdown: &str, tag: &str) -> Vec<(String, String)> {
         }
     }
     rows
+}
+
+/// `src` with its `//` and `/* */` annotations removed. Every other byte —
+/// newlines included — is left exactly where it was, so a row still reads like
+/// the chunk's own line in a panic message.
+///
+/// [`rejected_form_rows`]' one helper. A ```` ```reify-rejected ```` or
+/// ```` ```reify-rejected-at-eval ```` row (`form --> form // note`) is not
+/// Reify source, so no parser reads it, and its annotations are removed as
+/// text. Handles both comment forms the grammar defines
+/// (`tree-sitter-reify/grammar.js` `line_comment` / `block_comment`) and does
+/// not strip inside a double-quoted string. `://` is deliberately NOT a comment
+/// start, so a URL survives. A mis-tracked string can only cause a comment to
+/// survive, never content to be dropped — i.e. it degrades to the un-stripped
+/// behaviour, never past it.
+fn strip_reify_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut chars = src.chars().peekable();
+    let mut in_string = false;
+
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            match c {
+                '\\' => {
+                    if let Some(escaped) = chars.next() {
+                        out.push(escaped);
+                    }
+                }
+                '"' => in_string = false,
+                // An unterminated literal ends at the line break rather than
+                // swallowing the rest of the input.
+                '\n' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            // `//` to end of line — but not the `//` in a `scheme://` URL.
+            '/' if chars.peek() == Some(&'/') && !out.ends_with(':') => {
+                chars.next();
+                while chars.peek().is_some_and(|&n| n != '\n') {
+                    chars.next();
+                }
+            }
+            // `/* … */`, newlines preserved so line structure survives.
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev_star = false;
+                for n in chars.by_ref() {
+                    if n == '\n' {
+                        out.push('\n');
+                    }
+                    if prev_star && n == '/' {
+                        break;
+                    }
+                    prev_star = n == '*';
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Assert `module_src` compiles clean, in `module_compile`'s one sense of the
@@ -273,9 +312,9 @@ fn assert_rejected_as_documented(form: &str) {
     //     author with no idea which of six coordinates to fix.
     //
     //     THIS IS THE ONE DIAGNOSTIC-WORDING PIN IN THIS FILE, and it is a
-    //     second-best: see `LENGTH_SLOT_DIAGNOSTIC_MARKER` for why the phrase is
-    //     a local const rather than one imported from the compile layer, and for
-    //     the failure mode a rewording produces here.
+    //     second-best: see `reify_test_support::LENGTH_SLOT_DIAGNOSTIC_MARKER`
+    //     for why the phrase is not imported from the compile layer, and for the
+    //     failure mode a rewording produces here.
     let named: Vec<(&String, &str)> = messages
         .iter()
         .filter_map(|m| named_length_argument(m).map(|arg| (m, arg)))
@@ -309,21 +348,8 @@ fn assert_rejected_as_documented(form: &str) {
     );
 }
 
-/// The ```` ```reify ````-tagged fences of units.md, comment-stripped.
-///
-/// Comment-free because every downstream scan here is a text scan: a call form
-/// written only in a `//` annotation is never compiled, so it must not satisfy a
-/// sentinel or contribute a name. Same reasoning — and the same helper — as
-/// `geometry_chunk_smoke.rs`'s fence sentinels.
-fn units_fence_code(markdown: &str) -> Vec<String> {
-    tagged_fence_bodies(markdown, REIFY_TAG, UNITS_CHUNK_PATH)
-        .iter()
-        .map(|fence| strip_reify_comments(fence))
-        .collect()
-}
-
-/// Every form units.md's migration idiom turns on is CALLED, outside a comment,
-/// by one of its ```` ```reify ```` fences.
+/// Every form units.md's migration idiom turns on is CALLED, in parsed code, by
+/// one of its ```` ```reify ```` fences.
 ///
 /// That is what makes the idiom compile-verified: the fence gate
 /// (`fence_gate.rs::every_reify_tagged_fence_compiles_clean`) compiles every
@@ -347,21 +373,23 @@ fn units_fence_code(markdown: &str) -> Vec<String> {
 fn units_reify_fences_call_the_migration_idiom_sentinels() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
 
-    // Sentinels, scanned COMMENT-FREE. `box` is the primitive whose bare-number
-    // rejection is the chunk's headline example; `mirror` is the form that
-    // carries BOTH halves of the rule in one call (dimensioned pivot, bare axis
-    // components), so losing it would quietly retire the only fence-verified
-    // demonstration that the legitimately-bare tail really is accepted.
-    let code = units_fence_code(&markdown);
-    for sentinel in ["box(", "mirror("] {
+    // Sentinels, read off the fences' parsed AST, so a call written only in a
+    // `//` annotation or a string literal never counts. `box` is the primitive
+    // whose bare-number rejection is the chunk's headline example; `mirror` is
+    // the form that carries BOTH halves of the rule in one call (dimensioned
+    // pivot, bare axis components), so losing it would quietly retire the only
+    // fence-verified demonstration that the legitimately-bare tail really is
+    // accepted.
+    let called = callee_names(&fence_call_forms(&markdown, UNITS_CHUNK_PATH));
+    for sentinel in ["box", "mirror"] {
         assert!(
-            code.iter().any(|fence| fence.contains(sentinel)),
-            "anti-vacuity: no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} contains `{sentinel}` \
-             OUTSIDE A COMMENT — the documented migration idiom is no longer compile-verified, so \
-             a form the compiler outright rejects could ship as the recommended fix. The scan \
-             matches the info string BYTE-EXACTLY, so a bare ``` fence or a ```reify-rejected \
-             fence is invisible to it. (A call form mentioned only in a fence's `//` annotation \
-             does not count; it is never compiled.)"
+            called.iter().any(|name| name == sentinel),
+            "anti-vacuity: no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} calls `{sentinel}` — the \
+             documented migration idiom is no longer compile-verified, so a form the compiler \
+             outright rejects could ship as the recommended fix. The scan matches the info string \
+             BYTE-EXACTLY, so a bare ``` fence or a ```reify-rejected fence is invisible to it. \
+             (A call form mentioned only in a fence's `//` annotation does not count; it is never \
+             compiled.) Fence call names: {called:?}"
         );
     }
 }
@@ -399,18 +427,11 @@ const UNITS_FENCE_NAME_ALLOWLIST: &[&str] = &[];
 fn documented_call_names_in_units_chunk_are_real_registry_entries() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
 
-    let mut names: Vec<String> = Vec::new();
-    for fence in units_fence_code(&markdown) {
-        for name in called_names(&fence) {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
+    let names = callee_names(&fence_call_forms(&markdown, UNITS_CHUNK_PATH));
 
-    // Anti-vacuity. An emptied scan — the ```reify tag dropped, the fence
-    // rewritten as prose, or `strip_reify_comments` swallowing the body — would
-    // otherwise iterate zero times and pass while protecting nothing.
+    // Anti-vacuity. An emptied scan — the ```reify tag dropped, or the fence
+    // rewritten as prose or into a form with no calls — would otherwise iterate
+    // zero times and pass while protecting nothing.
     assert!(
         !names.is_empty(),
         "no call names were extracted from {UNITS_CHUNK_PATH}'s ```{REIFY_TAG} fences — the \
@@ -419,14 +440,13 @@ fn documented_call_names_in_units_chunk_are_real_registry_entries() {
     );
     // The two sentinels are the same pair the compile gate uses, so the two
     // guards cannot disagree about which forms the chunk is supposed to teach.
-    // Asserted on the EXTRACTED NAME SET rather than on raw text, so a call form
+    // Asserted on the parsed CALL NAMES rather than on raw text, so a call form
     // demoted to a comment fails here as well as there.
     for sentinel in ["box", "mirror"] {
         assert!(
             names.iter().any(|n| n == sentinel),
-            "no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} CALLS `{sentinel}` outside a comment \
-             — the migration idiom no longer demonstrates the form it is supposed to. Names \
-             seen: {names:?}"
+            "no ```{REIFY_TAG} fence in {UNITS_CHUNK_PATH} CALLS `{sentinel}` — the migration \
+             idiom no longer demonstrates the form it is supposed to. Names seen: {names:?}"
         );
     }
 
@@ -531,18 +551,15 @@ fn bare_zero_is_not_special_cased() {
 /// The EXACT live counts, not round numbers under them — the reasoning
 /// `geometry_chunk_smoke.rs::MINIMUM_FN_CITES` spells out: at a floor below the
 /// live count one whole cite can be deleted while the check stays green, which
-/// is precisely the regression the floor claims to catch. Seven `<path>::<fn>`
-/// cites across three `.rs` files (this module's own self-cites, plus the
-/// primitive-profile and modify-sweep eval pins), and one `.ri` exemplar
-/// (`angle_crossings.ri`, which predates this task).
+/// is precisely the regression the floor claims to catch.
 ///
 /// Raise these WITH the chunk when a cite is added. Never lower one to go green:
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything. How
 /// to re-measure one — and why a batched sweep under-reports — is stated once,
 /// next to `geometry_chunk_smoke.rs::MINIMUM_FN_CITES`, not repeated here.
-const MINIMUM_FN_CITES: usize = 7;
-const MINIMUM_RS_FILES: usize = 3;
-const MINIMUM_RI_FILES: usize = 1;
+const MINIMUM_FN_CITES: usize = 10;
+const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_RI_FILES: usize = 2;
 
 /// Every test units.md cites as PINNING a claim must still exist.
 ///
@@ -551,10 +568,7 @@ const MINIMUM_RI_FILES: usize = 1;
 /// Without this test a PINNED row survives the deletion or rename of the test it
 /// names, and the chunk — served verbatim to the in-GUI assistant — goes on
 /// asserting a guarantee that no longer exists. A dangling cite is not a broken
-/// link; it is a false claim. The three `.rs` files behind the floor are this
-/// module's own guard plus the two eval-layer pins the note relies on, and the
-/// one `.ri` is `examples/best_practices/angle_crossings.ri`, the compile-gated
-/// exemplar this chunk defers to for the angle-crossing diagnostics.
+/// link; it is a false claim.
 ///
 /// Twin of `geometry_chunk_smoke.rs::cited_test_paths_in_the_chunk_resolve`, and
 /// SHARES ITS BODY: the loop was extracted to
@@ -572,6 +586,41 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
     );
 }
 
+/// Line that opens units.md's pointer to the per-position length-argument catalogue.
+const LENGTH_ARGS_XREF_MARKER: &str = "<!-- LENGTH-ARGS-XREF -->";
+
+/// What [`LENGTH_ARGS_XREF_MARKER`]'s region is called in a failure message.
+const LENGTH_ARGS_XREF_TITLE: &str = "length-argument catalogue cross-reference";
+
+/// The topic that retrieves the chunk holding the length-argument catalogue:
+/// [`GEOMETRY_CHUNK_PATH`]'s filename stem, which `fence_gate`'s check 4 holds
+/// equal to the topic serving that file.
+fn length_args_catalogue_topic() -> &'static str {
+    Path::new(GEOMETRY_CHUNK_PATH)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{GEOMETRY_CHUNK_PATH} must have a UTF-8 filename stem"))
+}
+
+/// units.md routes a reader to the length-argument catalogue's topic (scope: module header).
+#[test]
+fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
+    let region = section_body(
+        &read_chunk(UNITS_CHUNK_PATH),
+        LENGTH_ARGS_XREF_MARKER,
+        UNITS_CHUNK_PATH,
+        LENGTH_ARGS_XREF_TITLE,
+    );
+
+    let topic_key = format!("`{}`", length_args_catalogue_topic());
+    assert!(
+        region.contains(&topic_key),
+        "{UNITS_CHUNK_PATH}'s `{LENGTH_ARGS_XREF_MARKER}` region never names topic {topic_key}, \
+         which retrieves {GEOMETRY_CHUNK_PATH} — a pointer that names no destination points \
+         nowhere. FIX: route the reader to topic {topic_key} of `reify_language_reference`."
+    );
+}
+
 /// The constructors units.md names as caught only at build/eval time really are
 /// INVISIBLE to the compile layer.
 ///
@@ -581,7 +630,8 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// `builtin_signatures.rs`'s own
 /// `polygon_stays_slot_free_because_its_positions_are_arity_open` — so a bare
 /// number in one of them compiles CLEAN and is rejected later, which is why
-/// `reify check` prints `error:` for these and still exits 0.
+/// `reify check` evaluates them to a verdict before its Severity::Error gate
+/// exits 1.
 ///
 /// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
 /// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
@@ -592,17 +642,17 @@ fn cited_test_paths_in_the_units_chunk_resolve() {
 /// ```` ```reify-rejected ```` block in the commit that recorded the move — the
 /// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.
 ///
-/// WHY PIN THE NEGATIVE. The chunk tells an author to gate on `reify eval`
-/// rather than `reify check`, and that advice is only worth following while the
-/// gap is real. If a compile-layer slot is later added for one of these, this
-/// test goes RED and the row must move to the ```` ```reify-rejected ```` block
-/// — so the doc is corrected by the same commit that closes the gap, instead of
-/// warning about a hazard that no longer exists.
+/// WHY PIN THE NEGATIVE. The chunk tells an author that `reify check` prints a
+/// clean verdict beside these rejections. If a compile-layer slot is later added
+/// for one of these, this test goes RED, the row moves to the
+/// ```` ```reify-rejected ```` block, and its CLI-seam row in
+/// cli_check_bare_length_exit.rs flips `Layer` in the same commit — so the doc
+/// is corrected by the commit that closes the gap.
 ///
 /// SCOPE — this pins the COMPILE-layer half only. That these forms are rejected
-/// at eval time is pinned on the eval side by the tests the chunk cites; that
-/// `reify check` EXITS 0 on them is a CLI-level property this harness never
-/// observes, and the chunk marks it UNPINNED for exactly that reason.
+/// at eval time is pinned on the eval side by the tests the chunk cites; where
+/// `reify check` stops on them is a CLI-level property this harness never
+/// observes, and the chunk cites its CLI-seam pin.
 #[test]
 fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
     let markdown = read_chunk(UNITS_CHUNK_PATH);
@@ -642,8 +692,9 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
             "{UNITS_CHUNK_PATH} lists `{rejected}` as caught only at build/eval time, but the \
              COMPILE layer now rejects it: {messages:?}. That is good news — a slot was added — \
              but the chunk is now wrong twice over: the form belongs in the ```{REJECTED_TAG} \
-             block, and the check-visibility note must stop naming this constructor as one \
-             `reify check` does not gate. Move the row and update the note in the same commit."
+             block, the check-visibility note must move the constructor to the compiler-checked \
+             list, and its cli_check_bare_length_exit.rs row must move to `Layer::Compiler`. \
+             Move all three in the same commit."
         );
 
         assert_module_compiles(
@@ -655,53 +706,54 @@ fn documented_eval_only_rejections_are_invisible_to_the_compile_layer() {
 
 // --- Scanner unit tests ------------------------------------------------------
 //
-// `rejected_form_rows`, `named_length_argument`, `squash_whitespace` and
+// `rejected_form_rows`, `strip_reify_comments`, `squash_whitespace` and
 // `wrap_form` are this module's own hand-rolled text helpers, and every
-// rejection assertion above is downstream of one of them. They are pinned
-// DIRECTLY here rather than only through the chunk, which is the posture
-// `call_scan.rs`'s own "Scanner unit tests" block establishes for the scanners
-// this file imports. The failure these guard against is
-// self-concealing: a helper that quietly stopped extracting anything would leave
-// every floor and sentinel above satisfied, because those are drawn from the
-// same helpers' output.
+// rejection assertion above is downstream of one of them.
+// They are pinned DIRECTLY here rather than only through the chunk. The failure
+// these guard against is self-concealing: a helper that quietly stopped
+// extracting anything would leave every floor and sentinel above satisfied,
+// because those are drawn from the same helpers' output.
 
-/// The argument-name extraction reads the blamed argument out of a SYNTHETIC
-/// message, so it is pinned independently of whatever the compiler emits today.
-///
-/// The input is the byte-exact template `builtin_signatures.rs` documents. If
-/// the live diagnostic ever diverges from it, `documented_rejected_forms_are_
-/// actually_rejected` goes red while THIS stays green — which is the signal that
-/// the wording moved rather than the gate breaking. See
-/// [`LENGTH_SLOT_DIAGNOSTIC_MARKER`].
 #[test]
-fn named_length_argument_reads_the_argument_out_of_a_message() {
+fn strip_reify_comments_leaves_ordinary_source_untouched() {
+    let src = "structure def S {\n    let g = box(1mm, 2mm, 3mm)\n}";
+    assert_eq!(strip_reify_comments(src), src);
+}
+
+#[test]
+fn strip_reify_comments_keeps_a_url_intact() {
+    // `//` after a URL scheme is not a comment start, so a row quoting a URL
+    // keeps it.
+    let src = "see https://example.test/clearance for more";
+    assert_eq!(strip_reify_comments(src), src);
+}
+
+#[test]
+fn strip_reify_comments_leaves_a_double_slash_inside_a_string_literal() {
+    let src = r#"let m1 = body(m0, "a//b", fixed()) // drop me"#;
     assert_eq!(
-        named_length_argument(
-            "box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"
-        ),
-        Some("width")
-    );
-    // A multi-word prefix must still yield the LAST token, not the first.
-    assert_eq!(
-        named_length_argument("linear_pattern: spacing argument expects Length, got Int"),
-        Some("spacing")
+        strip_reify_comments(src),
+        r#"let m1 = body(m0, "a//b", fixed()) "#
     );
 }
 
-/// A message that is not a LENGTH-slot rejection yields `None` rather than a
-/// bogus name.
-///
-/// The regression this catches is the one the marker const's doc names: if the
-/// compile layer reworded to the eval layer's shape, a scanner that "recovered"
-/// some token anyway would let `assert_rejected_as_documented`'s per-message
-/// identifier assertion pass on a message it never actually parsed.
 #[test]
-fn named_length_argument_rejects_a_message_without_the_marker() {
+fn strip_reify_comments_removes_a_block_comment_and_preserves_line_count() {
+    let src = "let a = box(1mm, 1mm, 1mm)\n/* two\n   lines */\nlet b = sphere(1mm)";
+    let out = strip_reify_comments(src);
     assert_eq!(
-        named_length_argument("missing or non-Length argument 'ox' for mirror"),
-        None
+        out.lines().count(),
+        src.lines().count(),
+        "line structure must survive so panic messages still line up with the chunk"
     );
-    assert_eq!(named_length_argument(""), None);
+    assert!(
+        !out.contains("two"),
+        "block-comment body must be gone: {out:?}"
+    );
+    assert!(
+        out.contains("sphere(1mm)"),
+        "code after the comment must survive"
+    );
 }
 
 /// A row missing its `-->` separator PANICS rather than being skipped.

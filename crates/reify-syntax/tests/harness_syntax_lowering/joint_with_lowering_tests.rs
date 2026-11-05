@@ -279,3 +279,36 @@ fn joint_empty_block_body_lowers_to_empty_vec() {
          β must emit a diagnostic for this case"
     );
 }
+
+// ── Malformed joint definition is refused ─────────────────────────────────────
+
+#[test]
+fn joint_with_a_missing_datum_type_is_refused() {
+    let source = "joint J(a: ) with x: Real = x";
+    let module = reify_syntax::parse(source, ModulePath::single("test"));
+    let refusals: Vec<&ParseError> = module
+        .errors
+        .iter()
+        .filter(|e| e.message.starts_with("invalid joint definition: "))
+        .collect();
+    assert_eq!(
+        refusals.len(),
+        1,
+        "`{source}`: expected exactly one `invalid joint definition: ` diagnostic, got: {:?}",
+        module.errors
+    );
+    let missing_type = source.find(": )").unwrap() + 1;
+    assert_eq!(
+        refusals[0].span.start as usize, missing_type,
+        "`{source}`: expected the diagnostic at the missing datum type, got: {:?}",
+        refusals[0]
+    );
+    assert!(
+        !module
+            .declarations
+            .iter()
+            .any(|d| matches!(d, Declaration::Joint(_))),
+        "`{source}`: a refused joint definition must not be lowered, got: {:?}",
+        module.declarations
+    );
+}

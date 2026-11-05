@@ -22,7 +22,7 @@ tasks:
   - name: prb-ctors-statically-typed-as-marker
     binding: 'capability→producer (this leaf) — signature-arm seam wired on main (joint_signatures.rs
       template #4311, ladder at expr.rs:3417, displacing the first-arg fallback expr.rs:3540);
-      all 14 prb_* names enumerated at flexures/diagnostics.rs:163-175'
+      all 13 prb_* names enumerated at flexures/diagnostics.rs::PRB_CTOR_NAMES'
     verdict: PASS
     delivered_check:
       kind: grep

@@ -1,10 +1,10 @@
 //! End-to-end smoke test for the v0.2 kinematic diagnostic wrapper (task 2677).
 //!
-//! Drives `reify_constraints::solve_loop_closure_with_diagnostics` against
-//! joint Maps materialised from a Reify source via the full
+//! Drives `reify_stdlib::loop_closure_solver::solve_loop_closure_with_diagnostics`
+//! against joint Maps materialised from a Reify source via the full
 //! `parse → compile_with_stdlib → eval` pipeline.  Pins that:
-//!   * the wrapper's public re-exports
-//!     (`LoopClosureReport`, `solve_loop_closure_with_diagnostics`) are
+//!   * the wrapper's public API
+//!     (`LoopClosureReport`, `solve_loop_closure_with_diagnostics`) is
 //!     reachable from a downstream consumer;
 //!   * the singularity post-process wired in step-10 surfaces a
 //!     `KinematicSingularity` warning when the Newton solver hits a
@@ -16,12 +16,13 @@
 //!
 //! See docs/prds/v0_2/kinematic-constraints.md, §"Singularity, over/under-constraint diagnostics".
 
-use reify_constraints::{
-    JointValue, LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
-    solve_loop_closure_with_diagnostics,
-};
 use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{Value, ValueMap};
+use reify_stdlib::loop_closure_solver::{
+    LoopClosureReport, NewtonConfig, NewtonOutcome, StartStrategy,
+    solve_loop_closure_with_diagnostics,
+};
+use reify_stdlib::loop_closure_value::JointValue;
 use reify_test_support::{collect_errors, make_simple_engine, parse_and_compile_with_stdlib};
 
 /// Six free prismatic-x joints (chain_b) plus a single prismatic-x

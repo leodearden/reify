@@ -526,8 +526,7 @@ MaximizeDeclaration {
 
 // ── Port ────────────────────────────────────────────────
 // grammar.js:957-993. The direction and the body are both optional, so the
-// bodyless `port output : out FullTrait`
-// (examples/integration_corner_cases.ri:45) and the directionless
+// bodyless `port output : out FullTrait` and the directionless
 // `port p : Fluid` are both admitted. The type is a bare `Identifier`
 // upstream, not a TypeExpr, and is kept that way — every committed port names
 // a plain trait.
@@ -605,7 +604,7 @@ PortMapping {
 // use it as an ordinary name and were left unparseable by that:
 // examples/tolerance-stackup-3part.ri:45 and examples/tolerance-stackup-rss.ri:35
 // (`let chain = [...]`, then `stackup_worst_case(chain)` / `stackup_rss(chain)`
-// at rss:40,44), and examples/integration_corner_cases.ri:131. MEASURED before
+// at rss:40,44), and examples/integration_corner_cases.ri:130. MEASURED before
 // the change: `structure def S { let chain = a }` → 3 error nodes, the first ON
 // the word itself, while `structure def S { let y = [x] }` was already clean —
 // so the list literal the round-3 ledger blamed was never involved.
@@ -1395,10 +1394,11 @@ VariantConstructionField {
 }
 
 // ── Quantifier expression ───────────────────────────────
-// grammar.js:1265-1273, `prec.right(0)` — the predicate swallows everything to
-// its right, so `forall v in vs : a and b` is `forall v in vs : (a and b)`,
-// never `(forall v in vs : a) and b`. That is why `quantifier` is one of the
-// two LOOSEST levels in the @precedence block.
+// grammar.js gives `quantifier_expression` TRAILING_BODY_PREC, below `implies`,
+// so the predicate extends past every keyword operator: `forall v in vs : a and
+// b` is `forall v in vs : (a and b)`, never `(forall v in vs : a) and b`. This
+// port matches by listing `quantifier` below `kwImplies` in the @precedence
+// block. Ruling: docs/reify-language-spec.md §16.
 //
 // Distinct from `ForallStatement` above by POSITION, not by marker: upstream
 // keeps them apart with the leading `connect`/`chain`/`constraint` its
@@ -1410,8 +1410,10 @@ QuantifierExpression {
 }
 
 // ── Lambda ──────────────────────────────────────────────
-// grammar.js:1222-1232, `prec.right(0)` — the body extends as far right as it
-// can, which is why `lambda` is the LOOSEST level in the @precedence block.
+// grammar.js gives `lambda_expression` TRAILING_BODY_PREC, below `implies`, so
+// the body extends past every keyword operator. This port matches by listing
+// `lambda` below `kwImplies` in the @precedence block. Ruling:
+// docs/reify-language-spec.md §16.
 //
 // THE `||` COLLISION, and the SECOND ARM that now settles it. A zero-parameter
 // lambda opens with the same two characters as the symbolic OR operator. No
@@ -1658,7 +1660,7 @@ IndexAccess {
 }
 
 // The callee admits `ReservedWord` as well as `Identifier`. `some(u)`
-// (examples/integration_corner_cases.ri:99), `map_or(some(5mm), …)`
+// (examples/integration_corner_cases.ri:98), `map_or(some(5mm), …)`
 // (examples/option_map_or.ri:30) and `Steel_AISI_1045(yield_stress: some(310mm))`
 // (tests/prd-gate/fixtures/dcr_yield_stress_dimension_silent.ri) all call one.
 //
@@ -1961,12 +1963,15 @@ ReservedWord {
   kwImplies @right,
   range @left,
   conditional @right,
-  // The two LOOSEST levels: grammar.js gives `lambda_expression` and
-  // `quantifier_expression` prec.right(0) alike, so each body swallows
-  // everything to its right — `|x| a + b * c` is `|x| (a + b * c)`, never
-  // `(|x| a) + b * c`, and `forall v in vs : a and b` binds the same way.
-  // They never compete with each other (different leading tokens), so their
-  // relative order here is arbitrary.
+  // The two LOOSEST levels. grammar.js gives `lambda_expression`,
+  // `quantifier_expression` and `conditional_expression` TRAILING_BODY_PREC,
+  // below `implies`, so each body extends past every keyword operator:
+  // `|x| a and b` is `|x| (a and b)`, never `(|x| a) and b`, and
+  // `forall v in vs : a and b` binds the same way. This port matches by listing
+  // `conditional`, `quantifier` and `lambda` below `kwImplies`. Ruling:
+  // docs/reify-language-spec.md §16. `quantifier` and `lambda` never compete
+  // with each other (different leading tokens), so their relative order here is
+  // arbitrary.
   quantifier @right,
   lambda @right
 }

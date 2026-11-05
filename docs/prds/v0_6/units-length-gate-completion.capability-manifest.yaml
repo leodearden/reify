@@ -126,6 +126,7 @@ tasks:
       pattern: fn point3_components
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: value-form-hole-is-real
     binding: signal premise (D3 probe) — `mirror(b, plane_yz(10))` → reify eval exit
@@ -184,6 +185,7 @@ tasks:
       pattern: DimensionVector::DIMENSIONLESS
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: r12-consistency-only-contract
     binding: capability→producer (this leaf) — grep:crates/reify-stdlib/src/geometry.rs:19-26
@@ -575,6 +577,7 @@ tasks:
       pattern: fn required_length_arg
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: alpha-is-a-hard-upstream
     binding: DAG-direction — producer:task-5742 upstream (edge wired at decompose).
@@ -591,9 +594,10 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn eval_all_args_to_f64
+      pattern: fn eval_all_args_to_values
       paths:
       - crates/reify-eval/src/geometry_ops.rs
+      - crates/reify-eval/src/geometry_ops/
       expect: present
   - name: contract-c-note-sharpen-not-drop
     binding: capability→producer — 5658's own 2026-07-28 amendment (esc-5658-3) is

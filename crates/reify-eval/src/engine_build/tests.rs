@@ -215,6 +215,7 @@
             Arc::new(Mutex::new(Vec::new()));
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -292,6 +293,7 @@
             let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
+                crate::SolverPosture::SolverFree,
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
             );
@@ -379,6 +381,7 @@ structure def D {
                 ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
+                crate::SolverPosture::SolverFree,
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
             );
@@ -438,6 +441,7 @@ structure def D {
                     .with_warnings(vec![reify_ir::ExportWarning::ThreeMfNoMaterials]);
             let exported_options = kernel.recorded_options();
             let mut engine = crate::Engine::new(
+                crate::SolverPosture::SolverFree,
                 Box::new(MockConstraintChecker::new()),
                 Some(Box::new(kernel)),
             );
@@ -514,6 +518,7 @@ structure Assembly {
         let exported_options = kernel.recorded_options();
 
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -575,6 +580,7 @@ structure Assembly {
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported))
             .with_warnings(vec![reify_ir::ExportWarning::StepAp242Fallback]);
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -650,6 +656,7 @@ structure Assembly {
             Arc::new(Mutex::new(Vec::new()));
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -733,6 +740,7 @@ structure Assembly {
             Arc::new(Mutex::new(Vec::new()));
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -891,6 +899,7 @@ structure Assembly {
             export_calls: std::sync::Mutex::new(0),
         };
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -1491,9 +1500,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -1629,9 +1638,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -1688,9 +1697,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -1821,9 +1830,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -1954,9 +1963,9 @@ structure Assembly {
         let box_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
         let cyl_ops = vec![CompiledGeometryOp::Primitive {
@@ -2089,9 +2098,9 @@ structure Assembly {
         let box_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
         // A realization that will fail to compile: OOB step reference forces the
@@ -2281,9 +2290,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -2437,9 +2446,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -2506,9 +2515,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -2928,17 +2937,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3101,17 +3110,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3266,17 +3275,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3423,17 +3432,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3586,17 +3595,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3736,17 +3745,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -3847,9 +3856,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -3965,17 +3974,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -4107,9 +4116,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -4208,9 +4217,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -4287,9 +4296,8 @@ structure Assembly {
     /// step-11 (RED): intermediate caching + cross-realization reuse. After one
     /// successful Mesh-demanding conversion realization (the step-7(A) fixture),
     /// each BRep→Mesh intermediate produced by the conversion executor must be
-    /// present in the [`RealizationCache`] at `(intermediate_entity, Mesh,
-    /// per_stage_tol, NO_OPTIONS)`, where `intermediate_entity` is the
-    /// per-input cache-key entity (`"{entity}#conv-step{idx}"` — the input's
+    /// present in the [`RealizationCache`] at `(key, Mesh, per_stage_tol,
+    /// NO_OPTIONS)`, where `key` is the per-input cache key (`intermediate_key(entity, Step(idx))` — the input's
     /// local step index makes it distinct-per-input AND stable across identical
     /// rebuilds) and `per_stage_tol = per_stage_tolerance_for_plan(&plan, tol)`
     /// for the single BRep→Mesh stage (`tol × 0.8`).
@@ -4360,17 +4368,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -4421,21 +4429,27 @@ structure Assembly {
             tol,
         );
 
-        // Both intermediates are cached at `("Cross#conv-step{0,1}", Mesh,
-        // per_stage_tol, NO_OPTIONS)` — 2 distinct keys (the conversion source
-        // provenance is the input's local step index), each holding a genuinely-
-        // Mesh Manifold handle (the `manifold.ingest_mesh` result: ids 1000 /
-        // 1001 in tessellate order). The key format MUST match the executor's
-        // `conversion_intermediate_entity_id` (step-12).
+        // Both intermediates are cached at `(intermediate_key("Cross",
+        // Step(0|1)), Mesh, per_stage_tol, NO_OPTIONS)` — 2 distinct keys (the
+        // conversion source provenance is the input's local step index), each
+        // holding a genuinely-Mesh Manifold handle (the `manifold.ingest_mesh`
+        // result: ids 1000 / 1001 in tessellate order). The key grammar has one
+        // home, `RealizationCache::intermediate_key`.
+        let step_key = |i| {
+            RealizationCache::<KernelHandle>::intermediate_key(
+                "Cross",
+                crate::realization_cache::ConversionSlot::Step(i),
+            )
+        };
         let cached_0 = state.realization_cache.lookup(
-            "Cross#conv-step0",
+            &step_key(0),
             ReprKind::Mesh,
             per_stage_tol,
             NO_OPTIONS,
         );
         assert!(
             cached_0.is_some(),
-            "intermediate for input step 0 must be cached at (Cross#conv-step0, Mesh, per_stage_tol)"
+            "intermediate for input step 0 must be cached at (Cross Step(0), Mesh, per_stage_tol)"
         );
         let cached_0 = *cached_0.unwrap();
         assert_eq!(
@@ -4446,14 +4460,14 @@ structure Assembly {
         assert_eq!(cached_0.id, GeometryHandleId(1000));
 
         let cached_1 = state.realization_cache.lookup(
-            "Cross#conv-step1",
+            &step_key(1),
             ReprKind::Mesh,
             per_stage_tol,
             NO_OPTIONS,
         );
         assert!(
             cached_1.is_some(),
-            "intermediate for input step 1 must be cached at (Cross#conv-step1, Mesh, per_stage_tol)"
+            "intermediate for input step 1 must be cached at (Cross Step(1), Mesh, per_stage_tol)"
         );
         let cached_1 = *cached_1.unwrap();
         assert_eq!(cached_1.kernel, KernelId::Manifold);
@@ -4493,6 +4507,134 @@ structure Assembly {
             *ingest_count.lock().unwrap(),
             ingest_after_1,
             "the anonymous re-realization must REUSE cached intermediates — no extra ingest_mesh"
+        );
+    }
+
+    /// γ (#4730, PRD `selective-realization-eviction` D4): evicting a
+    /// realization's FAMILY must also drop the conversion intermediates it
+    /// owns. Those intermediates are keyed stably across rebuilds, so an
+    /// eviction that removed only the terminal would send the re-executed
+    /// realization straight back to its OLD tessellated/ingested inputs —
+    /// stale geometry with a fresh terminal on top. Same fixture as
+    /// `execute_realization_ops_conversion_intermediates_cache_and_reuse`;
+    /// here the second run is NAMED, so only the eviction lets it reach the
+    /// conversion executor at all.
+    #[test]
+    fn evicting_a_realization_family_forces_its_conversion_intermediates_to_re_run() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{CapabilityDescriptor, CompiledExpr, GeometryKernel, Operation, ReprKind};
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let counts = || {
+            (
+                *tess_count.lock().unwrap(),
+                *ingest_count.lock().unwrap(),
+                *union_count.lock().unwrap(),
+            )
+        };
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let a_box = || CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
+            ],
+        };
+        let ops = vec![
+            a_box(),
+            a_box(),
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+        let realization_id = RealizationNodeId::new("Cross", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+        let mut run_named = |state: &mut DispatchTestState| {
+            state.dispatch_count = 0;
+            state.produced_repr_out = None;
+            state.reset_attribute_tables();
+            state.run_demand(
+                &mut kernels,
+                &registry,
+                "occt",
+                &ops,
+                &realization_id,
+                Some("Cross"),
+                SourceSpan::new(0, 0),
+                ReprKind::Mesh,
+                Some(tol),
+                None,
+            );
+            let errors: Vec<_> = state
+                .diagnostics
+                .iter()
+                .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+                .collect();
+            assert!(errors.is_empty(), "realization errors: {:?}", errors);
+        };
+
+        run_named(&mut state);
+        assert_eq!(
+            counts(),
+            (2, 2, 1),
+            "premise: the cold run tessellates 2 inputs, ingests 2, runs 1 union"
+        );
+
+        state.realization_cache.evict_family("Cross");
+        run_named(&mut state);
+
+        let (tess, ingest, unions) = counts();
+        assert_eq!(unions, 2, "the evicted realization must re-execute");
+        assert_eq!(
+            (tess, ingest),
+            (4, 4),
+            "evict_family must drop the owned conversion intermediates: the \
+             re-executed realization re-tessellates and re-ingests both inputs \
+             instead of reusing a stale intermediate"
         );
     }
 
@@ -4583,17 +4725,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -4862,9 +5004,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5113,17 +5255,17 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5195,11 +5337,17 @@ structure Assembly {
             },
             tol,
         );
+        let step_key = |i| {
+            RealizationCache::<KernelHandle>::intermediate_key(
+                "Cross",
+                crate::realization_cache::ConversionSlot::Step(i),
+            )
+        };
         assert!(
             state
                 .realization_cache
                 .lookup(
-                    "Cross#conv-step0",
+                    &step_key(0),
                     ReprKind::Mesh,
                     per_stage_tol,
                     NO_OPTIONS
@@ -5211,7 +5359,7 @@ structure Assembly {
             state
                 .realization_cache
                 .lookup(
-                    "Cross#conv-step1",
+                    &step_key(1),
                     ReprKind::Mesh,
                     per_stage_tol,
                     NO_OPTIONS
@@ -5256,9 +5404,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -5416,9 +5564,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -5583,9 +5731,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5693,9 +5841,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -5839,9 +5987,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -5987,9 +6135,9 @@ structure Assembly {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".into(), mm_lit(10.0)),
-                    ("height".into(), mm_lit(20.0)),
-                    ("depth".into(), mm_lit(5.0)),
+                    ("size_x".into(), mm_lit(10.0)),
+                    ("size_y".into(), mm_lit(20.0)),
+                    ("size_z".into(), mm_lit(5.0)),
                 ],
             },
             CompiledGeometryOp::Boolean {
@@ -6188,9 +6336,9 @@ structure Assembly {
         let box_op = CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(80.0)),
-                ("height".into(), mm_lit(100.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(80.0)),
+                ("size_y".into(), mm_lit(100.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         };
 
@@ -6225,7 +6373,7 @@ structure Assembly {
             recorded_tolerances: Arc::clone(&recorded),
         };
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
         let _ = engine.tessellate_realizations(&module);
 
@@ -6271,9 +6419,9 @@ structure Assembly {
             // ── Primitives ────────────────────────────────────────────────────
             Case {
                 op: GeometryOp::Box {
-                    width: Value::Real(0.01),
-                    height: Value::Real(0.02),
-                    depth: Value::Real(0.005),
+                    size_x: Value::Real(0.01),
+                    size_y: Value::Real(0.02),
+                    size_z: Value::Real(0.005),
                 },
                 expected: vec![],
                 label: "Box → empty (primitive, no parents)",
@@ -6851,7 +6999,7 @@ structure Assembly {
         // ── None-role: primitives — scalar fields only, nothing to substitute ─
         let no_handles = make_map(&[(999, 9999)]); // map with irrelevant entries
 
-        let mut op = GeometryOp::Box { width: Value::Real(1.0), height: Value::Real(1.0), depth: Value::Real(1.0) };
+        let mut op = GeometryOp::Box { size_x: Value::Real(1.0), size_y: Value::Real(1.0), size_z: Value::Real(1.0) };
         seen.insert(GeometryOpDiscriminants::from(&op));
         substitute_op_parents(&mut op, &no_handles); // must not panic
 
@@ -7282,7 +7430,7 @@ structure Assembly {
         let checker = MockConstraintChecker::new();
         // `mut` required for the positive-path sub-scenario where we seed
         // `active_tolerance_scope` directly (crate-internal field).
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         let template_a = TopologyTemplateBuilder::new("EntityA")
             .realization("EntityA", 0, vec![])
@@ -7396,9 +7544,9 @@ structure Assembly {
             // Primitives
             Case {
                 op: GeometryOp::Box {
-                    width: r(0.01),
-                    height: r(0.01),
-                    depth: r(0.01),
+                    size_x: r(0.01),
+                    size_y: r(0.01),
+                    size_z: r(0.01),
                 },
                 expected: Operation::PrimitiveBox,
                 label: "Box → PrimitiveBox",
@@ -8056,7 +8204,7 @@ structure Assembly {
         // `mut` required for sub-scenario (b) where we seed
         // `active_tolerance_scope` directly (crate-private field, accessible
         // from `mod tests` within the same crate).
-        let mut engine = crate::Engine::new(Box::new(checker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         let template_a = TopologyTemplateBuilder::new("EntityA")
             .realization("EntityA", 0, vec![])
@@ -8136,7 +8284,7 @@ structure Assembly {
         use reify_test_support::MockConstraintChecker;
 
         let checker = MockConstraintChecker::new();
-        let engine = crate::Engine::new(Box::new(checker), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), None);
 
         let occt = CapabilityDescriptor {
             supports: vec![(Operation::BooleanUnion, ReprKind::BRep)],
@@ -8191,7 +8339,7 @@ structure Assembly {
             recorded_tolerances: Arc::clone(&recorded),
         };
         let checker = MockConstraintChecker::new();
-        let mut engine = crate::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
         let _ = engine.tessellate_realizations(&module);
 
@@ -8267,6 +8415,7 @@ structure Assembly {
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
+            &mut VolumeMeshSources::default(),
             &[],               // ← OOB: empty demanded_tols
             &[vec![1e-4_f64]], // correctly shaped tessellation_budgets
             &mut 0usize,
@@ -8332,6 +8481,7 @@ structure Assembly {
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
+            &mut VolumeMeshSources::default(),
             &[vec![None]], // correctly shaped demanded_tols
             &[],           // ← OOB: empty tessellation_budgets
             &mut 0usize,
@@ -8992,9 +9142,9 @@ structure Assembly {
         let ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![
-                ("width".into(), mm_lit(10.0)),
-                ("height".into(), mm_lit(20.0)),
-                ("depth".into(), mm_lit(5.0)),
+                ("size_x".into(), mm_lit(10.0)),
+                ("size_y".into(), mm_lit(20.0)),
+                ("size_z".into(), mm_lit(5.0)),
             ],
         }];
 
@@ -10134,6 +10284,7 @@ structure Assembly {
         );
 
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -10209,6 +10360,7 @@ structure Assembly {
         let kernel = ExportRecordingKernel::new(Arc::clone(&executed), Arc::clone(&exported));
         let recorded_options = kernel.recorded_options();
         let mut engine = crate::Engine::new(
+            crate::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

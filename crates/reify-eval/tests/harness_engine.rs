@@ -62,6 +62,8 @@ mod engine_eval_commit_migration;
 mod joint_drive_cluster_formation;
 #[path = "harness_engine/reset_per_build_state_classification.rs"]
 mod reset_per_build_state_classification;
+#[path = "harness_engine/toleranced_equality_verdicts.rs"]
+mod toleranced_equality_verdicts;
 // Task #5196's capstone acceptance e2e lands here for the same reason #5056's
 // did: a NEW top-level `tests/*.rs` in a consolidatable crate would be an
 // anti-re-accretion violation (scripts/check-harness-baseline-registration.sh,
@@ -97,6 +99,9 @@ mod let_tracing_transitive_e2e;
 // same anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/instance_path_underdetermined_e2e.rs"]
 mod instance_path_underdetermined_e2e;
+// Task #6655's BT5 end to end: an interval-refutable model reports the proof.
+#[path = "harness_engine/interval_refutation_e2e.rs"]
+mod interval_refutation_e2e;
 // Task #5240's `eval_cached` guarded-groups fall-through tests land here for the
 // same anti-re-accretion reason as #5196's and #5360's above. They are
 // also a topical fit: they drive `Engine::eval_cached`, the engine-level
@@ -156,6 +161,26 @@ mod discrete_default_on_e2e;
 // reason as #5417's and #5415's above.
 #[path = "harness_engine/indeterminate_reason_carrier_e2e.rs"]
 mod indeterminate_reason_carrier_e2e;
+// Task #6689's posture-taking constructor pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/solver_posture_construction.rs"]
+mod solver_posture_construction;
+// Task #6667's viewport-attribution pins land here for the same anti-re-accretion
+// reason as #5196's and #5360's above.
+#[path = "harness_engine/viewport_unmeasured_attribution.rs"]
+mod viewport_unmeasured_attribution;
+// Task #6100's first-class frame-datum eval regressions land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/first_class_frame_datum_eval.rs"]
+mod first_class_frame_datum_eval;
+// Task #9572's stdlib-preset density pins land here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_material_preset_density_e2e.rs"]
+mod stdlib_material_preset_density_e2e;
+// Task #8393's stdlib-fn-in-user-fn-body e2e lands here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_fn_in_user_fn_body_e2e.rs"]
+mod stdlib_fn_in_user_fn_body_e2e;
 // Task #8102's instance-scope symbolic geometry/selector mint pins land here for
 // the same anti-re-accretion reason as #5196's and #5360's above. They are also
 // a topical fit: they drive `Engine::eval` over `sub` instantiations to pin

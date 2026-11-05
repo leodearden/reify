@@ -1,4 +1,13 @@
-// Global vitest setup: jsdom Range rectangle-measurement polyfills (task #5361).
+// Global vitest setup, re-run once per test file: jsdom polyfills (task #5361)
+// and the per-file baseline for reused fork workers (task 7642, at the bottom).
+// That hook must run in this file's BODY: vitest re-runs a setup file per test
+// file but keeps its imports cached. See docs/notes/gui-vitest-shared-workers.md.
+
+import { afterAll, afterEach } from 'vitest';
+import { cleanup } from '@solidjs/testing-library';
+import { rebindDomCapturesTo, restoreGlobalBaseline } from './vitest-shared-worker';
+
+// jsdom Range rectangle-measurement polyfills (task #5361).
 //
 // jsdom's Range implementation does not provide getClientRects() or
 // getBoundingClientRect() — accessing them throws "TypeError:
@@ -18,6 +27,12 @@
 // an empty DOMRectList-like, getBoundingClientRect returns a zero-sized DOMRect.
 // This is the standard CodeMirror-in-jsdom workaround and benefits every future
 // CM-measuring test, not just this task's.
+//
+// jsdom also lacks document.elementFromPoint (no layout engine), which the
+// debug bridge's hit-testing tools call; the stub below returns null, i.e.
+// "nothing hit", so every element reads as not hit-testable — consistent with
+// the all-zero rects jsdom reports. It is configurable/writable so a test can
+// vi.spyOn it and vi.restoreAllMocks() reverts to this stub.
 
 function zeroRect(): DOMRect {
   const rect = {
@@ -63,3 +78,15 @@ if (rangeProto) {
     };
   }
 }
+
+if (typeof document !== 'undefined' && typeof document.elementFromPoint !== 'function') {
+  Object.defineProperty(document, 'elementFromPoint', {
+    configurable: true,
+    writable: true,
+    value: (): Element | null => null,
+  });
+}
+
+rebindDomCapturesTo(document);
+afterEach(cleanup);
+afterAll(restoreGlobalBaseline);

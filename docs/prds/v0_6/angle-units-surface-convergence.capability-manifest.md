@@ -480,3 +480,13 @@ Evidence forms: `probe:` executed command + captured output · `grep:file:line` 
 **No binding resolved to `declared-only`, `test-only`, `producer-downstream`, `fixture-ERROR` or
 `rejection-absent`.** The single numeric bound in the PRD (Invariant R's `1e-12` relative scale
 tolerance) is `bound > floor` by four orders of magnitude (observed floor ≈ 1.1e-16 at `g/cm^3`).
+
+## Delivered-check path correction (2026-10-12, review-all S13 pass 2)
+
+PRD `docs/prds/v0_6/selector-resolution-factoring.md` splits `crates/reify-eval/src/geometry_ops.rs` into child modules under `crates/reify-eval/src/geometry_ops/` and moves `nodes_for_faces` onto `CarriedTopology` (`compute_targets/result_topology.rs`). The checks below had `paths` pinned to the pre-split file, so their match would leave the scanned path. Each `paths` list was widened in the `.yaml` twin and in the producer task's `metadata.delivered_checks` (the three writes). Every verdict at main `54222c4dcd` is unchanged.
+
+| leaf | check | path change |
+|---|---|---|
+| γ #5779 | `five-ungated-angle-reads` (`angle_spec\(\)`, present) | + `crates/reify-eval/src/geometry_ops/` |
+| δ #5780 | `draft-angle-is-ungated-raw-value` (`angle_spec\(\)`, present) | + `crates/reify-eval/src/geometry_ops/` |
+| ε #5781 | `resolve-bare-angle-exists`, `codeless-warning-is-live` (absent) | + `crates/reify-eval/src/geometry_ops/`, excluding `**/tests.rs` and `**/tests/**` (an existing negative-assertion test in `geometry_ops/tests.rs` quotes `bare numeric angle`) |

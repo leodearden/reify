@@ -81,6 +81,21 @@ fn find_trait(name: &str) -> &'static reify_compiler::CompiledTrait {
         })
 }
 
+fn find_enum(name: &str) -> &'static reify_ir::EnumDef {
+    let module = load_stdlib_module();
+    module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected enum {} in std/kinematic, got: {:?}",
+                name,
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        })
+}
+
 // ─── module loads cleanly ────────────────────────────────────────────────────
 
 #[test]
@@ -213,21 +228,18 @@ fn conforming_joints_have_driving_joint_bound() {
 // (direction, task 5848). JointValue is still
 // a `Real` alias (trajectory.ri:76) and resolves to Type::dimensionless_scalar().
 
+/// Cylindrical's constrained-DOF compliance groups (task 7163) are APPENDED
+/// after `axis`, so a positional `Cylindrical(vec3(…))` still binds `axis`. The
+/// groups' types and defaults are pinned by `joint_constrained_dof_compliance`.
 #[test]
-fn cylindrical_has_one_vec3_axis_param() {
-    // Narrowed by task 3849: Prismatic and Revolute now have 4 params (axis +
-    // spring_rate + damping + neutral); only Cylindrical still has exactly 1.
+fn cylindrical_params_are_axis_then_compliance_groups() {
     let template = find_structure("Cylindrical");
     let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
     assert_eq!(
-        params.len(),
-        1,
-        "Cylindrical should have exactly 1 param (axis), got: {:?}",
-        params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        params[0].id.member, "axis",
-        "Cylindrical.axis param missing or misnamed"
+        names,
+        vec!["axis", "radial_stiffness", "tilt_stiffness"],
+        "Cylindrical should have exactly (axis, radial_stiffness, tilt_stiffness) in that order"
     );
     assert_eq!(
         params[0].cell_type,
@@ -240,18 +252,30 @@ fn cylindrical_has_one_vec3_axis_param() {
 
 // ─── task 3849 step-5: flexure field shape tests ──────────────────────────────
 
-/// Revolute now has four params: axis (Vec3<Dimensionless>, task 5848), spring_rate
-/// (Option<RotationalStiffness>), damping (Option<RotationalDamping>),
-/// neutral (Option<Angle>). The three new params default to `none`.
+/// Revolute's params, in declaration order: axis (Vec3<Dimensionless>, task 5848),
+/// spring_rate (Option<RotationalStiffness>), damping (Option<RotationalDamping>),
+/// neutral (Option<Angle>), then the constrained-DOF compliance groups APPENDED by
+/// task 7163 (translational before rotational), so positional calls keep binding.
+/// The free-DOF fields default to `none`; the compliance groups' types and
+/// defaults are pinned by `joint_constrained_dof_compliance`.
 #[test]
-fn revolute_has_four_params_with_correct_types() {
+fn revolute_params_keep_positional_order_with_correct_types() {
     let template = find_structure("Revolute");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
     assert_eq!(
         names,
-        vec!["axis", "spring_rate", "damping", "neutral"],
-        "Revolute should have exactly (axis, spring_rate, damping, neutral) in that order"
+        vec![
+            "axis",
+            "spring_rate",
+            "damping",
+            "neutral",
+            "axial_stiffness",
+            "radial_stiffness",
+            "tilt_stiffness",
+        ],
+        "Revolute should have exactly (axis, spring_rate, damping, neutral, \
+         axial_stiffness, radial_stiffness, tilt_stiffness) in that order"
     );
 
     // axis: Vec3<Dimensionless> — a direction, not a length (task 5848).
@@ -305,18 +329,30 @@ fn revolute_has_four_params_with_correct_types() {
     }
 }
 
-/// Prismatic now has four params: axis (Vec3<Dimensionless>, task 5848), spring_rate
-/// (Option<TranslationalStiffness>), damping (Option<TranslationalDamping>),
-/// neutral (Option<Length>). The three new params default to `none`.
+/// Prismatic's params, in declaration order: axis (Vec3<Dimensionless>, task 5848),
+/// spring_rate (Option<TranslationalStiffness>), damping (Option<TranslationalDamping>),
+/// neutral (Option<Length>), then the constrained-DOF compliance groups APPENDED by
+/// task 7163 (translational before rotational), so positional calls keep binding.
+/// The free-DOF fields default to `none`; the compliance groups' types and
+/// defaults are pinned by `joint_constrained_dof_compliance`.
 #[test]
-fn prismatic_has_four_params_with_correct_types() {
+fn prismatic_params_keep_positional_order_with_correct_types() {
     let template = find_structure("Prismatic");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
     assert_eq!(
         names,
-        vec!["axis", "spring_rate", "damping", "neutral"],
-        "Prismatic should have exactly (axis, spring_rate, damping, neutral) in that order"
+        vec![
+            "axis",
+            "spring_rate",
+            "damping",
+            "neutral",
+            "radial_stiffness",
+            "tilt_stiffness",
+            "torsional_stiffness",
+        ],
+        "Prismatic should have exactly (axis, spring_rate, damping, neutral, \
+         radial_stiffness, tilt_stiffness, torsional_stiffness) in that order"
     );
 
     // axis: Vec3<Dimensionless> — a direction, not a length (task 5848).
@@ -370,17 +406,21 @@ fn prismatic_has_four_params_with_correct_types() {
     }
 }
 
+/// Planar's constrained-DOF compliance groups (task 7163) are APPENDED after its
+/// two axes, so a positional `Planar(vec3(…), vec3(…))` still binds them. The
+/// groups' types and defaults are pinned by `joint_constrained_dof_compliance`.
 #[test]
-fn planar_has_two_vec3_axis_params() {
+fn planar_params_are_two_vec3_axes_then_compliance_groups() {
     let template = find_structure("Planar");
     let params = param_cells(template);
     let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
     assert_eq!(
         names,
-        vec!["axis_x", "axis_y"],
-        "Planar should have exactly (axis_x, axis_y) in that order"
+        vec!["axis_x", "axis_y", "normal_stiffness", "tilt_stiffness"],
+        "Planar should have exactly (axis_x, axis_y, normal_stiffness, tilt_stiffness) \
+         in that order"
     );
-    for p in &params {
+    for p in &params[..2] {
         assert_eq!(
             p.cell_type,
             Type::vec3(Type::Scalar {
@@ -392,16 +432,18 @@ fn planar_has_two_vec3_axis_params() {
     }
 }
 
+/// Spherical is axis-isotropic (full SO(3)), so it has no axis field; its one
+/// param is the isotropic constrained-DOF compliance group added by task 7163,
+/// whose type and default are pinned by `joint_constrained_dof_compliance`.
 #[test]
-fn spherical_has_no_params() {
+fn spherical_params_are_only_its_compliance_group() {
     let template = find_structure("Spherical");
     let params = param_cells(template);
+    let names: Vec<&str> = params.iter().map(|vc| vc.id.member.as_str()).collect();
     assert_eq!(
-        params.len(),
-        0,
-        "Spherical should have no params (axis-isotropic — full SO(3)), \
-         got: {:?}",
-        params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
+        names,
+        vec!["translational_stiffness"],
+        "Spherical should have exactly (translational_stiffness) — no axis field"
     );
 }
 
@@ -1169,4 +1211,59 @@ fn compliant_joint_fields_keep_their_dimensions() {
         "Revolute.spring_rate stays Option<RotationalStiffness>; got: {:?}",
         spring_rate.cell_type
     )
+}
+
+// ─── JointPosition enum (C4) ─────────────────────────────────────────────────
+
+/// `enum JointPosition` carries one named-field variant per driving joint kind
+/// (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md §4 C4).
+/// Coupling and Fixed have no position variant.
+///
+/// The whole variant list is compared at once, so a missing, extra or renamed
+/// variant or field, a reordered field, or a mis-resolved field type
+/// (e.g. `Orientation` falling back to a structure reference) reds with a full
+/// diff.
+#[test]
+fn joint_position_declares_one_named_variant_per_driving_kind() {
+    use reify_ir::{EnumVariantDef, VariantPayload};
+
+    let named = |name: &str, fields: &[(&str, Type)]| EnumVariantDef {
+        name: name.to_string(),
+        payload: VariantPayload::Named(
+            fields
+                .iter()
+                .map(|(field, ty)| (field.to_string(), ty.clone()))
+                .collect(),
+        ),
+    };
+
+    let joint_position = find_enum("JointPosition");
+    assert!(
+        joint_position.type_params.is_empty(),
+        "JointPosition is not generic; got type params: {:?}",
+        joint_position.type_params
+    );
+    assert_eq!(
+        joint_position.variants,
+        vec![
+            named("PrismaticPosition", &[("distance", Type::length())]),
+            named("RevolutePosition", &[("angle", Type::angle())]),
+            named(
+                "CylindricalPosition",
+                &[("distance", Type::length()), ("angle", Type::angle())],
+            ),
+            named(
+                "PlanarPosition",
+                &[
+                    ("x", Type::length()),
+                    ("y", Type::length()),
+                    ("angle", Type::angle()),
+                ],
+            ),
+            named(
+                "SphericalPosition",
+                &[("orientation", Type::Orientation(3))]
+            ),
+        ],
+    );
 }

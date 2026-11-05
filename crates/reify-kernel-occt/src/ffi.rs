@@ -295,6 +295,69 @@ pub mod ffi {
         kind: u8,
     }
 
+    /// Outcome of `read_step_document`. Expected failures are values of this
+    /// enum, never exception text, so the Rust side never parses a message to
+    /// decide which error it has.
+    #[derive(Debug)]
+    #[repr(u8)]
+    enum StepReadStatus {
+        /// Read, transferred and walked: the tree records are populated.
+        Read,
+        /// OCCT could not parse the file (missing, unreadable, or not STEP).
+        Unreadable,
+        /// The file parsed but declares no product to transfer.
+        NoRoots,
+        /// The file parsed and has roots, but the XDE transfer failed.
+        TransferFailed,
+    }
+
+    /// A shape's type, one variant per concrete `TopAbs_ShapeEnum` value. The
+    /// abstract `TopAbs_SHAPE` has none: C++ refuses it as a ContractViolation.
+    #[derive(Debug)]
+    #[repr(u8)]
+    enum FfiShapeKind {
+        Compound,
+        CompSolid,
+        Solid,
+        Shell,
+        Face,
+        Wire,
+        Edge,
+        Vertex,
+    }
+
+    /// One product of a read STEP document, in DFS pre-order first-visit order
+    /// over the free roots.
+    struct StepProductRecord {
+        name: String,
+        is_assembly: bool,
+        solid_count: u32,
+        /// This product's components are `components[first_component ..
+        /// first_component + component_count]`.
+        first_component: u32,
+        component_count: u32,
+    }
+
+    /// One occurrence of a product inside an assembly product.
+    struct StepComponentRecord {
+        /// Index into `StepTreeRecords::products`.
+        product_index: u32,
+        instance_name: String,
+        /// Row-major linear part of the placement in the parent's frame, raw.
+        rotation: [f64; 9],
+        /// Metres, in the parent's frame.
+        translation: [f64; 3],
+    }
+
+    /// The flat product-tree records of a read STEP document.
+    struct StepTreeRecords {
+        status: StepReadStatus,
+        products: Vec<StepProductRecord>,
+        components: Vec<StepComponentRecord>,
+        /// Free roots, as indices into `products`.
+        roots: Vec<u32>,
+    }
+
     unsafe extern "C++" {
         include!("occt_wrapper.h");
 
@@ -303,6 +366,10 @@ pub mod ffi {
 
         /// Opaque vector of shapes for passing N shapes across FFI.
         type OcctShapeVec;
+
+        /// Opaque XCAF document read from a STEP file, plus its flattened
+        /// product walk. Owns every product's shapes.
+        type OcctStepDocument;
 
         /// Opaque container holding the BRepAlgoAPI history records
         /// (Modified/Generated/Deleted for faces and edges) plus the
@@ -341,18 +408,15 @@ pub mod ffi {
 
         /// Return OCCT's `Precision::Confusion()` value (~1e-7).
         ///
-        /// Test-fixture-style helper intentionally compiled across the cxx bridge
-        /// in every build.  Cfg-gating cxx::bridge entries is awkward, so the
-        /// symbol is visible to all callers of `crate::ffi::ffi` even though the
-        /// only present-day call site is the crate-private test module in
-        /// `lib.rs`, which pins `reify_types::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M`
-        /// against the authoritative OCCT value at runtime.
+        /// Test-only: pins `reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M` (see
+        /// `ffi_contract_tests.rs`). It ships in every build because cfg-gating a
+        /// cxx::bridge entry is awkward.
         /// `Precision::Confusion()` is a `constexpr` literal in OCCT — cannot
         /// throw, no `Result` wrapper needed.
         fn precision_confusion() -> f64;
 
         // --- Primitive construction ---
-        fn make_box(width: f64, height: f64, depth: f64) -> Result<UniquePtr<OcctShape>>;
+        fn make_box(size_x: f64, size_y: f64, size_z: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cylinder(radius: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_sphere(radius: f64) -> Result<UniquePtr<OcctShape>>;
         fn make_cone(bottom_r: f64, top_r: f64, height: f64) -> Result<UniquePtr<OcctShape>>;
@@ -376,7 +440,7 @@ pub mod ffi {
         /// (task 7054).
         ///
         /// Consequence for the Rust side: stamp the stored `BRepKind` via
-        /// `brep_kind_of_shape` (which reads `shape_type_name`), never a
+        /// `brep_kind_of_shape` (which reads `body_shape_kind`), never a
         /// hardcoded `BRepKind::Solid` — a disjoint fuse really is a
         /// multi-body COMPSOLID.
         fn boolean_fuse(left: &OcctShape, right: &OcctShape) -> Result<UniquePtr<OcctShape>>;
@@ -606,7 +670,7 @@ pub mod ffi {
         /// to the matching index. Eagerly captures the per-parent face/edge
         /// Modified/Generated/Deleted records (the curated path preserves the
         /// persistent-naming seam). Requires a non-empty `edge_indices`; the
-        /// all-edges / empty-selection path keeps using `fillet_all_edges`.
+        /// all-edges / empty-selection path is `make_fillet_with_history`.
         fn make_fillet_edges_with_history(
             shape: &OcctShape,
             radius: f64,
@@ -629,7 +693,7 @@ pub mod ffi {
         /// to the matching index. Eagerly captures the per-parent face/edge
         /// Modified/Generated/Deleted records (the curated path preserves the
         /// persistent-naming seam). Requires a non-empty `edge_indices`; the
-        /// all-edges / empty-selection path keeps using `chamfer_all_edges`.
+        /// all-edges / empty-selection path is `make_chamfer_with_history`.
         fn make_chamfer_edges_with_history(
             shape: &OcctShape,
             distance: f64,
@@ -678,10 +742,6 @@ pub mod ffi {
         /// Count of Modified/Generated children silently dropped because they could
         /// not be found in the result map. Zero for a well-formed fillet/chamfer.
         fn local_feature_op_history_silent_drop_count(history: &LocalFeatureOpHistory) -> u32;
-
-        // --- Modifications ---
-        fn fillet_all_edges(shape: &OcctShape, radius: f64) -> Result<UniquePtr<OcctShape>>;
-        fn chamfer_all_edges(shape: &OcctShape, distance: f64) -> Result<UniquePtr<OcctShape>>;
 
         // --- Transforms ---
         fn translate_shape(
@@ -1385,19 +1445,11 @@ pub mod ffi {
         /// `Build()`).
         fn parallel_bop_build_count() -> u64;
 
-        /// Return the canonical name of `shape`'s top-level TopAbs shape type
-        /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
-        /// "Vertex", or "Shape"). Backs `brep_kind_of_shape`, the ONE classifier
-        /// every boolean path uses to stamp the right `BRepKind` instead of
-        /// assuming Solid:
-        ///   - `OcctKernel::fuse_all` — SOLID (overlapping), COMPSOLID
-        ///     (disjoint), or the sole input's kind (identity), task 5213;
-        ///   - all six binary boolean arms — the three plain
-        ///     `Union`/`Difference`/`Intersection` arms of `execute` and the
-        ///     three `boolean_*_with_history` variants, task 7054. Since every
-        ///     boolean result is normalized, a disjoint fuse really is a
-        ///     multi-body COMPSOLID and the old hardcoded Solid was a lie.
-        fn shape_type_name(shape: &OcctShape) -> Result<String>;
+        /// The kind of `shape`'s body after `unwrap_boolean_compound`'s
+        /// single-body rule, so OCCT's 1-solid COMPOUND wrappers from fillet,
+        /// chamfer, draft and thicken are `Solid`. Backs `brep_kind_of_shape`;
+        /// errs on a null shape.
+        fn body_shape_kind(shape: &OcctShape) -> Result<FfiShapeKind>;
 
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
@@ -1528,6 +1580,12 @@ pub mod ffi {
         /// so this returns a plain `UniquePtr` (no `Result`).
         fn make_null_shape_for_test() -> UniquePtr<OcctShape>;
 
+        /// `body_shape_kind`'s TopAbs switch on a raw `TopAbs_ShapeEnum`
+        /// ordinal: the only way to reach its `TopAbs_SHAPE` arm, since no
+        /// shape carries the abstract type (same argument as
+        /// `make_null_shape_for_test`).
+        fn shape_kind_of_topabs_for_test(topabs: u8) -> Result<FfiShapeKind>;
+
         /// Apply rotation+translation using `BRepBuilderAPI_Transform(..., Copy=false)`,
         /// encoding the transform into `TopLoc_Location` rather than baking it into
         /// geometry. Used by placed-face integration tests to exercise the non-identity
@@ -1581,6 +1639,23 @@ pub mod ffi {
         /// for AP242, falls back to AP214 if the build rejects it (signalled
         /// via `ExportStepResult::ap242_fell_back`).
         fn export_step(shape: &OcctShape, schema: &str) -> Result<ExportStepResult>;
+
+        // --- STEP import (XDE) ---
+        /// Read a STEP file into an XCAF document with lengths in metres.
+        /// Expected failures come back in the document's status; `Err` carries
+        /// only an exception's text.
+        fn read_step_document(path: &str) -> Result<UniquePtr<OcctStepDocument>>;
+        fn step_document_tree(doc: &OcctStepDocument) -> StepTreeRecords;
+        /// The `body_index`-th solid (0-based, TopExp SOLID order) of a
+        /// product, in the product's local frame. `Err` on an out-of-range
+        /// index, which callers validate against the tree beforehand.
+        fn step_document_body(
+            doc: &OcctStepDocument,
+            product_index: u32,
+            body_index: u32,
+        ) -> Result<UniquePtr<OcctShape>>;
+        /// The process-global `xstep.cascade.unit` static (test observability).
+        fn xstep_cascade_unit_for_test() -> Result<String>;
 
         // --- BRep serialization ---
         fn serialize_brep(shape: &OcctShape) -> Result<String>;

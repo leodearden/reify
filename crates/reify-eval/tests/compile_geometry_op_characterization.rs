@@ -40,8 +40,9 @@
 //!
 //! # Snapshot determinism
 //!
-//! Inputs are synthetic literals built via [`lit`]; `CompiledExpr::literal`
-//! attaches no span, so the `{:#?}` Debug of the produced `GeometryOp`/`Err`
+//! Inputs are synthetic literals built via the shared `reify_test_support`
+//! constructors ([`real_literal`], [`length_literal`], [`angle_literal`]) and the
+//! local `lit_raw`/vector helpers; `CompiledExpr::literal` attaches no span, so the `{:#?}` Debug of the produced `GeometryOp`/`Err`
 //! string and the `(severity, message)` diagnostic projection are byte-stable
 //! across runs. Goldens were captured via a RED→GREEN bootstrap (placeholder →
 //! run on current code → paste actual).
@@ -65,36 +66,13 @@ use reify_compiler::{
 };
 use reify_core::Diagnostic;
 use reify_ir::{CompiledExpr, GeometryHandleId, GeometryOp, Value, ValueMap};
+use reify_test_support::{angle_literal, length_literal, real_literal};
 
 use reify_eval::geometry_op_characterization_probe::compile_geometry_op_probe;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/// Build a `CompiledExpr` literal from a constant f64 (dimensionless scalar).
-///
-/// Mirrors the in-module `literal_f64` helper at `geometry_ops.rs` so the
-/// characterization inputs match the production unit tests' representative args.
-fn lit(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::Real(v), reify_core::Type::dimensionless_scalar())
-}
-
-/// Build a `CompiledExpr` literal from a LENGTH-dimensioned scalar (SI metres).
-///
-/// Mirrors the in-module `literal_length` helper at `geometry_ops.rs`. The
-/// length-semantic pattern args (spacing, mirror-plane origin, circular-pattern
-/// axis origin, arbitrary-pattern offsets) require a dimensioned Length after
-/// tasks 5214 and 5350 — a bare `lit(..)` in those positions is now rejected at
-/// eval.
-fn lit_len(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::length(v), reify_core::Type::length())
-}
-
-#[path = "common/angle_expr.rs"]
-mod angle_expr;
-// Aliased to this file's `lit_*` literal-constructor convention.
-use angle_expr::angle_literal as lit_angle;
 
 /// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
 /// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
@@ -219,7 +197,7 @@ fn coord_args(coords: &[f64]) -> Vec<(String, CompiledExpr)> {
     coords
         .iter()
         .enumerate()
-        .map(|(i, &v)| (format!("c{i}"), lit_len(v)))
+        .map(|(i, &v)| (format!("c{i}"), length_literal(v)))
         .collect()
 }
 
@@ -335,47 +313,47 @@ const ALL_PRIMITIVE: [PrimitiveKind; 8] = [
 fn primitive_case(k: PrimitiveKind) -> CompiledGeometryOp {
     let args = match k {
         PrimitiveKind::Box => vec![
-            ("width".to_string(), lit_len(0.01)),
-            ("height".to_string(), lit_len(0.02)),
-            ("depth".to_string(), lit_len(0.03)),
+            ("size_x".to_string(), length_literal(0.01)),
+            ("size_y".to_string(), length_literal(0.02)),
+            ("size_z".to_string(), length_literal(0.03)),
         ],
         PrimitiveKind::Cylinder => vec![
-            ("radius".to_string(), lit_len(0.01)),
-            ("height".to_string(), lit_len(0.02)),
+            ("radius".to_string(), length_literal(0.01)),
+            ("height".to_string(), length_literal(0.02)),
         ],
-        PrimitiveKind::Sphere => vec![("radius".to_string(), lit_len(0.01))],
+        PrimitiveKind::Sphere => vec![("radius".to_string(), length_literal(0.01))],
         PrimitiveKind::Tube => vec![
-            ("outer_r".to_string(), lit_len(0.02)),
-            ("inner_r".to_string(), lit_len(0.01)),
-            ("height".to_string(), lit_len(0.03)),
+            ("outer_r".to_string(), length_literal(0.02)),
+            ("inner_r".to_string(), length_literal(0.01)),
+            ("height".to_string(), length_literal(0.03)),
         ],
         PrimitiveKind::Cone => vec![
-            ("bottom_radius".to_string(), lit_len(0.02)),
-            ("top_radius".to_string(), lit_len(0.01)),
-            ("height".to_string(), lit_len(0.03)),
+            ("bottom_radius".to_string(), length_literal(0.02)),
+            ("top_radius".to_string(), length_literal(0.01)),
+            ("height".to_string(), length_literal(0.03)),
         ],
         PrimitiveKind::Wedge => vec![
-            ("width".to_string(), lit_len(0.02)),
-            ("depth".to_string(), lit_len(0.03)),
-            ("height".to_string(), lit_len(0.04)),
-            ("top_width".to_string(), lit_len(0.01)),
+            ("width".to_string(), length_literal(0.02)),
+            ("depth".to_string(), length_literal(0.03)),
+            ("height".to_string(), length_literal(0.04)),
+            ("top_width".to_string(), length_literal(0.01)),
         ],
         PrimitiveKind::Torus => vec![
-            ("major_radius".to_string(), lit_len(0.03)),
-            ("minor_radius".to_string(), lit_len(0.01)),
+            ("major_radius".to_string(), length_literal(0.03)),
+            ("minor_radius".to_string(), length_literal(0.01)),
         ],
         // MIXED, and deliberately so: `(px, py, pz)` is a point on the boundary
         // plane and is gated, but `(nx, ny, nz)` is a DIMENSIONLESS unit normal
-        // and stays a bare `lit(..)`. Swapping the normal to `lit_len` here
+        // and stays a bare `real_literal(..)`. Swapping the normal to `length_literal` here
         // would hide an over-broad gate rather than characterize the real one —
         // `examples/half_space.ri` writes exactly this shape.
         PrimitiveKind::HalfSpace => vec![
-            ("px".to_string(), lit_len(0.0)),
-            ("py".to_string(), lit_len(0.0)),
-            ("pz".to_string(), lit_len(0.0)),
-            ("nx".to_string(), lit(0.0)),
-            ("ny".to_string(), lit(0.0)),
-            ("nz".to_string(), lit(1.0)),
+            ("px".to_string(), length_literal(0.0)),
+            ("py".to_string(), length_literal(0.0)),
+            ("pz".to_string(), length_literal(0.0)),
+            ("nx".to_string(), real_literal(0.0)),
+            ("ny".to_string(), real_literal(0.0)),
+            ("nz".to_string(), real_literal(1.0)),
         ],
     };
     CompiledGeometryOp::Primitive { kind: k, args }
@@ -388,7 +366,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
     match k {
         PrimitiveKind::Box => r#"Ok(
     Box {
-        width: Scalar {
+        size_x: Scalar {
             si_value: 0.01,
             dimension: DimensionVector(
                 [
@@ -435,7 +413,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
                 ],
             ),
         },
-        height: Scalar {
+        size_y: Scalar {
             si_value: 0.02,
             dimension: DimensionVector(
                 [
@@ -482,7 +460,7 @@ fn primitive_golden(k: PrimitiveKind) -> &'static str {
                 ],
             ),
         },
-        depth: Scalar {
+        size_z: Scalar {
             si_value: 0.03,
             dimension: DimensionVector(
                 [
@@ -1555,31 +1533,32 @@ const ALL_TRANSFORM: [TransformKind; 7] = [
 /// unit tests; ApplyTransform uses an identity-rotation `lit_transform`.
 fn transform_case(k: TransformKind) -> CompiledGeometryOp {
     let args = match k {
-        // Translation components are LENGTH-semantic (task 5623) — `lit_len`.
+        // Translation components are LENGTH-semantic (task 5623) — `length_literal`.
         // The golden below is unchanged: `Value::length(0.01).as_f64()` and
         // `Value::Real(0.01).as_f64()` are both `0.01`.
         TransformKind::Translate => vec![
-            ("dx".to_string(), lit_len(0.01)),
-            ("dy".to_string(), lit_len(0.02)),
-            ("dz".to_string(), lit_len(0.03)),
+            ("dx".to_string(), length_literal(0.01)),
+            ("dy".to_string(), length_literal(0.02)),
+            ("dz".to_string(), length_literal(0.03)),
         ],
         TransformKind::Rotate => vec![
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit_angle(1.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
+            ("angle".to_string(), angle_literal(1.0)),
         ],
-        TransformKind::Scale => vec![("factor".to_string(), lit(2.0))],
-        // Only the PIVOT is LENGTH-semantic (task 5623); ax/ay/az/angle stay
-        // on `lit`. Golden unchanged.
+        TransformKind::Scale => vec![("factor".to_string(), real_literal(2.0))],
+        // Only the PIVOT is LENGTH-semantic (task 5623); the ax/ay/az direction
+        // stays on `real_literal`, and `angle` is ANGLE-dimensioned via
+        // `angle_literal` (angle-units PRD leaf γ). Golden unchanged.
         TransformKind::RotateAround => vec![
-            ("px".to_string(), lit_len(0.05)),
-            ("py".to_string(), lit_len(0.0)),
-            ("pz".to_string(), lit_len(0.0)),
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
-            ("angle".to_string(), lit_angle(1.0)),
+            ("px".to_string(), length_literal(0.05)),
+            ("py".to_string(), length_literal(0.0)),
+            ("pz".to_string(), length_literal(0.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
+            ("angle".to_string(), angle_literal(1.0)),
         ],
         TransformKind::ApplyTransform => vec![(
             "transform".to_string(),
@@ -1774,21 +1753,21 @@ const MODIFY_EDGES_VARIANTS: [ModifyKind; 3] =
 /// see `geometry_ops.rs` Modify arm for each kind's required `eval_arg` names.
 fn modify_case(k: ModifyKind) -> CompiledGeometryOp {
     let args = match k {
-        ModifyKind::Fillet => vec![("radius".to_string(), lit_len(0.005))],
-        ModifyKind::Chamfer => vec![("distance".to_string(), lit_len(0.005))],
+        ModifyKind::Fillet => vec![("radius".to_string(), length_literal(0.005))],
+        ModifyKind::Chamfer => vec![("distance".to_string(), length_literal(0.005))],
         ModifyKind::ChamferAsymmetric => vec![
-            ("d1".to_string(), lit_len(0.004)),
-            ("d2".to_string(), lit_len(0.006)),
+            ("d1".to_string(), length_literal(0.004)),
+            ("d2".to_string(), length_literal(0.006)),
         ],
-        ModifyKind::Shell => vec![("thickness".to_string(), lit_len(0.002))],
-        // `Draft`'s `angle` stays BARE: it is an ANGLE position owned by
-        // `docs/prds/v0_6/angle-units-surface-convergence.md`, not by this leaf.
-        ModifyKind::Draft => vec![("angle".to_string(), lit_angle(0.1))],
-        ModifyKind::Thicken => vec![("offset".to_string(), lit_len(0.003))],
-        ModifyKind::ZoneSlab => vec![("width".to_string(), lit_len(0.01))],
-        ModifyKind::OffsetSolid => vec![("distance".to_string(), lit_len(0.002))],
-        ModifyKind::OffsetSurface => vec![("distance".to_string(), lit_len(0.002))],
-        ModifyKind::OffsetCurve => vec![("distance".to_string(), lit_len(0.002))],
+        ModifyKind::Shell => vec![("thickness".to_string(), length_literal(0.002))],
+        // `Draft`'s `angle` is an ANGLE position, dimensioned via `angle_literal`
+        // (`docs/prds/v0_6/angle-units-surface-convergence.md` leaf δ).
+        ModifyKind::Draft => vec![("angle".to_string(), angle_literal(0.1))],
+        ModifyKind::Thicken => vec![("offset".to_string(), length_literal(0.003))],
+        ModifyKind::ZoneSlab => vec![("width".to_string(), length_literal(0.01))],
+        ModifyKind::OffsetSolid => vec![("distance".to_string(), length_literal(0.002))],
+        ModifyKind::OffsetSurface => vec![("distance".to_string(), length_literal(0.002))],
+        ModifyKind::OffsetCurve => vec![("distance".to_string(), length_literal(0.002))],
     };
     CompiledGeometryOp::Modify {
         kind: k,
@@ -2496,57 +2475,58 @@ const PATTERN_VALUE_VARIANTS: [PatternKind; 2] = [PatternKind::Circular, Pattern
 
 /// Build a representative base `Pattern` op for `k` (the scalar/back-compat form
 /// for Circular/Mirror). EXHAUSTIVE match (no `_`); see `geometry_ops.rs` Pattern
-/// arm. Circular's bare numeric `angle` exercises the degrees→radians warning.
+/// arm. Circular's `angle` is ANGLE-dimensioned via `angle_literal` (angle-units
+/// PRD leaf ε retired the bare-number degrees→radians path).
 fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Linear => vec![
-            ("dx".to_string(), lit(1.0)),
-            ("dy".to_string(), lit(0.0)),
-            ("dz".to_string(), lit(0.0)),
-            ("count".to_string(), lit(3.0)),
+            ("dx".to_string(), real_literal(1.0)),
+            ("dy".to_string(), real_literal(0.0)),
+            ("dz".to_string(), real_literal(0.0)),
+            ("count".to_string(), real_literal(3.0)),
             // spacing is length-semantic → dimensioned Length (task 5214).
-            ("spacing".to_string(), lit_len(0.01)),
+            ("spacing".to_string(), length_literal(0.01)),
         ],
         PatternKind::Circular => vec![
             // Axis ORIGIN is length-semantic → dimensioned Length (task 5350);
             // axis DIRECTION stays a bare dimensionless unit vector.
-            ("ox".to_string(), lit_len(0.0)),
-            ("oy".to_string(), lit_len(0.0)),
-            ("oz".to_string(), lit_len(0.0)),
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
-            ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit_angle(std::f64::consts::FRAC_PI_2)),
+            ("ox".to_string(), length_literal(0.0)),
+            ("oy".to_string(), length_literal(0.0)),
+            ("oz".to_string(), length_literal(0.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
+            ("count".to_string(), real_literal(4.0)),
+            ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![
             // Plane ORIGIN is length-semantic → dimensioned Length (task 5214);
             // plane NORMAL stays a bare dimensionless unit vector.
-            ("ox".to_string(), lit_len(0.0)),
-            ("oy".to_string(), lit_len(0.0)),
-            ("oz".to_string(), lit_len(0.0)),
-            ("nx".to_string(), lit(0.0)),
-            ("ny".to_string(), lit(0.0)),
-            ("nz".to_string(), lit(1.0)),
+            ("ox".to_string(), length_literal(0.0)),
+            ("oy".to_string(), length_literal(0.0)),
+            ("oz".to_string(), length_literal(0.0)),
+            ("nx".to_string(), real_literal(0.0)),
+            ("ny".to_string(), real_literal(0.0)),
+            ("nz".to_string(), real_literal(1.0)),
         ],
         PatternKind::Linear2D => vec![
-            ("dx1".to_string(), lit(1.0)),
-            ("dy1".to_string(), lit(0.0)),
-            ("dz1".to_string(), lit(0.0)),
-            ("count1".to_string(), lit(2.0)),
+            ("dx1".to_string(), real_literal(1.0)),
+            ("dy1".to_string(), real_literal(0.0)),
+            ("dz1".to_string(), real_literal(0.0)),
+            ("count1".to_string(), real_literal(2.0)),
             // spacings are length-semantic → dimensioned Length (task 5214).
-            ("spacing1".to_string(), lit_len(0.01)),
-            ("dx2".to_string(), lit(0.0)),
-            ("dy2".to_string(), lit(1.0)),
-            ("dz2".to_string(), lit(0.0)),
-            ("count2".to_string(), lit(3.0)),
-            ("spacing2".to_string(), lit_len(0.02)),
+            ("spacing1".to_string(), length_literal(0.01)),
+            ("dx2".to_string(), real_literal(0.0)),
+            ("dy2".to_string(), real_literal(1.0)),
+            ("dz2".to_string(), real_literal(0.0)),
+            ("count2".to_string(), real_literal(3.0)),
+            ("spacing2".to_string(), length_literal(0.02)),
         ],
         PatternKind::Arbitrary => vec![
             // Offsets are translations (length-semantic) → dimensioned Length.
-            ("t0_dx".to_string(), lit_len(0.01)),
-            ("t0_dy".to_string(), lit_len(0.02)),
-            ("t0_dz".to_string(), lit_len(0.03)),
+            ("t0_dx".to_string(), length_literal(0.01)),
+            ("t0_dy".to_string(), length_literal(0.02)),
+            ("t0_dz".to_string(), length_literal(0.03)),
         ],
     };
     CompiledGeometryOp::Pattern {
@@ -2563,8 +2543,8 @@ fn pattern_case_value(k: PatternKind) -> CompiledGeometryOp {
     let args = match k {
         PatternKind::Circular => vec![
             ("axis".to_string(), lit_raw(axis_value([0.01, 0.02, 0.03], [0.0, 0.0, 2.0]))),
-            ("count".to_string(), lit(4.0)),
-            ("angle".to_string(), lit_angle(std::f64::consts::FRAC_PI_2)),
+            ("count".to_string(), real_literal(4.0)),
+            ("angle".to_string(), angle_literal(std::f64::consts::FRAC_PI_2)),
         ],
         PatternKind::Mirror => vec![(
             "plane".to_string(),
@@ -2716,26 +2696,28 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         SweepKind::Loft => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::Extrude => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit_len(0.02))],
+            vec![("distance".to_string(), length_literal(0.02))],
         ),
         SweepKind::Revolve => (
             vec![GeomRef::Step(0)],
             vec![
-                ("ax".to_string(), lit(0.0)),
-                ("ay".to_string(), lit(0.0)),
-                ("az".to_string(), lit(1.0)),
-                ("angle".to_string(), lit_angle(1.0)),
-                // Only the axis ORIGIN is LENGTH-semantic (task 5623);
-                // ax/ay/az/angle stay on `lit`. Golden unchanged.
-                ("ox".to_string(), lit_len(0.0)),
-                ("oy".to_string(), lit_len(0.0)),
-                ("oz".to_string(), lit_len(0.0)),
+                ("ax".to_string(), real_literal(0.0)),
+                ("ay".to_string(), real_literal(0.0)),
+                ("az".to_string(), real_literal(1.0)),
+                ("angle".to_string(), angle_literal(1.0)),
+                // Only the axis ORIGIN is LENGTH-semantic (task 5623); the
+                // ax/ay/az direction stays on `real_literal`, and `angle` is
+                // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ).
+                // Golden unchanged.
+                ("ox".to_string(), length_literal(0.0)),
+                ("oy".to_string(), length_literal(0.0)),
+                ("oz".to_string(), length_literal(0.0)),
             ],
         ),
         SweepKind::Sweep => (vec![GeomRef::Step(0), GeomRef::Step(1)], vec![]),
         SweepKind::ExtrudeSymmetric => (
             vec![GeomRef::Step(0)],
-            vec![("distance".to_string(), lit_len(0.02))],
+            vec![("distance".to_string(), length_literal(0.02))],
         ),
         SweepKind::SweepGuided => (
             vec![GeomRef::Step(0), GeomRef::Step(1), GeomRef::Step(2)],
@@ -2747,16 +2729,16 @@ fn sweep_case(k: SweepKind) -> CompiledGeometryOp {
         ),
         SweepKind::Pipe => (
             vec![GeomRef::Step(0)],
-            vec![("radius".to_string(), lit_len(0.005))],
+            vec![("radius".to_string(), length_literal(0.005))],
         ),
         SweepKind::ExtrudeInfinite => (
             vec![GeomRef::Step(0)],
             vec![
                 // `dx`/`dy`/`dz` are a dimensionless DIRECTION, not a length —
-                // they stay on `lit` (task 5744 boundary). Golden unchanged.
-                ("dx".to_string(), lit(0.0)),
-                ("dy".to_string(), lit(0.0)),
-                ("dz".to_string(), lit(1.0)),
+                // they stay on `real_literal` (task 5744 boundary). Golden unchanged.
+                ("dx".to_string(), real_literal(0.0)),
+                ("dy".to_string(), real_literal(0.0)),
+                ("dz".to_string(), real_literal(1.0)),
                 ("direction".to_string(), lit_raw(Value::String("positive".into()))),
             ],
         ),
@@ -3063,56 +3045,57 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
         // Both endpoints are LENGTH-gated (task 5623). The golden below is
         // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         CurveKind::LineSegment => vec![
-            ("x1".to_string(), lit_len(0.0)),
-            ("y1".to_string(), lit_len(0.0)),
-            ("z1".to_string(), lit_len(0.0)),
-            ("x2".to_string(), lit_len(0.01)),
-            ("y2".to_string(), lit_len(0.02)),
-            ("z2".to_string(), lit_len(0.03)),
+            ("x1".to_string(), length_literal(0.0)),
+            ("y1".to_string(), length_literal(0.0)),
+            ("z1".to_string(), length_literal(0.0)),
+            ("x2".to_string(), length_literal(0.01)),
+            ("y2".to_string(), length_literal(0.02)),
+            ("z2".to_string(), length_literal(0.03)),
         ],
-        // Centre and radius are LENGTH-gated (task 5623); the two angles and the
-        // ax/ay/az unit vector stay deliberately bare. Golden below unchanged.
+        // Centre and radius are LENGTH-gated (task 5623); the two angles are
+        // ANGLE-dimensioned via `angle_literal` (angle-units PRD leaf γ); the
+        // ax/ay/az unit vector stays deliberately bare. Golden below unchanged.
         CurveKind::Arc => vec![
-            ("cx".to_string(), lit_len(0.0)),
-            ("cy".to_string(), lit_len(0.0)),
-            ("cz".to_string(), lit_len(0.0)),
-            ("radius".to_string(), lit_len(0.01)),
-            ("start_angle".to_string(), lit_angle(0.0)),
-            ("end_angle".to_string(), lit_angle(1.0)),
-            ("ax".to_string(), lit(0.0)),
-            ("ay".to_string(), lit(0.0)),
-            ("az".to_string(), lit(1.0)),
+            ("cx".to_string(), length_literal(0.0)),
+            ("cy".to_string(), length_literal(0.0)),
+            ("cz".to_string(), length_literal(0.0)),
+            ("radius".to_string(), length_literal(0.01)),
+            ("start_angle".to_string(), angle_literal(0.0)),
+            ("end_angle".to_string(), angle_literal(1.0)),
+            ("ax".to_string(), real_literal(0.0)),
+            ("ay".to_string(), real_literal(0.0)),
+            ("az".to_string(), real_literal(1.0)),
         ],
         // radius / pitch / height are all LENGTH-gated (task 5623); `pitch` is a
         // rise per turn, not an angle. Golden below unchanged.
         CurveKind::Helix => vec![
-            ("radius".to_string(), lit_len(0.01)),
-            ("pitch".to_string(), lit_len(0.005)),
-            ("height".to_string(), lit_len(0.05)),
+            ("radius".to_string(), length_literal(0.01)),
+            ("pitch".to_string(), length_literal(0.005)),
+            ("height".to_string(), length_literal(0.05)),
         ],
         // 2 points → 6 coords. EVERY position is a point coordinate and so is
         // LENGTH-gated (task 5658). The golden below is unchanged:
         // `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         CurveKind::InterpCurve => vec![
-            ("c0".to_string(), lit_len(0.0)),
-            ("c1".to_string(), lit_len(0.0)),
-            ("c2".to_string(), lit_len(0.0)),
-            ("c3".to_string(), lit_len(0.01)),
-            ("c4".to_string(), lit_len(0.02)),
-            ("c5".to_string(), lit_len(0.03)),
+            ("c0".to_string(), length_literal(0.0)),
+            ("c1".to_string(), length_literal(0.0)),
+            ("c2".to_string(), length_literal(0.0)),
+            ("c3".to_string(), length_literal(0.01)),
+            ("c4".to_string(), length_literal(0.02)),
+            ("c5".to_string(), length_literal(0.03)),
         ],
         // 3 control points → 9 coords. EVERY position is a control-point
         // coordinate and so is LENGTH-gated (task 5658). Golden unchanged.
         CurveKind::BezierCurve => vec![
-            ("c0".to_string(), lit_len(0.0)),
-            ("c1".to_string(), lit_len(0.0)),
-            ("c2".to_string(), lit_len(0.0)),
-            ("c3".to_string(), lit_len(0.01)),
-            ("c4".to_string(), lit_len(0.01)),
-            ("c5".to_string(), lit_len(0.0)),
-            ("c6".to_string(), lit_len(0.02)),
-            ("c7".to_string(), lit_len(0.0)),
-            ("c8".to_string(), lit_len(0.0)),
+            ("c0".to_string(), length_literal(0.0)),
+            ("c1".to_string(), length_literal(0.0)),
+            ("c2".to_string(), length_literal(0.0)),
+            ("c3".to_string(), length_literal(0.01)),
+            ("c4".to_string(), length_literal(0.01)),
+            ("c5".to_string(), length_literal(0.0)),
+            ("c6".to_string(), length_literal(0.02)),
+            ("c7".to_string(), length_literal(0.0)),
+            ("c8".to_string(), length_literal(0.0)),
         ],
         // degree=1, n_points=2, poles(2×3), weights(2), knots(n+deg+1=4).
         // ONLY the pole span is LENGTH-gated (task 5658) — `coord_args` cannot
@@ -3121,20 +3104,20 @@ fn curve_case(k: CurveKind) -> CompiledGeometryOp {
         // the knots are parameter-space values, so all eight stay deliberately
         // BARE. Golden unchanged, same `as_f64` identity as above.
         CurveKind::NurbsCurve => vec![
-            ("c0".to_string(), lit(1.0)),      // degree
-            ("c1".to_string(), lit(2.0)),      // n_points
-            ("c2".to_string(), lit_len(0.0)),  // pole 1 x
-            ("c3".to_string(), lit_len(0.0)),  // pole 1 y
-            ("c4".to_string(), lit_len(0.0)),  // pole 1 z
-            ("c5".to_string(), lit_len(0.01)), // pole 2 x
-            ("c6".to_string(), lit_len(0.0)),  // pole 2 y
-            ("c7".to_string(), lit_len(0.0)),  // pole 2 z
-            ("c8".to_string(), lit(1.0)),      // weight 1
-            ("c9".to_string(), lit(1.0)),      // weight 2
-            ("c10".to_string(), lit(0.0)),     // knot 1
-            ("c11".to_string(), lit(0.0)),     // knot 2
-            ("c12".to_string(), lit(1.0)),     // knot 3
-            ("c13".to_string(), lit(1.0)),     // knot 4
+            ("c0".to_string(), real_literal(1.0)),      // degree
+            ("c1".to_string(), real_literal(2.0)),      // n_points
+            ("c2".to_string(), length_literal(0.0)),  // pole 1 x
+            ("c3".to_string(), length_literal(0.0)),  // pole 1 y
+            ("c4".to_string(), length_literal(0.0)),  // pole 1 z
+            ("c5".to_string(), length_literal(0.01)), // pole 2 x
+            ("c6".to_string(), length_literal(0.0)),  // pole 2 y
+            ("c7".to_string(), length_literal(0.0)),  // pole 2 z
+            ("c8".to_string(), real_literal(1.0)),      // weight 1
+            ("c9".to_string(), real_literal(1.0)),      // weight 2
+            ("c10".to_string(), real_literal(0.0)),     // knot 1
+            ("c11".to_string(), real_literal(0.0)),     // knot 2
+            ("c12".to_string(), real_literal(1.0)),     // knot 3
+            ("c13".to_string(), real_literal(1.0)),     // knot 4
         ],
     };
     CompiledGeometryOp::Curve { kind: k, args }
@@ -3281,18 +3264,18 @@ const ALL_PROFILE: [ProfileKind; 4] = [
 fn profile_case(k: ProfileKind) -> CompiledGeometryOp {
     let args = match k {
         ProfileKind::Rectangle => vec![
-            ("width".to_string(), lit_len(0.02)),
-            ("height".to_string(), lit_len(0.03)),
+            ("width".to_string(), length_literal(0.02)),
+            ("height".to_string(), length_literal(0.03)),
         ],
-        ProfileKind::Circle => vec![("radius".to_string(), lit_len(0.01))],
+        ProfileKind::Circle => vec![("radius".to_string(), length_literal(0.01))],
         // 3 points → 6 coords (chunks of 2). EVERY position is a vertex
         // coordinate in the XY plane and so is LENGTH-gated (task 5661), which
         // is why `coord_args` mints dimensioned literals. The golden below is
         // unchanged: `Value::length(0.01).as_f64() == Value::Real(0.01).as_f64()`.
         ProfileKind::Polygon => coord_args(&[0.0, 0.0, 0.01, 0.0, 0.005, 0.01]),
         ProfileKind::Ellipse => vec![
-            ("semi_major".to_string(), lit_len(0.02)),
-            ("semi_minor".to_string(), lit_len(0.01)),
+            ("semi_major".to_string(), length_literal(0.02)),
+            ("semi_minor".to_string(), length_literal(0.01)),
         ],
     };
     CompiledGeometryOp::Profile { kind: k, args }

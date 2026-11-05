@@ -34,7 +34,6 @@
 //!   `value_to_mechanism_model`
 //! - `crates/reify-lsp/src/analysis.rs`: `count_members_recursive`
 //! - `crates/reify-lsp/src/completion.rs`: `determine_context`
-//! - `crates/reify-lsp/src/references.rs`: `collect_references`
 //!
 //! ## Re-export alias (false positive)
 //!
@@ -56,7 +55,7 @@
 //! - `crates/reify-lsp/src/goto_def.rs`: `compute_goto_definition`,
 //!   `compute_goto_definition_cross_file`
 //! - `crates/reify-lsp/src/hover.rs`: `compute_hover`
-//! - `crates/reify-lsp/src/analysis.rs`: `compute_document_symbols`
+//! - `crates/reify-lsp/src/symbols.rs`: `compute_document_symbols`
 //!
 //! ## Test-support
 //!
@@ -314,7 +313,7 @@ fn assert_pins_are_g_allow_marked(result: &serde_json::Value, pins: &[(&str, &st
 /// references; these functions have a genuine same-file caller but no external
 /// caller, so the tool misclassifies them as orphans.
 ///
-/// Covers 12 functions across 9 files (module_dag.rs hosts 2 pins,
+/// Covers 11 functions across 8 files (module_dag.rs hosts 2 pins,
 /// trampoline.rs hosts 3).
 #[test]
 fn same_file_caller_false_positives_are_g_allow_marked() {
@@ -375,11 +374,6 @@ fn same_file_caller_false_positives_are_g_allow_marked() {
             "crates/reify-lsp/src/completion.rs",
             "determine_context",
         ),
-        // lsp: collect_references called within references.rs
-        (
-            "crates/reify-lsp/src/references.rs",
-            "collect_references",
-        ),
     ];
     assert_pins_are_g_allow_marked(result, PINS);
 }
@@ -439,7 +433,7 @@ fn lsp_public_api_shims_are_g_allow_marked() {
             "compute_hover",
         ),
         (
-            "crates/reify-lsp/src/analysis.rs",
+            "crates/reify-lsp/src/symbols.rs",
             "compute_document_symbols",
         ),
     ];

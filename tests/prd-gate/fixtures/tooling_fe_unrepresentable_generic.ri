@@ -1,0 +1,8 @@
+// /prd S27 tooling-front-end evidence: a declared, never-instantiated generic.
+// Compiles with zero diagnostics; its `T`-typed cell is unrepresentable at eval
+// time (task #6851's "shape 2"), so a debug-build eval panics unless the caller
+// asks the eval-readiness predicate first.
+module tooling_fe_unrepresentable_generic
+
+trait Seal {}
+structure def Bearing<T: Seal> { param seal : T }

@@ -1,6 +1,8 @@
 # PRD: `@solver_hint` content payloads for v0.1
 
 **Status:** v0.1 scope.
+
+> **Superseded in part 2026-10-08 (Leo, esc-5470-5).** `discrete_set` is no longer a stored-only hint: it compiles to the constraint `x in C` (a hard domain) — `docs/prds/v0_6/catalog-membership-constraint.md` γ #8357 — and its catalog may be any in-scope list. `prefer_stock` / `preferred_strategy` remain unconsumed; γ makes them emit a coded "not yet consumed" Warning and decision gate #8360 owns their semantics. The "#276 wired the solver" claim below was never true (audit finding M-008).
 **Spec reference:** `docs/reify-language-spec.md` §12.1.
 **Pre-existing infrastructure:** Tasks **#275** (compiler-side annotation extraction → `SolverHint { kind, collection, span }` on `ValueCellDecl`) and **#276** (solver-side integration through engine + constraint solver) are **done**. `extract_solver_hints` in `crates/reify-compiler/src/annotations.rs` parses the two arg form `@solver_hint("<kind>", <ident>)` and recognises `discrete_set` / `prefer_stock`. Tests exist at `crates/reify-compiler/tests/harness_geometry_solver/solver_hint_tests.rs`.
 
@@ -48,7 +50,7 @@ Add an integration test at `crates/reify-compiler/tests/harness_geometry_solver/
 
 ## Acceptance
 
-- `examples/m11_annotations.ri` (already present) gains a small block that uses both `standard_bolt_lengths` and `standard_sheet_thicknesses` with `@solver_hint`, producing no warnings under `reify check`.
+- `examples/m11_annotations.ri` (already present) gains a small block that uses both `standard_bolt_lengths` and `standard_sheet_thicknesses` with `@solver_hint`, producing no warnings under `reify check`. *(Amended 2026-10-08: after `docs/prds/v0_6/catalog-membership-constraint.md` γ #8357 the `prefer_stock` line emits the coded `SolverHintNotConsumed` Warning by design, and BoltedPanel gains constraints so its now-hard `bolt_length` resolves; γ updates the example and its test.)*
 - The new tests pass.
 - `reify doc` (separate PRD) renders the two collection constants in the stdlib docs page with their doc comments.
 

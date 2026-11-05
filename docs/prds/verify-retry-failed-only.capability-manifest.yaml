@@ -15,6 +15,7 @@ tasks:
       pattern: REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
   - name: tree-oid-sidecar-guard-and-loud-full-fallback
     binding: rejection-mechanism (G6 branch 4 / INV-4) — refuse subset run unless
@@ -26,6 +27,7 @@ tasks:
       pattern: REIFY_VERIFY_RETRY_SCOPE
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
 - label: α2
   task_id: 5548
@@ -79,6 +81,7 @@ tasks:
       paths:
       - scripts/verify.sh
       - scripts/gui-test.sh
+      - scripts/reify_verify/
       expect: present
 - label: δ
   task_id: 5290
@@ -95,6 +98,7 @@ tasks:
       pattern: REIFY_RETRY_SCOPE=failed_only
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: present
   - name: same-diff-drift-guard-registration
     binding: gate-test registration rule (overlay; esc-4914-162 A3-before-A6) — new

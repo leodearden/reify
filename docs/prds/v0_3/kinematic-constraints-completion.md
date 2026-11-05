@@ -436,6 +436,8 @@ pub enum JointBinding {
 }
 ```
 
+*Superseded:* `LiteralBound` is never scrubbable (`scrubbable: false`); see the §8.3 status note.
+
 The synth name follows pattern `__joint_<joint_id>_v`. Engine ensures
 no name collision against user-defined `param` cells (rejection at
 mechanism-build time if a user names a param `__joint_*`; emit
@@ -450,6 +452,8 @@ coalescing path. Visual distinction kept (an outline or small icon
 indicates literal-bound vs param-bound) but slider is functional in
 both cases.
 
+*Superseded:* the "slider is functional in both cases" clause is replaced by the §8.3 status note below.
+
 ### §8.3 — Persistence semantics
 
 Scrubbing a literal-bound joint **does not write back to the source
@@ -461,6 +465,14 @@ behaviour).
 
 A future PRD may add "scrub-as-edit" if dogfood demand warrants;
 filed as open question §14.1.
+
+**Status (task #7375).** The §8.1 synth virtual param was never built engine-side: no cell or
+source span resolves `__joint_*_v`, so a literal-bound scrub reached nothing. A session-only engine
+value is also the "divergent engine-only live value" that INV-GUI-3 (`docs/invariants.md`;
+`docs/prds/v0_6/ai-native-editing.md` D1) forbids, which supersedes the session-only model above.
+Literal-bound joints therefore render READ-ONLY, showing their literal; `JointBinding::literal_bound`
+sets `scrubbable = false`. The only route to a scrubbable literal-bound joint is §14.1 scrub-as-edit,
+a source splice of the `bind()` literal.
 
 ### §8.4 — Performance budget
 
@@ -613,6 +625,8 @@ Phase 7 is dogfood.
 
 ### Phase 5 — GUI slider for literal-bound joints (η)
 
+*Superseded:* literal-bound joints render read-only and their descriptor carries `scrubbable: false`; see the §8.3 status note.
+
 - **η-engine — Extend `JointBinding` enum, descriptor extractor, name-collision detection in engine.rs.**
   - Crates: `gui/src-tauri/src/types.rs`, `gui/src-tauri/src/engine.rs`, `gui/src-tauri/src/commands.rs`.
   - Observable signal (intermediate): Rust unit test confirms descriptor for `bind(j, 100mm)` produces `JointBinding::LiteralBound { scrubbable: true, ... }`.
@@ -683,7 +697,8 @@ Carried forward from v0.2 PRD plus new exclusions:
    Real dogfood demand may surface a need to write scrubbed values back to the
    `.ri` source AST literal. **Suggested resolution:** defer to a focused
    "scrub-as-edit" PRD once dogfood data exists. Decide during printer-build
-   dogfood phase.
+   dogfood phase. **Update (task #7375):** session-only scrub is superseded (§8.3 status note), so
+   scrub-as-edit is now the only remaining path to a scrubbable literal-bound joint — task #8315.
 
 2. **Manifold-kernel FK-aware parity.** Once KGQ Phase 5 (Manifold parity)
    lands, this PRD's ε path inherits Manifold support — but the

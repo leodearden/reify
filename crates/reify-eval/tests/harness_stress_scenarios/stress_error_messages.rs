@@ -257,7 +257,7 @@ fn eval_error_geometry_kernel_failure() {
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -314,7 +314,7 @@ fn eval_error_compile_geometry_op_failure() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let has_compile_fail = result
@@ -363,7 +363,7 @@ fn constraint_violation_diagnostic() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let check_result = engine.check(&compiled);
 
     let s_constraints: Vec<_> = check_result

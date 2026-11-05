@@ -184,3 +184,13 @@ Every leaf wires into milestone **5254**. `metadata.files` tight-or-empty (broad
 - A6 closure regeneration command exact flags (`cargo metadata -p reify-eval` edge filter to include build+normal, exclude dev) — settle in-leaf against the sound (over-approximate) direction.
 - E1: whether any of the 8 src unit tests genuinely need a `pub(crate)` test hook vs pure profile-invariant rewrite — per-site at dispatch (C3).
 - Whether reify-eval consolidation should split `tests/common/` dedup into its own leaf or fold it into the first C-eval-\* leaf — tactical.
+
+## Gap-fill amendments (2026-10-16)
+
+- **§5 C1 / C2 are superseded as the `cargo-native-harness-layout` stream lands its steps.** Ruling: `plans/gap-fill-deliberation-reify-20261016.md` §D-K8-1 (Leo, 2026-10-16, option A, sequenced A → C → B). C1/C2 stay in force until each step lands.
+  - Step A (`git mv crates/<c>/tests/harness_x.rs → crates/<c>/tests/harness_x/main.rs`, with `#[path]` stripped on every in-directory member) ends C1's **mandatory `#[path]`** clause and C2 (d). Under that layout a bare `mod` resolves against the harness directory. Target names, and so the nextest selectors, are unchanged.
+  - Step C (`autotests = false`, with the harness roots, the 7 override binaries and the grandfathered standalones as `[[test]]` entries) makes cargo enforce C2 (b). `harness-layout-baseline.manifest` retires into Cargo.toml and `scripts/check-harness-baseline-registration.sh` is deleted.
+  - Step B moves membership to the directory, behind an in-stream substrate probe (G3). If the probe fails, it settles on explicit bare `mod` lines.
+  - The stream's final leaf replaces the residual guard with one Python stdlib-unittest member (and its `.sh` wrapper). That member checks the C2 (a) kLOC cap, measured on code lines from rustc dep-info with external-include attribution; `git ls-files 'crates/*/tests/*.rs'` ⊆ cargo-metadata test `src_paths`; and C2 (e)'s stale-selector check. The leaf deletes `tests/infra/test_harness_kloc_cap.sh` and the layout half of `tests/infra/harness-layout-lib.sh`.
+  - The stream's PRD is authored separately via `/prd`. It cites this addendum.
+- **§5 C2's WARN tier is advisory.** §D-K8-2: the WARN-set ratchet (`_KLOC_WARN_KNOWN`) is deleted by S19 θ #8700, and the hard cap stays.

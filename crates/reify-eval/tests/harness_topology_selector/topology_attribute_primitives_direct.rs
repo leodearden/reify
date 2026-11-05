@@ -47,9 +47,9 @@ const TORUS_MINOR_R_M: f64 = 5.0e-3;
 
 fn box_op() -> GeometryOp {
     GeometryOp::Box {
-        width: Value::Real(BOX_SIDE_M),
-        height: Value::Real(BOX_SIDE_M),
-        depth: Value::Real(BOX_SIDE_M),
+        size_x: Value::Real(BOX_SIDE_M),
+        size_y: Value::Real(BOX_SIDE_M),
+        size_z: Value::Real(BOX_SIDE_M),
     }
 }
 

@@ -2,30 +2,42 @@ mod claude_bridge_tests;
 mod commands_tests;
 mod constraint_recheck_tests;
 mod debug_boundary_tests;
+mod debug_listener_tests;
+mod debug_write_confinement_tests;
 mod debug_write_tool_routing_fixtures;
 mod debug_write_tool_routing_tests;
 mod dev_url_tests;
 mod diff_tests;
+mod engine_activity_tests;
 mod engine_lock_tests;
+mod engine_reload_tests;
+mod engine_state_view_tests;
 mod engine_tests;
 mod eval_queue_tests;
 mod event_bus_tests;
+mod export_format_tests;
 mod gui_state_macro_tests;
 mod gui_state_parity_tests;
 mod kernel_status_tests;
 mod large_stack_tests;
 mod lsp_bridge_tests;
+mod lsp_lane_routing_tests;
 mod main_helpers_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
+mod mesh_count_parity_fixture_tests;
 #[cfg(has_openvdb)]
 mod openvdb_kernel_tests;
 mod path_key_tests;
+mod screenshot_save_tests;
+mod sidecar_env_tests;
 mod tcp_port_tests;
 pub(crate) mod test_helpers;
 mod test_helpers_tests;
 mod types_tests;
+mod unmeasured_attribution_tests;
 mod watcher_tests;
+mod write_confinement_tests;
 
 use std::sync::{Arc, Mutex};
 
@@ -34,18 +46,27 @@ use reify_test_support::{MockGeometryKernel, bracket_source};
 
 use crate::engine::EngineSession;
 
+/// A real [`EngineSession`] backed by a [`MockGeometryKernel`] with `src`
+/// loaded as `module`. Panics, naming `module`, if the load fails.
+pub(crate) fn test_session_from_source(src: &str, module: &str) -> EngineSession {
+    let mut session = EngineSession::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(src, module)
+        .unwrap_or_else(|e| panic!("{module}: load_from_source must succeed: {e:?}"));
+    session
+}
+
 /// Shared engine fixture for tests across this crate's test modules.
 ///
-/// Builds a real [`EngineSession`] backed by a [`MockGeometryKernel`] with
-/// a known-good source file pre-loaded, wrapped in an `Arc<Mutex<…>>` ready
-/// for use with [`crate::engine_lock::with_engine_lock`] and related helpers.
+/// [`test_session_from_source`] over a known-good source file, wrapped in an
+/// `Arc<Mutex<…>>` ready for use with [`crate::engine_lock::with_engine_lock`]
+/// and related helpers.
 pub(crate) fn make_test_engine() -> Arc<Mutex<EngineSession>> {
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    session
-        .load_from_source(bracket_source(), "bracket")
-        .expect("initial load should succeed");
+    let session = test_session_from_source(bracket_source(), "bracket");
     Arc::new(Mutex::new(session))
 }
 
@@ -97,6 +118,18 @@ fn public_api_types_are_accessible() {
 /// `crates/reify-eval/src/geometry_ops/tests.rs` (esc-4906-57).
 fn gui_crate_manifest_dir() -> String {
     std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string())
+}
+
+/// Absolute path to the workspace's `examples/<file_name>`, two levels up from
+/// [`gui_crate_manifest_dir`].
+fn examples_path(file_name: &str) -> std::path::PathBuf {
+    std::path::Path::new(&gui_crate_manifest_dir())
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(file_name)
 }
 
 /// Guards against a file under `src/tests/` that this module never

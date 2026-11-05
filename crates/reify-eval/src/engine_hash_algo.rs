@@ -389,9 +389,8 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
 /// Returns a 32-character lowercase hexadecimal string.
 ///
 /// **Production caller**: [`engine_version_hash_for`] calls this after
-/// accumulating all contributor walk parts (via [`walk_contributor`]). The function is `pub`
-/// so `persistent_cache::ENGINE_VERSION_HASH`'s doc comment can reference it
-/// by name, and so the algorithm-drift sentinel test
+/// accumulating all contributor walk parts (via [`walk_contributor`]). This file
+/// is `include!`d verbatim into `build.rs`, so the algorithm-drift sentinel test
 /// (`compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal`)
 /// pins the single canonical algorithm shared by both the library and the
 /// build script.
@@ -484,6 +483,7 @@ pub struct ContributorWalk {
 // The symmetric attributes on `walk_recursive` and `is_editor_debris` were removed in the
 // same commit.
 #[allow(dead_code)]
+// G-allow: build-script code — reached via engine_version_hash_for from crates/reify-eval/build.rs (include!, outside this audit's src scope); the lib's own callers are unit tests (see comment above)
 pub fn walk_contributor(label: &str, root: &Path) -> ContributorWalk {
     let mut walk = ContributorWalk {
         parts: Vec::new(),
@@ -706,6 +706,7 @@ pub fn parse_cargo_lock_stanzas(lock_text: &str) -> Vec<LockPackage> {
 /// The `(name, version)` projection of [`parse_cargo_lock_stanzas`], in file
 /// order.
 #[allow(dead_code)]
+// G-allow: same-file caller only (cargo_lock_closure_pins, on build.rs's engine_version_hash_for path); pub for persistent_cache.rs unit tests; audit counts cross-file refs
 pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
     parse_cargo_lock_stanzas(lock_text)
         .into_iter()

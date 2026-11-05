@@ -516,7 +516,12 @@ contract (landlock toolchain-cache redirect, task 5332 / os-sandbox rollout
 gamma6a).
 
 Usage:
-  python3 <script> <orch_yaml> <check> [args...]
+  python3 <script> <orch_yaml>
+
+Parses <orch_yaml> ONCE, then answers checks until stdin closes. Each request
+is one line, `<check>[TAB<arg>]...`. Each answer is one `out<TAB><line>` per
+line the check printed to stdout, one `msg<TAB><line>` per line it printed to
+stderr, then `rc<TAB><n>`, flushed.
 
 Checks:
   parse_ok                                 -- file parses as valid YAML
@@ -624,18 +629,28 @@ under role_env_overrides[<role>]" to "a key under a named top-level mapping":
                                                which is exactly why it needs a
                                                test rather than review.
 
-Exit 0 on pass, 1 on fail (or missing key/role), 2 on unknown check/bad args.
+Each check's rc: 0 on pass, 1 on fail (or missing key/role, a yaml that does
+not load, or bad args), 2 on an unknown check or a no_undeclared_cache_redirect
+given no roles.
 """
+import contextlib
+import io
 import sys
+import traceback
 import yaml
 from pathlib import Path
 
 orch_yaml_path = sys.argv[1]
-check = sys.argv[2]
-rest = sys.argv[3:]
 
-with open(orch_yaml_path) as f:
-    d = yaml.safe_load(f)
+# Loaded ONCE. A file that does not load fails every check with the load's
+# traceback, as each per-check spawn used to.
+try:
+    with open(orch_yaml_path) as f:
+        d = yaml.safe_load(f)
+    load_error = None
+except Exception:
+    d = None
+    load_error = traceback.format_exc()
 
 
 def _role_value(role, key):
@@ -669,212 +684,269 @@ def _top_value(section, key):
     return val
 
 
-if check == "parse_ok":
-    sys.exit(0)
+def run_check(check, rest):
+    """The status of one check: 0 pass, 1 fail, 2 unknown check."""
+    if check == "parse_ok":
+        return 0
 
-if check == "sandbox_enabled_true":
-    sandbox = d.get("sandbox")
-    ok = isinstance(sandbox, dict) and sandbox.get("enabled") is True
-    sys.exit(0 if ok else 1)
+    if check == "sandbox_enabled_true":
+        sandbox = d.get("sandbox")
+        ok = isinstance(sandbox, dict) and sandbox.get("enabled") is True
+        return 0 if ok else 1
 
-if check == "role_key_present":
-    role, key = rest
-    sys.exit(0 if _role_value(role, key) is not None else 1)
+    if check == "role_key_present":
+        role, key = rest
+        return 0 if _role_value(role, key) is not None else 1
 
-if check == "role_key_absolute":
-    role, key = rest
-    val = _role_value(role, key)
-    sys.exit(0 if val is not None and Path(val).is_absolute() else 1)
+    if check == "role_key_absolute":
+        role, key = rest
+        val = _role_value(role, key)
+        return 0 if val is not None and Path(val).is_absolute() else 1
 
-if check == "role_key_under_tmp":
-    role, key = rest
-    val = _role_value(role, key)
-    if val is None:
-        sys.exit(1)
-    p = Path(val)
-    # Strict descendant only -- /tmp itself is deliberately REJECTED here.
-    # CARGO_HOME: /tmp (or npm_config_cache: /tmp) would pass every other
-    # assertion in this suite yet make cargo/npm scatter registry/, git/,
-    # bin/, .package-cache (or npm's cacache tree) directly into the
-    # world-writable shared /tmp root of a many-concurrent-task host --
-    # colliding with every other tenant of /tmp, inside the landlock write
-    # set, so nothing else would catch it either.
-    sys.exit(0 if Path("/tmp") in p.parents else 1)
+    if check == "role_key_under_tmp":
+        role, key = rest
+        val = _role_value(role, key)
+        if val is None:
+            return 1
+        p = Path(val)
+        # Strict descendant only -- /tmp itself is deliberately REJECTED here.
+        # CARGO_HOME: /tmp (or npm_config_cache: /tmp) would pass every other
+        # assertion in this suite yet make cargo/npm scatter registry/, git/,
+        # bin/, .package-cache (or npm's cacache tree) directly into the
+        # world-writable shared /tmp root of a many-concurrent-task host --
+        # colliding with every other tenant of /tmp, inside the landlock write
+        # set, so nothing else would catch it either.
+        return 0 if Path("/tmp") in p.parents else 1
 
-if check == "role_keys_distinct":
-    role, key1, key2 = rest
-    val1 = _role_value(role, key1)
-    val2 = _role_value(role, key2)
-    if val1 is None or val2 is None:
-        sys.exit(1)
-    sys.exit(0 if val1 != val2 else 1)
+    if check == "role_keys_distinct":
+        role, key1, key2 = rest
+        val1 = _role_value(role, key1)
+        val2 = _role_value(role, key2)
+        if val1 is None or val2 is None:
+            return 1
+        return 0 if val1 != val2 else 1
 
-if check == "role_key_not_under":
-    role, key, prefix = rest
-    val = _role_value(role, key)
-    if val is None:
-        sys.exit(1)
-    # Plain string-prefix containment (deliberately not a resolve()-based
-    # check -- symlink resolution could mask the exact literal-default
-    # regression this guard exists to catch).
-    norm_val = str(Path(val))
-    norm_prefix = str(Path(prefix))
-    sys.exit(1 if (norm_val == norm_prefix or norm_val.startswith(norm_prefix + "/")) else 0)
+    if check == "role_key_not_under":
+        role, key, prefix = rest
+        val = _role_value(role, key)
+        if val is None:
+            return 1
+        # Plain string-prefix containment (deliberately not a resolve()-based
+        # check -- symlink resolution could mask the exact literal-default
+        # regression this guard exists to catch).
+        norm_val = str(Path(val))
+        norm_prefix = str(Path(prefix))
+        return 1 if (norm_val == norm_prefix or norm_val.startswith(norm_prefix + "/")) else 0
 
-if check == "no_undeclared_cache_redirect":
-    if not rest:
-        print("no_undeclared_cache_redirect needs at least one role", file=sys.stderr)
-        sys.exit(2)
-    overrides = d.get("role_env_overrides")
-    if not isinstance(overrides, dict):
-        print("role_env_overrides is absent or not a mapping", file=sys.stderr)
-        sys.exit(1)
-    declared = set(rest)
-    # Scoped to the CACHE contract on purpose: an entry that carries only
-    # endpoint env (ANTHROPIC_BASE_URL/AUTH_TOKEN -- role_env_overrides' other
-    # documented use, per the comment on that Field in DF's config.py) is none
-    # of this guard's business.
-    undeclared = sorted(
-        role
-        for role, role_map in overrides.items()
-        if isinstance(role_map, dict)
-        and any(k in role_map for k in ("CARGO_HOME", "npm_config_cache"))
-        and role not in declared
-    )
-    if undeclared:
-        # The `assert` helper dumps captured output only on FAIL, so naming
-        # the offending roles turns a bare non-zero exit into a directly
-        # actionable message.
-        print(
-            "role_env_overrides entries define a toolchain-cache redirect but are "
-            f"NOT declared in CACHE_REDIRECT_ROLES: {undeclared}",
-            file=sys.stderr,
+    if check == "no_undeclared_cache_redirect":
+        if not rest:
+            print("no_undeclared_cache_redirect needs at least one role", file=sys.stderr)
+            return 2
+        overrides = d.get("role_env_overrides")
+        if not isinstance(overrides, dict):
+            print("role_env_overrides is absent or not a mapping", file=sys.stderr)
+            return 1
+        declared = set(rest)
+        # Scoped to the CACHE contract on purpose: an entry that carries only
+        # endpoint env (ANTHROPIC_BASE_URL/AUTH_TOKEN -- role_env_overrides' other
+        # documented use, per the comment on that Field in DF's config.py) is none
+        # of this guard's business.
+        undeclared = sorted(
+            role
+            for role, role_map in overrides.items()
+            if isinstance(role_map, dict)
+            and any(k in role_map for k in ("CARGO_HOME", "npm_config_cache"))
+            and role not in declared
         )
-        sys.exit(1)
-    sys.exit(0)
+        if undeclared:
+            # The `assert` helper dumps captured output only on FAIL, so naming
+            # the offending roles turns a bare non-zero exit into a directly
+            # actionable message.
+            print(
+                "role_env_overrides entries define a toolchain-cache redirect but are "
+                f"NOT declared in CACHE_REDIRECT_ROLES: {undeclared}",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
-if check == "role_key_absent":
-    (role,) = rest
-    overrides = d.get("role_env_overrides")
-    if not isinstance(overrides, dict):
-        # Trivially absent. Every other assertion already fails loudly in
-        # this state, so reporting a pass here is honest rather than masking.
-        sys.exit(0)
-    if role in overrides:
-        print(f"role_env_overrides carries the key {role!r}, which must be absent", file=sys.stderr)
-        sys.exit(1)
-    sys.exit(0)
+    if check == "role_key_absent":
+        (role,) = rest
+        overrides = d.get("role_env_overrides")
+        if not isinstance(overrides, dict):
+            # Trivially absent. Every other assertion already fails loudly in
+            # this state, so reporting a pass here is honest rather than masking.
+            return 0
+        if role in overrides:
+            print(f"role_env_overrides carries the key {role!r}, which must be absent", file=sys.stderr)
+            return 1
+        return 0
 
-if check == "top_key_present":
-    section, key = rest
-    sys.exit(0 if _top_value(section, key) is not None else 1)
+    if check == "top_key_present":
+        section, key = rest
+        return 0 if _top_value(section, key) is not None else 1
 
-if check == "top_key_absolute":
-    section, key = rest
-    val = _top_value(section, key)
-    sys.exit(0 if val is not None and Path(val).is_absolute() else 1)
+    if check == "top_key_absolute":
+        section, key = rest
+        val = _top_value(section, key)
+        return 0 if val is not None and Path(val).is_absolute() else 1
 
-if check == "top_key_under_tmp":
-    section, key = rest
-    val = _top_value(section, key)
-    if val is None:
-        sys.exit(1)
-    # Strict descendant only -- /tmp itself is REJECTED, for the same reason
-    # spelled out under role_key_under_tmp above.
-    sys.exit(0 if Path("/tmp") in Path(val).parents else 1)
+    if check == "top_key_under_tmp":
+        section, key = rest
+        val = _top_value(section, key)
+        if val is None:
+            return 1
+        # Strict descendant only -- /tmp itself is REJECTED, for the same reason
+        # spelled out under role_key_under_tmp above.
+        return 0 if Path("/tmp") in Path(val).parents else 1
 
-if check == "top_key_absent":
-    section, key = rest
-    section_map = d.get(section)
-    if not isinstance(section_map, dict):
-        # Trivially absent. Every other assertion against this section already
-        # fails loudly in that state, so passing here is honest, not masking.
-        sys.exit(0)
-    if key in section_map:
-        print(
-            f"{section} carries the key {key!r}, whose ABSENCE is deliberate "
-            "-- see the caller's rationale before adding it",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    sys.exit(0)
+    if check == "top_key_absent":
+        section, key = rest
+        section_map = d.get(section)
+        if not isinstance(section_map, dict):
+            # Trivially absent. Every other assertion against this section already
+            # fails loudly in that state, so passing here is honest, not masking.
+            return 0
+        if key in section_map:
+            print(
+                f"{section} carries the key {key!r}, whose ABSENCE is deliberate "
+                "-- see the caller's rationale before adding it",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
-if check == "top_key_print":
-    section, key = rest
-    val = _top_value(section, key)
-    if val is None:
-        sys.exit(1)
-    print(val)
-    sys.exit(0)
+    if check == "top_key_print":
+        section, key = rest
+        val = _top_value(section, key)
+        if val is None:
+            return 1
+        print(val)
+        return 0
 
-if check == "cross_section_key_equals":
-    section, key, role, rolekey = rest
-    section_val = _top_value(section, key)
-    role_val = _role_value(role, rolekey)
-    if section_val is None or role_val is None:
-        print(
-            f"missing value: {section}.{key}={section_val!r}, "
-            f"role_env_overrides.{role}.{rolekey}={role_val!r}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Exact scalar equality, NOT a normalized/resolved path comparison: cargo
-    # hashes the CARGO_HOME-derived source path as a STRING into each unit's
-    # fingerprint, so two spellings that resolve to the same directory (a
-    # trailing slash, a symlink, a `/tmp/./x`) still produce DIFFERENT
-    # fingerprints and still thrash. Normalizing here would hide exactly the
-    # divergence this check exists to catch.
-    if section_val != role_val:
-        print(
-            f"toolchain-cache SPLIT: {section}.{key}={section_val!r} != "
-            f"role_env_overrides.{role}.{rolekey}={role_val!r}. A warm-lane "
-            "target/ is shared between verify and the sandboxed agent, and "
-            "cargo's per-unit fingerprint embeds the registry source path, so "
-            "this divergence makes each side dirty the other's units and "
-            "rebuild the whole registry dep tree.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    sys.exit(0)
+    if check == "cross_section_key_equals":
+        section, key, role, rolekey = rest
+        section_val = _top_value(section, key)
+        role_val = _role_value(role, rolekey)
+        if section_val is None or role_val is None:
+            print(
+                f"missing value: {section}.{key}={section_val!r}, "
+                f"role_env_overrides.{role}.{rolekey}={role_val!r}",
+                file=sys.stderr,
+            )
+            return 1
+        # Exact scalar equality, NOT a normalized/resolved path comparison: cargo
+        # hashes the CARGO_HOME-derived source path as a STRING into each unit's
+        # fingerprint, so two spellings that resolve to the same directory (a
+        # trailing slash, a symlink, a `/tmp/./x`) still produce DIFFERENT
+        # fingerprints and still thrash. Normalizing here would hide exactly the
+        # divergence this check exists to catch.
+        if section_val != role_val:
+            print(
+                f"toolchain-cache SPLIT: {section}.{key}={section_val!r} != "
+                f"role_env_overrides.{role}.{rolekey}={role_val!r}. A warm-lane "
+                "target/ is shared between verify and the sandboxed agent, and "
+                "cargo's per-unit fingerprint embeds the registry source path, so "
+                "this divergence makes each side dirty the other's units and "
+                "rebuild the whole registry dep tree.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
-print(f"unknown check or bad args: {check} {rest}", file=sys.stderr)
-sys.exit(2)
+    print(f"unknown check or bad args: {check} {rest}", file=sys.stderr)
+    return 2
+
+
+def answer(check, rest):
+    """run_check's status, or 1 with the traceback if the yaml did not load or the check raised."""
+    if load_error is not None:
+        print(load_error, end="", file=sys.stderr)
+        return 1
+    try:
+        return run_check(check, rest)
+    except Exception:
+        traceback.print_exc()
+        return 1
+
+
+for request in sys.stdin:
+    check, *rest = request.rstrip("\n").split("\t")
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = answer(check, rest)
+    for text in out.getvalue().splitlines():
+        sys.stdout.write(f"out\t{text}\n")
+    for text in err.getvalue().splitlines():
+        sys.stdout.write(f"msg\t{text}\n")
+    sys.stdout.write(f"rc\t{rc}\n")
+    sys.stdout.flush()
 PYEOF
 
-    assert "dark-factory-orchestrator.yaml parses as valid YAML" \
-        python3 "$_PARSE_PY" "$ORCH_YAML" parse_ok
+    # ONE long-lived checker answers every structural check below (task 9441).
+    # It parses the yaml once: a python3 spawn per assert was ~99% of this
+    # suite's wall time on a loaded host. The protocol is in its docstring.
+    coproc SEAM_CHECKER { exec python3 "$_PARSE_PY" "$ORCH_YAML"; }
 
-    if python3 "$_PARSE_PY" "$ORCH_YAML" sandbox_enabled_true; then
+    # _seam_check <check> [arg...] -- run one check in the checker. Its stdout
+    # and stderr lines are replayed on this shell's stdout and stderr, and its
+    # rc is returned. A checker that has gone away fails the check loudly.
+    _seam_check() {
+        local _tag _text _rc="" _sent=""
+        # Sent from a command substitution, the one subshell that keeps the
+        # coproc's fds, so a write to a checker that has died kills that
+        # subshell (SIGPIPE) and not this suite.
+        _sent="$( { IFS=$'\t'; printf '%s\n' "$*" >&"${SEAM_CHECKER[1]:-}" && echo sent; } 2>/dev/null )" || true
+        if [ "$_sent" = sent ]; then
+            while IFS=$'\t' read -r _tag _text <&"${SEAM_CHECKER[0]:-}"; do
+                case "$_tag" in
+                    out) printf '%s\n' "$_text" ;;
+                    msg) printf '%s\n' "$_text" >&2 ;;
+                    rc) _rc="$_text"; break ;;
+                esac
+            done
+        fi
+        if [ -z "$_rc" ]; then
+            echo "seam checker exited unexpectedly" >&2
+            return 1
+        fi
+        return "$_rc"
+    }
+
+    assert "dark-factory-orchestrator.yaml parses as valid YAML" \
+        _seam_check parse_ok
+
+    if _seam_check sandbox_enabled_true; then
         echo "sandbox.enabled == true; asserting cache-writability contract for cache-redirect roles ($CACHE_REDIRECT_ROLES)"
         for role in $CACHE_REDIRECT_ROLES; do
             for key in CARGO_HOME npm_config_cache XDG_CACHE_HOME; do
                 assert "role_env_overrides.${role}.${key} is present and non-empty" \
-                    python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" "$key"
+                    _seam_check role_key_present "$role" "$key"
 
                 assert "role_env_overrides.${role}.${key} is an absolute path" \
-                    python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absolute "$role" "$key"
+                    _seam_check role_key_absolute "$role" "$key"
 
                 assert "role_env_overrides.${role}.${key} lies under /tmp (the landlock write set's host-global writable root)" \
-                    python3 "$_PARSE_PY" "$ORCH_YAML" role_key_under_tmp "$role" "$key"
+                    _seam_check role_key_under_tmp "$role" "$key"
             done
 
             assert "role_env_overrides.${role}.CARGO_HOME is NOT under \$HOME/.cargo (the regression this guard exists to catch)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" CARGO_HOME "$HOME/.cargo"
+                _seam_check role_key_not_under "$role" CARGO_HOME "$HOME/.cargo"
 
             assert "role_env_overrides.${role}.npm_config_cache is NOT under \$HOME/.npm (the regression this guard exists to catch)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" npm_config_cache "$HOME/.npm"
+                _seam_check role_key_not_under "$role" npm_config_cache "$HOME/.npm"
 
             assert "role_env_overrides.${role}.XDG_CACHE_HOME is NOT under \$HOME/.cache (the ungranted ~/.cache/tree-sitter default this guard exists to catch)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" XDG_CACHE_HOME "$HOME/.cache"
+                _seam_check role_key_not_under "$role" XDG_CACHE_HOME "$HOME/.cache"
 
             assert "role_env_overrides.${role}.CARGO_HOME and .npm_config_cache are distinct paths (a same-dir target would pass every check above yet collide cargo's and npm's cache layouts)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME npm_config_cache
+                _seam_check role_keys_distinct "$role" CARGO_HOME npm_config_cache
 
             assert "role_env_overrides.${role}.CARGO_HOME and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside cargo's cache layout and pass every other check)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" CARGO_HOME XDG_CACHE_HOME
+                _seam_check role_keys_distinct "$role" CARGO_HOME XDG_CACHE_HOME
 
             assert "role_env_overrides.${role}.npm_config_cache and .XDG_CACHE_HOME are distinct paths (a same-dir target would let tree-sitter's lib/ and lock/ dirs land inside npm's cache layout and pass every other check)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_keys_distinct "$role" npm_config_cache XDG_CACHE_HOME
+                _seam_check role_keys_distinct "$role" npm_config_cache XDG_CACHE_HOME
 
             # UV_CACHE_DIR is a COUNTER-redirect (see the "COLLATERAL" header
             # paragraph): it must NOT be under /tmp, the opposite polarity
@@ -882,23 +954,23 @@ PYEOF
             # therefore asserted present/absolute here, outside the
             # under-tmp loop, rather than joining the `for key in ...` list.
             assert "role_env_overrides.${role}.UV_CACHE_DIR is present and non-empty" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_present "$role" UV_CACHE_DIR
+                _seam_check role_key_present "$role" UV_CACHE_DIR
 
             assert "role_env_overrides.${role}.UV_CACHE_DIR is an absolute path" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absolute "$role" UV_CACHE_DIR
+                _seam_check role_key_absolute "$role" UV_CACHE_DIR
 
             assert "role_env_overrides.${role}.UV_CACHE_DIR keeps its own compute_write_set ~/.cache/uv grant instead of following XDG_CACHE_HOME into /tmp" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" role_key_not_under "$role" UV_CACHE_DIR /tmp
+                _seam_check role_key_not_under "$role" UV_CACHE_DIR /tmp
         done
 
         # Unquoted expansion is intended -- the checker takes the roles as
         # separate argv entries.
         # shellcheck disable=SC2086
         assert "no role_env_overrides entry defines a toolchain-cache redirect without being declared in CACHE_REDIRECT_ROLES (catches a silent yaml-only widening of the covered set; deliberately ignores unrelated per-role endpoint overrides, which are role_env_overrides' other documented use)" \
-            python3 "$_PARSE_PY" "$ORCH_YAML" no_undeclared_cache_redirect $CACHE_REDIRECT_ROLES
+            _seam_check no_undeclared_cache_redirect $CACHE_REDIRECT_ROLES
 
         assert "role_env_overrides does NOT carry the collapsed 'reviewer' key at all (KNOWN_ROLE_NAMES accepts it, but _build_agent_env keys on role.name == 'reviewer_comprehensive', so a 'reviewer' entry is silently INERT -- no DF config warning, no redirect)" \
-            python3 "$_PARSE_PY" "$ORCH_YAML" role_key_absent reviewer
+            _seam_check role_key_absent reviewer
 
         # -------------------------------------------------------------------
         # (D) CARGO_HOME AGREEMENT -- verify_env vs role_env_overrides
@@ -909,13 +981,13 @@ PYEOF
         echo "--- (D) CARGO_HOME agreement (verify_env vs role_env_overrides) ---"
 
         assert "verify_env.CARGO_HOME is present and non-empty (verify subprocesses are NOT sandboxed, so nothing forces this -- but they share the warm lane's target/ with the sandboxed agent that built it, and leaving verify on the default ~/.cargo is the pre-5836 split)" \
-            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_present verify_env CARGO_HOME
+            _seam_check top_key_present verify_env CARGO_HOME
 
         assert "verify_env.CARGO_HOME is an absolute path" \
-            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_absolute verify_env CARGO_HOME
+            _seam_check top_key_absolute verify_env CARGO_HOME
 
         assert "verify_env.CARGO_HOME lies under /tmp (not a free choice: /tmp is the one host-global writable root in the landlock write set, which PINS the agent side and therefore fixes where the two sides can meet)" \
-            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_under_tmp verify_env CARGO_HOME
+            _seam_check top_key_under_tmp verify_env CARGO_HOME
 
         # THE load-bearing invariant of this block. Iterating CACHE_REDIRECT_ROLES
         # rather than checking one representative role keeps agreement exact even
@@ -923,7 +995,7 @@ PYEOF
         # literals and one of them drifts.
         for role in $CACHE_REDIRECT_ROLES; do
             assert "verify_env.CARGO_HOME == role_env_overrides.${role}.CARGO_HOME (anti-split invariant: they share one warm target/, and a divergence has NO symptom except every sandboxed task rebuilding the whole registry dep tree twice -- agent, then verify)" \
-                python3 "$_PARSE_PY" "$ORCH_YAML" cross_section_key_equals verify_env CARGO_HOME "$role" CARGO_HOME
+                _seam_check cross_section_key_equals verify_env CARGO_HOME "$role" CARGO_HOME
         done
 
         # -------------------------------------------------------------------
@@ -941,7 +1013,7 @@ PYEOF
         # rather than here, at the seam that caused it. Driven off the value
         # PARSED from the yaml, never a second hardcoded copy, so the probe
         # cannot silently test a path the config no longer names.
-        _VERIFY_CARGO_HOME="$(python3 "$_PARSE_PY" "$ORCH_YAML" top_key_print verify_env CARGO_HOME || true)"
+        _VERIFY_CARGO_HOME="$(_seam_check top_key_print verify_env CARGO_HOME || true)"
 
         if [ -z "$_VERIFY_CARGO_HOME" ]; then
             echo "SKIP: verify_env.CARGO_HOME is absent/empty, so there is no configured value to probe (the (D) assertions above already report that as FAIL -- not re-reported here as a second failure for one cause)"
@@ -968,7 +1040,7 @@ PYEOF
         # above) forces any future npm mirroring to arrive as a deliberate edit
         # carrying its own evidence, rather than as a symmetry-driven drive-by.
         assert "verify_env does NOT carry npm_config_cache -- its absence is DELIBERATE (cargo's fingerprint embeds the registry source path; npm has no path-keyed equivalent, so mirroring it would widen the merge gate's blast radius for no measured gain)" \
-            python3 "$_PARSE_PY" "$ORCH_YAML" top_key_absent verify_env npm_config_cache
+            _seam_check top_key_absent verify_env npm_config_cache
     else
         echo "SKIP: sandbox.enabled is not true; none of the (A) cache-redirect, (D) CARGO_HOME-agreement or (E) flip-precondition contracts apply (guard is conditional, see header)"
     fi

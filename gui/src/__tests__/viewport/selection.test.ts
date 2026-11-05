@@ -1236,6 +1236,104 @@ describe('createSelection', () => {
     });
   });
 
+  describe('onClickGesture', () => {
+    // clearAllMocks keeps queued mockReturnValueOnce values; an earlier test's unconsumed one would leak in here.
+    beforeEach(() => {
+      mockRaycasterIntersectObjects.mockReset();
+    });
+
+    function setupWithClickGesture(meshMap?: Map<string, any>) {
+      const domElement = createMockDomElement();
+      const onSelect = vi.fn();
+      const onClickGesture = vi.fn();
+      const selection = createSelection({
+        scene: new Scene() as any,
+        camera: new PerspectiveCamera() as any,
+        domElement,
+        getMeshes: () => meshMap ?? new Map<string, any>(),
+        onHover: vi.fn(),
+        onSelect,
+        onClickGesture,
+      });
+      return { domElement, onSelect, onClickGesture, selection };
+    }
+
+    function press(domElement: HTMLElement, x: number, y: number): void {
+      domElement.dispatchEvent(new MouseEvent('pointerdown', { clientX: x, clientY: y }));
+    }
+
+    function release(domElement: HTMLElement, x: number, y: number, init: MouseEventInit = {}): MouseEvent {
+      const upEvent = new MouseEvent('pointerup', { clientX: x, clientY: y, ...init });
+      domElement.dispatchEvent(upEvent);
+      return upEvent;
+    }
+
+    it('a click calls onClickGesture once with the pointerup event, and onSelect still fires', () => {
+      const meshA = createMockMesh('A');
+      const { domElement, onSelect, onClickGesture } = setupWithClickGesture(new Map([['A', meshA]]));
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      press(domElement, 400, 300);
+      const upEvent = release(domElement, 400, 300);
+
+      expect(onClickGesture).toHaveBeenCalledTimes(1);
+      expect(onClickGesture).toHaveBeenCalledWith(upEvent);
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: false, shift: false });
+    });
+
+    it('a modifier click reports the gesture too; the consumer reads the modifiers off the event', () => {
+      const meshA = createMockMesh('A');
+      const { domElement, onSelect, onClickGesture } = setupWithClickGesture(new Map([['A', meshA]]));
+      mockRaycasterIntersectObjects.mockReturnValueOnce([
+        { object: meshA, distance: 1, point: { x: 0, y: 0, z: 0 } },
+      ]);
+
+      press(domElement, 400, 300);
+      const upEvent = release(domElement, 400, 300, { ctrlKey: true, shiftKey: true });
+
+      expect(onSelect).toHaveBeenCalledWith('A', { ctrl: true, shift: true });
+      expect(onClickGesture).toHaveBeenCalledTimes(1);
+      expect(onClickGesture).toHaveBeenCalledWith(upEvent);
+    });
+
+    it('a drag (>5px) does not call onClickGesture', () => {
+      const { domElement, onClickGesture } = setupWithClickGesture(new Map([['A', createMockMesh('A')]]));
+
+      press(domElement, 400, 300);
+      release(domElement, 410, 300);
+
+      expect(onClickGesture).not.toHaveBeenCalled();
+    });
+
+    it('after dispose, a click does not call onClickGesture', () => {
+      const { domElement, onClickGesture, selection } = setupWithClickGesture(
+        new Map([['A', createMockMesh('A')]]),
+      );
+
+      selection.dispose();
+      press(domElement, 400, 300);
+      release(domElement, 400, 300);
+
+      expect(onClickGesture).not.toHaveBeenCalled();
+    });
+
+    it('a click on empty space still calls onClickGesture (it reports the gesture, not a hit)', () => {
+      const { domElement, onSelect, onClickGesture } = setupWithClickGesture(
+        new Map([['A', createMockMesh('A')]]),
+      );
+      mockRaycasterIntersectObjects.mockReturnValueOnce([]);
+
+      press(domElement, 400, 300);
+      const upEvent = release(domElement, 400, 300);
+
+      expect(onSelect).toHaveBeenCalledWith(null, { ctrl: false, shift: false });
+      expect(onClickGesture).toHaveBeenCalledTimes(1);
+      expect(onClickGesture).toHaveBeenCalledWith(upEvent);
+    });
+  });
+
   describe('ghost exclusion (via meshManager contract)', () => {
     it('raycaster.intersectObjects is called only with meshes from getMeshes, excluding ghosts', () => {
       // Simulate: meshManager.getSceneMeshes() returns only 'show' mesh (meshA)

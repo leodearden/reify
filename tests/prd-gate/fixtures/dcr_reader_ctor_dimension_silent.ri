@@ -41,7 +41,7 @@ module dcr_reader_ctor_dimension_silent
 //   `shaper_correct` raises nothing. CHOKEPOINT: compile-time struct-ctor field
 //   conformance. Machine pin: the gate-resident
 //   `ctor_conformance_corpus_residual_entries_are_all_live` (reify-compiler,
-//   harness_compilation_surface/ctor_conformance_corpus_survey.rs).
+//   harness_ctor_conformance_survey/disposition.rs).
 //   How ε and η (#6922) and ζ (#6941) read their signals instead:
 //   docs/notes/ctor-conformance-flip-leaf-signals.md.
 

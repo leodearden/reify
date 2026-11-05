@@ -1,0 +1,5 @@
+// B23: extent smaller than the body -> W_IMPLICIT_CLIPPED.
+structure def ClippedImplicit {
+    let f = sdf_sphere(20mm)
+    let body = implicit(f, vec3(10mm, 10mm, 10mm), 1mm)
+}

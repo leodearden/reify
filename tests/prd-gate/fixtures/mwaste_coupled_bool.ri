@@ -1,0 +1,11 @@
+// M-WASTE PRD baseline (§2.3, §5 B2/B5): a FINITE auto drives geometry that the objective reads.
+// The smaller volume is the 20mm width.
+module mwaste_coupled_bool
+
+structure def CoupledBool {
+    param wide : Bool = auto
+    let w = if wide then 40mm else 20mm
+    let body = box(w, 30mm, 10mm)
+    constraint wide or not wide
+    minimize volume(body)
+}

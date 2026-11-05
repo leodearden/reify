@@ -15,23 +15,7 @@
 //! Asserted through the public `reify_syntax::parse` API, on both the byte offset (derived with
 //! `str::find`, never hard-coded) and the rendered `line:col: ` prefix a user actually reads.
 
-use reify_ast::ParseError;
-
-use crate::parse_error_lookup::{only_error_starting_with, parse_errors};
-
-/// Assert `error` starts at byte `offset` and renders at `line_col`.
-#[track_caller]
-fn assert_located(error: &ParseError, source: &str, offset: usize, line_col: &str) {
-    assert_eq!(
-        error.span.start as usize, offset,
-        "expected the diagnostic to start at byte {offset}, got: {error:?}"
-    );
-    let rendered = error.render(source);
-    assert!(
-        rendered.starts_with(&format!("{line_col}: ")),
-        "expected the diagnostic rendered at {line_col}, got: {rendered:?}"
-    );
-}
+use crate::parse_error_lookup::{assert_located, only_error_starting_with, parse_errors};
 
 #[test]
 fn guarded_block_fault_is_located_at_the_missing_value() {

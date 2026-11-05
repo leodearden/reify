@@ -88,14 +88,14 @@ pin today's shape and move with leaf γ: the three `QoIDescriptor` stub pins
 both crates finds only "self-adjoint" (eigensolver symmetry) and "dual-mode/dual-source" (engine
 concepts). No dual solve, no dual load assembler, no goal functional.
 
-**The primal solve is Jacobi-PCG, assembled in `reify-eval`, and discards its system.**
+**The primal solve is Jacobi-PCG, assembled in `reify-eval`, and discards its system.** (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) As authored; `docs/prds/v0_6/elastic-static-solver-performance.md` replaces the Jacobi-PCG with a tiered SPD solve (sparse direct Cholesky within a budget, SA-AMG-PCG above it) whose factor or hierarchy lives in a session that outlives the primal (its leaf η).
 `solve_cantilever_fea` (`elastic_static.rs`) calls the solver crate's `assemble_global_stiffness`,
 builds `f`, applies `apply_dirichlet_row_elimination` (zero row, zero column, unit diagonal, pin RHS —
 the constrained `K` stays **symmetric**; every `DirichletBc.value` on this path is `0.0`), runs
 `solve_cg_with_warm_state`, and returns `CantileverFeaSolve { u, coords, tet_connectivity, nodal_stress,
 … }`. `K`, `f` and the `DirichletBc` set are locals of that `reify-eval` function; `solve_cg` borrows `K`,
 so a second solve on `(&k, &g)` needs no solver-crate API change. There is no factorization to reuse: **a
-dual solve is a second CG solve of the same cost as the primal**, the cost the v0.4 PRD priced.
+dual solve is a second CG solve of the same cost as the primal**, the cost the v0.4 PRD priced. (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) Under the new PRD the factorization is reused: the dual is a second right-hand side on the primal's factor or hierarchy (`docs/prds/v0_6/elastic-static-solver-performance.md`, leaf η).
 
 **Both adaptive lanes call the same primal.** `CantileverAdaptiveProblem` (uniform, #4902) and
 `RealizedAdaptiveProblem` (localized, #4909) both implement `AdaptiveProblem::solve_and_estimate` as
@@ -305,7 +305,7 @@ QoI is present, assembles `g` (`QuantityOfInterest::dual_load`), **zeroes `g` at
 — the dual always has homogeneous Dirichlet data, whatever the primal prescribed; the column-into-RHS
 term of `apply_dirichlet_row_elimination` does not apply because `K` is already eliminated, so this is
 one loop, not a "half" of that function — and runs `solve_cg` on `(&k, &g)` with the primal's
-`CgSolverOptions` and `SolverMode`. Cost: one primal-equivalent solve per iteration. No warm-start across
+`CgSolverOptions` and `SolverMode`. Cost: one primal-equivalent solve per iteration. (amended 2026-10-08 by docs/prds/v0_6/elastic-static-solver-performance.md) Under the new PRD the dual is a second right-hand side on the primal's factor or hierarchy, so its cost is a back-substitution (direct tier) or a warm-hierarchy PCG (iterative tier), not a second setup (`docs/prds/v0_6/elastic-static-solver-performance.md`, leaf η). No warm-start across
 meshes (a remesh preserves no DOF numbering); the primal already accepts that. Dual non-convergence is
 `W_QoiDualNotConverged` and the estimate is still reported — the posture the primal takes with
 `converged: false`.

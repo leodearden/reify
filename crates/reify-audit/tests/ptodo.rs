@@ -20,7 +20,6 @@ use reify_audit::{
     Severity,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Write `content` to relative `path` inside `root`, creating parent dirs.
@@ -74,17 +73,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -194,17 +183,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -262,17 +241,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -326,17 +295,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -386,17 +345,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -423,17 +372,7 @@ mod tests {
         );
         let mut git2 = MockGitOps::new();
         git2.set_ls_files(vec!["ignore_cite.rs".to_string()]);
-        let ctx2 = AuditContext {
-            project_root: root2.to_path_buf(),
-            conn: &conn,
-            git: &git2,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx2 = AuditContext::new(root2.to_path_buf(), &conn, &git2, &jc);
         let findings2 = reify_audit::ptodo::check(&ctx2);
         assert!(
             findings2.is_empty(),
@@ -486,17 +425,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -563,17 +492,7 @@ mod tests {
         }
 
         let (git, conn, jc) = mock_ops(&[name]);
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         reify_audit::ptodo::check(&ctx)
     }
@@ -651,17 +570,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -772,6 +681,129 @@ mod tests {
             findings.is_empty(),
             "the δ-B negative fixture must contribute ZERO findings; got {findings:?}"
         );
+    }
+
+    /// The committed δ-C positive fixture, and the four owner-position lines
+    /// in it that name the promised owner #4578 — one per rule (L, legacy L,
+    /// R, S), each identified by a fragment of its text.
+    const PROMISE_FIXTURE: &str = "scenario21_prose_promise.rs";
+    const PROMISE_OWNER_LINES: [&str; 4] = [
+        "is owned by #4578.",
+        "deferred to task 4578 and",
+        "Task 4578 will grow",
+        "until #4578 lands the",
+    ];
+
+    /// §8.1 lane δ-C end-to-end through `check()`: with the promised owner
+    /// terminal, each owner-position line is one High `orphaned` finding. The
+    /// three provenance mentions of the SAME id and the live-owner line are
+    /// silent, so the lane reads a cite's role, not the bare id.
+    #[test]
+    fn committed_prose_promise_fixture_orphans_each_owner_line() {
+        let findings = check_committed_fixture(
+            PROMISE_FIXTURE,
+            Some(&[("master", 4578, "done"), ("master", 7097, "pending")]),
+        );
+
+        for f in &findings {
+            assert_eq!(f.pattern, Pattern::PTodo);
+            assert_eq!(f.severity, Severity::High, "orphaned → High: {}", f.summary);
+            for needle in ["orphaned:", "#4578", "status=done"] {
+                assert!(f.summary.contains(needle), "summary must carry {needle:?}: {}", f.summary);
+            }
+        }
+        for line in PROMISE_OWNER_LINES {
+            let hits = findings.iter().filter(|f| f.summary.contains(line)).count();
+            assert_eq!(hits, 1, "exactly one finding for the owner line {line:?}; got {findings:?}");
+        }
+        assert_eq!(
+            findings.len(),
+            PROMISE_OWNER_LINES.len(),
+            "one finding per owner line, none for provenance or the live owner; got {findings:?}"
+        );
+    }
+
+    /// A promise whose owner is still open is honest: no finding.
+    #[test]
+    fn committed_prose_promise_fixture_is_silent_when_owner_live() {
+        let findings = check_committed_fixture(
+            PROMISE_FIXTURE,
+            Some(&[("master", 4578, "pending"), ("master", 7097, "pending")]),
+        );
+        assert!(findings.is_empty(), "a live owner keeps every promise silent; got {findings:?}");
+    }
+
+    /// PRD §19: with no task DB, δ-C contributes nothing — it adds no entry to
+    /// the DB-absent structural ratchet.
+    #[test]
+    fn committed_prose_promise_fixture_is_silent_when_db_absent() {
+        let findings = check_committed_fixture(PROMISE_FIXTURE, None);
+        assert!(findings.is_empty(), "δ-C is invisible DB-absent; got {findings:?}");
+    }
+
+    /// FP guard at the fixture level for δ-C: the committed
+    /// `scenario22_prose_promise_negatives.rs` is entirely NEGATIVE, one block
+    /// per measured false-positive class. Every cited id is seeded TERMINAL,
+    /// the worst case, so silence proves the grammar held. #7778 is the
+    /// discriminating G-allow cite: that lane exempts it as provenance, so
+    /// δ-C's `g_allow_marker_body` guard is the only thing keeping it silent.
+    #[test]
+    fn committed_prose_promise_negatives_fixture_contributes_zero_findings() {
+        let findings = check_committed_fixture(
+            "scenario22_prose_promise_negatives.rs",
+            Some(&[
+                ("master", 10, "done"),
+                ("master", 3441, "done"),
+                ("master", 4168, "done"),
+                ("master", 4578, "done"),
+                ("master", 5907, "cancelled"),
+                ("master", 5951, "done"),
+                ("master", 6082, "done"),
+                ("master", 6890, "done"),
+                ("master", 7778, "done"),
+            ]),
+        );
+        assert!(
+            findings.is_empty(),
+            "the δ-C negative fixture must contribute ZERO findings; got {findings:?}"
+        );
+    }
+
+    /// The `SweptLang` axis end to end: δ-C reads `//` comments in every
+    /// `//`-comment language and in no `#`-comment one.
+    #[test]
+    fn check_delta_c_applies_to_slash_comment_languages_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let slash = ["a.ri", "a.ts", "a.tsx", "a.js", "a.rs"];
+        let hash = ["a.sh", "a.py"];
+        for path in slash.iter().chain(&hash) {
+            write_file(root, path, "// growth is owned by #4578\n");
+        }
+        crate::common::schema::seed_tasks_db_at(
+            &root.join(".taskmaster/tasks/tasks.db"),
+            &[("master", 4578, "cancelled")],
+        );
+
+        let paths: Vec<&str> = slash.iter().chain(&hash).copied().collect();
+        let (git, conn, jc) = mock_ops(&paths);
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
+        let findings = reify_audit::ptodo::check(&ctx);
+
+        let mut flagged: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.summary.starts_with("orphaned:") && f.summary.contains("#4578"))
+            .flat_map(|f| f.evidence.iter())
+            .filter_map(|e| match e {
+                EvidenceRef::File { path } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        flagged.sort_unstable();
+        let mut expected = slash.to_vec();
+        expected.sort_unstable();
+        assert_eq!(flagged, expected, "one orphaned finding per `//`-comment file; got {findings:?}");
+        assert_eq!(findings.len(), slash.len(), "nothing for `#`-comment files; got {findings:?}");
     }
 
     /// The committed fixture carrying two tracking claims: one names no task,
@@ -912,17 +944,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -998,17 +1020,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -1037,17 +1049,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -1164,17 +1166,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -1230,17 +1222,7 @@ mod tests {
 
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jc = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let findings = reify_audit::ptodo::check(&ctx);
 
@@ -1320,17 +1302,7 @@ mod tests {
         let paths = write_mixed_fixture(root);
 
         let (git, conn, jc) = mock_ops(&paths);
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let (_findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
 
@@ -1361,17 +1333,7 @@ mod tests {
         write_file(root, "clean_b.rs", "pub fn b() {}\n");
 
         let (git, conn, jc) = mock_ops(&["clean_a.rs", "clean_b.rs"]);
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let (findings, stats) = reify_audit::ptodo::check_with_stats(&ctx);
 
@@ -1410,17 +1372,7 @@ mod tests {
         let paths = write_mixed_fixture(root);
 
         let (git, conn, jc) = mock_ops(&paths);
-        let ctx = AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
         let (with_stats, _stats) = reify_audit::ptodo::check_with_stats(&ctx);
         let plain = reify_audit::ptodo::check(&ctx);

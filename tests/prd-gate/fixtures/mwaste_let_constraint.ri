@@ -1,0 +1,11 @@
+// M-WASTE PRD baseline (§2.3, §5 B3): a let-indirected geometry constraint over an auto.
+module mwaste_let_constraint
+
+structure def LetConstraint {
+    param w : Length = auto
+    constraint w >= 10mm
+    constraint w <= 50mm
+    let body = box(w, 30mm, 10mm)
+    let v = volume(body)
+    constraint v >= 6000mm^3
+}

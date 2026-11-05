@@ -387,3 +387,8 @@ Phase 3 — remaining honors. Phase 4 — docs-truth + close.
 4. **`PressureLoad` on the buckling path.** Elastic implements it; whether buckling's geometric-stiffness
    formulation can consume a pressure load without new kernel work was not measured. **Suggested
    resolution:** measure in γ; if it needs kernel work, move it to the split PRD and allowlist it.
+
+## Gap-fill amendments (2026-10-16)
+
+- **θ #7087** (`plans/gap-fill-deliberation-reify-20261016.md` §K5-6, note only; fk-a804f8218ad6, fk-0a1125558289): the wire-or-delete ruling D5 asks for is unchanged and still Leo's. Whichever branch is ruled, `crates/reify-eval/tests/harness_fea_solver_e2e/fdm_progressive_refinement_e2e.rs`'s direct-trampoline gate (it calls both rung trampolines with hand-built inputs, so it stays green whether or not the DSL reaches R0) is replaced by a `.ri`-driven e2e and the R0 failure path gets a coded diagnostic (WIRE), or is relabelled seam-level and removed with the R0 rung (DELETE); either way #3791's signal is marked test-harness-only. `review/briefing.yaml` carries "R-fast only; R0 pending #7087" as an FDM known gap until then. The FDM input decoders are S15 υ #9293.
+

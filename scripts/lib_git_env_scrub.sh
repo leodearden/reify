@@ -38,7 +38,7 @@
 # ---------------------------------------------------------------------------
 # WHY THIS ENUMERATED SET, NOT A WHOLESALE `GIT_*` CLEAR
 # ---------------------------------------------------------------------------
-# See crates/reify-test-support/src/git_env.rs:55-95 — that doc is the
+# See REPO_REDIRECT_VARS's doc in crates/reify-git-env/src/lib.rs — that doc is the
 # workspace's ONE copy of the argument, living with the constant it justifies,
 # and this list is the bash mirror of its REPO_REDIRECT_VARS.  It is
 # deliberately NOT restated here.  tests/infra/test_infra_git_env_isolation.sh
@@ -72,7 +72,7 @@ _REIFY_LIB_GIT_ENV_SCRUB_SH_SOURCED=1
 # below derive their `env -u` argv by iterating this string, so widening the
 # list automatically reaches the runner helper AND the plan-prefix emitter.
 #
-# The bash mirror of crates/reify-test-support/src/git_env.rs's
+# The bash mirror of crates/reify-git-env/src/lib.rs's
 # REPO_REDIRECT_VARS.  The first three are the MEASURED HOOK-EXPORTED FLOOR (git
 # actually exports GIT_INDEX_FILE, and GIT_DIR/GIT_WORK_TREE are its documented
 # siblings); the remaining five are the same class — each redirects part of

@@ -108,7 +108,8 @@ Full evidence text and the `delivered_check` bodies are in the YAML twin; this i
 - **UNLISTED:** `accept_arg` has no `Value::Option` arm but every field β/η/ι gate is
   `Option<T>`; a naive adapter would regress all `yield_stress` reads. Amendment A2. **PASS (resolved)**
 - **FALSIFIED:** eight classifiers, not nine. **PASS (resolved)**
-- **FALSIFIED:** the eval exit gate is `main.rs:1661`, not `:1545` (compile-time). **PASS (resolved)**
+- **FALSIFIED:** the eval exit gate is `main.rs:1661`, not `:1545` (compile-time). **PASS (resolved)** **[Amended 2026-10-22, υ #8775 BLK-1]**
+  delivered check `eval-exit-gate-anchor-is-1661-not-1545` re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: the `cmd_*` units holding the `d.severity == Severity::Error` gates it matches moved to `crates/reify-cli/src/cmd/` (`cmd_eval` to `crates/reify-cli/src/cmd/eval.rs`).
 - **UNLISTED:** I5's specific `UndefCause` has no exercised path — both
   `push_op_contract_failure` call sites pass the generic code. Amendment A6. **PASS (resolved)**
 

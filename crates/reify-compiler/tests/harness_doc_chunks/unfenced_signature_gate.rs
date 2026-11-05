@@ -24,8 +24,7 @@
 use std::collections::BTreeSet;
 
 use crate::chunk_io::{all_chunks, chunk_label, report};
-use crate::chunk_prose::{code_spans, unfenced_prose};
-use crate::doc_forms::{Arity, DocForm, call_forms, doc_form_of_span};
+use crate::doc_forms::{Arity, DocForm, DocumentedForm, call_forms, documented_unfenced_forms};
 use crate::signature_fixtures::{SIGNATURE_FIXTURES, UNFENCED_SIGNATURES_FIXTURE, read_fixture};
 
 /// A span in `chunk`'s prose that is signature-SHAPED but is not a signature,
@@ -52,7 +51,7 @@ const NOT_SIGNATURES: &[ProseMention] = &[
               table, not a builtin",
     },
     ProseMention {
-        chunk: "geometry",
+        chunk: "topology",
         span: "single()",
         why: "names the function in prose — `single` takes one selector argument",
     },
@@ -62,29 +61,6 @@ const NOT_SIGNATURES: &[ProseMention] = &[
         why: "trap 3 documents this 2-arg form as UNSUPPORTED",
     },
 ];
-
-/// One signature-shaped span in a chunk's unfenced prose.
-pub(crate) struct DocumentedForm {
-    pub(crate) form: DocForm,
-    /// 1-based line of the span's opening backtick run.
-    pub(crate) line: usize,
-    pub(crate) span: String,
-}
-
-/// Every signature-shaped code span in `markdown`'s unfenced prose, in document
-/// order; `Err` when the prose cannot be read.
-pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
-    Ok(code_spans(&unfenced_prose(markdown)?)
-        .into_iter()
-        .filter_map(|span| {
-            doc_form_of_span(&span.text).map(|form| DocumentedForm {
-                form,
-                line: span.line,
-                span: span.text,
-            })
-        })
-        .collect())
-}
 
 /// Everything wrong across `chunks` (`(stem, markdown)`), one line each, sorted
 /// and deduped: a documented signature no call in `calls` exercises at its
@@ -173,15 +149,19 @@ pub(crate) fn unfenced_signature_violations(
 /// protocol stated once next to `geometry_chunk_smoke.rs`'s `MINIMUM_FN_CITES`.
 const MINIMUM_UNFENCED_FORMS: usize = 119;
 
-/// One form per chunk family that prose extraction must reach. The geometry one
-/// sits in the Topology Selectors table at the END of geometry.md, so reading it
-/// proves the extraction survived every fence and note above it.
+/// One form per chunk family that prose extraction must reach. The geometry
+/// and topology ones each sit after every fence and maintainer note in their
+/// chunk — trap 5's `min_clearance(s, id, id)` closes geometry.md, and
+/// `faces_by_normal` is a row of topology.md's selector table — so reading them
+/// proves the extraction survived everything above them.
 const SENTINELS: &[(&str, &str, Arity)] = &[
     ("collections", "generate", Arity::Exact(2)),
     ("enums", "unwrap_or", Arity::Exact(2)),
     ("fields", "constant_field", Arity::Exact(1)),
     ("stdlib", "rotate", Arity::Exact(5)),
-    ("geometry", "faces_by_normal", Arity::Exact(3)),
+    ("geometry", "min_clearance", Arity::Exact(3)),
+    ("measurement", "max_deviation", Arity::Exact(2)),
+    ("topology", "faces_by_normal", Arity::Exact(3)),
 ];
 
 /// Every signature in any chunk's unfenced prose is exercised, at its documented

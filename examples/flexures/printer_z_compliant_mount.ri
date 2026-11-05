@@ -8,7 +8,7 @@
 // parallelogram PRB flexure stage.  This example exercises the full flexure
 // vertical slice end-to-end:
 //
-//   (1) prb_parallelogram_flexure — Phase-2/3 PRB ctor (compound.rs:370)
+//   (1) prb_parallelogram_flexure — Phase-2/3 PRB ctor (reify-stdlib flexures/compound.rs)
 //   (2) mechanism() / body() / point_mass() — mechanism wiring
 //   (3) inverse_dynamics(m, traj) — spring force −k·(q−neutral) appears
 //   (4) mechanism_modal_analysis(m, opts) — NEW 4271 surface, NOT solid-beam

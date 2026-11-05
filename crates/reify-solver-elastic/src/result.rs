@@ -353,6 +353,12 @@ pub fn element_gradient_p1(phys_nodes: &[[f64; 3]; 4], u_e: &[f64; 12]) -> [[f64
 /// returns exactly `0.0`; diagnosing that condition is PRD task #21's
 /// job.
 pub fn tet_volume_p1(phys_nodes: &[[f64; 3]; 4]) -> f64 {
+    tet_signed_volume_p1(phys_nodes).abs()
+}
+
+/// The ORIENTED volume `det M / 6` behind [`tet_volume_p1`]: positive for a
+/// right-handed node ordering, negative for a mirror-flipped one.
+pub(crate) fn tet_signed_volume_p1(phys_nodes: &[[f64; 3]; 4]) -> f64 {
     let v0 = phys_nodes[0];
     let mut m = [[0.0_f64; 3]; 3];
     for i in 0..3 {
@@ -363,7 +369,7 @@ pub fn tet_volume_p1(phys_nodes: &[[f64; 3]; 4]) -> f64 {
     let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
         - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
-    det.abs() / 6.0
+    det / 6.0
 }
 
 /// Per-element stress contribution for [`recover_nodal_stress_p1`].

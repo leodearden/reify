@@ -1,0 +1,22 @@
+// PRD 7.3: one call per builtin (alpha/beta sdf_algebra.ri shape), B1-B3.
+structure def SdfAlgebra {
+    let a = sdf_sphere(5mm)
+    let b = sdf_box(10mm, 8mm, 6mm)
+    let c = sdf_cylinder(4mm, 12mm)
+    let d = sdf_torus(10mm, 2mm)
+    let e = sdf_half_space(plane_xy(1mm))
+    let u = sdf_union(a, b)
+    let i = sdf_intersect(a, b)
+    let df = sdf_difference(b, a)
+    let su = sdf_smooth_union(a, b, 1mm)
+    let o = sdf_offset(a, 1mm)
+    let sh = sdf_shell(a, 1mm)
+    let t = sdf_transform(a, transform3(orient_identity(), vec3(3mm, 0mm, 0mm)))
+    let mx = sdf_mirror(t, plane_yz(0mm))
+    let my = sdf_mirror(t, plane_xz(0mm))
+    let mz = sdf_mirror(t, plane_xy(0mm))
+    let g = sdf_gyroid(10mm, 1mm)
+    let s_origin = sample(sdf_sphere(5mm), point3(0mm, 0mm, 0mm))
+    let s_g = sample(g, point3(0mm, 0mm, 0mm))
+    let s_t = sample(t, point3(3mm, 0mm, 0mm))
+}

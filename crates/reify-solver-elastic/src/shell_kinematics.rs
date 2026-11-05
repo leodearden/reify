@@ -1,14 +1,16 @@
 //! Shared MITC3 shell kinematics shared by `shell_assembly` and `shell_result`.
 //!
-//! Both `shell_element_stiffness` and `shell_element_stress` need the same
-//! local 2D nodal coordinates, constant 2D shape gradients, covariant shear
-//! B-matrix at the three MITC3 tying points, and the J2⁻ᵀ covariant→physical
-//! map. This module is the single source of truth for those four quantities
-//! (plus the J2 determinant `det2` used by the shear quadrature weight in the
-//! stiffness path), so a sign-convention or tying-point-ordering change made
-//! here propagates to both consumers atomically.
+//! The flat shell kernels and `shell_element_stress` need the same local 2D
+//! nodal coordinates, constant 2D shape gradients, the local J2 and its J2⁻ᵀ
+//! covariant→physical map, and the covariant transverse-shear B-matrix. This
+//! module is the single source of truth for them (plus the J2 determinant
+//! `det2` used by the shear quadrature weight). The covariant shear has one
+//! home, [`ShellKinematics::covariant_shear_b`], which carries the in-plane
+//! metric on the rotation term. Bare MITC3 samples it at the three edge tying
+//! points (`b_cov_at_tying_points`); MITC3+ samples it at the six interior ones.
 
-use crate::shell_assembly::ShellFrame;
+use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
+use crate::elements::shell_frame::ShellFrame;
 
 /// Per-element shell kinematics derived from physical nodes + the local
 /// mid-surface frame.
@@ -18,10 +20,13 @@ pub struct ShellKinematics {
     pub local_nodes_2d: [[f64; 2]; 3],
     /// Constant 2D shape gradients in the local frame: `dn[i] = [dN_i/dx, dN_i/dy]`.
     pub dn: [[f64; 2]; 3],
-    /// Covariant shear B-matrix at each MITC3 tying point A, B, C:
+    /// [`ShellKinematics::covariant_shear_b`] at each MITC3 tying point A, B, C:
     /// `b_cov_at_tying_points[tp_idx][cov_component][dof]` for
     /// `tp_idx in {A=0, B=1, C=2}` and `cov_component in {γ_ξζ=0, γ_ηζ=1}`.
     pub b_cov_at_tying_points: [[[f64; 18]; 2]; 3],
+    /// Local-frame J2 = `[[x1−x0, x2−x0], [y1−y0, y2−y0]]`: its columns are the
+    /// covariant base vectors `g_ξ`, `g_η`.
+    pub jac2: [[f64; 2]; 2],
     /// J2⁻ᵀ — maps covariant (ξ,η) shear components to physical (x,y).
     pub jac2_inv_t: [[f64; 2]; 2],
     /// `det(J2)` — local 2D Jacobian determinant. Always `> 0` for a
@@ -30,22 +35,15 @@ pub struct ShellKinematics {
     pub det2: f64,
 }
 
-/// Compute shared MITC3 shell kinematics from physical node positions and the
-/// pre-built local mid-surface frame.
-///
-/// Both `shell_element_stiffness` and `shell_element_stress` call this after
-/// `build_shell_frame` and read the fields directly — no behaviour change,
-/// identical floating-point output.
+/// The [`ShellKinematics`] of the flat triangle `nodes` in its local `frame`,
+/// read by the flat shell stiffness kernels, `shell_element_stress`, and the
+/// membrane and degenerate-shell kernels.
 ///
 /// # Arguments
 ///
 /// - `nodes` — three physical vertex positions in global coordinates.
 /// - `frame` — pre-built local mid-surface frame (from `build_shell_frame`).
 pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinematics {
-    use crate::elements::mitc3_plus::Mitc3Plus;
-
-    const NDOF: usize = Mitc3Plus::N_DOFS; // 18 total DOFs
-    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE; // 6 DOFs per node
     const NN: usize = Mitc3Plus::N_NODES; // 3 nodes
 
     let r = frame.r;
@@ -92,48 +90,189 @@ pub fn shell_kinematics(nodes: &[[f64; 3]; 3], frame: &ShellFrame) -> ShellKinem
         [-jac2[0][1] / det2, jac2[0][0] / det2],
     ];
 
-    // --- Covariant shear B-matrix at each MITC3 tying point ---
-    // b_cov_at_tying_points[tp_idx][cov_component][dof]
-    // For each tying point (ξ_t, η_t):
-    //   γ_ξζ = Σ_i dn_ref[i][0] * u_z_i + N_i(tp) * θ_y_i
-    //   γ_ηζ = Σ_i dn_ref[i][1] * u_z_i - N_i(tp) * θ_x_i
     let tying_pts = Mitc3Plus.tying_points();
-    let mut b_cov_at_tying_points = [[[0.0_f64; NDOF]; 2]; 3];
-    for (tp_idx, tp) in tying_pts.iter().enumerate() {
-        let n_at_tp = Mitc3Plus.shape_at(tp.coord);
-        // shape_grad_at returns constant ∇N_0=(−1,−1), ∇N_1=(1,0), ∇N_2=(0,1)
-        let dn_ref_tp = Mitc3Plus.shape_grad_at(tp.coord);
-        for node in 0..NN {
-            let dof_uz = NDP * node + 2;
-            let dof_tx = NDP * node + 3;
-            let dof_ty = NDP * node + 4;
-            // γ_ξζ contribution: dn_ref[node][0]*u_z + N*θ_y
-            b_cov_at_tying_points[tp_idx][0][dof_uz] += dn_ref_tp[node][0];
-            b_cov_at_tying_points[tp_idx][0][dof_ty] += n_at_tp[node];
-            // γ_ηζ contribution: dn_ref[node][1]*u_z - N*θ_x
-            b_cov_at_tying_points[tp_idx][1][dof_uz] += dn_ref_tp[node][1];
-            b_cov_at_tying_points[tp_idx][1][dof_tx] -= n_at_tp[node];
-        }
-    }
+    let b_cov_at_tying_points =
+        std::array::from_fn(|tp_idx| covariant_shear_b_at(&jac2, tying_pts[tp_idx].coord));
 
     ShellKinematics {
         local_nodes_2d,
         dn,
         b_cov_at_tying_points,
+        jac2,
         jac2_inv_t,
         det2,
     }
+}
+
+impl ShellKinematics {
+    /// Covariant transverse-shear B-matrix of the three-node (DISP3) field at
+    /// `coord`: rows `(γ_ξζ, γ_ηζ)`, columns the 18 local DOFs.
+    ///
+    /// ```text
+    /// γ_ξζ = Σ_i ∂h_i/∂ξ · u_z_i + h_i · (J00·θ_y_i − J10·θ_x_i)
+    /// γ_ηζ = Σ_i ∂h_i/∂η · u_z_i + h_i · (J01·θ_y_i − J11·θ_x_i)
+    /// ```
+    ///
+    /// i.e. `γ_α = ∂w/∂ξ_α + g_α · (θ_y, −θ_x)`, so the physical shear
+    /// `J2⁻ᵀ · B · u = ∇w + (θ_y, −θ_x)` on any flat triangle.
+    pub fn covariant_shear_b(&self, coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+        covariant_shear_b_at(&self.jac2, coord)
+    }
+}
+
+/// [`ShellKinematics::covariant_shear_b`] for the local-frame J2 `jac2`.
+fn covariant_shear_b_at(jac2: &[[f64; 2]; 2], coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+    const NDP: usize = Mitc3Plus::N_DOFS_PER_NODE;
+    let h = Mitc3Plus.shape_at(coord);
+    let dh = Mitc3Plus.shape_grad_at(coord);
+    let mut b = [[0.0_f64; Mitc3Plus::N_DOFS]; 2];
+    for node in 0..Mitc3Plus::N_NODES {
+        let (uz, tx, ty) = (NDP * node + 2, NDP * node + 3, NDP * node + 4);
+        for (alpha, row) in b.iter_mut().enumerate() {
+            row[uz] = dh[node][alpha];
+            row[ty] = jac2[0][alpha] * h[node];
+            row[tx] = -jac2[1][alpha] * h[node];
+        }
+    }
+    b
 }
 
 #[cfg(test)]
 #[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
-    use crate::elements::mitc3_plus::Mitc3Plus;
-    use crate::shell_assembly::build_shell_frame;
+    use crate::elements::shell_frame::build_shell_frame;
 
     const UNIT_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     const WIDE_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 3.0, 0.0]];
+
+    // Non-unit-metric xy-plane triangles whose first edge runs along +x, so the
+    // local shell frame coincides with the global frame.
+    const DISTORTED_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [1.3, 0.0, 0.0], [0.4, 0.9, 0.0]];
+    const WIDE_SHALLOW_TRI: [[f64; 3]; 3] = [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.5, 0.0]];
+    const NON_UNIT_TRIS: [[[f64; 3]; 3]; 2] = [DISTORTED_TRI, WIDE_SHALLOW_TRI];
+
+    /// The edge tying points, the interior tying points and one generic point.
+    fn shear_probe_coords() -> Vec<ShellReferenceCoord> {
+        Mitc3Plus
+            .tying_points()
+            .iter()
+            .chain(Mitc3Plus.interior_tying_points())
+            .map(|tp| tp.coord)
+            .chain([ShellReferenceCoord::new(0.2, 0.3)])
+            .collect()
+    }
+
+    fn covariant_shear_of(
+        kin: &ShellKinematics,
+        coord: ShellReferenceCoord,
+        u: &[f64; 18],
+    ) -> [f64; 2] {
+        let b = kin.covariant_shear_b(coord);
+        std::array::from_fn(|row| (0..18).map(|dof| b[row][dof] * u[dof]).sum())
+    }
+
+    fn uniform_rotation_dofs(theta_x: f64, theta_y: f64) -> [f64; 18] {
+        let mut u = [0.0_f64; 18];
+        for node in 0..3 {
+            u[6 * node + 3] = theta_x;
+            u[6 * node + 4] = theta_y;
+        }
+        u
+    }
+
+    #[test]
+    fn covariant_shear_b_annihilates_in_plane_axis_rigid_rotations_on_non_unit_triangles() {
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let cx = (nodes[0][0] + nodes[1][0] + nodes[2][0]) / 3.0;
+            let cy = (nodes[0][1] + nodes[1][1] + nodes[2][1]) / 3.0;
+            let scale = nodes.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
+            for (wx, wy) in [(1.0, 0.0), (0.0, 1.0), (0.3, -0.7)] {
+                // u = ω × (x − c), θ = ω, for ω = (wx, wy, 0).
+                let mut u = uniform_rotation_dofs(wx, wy);
+                for (i, p) in nodes.iter().enumerate() {
+                    u[6 * i + 2] = wx * (p[1] - cy) - wy * (p[0] - cx);
+                }
+                let tol = 1e-12 * (f64::hypot(wx, wy) * scale).max(1.0);
+                for coord in shear_probe_coords() {
+                    let gamma = covariant_shear_of(&kin, coord, &u);
+                    assert!(
+                        gamma[0].abs() < tol && gamma[1].abs() < tol,
+                        "rigid rotation ω=({wx},{wy}) on {nodes:?} strains the shear at \
+                         {coord:?}: covariant γ = {gamma:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn covariant_shear_b_maps_uniform_rotation_to_the_constant_physical_shear_on_non_unit_triangles()
+     {
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let m = kin.jac2_inv_t;
+            for (alpha, beta) in [(0.7, 0.0), (0.0, -0.4), (0.7, -0.4)] {
+                let u = uniform_rotation_dofs(beta, alpha);
+                let expected = [alpha, -beta];
+                let tol = 1e-12 * f64::max(alpha.abs(), beta.abs());
+                for coord in shear_probe_coords() {
+                    let cov = covariant_shear_of(&kin, coord, &u);
+                    let phys = [
+                        m[0][0] * cov[0] + m[0][1] * cov[1],
+                        m[1][0] * cov[0] + m[1][1] * cov[1],
+                    ];
+                    assert!(
+                        (phys[0] - expected[0]).abs() < tol && (phys[1] - expected[1]).abs() < tol,
+                        "uniform θ = (θ_x={beta}, θ_y={alpha}) on {nodes:?} at {coord:?}: \
+                         physical shear {phys:?}, expected {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn covariant_shear_b_plus_eq9_reproduces_the_constant_covariant_state_on_non_unit_triangle() {
+        use crate::elements::mitc3_plus::ShearStrain;
+
+        let (alpha, beta) = (0.7_f64, -0.4_f64);
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let j = kin.jac2;
+            // The constant covariant state J2ᵀ·(θ_y, −θ_x).
+            let expected = [
+                j[0][0] * alpha - j[1][0] * beta,
+                j[0][1] * alpha - j[1][1] * beta,
+            ];
+            let u = uniform_rotation_dofs(beta, alpha);
+            let samples: Vec<ShearStrain> = Mitc3Plus
+                .interior_tying_points()
+                .iter()
+                .map(|tp| {
+                    let [gamma_xi_zeta, gamma_eta_zeta] = covariant_shear_of(&kin, tp.coord, &u);
+                    ShearStrain {
+                        gamma_xi_zeta,
+                        gamma_eta_zeta,
+                    }
+                })
+                .collect();
+            let tol = 1e-12 * expected[0].abs().max(expected[1].abs());
+            for p in [
+                ShellReferenceCoord::new(1.0 / 3.0, 1.0 / 3.0),
+                ShellReferenceCoord::new(0.2, 0.3),
+            ] {
+                let out = Mitc3Plus.interpolate_assumed_shear_mitc3_plus(&samples, p);
+                assert!(
+                    (out.gamma_xi_zeta - expected[0]).abs() < tol
+                        && (out.gamma_eta_zeta - expected[1]).abs() < tol,
+                    "Eq. 9 on {nodes:?} at {p:?}: {out:?}, expected constant covariant \
+                     {expected:?}"
+                );
+            }
+        }
+    }
 
     /// For UNIT_TRI in the xy-plane, the local frame is the identity rotation,
     /// so local_nodes_2d must equal the xy projections of the physical nodes.
@@ -212,96 +351,24 @@ mod tests {
         );
     }
 
-    /// The covariant shear B-matrix only activates the out-of-plane and rotation
-    /// DOFs of each node (6n+2, 6n+3, 6n+4). All other DOF columns are identically
-    /// zero. Furthermore:
-    ///   - γ_ξζ (comp 0) contributes to u_z (6n+2) and θ_y (6n+4) only
-    ///   - γ_ηζ (comp 1) contributes to u_z (6n+2) and θ_x (6n+3) only,
-    ///     with the θ_x contribution having a negative sign (−N_i at tying point).
+    /// In-plane translations and drilling rotations carry no transverse shear.
     #[test]
-    fn shell_kinematics_b_cov_at_tying_points_only_writes_into_uz_tx_ty_dofs() {
-        let frame = build_shell_frame(&UNIT_TRI);
-        let kin = shell_kinematics(&UNIT_TRI, &frame);
-
-        for tp in 0..3 {
-            let tp_coord = Mitc3Plus.tying_points()[tp].coord;
-            let n_at_tp = Mitc3Plus.shape_at(tp_coord);
-            let dn_ref_tp = Mitc3Plus.shape_grad_at(tp_coord);
-            for dof in 0..18 {
-                let local_dof = dof % 6;
-                let node = dof / 6;
-
-                // DOFs outside {2,3,4} per node must be zero in both components
-                if local_dof != 2 && local_dof != 3 && local_dof != 4 {
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        0.0,
-                        "b_cov[{tp}][xi_zeta][{dof}] (local={local_dof}) must be 0"
-                    );
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        0.0,
-                        "b_cov[{tp}][eta_zeta][{dof}] (local={local_dof}) must be 0"
-                    );
-                }
-
-                // u_z dofs (6n+2): γ_ξζ gets dn_ref[node][0], γ_ηζ gets dn_ref[node][1]
-                if local_dof == 2 {
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][0][dof] - dn_ref_tp[node][0]).abs()
-                            < 1e-12,
-                        "b_cov[{tp}][xi_zeta][{dof}] (uz@node{node}) = {}, expected dn_ref[{node}][0]={}",
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        dn_ref_tp[node][0]
-                    );
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][1][dof] - dn_ref_tp[node][1]).abs()
-                            < 1e-12,
-                        "b_cov[{tp}][eta_zeta][{dof}] (uz@node{node}) = {}, expected dn_ref[{node}][1]={}",
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        dn_ref_tp[node][1]
-                    );
-                }
-
-                // γ_ξζ (comp 0): θ_x dofs (6n+3) must be zero
-                if local_dof == 3 {
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        0.0,
-                        "b_cov[{tp}][xi_zeta][{dof}] (theta_x@node{node}) must be 0"
-                    );
-                }
-
-                // γ_ηζ (comp 1): θ_y dofs (6n+4) must be zero
-                if local_dof == 4 {
-                    assert_eq!(
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        0.0,
-                        "b_cov[{tp}][eta_zeta][{dof}] (theta_y@node{node}) must be 0"
-                    );
-                }
-
-                // γ_ξζ (comp 0): θ_y dofs (6n+4) must equal +N_i(tp)
-                if local_dof == 4 {
-                    let expected = n_at_tp[node];
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][0][dof] - expected).abs() < 1e-12,
-                        "b_cov[{tp}][xi_zeta][{dof}] (theta_y@node{node}) = {}, expected +N_i={}",
-                        kin.b_cov_at_tying_points[tp][0][dof],
-                        expected
-                    );
-                }
-
-                // γ_ηζ (comp 1): θ_x dofs (6n+3) must equal −N_i(tp) (negative sign)
-                if local_dof == 3 {
-                    let expected = -n_at_tp[node];
-                    assert!(
-                        (kin.b_cov_at_tying_points[tp][1][dof] - expected).abs() < 1e-12,
-                        "b_cov[{tp}][eta_zeta][{dof}] (theta_x@node{node}) = {}, expected {}",
-                        kin.b_cov_at_tying_points[tp][1][dof],
-                        expected
-                    );
-                }
+    fn covariant_shear_b_ignores_membrane_and_drilling_dofs_on_non_unit_triangles() {
+        for nodes in NON_UNIT_TRIS {
+            let kin = shell_kinematics(&nodes, &build_shell_frame(&nodes));
+            let mut u = [0.0_f64; 18];
+            for node in 0..3 {
+                u[6 * node] = 0.3 + node as f64;
+                u[6 * node + 1] = -0.5 * node as f64 + 0.2;
+                u[6 * node + 5] = 0.7 - 0.4 * node as f64;
+            }
+            for coord in shear_probe_coords() {
+                let gamma = covariant_shear_of(&kin, coord, &u);
+                assert_eq!(
+                    gamma,
+                    [0.0, 0.0],
+                    "membrane/drilling DOFs {u:?} on {nodes:?} strain the shear at {coord:?}"
+                );
             }
         }
     }
@@ -312,7 +379,7 @@ mod tests {
     /// un-tilted case (within floating-point rounding).
     #[test]
     fn shell_kinematics_tilted_triangle_local_coords_collapse_to_un_tilted() {
-        let q = crate::shell_assembly::tilted_q_for_shell_tests();
+        let q = crate::elements::shell_frame::test_support::tilted_q_for_shell_tests();
 
         // Build tilted nodes: Q · UNIT_TRI
         let mut tilted = [[0.0_f64; 3]; 3];

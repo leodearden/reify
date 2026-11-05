@@ -1,0 +1,6 @@
+module p8_disp
+structure def Main {
+    let fr = frame_at(point3(0mm, 0mm, 0mm), axis_y(point3(0mm, 0mm, 0mm)).dir, axis_x(point3(0mm, 0mm, 0mm)).dir)
+    let d = direction(0, 1, 0)
+    let o = orientation_identity()
+}

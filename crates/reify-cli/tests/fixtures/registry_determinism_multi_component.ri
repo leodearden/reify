@@ -1,0 +1,14 @@
+// B11 (solver-driver-parity §5): a two-component model whose resolved values must be byte-identical across runs (harness_cli/cli_eval_registry_determinism.rs).
+
+module registry_determinism_multi_component
+
+structure Split {
+    param w: Length = auto
+    param h: Length = auto
+    param d: Length = auto
+
+    constraint w + h == 12mm
+    constraint w - h == 4mm
+    constraint d >= 3mm
+    constraint d <= 4mm
+}

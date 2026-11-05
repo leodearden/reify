@@ -1,0 +1,11 @@
+// compiler-declaration-passes PRD §2.1 / leaf β: a geometry alias declared BEFORE its referent.
+// Main a030ee7528..8e6ffcac9d: `reify check` exits 0 with an INDETERMINATE constraint, because
+// pass 1 classified `shifted` as a dimensionless scalar while passes 2/3 classified it as geometry.
+// After β: exits 1 with exactly the diagnostic decl_passes_backward_geometry_alias.ri prints.
+module decl_passes_forward_geometry_alias
+
+structure Part {
+    let shifted = base
+    let base = box(10mm, 10mm, 10mm)
+    constraint shifted > 0
+}

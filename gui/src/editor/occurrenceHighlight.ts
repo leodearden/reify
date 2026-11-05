@@ -17,6 +17,7 @@ import {
 } from '@codemirror/view';
 import type { DocumentHighlight } from './lspClient';
 import { lspRangeToCmRange, type CmRange } from './lspRange';
+import { isSameFile } from '../utils/pathUtils';
 
 /** Re-export the shared CmRange type so existing importers don't change. */
 export type { CmRange } from './lspRange';
@@ -195,7 +196,7 @@ export function occurrenceHighlightExtension(
         // Stale-guard: a newer cursor move fired, the file switched, or the view
         // was torn down while this was in flight → never paint the wrong buffer.
         if (token !== this.latestToken) return;
-        if (uriGetter() !== uri) return;
+        if (!isSameFile(uriGetter(), uri)) return;
         if (!view.dom.isConnected) return;
 
         view.dispatch({

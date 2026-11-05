@@ -11,8 +11,11 @@ import {
   navigateToSource,
   navigateToEntity,
   navigateFromConstraint,
+  createLocationNavigator,
 } from '../navigation';
 import { createSelectionStore } from '../stores/selectionStore';
+import { createEditorStore } from '../stores/editorStore';
+import { deferred } from './test-utils';
 
 describe('navigation', () => {
   beforeEach(() => {
@@ -20,7 +23,7 @@ describe('navigation', () => {
   });
 
   describe('navigateToSource', () => {
-    it('calls getSourceLocation with entityPath and passes result to scrollEditor', async () => {
+    it('calls getSourceLocation with entityPath and passes result to revealLocation', async () => {
       const sourceLocation: SourceLocation = {
         file_path: 'main.ri',
         line: 5,
@@ -29,23 +32,23 @@ describe('navigation', () => {
         end_column: 10,
       };
       const getSourceLocation = vi.fn().mockResolvedValue(sourceLocation);
-      const scrollEditor = vi.fn();
+      const revealLocation = vi.fn();
       const selectEntity = vi.fn();
 
       await navigateToSource('Bracket', {
         getSourceLocation,
-        scrollEditor,
+        revealLocation,
         selectEntity,
       });
 
       expect(getSourceLocation).toHaveBeenCalledWith('Bracket');
-      expect(scrollEditor).toHaveBeenCalledWith(sourceLocation);
+      expect(revealLocation).toHaveBeenCalledWith(sourceLocation);
       expect(selectEntity).toHaveBeenCalledWith('Bracket');
     });
 
     it('handles getSourceLocation rejection gracefully', async () => {
       const getSourceLocation = vi.fn().mockRejectedValue(new Error('not found'));
-      const scrollEditor = vi.fn();
+      const revealLocation = vi.fn();
       const selectEntity = vi.fn();
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -53,12 +56,12 @@ describe('navigation', () => {
       await expect(
         navigateToSource('Unknown', {
           getSourceLocation,
-          scrollEditor,
+          revealLocation,
           selectEntity,
         }),
       ).resolves.not.toThrow();
 
-      expect(scrollEditor).not.toHaveBeenCalled();
+      expect(revealLocation).not.toHaveBeenCalled();
       expect(consoleError).toHaveBeenCalled();
       consoleError.mockRestore();
     });
@@ -67,20 +70,20 @@ describe('navigation', () => {
       const getSourceLocation = vi
         .fn()
         .mockRejectedValue(new Error('No source location found for BooleanResult'));
-      const scrollEditor = vi.fn();
+      const revealLocation = vi.fn();
       const selectEntity = vi.fn();
       const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
 
       await navigateToSource('BooleanResult', {
         getSourceLocation,
-        scrollEditor,
+        revealLocation,
         selectEntity,
       });
 
       // Selection must happen unconditionally — even when no source span exists
       expect(selectEntity).toHaveBeenCalledWith('BooleanResult');
       // Editor scroll is best-effort; must be skipped when no span is available
-      expect(scrollEditor).not.toHaveBeenCalled();
+      expect(revealLocation).not.toHaveBeenCalled();
       consoleError.mockRestore();
     });
   });
@@ -268,6 +271,240 @@ describe('navigation', () => {
         // selectedEntity is null (no match found), but the highlight must survive
         expect(store.state.selectedEntity).toBeNull();
         expect(store.state.highlightedParams).toEqual(['c1', 'c2']);
+
+        dispose();
+      });
+    });
+  });
+
+  describe('createLocationNavigator', () => {
+    type EditorStore = ReturnType<typeof createEditorStore>;
+
+    /** A navigator over `store` with spied deps; `navigate` reports open failures to `reportOpenFailure`. */
+    function makeDeps(store: EditorStore) {
+      const openFile = vi.fn();
+      const setScrollToLocation = vi.fn();
+      const reportOpenFailure = vi.fn();
+      const navigateToLocation = createLocationNavigator({ store, openFile, setScrollToLocation });
+      return {
+        openFile,
+        setScrollToLocation,
+        reportOpenFailure,
+        navigate: (loc: SourceLocation) => navigateToLocation(loc, reportOpenFailure),
+      };
+    }
+
+    it('same-file → scrolls once with the span; opens and activates nothing', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const setActiveFileSpy = vi.spyOn(store, 'setActiveFile');
+        const deps = makeDeps(store);
+        const loc = { file_path: 'main.ri', line: 7, column: 4, end_line: 7, end_column: 9 };
+
+        await deps.navigate(loc);
+
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
+        expect(deps.openFile).not.toHaveBeenCalled();
+        expect(setActiveFileSpy).not.toHaveBeenCalled();
+
+        dispose();
+      });
+    });
+
+    it('cross-file, already open → activates the tab and scrolls; opens nothing', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        store.openFile({ path: 'helper.ri', content: '' });
+        store.setActiveFile('main.ri');
+        const deps = makeDeps(store);
+        const loc = { file_path: 'helper.ri', line: 10, column: 3, end_line: 10, end_column: 8 };
+
+        await deps.navigate(loc);
+
+        expect(store.state.activeFile).toBe('helper.ri');
+        expect(deps.openFile).not.toHaveBeenCalled();
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
+
+        dispose();
+      });
+    });
+
+    it('cross-file, not open → opens from disk, loads it active, then scrolls', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        let activeAtScroll: string | null = null;
+        deps.openFile.mockResolvedValue({ path: 'helper.ri', content: 'structure Helper {}' });
+        deps.setScrollToLocation.mockImplementation(() => {
+          activeAtScroll = store.state.activeFile;
+        });
+        const loc = { file_path: 'helper.ri', line: 2, column: 1, end_line: 2, end_column: 15 };
+
+        await deps.navigate(loc);
+
+        expect(deps.openFile).toHaveBeenCalledTimes(1);
+        expect(deps.openFile).toHaveBeenCalledWith('helper.ri');
+        expect(store.state.openFiles.some((f) => f.path === 'helper.ri')).toBe(true);
+        expect(store.state.activeFile).toBe('helper.ri');
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(loc);
+        expect(activeAtScroll).toBe('helper.ri');
+
+        dispose();
+      });
+    });
+
+    it('open rejects → reports the failure naming the path; no scroll; active tab unchanged; resolves', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        deps.openFile.mockRejectedValue(new Error('disk read error'));
+        const loc = { file_path: 'missing.ri', line: 5, column: 2, end_line: 5, end_column: 10 };
+
+        await expect(deps.navigate(loc)).resolves.toBeUndefined();
+
+        expect(deps.reportOpenFailure).toHaveBeenCalledTimes(1);
+        expect(deps.reportOpenFailure).toHaveBeenCalledWith(expect.stringContaining('missing.ri'));
+        expect(deps.setScrollToLocation).not.toHaveBeenCalled();
+        expect(store.state.activeFile).toBe('main.ri');
+
+        dispose();
+      });
+    });
+
+    it('a spelling that opens to an already-open tab activates it without reloading the dirty buffer', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: '/proj/parts.ri', content: 'edited' });
+        store.markDirty('/proj/parts.ri');
+        store.openFile({ path: '/proj/main.ri', content: '' });
+        const deps = makeDeps(store);
+        deps.openFile.mockResolvedValue({ path: '/proj/parts.ri', content: 'disk' });
+
+        await deps.navigate({ file_path: 'parts.ri', line: 3, column: 5, end_line: 3, end_column: 10 });
+
+        expect(store.state.activeFile).toBe('/proj/parts.ri');
+        expect(store.state.openFiles.find((f) => f.path === '/proj/parts.ri')?.content).toBe('edited');
+        expect(store.state.externallyChanged).not.toContain('/proj/parts.ri');
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith({
+          file_path: '/proj/parts.ri', line: 3, column: 5, end_line: 3, end_column: 10,
+        });
+
+        dispose();
+      });
+    });
+
+    it('scrolls with the store key the file opened under, not the producer spelling', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: '/real/proj/main.ri', content: '' });
+        const deps = makeDeps(store);
+        deps.openFile.mockResolvedValue({ path: '/real/proj/helper.ri', content: '' });
+
+        await deps.navigate({ file_path: '/link/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2 });
+
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith({
+          file_path: '/real/proj/helper.ri', line: 4, column: 1, end_line: 6, end_column: 2,
+        });
+
+        dispose();
+      });
+    });
+
+    it('opens that finish in reverse order leave the newer navigation active and scrolled', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        const older = deferred<{ path: string; content: string }>();
+        const newer = deferred<{ path: string; content: string }>();
+        deps.openFile.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+        const newerLoc = { file_path: 'b.ri', line: 8, column: 1, end_line: 8, end_column: 6 };
+
+        const first = deps.navigate({ file_path: 'a.ri', line: 2, column: 1, end_line: 2, end_column: 4 });
+        const second = deps.navigate(newerLoc);
+        newer.resolve({ path: 'b.ri', content: '' });
+        await second;
+        older.resolve({ path: 'a.ri', content: '' });
+        await first;
+
+        expect(store.state.activeFile).toBe('b.ri');
+        expect(store.state.openFiles.some((f) => f.path === 'a.ri')).toBe(false);
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(newerLoc);
+
+        dispose();
+      });
+    });
+
+    it('an open still pending when a navigation to an open tab starts is dropped when it resolves', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        store.openFile({ path: 'helper.ri', content: '' });
+        store.setActiveFile('main.ri');
+        const deps = makeDeps(store);
+        const pending = deferred<{ path: string; content: string }>();
+        deps.openFile.mockReturnValueOnce(pending.promise);
+        const helperLoc = { file_path: 'helper.ri', line: 4, column: 2, end_line: 4, end_column: 9 };
+
+        const first = deps.navigate({ file_path: 'slow.ri', line: 1, column: 1, end_line: 1, end_column: 3 });
+        await deps.navigate(helperLoc);
+        pending.resolve({ path: 'slow.ri', content: '' });
+        await first;
+
+        expect(store.state.activeFile).toBe('helper.ri');
+        expect(store.state.openFiles.some((f) => f.path === 'slow.ri')).toBe(false);
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(helperLoc);
+
+        dispose();
+      });
+    });
+
+    it('two navigations started in the same tick scroll only the later one', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'a.ri', content: '' });
+        store.openFile({ path: 'b.ri', content: '' });
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        const bLoc = { file_path: 'b.ri', line: 2, column: 1, end_line: 2, end_column: 4 };
+
+        const first = deps.navigate({ file_path: 'a.ri', line: 9, column: 1, end_line: 9, end_column: 4 });
+        const second = deps.navigate(bLoc);
+        await Promise.all([first, second]);
+
+        expect(store.state.activeFile).toBe('b.ri');
+        expect(deps.setScrollToLocation).toHaveBeenCalledTimes(1);
+        expect(deps.setScrollToLocation).toHaveBeenCalledWith(bLoc);
+
+        dispose();
+      });
+    });
+
+    it('a superseded navigation whose open fails reports nothing', async () => {
+      await createRoot(async (dispose) => {
+        const store = createEditorStore();
+        store.openFile({ path: 'main.ri', content: '' });
+        const deps = makeDeps(store);
+        const pending = deferred<{ path: string; content: string }>();
+        deps.openFile.mockReturnValueOnce(pending.promise);
+
+        const first = deps.navigate({ file_path: 'gone.ri', line: 1, column: 1, end_line: 1, end_column: 3 });
+        await deps.navigate({ file_path: 'main.ri', line: 6, column: 1, end_line: 6, end_column: 4 });
+        pending.reject(new Error('No such file or directory'));
+        await first;
+
+        expect(deps.reportOpenFailure).not.toHaveBeenCalled();
+        expect(store.state.activeFile).toBe('main.ri');
 
         dispose();
       });

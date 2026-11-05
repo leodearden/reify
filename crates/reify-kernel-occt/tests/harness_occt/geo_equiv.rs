@@ -42,13 +42,13 @@ use reify_kernel_occt::OcctKernel;
 /// Build a kernel with a single box primitive.
 ///
 /// Returns `(kernel, handle_id)`.
-fn box_kernel(width: f64, height: f64, depth: f64) -> (OcctKernel, GeometryHandleId) {
+fn box_kernel(size_x: f64, size_y: f64, size_z: f64) -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(width),
-            height: Value::Real(height),
-            depth: Value::Real(depth),
+            size_x: Value::Real(size_x),
+            size_y: Value::Real(size_y),
+            size_z: Value::Real(size_z),
         })
         .expect("box creation should succeed");
     (kernel, handle.id)
@@ -61,9 +61,9 @@ fn box_and_cylinder_kernel() -> (OcctKernel, GeometryHandleId, GeometryHandleId)
     let mut kernel = OcctKernel::new();
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("box creation should succeed");
     let cyl_handle = kernel
@@ -86,9 +86,9 @@ fn geo_equiv_identical_boxes_returns_true() {
     let (mut kernel, a) = box_kernel(10.0, 10.0, 10.0);
     let b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("second box creation should succeed")
         .id;
@@ -108,9 +108,9 @@ fn geo_equiv_within_tol_boxes_returns_true() {
     let (mut kernel, a) = box_kernel(10.0, 10.0, 10.0);
     let b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0 + 2e-7),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0 + 2e-7),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("slightly-wider box creation should succeed")
         .id;
@@ -134,9 +134,9 @@ fn geo_equiv_gross_displacement_boxes_returns_false() {
     let (mut kernel, a) = box_kernel(10.0, 10.0, 10.0);
     let b = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.02),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.02),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("wider box creation should succeed")
         .id;

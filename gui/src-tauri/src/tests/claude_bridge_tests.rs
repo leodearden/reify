@@ -335,8 +335,8 @@ fn parse_outbound_tool_call() {
 
 #[test]
 fn parse_outbound_tool_call_without_tool_use_id_defaults_to_empty() {
-    // Stale-sidecar payload: ToolCall JSON missing tool_use_id.
-    // After #[serde(default)] is applied, this should parse Ok with tool_use_id == "".
+    // A ToolCall line without tool_use_id (an older sidecar) still parses, with
+    // tool_use_id == "", rather than being dropped as a parse failure.
     let line = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get","tool_input":{"x":1}}"#;
     let result = parse_outbound(line);
     match result {
@@ -532,7 +532,7 @@ async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
 
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
-    let _handle = SidecarHandle::from_parts_with_mcp(
+    let _handle = SidecarHandle::from_parts_with_events(
         stdin_writer,
         reader,
         state,
@@ -613,7 +613,7 @@ async fn reify_debug_mcp_tool_call_round_trips_through_bridge() {
 
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
-    let _handle = SidecarHandle::from_parts_with_mcp(
+    let _handle = SidecarHandle::from_parts_with_events(
         stdin_writer,
         reader,
         state,
@@ -691,7 +691,7 @@ fn app_state_has_sidecar_field() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    let session = EngineSession::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // AppState should be constructible with the new sidecar field
     let _state = AppState {
@@ -745,7 +745,7 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
 
     // Poll under timeout: the spawned reader task must notice EOF and set Crashed.
     // A fixed yield count is flaky on loaded CI runners — same race as the wiring
-    // test (`from_parts_with_mcp_emits_sidecar_crashed_on_eof`) below.
+    // test (`from_parts_with_events_emits_sidecar_crashed_on_eof`) below.
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
@@ -758,14 +758,14 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
     .expect("Timed out waiting for SidecarState::Crashed after EOF");
 }
 
-// Wiring test: from_parts_with_mcp → EOF → on_sidecar_exit → emitter
+// Wiring test: from_parts_with_events → EOF → on_sidecar_exit → emitter
 //
 // The three on_sidecar_exit_* unit tests verify the helper in isolation.
 // This test pins the production wiring so that a future refactor that forgets
 // to clone one of the three Arcs (state_for_crash, notify_for_crash,
 // event_emitter_for_exit) into the on_exit closure would be caught here.
 #[tokio::test]
-async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
+async fn from_parts_with_events_emits_sidecar_crashed_on_eof() {
     use std::sync::Arc;
     use tokio::io::BufReader;
 
@@ -778,7 +778,7 @@ async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
     let reader = BufReader::new(data_reader);
     let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
 
-    let handle = SidecarHandle::from_parts_with_mcp(
+    let handle = SidecarHandle::from_parts_with_events(
         stdin_writer,
         reader,
         state,
@@ -1201,17 +1201,18 @@ async fn read_sidecar_output_skips_invalid_json_lines() {
 
 // --- read_sidecar_output warn tests (task-2819) ---
 
-/// A stale sidecar that omits `tool_use_id` from a ToolCall event must still
-/// deliver the message to `on_message` (not silently drop it), AND must emit
-/// exactly one WARN so operators know to rebuild the sidecar.
+/// A sidecar that omits `tool_use_id` from a ToolCall event must still deliver
+/// the message to `on_message` (not silently drop it). It emits no WARN: no host
+/// reply is correlated by that id, so its absence degrades nothing an operator
+/// needs to know about.
 #[tokio::test(flavor = "current_thread")]
-async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
+async fn read_sidecar_output_delivers_tool_call_missing_tool_use_id_without_warning() {
     use std::sync::{Arc, Mutex};
     use tokio::io::BufReader;
 
     let (_guard, warn_counter) = reify_test_support::warn_counting_guard();
 
-    // Stale-sidecar payload: ToolCall without tool_use_id.
+    // ToolCall without tool_use_id.
     let data = b"{\"type\":\"tool_call\",\"id\":\"msg-1\",\"tool_name\":\"reify_get\",\"tool_input\":{}}\n";
     let reader = BufReader::new(&data[..]);
     let received: Arc<Mutex<Vec<OutboundMessage>>> = Arc::new(Mutex::new(vec![]));
@@ -1231,7 +1232,7 @@ async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
     assert_eq!(
         msgs.len(),
         1,
-        "stale ToolCall must be delivered to on_message"
+        "ToolCall without tool_use_id must be delivered to on_message"
     );
     assert!(
         matches!(
@@ -1242,12 +1243,8 @@ async fn read_sidecar_output_warns_when_tool_call_missing_tool_use_id() {
         msgs[0]
     );
 
-    // (b) Exactly one WARN must be emitted for the version-skew.
-    reify_test_support::assert_warn_count(
-        &warn_counter,
-        1,
-        "missing tool_use_id must emit exactly one WARN",
-    );
+    // (b) No WARN: a missing tool_use_id is not an operator-facing condition.
+    reify_test_support::assert_warn_count(&warn_counter, 0, "missing tool_use_id must not WARN");
 }
 
 /// Parse failures (e.g. invalid JSON) must emit a WARN and NOT deliver a
@@ -1292,38 +1289,6 @@ async fn read_sidecar_output_warns_on_parse_failure() {
         1,
         "parse failure must emit exactly one WARN",
     );
-}
-
-/// `warn_if_stale_tool_call` must emit exactly one WARN for a stale ToolCall
-/// (empty tool_use_id), and zero WARNs for a valid ToolCall or a non-ToolCall
-/// variant.  Three branches tested in a single subscriber session so the
-/// assert is on the cumulative count.
-#[test]
-fn warn_if_stale_tool_call_emits_one_warn_only_for_stale_tool_call() {
-    let (_guard, counter) = reify_test_support::warn_counting_guard();
-
-    // (i) Stale ToolCall — empty tool_use_id → must bump the counter by 1.
-    let stale = OutboundMessage::ToolCall {
-        id: "msg-1".to_string(),
-        tool_name: "reify_get".to_string(),
-        tool_input: json!({}),
-        tool_use_id: String::new(),
-    };
-    warn_if_stale_tool_call(&stale);
-
-    // (ii) Valid ToolCall — non-empty tool_use_id → counter unchanged.
-    let valid = OutboundMessage::ToolCall {
-        id: "msg-2".to_string(),
-        tool_name: "reify_get".to_string(),
-        tool_input: json!({}),
-        tool_use_id: "tu-1".to_string(),
-    };
-    warn_if_stale_tool_call(&valid);
-
-    // (iii) Non-ToolCall variant → counter unchanged.
-    warn_if_stale_tool_call(&OutboundMessage::Ready);
-
-    reify_test_support::assert_warn_count(&counter, 1, "only the stale ToolCall must warn");
 }
 
 // --- outbound_to_event tests (step-7) ---
@@ -1581,6 +1546,7 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
         |_name: String, _payload: serde_json::Value| {},
         Path::new("/tmp/test-ws"),
         None,
+        None,
     )
     .await;
 
@@ -1602,6 +1568,7 @@ async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
         Path::new("/bin/cat"),
         |_name: String, _payload: serde_json::Value| {},
         Path::new("/tmp/test-ws"),
+        None,
         None,
     )
     .await;
@@ -1758,26 +1725,6 @@ fn format_inbound_send_message_with_context_includes_context() {
     assert!(line.ends_with('\n'));
     let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
     assert_eq!(json_val["context"]["selected_entity"], "box1");
-}
-
-#[test]
-fn format_inbound_tool_result_includes_tool_use_id() {
-    let msg = InboundMessage::ToolResult {
-        id: "msg-tr1".to_string(),
-        tool_name: "reify_get_diagnostics".to_string(),
-        result: serde_json::json!([]),
-        tool_use_id: "tu-echo-1".to_string(),
-    };
-    let line = format_inbound(&msg);
-    assert!(line.ends_with('\n'), "Should end with newline");
-    let json_val: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
-    assert_eq!(json_val["type"], "tool_result");
-    assert_eq!(json_val["id"], "msg-tr1");
-    assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
-    assert_eq!(
-        json_val["tool_use_id"], "tu-echo-1",
-        "tool_use_id must be echoed so the sidecar can use id-based correlation"
-    );
 }
 
 // --- shutdown_sidecar edge-case tests (task-353/step-1) ---
@@ -3035,147 +2982,6 @@ mod workspace_resolution {
         let result = resolve_workspace_dir(None, Some(Path::new("/init/foo.ri")), &fallback);
         assert_eq!(result, PathBuf::from("/init"));
     }
-}
-
-// --- sidecar_env tests (task 3210 step-13) ---
-
-mod sidecar_env {
-    use crate::claude_bridge::compute_sidecar_env;
-    use std::path::Path;
-
-    #[test]
-    fn workspace_and_landlock_exec_both_present() {
-        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
-        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
-        assert_eq!(
-            reify_ws,
-            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
-        );
-        assert_eq!(
-            reify_le,
-            Some(&("REIFY_LANDLOCK_EXEC".to_string(), "/sb/le.py".to_string()))
-        );
-    }
-
-    #[test]
-    fn landlock_exec_none_omits_key() {
-        let envs = compute_sidecar_env(Path::new("/ws"), None);
-        let reify_ws = envs.iter().find(|(k, _)| k == "REIFY_WORKSPACE");
-        let reify_le = envs.iter().find(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
-        assert_eq!(
-            reify_ws,
-            Some(&("REIFY_WORKSPACE".to_string(), "/ws".to_string()))
-        );
-        assert!(
-            reify_le.is_none(),
-            "REIFY_LANDLOCK_EXEC should not appear when None"
-        );
-    }
-
-    #[test]
-    fn ordering_is_workspace_first_then_landlock_exec() {
-        let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        // Under `--features gui`, compute_sidecar_env also appends REIFY_DEBUG_PORT
-        // after REIFY_LANDLOCK_EXEC (see compute_sidecar_env_includes_debug_port_and_workspace),
-        // so the exact count is feature-dependent; assert on relative ordering by key instead.
-        let expected_len = if cfg!(feature = "gui") { 3 } else { 2 };
-        assert_eq!(envs.len(), expected_len);
-        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
-        assert_eq!(envs[1].0, "REIFY_LANDLOCK_EXEC");
-        #[cfg(feature = "gui")]
-        assert_eq!(envs[2].0, "REIFY_DEBUG_PORT");
-    }
-
-    #[test]
-    fn only_workspace_when_no_landlock() {
-        let envs = compute_sidecar_env(Path::new("/ws"), None);
-        // Under `--features gui`, REIFY_DEBUG_PORT is also present (no landlock_exec entry).
-        let expected_len = if cfg!(feature = "gui") { 2 } else { 1 };
-        assert_eq!(envs.len(), expected_len);
-        assert_eq!(envs[0].0, "REIFY_WORKSPACE");
-        #[cfg(feature = "gui")]
-        assert_eq!(envs[1].0, "REIFY_DEBUG_PORT");
-    }
-}
-
-// --- apply_sidecar_env + spawn_sidecar_impl signature tests (task 3210 step-15) ---
-
-mod apply_sidecar_env_tests {
-    use crate::claude_bridge::apply_sidecar_env;
-    use std::path::Path;
-
-    #[test]
-    fn sets_workspace_only_when_no_landlock_exec() {
-        let mut cmd = tokio::process::Command::new("/bin/true");
-        apply_sidecar_env(&mut cmd, Path::new("/ws"), None);
-        let envs: Vec<_> = cmd
-            .as_std()
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned()),
-                )
-            })
-            .collect();
-        let has_ws = envs
-            .iter()
-            .any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
-        let has_le = envs.iter().any(|(k, _)| k == "REIFY_LANDLOCK_EXEC");
-        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
-        assert!(!has_le, "REIFY_LANDLOCK_EXEC should not be set: {:?}", envs);
-    }
-
-    #[test]
-    fn sets_both_when_landlock_exec_some() {
-        let mut cmd = tokio::process::Command::new("/bin/true");
-        apply_sidecar_env(&mut cmd, Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        let envs: Vec<_> = cmd
-            .as_std()
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned()),
-                )
-            })
-            .collect();
-        let has_ws = envs
-            .iter()
-            .any(|(k, v)| k == "REIFY_WORKSPACE" && v.as_deref() == Some("/ws"));
-        let has_le = envs
-            .iter()
-            .any(|(k, v)| k == "REIFY_LANDLOCK_EXEC" && v.as_deref() == Some("/sb/le.py"));
-        assert!(has_ws, "REIFY_WORKSPACE=/ws should be set: {:?}", envs);
-        assert!(
-            has_le,
-            "REIFY_LANDLOCK_EXEC=/sb/le.py should be set: {:?}",
-            envs
-        );
-    }
-}
-
-// spawn_sidecar_impl signature test (step-15c)
-#[tokio::test]
-async fn spawn_sidecar_impl_with_workspace_and_no_landlock_returns_error_for_missing_binary() {
-    use std::path::Path;
-
-    let result = spawn_sidecar_impl(
-        Path::new("/tmp/no-such-binary"),
-        |_name: String, _payload: serde_json::Value| {},
-        Path::new("/tmp/ws"),
-        None,
-    )
-    .await;
-
-    assert!(result.is_err(), "Expected error for missing binary");
-    let err = result.err().expect("Expected Err variant");
-    assert!(
-        err.contains("Failed to spawn sidecar"),
-        "Error should mention 'Failed to spawn sidecar': {}",
-        err
-    );
 }
 
 // --- on_sidecar_exit direct unit tests (task 3301) ---

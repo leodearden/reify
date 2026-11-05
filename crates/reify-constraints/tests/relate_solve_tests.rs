@@ -22,78 +22,34 @@
 //! are already satisfied at the identity witness (`Pose::identity()`). That keeps
 //! the residual ≈ 0 and the Jacobian rows clean closed-forms, so the expected ranks
 //! are exact integer codimensions (design §5: DOF figures are exact codimensions,
-//! never tuned epsilons). The numeric rank tolerance [`TOL`] only has to separate a
-//! genuinely-zero column (an unconstrained DOF) from an O(1) gradient entry.
+//! never tuned epsilons). The partition's rank cutoff on the scaled Jacobian
+//! ([`SolveScaling::rank_threshold`]) only has to separate a genuinely-zero column
+//! (an unconstrained DOF) from an O(1) gradient entry.
 
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, ResidualUnit,
-    comparable_datum_operands, max_relation_residual, partition_driving_set, pose_from_frame,
-    solve_frame, static_relation_residuals,
+    FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
+    max_relation_exceedance, partition_driving_set, pose_from_frame, static_relation_residuals,
 };
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
 use reify_ir::{SolveResult, Value};
 
-/// Numeric rank-revealing tolerance handed to the partition. The Jacobian entries
-/// are O(1) (unit directions) to O(1) (metre translations); an unconstrained DOF
-/// shows up as an exactly-zero column (equal residuals up to float noise), so a
-/// coarse 1e-6 cleanly separates rank-5 from rank-6.
-const TOL: f64 = 1e-6;
+mod common;
 
-// ── synthetic realized-datum builders ───────────────────────────────────────
+use common::{
+    axis, b5_relations, bolt_unknown, datum, dir, fully_determined_relations, plane, point3,
+    relation, scaling_for, solve_frame_result, unknown, vec3,
+};
 
-fn point3(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
-}
-
-fn vec3(x: f64, y: f64, z: f64) -> Value {
-    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-}
-
-/// A `Value::Axis` from an origin point (metres) + a direction vector.
-fn axis(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
-    Value::Axis {
-        origin: Box::new(point3(o.0, o.1, o.2)),
-        direction: Box::new(vec3(d.0, d.1, d.2)),
-    }
-}
-
-/// A `Value::Plane` from an origin point (metres) + a unit normal vector.
-fn plane(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
-    Value::Plane {
-        origin: Box::new(point3(o.0, o.1, o.2)),
-        normal: Box::new(vec3(n.0, n.1, n.2)),
-    }
-}
-
-/// A dimensionless `Value::Direction`.
-fn dir(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
-}
-
-/// A datum operand belonging to sub `sub` (so the partition transforms it by the
-/// witness Frame iff `sub` is the auto unknown).
-fn datum(sub: &str, value: Value) -> Operand {
-    Operand {
-        sub: Some(sub.to_string()),
-        datum: value,
-    }
-}
-
-/// A relation instance: name, ordered operands, and the γ-published nominal ΔDOF
-/// (codimension) the partition cross-checks its measured per-relation rank against.
-fn relation(name: &str, operands: Vec<Operand>, nominal_delta_dof: u32) -> RelationInstance {
-    RelationInstance {
-        name: name.to_string(),
-        operands,
-        nominal_delta_dof: Some(nominal_delta_dof),
-    }
-}
-
-/// The auto Frame unknown for sub `"bolt"` (the §1 moving sub).
-fn bolt_unknown() -> FrameUnknown {
-    FrameUnknown {
-        sub: "bolt".to_string(),
-        free: false,
-    }
+/// The largest `|r_i|` over every row of `relations` at `pose`, blind to each row's
+/// unit. Only for the closed-form residual tests here, which compare against a
+/// near-zero or O(1) separator; a pose is judged with [`max_relation_exceedance`]
+/// against per-unit bars.
+fn max_relation_residual(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    pose: &Pose,
+) -> f64 {
+    max_relation_exceedance(relations, unknown, pose, |_| 1.0)
 }
 
 /// The §1 driving relations (B1): `concentric(bolt.shank, plate.hole)` +
@@ -184,7 +140,12 @@ fn m_unknown() -> FrameUnknown {
 #[test]
 fn partition_b1_concentric_flush_spends_five_residual_one() {
     let relations = b1_relations();
-    let p = partition_driving_set(&relations, &bolt_unknown(), &Pose::identity(), TOL);
+    let p = partition_driving_set(
+        &relations,
+        &bolt_unknown(),
+        &Pose::identity(),
+        &scaling_for(&relations, &bolt_unknown(), &Pose::identity()),
+    );
 
     assert_eq!(
         p.driving.len(),
@@ -211,7 +172,12 @@ fn partition_b1_concentric_flush_spends_five_residual_one() {
 #[test]
 fn partition_b2_three_relations_rank_two() {
     let relations = b2_relations();
-    let p = partition_driving_set(&relations, &m_unknown(), &Pose::identity(), TOL);
+    let p = partition_driving_set(
+        &relations,
+        &m_unknown(),
+        &Pose::identity(),
+        &scaling_for(&relations, &m_unknown(), &Pose::identity()),
+    );
 
     assert_eq!(p.driving.len(), 2, "two independent rows ⇒ driving set size 2: {:?}", p.driving);
     assert_eq!(
@@ -240,9 +206,19 @@ fn partition_b2_three_relations_rank_two() {
 fn partition_is_order_independent() {
     // B2: reverse order [rel2, rel1, rel0].
     let mut b2 = b2_relations();
-    let forward = partition_driving_set(&b2, &m_unknown(), &Pose::identity(), TOL);
+    let forward = partition_driving_set(
+        &b2,
+        &m_unknown(),
+        &Pose::identity(),
+        &scaling_for(&b2, &m_unknown(), &Pose::identity()),
+    );
     b2.reverse();
-    let reversed = partition_driving_set(&b2, &m_unknown(), &Pose::identity(), TOL);
+    let reversed = partition_driving_set(
+        &b2,
+        &m_unknown(),
+        &Pose::identity(),
+        &scaling_for(&b2, &m_unknown(), &Pose::identity()),
+    );
     assert_eq!(
         (forward.driving.len(), forward.redundant.len(), forward.spent),
         (reversed.driving.len(), reversed.redundant.len(), reversed.spent),
@@ -253,7 +229,12 @@ fn partition_is_order_independent() {
     // B1: swap order [flush, concentric].
     let mut b1 = b1_relations();
     b1.reverse();
-    let swapped = partition_driving_set(&b1, &bolt_unknown(), &Pose::identity(), TOL);
+    let swapped = partition_driving_set(
+        &b1,
+        &bolt_unknown(),
+        &Pose::identity(),
+        &scaling_for(&b1, &bolt_unknown(), &Pose::identity()),
+    );
     assert_eq!(swapped.driving.len(), 2, "both relations still drive when swapped");
     assert_eq!(swapped.redundant.len(), 0);
     assert_eq!(swapped.spent, 5, "B1 spends 5 DOF regardless of order");
@@ -278,7 +259,12 @@ fn partition_is_order_independent() {
 fn partition_per_relation_delta_dof_cross_checks_gamma() {
     // B1: concentric (nominal 4) + flush (nominal 3).
     let b1 = b1_relations();
-    let p1 = partition_driving_set(&b1, &bolt_unknown(), &Pose::identity(), TOL);
+    let p1 = partition_driving_set(
+        &b1,
+        &bolt_unknown(),
+        &Pose::identity(),
+        &scaling_for(&b1, &bolt_unknown(), &Pose::identity()),
+    );
     assert_eq!(p1.per_relation.len(), 2);
     for rr in &p1.per_relation {
         let nominal = rr.nominal_delta_dof.expect("γ codimension is carried for §1 relations");
@@ -296,7 +282,12 @@ fn partition_per_relation_delta_dof_cross_checks_gamma() {
 
     // B2: each perpendicular has nominal + measured rank 1.
     let b2 = b2_relations();
-    let p2 = partition_driving_set(&b2, &m_unknown(), &Pose::identity(), TOL);
+    let p2 = partition_driving_set(
+        &b2,
+        &m_unknown(),
+        &Pose::identity(),
+        &scaling_for(&b2, &m_unknown(), &Pose::identity()),
+    );
     assert_eq!(p2.per_relation.len(), 3);
     for rr in &p2.per_relation {
         assert_eq!(rr.individual_rank, 1, "perpendicular removes 1 angular DOF");
@@ -304,9 +295,9 @@ fn partition_per_relation_delta_dof_cross_checks_gamma() {
     }
 }
 
-// ── step-9 RED: solve_frame drives the auto Frame to satisfy the driving set ──
+// ── step-9 RED: the Frame solve drives the auto Frame to satisfy the driving set ──
 //
-// `solve_frame(driving, frame_unknown, seed, tol)` takes the partition's driving set
+// `solve_frame_result(driving, frame_unknown, seed, scaling)` takes the partition's driving set
 // over realized datums + the 6-DOF Frame unknown + a seed pose, and returns a
 // `SolveResult::Solved { values, unique }` whose solved Frame satisfies every driving
 // relation within the solver convergence tolerance. The synthetic §1 scenario starts
@@ -350,11 +341,11 @@ fn b1_solve_relations() -> Vec<RelationInstance> {
 fn solve_frame_b1_converges_within_solver_tol() {
     let relations = b1_solve_relations();
     let tol = RelateTolerance::kernel_default();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &bolt_unknown(),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &bolt_unknown(), &Pose::identity()),
     );
 
     let values = match result {
@@ -368,15 +359,14 @@ fn solve_frame_b1_converges_within_solver_tol() {
         "the 6 solved scalars assemble into a Value::Frame, got {frame:?}"
     );
 
-    // Method guarantee: at the solved pose every driving relation is satisfied within
-    // the solver convergence tolerance (concentric coaxial + flush coplanar).
+    // Method guarantee: at the solved pose every driving relation row is within its
+    // own nominal tolerance (concentric coaxial + flush coplanar), i.e. max|r̃| ≤ 1.
     let pose = pose_from_frame(frame).expect("solved Frame converts back to a Pose");
-    let resid = max_relation_residual(&relations, &bolt_unknown(), &pose);
-    assert!(
-        resid <= tol.solver_convergence(),
-        "solved residual {resid} must be ≤ solver convergence {}",
-        tol.solver_convergence()
-    );
+    let scaling = scaling_for(&relations, &bolt_unknown(), &Pose::identity());
+    let exceedance = max_relation_exceedance(&relations, &bolt_unknown(), &pose, |u| {
+        scaling.row_tolerance(u)
+    });
+    assert!(exceedance <= 1.0, "solved max|r̃| {exceedance} must be ≤ 1");
 
     // The recovered transform is the expected seat (translation pinned; spin is the
     // lone gauge freedom, left at the identity seed). Checked within the (looser)
@@ -386,32 +376,9 @@ fn solve_frame_b1_converges_within_solver_tol() {
     assert!((pose.translation[2] - 0.045).abs() <= tol.assertion(), "tz: {:?}", pose.translation);
 }
 
-/// The single kernel-defaulted `Length` knob governs the whole tolerance hierarchy:
-/// `kernel_local ≤ solver_convergence ≤ assertion/dedup` (PRD §7.1 coherence law).
-/// Numeric boundary assertions test against the solver's OWN convergence guarantee,
-/// never a hand-picked epsilon — so the ordering must hold by construction.
-#[test]
-fn solve_frame_single_knob_tolerance_hierarchy() {
-    let tol = RelateTolerance::kernel_default();
-    assert!(
-        tol.kernel_local() <= tol.solver_convergence(),
-        "kernel-local {} must be ≤ solver convergence {}",
-        tol.kernel_local(),
-        tol.solver_convergence()
-    );
-    assert!(
-        tol.solver_convergence() <= tol.assertion(),
-        "solver convergence {} must be ≤ assertion/dedup {}",
-        tol.solver_convergence(),
-        tol.assertion()
-    );
-    // All three are strictly-positive lengths (metres).
-    assert!(tol.kernel_local() > 0.0, "tolerances are positive lengths");
-}
-
 // ── step-11 RED: auto(free) + residual seeding + seed bias (B5) ───────────────
 //
-// The `free` flag on the Frame unknown + the seed `Pose` change how `solve_frame`
+// The `free` flag on the Frame unknown + the seed `Pose` change how the Frame solve
 // reports and seeds a residual DOF (PRD §7.1 step 3):
 //   * `auto(free)` waives the uniqueness check — even a fully-determined system
 //     returns `unique:false`; a residual DOF is seeded to a CONCRETE value (the
@@ -424,68 +391,16 @@ fn solve_frame_single_knob_tolerance_hierarchy() {
 // RED until step-12 adds the `free` field to `FrameUnknown` + the free/seed wiring
 // (the `unknown(sub, free)` helper references the not-yet-existing field).
 
-/// A Frame unknown for `sub` with the given `free` flag (`auto` vs `auto(free)`).
-fn unknown(sub: &str, free: bool) -> FrameUnknown {
-    FrameUnknown {
-        sub: sub.to_string(),
-        free,
-    }
-}
-
-/// A fully-determined (rank-6) synthetic scenario for the moving sub `"m"`:
-/// `coincident(point,point)` pins 3 translation DOF; `parallel(+z,+z)` pins 2 tilt
-/// DOF; `parallel(+x,+x)` pins the remaining spin — all 6 Frame DOF determined, all
-/// already satisfied at the identity witness.
-fn fully_determined_relations() -> Vec<RelationInstance> {
-    vec![
-        relation(
-            "coincident",
-            vec![
-                datum("m", point3(0.0, 0.0, 0.0)),
-                datum("a", point3(0.0, 0.0, 0.0)),
-            ],
-            3,
-        ),
-        relation(
-            "parallel",
-            vec![datum("m", dir(0.0, 0.0, 1.0)), datum("a", dir(0.0, 0.0, 1.0))],
-            2,
-        ),
-        relation(
-            "parallel",
-            vec![datum("m", dir(1.0, 0.0, 0.0)), datum("a", dir(1.0, 0.0, 0.0))],
-            2,
-        ),
-    ]
-}
-
-/// B5 — a single `concentric(axis,axis)` leaving a residual DOF. The moving bolt's
-/// LOCAL shank axis sits at the origin; the fixed plate hole axis is offset by
-/// `(0.10, 0.20)` in-plane, both `+z`. concentric pins {2 tilt, 2 perp-position} = 4
-/// DOF; the 2 residual DOF are slide-along-axis (`tz`) + spin-about-axis (`rot_z`).
-fn b5_relations() -> Vec<RelationInstance> {
-    vec![relation(
-        "concentric",
-        vec![
-            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
-            datum("plate", axis((0.10, 0.20, 0.0), (0.0, 0.0, 1.0))),
-        ],
-        4,
-    )]
-}
-
 /// The `free` flag waives uniqueness: a rank-6 system is `unique:true` under strict
 /// `auto` but `unique:false` under `auto(free)` (the perturbation check is skipped).
 #[test]
 fn solve_frame_free_flag_waives_uniqueness() {
     let relations = fully_determined_relations();
-    let tol = RelateTolerance::kernel_default();
-
-    let strict = solve_frame(
+    let strict = solve_frame_result(
         &relations,
         &unknown("m", false),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &unknown("m", false), &Pose::identity()),
     );
     match strict {
         SolveResult::Solved { unique, .. } => {
@@ -494,11 +409,11 @@ fn solve_frame_free_flag_waives_uniqueness() {
         other => panic!("expected Solved, got {other:?}"),
     }
 
-    let free = solve_frame(
+    let free = solve_frame_result(
         &relations,
         &unknown("m", true),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &unknown("m", true), &Pose::identity()),
     );
     match free {
         SolveResult::Solved { unique, .. } => {
@@ -514,13 +429,11 @@ fn solve_frame_free_flag_waives_uniqueness() {
 #[test]
 fn solve_frame_free_residual_is_fully_numeric() {
     let relations = b5_relations();
-    let tol = RelateTolerance::kernel_default();
-
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &unknown("bolt", true), &Pose::identity()),
     );
     let (values, unique) = match result {
         SolveResult::Solved { values, unique } => (values, unique),
@@ -538,7 +451,7 @@ fn solve_frame_free_residual_is_fully_numeric() {
         &relations,
         &unknown("bolt", true),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &unknown("bolt", true), &Pose::identity()),
     );
     assert_eq!(part.free, 2, "concentric leaves slide + spin = 2 residual DOF");
 }
@@ -549,13 +462,11 @@ fn solve_frame_free_residual_is_fully_numeric() {
 #[test]
 fn solve_frame_strict_residual_signals_under_determined() {
     let relations = b5_relations();
-    let tol = RelateTolerance::kernel_default();
-
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", false),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &unknown("bolt", false), &Pose::identity()),
     );
     match result {
         SolveResult::Solved { unique, .. } => {
@@ -568,7 +479,7 @@ fn solve_frame_strict_residual_signals_under_determined() {
         &relations,
         &unknown("bolt", false),
         &Pose::identity(),
-        tol.solver_convergence(),
+        &scaling_for(&relations, &unknown("bolt", false), &Pose::identity()),
     );
     assert_eq!(part.free, 2, "the under-determined signal carries the residual DOF count");
 }
@@ -585,7 +496,12 @@ fn solve_frame_seed_biases_residual_dof() {
         translation: [0.0, 0.0, 0.05],
         rotation: [0.0, 0.0, 0.3],
     };
-    let result = solve_frame(&relations, &unknown("bolt", true), &seed, tol.solver_convergence());
+    let result = solve_frame_result(
+        &relations,
+        &unknown("bolt", true),
+        &seed,
+        &scaling_for(&relations, &unknown("bolt", true), &seed),
+    );
     let values = match result {
         SolveResult::Solved { values, .. } => values,
         other => panic!("expected Solved, got {other:?}"),
@@ -829,7 +745,7 @@ fn fasten_codimension_is_six() {
         std::slice::from_ref(&rel),
         &a_unknown(),
         &Pose::identity(),
-        TOL,
+        &scaling_for(std::slice::from_ref(&rel), &a_unknown(), &Pose::identity()),
     );
 
     assert_eq!(p.per_relation.len(), 1);
@@ -866,11 +782,11 @@ fn fasten_solve_grounds_sub_to_identity() {
         rotation: [0.1, -0.05, 0.2],
     };
 
-    let result = solve_frame(
+    let result = solve_frame_result(
         std::slice::from_ref(&rel),
         &a_unknown(),
         &seed,
-        tol.solver_convergence(),
+        &scaling_for(std::slice::from_ref(&rel), &a_unknown(), &seed),
     );
     let (values, unique) = match result {
         SolveResult::Solved { values, unique } => (values, unique),
@@ -904,13 +820,13 @@ fn fasten_solve_grounds_sub_to_identity() {
         );
     }
 
-    // The residual at the solved pose meets the solver-convergence guarantee.
-    let resid = max_relation_residual(std::slice::from_ref(&rel), &a_unknown(), &pose);
-    assert!(
-        resid <= tol.solver_convergence(),
-        "solved residual {resid} must be ≤ solver convergence {}",
-        tol.solver_convergence()
-    );
+    // Every row at the solved pose meets its own nominal tolerance, max|r̃| ≤ 1.
+    let scaling = scaling_for(std::slice::from_ref(&rel), &a_unknown(), &seed);
+    let exceedance =
+        max_relation_exceedance(std::slice::from_ref(&rel), &a_unknown(), &pose, |u| {
+            scaling.row_tolerance(u)
+        });
+    assert!(exceedance <= 1.0, "solved max|r̃| {exceedance} must be ≤ 1");
 }
 
 // ── task 5540 step-5 RED: tangent residuals + rank ───────────────────────────
@@ -951,7 +867,7 @@ fn tangent(operands: Vec<Operand>, nominal_delta_dof: u32) -> RelationInstance {
 }
 
 /// The exact-algebra tolerance for a residual closed form. Unlike the rank
-/// tolerance [`TOL`] (which absorbs finite-difference noise in the Jacobian),
+/// cutoff (which absorbs finite-difference noise in the Jacobian),
 /// residual evaluation is straight-line arithmetic on the operand values, so the
 /// only slack needed is float round-off.
 const EXACT: f64 = 1e-12;
@@ -973,7 +889,11 @@ fn measured_rank(rel: &RelationInstance) -> u32 {
         std::slice::from_ref(rel),
         &tangent_unknown(),
         &Pose::identity(),
-        TOL,
+        &scaling_for(
+            std::slice::from_ref(rel),
+            &tangent_unknown(),
+            &Pose::identity(),
+        ),
     )
     .per_relation[0]
         .individual_rank
@@ -1434,7 +1354,11 @@ fn tangent_measured_rank_matches_the_published_delta_dof_table() {
             std::slice::from_ref(&rel),
             &tangent_unknown(),
             &Pose::identity(),
-            TOL,
+            &scaling_for(
+                std::slice::from_ref(&rel),
+                &tangent_unknown(),
+                &Pose::identity(),
+            ),
         );
         let measured = part.per_relation[0].individual_rank;
         assert_eq!(

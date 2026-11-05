@@ -11,8 +11,9 @@
 //   shell = isosurface(solid, iso: 3mm) — voxelizes `solid` (Mesh→Voxel on
 //   OpenVDB) and surfaces an offset shell at iso=3mm (0.003m) via marching
 //   cubes (Voxel→Mesh on OpenVDB). 3mm lies within the ~0.01m narrow band of
-//   a 20mm box (narrow_band * h >= longest_extent/2,
-//   crates/reify-kernel-openvdb/src/kernel_real.rs:623-628), so this is a
+//   a 20mm box (narrow_band * h >= longest_extent/2, computed by
+//   `MeshToVoxelOptions::honest_floor`,
+//   crates/reify-kernel-openvdb/src/mesh_to_voxel_options.rs), so this is a
 //   valid non-empty offset surface — distinct from the default iso=0mm
 //   surface in examples/multi_kernel/voxel_to_mesh.ri.
 //

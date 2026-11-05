@@ -71,6 +71,50 @@ pub(crate) fn cylindrical_z_joint() -> Value {
     )
 }
 
+fn symmetric_length_range(half_width_m: f64) -> Value {
+    Value::Range {
+        lower: Some(Box::new(Value::length(-half_width_m))),
+        upper: Some(Box::new(Value::length(half_width_m))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    }
+}
+
+fn symmetric_angle_range(half_width_rad: f64) -> Value {
+    Value::Range {
+        lower: Some(Box::new(Value::angle(-half_width_rad))),
+        upper: Some(Box::new(Value::angle(half_width_rad))),
+        lower_inclusive: true,
+        upper_inclusive: true,
+    }
+}
+
+/// Planar XY joint whose range midpoint (its cold Newton seed) is `Planar([0, 0, 0])`.
+pub(crate) fn planar_xy_joint_centred() -> Value {
+    eval_builtin(
+        "planar",
+        &[
+            axis_x_unit(),
+            axis_y_unit(),
+            symmetric_length_range(2.0),
+            symmetric_length_range(2.0),
+            symmetric_angle_range(std::f64::consts::FRAC_PI_2),
+        ],
+    )
+}
+
+/// Cylindrical Z joint whose range midpoint (its cold Newton seed) is `Cyl([0, 0])`.
+pub(crate) fn cylindrical_z_joint_centred() -> Value {
+    eval_builtin(
+        "cylindrical",
+        &[
+            axis_z_unit(),
+            symmetric_length_range(1.0),
+            symmetric_angle_range(std::f64::consts::FRAC_PI_2),
+        ],
+    )
+}
+
 // ── KIN-OFFSET γ shared offset fixtures ──────────────────────────────────────
 //
 // Shared offset-joint constructors used by the joints/loop_closure/snapshot/
@@ -137,4 +181,28 @@ pub(crate) fn body_world_transform(snap: &Value, idx: usize) -> &Value {
     };
     body.get(&Value::String("world_transform".to_string()))
         .expect("body record must carry world_transform")
+}
+
+/// The single loop's `free_values` row of a `snapshot` result, panicking with
+/// `label` when the snapshot is not a one-loop Snapshot Map of Real leaves.
+pub(crate) fn single_loop_free_row(snap: &Value, label: &str) -> Vec<f64> {
+    let smap = match snap {
+        Value::Map(m) => m,
+        other => panic!("{label}: expected Snapshot Map, got {other:?}"),
+    };
+    let loops = match smap.get(&Value::String("free_values".to_string())) {
+        Some(Value::List(l)) => l,
+        other => panic!("{label}: free_values must be a List, got {other:?}"),
+    };
+    assert_eq!(loops.len(), 1, "{label}: exactly one loop closure expected");
+    match &loops[0] {
+        Value::List(row) => row
+            .iter()
+            .map(|leaf| match leaf {
+                Value::Real(r) => *r,
+                other => panic!("{label}: free_values leaf must be Real, got {other:?}"),
+            })
+            .collect(),
+        other => panic!("{label}: free_values[0] must be a List, got {other:?}"),
+    }
 }

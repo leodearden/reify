@@ -153,16 +153,19 @@ make_fixture() {
     mkdir -p "$dir/scripts"
     cp "$REPO_ROOT/scripts/verify.sh" "$dir/scripts/verify.sh"
     cp "$REPO_ROOT/scripts/occt-scope-lib.sh" "$dir/scripts/occt-scope-lib.sh"
+    cp "$REPO_ROOT/scripts/reify_path_attribution.py" "$dir/scripts/reify_path_attribution.py"
     cp "$REPO_ROOT/scripts/occt-touching-crates.txt" "$dir/scripts/occt-touching-crates.txt"
     cp "$REPO_ROOT/scripts/release-scope-lib.sh" "$dir/scripts/release-scope-lib.sh"
     cp "$REPO_ROOT/scripts/release-sensitive-crates.txt" "$dir/scripts/release-sensitive-crates.txt"
     cp "$REPO_ROOT/scripts/affected-crates-lib.sh" "$dir/scripts/affected-crates-lib.sh"
     cp "$REPO_ROOT/scripts/lib_test_semaphore.sh" "$dir/scripts/lib_test_semaphore.sh"
     cp "$REPO_ROOT/scripts/lib_slot_acquire.sh" "$dir/scripts/lib_slot_acquire.sh"
+    cp "$REPO_ROOT/scripts/lib_event_log.sh"    "$dir/scripts/lib_event_log.sh"
     cp "$REPO_ROOT/scripts/lib_clock_stop.sh"   "$dir/scripts/lib_clock_stop.sh"
     cp "$REPO_ROOT/scripts/cpu-admit.sh" "$dir/scripts/cpu-admit.sh"
     cp "$REPO_ROOT/scripts/lib_proc_reaper.sh" "$dir/scripts/lib_proc_reaper.sh"
     cp "$REPO_ROOT/scripts/lib_git_env_scrub.sh" "$dir/scripts/lib_git_env_scrub.sh"
+    cp "$REPO_ROOT/scripts/lib_main_checkout.sh" "$dir/scripts/lib_main_checkout.sh"
     cp "$REPO_ROOT/scripts/gen-nextest-config.sh" "$dir/scripts/gen-nextest-config.sh"
     cp "$REPO_ROOT/scripts/heavy-test-filter-lib.sh" "$dir/scripts/heavy-test-filter-lib.sh"
     cp "$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt" "$dir/scripts/verify-pipeline-infra-tests.txt"
@@ -433,12 +436,11 @@ assert "S6 knob-on/merge/real-merge/no-override: delta-clean marker ABSENT" _lac
 echo ""
 echo "--- ACTIVATION (task ζ): REIFY_RELEASE_DELTA_SKIP durable verify_env wiring ---"
 
-# verify_env_exports — parse KEY=VALUE from the yaml verify_env block. Mirrored
-# VERBATIM from tests/infra/test_verify_env_ambient_isolation.sh:59-85 (task
-# 4966's drift-guard; the established 3-copy convention — no shared lib
-# exists) as a reuse-note, NOT extracted to a shared lib, to avoid editing
-# that live merge-gate guard file (out of this task's declared scope).
-# Refresh all copies together if the awk logic ever changes.
+# verify_env_exports — parse KEY=VALUE from the yaml verify_env block: the awk
+# form of the parse contract stated in the docstring of
+# test_verify_env_ambient_isolation.py::verify_env_exports. Identical copies
+# live in other members (`git grep -n '^verify_env_exports() {' -- tests/infra`);
+# change every copy and that function together.
 verify_env_exports() {
     local yaml_file="$1"
     awk '

@@ -333,8 +333,8 @@ pub(crate) fn marker_closed_region(
 }
 
 /// The names a CATALOGUE TABLE's rows are about — one entry per markdown row, in
-/// document order. geometry.md carries two: the length-argument catalogue and
-/// the topology-selector catalogue.
+/// document order. geometry.md carries the length-argument catalogue and
+/// topology.md the topology-selector catalogue.
 ///
 /// FIRST COLUMN ONLY, and that is the whole point of the scan rather than a
 /// simplification of it. A catalogue's claim is made by the row's subject: the
@@ -1011,10 +1011,10 @@ fn catalogue_table_rows_reads_the_first_cell_and_strips_a_call_form() {
 /// A cell naming two constructors yields both, and a `|`-leading line with no
 /// backticked identifier yields no ROW at all.
 ///
-/// The row count is an anti-vacuity floor in `geometry_chunk_smoke.rs`'s
-/// catalogue checks, so what counts as a row is load-bearing: a header or
-/// delimiter line that slipped into the count would let a real catalogue row be
-/// deleted while the floor stayed satisfied.
+/// The row count is an anti-vacuity floor in `geometry_chunk_smoke.rs`'s and
+/// `topology_chunk_smoke.rs`'s catalogue checks, so what counts as a row is
+/// load-bearing: a header or delimiter line that slipped into the count would
+/// let a real catalogue row be deleted while the floor stayed satisfied.
 #[test]
 fn catalogue_table_rows_splits_a_shared_cell_and_drops_a_rowless_line() {
     let table = "\

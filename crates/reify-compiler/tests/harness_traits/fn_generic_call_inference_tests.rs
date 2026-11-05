@@ -12,7 +12,10 @@
 //! read via `reify_test_support::get_let_expr`.
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
-use reify_test_support::{compile_source, get_let_expr};
+use reify_test_support::{
+    assert_error_code_present, cell_value, compile_source, errors_only, eval_source, get_let_expr,
+    get_value_cell_in,
+};
 
 // ── step-5 (ii): overload resolution selects the generic candidate ───────────
 
@@ -367,5 +370,191 @@ fn dim_param_unbound_bare_result_emits_unresolved_diagnostic() {
         "mk(3.0) with bare unbound ScalarParam result should emit FnTypeArgUnresolved; \
          got diagnostics: {:?}",
         module.diagnostics
+    );
+}
+
+// ── task 8232: default-padded generic call ───────────────────────────────────
+
+/// A default-padded call to a generic fn (`keep(5mm)`, `k` omitted) substitutes
+/// the return type like the full-arity call: the call expression and its value
+/// cell both carry `Scalar<LENGTH>`, never the raw `TypeParam("T")`.
+#[test]
+fn generic_default_padded_call_substitutes_return_type() {
+    let module = compile_source(
+        "fn keep<T>(x: T, k: Real = 2.0) -> T { x } structure S { let v = keep(5mm) }",
+    );
+
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "expected no Error diagnostics for keep(5mm), got: {errors:?}"
+    );
+
+    let v_expr = get_let_expr(&module, "v");
+    match &v_expr.kind {
+        reify_ir::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
+            assert_eq!(function_name, "keep");
+            assert_eq!(args.len(), 2, "default-padding must supply `k`");
+        }
+        other => panic!("expected UserFunctionCall for keep(5mm), got {other:?}"),
+    }
+    assert_eq!(
+        v_expr.result_type,
+        Type::length(),
+        "keep(5mm) result_type should be substituted to Scalar<LENGTH>, got {:?}",
+        v_expr.result_type
+    );
+
+    let v_cell = get_value_cell_in(&module, "S", "v");
+    assert_eq!(
+        v_cell.cell_type,
+        Type::length(),
+        "value cell `v` cell_type should be Scalar<LENGTH>, got {:?}",
+        v_cell.cell_type
+    );
+}
+
+/// Evaluating a structure whose cell is a default-padded generic call reaches
+/// the engine without tripping its representable-cell-type assertion and
+/// yields the argument's value.
+#[test]
+fn generic_default_padded_call_evaluates_without_panic() {
+    let result = eval_source(
+        "fn keep<T>(x: T, k: Real = 2.0) -> T { x } \
+         structure S { let v = keep(5mm)  constraint v > 1mm }",
+    );
+
+    assert_eq!(
+        cell_value(&result, "S", "v"),
+        reify_ir::Value::Scalar {
+            si_value: 0.005,
+            dimension: DimensionVector::LENGTH,
+        },
+        "keep(5mm) should evaluate to the 5mm length scalar"
+    );
+}
+
+/// A default-padded generic call whose provided args bind one type parameter to
+/// two types emits `FnTypeArgConflict` naming `'T'` and poisons the call.
+#[test]
+fn generic_default_padded_call_conflicting_args_emits_conflict_diagnostic() {
+    let module = compile_source(
+        "fn pr<T>(a: T, b: T, k: Real = 2.0) -> T { a } structure S { let v = pr(1, 1.5) }",
+    );
+
+    let Some(diag) = module
+        .diagnostics
+        .iter()
+        .find(|d| d.code == Some(DiagnosticCode::FnTypeArgConflict))
+    else {
+        panic!(
+            "expected a FnTypeArgConflict diagnostic for pr(1, 1.5); got diagnostics: {:?}",
+            module.diagnostics
+        );
+    };
+    assert!(
+        diag.message.contains("'T'"),
+        "FnTypeArgConflict message should reference the conflicting param \"'T'\" (quoted), got: {:?}",
+        diag.message
+    );
+    assert_eq!(
+        get_let_expr(&module, "v").result_type,
+        Type::Error,
+        "a conflicting padded call must be poisoned, not leak a TypeParam"
+    );
+}
+
+/// A default-padded generic call whose result type no provided arg pins
+/// (`mkp()` → bare `T`) emits `FnTypeArgUnresolved` and poisons the call.
+#[test]
+fn generic_default_padded_call_bare_unbound_emits_unresolved_diagnostic() {
+    let module =
+        compile_source("fn mkp<T>(k: Real = 2.0) -> T { k } structure S { let v = mkp() }");
+
+    assert!(
+        module
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::FnTypeArgUnresolved)),
+        "expected a FnTypeArgUnresolved diagnostic for mkp(); got diagnostics: {:?}",
+        module.diagnostics
+    );
+    assert_eq!(
+        get_let_expr(&module, "v").result_type,
+        Type::Error,
+        "an unresolved padded call must be poisoned, not leak a TypeParam"
+    );
+}
+
+/// A default-padded generic call tolerates a NESTED unbound type parameter:
+/// `cf(42.5)` binds `C` (→ Real) and leaves `D` inside `Field<…>`, with no
+/// Error diagnostic — the padded counterpart of B5.
+#[test]
+fn generic_default_padded_call_tolerates_nested_unbound_param() {
+    let module = compile_source(
+        "fn cf<D, C>(value: C, k: Real = 1.0) -> Field<D, C> { value } \
+         structure S { let v = cf(42.5) }",
+    );
+
+    let errors = errors_only(&module);
+    assert!(
+        errors.is_empty(),
+        "cf(42.5) must check clean (nested unbound D is tolerated), got: {errors:?}"
+    );
+
+    let v_expr = get_let_expr(&module, "v");
+    assert_eq!(
+        v_expr.result_type,
+        Type::Field {
+            domain: Box::new(Type::TypeParam("D".to_string())),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        },
+        "cf(42.5) result_type should be Field<TypeParam(D), Real> (C bound, D unbound), got {:?}",
+        v_expr.result_type
+    );
+}
+
+/// A type-param slot has no valid default: `y: T = 0.0` is rejected where the fn
+/// is defined, and the padded call `f(5mm)` types `T` from the provided arg alone.
+#[test]
+fn generic_default_padded_call_trailing_default_binds_no_type_param() {
+    let module =
+        compile_source("fn f<T>(x: T, y: T = 0.0) -> T { x } structure S { let v = f(5mm) }");
+
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::FnParamDefaultTypeMismatch,
+        "a `Real` default on a `T`-typed slot",
+    );
+    assert_eq!(
+        get_let_expr(&module, "v").result_type,
+        Type::length(),
+        "f(5mm) should type `T` from the provided arg; the rejected default binds nothing"
+    );
+}
+
+/// A default cannot pin a type parameter that no provided arg binds: `mk()` is
+/// rejected where `mk` is defined (`k: T = 2.0`), reported unresolved and poisoned.
+#[test]
+fn generic_default_padded_call_default_cannot_pin_unbound_type_param() {
+    let module = compile_source("fn mk<T>(k: T = 2.0) -> T { k } structure S { let v = mk() }");
+
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::FnParamDefaultTypeMismatch,
+        "a `Real` default on a `T`-typed slot",
+    );
+    assert_error_code_present(
+        &module.diagnostics,
+        DiagnosticCode::FnTypeArgUnresolved,
+        "mk() with no provided arg to bind `T`",
+    );
+    assert_eq!(
+        get_let_expr(&module, "v").result_type,
+        Type::Error,
+        "an unresolved padded call must be poisoned, not leak a TypeParam"
     );
 }

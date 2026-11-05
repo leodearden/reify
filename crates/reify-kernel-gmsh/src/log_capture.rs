@@ -47,8 +47,7 @@
 //! [`MAX_APPENDED_LOG_LINES`] bounds the tail folded into an error message.
 //! It does not bound the capture itself: gmsh buffers every line it emits
 //! while armed and offers no knob to cap that buffer, so a caller that arms
-//! unconditionally — as
-//! [`crate::kernel_real::GmshKernel::mesh_to_volume`] does — pays for the
+//! unconditionally — as every mesher in this crate does — pays for the
 //! buffering on its SUCCESS path too, where not one line is ever read.
 //!
 //! That cost is accepted, on measurement rather than assumption. Reading the
@@ -103,7 +102,7 @@ pub const MAX_APPENDED_LOG_LINES: usize = 40;
 /// folds in a copy it read before recycling libgmsh, because the capture
 /// lives inside the library it destroys — see its "Why the diagnosis is read
 /// here", which is also why the mesher failure is deliberately outside
-/// `mesh_to_volume`'s `LogCapture` seam.
+/// every caller's `LogCapture` seam.
 ///
 /// Two inputs are passed through untouched: an empty `lines` (so a
 /// best-effort arm that failed costs the caller nothing but the capture it
@@ -172,10 +171,13 @@ pub fn annotated(err: GeometryError, lines: &[String]) -> GeometryError {
 /// live `LogCapture`s under one lock hold would not nest: the inner one's
 /// `drop` stops the outer one's capture and drains the buffer out from under
 /// it, leaving the outer `annotate` with nothing. Arm at most one per lock
-/// hold. Today there is exactly one call site,
-/// [`crate::kernel_real::GmshKernel::mesh_to_volume`] — and its seam
-/// deliberately does not span the one call that recycles libgmsh, which
-/// annotates its own failure instead.
+/// hold. Each of the crate's four meshers keeps to that by arming exactly one
+/// per entry point:
+/// [`crate::kernel_real::GmshKernel::mesh_to_volume`],
+/// `refine_volume::refine_volume_with_size_field`,
+/// `mesh_boundary::mesh_surface_to_volume_with_attribution` and
+/// `mesh_profile_2d::mesh_plane_2d`. None of their seams spans the one call
+/// that recycles libgmsh, which annotates its own failure instead.
 pub struct LogCapture<'g>(std::marker::PhantomData<&'g crate::init::GmshGuard>);
 
 impl<'g> LogCapture<'g> {

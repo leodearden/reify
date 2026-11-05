@@ -84,7 +84,7 @@ fn warm_edit_commits_identical_determinacy_to_cold_eval() {
     // Cold reference: a FRESH engine's eval() resolves x via the solver and
     // evaluates y through the main unified pass — ground truth.
     let cold_compiled = compile_source(SRC);
-    let mut cold_engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+    let mut cold_engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
         .with_solver(Box::new(DimensionalSolver));
     let cold_result = cold_engine.eval(&cold_compiled);
     let cold_val = cold_result
@@ -111,7 +111,7 @@ fn warm_edit_commits_identical_determinacy_to_cold_eval() {
     // "1624" site under test).
     let warm_compiled = compile_source(SRC);
     let mut warm_engine =
-        Engine::new(Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None).with_solver(Box::new(DimensionalSolver));
     warm_engine.eval(&warm_compiled);
     let warm_result = warm_engine
         .edit_param(x_id, Value::length(0.01))

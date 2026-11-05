@@ -43,7 +43,8 @@ Against main `16cfb015bc`. Each was reproduced, not inferred.
 into reaped task worktree `4102`. `systemctl` reports `not-found`; `list-unit-files` reports
 `bad enabled`; the journal logs `Failed to open …: No such file or directory` every few minutes.
 `docs/architecture-audit/jcodemunch-serve-activation.md:109-122` predicted this exact failure under
-"Operator action required"; the step was never performed.
+"Operator action required"; the step was never performed. That section was later deleted (#6117);
+the prediction survives as prose in the activation doc's *Overview*.
 
 ### 2.2 The reify index does not exist, and its maintenance was deliberately disabled
 A scan of `meta.source_root` across all ~1400 indexes in `~/.code-index` finds **no index for

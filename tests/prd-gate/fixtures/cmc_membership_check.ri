@@ -1,0 +1,12 @@
+module cmc_membership_check
+
+// docs/prds/v0_6/catalog-membership-constraint.md §6 B2 (leaf α).
+// Check-time membership on determined values: b1 is a stock length, b2 is not.
+// After α: `reify check` reports b1 OK, b2 VIOLATED, exit 1.
+// Baseline (main 2026-10-08): parse error — `in` is not a binary operator.
+structure MembershipCheck {
+    param b1 : Length = 25mm
+    param b2 : Length = 22mm
+    constraint b1 in standard_bolt_lengths()
+    constraint b2 in standard_bolt_lengths()
+}

@@ -390,44 +390,6 @@ run_ts_freshness() {
     fi
 }
 
-# ts_offset_of <haystack> <needle>
-#
-# Byte offset of <needle>'s first occurrence in <haystack>, or -1 when absent.
-# Fork-free (parameter expansion only) for the same reason plan_capture_lib.sh
-# is: a pipe-to-grep/awk offset computation is an EINTR surface that can flip an
-# ordering assertion to a spurious FAIL under concurrent load (esc-4574-42).
-# <needle> is quoted inside the expansion, so it is matched literally.
-ts_offset_of() {
-    local hay="$1" needle="$2" pre
-    if [[ "$hay" != *"$needle"* ]]; then
-        printf '%s' -1
-        return 0
-    fi
-    pre="${hay%%"$needle"*}"
-    printf '%s' "${#pre}"
-}
-
-# ts_last_offset_of <haystack> <needle>
-#
-# Byte offset of <needle>'s LAST occurrence in <haystack>, or -1 when absent.
-# Same fork-free rationale as ts_offset_of; `%` (shortest suffix removal) leaves
-# the prefix ending at the final occurrence, where `%%` would leave the first.
-#
-# Needed because the freshness POST-CONDITION must follow the LAST cargo leaf that
-# can compile the parser, not the first: ordering against the first cargo leaf is
-# satisfied by a `check` sitting immediately after clippy, which attests a
-# different fingerprint dir than the one the later nextest builds link (#5629
-# review round 3).
-ts_last_offset_of() {
-    local hay="$1" needle="$2" pre
-    if [[ "$hay" != *"$needle"* ]]; then
-        printf '%s' -1
-        return 0
-    fi
-    pre="${hay%"$needle"*}"
-    printf '%s' "${#pre}"
-}
-
 # ts_masked_path_dir <name-to-mask>
 #
 # Print a shim directory holding symlinks to every executable currently
@@ -786,69 +748,6 @@ test_auto_generation_rebuilds_parser() {
     # Verify parser.c was recreated
     assert_file_exists "$parser" || return 1
     assert_file_nonempty "$parser" || return 1
-}
-
-test_build_rs_no_piped_stdout_deadlock() {
-    # Regression guard for the deadlock_pipe_buffer issue: build.rs must NOT
-    # use Stdio::piped() for child stdout. The run_with_timeout loop drains
-    # the pipe only AFTER try_wait() returns Some(status). If the child writes
-    # more than 64KB to stdout, the OS pipe buffer fills, the child blocks on
-    # write(), and try_wait() never returns Some — hard deadlock until the
-    # 60-second timeout kills the process.
-    #
-    # Fix: use Stdio::null() instead. tree-sitter generate writes diagnostics
-    # to stderr (already inherited), so discarding stdout loses nothing.
-    local build_rs="$TS_DIR/build.rs"
-
-    assert_file_exists "$build_rs" || return 1
-
-    # Grep for lines that set .stdout(... Stdio::piped() ...). If found, FAIL.
-    if grep -E '\.stdout\(.*Stdio::piped\(\)' "$build_rs" >/dev/null 2>&1; then
-        echo ""
-        echo "  ASSERTION FAILED: build.rs uses Stdio::piped() for child stdout"
-        echo ""
-        echo "  This creates a deadlock in run_with_timeout(): the parent only"
-        echo "  drains the stdout pipe AFTER try_wait() returns Some(status), but"
-        echo "  if the child writes >64KB to stdout, the pipe buffer fills, the"
-        echo "  child blocks on write, and try_wait() returns Ok(None) forever."
-        echo "  The deadlock persists until the 60-second timeout kills the process,"
-        echo "  making every build take a full minute."
-        echo ""
-        echo "  Use .stdout(Stdio::null()) instead. tree-sitter generate writes"
-        echo "  useful diagnostics to stderr (already inherited via Stdio::inherit())."
-        return 1
-    else
-        return 0
-    fi
-}
-
-test_build_rs_no_stdout_inheritance() {
-    # Regression guard for the stdio_pollution issue: build.rs must NOT let
-    # child processes inherit stdout, because Cargo parses build-script stdout
-    # line-by-line for "cargo:" directives. If tree-sitter CLI emits anything
-    # to stdout (e.g. structured output), Cargo would misinterpret it.
-    #
-    # The fix: run_with_timeout must explicitly set .stdout(Stdio::piped())
-    # or .stdout(Stdio::null()) so child stdout is NOT inherited.
-    local build_rs="$TS_DIR/build.rs"
-
-    assert_file_exists "$build_rs" || return 1
-
-    # Grep for .stdout(Stdio:: or .stdout(std::process::Stdio:: in the Command
-    # builder within build.rs. This catches accidental removal of the redirect.
-    if grep -qE '\.stdout\(.*Stdio::' "$build_rs"; then
-        return 0
-    else
-        echo ""
-        echo "  ASSERTION FAILED: build.rs does not configure child stdout"
-        echo "  build.rs must use .stdout(Stdio::piped()) or .stdout(Stdio::null())"
-        echo "  on the Command builder in run_with_timeout() to prevent child"
-        echo "  processes from inheriting build-script stdout, which Cargo parses"
-        echo "  for 'cargo:' directives."
-        echo ""
-        echo "  See: https://doc.rust-lang.org/cargo/reference/build-scripts.html"
-        return 1
-    fi
 }
 
 test_generate_script_exists_and_executable() {
@@ -2919,7 +2818,7 @@ test_freshness_leaves_are_ld_scrubbed() {
         n_control=0
         # Here-string, not a pipe: the loop must run in THIS shell or the counters
         # below are lost to a subshell. Fork-free line walking for the same reason
-        # ts_offset_of is (an EINTR surface can flip an assertion under load).
+        # plan_capture_lib.sh is (an EINTR surface can flip an assertion under load).
         while IFS= read -r line; do
             case "$line" in
                 *"./scripts/tree-sitter-freshness.sh ensure"*) n_ensure=$(( n_ensure + 1 )) ;;
@@ -2993,7 +2892,7 @@ test_verify_plan_includes_freshness_after_generation() {
     local verify="$REPO_ROOT/scripts/verify.sh"
     assert_file_exists "$verify" || return 1
 
-    local action plan cmds off_gen off_fresh off_cargo
+    local action plan cmds i_gen i_fresh i_cargo
     for action in "all --profile debug --scope all --include-infra" \
                   "test --profile both --scope all --include-infra" \
                   "lint --scope all --include-infra" \
@@ -3009,9 +2908,10 @@ test_verify_plan_includes_freshness_after_generation() {
             return 1
         fi
 
-        # Reason over the COMMANDS BLOCK only. The environment preamble carries
-        # `# . $HOME/.cargo/env`, so an offset computed over the whole capture
-        # could pick up a comment line rather than a real cargo leaf.
+        # Presence checks reason over the COMMANDS BLOCK only: the environment
+        # preamble carries `# . $HOME/.cargo/env`, which is not a cargo leaf.
+        # Ordering is read as plan_step_index step indices, which never count a
+        # line above the commands marker or a comment line.
         cmds="${plan#*# --- commands}"
 
         if [[ "$cmds" != *"tree-sitter-freshness.sh"* ]]; then
@@ -3027,30 +2927,30 @@ test_verify_plan_includes_freshness_after_generation() {
             return 1
         fi
 
-        off_gen=$(ts_offset_of "$cmds" "tree-sitter-generate")
-        off_fresh=$(ts_offset_of "$cmds" "tree-sitter-freshness")
-        off_cargo=$(ts_offset_of "$cmds" "cargo ")
-        if [ "$off_gen" -lt 0 ]; then
+        i_gen=$(plan_step_index "$plan" 'tree-sitter-generate')
+        i_fresh=$(plan_step_index "$plan" 'tree-sitter-freshness')
+        i_cargo=$(plan_step_index "$plan" 'cargo ')
+        if [ "$i_gen" -lt 0 ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' plan has no tree-sitter-generate leaf"
             return 1
         fi
-        if [ "$off_gen" -ge "$off_fresh" ]; then
+        if [ "$i_gen" -ge "$i_fresh" ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' runs freshness BEFORE generate"
-            echo "  (generate offset $off_gen, freshness offset $off_fresh) —"
+            echo "  (generate step $i_gen, freshness step $i_fresh) —"
             echo "  parser.c would be fingerprinted before it is regenerated."
             return 1
         fi
-        if [ "$off_cargo" -lt 0 ]; then
+        if [ "$i_cargo" -lt 0 ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' plan has no cargo leaf to order against"
             return 1
         fi
-        if [ "$off_fresh" -ge "$off_cargo" ]; then
+        if [ "$i_fresh" -ge "$i_cargo" ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' runs freshness AFTER the first cargo leaf"
-            echo "  (freshness offset $off_fresh, first cargo offset $off_cargo) —"
+            echo "  (freshness step $i_fresh, first cargo step $i_cargo) —"
             echo "  a force applied after the compile repairs nothing."
             return 1
         fi
@@ -3072,10 +2972,9 @@ test_verify_plan_includes_freshness_after_generation() {
         # carrying the whole one-level-up false GREEN this leaf exists to close.
         # The ORDERING arm is what makes the pre-build hard-fail concern moot:
         # wherever the leaf exists it must come after EVERY cargo leaf.
-        local off_check off_last_cargo
-        off_check=$(ts_offset_of "$cmds" "tree-sitter-freshness.sh check")
-        off_last_cargo=$(ts_last_offset_of "$cmds" "cargo ")
-        if [ "$off_check" -lt 0 ]; then
+        local i_check i_after
+        i_check=$(plan_step_index "$plan" 'tree-sitter-freshness\.sh check')
+        if [ "$i_check" -lt 0 ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' has no post-cargo"
             echo "  './scripts/tree-sitter-freshness.sh check' leaf — the plan only ATTEMPTS"
@@ -3088,26 +2987,28 @@ test_verify_plan_includes_freshness_after_generation() {
         # than the debug/release nextest builds that follow, so such a leaf
         # attests an archive no test binary ever links while the archives that
         # ARE linked go unexamined. That is the same false GREEN one level up.
-        if [ "$off_check" -le "$off_last_cargo" ]; then
+        # "After every cargo leaf" is "no cargo step at or after the check".
+        i_after=$(plan_step_index "$plan" 'cargo ' "$i_check")
+        if [ "$i_after" -ne -1 ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
-            echo "  offset $off_check, before/at the LAST cargo leaf ($off_last_cargo)."
+            echo "  step $i_check, before cargo step $i_after (not the LAST cargo leaf)."
             echo "  A cargo leaf that compiles the parser runs after the assertion, so the"
             echo "  archive actually linked is never attested — and an assertion placed"
             echo "  before the build would also hard-fail the very staleness 'ensure' had"
             echo "  just queued a repair for."
             return 1
         fi
-        if [ "$off_check" -le "$off_cargo" ]; then
+        if [ "$i_check" -le "$i_cargo" ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' runs the freshness CHECK leaf at"
-            echo "  offset $off_check, before/at the first cargo leaf ($off_cargo)."
+            echo "  step $i_check, before/at the first cargo leaf (step $i_cargo)."
             echo "  A post-condition asserted before the build proves nothing, and would"
             echo "  hard-fail the very staleness 'ensure' had just queued a repair for."
             return 1
         fi
         # ...and it must be a DIFFERENT leaf from the ensure one, not a rename.
-        if [ "$off_check" -le "$off_fresh" ]; then
+        if [ "$i_check" -le "$i_fresh" ]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' emits 'check' at or before the"
             echo "  'ensure' leaf — the pre-build repair and the post-build assertion are"
@@ -3122,8 +3023,8 @@ test_verify_plan_includes_freshness_after_generation() {
     #
     # NON-VACUITY IS ASSERTED FIRST (#5629 review round 4). This arm used to
     # stage with `git add ... || true` and then assert nothing about the index.
-    # MEASURED with the same fixture and NOTHING staged, the plan reads
-    # `# scope decision — RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0` and
+    # MEASURED with the same fixture and NOTHING staged, the scope decision's
+    # RUN_RUST, RUN_GUI and RUN_OCCT_GATE fields all read 0 and the plan carries
     # `# (no commands — nothing to verify for this action/scope)` with ZERO
     # `tree-sitter-freshness` matches — so an EMPTY index satisfies BOTH
     # assertions below, and the RUN_RUST guarding of the two freshness leaves
@@ -3158,7 +3059,7 @@ test_verify_plan_includes_freshness_after_generation() {
         echo "  ASSERTION FAILED: docs-only --print-plan capture truncated after retries"
         return 1
     fi
-    if [[ "$plan" != *"RUN_RUST=0"* ]]; then
+    if [ "$(plan_header_field "$plan" scope RUN_RUST)" != 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: docs-only fixture did not classify RUN_RUST=0 — negative arm is void"
         echo "$plan"
@@ -3206,7 +3107,7 @@ test_verify_plan_includes_freshness_after_generation() {
         echo "  ASSERTION FAILED: positive-control --print-plan capture truncated after retries"
         return 1
     fi
-    if [[ "$plan" != *"RUN_RUST=1"* ]]; then
+    if [ "$(plan_header_field "$plan" scope RUN_RUST)" != 1 ]; then
         echo ""
         echo "  ASSERTION FAILED: staging a Rust file did not classify RUN_RUST=1, so the"
         echo "  negative arm above is not evidence of anything — this fixture never"

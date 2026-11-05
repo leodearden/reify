@@ -699,9 +699,7 @@ fn purpose_compiled_and_activatable() {
     // purpose body is updated — both the test and the .ri source stay in sync automatically.
     // (See examples/integration_full_v01.ri: mfg_ready uses literal placeholder constraints;
     // replacing them with reflective `forall p in subject.geometric_params: determined(p)`
-    // is tracked as task #1904 — three missing pieces: StructureRef member-access compilation
-    // in expr.rs, filter-kind branches in traits.rs resolved_queries loop, and forall runtime
-    // expansion via ResolvedSchemaQuery.resolved_ids in reify-eval activate_purpose.)
+    // is owned by #8303.)
     let expected_extra = mfg_ready.constraints.len();
     assert!(
         expected_extra > 0,
@@ -844,8 +842,8 @@ fn test_runner_all_pass() {
 /// old generic "tracked as a follow-up task" phrasing to precise scoped // ptodo:allow test code quoting the banned phrase for assertion purposes
 /// references citing task #1904.
 ///
-/// Self-expiring scaffolding: delete this test when task #1904 lands and
-/// the placeholder constraints are replaced with real reflective syntax.
+/// Self-expiring scaffolding: delete this test when #8303 replaces the
+/// placeholder constraints with real reflective syntax.
 ///
 /// Assertions:
 /// 1. The old generic phrase is absent (regression guard).
@@ -866,7 +864,7 @@ fn purpose_follow_up_comment_is_precise() {
     // 2. Old vague "tracked as a follow-up task" phrase must be gone. // ptodo:allow test code quoting the banned phrase
     assert!(
         !src.contains("tracked as a follow-up task"), // ptodo:allow string literal in assertion, not a tracking claim
-        "Vague 'tracked as a follow-up task' phrase found — must be replaced with 'task #1904' reference"
+        "Vague 'tracked as a follow-up task' phrase found — must be replaced with 'task #1904' reference" // ptodo:allow quoted banned phrase
     );
 
     // 3. Precise follow-up task id must be present.

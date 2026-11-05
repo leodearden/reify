@@ -42,28 +42,28 @@ use std::sync::Arc;
 use reify_core::{DimensionVector, Type};
 use reify_fdm::{
     AxisAlignedBox, BaseElastic, CouponOverride, DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD, InfillPattern,
-    OrthotropicConstants, TransverseIsoConstants, Zone, effective_orthotropic,
+    OrthotropicConstants, TransverseIsoConstants, Zone, ZoneProcessParams, effective_orthotropic,
     effective_transverse_isotropic, zone_solid_fraction,
 };
-use reify_ir::{
-    FieldSourceKind, OpaqueState, PersistentMap, StructureInstanceData, StructureTypeId, Value,
+use reify_ir::{FieldSourceKind, OpaqueState, StructureInstanceData, Value};
+
+use super::{rejected_input_outcome, struct_data, structure};
+use crate::arg_acceptance::{
+    FieldRejection, density_spec, dimensionless_spec, length_spec, pressure_spec, read_field,
 };
-
 use crate::{CancellationHandle, ComputeOutcome, RealizationReadHandle};
-
-/// Registry-free placeholder type id for the Rust-constructed StructureInstances
-/// this trampoline mints (mirrors `dynamics_ops::REGISTRY_FREE_TYPE_ID`). These
-/// values are produced and sampled entirely Rust-side, never re-resolved against
-/// the stdlib [`StructureRegistry`], so the opaque id is unused.
-const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
 /// `@optimized("fdm::as_printed_material_r_fast")` ComputeNode trampoline.
 ///
-/// Always returns [`ComputeOutcome::Completed`] with a
-/// `Value::Field { source: AsPrintedZones }`. When the inputs are malformed or
-/// the body realization is unavailable, it degrades honestly to a field whose
-/// lambda is [`Value::Undef`] (every sample returns `Undef`) rather than
+/// Returns [`ComputeOutcome::Completed`] with a
+/// `Value::Field { source: AsPrintedZones }`. When the inputs are incomplete,
+/// the body realization is unavailable, or `layer_height` / `line_width` / a
+/// `build_direction` component is non-finite, it degrades honestly to a field
+/// whose lambda is [`Value::Undef`] (every sample returns `Undef`) rather than
 /// panicking — matching the Undef-for-Field convention of the stdlib surface.
+/// A present numeric field the reader refuses — a number of the wrong dimension
+/// or a value that is not a number at all — is [`ComputeOutcome::Failed`] with
+/// that field's `DimensionedArgRejected` Error (`read_field`'s refusal rule).
 pub fn as_printed_material_r_fast_trampoline(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
@@ -71,44 +71,74 @@ pub fn as_printed_material_r_fast_trampoline(
     _prior_warm_state: Option<&OpaqueState>,
     _cancellation: &CancellationHandle,
 ) -> ComputeOutcome {
-    let field =
-        build_as_printed_field(value_inputs, realization_inputs).unwrap_or_else(degraded_field);
-    ComputeOutcome::Completed {
-        result: field,
-        new_warm_state: None,
-        cost_per_byte: None,
-        diagnostics: Vec::new(),
-        structured_detail: vec![],
+    match build_as_printed_field(value_inputs, realization_inputs) {
+        Ok(field) => ComputeOutcome::Completed {
+            result: field.unwrap_or_else(degraded_field),
+            new_warm_state: None,
+            cost_per_byte: None,
+            diagnostics: Vec::new(),
+            structured_detail: vec![],
+        },
+        Err(rejection) => rejected_input_outcome(rejection.to_error(AS_PRINTED_MATERIAL)),
     }
 }
 
-/// Build the `AsPrintedZones` material field, or `None` if any required input is
-/// missing/malformed (caller degrades to [`degraded_field`]).
+/// The builtin both as-printed rungs (R-fast and R0) implement, named in their
+/// rejection diagnostics.
+pub(crate) const AS_PRINTED_MATERIAL: &str = "as_printed_material";
+
+/// Build the `AsPrintedZones` material field: `Ok(None)` if any required input
+/// is missing, unresolved or non-finite (caller degrades to
+/// [`degraded_field`]), `Err` if a present numeric field is refused.
 fn build_as_printed_field(
     value_inputs: &[Value],
     realization_inputs: &[RealizationReadHandle],
-) -> Option<Value> {
-    let process = struct_data(value_inputs.get(1)?)?;
-    let options = struct_data(value_inputs.get(2)?)?;
-    let aabb = body_aabb(realization_inputs)?;
+) -> Result<Option<Value>, FieldRejection> {
+    let (Some(process), Some(options)) = (
+        value_inputs.get(1).and_then(struct_data),
+        value_inputs.get(2).and_then(struct_data),
+    ) else {
+        return Ok(None);
+    };
 
-    // ── FDMProcess → ZoneProcessParams + BaseElastic ───────────────────────────
-    let walls = field_int(process, "walls")?.max(0) as u32;
-    let top_bottom_layers = field_int(process, "top_bottom_layers")?.max(0) as u32;
-    let layer_height = field_scalar(process, "layer_height")?;
-    let build_direction = field_vec3(process, "build_direction")?;
-    let infill_density = field_real(process, "infill_density")?;
-    let pattern = read_pattern(process);
+    // Every dimension-checked read runs before the realization lookup, so a
+    // rejection never depends on whether the body has realized yet.
+    let layer_height = read_field(process, "layer_height", &length_spec())?;
+    let infill_density = read_field(process, "infill_density", &dimensionless_spec())?;
     let base = read_base_elastic(process)?;
+    let line_width = read_field(options, "line_width", &length_spec())?;
+    let coupon = read_coupon(options)?;
 
-    // ── AsPrintedOptions ───────────────────────────────────────────────────────
-    let line_width = field_scalar(options, "line_width")?;
-    let coupon = read_coupon(options);
+    let (
+        Some(layer_height),
+        Some(infill_density),
+        Some(base),
+        Some(line_width),
+        Some(walls),
+        Some(top_bottom_layers),
+        Some(build_direction),
+        Some(aabb),
+    ) = (
+        layer_height,
+        infill_density,
+        base,
+        line_width,
+        field_int(process, "walls"),
+        field_int(process, "top_bottom_layers"),
+        field_vec3(process, "build_direction"),
+        body_aabb(realization_inputs),
+    )
+    else {
+        return Ok(None);
+    };
+    let walls = walls.max(0) as u32;
+    let top_bottom_layers = top_bottom_layers.max(0) as u32;
+    let pattern = read_pattern(process);
     let orthotropic = matches!(options.fields.get("orthotropic"), Some(Value::Bool(true)));
 
     // The build axis is the (weak) axial direction; align the material frame's
     // z-axis with it so build-Z is the weakest axis (PRD C4 invariant). A
-    // degenerate build_direction falls back to +Z.
+    // finite but zero-length build_direction falls back to +Z.
     let build_unit = unit3(build_direction).unwrap_or([0.0, 0.0, 1.0]);
     let cos_threshold = DEFAULT_TOP_BOTTOM_NORMAL_THRESHOLD;
     let frame = material_frame(build_unit);
@@ -148,16 +178,15 @@ fn build_as_printed_field(
 
     // ── Pack the AsPrintedZones lambda payload (storage contract on
     //    reify_ir::FieldSourceKind::AsPrintedZones) ──────────────────────────────
-    // params = [walls, top_bottom_layers, layer_height, line_width, bx, by, bz].
-    let params_list = Value::List(vec![
-        Value::Real(walls as f64),
-        Value::Real(top_bottom_layers as f64),
-        Value::Real(layer_height),
-        Value::Real(line_width),
-        Value::Real(build_unit[0]),
-        Value::Real(build_unit[1]),
-        Value::Real(build_unit[2]),
-    ]);
+    let Some(params_list) = zone_params_value(&ZoneProcessParams {
+        walls,
+        top_bottom_layers,
+        layer_height,
+        line_width,
+        build_direction: build_unit,
+    }) else {
+        return Ok(None);
+    };
     let lambda = Value::List(vec![
         super::point3_length(aabb.min),
         super::point3_length(aabb.max),
@@ -167,7 +196,28 @@ fn build_as_printed_field(
         mat_skin,
         mat_infill,
     ]);
-    Some(as_printed_field_value(lambda))
+    Ok(Some(as_printed_field_value(lambda)))
+}
+
+/// The positional `params` slot of the `AsPrintedZones` lambda,
+/// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`: the two
+/// band widths are typed `Length` (SI metres); the counts and the unit build
+/// direction are dimensionless `Value::Real`. A non-finite length or direction
+/// has no meaningful zone classification, so it yields `None` and the caller
+/// degrades to its Undef-lambda field.
+pub(crate) fn zone_params_value(params: &ZoneProcessParams) -> Option<Value> {
+    let [bx, by, bz] = params.build_direction;
+    params.is_finite().then(|| {
+        Value::List(vec![
+            Value::Real(f64::from(params.walls)),
+            Value::Real(f64::from(params.top_bottom_layers)),
+            super::length(params.layer_height),
+            super::length(params.line_width),
+            Value::Real(bx),
+            Value::Real(by),
+            Value::Real(bz),
+        ])
+    })
 }
 
 /// Wrap a lambda payload as the `Field<Point3<Length>, AnisotropicMaterial>`
@@ -226,31 +276,6 @@ fn aabb_from_vertices(vertices: &[f32]) -> Option<AxisAlignedBox> {
 
 // ── FDMProcess / AsPrintedOptions field marshalling ─────────────────────────
 
-pub(crate) fn struct_data(v: &Value) -> Option<&StructureInstanceData> {
-    match v {
-        Value::StructureInstance(d) => Some(d),
-        _ => None,
-    }
-}
-
-/// Read a dimensioned `Scalar` (SI value) field; also accepts a bare `Real`.
-pub(crate) fn field_scalar(data: &StructureInstanceData, key: &str) -> Option<f64> {
-    match data.fields.get(key) {
-        Some(Value::Scalar { si_value, .. }) => Some(*si_value),
-        Some(Value::Real(r)) => Some(*r),
-        _ => None,
-    }
-}
-
-/// Read a dimensionless `Real` field; also accepts a `Scalar` (its SI value).
-pub(crate) fn field_real(data: &StructureInstanceData, key: &str) -> Option<f64> {
-    match data.fields.get(key) {
-        Some(Value::Real(r)) => Some(*r),
-        Some(Value::Scalar { si_value, .. }) => Some(*si_value),
-        _ => None,
-    }
-}
-
 /// Read an `Int` field; also accepts a `Real` (truncated).
 pub(crate) fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> {
     match data.fields.get(key) {
@@ -260,15 +285,18 @@ pub(crate) fn field_int(data: &StructureInstanceData, key: &str) -> Option<i64> 
     }
 }
 
-/// Read a 3-component `Vector` / `Point` / `Direction` field.
+/// Read a 3-component `Vector` / `Point` / `Direction` field; `None` if any
+/// component is non-numeric or non-finite, so a NaN / ±Inf `build_direction`
+/// degrades the rung instead of normalising to the degenerate +Z fallback.
 pub(crate) fn field_vec3(data: &StructureInstanceData, key: &str) -> Option<[f64; 3]> {
-    match data.fields.get(key) {
+    let v = match data.fields.get(key) {
         Some(Value::Vector(c) | Value::Point(c)) if c.len() == 3 => {
-            Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
+            [c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?]
         }
-        Some(Value::Direction { x, y, z }) => Some([*x, *y, *z]),
-        _ => None,
-    }
+        Some(Value::Direction { x, y, z }) => [*x, *y, *z],
+        _ => return None,
+    };
+    v.iter().all(|c| c.is_finite()).then_some(v)
 }
 
 /// Map the FDMProcess `infill_pattern` enum to the β [`InfillPattern`].
@@ -286,39 +314,42 @@ fn read_pattern(process: &StructureInstanceData) -> InfillPattern {
     }
 }
 
-/// Read the base filament `ElasticMaterial` into a β [`BaseElastic`].
-pub(crate) fn read_base_elastic(process: &StructureInstanceData) -> Option<BaseElastic> {
-    let material = struct_data(process.fields.get("material")?)?;
-    Some(BaseElastic {
-        youngs_modulus: field_scalar(material, "youngs_modulus")?,
-        poisson_ratio: field_real(material, "poisson_ratio")?,
-        density: field_scalar(material, "density")?,
+/// Read the base filament `ElasticMaterial` into a β [`BaseElastic`]
+/// (`Ok(None)` when it or one of its fields is missing).
+pub(crate) fn read_base_elastic(
+    process: &StructureInstanceData,
+) -> Result<Option<BaseElastic>, FieldRejection> {
+    let Some(material) = process.fields.get("material").and_then(struct_data) else {
+        return Ok(None);
+    };
+    let youngs_modulus = read_field(material, "youngs_modulus", &pressure_spec())?;
+    let poisson_ratio = read_field(material, "poisson_ratio", &dimensionless_spec())?;
+    let density = read_field(material, "density", &density_spec())?;
+    Ok(match (youngs_modulus, poisson_ratio, density) {
+        (Some(youngs_modulus), Some(poisson_ratio), Some(density)) => Some(BaseElastic {
+            youngs_modulus,
+            poisson_ratio,
+            density,
+        }),
+        _ => None,
     })
 }
 
-/// Read the optional `FDMCouponOverride` into a β [`CouponOverride`]. Absent /
-/// malformed coupon → the all-`None` (no-override) default.
-fn read_coupon(options: &StructureInstanceData) -> CouponOverride {
-    let coupon = match options.fields.get("coupon") {
-        Some(Value::StructureInstance(d)) => d,
-        _ => return CouponOverride::default(),
+/// Read the optional `FDMCouponOverride` into a β [`CouponOverride`]. An absent
+/// or non-struct coupon, and each `none` field, is no override.
+fn read_coupon(options: &StructureInstanceData) -> Result<CouponOverride, FieldRejection> {
+    let Some(coupon) = options.fields.get("coupon").and_then(struct_data) else {
+        return Ok(CouponOverride::default());
     };
-    CouponOverride {
-        ex: opt_f64(coupon, "ex"),
-        ey: opt_f64(coupon, "ey"),
-        ez: opt_f64(coupon, "ez"),
-        gxy: opt_f64(coupon, "gxy"),
-        infill_c: opt_f64(coupon, "infill_gibson_ashby_c"),
-        infill_n: opt_f64(coupon, "infill_gibson_ashby_n"),
-    }
-}
-
-/// Read an `Option<Scalar/Real>` field's inner SI value, or `None`.
-fn opt_f64(data: &StructureInstanceData, key: &str) -> Option<f64> {
-    match data.fields.get(key) {
-        Some(Value::Option(Some(inner))) => inner.as_f64(),
-        _ => None,
-    }
+    let modulus = |key| read_field(coupon, key, &pressure_spec());
+    Ok(CouponOverride {
+        ex: modulus("ex")?,
+        ey: modulus("ey")?,
+        ez: modulus("ez")?,
+        gxy: modulus("gxy")?,
+        infill_c: read_field(coupon, "infill_gibson_ashby_c", &dimensionless_spec())?,
+        infill_n: read_field(coupon, "infill_gibson_ashby_n", &dimensionless_spec())?,
+    })
 }
 
 // ── AnisotropicMaterial value construction ──────────────────────────────────
@@ -416,17 +447,6 @@ fn empty_provenance() -> Value {
 }
 
 // ── small value/geometry helpers ────────────────────────────────────────────
-
-pub(crate) fn structure(type_name: &str, fields: Vec<(&str, Value)>) -> Value {
-    let fields: PersistentMap<String, Value> =
-        fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    Value::StructureInstance(Box::new(StructureInstanceData {
-        type_id: REGISTRY_FREE_TYPE_ID,
-        type_name: type_name.to_string(),
-        version: 1,
-        fields,
-    }))
-}
 
 fn pressure(si: f64) -> Value {
     Value::Scalar {
@@ -531,7 +551,7 @@ mod iota_tests {
     #[test]
     fn rung_keys_are_registered_in_compute_dispatch() {
         use reify_test_support::mocks::MockConstraintChecker;
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         crate::compute_targets::register_compute_fns(&mut engine);
         for rung in [Rung::RFast, Rung::R0] {
             let key = rung_compute_key(rung);
@@ -545,6 +565,8 @@ mod iota_tests {
 
 #[cfg(test)]
 mod tests {
+    use reify_ir::StructureTypeId;
+
     use super::*;
 
     /// Task 5848 retypes `FDMProcess.build_direction` from `Vec3<Length>` to a

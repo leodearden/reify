@@ -14,7 +14,7 @@
 //! task 4066 made the assembled `K`/`M` and even the node count order-dependent,
 //! so a P1 assembly must never be reused for a P2 request). It deliberately
 //! EXCLUDES everything that affects only the cheap downstream free-DOF
-//! projection + eigensolve — `n_modes`, `tol`, `sigma`, `max_iters`,
+//! projection + eigensolve — `n_modes`, `tol`, `shift_frequency`, `max_iters`,
 //! `boundary_conditions`, `damping`, `reference_direction` — so two calls that
 //! differ only in those still HIT the cached assembly (the PRD amortization
 //! goal, e.g. sweeping `n_modes`).

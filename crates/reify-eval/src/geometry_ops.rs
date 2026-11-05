@@ -12,6 +12,7 @@ use reify_ir::{
 use reify_solver_elastic::DEGENERATE_RING_AREA_TOLERANCE;
 
 use crate::eval_ctx_with_meta;
+use crate::kernel_owner::resolve_owning_kernel_name;
 
 /// Minimum meaningful distance in meters (1 picometer).
 ///
@@ -144,7 +145,8 @@ pub(crate) fn route_capability(
     }
 }
 
-#[allow(dead_code)] // used in #[cfg(test)] and by downstream dispatcher tasks (KGQ-ο/π/ρ)
+#[allow(dead_code)]
+// G-allow: no production caller yet (unit tests in geometry_ops/tests.rs only; the region path calls route_capability directly); wiring it into try_eval_geometry_query per PRD §5.4, or deleting it, is owned by #8192
 pub(crate) fn gate_query_capability(
     query: &reify_ir::GeometryQuery,
     produced_repr: reify_ir::ReprKind,
@@ -584,7 +586,7 @@ pub(crate) fn optional_length_value(
 /// [`required_length_values`] (which this delegates to at `N == 1`, so
 /// `reify_ir::Value::length` is still called from exactly one site) — the IR
 /// spacing slots (`LinearPattern`/`LinearPattern2D`), since task 5743 the
-/// primitive and profile dimensions (`Box` width/height/depth, `Cylinder`
+/// primitive and profile dimensions (`Box` size_x/size_y/size_z, `Cylinder`
 /// radius/height, `Sphere` radius, `Tube`, `Cone`, `Wedge`, `Torus`,
 /// `HalfSpace`'s origin, `Rectangle`, `Circle`, `Ellipse`), and since task
 /// 5744 the modify + sweep MAGNITUDES (`Fillet` radius, `Chamfer` distance,
@@ -825,7 +827,7 @@ fn required_angle_args<const N: usize>(
 /// the `N == 1` special case of it, not a second minting site.
 ///
 /// ALL FAILURES AT ONCE, restated here because it is the reason this exists
-/// (reviewer amendment, task 5743): a primitive's `width`/`height`/`depth` and
+/// (reviewer amendment, task 5743): a box's `size_x`/`size_y`/`size_z` and
 /// a profile's `semi_major`/`semi_minor` are written as ONE gesture, exactly
 /// like a `translate` triple, so a bare primitive is usually bare in EVERY
 /// dimension. Reading them through per-field `?`-chained
@@ -1203,22 +1205,12 @@ fn accept_variadic_length_args(
 /// (task 5743) is inherited for free. The `Unresolved` / `Invalid` `Err`
 /// wordings are lifted VERBATIM from [`required_length_arg`].
 ///
-/// SCOPE OF "byte-identical", stated precisely because the phrase recurs
-/// throughout this module: it is a claim about the pushed `Diagnostic` and about
-/// the `Err` STRING THIS FUNCTION RETURNS, not about whatever a caller then
-/// wraps that string in. The value-form pattern callers keep their PRE-δ
-/// per-builtin prefix — [`pattern_mirror`] wraps the decoder result in
-/// `format!("mirror: {}", e)` and [`pattern_circular`] in
-/// `format!("circular_pattern: {}", e)` — so the op-compile `Err` reaching
-/// `engine_build`'s "failed to compile geometry operation" wrapper reads
-/// `mirror: missing or non-Length argument 'ox' for mirror`, where the SCALAR
-/// branch's un-wrapped [`required_length_origin3`] reads
-/// `missing or non-Length argument 'ox' for mirror`. That stutter is cosmetic
-/// and PRE-EXISTS δ (it is on the merge-base at both sites), and the string is
-/// not the user-facing contract — the `Diagnostic` is, and that one IS identical
-/// across both forms. δ deliberately does not drop the prefix: doing so would
-/// change a pre-δ caller-facing message, which is precisely what the rest of
-/// this leaf's discipline forbids.
+/// SCOPE OF "byte-identical": it holds for a given label, and the label is the
+/// caller's to choose. The value-form callers pass the decoder `Err` through
+/// unwrapped, and each decoder prefixes only its own non-units messages with the
+/// label it is given. [`pattern_mirror`] and [`pattern_circular`] both pass
+/// `kind`, whose `Display` is the builtin the author typed, so each value form
+/// reads exactly like its scalar branch.
 ///
 /// ALL FAILURES AT ONCE, FIRST error wins — [`required_length_args`]' rule and
 /// its mechanism. A position is written as one gesture (`point3(10, 0, 0)`), so
@@ -1227,9 +1219,9 @@ fn accept_variadic_length_args(
 ///
 /// A wrong SHAPE is deliberately NOT a units rejection: it hands the caller's
 /// `shape_err` the diagnostic sink and returns its `String` VERBATIM, minting
-/// nothing of its own. This helper replaces [`point3_components`]' ACCEPTANCE
-/// policy, not its shape check, so every pre-δ wrong-variant / wrong-arity
-/// message survives byte-identical.
+/// nothing of its own — so the wording of a shape message, label prefix
+/// included, is entirely the caller's. This helper replaces
+/// [`point3_components`]' ACCEPTANCE policy, not its shape check.
 ///
 /// `shape_err` takes the sink so that ONE closure owns BOTH halves of a shape
 /// rejection — the `Diagnostic` a caller wants the user to see AND the `Err`
@@ -1275,8 +1267,8 @@ fn accept_length_point3<N: std::fmt::Display + Copy>(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<[f64; 3], String> {
     // SHAPE check, mirroring `point3_components` exactly — same variants, same
-    // arity. A mismatch keeps the caller's pre-δ wording and mints nothing here:
-    // whatever the caller's `shape_err` pushes is the whole of it.
+    // arity. A mismatch returns the caller's `shape_err` text and mints nothing
+    // here: whatever that closure pushes is the whole of it.
     let comps = match value {
         reify_ir::Value::Point(c) | reify_ir::Value::Vector(c) if c.len() == 3 => c,
         _ => return Err(shape_err(diagnostics)),
@@ -2025,6 +2017,18 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
     Ok([v[0] / mag, v[1] / mag, v[2] / mag])
 }
 
+/// A decoder's OWN failure (wrong variant, wrong shape, degenerate vector), led
+/// by the label of the builtin it decodes for: `mirror: expected a Plane value,
+/// got …`.
+///
+/// The one home of that prefix. A units rejection never passes through here:
+/// [`accept_length_point3`] renders it already naming the label
+/// (`missing or non-Length argument 'ox' for mirror`), so prefixing it as well
+/// would print the builtin twice.
+fn labelled(kind_label: impl std::fmt::Display, failure: impl std::fmt::Display) -> String {
+    format!("{kind_label}: {failure}")
+}
+
 /// Decode a [`Value::Plane`] into `(origin, unit_normal)` — an SI metre triple
 /// and a dimensionless unit vector, returned as `([f64; 3], [f64; 3])`.
 ///
@@ -2075,8 +2079,8 @@ fn unit_vector3(v: [f64; 3]) -> Result<[f64; 3], String> {
 ///     `decode_plane_non_finite_length_origin_warns_without_a_code`);
 ///   - origin or normal of the wrong SHAPE (not a 3-component `Point`/`Vector`),
 ///     or a normal with non-numeric / non-finite components — these keep their
-///     pre-δ wording and push no diagnostic, because a wrong shape is not a
-///     units rejection;
+///     pre-δ wording behind the `kind_label` prefix and push no diagnostic,
+///     because a wrong shape is not a units rejection;
 ///   - zero-magnitude normal.
 ///
 /// # Visibility
@@ -2091,27 +2095,42 @@ pub(crate) fn decode_plane(
     let (origin_val, normal_val) = match value {
         reify_ir::Value::Plane { origin, normal } => (origin.as_ref(), normal.as_ref()),
         other => {
-            return Err(format!("expected a Plane value, got {}", other));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected a Plane value, got {other}"),
+            ));
         }
     };
-    // The plane ORIGIN is a point in space — LENGTH-gated. The shape message is
-    // handed through unchanged as `shape_err`, so a wrong-arity origin still
-    // reads exactly as it did pre-δ.
+    // The plane ORIGIN is a point in space — LENGTH-gated. A wrong-arity origin
+    // is no units rejection, so `accept_length_point3` returns this `shape_err`
+    // unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Plane origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| {
+            labelled(
+                kind_label,
+                "Plane origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The plane NORMAL is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `nx`/`ny`/`nz` do (see `pattern_mirror`). Gating it
     // would reject correct `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let normal_raw = point3_components(normal_val).ok_or_else(|| {
-        "Plane normal is not a valid 3-component numeric Point/Vector".to_string()
+        labelled(
+            kind_label,
+            "Plane normal is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_normal =
-        unit_vector3(normal_raw).map_err(|e| format!("Plane has a degenerate normal: {e}"))?;
+    let unit_normal = unit_vector3(normal_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Plane has a degenerate normal: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_normal))
 }
 
@@ -2151,8 +2170,9 @@ pub(crate) fn decode_plane(
 ///     `decode_axis_non_finite_length_origin_warns_without_a_code`;
 ///   - origin or direction of the wrong SHAPE (not a 3-component
 ///     `Point`/`Vector`), or a direction with non-numeric / non-finite
-///     components — these keep their pre-δ wording and push no diagnostic. A
-///     kernel-minted `Value::Direction` still lands here, unchanged;
+///     components — these keep their pre-δ wording behind the `kind_label`
+///     prefix and push no diagnostic. A kernel-minted `Value::Direction` still
+///     lands here, unchanged;
 ///   - zero-magnitude direction.
 ///
 /// Reuses the private helpers [`point3_components`] and [`unit_vector3`] from
@@ -2171,26 +2191,41 @@ pub(crate) fn decode_axis(
     let (origin_val, dir_val) = match value {
         reify_ir::Value::Axis { origin, direction } => (origin.as_ref(), direction.as_ref()),
         other => {
-            return Err(format!("expected an Axis value, got {}", other));
+            return Err(labelled(
+                kind_label,
+                format_args!("expected an Axis value, got {other}"),
+            ));
         }
     };
-    // The axis ORIGIN is a point in space — LENGTH-gated, with the pre-δ shape
-    // message handed through unchanged as `shape_err`.
+    // The axis ORIGIN is a point in space — LENGTH-gated; a wrong-shape origin
+    // comes back as this `shape_err`, unchanged.
     let origin_arr = accept_length_point3(
         origin_val,
         ["ox", "oy", "oz"],
         kind_label,
-        |_| "Axis origin is not a valid 3-component numeric Point/Vector".to_string(),
+        |_| {
+            labelled(
+                kind_label,
+                "Axis origin is not a valid 3-component numeric Point/Vector",
+            )
+        },
         diagnostics,
     )?;
     // The axis DIRECTION is a dimensionless unit vector — stays bare f64, exactly
     // as the scalar form's `ax`/`ay`/`az` do. Gating it would reject correct
     // `.ri` code; D3 adversary finding, 2026-07-28 BINDING.
     let dir_raw = point3_components(dir_val).ok_or_else(|| {
-        "Axis direction is not a valid 3-component numeric Point/Vector".to_string()
+        labelled(
+            kind_label,
+            "Axis direction is not a valid 3-component numeric Point/Vector",
+        )
     })?;
-    let unit_dir =
-        unit_vector3(dir_raw).map_err(|e| format!("Axis has a degenerate direction: {e}"))?;
+    let unit_dir = unit_vector3(dir_raw).map_err(|e| {
+        labelled(
+            kind_label,
+            format_args!("Axis has a degenerate direction: {e}"),
+        )
+    })?;
     Ok((origin_arr, unit_dir))
 }
 
@@ -2907,8 +2942,8 @@ fn prim_box(
     // ONE grouped read, not three `?`-chained ones: a bare `box(20, 20, 10)`
     // is bare in every dimension, so every failing slot must be diagnosed in a
     // single build (see `required_length_values`).
-    let [width, height, depth] = required_length_values(
-        ["width", "height", "depth"],
+    let [size_x, size_y, size_z] = required_length_values(
+        ["size_x", "size_y", "size_z"],
         kind,
         args,
         values,
@@ -2917,9 +2952,9 @@ fn prim_box(
         diagnostics,
     )?;
     Ok(reify_ir::GeometryOp::Box {
-        width,
-        height,
-        depth,
+        size_x,
+        size_y,
+        size_z,
     })
 }
 
@@ -3685,7 +3720,11 @@ fn modify_offset_curve(
                     &eval_ctx_with_meta(values, functions, meta_map),
                 );
                 match point3_components(&v) {
-                    Some(dir) => (None, Some(dir)),
+                    Some(dir) => {
+                        let unit_dir = unit_vector3(dir)
+                            .map_err(|e| format!("{kind}: degenerate direction: {e}"))?;
+                        (None, Some(unit_dir))
+                    }
                     None => {
                         diagnostics.push(Diagnostic::warning(
                             "offset_curve: 3rd argument is neither a reference \
@@ -4118,16 +4157,6 @@ fn pattern_circular(
     meta_map: &HashMap<String, HashMap<String, String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Result<reify_ir::GeometryOp, String> {
-    // The SURFACE name the author typed, bound ONCE (SPOT) and used at every
-    // site in this function that must not render `kind`. `PatternKind::Circular`
-    // Displays as "circular", so `kind` in these messages names a builtin that
-    // does not exist; `PatternKind::Linear` was already given its surface name
-    // (task 5755), and doing the same for Circular/Arbitrary is task #6874.
-    // That repair lives in reify-compiler and moves every OTHER diagnostic
-    // rendering this kind too — a migration of its own, not a clause of ε —
-    // which is why it is a follow-up and this is a local binding. When #6874
-    // lands, this binding and its uses collapse back to `kind`.
-    let surface_name = "circular_pattern";
     if args.iter().any(|(n, _)| n == "axis") {
         let axis_val = eval_named_arg(
             "axis",
@@ -4139,8 +4168,7 @@ fn pattern_circular(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'axis' for {}", kind))?;
-        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)
-            .map_err(|e| format!("{}: {}", surface_name, e))?;
+        let (axis_origin, axis_dir) = decode_axis(&axis_val, kind, diagnostics)?;
         let count_raw = eval_named_arg_f64(
             "count",
             kind,
@@ -4160,15 +4188,9 @@ fn pattern_circular(
         // per-builtin; the case for settling it across the whole surface
         // instead is docs/prds/v0_6/angle-units-surface-convergence.md §3.10.
         // Do not re-derive #1763 from this one call site and restore it.
-        //
-        // `surface_name`, not `kind`: passing `kind` would render "circular:
-        // angle argument expects Angle" at a call the author wrote as
-        // `circular_pattern(...)`. The retired warning hard-coded that name and
-        // the compile layer's slot renders the surface call name too, so `kind`
-        // here would regress the wording AND split it across the two layers.
         let angle = required_angle_value(
             "angle",
-            surface_name,
+            kind,
             args,
             values,
             functions,
@@ -4205,12 +4227,12 @@ fn pattern_circular(
         let axis_dir = [f64_arg("ax")?, f64_arg("ay")?, f64_arg("az")?];
         let count_raw = f64_arg("count")?;
         let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-        // The scalar-axis sibling of the value-axis form above: same gate,
-        // same task-#1763 reversal and same `surface_name`, whose rationale is
-        // recorded there in full rather than copied here.
+        // The scalar-axis sibling of the value-axis form above: same gate and
+        // same task-#1763 reversal, whose rationale is recorded there in full
+        // rather than copied here.
         let angle = required_angle_value(
             "angle",
-            surface_name,
+            kind,
             args,
             values,
             functions,
@@ -4247,8 +4269,7 @@ fn pattern_mirror(
             diagnostics,
         )
         .ok_or_else(|| format!("missing required argument 'plane' for {}", kind))?;
-        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)
-            .map_err(|e| format!("mirror: {}", e))?;
+        let (plane_origin, plane_normal) = decode_plane(&plane_val, kind, diagnostics)?;
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
             plane_origin,
@@ -4383,21 +4404,20 @@ fn pattern_arbitrary(
             meta_map,
             diagnostics,
         )
-        .ok_or_else(|| "arbitrary_pattern: 'transform_list' arg is missing".to_string())?;
+        .ok_or_else(|| format!("{kind}: 'transform_list' arg is missing"))?;
         let reify_ir::Value::List(elements) = &value else {
-            diagnostics.push(Diagnostic::warning(
-                "arbitrary_pattern dropped: 'transform_list' arg is not a List<Transform<3>>"
-                    .to_string(),
+            diagnostics.push(Diagnostic::warning(format!(
+                "{kind} dropped: 'transform_list' arg is not a List<Transform<3>>"
+            )));
+            return Err(format!(
+                "{kind}: 'transform_list' arg is not a List<Transform<3>>"
             ));
-            return Err(
-                "arbitrary_pattern: 'transform_list' arg is not a List<Transform<3>>".into(),
-            );
         };
         if elements.is_empty() {
-            diagnostics.push(Diagnostic::warning(
-                "arbitrary_pattern dropped: 'transform_list' is empty".to_string(),
-            ));
-            return Err("arbitrary_pattern: 'transform_list' is empty".into());
+            diagnostics.push(Diagnostic::warning(format!(
+                "{kind} dropped: 'transform_list' is empty"
+            )));
+            return Err(format!("{kind}: 'transform_list' is empty"));
         }
         let mut transforms = Vec::with_capacity(elements.len());
         for element in elements {
@@ -4409,15 +4429,12 @@ fn pattern_arbitrary(
             // where widening it would turn one bad transform into a storm.
             transforms.push(accept_transform_to_arrays(
                 element,
-                "arbitrary_pattern",
+                kind,
                 &|diagnostics: &mut Vec<Diagnostic>| {
-                    diagnostics.push(Diagnostic::warning(
-                        "arbitrary_pattern dropped: 'transform_list' element is not a valid \
-                         Transform<3>"
-                            .to_string(),
-                    ));
-                    "arbitrary_pattern: 'transform_list' element is not a valid Transform<3>"
-                        .to_string()
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "{kind} dropped: 'transform_list' element is not a valid Transform<3>"
+                    )));
+                    format!("{kind}: 'transform_list' element is not a valid Transform<3>")
                 },
                 diagnostics,
             )?);
@@ -6866,30 +6883,12 @@ fn resolve_int_value_ref(
     }
 }
 
-/// Dimension-qualified label for a `Value::Scalar`, mirroring
-/// `arg_acceptance::value_short_label` so the `got` payload of task ε's
-/// non-scalar resolvers (int / point / vec3 / range / string) reports the
-/// SAME dimension-qualified Scalar wording as the density / scalar-dim paths
-/// that route through `accept_arg` — e.g. `"MASS_DENSITY Scalar"`,
-/// `"dimensionless Scalar"`, `"dimensioned Scalar"`. `value_short_label` is
-/// module-private to `arg_acceptance` (owned by task δ, not modified here), so
-/// the Scalar arm is replicated rather than shared.
-fn scalar_got_label(dimension: &reify_core::DimensionVector) -> String {
-    if dimension.is_dimensionless() {
-        "dimensionless Scalar".to_string()
-    } else if let Some(name) = dimension.canonical_name() {
-        format!("{name} Scalar")
-    } else {
-        "dimensioned Scalar".to_string()
-    }
-}
-
 /// Short human-readable label for a `Value` that failed Int classification,
 /// used as the `got` field of the rejection diagnostic (task ε).
 fn int_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::String(_) => "String".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -8285,246 +8284,6 @@ fn eval_selector_feature_datum(
     crate::feature_datum::feature_datum_projection(&combined, member, diagnostics)
 }
 
-// ── geometric-relations η: intrinsic `self`-datum projections (task 4387) ─────
-
-/// Intrinsic `self`-datum projection member names (geometric-relations η). A
-/// structure's `self` is its own identity frame (design §6), so these project
-/// the structure's intrinsic identity-frame constants. LOCKSTEP with the
-/// compiler typing table (`datum_projection.rs` `Type::StructureRef(_)` arm) and
-/// the `expr.rs` self-datum lowering — exactly the members
-/// `datum_projection_result_type` resolves on a `StructureRef` receiver.
-const SELF_DATUM_PROJECTION_MEMBERS: [&str; 8] = [
-    "origin", "frame", "x", "y", "z", "xy_plane", "yz_plane", "zx_plane",
-];
-
-/// The world origin as a length-dimensioned `Point3` (all components 0 m).
-fn self_datum_origin_point() -> reify_ir::Value {
-    reify_ir::Value::Point(vec![
-        reify_ir::Value::length(0.0),
-        reify_ir::Value::length(0.0),
-        reify_ir::Value::length(0.0),
-    ])
-}
-
-/// A dimensionless 3-vector plane normal — matches `frame_xy_plane`'s
-/// `Vector([Real; 3])` plane-normal convention in reify-expr.
-fn self_datum_normal(x: f64, y: f64, z: f64) -> reify_ir::Value {
-    reify_ir::Value::Vector(vec![
-        reify_ir::Value::Real(x),
-        reify_ir::Value::Real(y),
-        reify_ir::Value::Real(z),
-    ])
-}
-
-/// Kernel-free evaluation of an intrinsic `self`-datum projection
-/// (`self.origin` / `.frame` / `.x` / `.y` / `.z` / `.xy_plane` / `.yz_plane` /
-/// `.zx_plane`), geometric-relations η (design §6).
-///
-/// The compiler (η step-8) lowers `self.<datum>` to a
-/// `MethodCall { object: ValueRef(__self : StructureRef), method, args: [] }`.
-/// There is no `__self` value cell at eval time (mirroring the structural-query
-/// `self.children`/`self.members` path — see [`crate::structural_query`]), so
-/// the pure `eval_expr` short-circuits the `__self` receiver to `Undef`. This
-/// intercepts such a node by its STATIC shape — a `StructureRef`-typed receiver
-/// plus a self-datum member name — and returns the structure's intrinsic
-/// identity-frame constant:
-///   - `origin`   → `Point3<Length>` at the world origin
-///   - `frame`    → identity `Frame` (world origin, identity quaternion)
-///   - `x`/`y`/`z`→ unit-axis `Direction`s
-///   - `*_plane`  → principal `Plane`s through the origin (axis normals)
-///
-/// The `StructureRef` receiver gate distinguishes self-datums from β's datum→
-/// datum projections (`axis.origin`, `frame.x`, …), whose receivers are
-/// `Axis`/`Frame`/… typed and which the pure `eval_datum_projection` owns.
-///
-/// Returns `None` for any node that is not a self-datum projection.
-pub(crate) fn try_eval_self_datum_projection(
-    expr: &reify_ir::CompiledExpr,
-) -> Option<reify_ir::Value> {
-    let (object, member) = match &expr.kind {
-        reify_ir::CompiledExprKind::MethodCall {
-            object,
-            method,
-            args,
-        } if args.is_empty() && SELF_DATUM_PROJECTION_MEMBERS.contains(&method.as_str()) => {
-            (object.as_ref(), method.as_str())
-        }
-        _ => return None,
-    };
-    if !matches!(object.result_type, reify_core::ty::Type::StructureRef(_)) {
-        return None;
-    }
-    Some(match member {
-        "origin" => self_datum_origin_point(),
-        "frame" => reify_ir::Value::Frame {
-            origin: Box::new(self_datum_origin_point()),
-            basis: Box::new(reify_ir::Value::Orientation {
-                w: 1.0,
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-            }),
-        },
-        "x" => reify_ir::Value::Direction {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        },
-        "y" => reify_ir::Value::Direction {
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-        },
-        "z" => reify_ir::Value::Direction {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        },
-        "xy_plane" => reify_ir::Value::Plane {
-            origin: Box::new(self_datum_origin_point()),
-            normal: Box::new(self_datum_normal(0.0, 0.0, 1.0)),
-        },
-        "yz_plane" => reify_ir::Value::Plane {
-            origin: Box::new(self_datum_origin_point()),
-            normal: Box::new(self_datum_normal(1.0, 0.0, 0.0)),
-        },
-        "zx_plane" => reify_ir::Value::Plane {
-            origin: Box::new(self_datum_origin_point()),
-            normal: Box::new(self_datum_normal(0.0, 1.0, 0.0)),
-        },
-        // SELF_DATUM_PROJECTION_MEMBERS is the exhaustive gate above; defensive.
-        _ => return None,
-    })
-}
-
-/// Returns `true` if `expr` contains any intrinsic `self`-datum projection node.
-///
-/// Gates the clone+rewrite+re-eval pass so cells without self-datums are not
-/// re-evaluated. Uses the canonical [`reify_ir::CompiledExpr::walk`] traversal
-/// (visits self + every sub-expression), so it needs no hand-rolled recursion.
-pub(crate) fn contains_self_datum_projection(expr: &reify_ir::CompiledExpr) -> bool {
-    let mut found = false;
-    expr.walk(&mut |e| {
-        if try_eval_self_datum_projection(e).is_some() {
-            found = true;
-        }
-    });
-    found
-}
-
-/// Rewrite every intrinsic `self`-datum projection node within `expr` in-place
-/// to a [`reify_ir::CompiledExpr::literal`] holding its intrinsic constant
-/// (preserving the projection's `result_type`), so the pure `eval_expr`
-/// evaluates the containing cell — including NESTED operands such as
-/// `midplane(self.xy_plane, self.zx_plane)`.
-///
-/// Mirrors [`crate::structural_query`]'s `expand_structural_query` `&mut`
-/// tree-walk (there is no generic `walk_mut`): each `MethodCall` on a
-/// `StructureRef` receiver naming a self-datum is replaced by its constant,
-/// otherwise the walk recurses into sub-expressions.
-pub(crate) fn rewrite_self_datum_projections(expr: &mut reify_ir::CompiledExpr) {
-    use reify_ir::CompiledExprKind as K;
-    // Replace this node if it is itself a self-datum projection.
-    if let Some(value) = try_eval_self_datum_projection(expr) {
-        *expr = reify_ir::CompiledExpr::literal(value, expr.result_type.clone());
-        return;
-    }
-    match &mut expr.kind {
-        K::Literal(_)
-        | K::ValueRef(_)
-        | K::CrossSubGeometryRef(_)
-        | K::OptionNone
-        | K::MetaAccess { .. }
-        | K::DeterminacyPredicate { .. }
-        | K::PurposeReflectiveAggregation { .. } => {}
-        K::BinOp { left, right, .. } => {
-            rewrite_self_datum_projections(left);
-            rewrite_self_datum_projections(right);
-        }
-        K::UnOp { operand, .. } => rewrite_self_datum_projections(operand),
-        K::FunctionCall { args, .. } | K::UserFunctionCall { args, .. } => {
-            for arg in args {
-                rewrite_self_datum_projections(arg);
-            }
-        }
-        K::Conditional {
-            condition,
-            then_branch,
-            else_branch,
-        } => {
-            rewrite_self_datum_projections(condition);
-            rewrite_self_datum_projections(then_branch);
-            rewrite_self_datum_projections(else_branch);
-        }
-        K::Match { discriminant, arms } => {
-            rewrite_self_datum_projections(discriminant);
-            for arm in arms {
-                rewrite_self_datum_projections(&mut arm.body);
-            }
-        }
-        K::Lambda { body, .. } => rewrite_self_datum_projections(body),
-        K::ListLiteral(elements)
-        | K::SetLiteral(elements)
-        | K::ReflectiveCellList(elements) => {
-            for elem in elements {
-                rewrite_self_datum_projections(elem);
-            }
-        }
-        K::MapLiteral(entries) => {
-            for (key, val) in entries {
-                rewrite_self_datum_projections(key);
-                rewrite_self_datum_projections(val);
-            }
-        }
-        K::IndexAccess { object, index } => {
-            rewrite_self_datum_projections(object);
-            rewrite_self_datum_projections(index);
-        }
-        K::MethodCall { object, args, .. } => {
-            rewrite_self_datum_projections(object);
-            for arg in args {
-                rewrite_self_datum_projections(arg);
-            }
-        }
-        K::Quantifier {
-            collection,
-            predicate,
-            ..
-        } => {
-            rewrite_self_datum_projections(collection);
-            rewrite_self_datum_projections(predicate);
-        }
-        K::OptionSome(inner) => rewrite_self_datum_projections(inner),
-        K::RangeConstructor { lower, upper, .. } => {
-            if let Some(lo) = lower {
-                rewrite_self_datum_projections(lo);
-            }
-            if let Some(hi) = upper {
-                rewrite_self_datum_projections(hi);
-            }
-        }
-        K::AdHocSelector { base, args, .. } => {
-            rewrite_self_datum_projections(base);
-            for arg in args {
-                rewrite_self_datum_projections(arg);
-            }
-        }
-        K::StructureInstanceCtor {
-            ordered_args,
-            defaults,
-            ..
-        } => {
-            for (_, arg) in ordered_args {
-                rewrite_self_datum_projections(arg);
-            }
-            for (_, def) in defaults {
-                rewrite_self_datum_projections(def);
-            }
-        }
-        K::ResolveSelector { selector } => rewrite_self_datum_projections(selector),
-    }
-}
-
 /// Reconstruct a `SelectorValue` from a single compiled arg expression.
 ///
 /// PREFERRED path: inline reconstruction from a nested selector FunctionCall
@@ -8896,6 +8655,87 @@ fn resolve_index_usize(
     }
 }
 
+/// Kernel-aware `flat_map(list, |x| body)` over relational topology selectors,
+/// e.g. `flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))`: binds each
+/// list element to the lambda param and concatenates the `List`s the body
+/// yields through [`try_eval_topology_selector`].
+///
+/// `None` means "not mine; keep the pure-eval value". It is returned unless the
+/// list arg is a `ValueRef` to a `List` or a call this function resolves to a
+/// `List`, the lambda has one param and a `FunctionCall` body, and every
+/// element's body resolves to a `List`. A `Selector`-valued list arg such as
+/// `faces(b)` is not supported. `Some(Undef)` only propagates a kernel failure
+/// the nested helper already reported. The diagnostics the walk's nested
+/// helpers report are kept only with a `Some`: a declined cell leaves none.
+///
+/// A `ValueRef` list arg reads another selector cell's resolved `List`, so its
+/// result depends on that cell being hydrated first: UnifiedDag's HydrateCell
+/// walk guarantees it; the whole-template post-process sees it only when that
+/// cell is declared first (see `Engine::post_process_topology_selectors`).
+///
+/// It is reached from inside `try_eval_topology_selector` so both hydration
+/// ladders, a nested `flat_map` and the `single(...)` fallback share one entry.
+fn try_eval_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let mut walk_diagnostics = Vec::new();
+    let walked = walk_topology_flat_map(args, named_steps, values, kernel, &mut walk_diagnostics)?;
+    diagnostics.append(&mut walk_diagnostics);
+    Some(walked)
+}
+
+/// The walk behind [`try_eval_topology_flat_map`]. It reports into
+/// `diagnostics` even on the paths that return `None`.
+fn walk_topology_flat_map(
+    args: &[reify_ir::CompiledExpr],
+    named_steps: &HashMap<String, KernelHandle>,
+    values: &reify_ir::ValueMap,
+    kernel: &mut dyn reify_ir::GeometryKernel,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let [list_arg, lambda_arg] = args else {
+        return None;
+    };
+    let (param_id, body) = match &lambda_arg.kind {
+        reify_ir::CompiledExprKind::Lambda {
+            param_ids, body, ..
+        } if param_ids.len() == 1 => (&param_ids[0], body.as_ref()),
+        _ => return None,
+    };
+    if !matches!(body.kind, reify_ir::CompiledExprKind::FunctionCall { .. }) {
+        return None;
+    }
+    let items = match &list_arg.kind {
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id)? {
+            reify_ir::Value::List(items) => items.clone(),
+            _ => return None,
+        },
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_topology_selector(list_arg, named_steps, values, kernel, diagnostics)? {
+                reify_ir::Value::List(items) => items,
+                reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let mut scope = values.clone();
+    let mut out = Vec::new();
+    for item in items {
+        scope.insert(param_id.clone(), item);
+        match try_eval_topology_selector(body, named_steps, &scope, kernel, diagnostics)? {
+            reify_ir::Value::List(sub) => out.extend(sub),
+            reify_ir::Value::Undef => return Some(reify_ir::Value::Undef),
+            _ => return None,
+        }
+    }
+    Some(reify_ir::Value::List(out))
+}
+
 pub(crate) fn try_eval_topology_selector(
     expr: &reify_ir::CompiledExpr,
     named_steps: &HashMap<String, KernelHandle>,
@@ -8908,6 +8748,13 @@ pub(crate) fn try_eval_topology_selector(
         reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
         _ => return None,
     };
+
+    // (1b) `flat_map` is a generic combinator, checked before the helper-name
+    // match (which would reject it); it claims the cell only when its lambda
+    // body resolves through this function.
+    if function.name == "flat_map" {
+        return try_eval_topology_flat_map(args, named_steps, values, kernel, diagnostics);
+    }
 
     // (2) Must be one of the recognised helper names.
     let helper = match function.name.as_str() {
@@ -10078,8 +9925,9 @@ enum TopologySelectorHelper {
     /// `curvature(shape, point) -> Scalar<Curvature>|Matrix<2,2,Curvature>` —
     /// at-point curvature (task 3621, KGQ-μ, PRD §9). For a surface (face),
     /// returns a 2×2 `Value::Matrix` of principal curvatures [[κ_max,0],[0,κ_min]]
-    /// as `Value::Scalar{ dimension: 1/Length }` cells; for a curve (edge),
-    /// returns `Value::Scalar{ si_value: κ, dimension: 1/Length }`. Dispatches
+    /// as `Value::Scalar{ dimension: DimensionVector::CURVATURE }` (rad·m⁻¹) cells;
+    /// for a curve (edge), returns
+    /// `Value::Scalar{ si_value: κ, dimension: DimensionVector::CURVATURE }`. Dispatches
     /// `GeometryQuery::SurfaceCurvatureAt` first; on error retries as
     /// `GeometryQuery::CurveCurvatureAt`. Backed by `OcctKernel::curvature_at`
     /// (surface) and `OcctKernel::curve_curvature_at` (curve).
@@ -10370,7 +10218,7 @@ fn point3_got_label(value: &reify_ir::Value) -> String {
         }
         reify_ir::Value::Point(_) => "Point with a non-Length or non-Scalar component".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
@@ -10576,7 +10424,7 @@ fn vec3_got_label(value: &reify_ir::Value) -> String {
             "Vector with a dimensioned or non-numeric component".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Point(_) => "Point".to_string(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
@@ -10811,7 +10659,7 @@ fn range_got_label(value: &reify_ir::Value) -> String {
             "Range with a wrong-dimension or non-Scalar bound".to_string()
         }
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -11098,15 +10946,6 @@ fn dispatch_normal_vector3(
     }
 }
 
-/// Curvature dimension constant: 1/Length = Length^-1 (m⁻¹ in SI).
-/// Used by `dispatch_curvature` to tag scalar and matrix cells.
-/// The curvature dimension is LENGTH^-1. index 0 = LENGTH in DimensionVector.
-const CURVATURE_DIM: reify_core::dimension::DimensionVector = {
-    let mut d = [reify_core::dimension::Rational::ZERO; 10];
-    d[0] = reify_core::dimension::Rational::new(-1, 1);
-    reify_core::dimension::DimensionVector(d)
-};
-
 /// Dispatch a `length(curve)` query for `TopologySelectorHelper::Length`
 /// (task 3622, KGQ-ν).
 ///
@@ -11196,10 +11035,15 @@ fn dispatch_perimeter(
 ///
 /// Strategy: try `SurfaceCurvatureAt{handle, u=px, v=py}` first. If the kernel
 /// returns Ok, decode the `[[κ_max,0],[0,κ_min]]` nested-List wire value into a
-/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells. If
-/// the kernel returns Err, retry as `CurveCurvatureAt{handle,px,py,pz}` and
-/// return `Value::Scalar{si_value: κ, dimension: 1/Length}`. If both fail, emit
-/// exactly one Warning naming `helper_name` and return `Some(Value::Undef)`.
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: DimensionVector::CURVATURE}`
+/// (rad·m⁻¹) cells. If the kernel returns Err, retry as
+/// `CurveCurvatureAt{handle,px,py,pz}` and return
+/// `Value::Scalar{si_value: κ, dimension: DimensionVector::CURVATURE}`. If both
+/// fail, emit exactly one Warning naming `helper_name` and return
+/// `Some(Value::Undef)`.
+///
+/// The kernel's raw κ is tagged here, and this is where the arc measure is
+/// asserted: η = 1, so the value passes through unchanged.
 ///
 /// The surface wire note: the kernel encodes the principal-curvature matrix as a
 /// diagonal `[[kappa_max, 0.0], [0.0, kappa_min]]` (InertiaTensor wire convention)
@@ -11236,7 +11080,7 @@ fn dispatch_curvature(
     match kernel.query(&curve_query) {
         Ok(reify_ir::Value::Real(kappa)) => Some(reify_ir::Value::Scalar {
             si_value: kappa,
-            dimension: CURVATURE_DIM,
+            dimension: reify_core::DimensionVector::CURVATURE,
         }),
         Ok(unexpected) => {
             diagnostics.push(Diagnostic::warning(format!(
@@ -11255,7 +11099,8 @@ fn dispatch_curvature(
 }
 
 /// Decode the kernel's `[[κ_max, 0.0], [0.0, κ_min]]` nested-List reply into a
-/// `Value::Matrix` of `Value::Scalar{si_value, dimension: 1/Length}` cells.
+/// `Value::Matrix` of `Value::Scalar{si_value, dimension: DimensionVector::CURVATURE}`
+/// (rad·m⁻¹) cells.
 ///
 /// On any parse failure emits a Warning and returns `Value::Undef` (same
 /// defensive-downgrade contract as `dispatch_normal_vector3`).
@@ -11299,7 +11144,7 @@ fn parse_curvature_matrix_reply(
             };
             matrix_row.push(reify_ir::Value::Scalar {
                 si_value,
-                dimension: CURVATURE_DIM,
+                dimension: reify_core::DimensionVector::CURVATURE,
             });
         }
         matrix_rows.push(matrix_row);
@@ -11826,7 +11671,7 @@ fn string_got_label(value: &reify_ir::Value) -> String {
     match value {
         reify_ir::Value::Int(_) => "Int".to_string(),
         reify_ir::Value::Real(_) => "Real".to_string(),
-        reify_ir::Value::Scalar { dimension, .. } => scalar_got_label(dimension),
+        reify_ir::Value::Scalar { dimension, .. } => dimension.diagnostic_scalar_label(),
         reify_ir::Value::Bool(_) => "Bool".to_string(),
         reify_ir::Value::Vector(_) => "Vector".to_string(),
         reify_ir::Value::Point(_) => "Point".to_string(),
@@ -12039,7 +11884,7 @@ fn quaternion_from_z_to_axis(nx: f64, ny: f64, nz: f64) -> reify_ir::Value {
 /// | `Some(_)` → `Value::Transform`      | pass through unchanged                                |
 /// | `Some(_)` → `Value::Frame`          | lowered per the convention above                      |
 /// | anything else (incl. `Value::Undef`)| one `Diagnostic::error`; returns `Value::Undef`       |
-#[allow(dead_code)] // used in #[cfg(test)]; consumed by T5 (full-tree composition)
+// G-allow: same-file caller only (walk_placed_realizations, reached from engine_build.rs via surface_subtree); audit counts cross-file refs
 pub(crate) fn eval_sub_pose(
     pose: Option<&reify_ir::CompiledExpr>,
     values: &ValueMap,
@@ -12385,24 +12230,6 @@ fn fold_pose_chain<'a>(poses: impl Iterator<Item = &'a reify_ir::Value>) -> reif
     })
 }
 
-/// Human-readable label for a [`reify_core::DimensionVector`], suitable for a
-/// user-facing diagnostic.
-///
-/// [`reify_core::DimensionVector::canonical_name`] deliberately excludes
-/// `DIMENSIONLESS` from its named-singleton table and returns `None` for it —
-/// which is precisely the case task 6099 is about — so the dimensionless check
-/// comes FIRST and yields the literal `"dimensionless"`. Unnamed composite
-/// dimensions (e.g. `MONEY/MASS`) fall through to the `Display` exponent form.
-fn dimension_label(d: reify_core::DimensionVector) -> String {
-    if d.is_dimensionless() {
-        return "dimensionless".to_string();
-    }
-    match d.canonical_name() {
-        Some(name) => name.to_string(),
-        None => format!("{d}"),
-    }
-}
-
 /// The translation dimension of a pose [`reify_ir::Value::Transform`], if it has one.
 ///
 /// Goes through the `translation` field on purpose: `Value::dimension()` called
@@ -12534,8 +12361,8 @@ pub(crate) fn diagnose_pose_composition_failure(
              cannot be composed, so `{sub_name}` would be placed at the origin. \
              Give the pose length-dimensioned components, e.g. \
              `vec3(5.0mm, 0.0mm, 0.0mm)`.",
-            dimension_label(sd),
-            dimension_label(pd),
+            sd.diagnostic_dimension_label(),
+            pd.diagnostic_dimension_label(),
         )));
     }
 
@@ -12676,13 +12503,17 @@ pub(crate) type PlacedPreFilter<'a> = Option<&'a dyn Fn(usize, usize, &str) -> b
 /// Placed-product body collected by the T7 export walk (`surface_export_bodies`).
 ///
 /// The `entity_path` is the composed PRD §11.2 path; `handle_id` is the
-/// `GeometryHandleId` of the placed BRep (world transform already baked in via
-/// `ApplyTransform`); `default_visible` follows the same OR-of-aux rule as
-/// `surface_subtree` (`false` iff aux or under-aux-sub).
+/// `GeometryHandleId` of the placed body (world transform already baked in via
+/// `ApplyTransform`) and `kernel` is the kernel that owns it. Handle ids are
+/// kernel-local, so `handle_id` means nothing without `kernel`: resolve the
+/// serving map entry with `crate::kernel_owner::resolve_owning_kernel_name`.
+/// `default_visible` follows the same OR-of-aux rule as `surface_subtree`
+/// (`false` iff aux or under-aux-sub).
 #[derive(Debug)]
 pub(crate) struct ExportBody {
     pub entity_path: String,
     pub handle_id: GeometryHandleId,
+    pub kernel: KernelId,
     pub default_visible: bool,
 }
 
@@ -12695,13 +12526,13 @@ pub(crate) struct ExportBody {
 ///
 /// # Visitor
 ///
-/// `visit_realization(kernel, placed_id, entity_path, default_visible, t_idx, r_idx, diagnostics)`
+/// `visit_realization(kernel, placed, entity_path, default_visible, t_idx, r_idx, diagnostics)`
 /// — called once per realization that produced a handle, after the composed world
 /// transform is applied:
-/// - `kernel`: mutable borrow of the default kernel (over the visit call; released before
-///   recursion so the sub loop can re-borrow).
-/// - `placed_id`: the `GeometryHandleId` after `ApplyTransform` (or the source handle for
-///   identity/undecomposable poses — no extra kernel op).
+/// - `kernel`: mutable borrow of the kernel that OWNS the handle (over the visit call;
+///   released before recursion so the sub loop can re-borrow).
+/// - `placed`: the handle after `ApplyTransform` (or the source handle for
+///   identity/undecomposable poses — no extra kernel op), tagged with its owning kernel.
 /// - `entity_path`: PRD §11.2 composed path (owned `String`).
 /// - `default_visible`: `false` iff aux or under-aux-sub (same OR rule as the callers).
 /// - `t_idx`, `r_idx`: template and realization indices (for budget lookup in the
@@ -12751,7 +12582,7 @@ pub(crate) fn walk_placed_realizations<V>(
 ) where
     V: FnMut(
         &mut dyn GeometryKernel,
-        GeometryHandleId,
+        KernelHandle,
         String,
         bool,
         usize,
@@ -12794,25 +12625,10 @@ pub(crate) fn walk_placed_realizations<V>(
         if pre_filter.is_some_and(|f| !f(t_idx, r_idx, &entity_path)) {
             continue;
         }
-        // Task 5033 Gap D: resolve the kernel that actually OWNS this handle
-        // (`handle.kernel`), not unconditionally `default_kernel_name`. Every
-        // pre-5033 realization dispatched at BRep demand (task 4050 step-8
-        // design_decision 4), so `handle.kernel` was always the default
-        // kernel and this lookup was a no-op in practice. `tessellate_from_values`
-        // now demands Voxel for an isosurface operand (Gap D sibling fix,
-        // `voxel_demanded_realization_indices`), so a handle reaching this
-        // walk can legitimately live on a non-default kernel (e.g. OpenVDB);
-        // tessellating it via the wrong kernel's disjoint id space would
-        // panic or silently mistessellate. Same registry-name-vs-map-key
-        // fallback used by `engine_build.rs`'s Voxel/VolumeMesh post-loop
-        // edges (backward-compat sentinel mode keys the default kernel's
-        // handle under `default_kernel_name`, not its own registry name).
+        // Task 5033 Gap D: resolve the kernel that OWNS this handle, not
+        // unconditionally the default kernel.
         let resolved_kernel_name =
-            if geometry_kernels.contains_key(handle.kernel.as_registry_name()) {
-                handle.kernel.as_registry_name()
-            } else {
-                default_kernel_name
-            };
+            resolve_owning_kernel_name(geometry_kernels, handle.kernel, default_kernel_name);
         let resolved_kernel = geometry_kernels
             .get_mut(resolved_kernel_name)
             .expect("resolved kernel must remain in the map across the surfacing walk");
@@ -12843,7 +12659,10 @@ pub(crate) fn walk_placed_realizations<V>(
         // `&mut **resolved_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
         visit_realization(
             &mut **resolved_kernel,
-            placed_id,
+            KernelHandle {
+                kernel: handle.kernel,
+                id: placed_id,
+            },
             entity_path,
             default_visible,
             t_idx,
@@ -13008,10 +12827,11 @@ pub(crate) fn non_final_realization_indices(
         .collect()
 }
 
-/// T7 export walk (task 3905): collect placed-product BRep handles for STEP export.
+/// T7 export walk (task 3905): collect placed product bodies for Phase-B export.
 ///
 /// Thin wrapper over `walk_placed_realizations` that pushes each placed realization
-/// as an `ExportBody` (handle_id + entity_path + default_visible) without tessellating.
+/// as an `ExportBody` tagged with the kernel that owns it (handle_id + kernel +
+/// entity_path + default_visible) without tessellating.
 ///
 /// `skip` (indexed by `t_idx`) lists realization indices to exclude — every
 /// non-final intra-template realization (see [`non_final_realization_indices`]) —
@@ -13076,13 +12896,14 @@ pub(crate) fn surface_export_bodies(
         meta_map,
         diagnostics,
         Some(combined_filter),
-        &mut |_kernel, placed_id, entity_path, default_visible, _t, _r, _diag| {
+        &mut |_kernel, placed, entity_path, default_visible, _t, _r, _diag| {
             // The combined pre_filter already excluded non-final / non-target
             // realizations before the transform, so every body reaching this
             // visitor should be collected unconditionally.
             export_bodies.push(ExportBody {
                 entity_path,
-                handle_id: placed_id,
+                handle_id: placed.id,
+                kernel: placed.kernel,
                 default_visible,
             });
         },
@@ -13157,7 +12978,7 @@ pub(crate) fn surface_subtree(
     capture_repr_tol: bool,
     // Determinacy β (task 4198): per-build map from realized-occurrence name
     // ("{entity}#realization[{index}]") to sampled max facet-chord deviation
-    // in SI metres. Populated here (the unique site holding kernel + placed_id
+    // in SI metres. Populated here (the unique site holding kernel + placed handle
     // + fresh mesh + entity_path simultaneously) when `capture_repr_tol` is
     // true. Recording is skip-on-None and skip-on-empty-mesh so the map never
     // contains misleading 0.0 entries (honest absence = missing key, B3).
@@ -13192,9 +13013,9 @@ pub(crate) fn surface_subtree(
         meta_map,
         diagnostics,
         Some(&not_query_only),
-        &mut |kernel, placed_id, entity_path, default_visible, t, r, diag| {
+        &mut |kernel, placed, entity_path, default_visible, t, r, diag| {
             let budget = tessellation_budgets[t][r];
-            match kernel.tessellate(placed_id, budget) {
+            match kernel.tessellate(placed.id, budget) {
                 Ok(mesh) => {
                     // Determinacy β (task 4198): record the sampled max
                     // facet-chord deviation BEFORE moving entity_path into
@@ -13209,7 +13030,7 @@ pub(crate) fn surface_subtree(
                     // facet-chord error, NOT the configured deflection budget.
                     if capture_repr_tol
                         && !mesh.indices.is_empty()
-                        && let Some(dev) = kernel.measure_mesh_deviation(placed_id, &mesh)
+                        && let Some(dev) = kernel.measure_mesh_deviation(placed.id, &mesh)
                     {
                         achieved_repr_tol.insert(entity_path.clone(), dev);
                     }
@@ -13235,3 +13056,6 @@ mod tests;
 
 #[cfg(test)]
 mod dispatch_table_uniqueness;
+
+#[cfg(test)]
+mod flat_map_tests;

@@ -1,7 +1,5 @@
 use crate::common;
 
-use std::process::Command;
-
 /// δ (task #4891) B8 integration gate: a Physical + SurfaceTreated body carrying
 /// a functional Coating(process: Anodize, color: Color(named:"RAL9005", ...))
 /// exports the anodize-derived RGB into the 3MF <basematerials>, overriding the
@@ -24,26 +22,18 @@ fn build_anodized_box_3mf_reflects_coating_color() {
 
     let example = common::example_path("surface_finish_3mf.ri");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_reify"))
-        .args([
-            "build",
-            &example,
-            "-o",
-            output_path.to_str().expect("temp path is not valid UTF-8"),
-        ])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .expect("failed to execute reify binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let (status, stdout, stderr) = common::run_with_args(&[
+        "build",
+        &example,
+        "-o",
+        output_path.to_str().expect("temp path is not valid UTF-8"),
+    ]);
 
     // (a) Build must succeed.
     assert!(
-        output.status.success(),
-        "reify build should exit 0 for surface_finish_3mf.ri\nstdout: {stdout}\nstderr: {stderr}"
+        status.success(),
+        "reify build should exit 0 for surface_finish_3mf.ri; got exit {:?}\nstdout: {stdout}\nstderr: {stderr}",
+        status.code()
     );
 
     // (a-ii) Positive diagnostic channel check: stdout contains "Wrote" on success.

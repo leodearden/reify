@@ -4,14 +4,17 @@
 #
 # NOT a visual-regression gate, despite the directory it shares: the driver
 # captures no screenshot and diffs no baseline (that is gui/test/visual/run.ts).
-# Its only assertion is the three-way numeric parity check.
+# Its only assertion is the driver's mesh-count parity check; the invariant and
+# its rationale live in docs/debug-mcp-contract.md, "Full realized scene".
 #
 # Usage:
 #   bash gui/test/visual/run_mesh_count_parity_e2e_smoke.sh
 #   # or via npm:
 #   npm --prefix gui run test:smoke:mesh-count-parity
 #
-# Fixture: gui/test/fixtures/large_assembly.ri
+# Fixture: gui/test/fixtures/large_assembly.ri — the LAUNCH fixture only; the
+#          driver then opens every fixture in its FIXTURES table in turn
+#          (aux_assembly.ri included).
 # Driver:  gui/test/visual/smoke_mesh_count_parity_e2e.mjs (the parity driver)
 #
 # The whole launch/readiness/teardown lifecycle — port resolution, DISPLAY and
@@ -34,7 +37,9 @@
 #
 # LIVE-ONLY — not CI/verify-gated.  Waivable when blocked solely on the debug-port
 # gap (esc-4202-61).  The deterministic gate is gui/test/visual/meshCountParity.test.ts
-# (the whole decision function) plus 5348's commands_tests.rs full-scene tests.
+# (the whole decision function) plus 5348's commands_tests.rs full-scene tests
+# and gui/src-tauri/src/tests/mesh_count_parity_fixture_tests.rs (each fixture's
+# exact rendered/hidden composition).
 
 set -euo pipefail
 

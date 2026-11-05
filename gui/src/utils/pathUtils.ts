@@ -20,8 +20,15 @@ export function normalizePath(p: string): string {
 }
 
 /**
- * Returns a canonical form of `path` suitable for use as a document-identity key
- * in the editor store.
+ * Returns the GUI's single document-identity key for `path`: the editor store
+ * and the editor key every per-document map by it, and {@link isSameFile} is
+ * its predicate form.
+ *
+ * One document reaches the GUI under two spellings — store paths and
+ * {@link pathToUri} output are decoded (`/proj/hello world.ri`), while every URI
+ * the backend's `url` crate mints (diagnostics, WorkspaceEdits, Locations) is
+ * percent-encoded (`file:///proj/hello%20world.ri`) — so any raw string compare
+ * or raw-keyed map splits them.
  *
  * Steps applied in order:
  * 1. Strips `file://` prefix and decodes percent-encoding via {@link normalizePath}.
@@ -150,19 +157,16 @@ export function workspaceRootUriForFile(activeFile: string | null): string | und
 }
 
 /**
- * Returns true if two file identifiers refer to the same file, normalizing
- * `file://` URI scheme vs bare path differences before comparison.
- *
- * The backend can emit paths as either bare paths (e.g. `/project/src/foo.ri`)
- * or `file://` URIs (e.g. `file:///project/src/foo.ri`). This utility strips
- * the scheme from both arguments before doing an exact equality check, so
- * cross-format comparisons work correctly.
+ * True iff `a` and `b` have the same {@link canonicalizeKey} — the one
+ * document-identity rule. Use this for every identity comparison, and
+ * `canonicalizeKey` for every identity-keyed map.
  *
  * @example
  * isSameFile('/project/src/foo.ri', 'file:///project/src/foo.ri') // → true
+ * isSameFile('/p/hello world.ri', 'file:///p/./hello%20world.ri') // → true
  * isSameFile('/a/foo.ri', '/b/a/foo.ri')                          // → false
  */
 export function isSameFile(a: string, b: string): boolean {
   if (a === b) return true; // fast path — identical strings always match
-  return normalizePath(a) === normalizePath(b);
+  return canonicalizeKey(a) === canonicalizeKey(b);
 }

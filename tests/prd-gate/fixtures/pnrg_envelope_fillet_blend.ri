@@ -15,6 +15,11 @@
 // PRD §2 quotes a 0.599 spot value.  `fillet(target, radius)` is the 2-arg
 // all-edges form; `fillet(target, edges(target), radius)` is the curated form.
 //
+// Task #7463 walked this class densely — record:
+//   docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md
+// Current envelope value:
+//   docs/notes/precision-refine-envelope-calibration.md §1.1.
+//
 // NOT wired into any probe set or auto-run gate.
 
 module pnrg_envelope_fillet_blend

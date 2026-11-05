@@ -12,10 +12,13 @@
 # three substantive values: the echo prefix, the fixture and the driver .mjs.
 # The copies had already drifted — run_find_uses_smoke.sh (the oldest, task-4202)
 # lacked the /opt/reify-deps LD_LIBRARY_PATH block and the WebKit DMABuf
-# disable that the other five carried.  Consolidation unifies on the SUPERSET of
-# the env hygiene: both blocks are conditional/defaulted (the deps block fires
-# only when the deps dir is actually present; the WebKit one honours a caller
-# override), so neither can regress a host where they were previously absent.
+# disable that the other five carried.  Consolidation unified on the SUPERSET of
+# the env hygiene: both blocks were conditional/defaulted (the deps block fired
+# only when the deps dir was actually present; the WebKit one honours a caller
+# override), so neither could regress a host where they were previously absent.
+# Task 8654 then removed the deps block: reify-gui resolves every native lib
+# through its own RUNPATH, and #5192/#7254's tbb pin superseded its TBB 12.18
+# rationale (docs/notes/native-dep-loader-path.md).
 #
 # ENTRY POINT:
 #   e2e_smoke_run --name <label> --fixture <repo-relative> --driver <repo-relative>
@@ -26,9 +29,9 @@
 #      no longer contend for :1420; reify-gui follows it via its startup devUrl
 #      retarget (gui/src-tauri/src/dev_url.rs).
 #   2. Set DISPLAY="${DISPLAY:-:0}" so the Tauri webview can instantiate.
-#  2a. Prepend /opt/reify-deps/lib to LD_LIBRARY_PATH when present.
 #  2b. gui_launch_env_pin (scripts/lib_gui_launch.sh): disable the WebKit
-#      GBM/DMABuf renderer unless the caller overrode it, and pin oneTBB first.
+#      GBM/DMABuf renderer unless the caller overrode it, and apply the whole
+#      launch loader path (the workspace-bin dirs, then the oneTBB pin first).
 #   3. Install an EXIT/INT/TERM cleanup trap so the GUI is reaped even on early failure.
 #   4. (Unless REIFY_SMOKE_SKIP_PREBUILD=1) run synchronous pre-build steps —
 #      sidecar npm install, sidecar build, gui npm install, cargo build reify-gui —
@@ -64,8 +67,8 @@ E2E_SMOKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 E2E_SMOKE_REPO_ROOT="$(cd "$E2E_SMOKE_LIB_DIR/../../.." && pwd)"
 
 # Sourced at load time, not inside e2e_smoke_run: lib_gui_launch.sh snapshots
-# the inherited LD_LIBRARY_PATH when sourced, so it must run before step 2a
-# edits that variable.
+# the inherited LD_LIBRARY_PATH when sourced, so it must run before
+# gui_launch_env_pin (step 2b) edits that variable.
 # shellcheck source=../../../scripts/lib_gui_launch.sh
 source "$E2E_SMOKE_REPO_ROOT/scripts/lib_gui_launch.sh"
 
@@ -179,21 +182,9 @@ e2e_smoke_run() {
     export DISPLAY="${DISPLAY:-:0}"
 
     # -----------------------------------------------------------------------
-    # 2a. Ensure /opt/reify-deps/lib is on LD_LIBRARY_PATH when present.
-    #     libopenvdb.so.13+ links against TBB 12.18; on hosts where only
-    #     TBB 12.11 is installed at the system path the binary fails with
-    #     "undefined symbol" at startup.  This mirrors the .cargo/run-with-occt.sh
-    #     logic (which fires for `cargo run` but NOT for direct binary invocations).
-    # -----------------------------------------------------------------------
-    local REIFY_DEPS_LIB="/opt/reify-deps/lib"
-    if [ -d "$REIFY_DEPS_LIB" ] && ls "$REIFY_DEPS_LIB"/libTKernel.so* >/dev/null 2>&1; then
-        export LD_LIBRARY_PATH="$REIFY_DEPS_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-    fi
-
-    # -----------------------------------------------------------------------
-    # 2b. Shared launch-env defaults (WebKit DMABuf disable + oneTBB pin) from
-    #     scripts/lib_gui_launch.sh.  Called AFTER 2a on purpose: the helper
-    #     prepends the tbb-pin dir, which must land ahead of the deps lib.
+    # 2b. gui_launch_env_pin (scripts/lib_gui_launch.sh) applies the WebKit
+    #     default and the whole launch loader path: the workspace-bin dirs,
+    #     then the tbb pin first.
     # -----------------------------------------------------------------------
     gui_launch_env_pin
 

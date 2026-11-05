@@ -1,0 +1,21 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): CoreXY gantry (T4, R8).
+// Tree: world -> y (prismatic Y) -> x (prismatic X) -> carriage. Belt branch: world -> u (axis (1,1,0)) -> v (axis (1,-1,0)).
+// u, v (belt displacements) are bound; the carriage must land at x = (u+v)/sqrt2, y = (u-v)/sqrt2.
+// Orientation A closes v onto x (x, y on the closing side); orientation B closes x onto v (x, y on the tree side).
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_corexy_tie_orientation
+
+structure def CoreXY {
+    let jy = prismatic(vec3(0, 1, 0), -500mm .. 500mm)
+    let jx = prismatic(vec3(1, 0, 0), -500mm .. 501mm)
+    let ju = prismatic(vec3(1, 1, 0), -700mm .. 700mm)
+    let jv = prismatic(vec3(1, -1, 0), -700mm .. 701mm)
+    let base = body(body(body(mechanism(), "gantry_y", jy, world()), "carriage", jx, jy), "belt_u", ju, world())
+    let m_a = body(body(base, "belt_v", jv, ju), "tie_a", jv, jx)
+    let m_b = body(body(base, "belt_v", jv, ju), "tie_b", jx, jv)
+    let binds = [bind(ju, 200mm), bind(jv, 100mm)]
+    let s_a = snapshot(m_a, binds)
+    let s_b = snapshot(m_b, binds)
+    let carriage_a = s_a.free_values
+    let carriage_b = s_b.free_values
+}

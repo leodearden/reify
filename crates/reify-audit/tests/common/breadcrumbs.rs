@@ -1,19 +1,27 @@
-//! The jcodemunch PER-CALL fail-soft breadcrumb literals, in ONE place.
+//! The jcodemunch fail-soft breadcrumb literals — both layers — in ONE place.
 //!
-//! Every one of these strings is a copy of a `eprintln!` in
-//! `src/jcodemunch_client.rs`. Two test binaries consume them, for two
-//! DIFFERENT and complementary reasons:
+//! Each string is a copy of an `eprintln!` in production code: the
+//! CONSTRUCTION layer's labels come from the seam binding
+//! (`SeamUnavailable`'s rendering in `src/jcodemunch_seam.rs`), emitted when
+//! the handshake fails and the whole run binds the inert stub; the PER-CALL
+//! layer's come from `RealJCodemunchOps::call_or_fail` in
+//! `src/jcodemunch_client.rs`, which renders `jcodemunch <tool>: …` (or
+//! `jcodemunch <tool>(<subject>): …`) when one `tools/call` fails after a
+//! successful handshake. Test binaries consume them for two DIFFERENT and
+//! complementary reasons:
 //!
-//! - `tests/cli.rs` (`freshness_gate::per_call_fail_soft_*`) asserts the
-//!   literal is PRESENT in the real binary's stderr, hermetically, on the
+//! - the hermetic CLI tests (`tests/cli.rs`, `tests/jcodemunch_fallback_cli.rs`)
+//!   assert the literal is PRESENT in the real binary's stderr, on the
 //!   ordinary merge gate. That is the production-side lock: reword the
 //!   `eprintln!` and these tests go red.
 //! - `tests/jcodemunch_live.rs` (`assert_live_leg`) asserts the literal is
-//!   ABSENT from a live leg's stderr. That is the vacuity check — link 4 of
-//!   the five-part chain, whose canonical statement is the header of
-//!   `tests/jcodemunch_live.rs` ("THE FIVE-PART CHAIN"). The short version:
-//!   nothing else in that chain can tell an empty-by-failure run from an
-//!   empty-by-fact one, so the breadcrumb is the only signal there is.
+//!   ABSENT from a live leg's stderr. That is the vacuity check — links 3
+//!   (construction) and 4 (per call) of the five-part chain, whose canonical
+//!   statement is the header of `tests/jcodemunch_live.rs` ("THE FIVE-PART
+//!   CHAIN"). The short version: a per-call failure also leaves a Low
+//!   unexamined record in the findings array, but no link of that chain reads
+//!   finding patterns, so the breadcrumb is what the capstone checks — and why
+//!   these literals stay shared.
 //!
 //! # Why they live here rather than in either consumer
 //!
@@ -79,3 +87,20 @@ pub const PDEAD_CALL: &[&str] = &[PDEAD_GET_DEAD_CODE];
 /// providing none.
 #[allow(dead_code)]
 pub const P1_CALL: &[&str] = &[P1_GET_CHANGED_SYMBOLS, P1_FIND_REFERENCES];
+
+/// The CONSTRUCTION fail-soft for an endpoint that never answered: connection
+/// refused/reset, timeout (`LoadError::Http`).
+#[allow(dead_code)]
+pub const CONSTRUCTION_UNREACHABLE: &str = "reify-audit: jcodemunch unreachable at";
+
+/// The CONSTRUCTION fail-soft for an endpoint that ANSWERED but is not a live
+/// MCP seam: a non-2xx status (`LoadError::Status`), a body broken off
+/// mid-reply (`LoadError::Body`), or a body that is not an MCP
+/// `InitializeResult` (`LoadError::Protocol`).
+#[allow(dead_code)]
+pub const CONSTRUCTION_HANDSHAKE_REFUSED: &str = "reify-audit: jcodemunch handshake refused at";
+
+/// Every CONSTRUCTION fail-soft label. A run that printed any of them never
+/// opened a jcodemunch session.
+#[allow(dead_code)]
+pub const CONSTRUCTION: &[&str] = &[CONSTRUCTION_UNREACHABLE, CONSTRUCTION_HANDSHAKE_REFUSED];

@@ -3,7 +3,8 @@
 //! Dependency-free `f64` math (no `reify-solver-elastic` / `reify-ir::Value`
 //! deps) so this module stays inside `reify-stdlib`. The `reify-eval` modal
 //! trampoline (`modal_ops.rs`) calls these to convert eigen-solver output into
-//! the `ModalResult` fields.
+//! the `ModalResult` fields, and the author's shift frequency into eigen-solver
+//! input.
 
 use std::f64::consts::PI;
 
@@ -35,7 +36,8 @@ const MIN_OMEGA_FOR_DAMPING: f64 = 1e-9;
 /// doctrine-citing comment rather than a retype. See
 /// `docs/prds/v0_6/angle-dimension-completion.md` D4 (#6184).
 ///
-/// This function is the module's ONLY unit crossing:
+/// This function and [`frequency_hz_to_eigenvalue`] are the module's ONLY unit
+/// crossings — one declared pair, Hz ↔ λ:
 /// [`rayleigh_damping_ratio`] and [`total_damping_ratio`] below stay entirely in
 /// rad/s and cross nothing, so a reader need not check them.
 pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
@@ -44,6 +46,21 @@ pub fn eigenvalue_to_frequency_hz(lambda: f64) -> f64 {
     } else {
         0.0
     }
+}
+
+/// Free-vibration eigenvalue `λ = ω²` (rad²/s²) from a frequency in Hz:
+/// `λ = (2π·f)²`. The inverse of [`eigenvalue_to_frequency_hz`] on `f ≥ 0`.
+///
+/// This is the same **D4 rad/cycle crossing** in the OPPOSITE direction —
+/// Hz → rad/s, multiplying in 2π rad·cycle⁻¹ — then squared; see
+/// `docs/prds/v0_6/angle-dimension-completion.md` D4 (#6184).
+///
+/// Squaring erases the sign of `f_hz`, so f and −f select the same λ — the
+/// reason `ModalOptions.shift_frequency` cannot express a negative-λ shift (see
+/// `docs/prds/v0_3/modal-analysis.md` §4.3).
+pub fn frequency_hz_to_eigenvalue(f_hz: f64) -> f64 {
+    let omega = 2.0 * PI * f_hz;
+    omega * omega
 }
 
 /// Rayleigh (proportional) modal damping ratio ζ for one mode (PRD §4.2):
@@ -185,6 +202,64 @@ mod tests {
     fn eigenvalue_to_frequency_hz_negative_eigenvalue_clamps_to_zero() {
         let got = eigenvalue_to_frequency_hz(-123.4);
         assert_eq!(got, 0.0, "negative λ must clamp to 0.0, got {got}");
+    }
+
+    // ── frequency_hz_to_eigenvalue: λ = (2π·f)² ──────────────────────────────
+
+    /// f = 1/(2π) Hz ⇒ ω = 1 rad/s ⇒ λ = 1.
+    #[test]
+    fn frequency_hz_to_eigenvalue_unit_angular_rate() {
+        let got = frequency_hz_to_eigenvalue(1.0 / (2.0 * PI));
+        assert!((got - 1.0).abs() < EPS, "got {got}");
+    }
+
+    /// The crossing pair is mutually inverse on f ≥ 0: Hz → λ → Hz recovers f.
+    #[test]
+    fn frequency_hz_to_eigenvalue_round_trips_through_eigenvalue_to_frequency_hz() {
+        for f in [41.3_f64, 100.0, 61640.0] {
+            let got = eigenvalue_to_frequency_hz(frequency_hz_to_eigenvalue(f));
+            assert!(((got - f) / f).abs() < 1e-12, "got {got} Hz, want {f} Hz");
+        }
+    }
+
+    /// The default `0Hz` maps to σ = 0, the identity shift.
+    #[test]
+    fn frequency_hz_to_eigenvalue_zero_is_zero() {
+        assert_eq!(frequency_hz_to_eigenvalue(0.0), 0.0);
+    }
+
+    /// Squaring erases the sign: f and −f select the same λ, so a negative-λ
+    /// shift is inexpressible through a frequency.
+    #[test]
+    fn frequency_hz_to_eigenvalue_erases_sign() {
+        assert_eq!(
+            frequency_hz_to_eigenvalue(-100.0),
+            frequency_hz_to_eigenvalue(100.0)
+        );
+    }
+
+    /// Neighbours equidistant in Hz are NOT equidistant in λ: around 100 Hz the
+    /// 90 Hz neighbour is closer in λ than the 110 Hz one, so a λ-nearest shift
+    /// is biased low.
+    #[test]
+    fn frequency_hz_to_eigenvalue_band_is_asymmetric_in_hz() {
+        let low_gap = frequency_hz_to_eigenvalue(100.0) - frequency_hz_to_eigenvalue(90.0);
+        let high_gap = frequency_hz_to_eigenvalue(110.0) - frequency_hz_to_eigenvalue(100.0);
+        let four_pi_sq = 4.0 * PI * PI;
+        let want_low = four_pi_sq * (100.0 * 100.0 - 90.0 * 90.0);
+        let want_high = four_pi_sq * (110.0 * 110.0 - 100.0 * 100.0);
+        assert!(
+            ((low_gap - want_low) / want_low).abs() < 1e-9,
+            "low gap {low_gap}"
+        );
+        assert!(
+            ((high_gap - want_high) / want_high).abs() < 1e-9,
+            "high gap {high_gap}"
+        );
+        assert!(
+            low_gap < high_gap,
+            "low gap {low_gap} must be < high gap {high_gap}"
+        );
     }
 
     // ── rayleigh_damping_ratio: ζ = (α + β·ω²) / (2ω) ────────────────────────

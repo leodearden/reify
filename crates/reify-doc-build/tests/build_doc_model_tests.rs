@@ -5,13 +5,20 @@
 //! `reify_doc_build::build_doc_model(&compiled, source)` and asserts the
 //! structure of the returned `DocModel`.
 
-use reify_compiler::CompiledTypeAlias;
-use reify_core::{ContentHash, ModulePath, SourceSpan};
+use reify_compiler::{CompiledModule, CompiledTypeAlias};
+use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
+use reify_doc::expr_text::{ExprText, UnavailableReason};
 use reify_doc::fmt_html::render_html;
 use reify_doc::fmt_markdown::{render_markdown, MarkdownOptions, MarkdownOutput};
-use reify_doc::model::{DocModel, ItemKind};
-use reify_doc_build::build_doc_model;
-use reify_test_support::{CompiledModuleBuilder, compile_source_with_stdlib};
+use reify_doc::model::{
+    ConstraintDoc, DocModel, ItemKind, ParamDoc, RealizationDoc, SubComponentArgDoc,
+    SubComponentDoc,
+};
+use reify_doc_build::{build_doc_model, build_stdlib_doc_model};
+use reify_ir::{CompiledExpr, Value};
+use reify_test_support::{
+    CompiledModuleBuilder, TopologyTemplateBuilder, compile_source_with_stdlib,
+};
 
 // ---------------------------------------------------------------------------
 // Shared helper
@@ -29,6 +36,54 @@ fn find_item<'m>(module: &'m reify_doc::model::ModuleDoc, name: &str) -> &'m rei
         })
 }
 
+/// Compile `source` against the stdlib, failing the test on any Error diagnostic.
+fn compile_clean(source: &str) -> CompiledModule {
+    let compiled = compile_source_with_stdlib(source);
+    let errors: Vec<_> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "compilation errors in test source: {errors:?}"
+    );
+    compiled
+}
+
+/// The body of a structure or occurrence item, or a panic naming what it was.
+struct TemplateBody<'m> {
+    params: &'m [ParamDoc],
+    constraints: &'m [ConstraintDoc],
+    sub_components: &'m [SubComponentDoc],
+    realizations: &'m [RealizationDoc],
+}
+
+fn template_body<'m>(item: &'m reify_doc::model::ItemDoc) -> TemplateBody<'m> {
+    match &item.kind {
+        ItemKind::Structure {
+            params,
+            constraints,
+            sub_components,
+            realizations,
+            ..
+        }
+        | ItemKind::Occurrence {
+            params,
+            constraints,
+            sub_components,
+            realizations,
+            ..
+        } => TemplateBody {
+            params,
+            constraints,
+            sub_components,
+            realizations,
+        },
+        other => panic!("expected a Structure or Occurrence, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // step-1: structure with params and constraints
 // ---------------------------------------------------------------------------
@@ -39,15 +94,7 @@ fn find_item<'m>(module: &'m reify_doc::model::ModuleDoc, name: &str) -> &'m rei
 /// payload.
 #[test]
 fn structure_with_params_and_constraints() {
-    let source = r#"
-pub structure Widget {
-    param width: Length = 10mm
-    param height: Length = 20mm
-    param depth: Length
-    constraint depth > 0mm
-    constraint width >= height
-}
-"#;
+    let source = WIDGET_SOURCE;
     let compiled = compile_source_with_stdlib(source);
     let model: DocModel = build_doc_model(&compiled, source);
 
@@ -78,49 +125,31 @@ pub structure Widget {
 
     // Params: width, height, depth (in source order).
     assert_eq!(params.len(), 3, "expected 3 params; got {params:?}");
+    // A default is the declaration's value text alone, not the whole declaration.
     assert_eq!(params[0].name, "width");
-    {
-        let default = params[0]
-            .default_repr
-            .as_deref()
-            .expect("width has a default (10mm); default_repr must be Some");
-        assert!(
-            default.contains("10mm"),
-            "width default_repr must contain the actual default value '10mm', \
-             not the full declaration; got: {default:?}"
-        );
-        assert!(
-            !default.contains("param"),
-            "width default_repr must NOT contain 'param' (should be the RHS value, \
-             not the full declaration text); got: {default:?}"
-        );
-    }
+    assert_eq!(
+        params[0].default_repr,
+        Some(ExprText::Source("10mm".into()))
+    );
     assert_eq!(params[1].name, "height");
-    assert!(
-        params[1].default_repr.is_some(),
-        "height has a default (20mm)"
+    assert_eq!(
+        params[1].default_repr,
+        Some(ExprText::Source("20mm".into()))
     );
     assert_eq!(params[2].name, "depth");
-    assert!(
-        params[2].default_repr.is_none(),
-        "depth has no default"
-    );
+    assert_eq!(params[2].default_repr, None, "depth has no default");
 
-    // Constraints: two entries.
+    // Constraints: two entries, each the span-sliced source of its declaration.
     assert_eq!(constraints.len(), 2, "expected 2 constraints; got {constraints:?}");
-
-    // constraint 0: expr_repr is the span-sliced text of "depth > 0mm"
-    assert!(
-        constraints[0].expr_repr.contains("depth"),
-        "first constraint expr_repr must mention 'depth', got: {:?}",
-        constraints[0].expr_repr
-    );
-    // constraint 1: expr_repr is "width >= height"
-    assert!(
-        constraints[1].expr_repr.contains("width"),
-        "second constraint expr_repr must mention 'width', got: {:?}",
-        constraints[1].expr_repr
-    );
+    for (c, mentioned) in constraints.iter().zip(["depth", "width"]) {
+        match &c.expr_repr {
+            ExprText::Source(text) => assert!(
+                text.contains(mentioned),
+                "constraint source must mention {mentioned:?}, got: {text:?}"
+            ),
+            other => panic!("constraint mentioning {mentioned:?} has no source: {other:?}"),
+        }
+    }
 
     // line numbers: both constraints must have Some(line) and be >= 1.
     for (i, c) in constraints.iter().enumerate() {
@@ -134,6 +163,139 @@ pub structure Widget {
             c.line
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// task #8767: every expression-valued field is source text or a typed reason
+// ---------------------------------------------------------------------------
+
+const WIDGET_SOURCE: &str = r#"
+pub structure Widget {
+    param width: Length = 10mm
+    param height: Length = 20mm
+    param depth: Length
+    constraint depth > 0mm
+    constraint width >= height
+}
+"#;
+
+/// A sub-component argument value is a `CompiledExpr`, which records no span.
+#[test]
+fn sub_component_arg_values_have_no_span() {
+    let source =
+        "structure Inner { param w: Length = 1mm }\nstructure Outer { sub inner = Inner(w: 2mm) }";
+    let compiled = compile_clean(source);
+    let model = build_doc_model(&compiled, source);
+
+    let outer = template_body(find_item(&model.modules[0], "Outer"));
+    assert_eq!(outer.sub_components.len(), 1, "{:?}", outer.sub_components);
+    assert_eq!(
+        outer.sub_components[0].args,
+        vec![SubComponentArgDoc {
+            name: "w".into(),
+            value: ExprText::Unavailable(UnavailableReason::NoSpan),
+        }]
+    );
+}
+
+/// A realization documents the value text of the `let` it was lowered from.
+///
+/// Source copied from `crates/reify-cli/tests/fixtures/box_3mf.ri`.
+#[test]
+fn realization_value_is_its_declaration_source_text() {
+    let source = r#"structure Box3mf {
+    param width: Length = 10mm
+    param height: Length = 20mm
+    param depth: Length = 5mm
+
+    let body = box(width, height, depth)
+}
+"#;
+    let compiled = compile_clean(source);
+    let model = build_doc_model(&compiled, source);
+
+    let body = template_body(find_item(&model.modules[0], "Box3mf"));
+    let expected = RealizationDoc {
+        name: "body".into(),
+        value: ExprText::Source("box(width, height, depth)".into()),
+    };
+    assert!(
+        body.realizations.contains(&expected),
+        "expected {expected:?} among {:?}",
+        body.realizations
+    );
+}
+
+/// An expression annotation argument renders the source text it was written as.
+///
+/// Source from `crates/reify-compiler/tests/fixtures/eval_annotation_smoke.ri`.
+#[test]
+fn annotation_expression_arg_renders_its_source_text() {
+    let source = "@test_eval(2.0 * 1.5) structure def Foo {\n    param dummy : Real = 0\n}\n";
+    let compiled = compile_clean(source);
+    let model = build_doc_model(&compiled, source);
+
+    let foo = find_item(&model.modules[0], "Foo");
+    let test_eval = foo
+        .header
+        .annotations
+        .iter()
+        .find(|a| a.name == "test_eval")
+        .unwrap_or_else(|| panic!("Foo has no @test_eval: {:?}", foo.header.annotations));
+    assert_eq!(test_eval.args, vec!["2.0 * 1.5".to_string()]);
+}
+
+/// Lowering against a source that does not contain the module's spans marks
+/// every span-derived field as outside the source, and never panics.
+#[test]
+fn empty_source_marks_every_span_outside_source() {
+    let compiled = compile_clean(WIDGET_SOURCE);
+    let model = build_doc_model(&compiled, "");
+
+    let widget = template_body(find_item(&model.modules[0], "Widget"));
+    let outside = ExprText::Unavailable(UnavailableReason::SpanOutsideSource);
+    let defaults: Vec<&ExprText> = widget
+        .params
+        .iter()
+        .filter_map(|p| p.default_repr.as_ref())
+        .collect();
+    assert_eq!(defaults, vec![&outside, &outside], "{:?}", widget.params);
+    assert_eq!(widget.constraints.len(), 2, "{:?}", widget.constraints);
+    for c in widget.constraints {
+        assert_eq!(c.expr_repr, outside, "{c:?}");
+        assert_eq!(c.line, None, "{c:?}");
+    }
+}
+
+/// A param whose declaration text has no `=` reports that, rather than
+/// inventing a default.  Unreachable from source (a defaulted param always
+/// declares one), so the template is built synthetically.
+#[test]
+fn declaration_without_value_is_reported() {
+    let source = "param w: Real";
+    let real = Type::dimensionless_scalar();
+    let mut template = TopologyTemplateBuilder::new("T")
+        .param(
+            "T",
+            "w",
+            real.clone(),
+            Some(CompiledExpr::literal(Value::Real(1.0), real)),
+        )
+        .build();
+    template.value_cells[0].span = SourceSpan::new(0, source.len() as u32);
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let model = build_doc_model(&compiled, source);
+
+    let t = template_body(find_item(&model.modules[0], "T"));
+    assert_eq!(
+        t.params[0].default_repr,
+        Some(ExprText::Unavailable(
+            UnavailableReason::DeclarationWithoutValue
+        ))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -495,8 +657,8 @@ constraint def non_negative {
     match &cd_item.kind {
         ItemKind::ConstraintDef { expr_repr } => {
             assert!(
-                !expr_repr.is_empty(),
-                "non_negative expr_repr must be non-empty"
+                matches!(expr_repr, ExprText::Source(text) if !text.is_empty()),
+                "non_negative expr_repr must be non-empty source text; got {expr_repr:?}"
             );
         }
         other => panic!("expected ItemKind::ConstraintDef for 'non_negative', got {other:?}"),
@@ -507,12 +669,9 @@ constraint def non_negative {
 // Amendment: purpose with explicit minimize / maximize objective
 // ---------------------------------------------------------------------------
 
-/// Verify that `lower_purpose` renders explicit minimize/maximize objectives
-/// as clean placeholders rather than Rust Debug AST output.
-///
-/// `CompiledExpr` has no source span, so we cannot span-slice the objective
-/// expression.  The lowering emits "<minimize>" / "<maximize>" instead of
-/// `format!("{expr:?}")` which would produce unreadable internal AST text.
+/// An explicit minimize/maximize objective is a `CompiledExpr`, which carries
+/// no source span, so its text is the typed `NoSpan` placeholder — never a
+/// Rust Debug dump of the AST.  The direction still comes from the objective.
 #[test]
 fn purpose_with_explicit_objective() {
     let source = r#"
@@ -544,21 +703,10 @@ purpose with_maximize(subject: Structure) {
     match &min_item.kind {
         ItemKind::Purpose { direction, expr_repr } => {
             assert_eq!(direction, "minimize", "direction must be 'minimize'");
-            // Must NOT contain Rust internal Debug output.
-            assert!(
-                !expr_repr.contains("CompiledExpr"),
-                "minimize expr_repr must not contain Rust Debug output 'CompiledExpr'; \
-                 got: {expr_repr:?}"
-            );
-            assert!(
-                !expr_repr.contains("BinOp"),
-                "minimize expr_repr must not contain Rust Debug output 'BinOp'; \
-                 got: {expr_repr:?}"
-            );
-            // Should be the clean placeholder.
             assert_eq!(
-                expr_repr, "<minimize>",
-                "minimize expr_repr must be '<minimize>' placeholder; got: {expr_repr:?}"
+                expr_repr,
+                &ExprText::Unavailable(UnavailableReason::NoSpan),
+                "a minimize objective has no source span"
             );
         }
         other => panic!("expected ItemKind::Purpose for 'with_minimize', got {other:?}"),
@@ -569,13 +717,10 @@ purpose with_maximize(subject: Structure) {
     match &max_item.kind {
         ItemKind::Purpose { direction, expr_repr } => {
             assert_eq!(direction, "maximize", "direction must be 'maximize'");
-            assert!(
-                !expr_repr.contains("CompiledExpr"),
-                "maximize expr_repr must not contain Rust Debug output; got: {expr_repr:?}"
-            );
             assert_eq!(
-                expr_repr, "<maximize>",
-                "maximize expr_repr must be '<maximize>' placeholder; got: {expr_repr:?}"
+                expr_repr,
+                &ExprText::Unavailable(UnavailableReason::NoSpan),
+                "a maximize objective has no source span"
             );
         }
         other => panic!("expected ItemKind::Purpose for 'with_maximize', got {other:?}"),
@@ -1075,9 +1220,7 @@ fn alias_with_no_body_renders_unresolved_not_parameterized() {
         .type_alias(alias)
         .build();
 
-    // "" as source deliberately mirrors the `build_doc_model(compiled, "")`
-    // call inside `reify_doc_build::build_stdlib_doc_model`: proves the
-    // renderer never depends on source text.
+    // "" as source proves the alias renderer never depends on source text.
     let model: DocModel = build_doc_model(&compiled, "");
     let module = &model.modules[0];
 
@@ -1097,4 +1240,81 @@ fn alias_with_no_body_renders_unresolved_not_parameterized() {
         }
         other => panic!("expected ItemKind::TypeAlias for 'Bodyless', got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// task #8767 B12: the stdlib doc model is lowered against its real sources
+// ---------------------------------------------------------------------------
+
+fn stdlib_module<'m>(model: &'m DocModel, dotted: &str) -> &'m reify_doc::model::ModuleDoc {
+    let path = ModulePath::from_dotted(dotted)
+        .unwrap_or_else(|e| panic!("{dotted:?} is not a module path: {e:?}"))
+        .to_string();
+    model
+        .modules
+        .iter()
+        .find(|m| m.path == path)
+        .unwrap_or_else(|| panic!("stdlib doc model has no module {path:?}"))
+}
+
+/// Every defaulted stdlib param documents its default's source text, and
+/// stdlib constraints carry their source text and line.
+#[test]
+fn stdlib_param_defaults_carry_their_source_text() {
+    let model = build_stdlib_doc_model();
+
+    let mut defaulted = 0usize;
+    let mut without_source = Vec::new();
+    for module in &model.modules {
+        for item in &module.items {
+            if !matches!(
+                item.kind,
+                ItemKind::Structure { .. } | ItemKind::Occurrence { .. }
+            ) {
+                continue;
+            }
+            for param in template_body(item).params {
+                let Some(default) = &param.default_repr else {
+                    continue;
+                };
+                defaulted += 1;
+                if !matches!(default, ExprText::Source(text) if !text.is_empty()) {
+                    without_source.push((
+                        module.path.as_str(),
+                        item.header.name.as_str(),
+                        param.name.as_str(),
+                        default,
+                    ));
+                }
+            }
+        }
+    }
+    assert!(defaulted > 0, "the stdlib declares defaulted params");
+    assert!(
+        without_source.is_empty(),
+        "{} of {defaulted} defaulted stdlib params have no default source text \
+         (module, item, param, default): {without_source:#?}",
+        without_source.len()
+    );
+
+    let fea = stdlib_module(&model, "std.materials.fea");
+    let steel = template_body(find_item(fea, "Steel_AISI_1045"));
+    let youngs_modulus = steel
+        .params
+        .iter()
+        .find(|p| p.name == "youngs_modulus")
+        .expect("Steel_AISI_1045 declares youngs_modulus");
+    assert_eq!(
+        youngs_modulus.default_repr,
+        Some(ExprText::Source("205GPa".into()))
+    );
+
+    let appearance_module = stdlib_module(&model, "std.materials.appearance");
+    let appearance = template_body(find_item(appearance_module, "Appearance"));
+    assert!(
+        appearance.constraints.iter().any(|c| c.line.is_some()
+            && matches!(&c.expr_repr, ExprText::Source(text) if text.contains("metalness"))),
+        "Appearance must document its metalness constraint with source and line: {:#?}",
+        appearance.constraints
+    );
 }

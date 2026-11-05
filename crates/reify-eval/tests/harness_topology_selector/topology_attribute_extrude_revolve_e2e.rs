@@ -29,7 +29,7 @@
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{CompiledGeometryOp, CurveKind, GeomRef, SweepKind};
-use reify_core::{ModulePath, Type};
+use reify_core::ModulePath;
 use reify_ir::{
     AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
@@ -173,17 +173,6 @@ impl GeometryKernel for HistoryMockKernel {
 
 // ─── shared helpers ───────────────────────────────────────────────────────────
 
-fn mm_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(mm(v), Type::length())
-}
-
-fn real_literal(v: f64) -> CompiledExpr {
-    CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())
-}
-
-#[path = "../common/angle_expr.rs"]
-mod angle_expr;
-use angle_expr::angle_literal;
 
 /// Build a synthesised `CompiledModule` with two ops:
 /// (0) a LineSegment curve (a non-primitive whose primitive-seeding step
@@ -306,6 +295,7 @@ fn engine_build_extrude_with_mock_history_populates_table_with_cap_and_side_entr
         )
         .with_extrude_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -425,6 +415,7 @@ fn engine_build_partial_revolve_populates_cap_start_end_and_revolved_face() {
         )
         .with_revolve_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );
@@ -522,6 +513,7 @@ fn engine_build_full_revolve_populates_only_revolved_face_no_caps() {
         )
         .with_revolve_history(history.clone());
         let mut engine = reify_eval::Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(MockConstraintChecker::new()),
             Some(Box::new(kernel)),
         );

@@ -251,6 +251,12 @@ E = ½Iω² → J · τ = Iα → N·m/rad · L = Iω → J·s/rad · dL/dt → 
   production duplicate `CURVATURE_DIM` (`geometry_ops.rs:9166-9170`) must change in lockstep
   and gains a drift-pin test equating it to `DimensionVector::CURVATURE` — today nothing
   catches divergence (`value_type_kind_matches` is kind-only).
+  **Resolved at α (#6179):** the production duplicate was retired rather than drift-pinned.
+  Both dispatch sites tag `DimensionVector::CURVATURE` directly (the `MOMENT_OF_INERTIA`
+  precedent in the same file), so divergence is unrepresentable, and the eval dispatch tests
+  pin the tag against the canonical constant. The B1 rejected-form check (`= 0.2 / 1mm`)
+  lives in `crates/reify-compiler/tests/harness_units/curvature_dimension_tests.rs`, not in
+  the fixture, which must check clean.
 - **δ signals.** Closure identities probed with rad⁻² MOI (scratch eval): ½Iω² → exactly
   ENERGY; τ/I → rad·s⁻²; L/t → exactly TORQUE. All capabilities delivered by the upstream
   #5844 (DAG-direction: wired dep) + this leaf's constant. No numeric bounds asserted —

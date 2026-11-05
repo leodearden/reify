@@ -16,9 +16,11 @@
 // committed spelling measures 5.665e-3.
 //
 // A spot value on this class is actively misleading, so the note tabulates the
-// SUPREMUM over the regime instead: 0.978, at minor/major = 0.02 and d/minor =
-// 0.015, which sits right at PRD §2's 0.982.  The default point above is roughly
-// HALF the supremum — sampling this one point understates the envelope ~2x.
+// envelope over the regime instead; the default point above sits well below
+// it.  Dense re-walk record (task #7463):
+//   docs/notes/precision-envelope-dense-walk-torus-cone-fillet.md
+// Current envelope value:
+//   docs/notes/precision-refine-envelope-calibration.md §1.1.
 //
 // NOT wired into any probe set or auto-run gate.
 

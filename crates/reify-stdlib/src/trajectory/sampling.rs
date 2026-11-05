@@ -32,7 +32,7 @@ use super::spline::{BoundaryCondition, CubicSpline, MultiJointSpline};
 /// Each of `values`, `vels`, and `accels` has length == joint count.
 #[derive(Debug, Clone)]
 pub(crate) struct TrajectorySample {
-    /// Sample time (seconds from profile start, t=0).
+    /// Sample time on the profile's own (absolute) time axis, seconds.
     pub(crate) t: f64,
     /// Joint positions q at time t.
     pub(crate) values: Vec<f64>,
@@ -104,20 +104,14 @@ impl MotionTrajectory {
 
 /// Sample a `MultiJointSpline` uniformly at step `dt` seconds.
 ///
-/// Produces a [`MotionTrajectory`] covering `[0, profile.duration()]` where:
-/// - The first sample is at `t = 0`.
+/// Produces a [`MotionTrajectory`] covering `spline.domain()` where:
+/// - The first sample is at the domain's start.
 /// - Interior samples are spaced exactly `dt` apart.
-/// - The last sample is always exactly at `t = profile.duration()`.
+/// - The last sample is always exactly at the domain's end.
 /// - Total sample count ≥ 2 for any `duration > 0`.
 ///
 /// Returns `None` if `dt` is not finite, not positive, or the profile has
 /// zero / non-finite duration.
-///
-/// # Assumptions
-///
-/// The profile is authored from `t = 0` (PRD §4.1 / §4.2 convention).
-/// `MultiJointSpline` exposes `duration()` but not `start_time`; for
-/// non-zero-origin profiles the caller must adjust.
 pub(crate) fn to_trajectory_samples(
     spline: &MultiJointSpline,
     dt: f64,
@@ -127,7 +121,9 @@ pub(crate) fn to_trajectory_samples(
         return None;
     }
 
-    let d = spline.duration();
+    let domain = spline.domain();
+    let (t_start, t_end) = (*domain.start(), *domain.end());
+    let d = t_end - t_start;
     if !d.is_finite() || d <= 0.0 {
         return None;
     }
@@ -135,33 +131,33 @@ pub(crate) fn to_trajectory_samples(
     // Minimum gap between the last interior grid point and the endpoint.
     // Using a dt-relative threshold (rather than an absolute constant) ensures:
     //
-    // 1. No near-coincident final knots: if the last i*dt lands within
-    //    `min_gap` of d we skip it and let the explicit endpoint close the
+    // 1. No near-coincident final knots: if the last grid point lands within
+    //    `min_gap` of t_end we skip it and let the explicit endpoint close the
     //    interval — preventing ill-conditioned cubic fits where consecutive
     //    knot spacing approaches the SINGULAR_PIVOT threshold (~2.2e-10).
     //
-    // 2. The ≥ 2 sample guarantee holds for all d > 0: t = 0 is emitted
+    // 2. The ≥ 2 sample guarantee holds for all d > 0: t_start is emitted
     //    unconditionally before the loop, so even d ≤ 1e-9 trajectories
     //    contain at least the start and end samples.
     let min_gap = dt * 1e-6;
 
-    // Always emit t = 0 (the profile start).
-    let mut samples: Vec<TrajectorySample> = vec![sample_at(spline, 0.0)];
+    // Always emit the profile start.
+    let mut samples: Vec<TrajectorySample> = vec![sample_at(spline, t_start)];
 
-    // Emit t = dt, 2*dt, … while strictly below d - min_gap.
+    // Emit t_start + dt, t_start + 2*dt, … while strictly below t_end - min_gap.
     let mut i: usize = 1;
     loop {
-        let t = (i as f64) * dt;
-        if t >= d - min_gap {
+        let t = t_start + (i as f64) * dt;
+        if t >= t_end - min_gap {
             break;
         }
         samples.push(sample_at(spline, t));
         i += 1;
     }
 
-    // Always append the exact endpoint (d).
-    // For d > 0, the start sample at 0.0 ≠ d, so no dedup is needed.
-    samples.push(sample_at(spline, d));
+    // Always append the exact endpoint.
+    // For d > 0, the start sample at t_start ≠ t_end, so no dedup is needed.
+    samples.push(sample_at(spline, t_end));
 
     Some(MotionTrajectory { samples })
 }
@@ -294,6 +290,50 @@ mod tests {
         // Strictly increasing.
         for w in times.windows(2) {
             assert!(w[1] > w[0], "strictly increasing");
+        }
+    }
+
+    // ─── non-zero-origin profile: samples its own absolute domain ─────────────
+
+    /// A profile whose first knot is at t = 2 s is sampled over its own
+    /// `[2, 3]` time axis, not over `[0, duration]`: the first sample is the
+    /// first waypoint, and every sample carries the real motion there.
+    ///
+    /// The fixture is a clamped cubic through `p(t)` with the exact end slopes,
+    /// which reproduces `p` on `[2, 3]` exactly, so each sample is checked
+    /// against the closed form.
+    #[test]
+    fn samples_span_absolute_domain_for_non_zero_origin_profile() {
+        let knot_times = vec![2.0, 2.5, 3.0];
+        let values: Vec<f64> = knot_times.iter().map(|&t| cubic_p(t)).collect();
+        let bc = BoundaryCondition::Clamped {
+            start_vel: cubic_dp(2.0),
+            end_vel: cubic_dp(3.0),
+        };
+        let s = CubicSpline::fit(&knot_times, &values, &bc).expect("cubic fit");
+        let spline = MultiJointSpline::new_cubic(vec![s]).expect("multi-joint");
+
+        let dt = 0.25_f64;
+        let traj = to_trajectory_samples(&spline, dt).expect("samples");
+        let times = traj.times();
+
+        assert_eq!(traj.samples.len(), 5, "[2, 3] at dt = 0.25 → 5 samples");
+        assert_close(times[0], 2.0, 1e-12, "first sample t is the first knot");
+        assert_close(*times.last().unwrap(), 3.0, 1e-12, "last sample t is the last knot");
+        for w in times.windows(2) {
+            assert_close(w[1] - w[0], dt, 1e-12, "consecutive dt");
+        }
+
+        assert_close(
+            traj.samples[0].values[0],
+            cubic_p(2.0),
+            1e-12,
+            "first sample is the first waypoint's value",
+        );
+        for s in &traj.samples {
+            assert_close(s.values[0], cubic_p(s.t), 1e-12, "sample.values matches p");
+            assert_close(s.vels[0], cubic_dp(s.t), 1e-12, "sample.vels matches p'");
+            assert_close(s.accels[0], cubic_ddp(s.t), 1e-12, "sample.accels matches p''");
         }
     }
 

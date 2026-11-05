@@ -2,6 +2,8 @@
 
 use reify_ast::{ImportDecl, ImportKind};
 
+use crate::parse_error_lookup::only_error_starting_with;
+
 // ── Step 1: Basic dot-path module import ──────────────────────────
 
 #[test]
@@ -154,14 +156,11 @@ fn parse_destructured_import_single_item() {
 /// Summary", which makes the `'.'` an explicit terminal before the brace list
 /// (#5931).
 ///
-/// The two tests above cannot pin that separator: an ERROR nested inside
-/// `import_declaration` never becomes a diagnostic (see the note in
-/// `lower_import`), so they would stay green if the grammar merely
-/// error-recovered the `.` — the CST-level pins live in
+/// An ERROR nested inside `import_declaration` is refused as `invalid import: …`,
+/// so the `errors.is_empty()` assertions in the two tests above pin the dotted
+/// separator at AST level; the CST-level pins live in
 /// tree-sitter-reify/tests/import_items_grammar_tests.rs. The spaced form's
-/// stray `{...}`, by contrast, is a sibling ERROR at `source_file` level, which
-/// the source_file dispatch loop does surface, so this rejection is observable
-/// here.
+/// stray `{...}` is a sibling ERROR at `source_file` level.
 #[test]
 fn spaced_destructured_import_is_rejected() {
     let source = "import std.mech {Bolt, Nut}";
@@ -383,4 +382,90 @@ fn import_has_content_hash() {
     // Content hash should be non-zero (not default)
     let zero = reify_core::ContentHash::of_str("");
     assert_ne!(import.content_hash, zero, "content_hash should be computed");
+}
+
+// ── Malformed imports are refused ─────────────────────────────────
+
+/// The `ImportDecl`s lowered from `parsed`, in source order.
+fn imports_of(parsed: &reify_ast::ParsedModule) -> Vec<&ImportDecl> {
+    parsed
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            reify_ast::Declaration::Import(i) => Some(i),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An import whose CST carries a nested ERROR or MISSING node no longer matches its source
+/// once lowered (e.g. `import a.b.{C D}` would lower to `Destructured([C])`, dropping `D`), so
+/// it is refused with one `invalid import: ` diagnostic located at its first fault.
+#[test]
+fn import_with_a_nested_fault_is_refused_at_its_first_fault() {
+    let stray_item = "import a.b.{C D}";
+    let unclosed_items = "import a.b.{C, D";
+    let missing_segment = "import a.b.";
+    let missing_path = "pub import";
+    let cases = [
+        (stray_item, stray_item.find(" D").unwrap() + 1),
+        (unclosed_items, unclosed_items.len()),
+        (missing_segment, missing_segment.len()),
+        (missing_path, missing_path.len()),
+    ];
+    for (source, fault_offset) in cases {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        let error = only_error_starting_with(&parsed.errors, "invalid import: ");
+        assert_eq!(
+            error.span.start as usize, fault_offset,
+            "`{source}`: expected the diagnostic at byte {fault_offset}, got: {error:?}"
+        );
+        assert!(
+            imports_of(&parsed).is_empty(),
+            "`{source}`: a refused import must not be lowered, got declarations: {:?}",
+            parsed.declarations
+        );
+    }
+}
+
+#[test]
+fn a_refused_import_does_not_take_its_well_formed_neighbour_with_it() {
+    let source = "import a.b.{C D}\nimport c.d";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    only_error_starting_with(&parsed.errors, "invalid import: ");
+
+    let imports = imports_of(&parsed);
+    assert_eq!(
+        imports.len(),
+        1,
+        "`{source}`: expected only the well-formed import, got declarations: {:?}",
+        parsed.declarations
+    );
+    assert_eq!(imports[0].path, "c.d", "`{source}`");
+    assert_eq!(imports[0].kind, ImportKind::Module, "`{source}`");
+}
+
+/// A refused import still binds the names it declares, so the refusal stays the only
+/// diagnostic: a use of `pp` is not reported again as unbound, with the advice to declare
+/// `import <path> as pp`, the very line being refused.
+#[test]
+fn a_refused_import_still_binds_its_alias() {
+    let source = "import a.1.b as pp\nstructure def S { let f = pp.mk() }";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    assert!(
+        matches!(parsed.errors.as_slice(), [only] if only.message.starts_with("invalid import: ")),
+        "`{source}`: expected the refusal as the only diagnostic, got: {:?}",
+        parsed.errors
+    );
+}
+
+#[test]
+fn a_refused_import_still_binds_its_recovered_items() {
+    let source = "import a.b.{C D}\nstructure def S { let f = C.mk() }";
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    only_error_starting_with(&parsed.errors, "invalid import: ");
+    only_error_starting_with(
+        &parsed.errors,
+        "qualifier `C` in `C.mk(...)` is not a module namespace: an import in this file binds `C`",
+    );
 }

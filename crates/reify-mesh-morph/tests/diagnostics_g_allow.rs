@@ -1,6 +1,6 @@
-//! Pin: `record_morphed`, `record_quality_remesh`, `record_ineligible`, and
-//! `record_panicked` in `crates/reify-mesh-morph/src/diagnostics.rs` are now
-//! WIRED — they have real (non-test) callers and are therefore no longer
+//! Pin: `record_morphed`, `record_quality_remesh`, `record_ineligible`,
+//! `record_panicked` and `record_solver_error` in
+//! `crates/reify-mesh-morph/src/diagnostics.rs` are WIRED — they have real (non-test) callers and are therefore no longer
 //! orphan producers.
 //!
 //! ## History
@@ -29,7 +29,7 @@
 //!
 //! The test shells out to `scripts/audit-orphan-producers.sh` with
 //! `--scope crates/reify-mesh-morph/src` and asserts *list non-membership* —
-//! each of the four named recorders must be ABSENT from `orphans[]`.
+//! each named recorder must be ABSENT from `orphans[]`.
 //!
 //! We do NOT assert `orphan_count == 0`: reify-mesh-morph has pre-existing
 //! baseline orphans in boundary/elasticity/laplacian/lib/quality/diagnostics
@@ -39,18 +39,19 @@
 //!
 //! Graceful skip: if `python3`, `git`, or the script are absent from PATH/disk,
 //! the shared helper prints a note to stderr and returns `None`; the test then
-//! returns early. Mirrors `crates/reify-mesh-morph/tests/stats_g_allow.rs`.
+//! returns early. Mirrors `crates/reify-audit/tests/g_allow.rs`.
 //! The shared helper is in `reify_test_support::run_orphan_audit`.
 
 use reify_test_support::run_orphan_audit;
 
-/// The four `pub fn` recorders in diagnostics.rs. Originally deferred orphans;
-/// now wired via `compose_morph` (their first real non-test caller).
+/// The recorders in diagnostics.rs, each wired via `compose_morph` (their real
+/// non-test caller).
 const TARGET_FNS: &[&str] = &[
     "record_morphed",
     "record_quality_remesh",
     "record_ineligible",
     "record_panicked",
+    "record_solver_error",
 ];
 
 #[test]

@@ -194,11 +194,19 @@ fn param_binding_wrong_kind_selector_tagged_with_selector_kind_mismatch() {
 /// tagged with `SelectorKindMismatch` — only the Selector→Selector kind mismatch
 /// case qualifies.
 ///
-/// Reuses `SOURCE_WRONG_KIND_PARAM` (takes_reals / `List<Real>` param). GREEN
-/// both before and after step-2 because `is_selector_kind_mismatch_nomatch`
-/// requires BOTH param and arg to be `Type::Selector`.
+/// Reuses `SOURCE_WRONG_KIND_PARAM` (takes_reals / `List<Real>` param). The guard
+/// holds because `is_selector_kind_mismatch_nomatch` requires BOTH param and arg
+/// to be `Type::Selector`, and a `List<Real>` param is neither.
+///
+/// task 5476: this case is the GENERAL no-match, so it now carries
+/// `NoMatchingOverload` (`E_NO_MATCHING_OVERLOAD`) where it previously carried no
+/// code at all. The over-tag guard this test exists for is unchanged and is now
+/// asserted directly — `!= SelectorKindMismatch` — rather than via the
+/// no-longer-true proxy `code == None`. Renamed from
+/// `..._keeps_code_none` to match. PRD
+/// `docs/prds/v0_6/placeholder-type-eradication-ratchet.md` §3.3 / INV-SF-6.
 #[test]
-fn param_binding_selector_to_list_real_no_match_keeps_code_none() {
+fn param_binding_selector_to_list_real_no_match_is_not_selector_kind_mismatch() {
     let compiled = compile_source_with_stdlib(SOURCE_WRONG_KIND_PARAM);
     let errors = errors_only(&compiled);
 
@@ -208,10 +216,20 @@ fn param_binding_selector_to_list_real_no_match_keeps_code_none() {
         .find(|d| d.message.contains("no matching overload"))
         .expect("expected a no-matching-overload error for Selector→List<Real>");
 
+    // The guard proper: a non-Selector param must never borrow the selector code.
+    assert_ne!(
+        no_match.code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "Selector→List<Real> no-match must NOT be tagged SelectorKindMismatch \
+         (task 4581 over-tag guard); got: {:?}",
+        no_match.code
+    );
+    // …and it lands in the general bucket rather than staying untagged.
     assert_eq!(
-        no_match.code, None,
-        "Selector→List<Real> no-match must keep code = None (not SelectorKindMismatch); \
-         got: {:?}",
+        no_match.code,
+        Some(DiagnosticCode::NoMatchingOverload),
+        "Selector→List<Real> is a GENERAL no-match, so it must carry \
+         NoMatchingOverload (task 5476); got: {:?}",
         no_match.code
     );
 }

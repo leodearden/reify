@@ -1,0 +1,10 @@
+// PRD implicit-solids section 1 Goal, theta-era file (epsilon ships it without the mass line; theta appends it). Also B8/B21 inputs.
+structure def SmoothBracket {
+    param web   : Length = 6mm
+    param r     : Length = 2mm
+    let plate   = sdf_box(60mm, 40mm, web)
+    let boss    = sdf_transform(sdf_cylinder(8mm, 30mm), transform3(orient_identity(), vec3(0mm, 0mm, 12mm)))
+    let body_f  = sdf_smooth_union(plate, boss, r)
+    let body    = implicit(body_f, vec3(80mm, 60mm, 40mm), 2mm, point3(0mm, 0mm, 12mm))
+    let mass    = sdf_volume(body_f, vec3(80mm, 60mm, 40mm), 2mm, point3(0mm, 0mm, 12mm)) * 7850kg/m^3
+}

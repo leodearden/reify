@@ -147,7 +147,7 @@ fn block_inertia_evals_moment_of_inertia_to_tensor() {
         inertia_reply,
     );
     let checker = SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     let cell = ValueCellId::new("BlockInertia", "i");
@@ -294,7 +294,7 @@ fn fillet_top_edges_evals_to_solid_via_topology_walk() {
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // geometry_output.is_some() alone is vacuous because the mock allocates

@@ -37,6 +37,7 @@ fn set_demand_selective_populates_production_demand_from_one_visible_realization
     let e = "SelectiveMultiBody";
     let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -133,6 +134,7 @@ fn cold_check_overrides_selective_demand_to_full_scope() {
     let e = "SelectiveMultiBody";
     let compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_SRC);
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

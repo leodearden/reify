@@ -63,6 +63,8 @@ mod comparison_operand_guard_tests;
 mod expr_error_sentinel_tests;
 #[path = "harness_type_checking/field_op_typing_tests.rs"]
 mod field_op_typing_tests;
+#[path = "harness_type_checking/fn_body_prelude_resolution_tests.rs"]
+mod fn_body_prelude_resolution_tests;
 #[path = "harness_type_checking/implies_type_check_tests.rs"]
 mod implies_type_check_tests;
 #[path = "harness_type_checking/mul_div_operand_guard_tests.rs"]

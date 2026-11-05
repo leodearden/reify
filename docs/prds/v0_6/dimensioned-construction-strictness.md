@@ -526,6 +526,12 @@ by the registry alone **under-counts**; α must reproduce the alias extension.
 > resolves to the registry either — at HEAD that line sits inside
 > `DimensionVector::to_display_units` (`:504`), not `NAMED_DIMENSIONS`.
 > The underlying claim (a registry-only sweep under-counts) still holds.
+>
+> **Amended 2026-09-30 by angle-completion α (#6179, CURVATURE → rad·m⁻¹).** The
+> `ABSORPTION_COEFF`/`CURVATURE` pair is dissolved: `CURVATURE` now has its own vector.
+> TWO alias pairs remain (`STIFFNESS`/`TRANSLATIONAL_STIFFNESS`, `"Impulse"`/`"Momentum"`),
+> so the distinct-vector figure grows by one (49 → 50 against the 2026-08-03 table). The
+> measurement above is left as taken.
 
 | Category | Count |
 |---|---|
@@ -944,10 +950,21 @@ input class. Note the symmetry that proves the compile layer is fine: for a fiel
 *dimensionless* holding a `Real`, `constraint efficiency > 5mm` **already is** a hard compile
 error today, via that very same arm.
 
-**The stdlib already documents this exact failure mode** —
-`crates/reify-compiler/stdlib/modal_analysis.ri:497-499`: *"Dimensioned literal `0N` … is
-required to keep eval_cmp dim-equality matching at runtime; a bare `0` would yield
-`Indeterminate` per task #3115 esc-3115-112"*. The research doc's framing ("constraints are
+**Where the stdlib documents this failure mode — param-default position, not the comparison
+operand.** As authored, this paragraph quoted `StepForce`'s constraint note in
+`crates/reify-compiler/stdlib/modal_analysis.ri` — *"a bare `0` would yield `Indeterminate` per
+task #3115 esc-3115-112"* — as the stdlib documenting this exact failure mode. That note was
+already stale at this PRD's anchor `dc83d4fd60`. #4485's `coerce_zero_operand`
+(`crates/reify-compiler/src/expr.rs`) rewrites a syntactic zero in comparison/additive operand
+position to its sibling's dimension at compile time, so `magnitude > 0` and `magnitude > 0N`
+compile identically (runtime pin: `crates/reify-eval/tests/polymorphic_zero_eval.rs`). #6038
+then corrected the note. The canonical statement is now `docs/notes/dimensioned-zero-coercion.md`,
+and its "Where the rule does NOT reach" → **Param defaults** entry is where this failure mode
+really survives: the rewrite never reaches a param default, so a bare literal default is stored
+dimensionless (the `HarmonicForce.phase : Angle = 0deg` note in `modal_analysis.ri` states the
+same mechanism). That is the configuration the manifest's `probe:epsilon-recovery-target`
+observed — `param magnitude : Force = -10.0` → `INDETERMINATE`, "operator undefined for these
+operand kinds: Real" — and the one ε pins. The research doc's framing ("constraints are
 NOT a backstop") is **correct as stated**; the reason is the constructor, not the comparator.
 
 **One genuinely independent defect survives, and one asymmetry.** Neither is fixed by this

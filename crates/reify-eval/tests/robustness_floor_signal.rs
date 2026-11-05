@@ -82,7 +82,7 @@ fn money_floor_resolves_off_boundary_and_emits_info() {
 
     let thickness_id = ValueCellId::new("CostMinFloor", "thickness");
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -150,7 +150,7 @@ fn non_money_objective_emits_no_floor_diagnostic() {
     let mass_id = ValueCellId::new("WeightedObjective", "mass");
     let stiffness_id = ValueCellId::new("WeightedObjective", "stiffness");
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -211,7 +211,7 @@ fn floor_infeasible_surfaces_distinct_diagnostic() {
         errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -280,7 +280,7 @@ fn floor_infeasible_message_names_the_margin_not_an_empty_region() {
         errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);

@@ -1,13 +1,13 @@
 //! Where the MCP language-reference chunk corpus lives, how a chunk is read and
 //! listed, and how a corpus-wide gate over it reports what it found.
 //!
-//! `reify-mcp` does NOT depend on `reify-compiler`, so the chunks cannot be
-//! reached through `language_chunks::get_chunk` from here; they are read BY PATH
-//! at runtime instead, so an edit to the markdown is seen by `cargo test`
-//! without a rebuild of this crate. Every path is REPO-RELATIVE — the currency a
-//! violation message names a chunk in, so a failure reads as a path a developer
-//! can open rather than an absolute build-machine one. A wrong path fails
-//! loudly at read time; nothing here ever skips.
+//! The chunks are read BY PATH at runtime, because the on-disk corpus is what
+//! every gate in this harness inspects; `fence_gate`'s check 4 is the one place
+//! that ties that corpus to what `reify_mcp::tools::language_chunks` serves.
+//! Every path is REPO-RELATIVE — the currency a violation message names a chunk
+//! in, so a failure reads as a path a developer can open rather than an
+//! absolute build-machine one. A wrong path fails loudly at read time; nothing
+//! here ever skips.
 
 use std::path::{Path, PathBuf};
 
@@ -24,8 +24,14 @@ macro_rules! chunks_dir {
 /// The chunk directory, repo-relative.
 pub(crate) const CHUNKS_DIR: &str = chunks_dir!();
 
-/// `geometry.md` — primitives, profiles, zones, and the geometry queries.
+/// `geometry.md` — primitives, profiles, zones, and the interference oracle.
 pub(crate) const GEOMETRY_CHUNK_PATH: &str = concat!(chunks_dir!(), "/geometry.md");
+
+/// `measurement.md` — the measurement and mass-property queries.
+pub(crate) const MEASUREMENT_CHUNK_PATH: &str = concat!(chunks_dir!(), "/measurement.md");
+
+/// `topology.md` — the topology-selector catalogue.
+pub(crate) const TOPOLOGY_CHUNK_PATH: &str = concat!(chunks_dir!(), "/topology.md");
 
 /// `stdlib.md` — the geometry-operation and curve tables.
 pub(crate) const STDLIB_CHUNK_PATH: &str = concat!(chunks_dir!(), "/stdlib.md");
@@ -44,14 +50,14 @@ pub(crate) const CONSTRAINTS_CHUNK_PATH: &str = concat!(chunks_dir!(), "/constra
 
 /// The EXACT number of `.md` files in [`CHUNKS_DIR`].
 ///
-/// A live count, never a lower bound: slack is not a safety margin. At `>= 16`
-/// against 17 files a whole chunk could be deleted with nothing going red and
+/// A live count, never a lower bound: slack is not a safety margin. At `>= 18`
+/// against 19 files a whole chunk could be deleted with nothing going red and
 /// no constant to lower. [`all_chunks`] compares with `>=` so a vacuous scan
 /// fails fast and specifically; the EXACTNESS obligation is the separately
 /// named `chunk_file_count_is_exact_not_slack`, so a diff that legitimately
 /// adds a chunk gets a message telling it to re-measure rather than a vacuity
 /// warning describing a bug that did not happen.
-pub(crate) const CHUNK_FILE_COUNT: usize = 17;
+pub(crate) const CHUNK_FILE_COUNT: usize = 20;
 
 /// Repo root, derived from this crate's manifest dir
 /// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this

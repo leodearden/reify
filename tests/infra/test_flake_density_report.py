@@ -7,9 +7,9 @@ policy (docs/notes/infra-test-bash-to-python-migration-policy.md), and the
 worked example that document points at.
 
 WHAT RUNS THIS: not the gate directly. run_all.sh discovers `test_*.sh` only
-(header :22-24, glob repeated at :1347/:1456/:2013), so the discovered member
-is the thin wrapper tests/infra/test_flake_density_report.sh, which invokes
-this file. A bare .py here would be silently never run.
+(via classification_discovered_set in run-all-classification-lib.sh), so the
+discovered member is the thin wrapper tests/infra/test_flake_density_report.sh,
+which invokes this file. A bare .py here would be silently never run.
 
 IMPORT IDIOM: scripts/ is prepended to sys.path so a sibling import inside the
 tool resolves without installation — the scripts/test_sn_gate.py:1-13 idiom.
@@ -53,7 +53,8 @@ fdr = _load_tool()
 
 def _row(test, ts="2026-07-19T22:22:50Z", role="merge", task="unknown",
          branch="HEAD", run_id="r1"):
-    """One ledger record in the producer's schema (run_all.sh:711-715)."""
+    """One ledger record in the producer's schema
+    (run_all.sh `_ra_flaky_ledger_append`)."""
     return {"ts": ts, "test": test, "role": role, "task": task,
             "branch": branch, "run_id": run_id}
 
@@ -177,8 +178,9 @@ class TestDenominators(LedgerFixture):
         self.assertEqual(report.members[0].distinct_runs, 0)
 
     def test_no_density_without_total_runs(self):
-        """run_all.sh:729-731 — a clean run writes NO line, so the ledger alone
-        cannot support a flakes-per-gate density."""
+        """`_ra_flaky_ledger_append` writes only for flaky members — a clean run
+        writes NO line, so the ledger alone cannot support a flakes-per-gate
+        density."""
         ledger = self.write_ledger([_row("test_a.sh")] * 3)
         report = fdr.build_report(fdr.read_ledger(ledger).rows)
         self.assertIsNone(report.total_runs)
@@ -326,7 +328,7 @@ class TestWindowing(LedgerFixture):
 class TestLedgerPathResolution(LedgerFixture):
 
     def test_env_var_is_the_default_source(self):
-        """Same precedence as the producer, run_all.sh:1236."""
+        """Same precedence as the producer, run_all.sh `_RA_FLAKY_LEDGER`."""
         ledger = self.write_ledger([_row("test_from_env.sh")])
         result = self.run_cli(
             "--json", env={"REIFY_RUN_ALL_FLAKY_LEDGER": str(ledger)})

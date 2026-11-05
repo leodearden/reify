@@ -29,6 +29,10 @@
 #             --audit's own non-terminal filter kept out of step-17's reach
 #   esc-7244-16 — C8-C10: the census reads SUBJECTS in reify's own
 #             `kind(<id>):` form, and fires on the esc-6205-4 shape itself
+#   task 7377 — C2/json and F6 peers: under --format json `peers` is an array
+#             of task-id numbers, or "-" when unmeasured
+#   task 7377 — Block 12: fleet rows ascend by task id under any
+#             --branch-prefix, and a same-named tag hides no branch
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -685,6 +689,16 @@ _assert_field "C2: peers is the sorted-unique UNION of commit- and file-derived 
 # (f) signature is set by peer_commits alone
 _assert_field "C3: peer_commits>0 -> signature=SUSPECT" 9510 signature SUSPECT
 
+run_helper --task 9510 --db "$C_DB" --repo "$REPO" --format json
+assert "C2/json: exits 0" test "$RC" -eq 0
+assert "C2/json: peers is an ARRAY of task-id numbers, not a comma-joined string" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+p=d[\"branches\"][0][\"peers\"]
+assert p==[9501,9502,9504], p
+"' _ "$OUT"
+
 # (b) isolated: a message that cites its OWN id must not flag even when it
 #     also names a live peer in the same message.
 _add_task 9520 pending '{"files":["o20.rs"]}'
@@ -935,6 +949,15 @@ assert s[\"branches\"]==7 and s[\"suspect\"]==1 and s[\"clean\"]==2, s
 assert s[\"skipped_terminal\"]==1 and s[\"skipped_nonnumeric\"]==1, s
 assert s[\"skipped_no_task\"]==0 and s[\"repo_unusable\"]==0, s
 "' _ "$OUT"
+assert "F6: peers is a JSON array when measured ([] when none) and the '-' placeholder when unmeasured" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+p={b[\"task\"]: b[\"peers\"] for b in d[\"branches\"]}
+assert p[9603]==[9610], p
+assert p[9601]==[], p
+assert p[9606]==\"-\", p
+"' _ "$OUT"
 
 # (f) the two formats agree
 F7_JSON="$OUT"
@@ -946,8 +969,10 @@ import json,sys
 d=json.load(sys.stdin)
 cols=[\"task\",\"status\",\"merge_base\",\"behind\",\"commits\",\"peer_commits\",
       \"changed\",\"foreign\",\"peer_files\",\"peers\",\"scope\",\"signature\"]
+def cell(v):
+    return (\",\".join(map(str, v)) or \"-\") if isinstance(v, list) else v
 for b in d[\"branches\"]:
-    print(\" \".join(f\"{c}={b[c]}\" for c in cols))
+    print(\" \".join(f\"{c}={cell(b[c])}\" for c in cols))
 s=d[\"summary\"]
 print(\"SWEEP: \" + \" \".join(f\"{k}={s[k]}\" for k in
       [\"branches\",\"suspect\",\"peer_files\",\"out_of_scope\",\"undeclared\",
@@ -1461,5 +1486,66 @@ run_helper_badpy --audit --db "$G_DB" --repo "$G_REPO"
 assert "H3: table mode is unaffected by a broken python3" \
     bash -c 'printf "%s\n" "$1" | grep -q "^SWEEP:"' _ "$OUT"
 unset _mode _fmt
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block 12 (task 7377) — fleet row order under any --branch-prefix
+#
+# "Rows are emitted in ascending task id" must hold whatever --branch-prefix
+# is spelled: slash-free (`tb-`), one slash (`task/`) or two (`wip/task/`).
+# The ids mix widths on purpose so that lexicographic and numeric order
+# DIFFER — F1's all-four-digit fixture cannot tell them apart.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 12: fleet row order under any --branch-prefix ---"
+
+_mk_tasks_db
+_mk_repo
+O_DB="$DB"
+O_REPO="$REPO"
+O_MAIN="$(git -C "$REPO" rev-parse main)"
+
+for _id in 9 10 20 100; do
+    _add_task "$_id" pending "{\"files\":[\"own$_id.rs\"]}"
+done
+for _p in task/ tb- wip/task/; do
+    for _id in 9 10 20 100; do _branch_at "${_p}${_id}" "$O_MAIN"; done
+done
+# A branch named exactly the prefix: its suffix is EMPTY.
+_branch_at "tb-" "$O_MAIN"
+
+# _assert_row_order <desc> — the task ids of $OUT's rows, in emitted order,
+# are EXACTLY 9 10 20 100. Exact, so a missing or duplicated row fails too.
+_assert_row_order() {
+    assert "$1" bash -c 'ids="$(printf "%s\n" "$1" | sed -nE "s/^task=([0-9]+) .*/\1/p" | paste -sd " " -)"
+             [ "$ids" = "9 10 20 100" ] || { echo "rows in order: $ids" >&2; exit 1; }' _ "$OUT"
+}
+
+for _p in task/ tb- wip/task/; do
+    run_helper --audit --db "$O_DB" --repo "$O_REPO" --branch-prefix "$_p"
+    assert "O1[$_p]: exits 0" test "$RC" -eq 0
+    _assert_row_order "O1[$_p]: rows ascend by task id (9 10 20 100)"
+    _assert_summary "O1[$_p]: branches=4" branches 4
+done
+
+run_helper --audit --db "$O_DB" --repo "$O_REPO" --branch-prefix tb- --format json
+assert "O2: json branches ascend by task id under a slash-free prefix" \
+    bash -c 'printf "%s" "$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+ids=[b[\"task\"] for b in d[\"branches\"]]
+assert ids==[9,10,20,100], ids
+"' _ "$OUT"
+
+run_helper --audit --db "$O_DB" --repo "$O_REPO" --branch-prefix tb-
+_assert_summary "O3: a ref named exactly the prefix is counted, never dropped" \
+    skipped_nonnumeric 1
+
+# A tag sharing a branch's name makes `%(refname:short)` print the branch as
+# `heads/task/10`, which no prefix strip turns back into a task id.
+git -C "$O_REPO" tag task/10 main
+run_helper --audit --db "$O_DB" --repo "$O_REPO"
+_assert_row_order "O4: a tag named like a branch does not hide the branch's row"
+_assert_summary "O4: ...nor count it as non-numeric" skipped_nonnumeric 0
+unset _p _id
 
 test_summary

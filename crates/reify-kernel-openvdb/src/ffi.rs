@@ -35,6 +35,34 @@ pub mod ffi {
             half_width_voxels: f64,
         ) -> Result<UniquePtr<OpenVdbGridHandle>>;
 
+        // Dense SDF → level-set FloatGrid. `data` is X-outermost row-major
+        // over `dims`, voxel (0,0,0) centred at `origin`; every voxel is set
+        // ACTIVE with its value clamped to ±band_half_width (D-8).
+        fn dense_sdf_to_level_set_ffi(
+            data: &[f32],
+            dims: [u32; 3],
+            origin: [f64; 3],
+            voxel_size: f64,
+            band_half_width: f64,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+
+        // Level-set CSG: a ∪ b, a minus b, a ∩ b. Reads both grids, mutates
+        // neither, and returns a fresh grid on `a`'s transform (`b` is
+        // resampled onto it when the transforms differ). Throws when either
+        // operand is not a level set. Policy: the header's doc block.
+        fn csg_union_ffi(
+            a: &OpenVdbGridHandle,
+            b: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+        fn csg_difference_ffi(
+            a: &OpenVdbGridHandle,
+            b: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+        fn csg_intersection_ffi(
+            a: &OpenVdbGridHandle,
+            b: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
+
         // Volume → Mesh (marching cubes): FloatGrid SDF → triangle soup.
         //
         // `iso_level`: isovalue (0.0 = zero level-set / SDF surface).
@@ -91,5 +119,19 @@ pub mod ffi {
         // caller in `read_vdb_file` surfaces the exception as
         // `IngestError::FileReadError { detail: "grid too large: …" }`.
         fn grid_densify_to_buffer(h: &OpenVdbGridHandle) -> Result<Vec<f32>>;
+
+        // TBB single-thread limit: serves only the test-fixtures
+        // `tbb_scope` module (unconditional here because cfg-gating cxx
+        // bridge entries is awkward; the Rust surface is gated instead).
+        type TbbParallelismLimit;
+        fn tbb_single_thread_limit_ffi() -> UniquePtr<TbbParallelismLimit>;
+        fn tbb_max_allowed_parallelism_ffi() -> usize;
+
+        // Fog-volume copy of a level set: serves only the test-fixtures
+        // `OpenVdbKernel::register_fog_volume_for_test` (unconditional here
+        // for the same reason as the TBB entries above).
+        fn level_set_to_fog_volume_ffi(
+            h: &OpenVdbGridHandle,
+        ) -> Result<UniquePtr<OpenVdbGridHandle>>;
     }
 }

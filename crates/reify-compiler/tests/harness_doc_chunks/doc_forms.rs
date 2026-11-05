@@ -9,11 +9,19 @@
 //! `-> Type`. Concrete idioms, expressions, declarations, qualified or
 //! capitalised names and lambdas are prose, never signatures — see
 //! [`doc_form_of_span`]. A ```` ```reify-schematic ```` listing is read span by
-//! span, as [`listing_signature_spans`] cuts it, through that same rule.
+//! span, as [`listing_signature_spans`] cuts it, through that same rule. What
+//! counts as a call-shaped opening at all is [`span_callee`]'s one definition.
+//!
+//! A source's call forms are read off its parsed AST by [`call_forms`], and a
+//! chunk's ```` ```reify ```` fences are read the same way, one module per
+//! fence, by [`fence_call_forms`].
 
-use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart};
+use reify_ast::{Declaration, Expr, ExprKind, MemberDecl, ParsedModule, StringPart, WhereClause};
 use reify_compiler::parse_with_stdlib;
 use reify_core::ModulePath;
+
+use crate::chunk_markdown::tagged_fence_bodies;
+use crate::chunk_prose::{CodeSpan, code_spans, unfenced_prose};
 
 /// A documented form's declared argument count: either an exact arity, or a
 /// variadic form carrying the given MINIMUM arity.
@@ -55,11 +63,11 @@ impl DocForm {
 /// makes the form `AtLeast`; every other argument counts one.
 pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
     let span = span.trim();
-    let open = span.find('(')?;
+    let name = span_callee(span)?;
+    let open = name.len();
     let close = open + span[open..].find(')')?;
-    let name = &span[..open];
     let params = &span[open + 1..close];
-    if !is_metavariable(name) || params.contains('(') || !is_return_annotation(&span[close + 1..]) {
+    if params.contains('(') || !is_return_annotation(&span[close + 1..]) {
         return None;
     }
 
@@ -87,6 +95,50 @@ pub(crate) fn doc_form_of_span(span: &str) -> Option<DocForm> {
             Arity::Exact(count)
         },
     })
+}
+
+/// The name `span` opens by calling: the text before its first `(`, when that
+/// is a lowercase snake_case identifier; `None` for any other opening. The
+/// caller trims.
+pub(crate) fn span_callee(span: &str) -> Option<&str> {
+    let name = &span[..span.find('(')?];
+    is_metavariable(name).then_some(name)
+}
+
+/// One signature-shaped span in a chunk's unfenced prose.
+pub(crate) struct DocumentedForm {
+    pub(crate) form: DocForm,
+    /// 1-based line of the span's opening backtick run.
+    pub(crate) line: usize,
+    pub(crate) span: String,
+}
+
+/// Every code span in `markdown`'s unfenced prose, its text trimmed, in
+/// document order; `Err` when the prose cannot be read. The one scan each prose
+/// gate filters for the spans it owns.
+pub(crate) fn unfenced_code_spans(markdown: &str) -> Result<Vec<CodeSpan>, String> {
+    Ok(code_spans(&unfenced_prose(markdown)?)
+        .into_iter()
+        .map(|span| CodeSpan {
+            line: span.line,
+            text: span.text.trim().to_string(),
+        })
+        .collect())
+}
+
+/// Every signature-shaped code span in `markdown`'s unfenced prose, in document
+/// order; `Err` when the prose cannot be read.
+pub(crate) fn documented_unfenced_forms(markdown: &str) -> Result<Vec<DocumentedForm>, String> {
+    Ok(unfenced_code_spans(markdown)?
+        .into_iter()
+        .filter_map(|span| {
+            doc_form_of_span(&span.text).map(|form| DocumentedForm {
+                form,
+                line: span.line,
+                span: span.text,
+            })
+        })
+        .collect())
 }
 
 /// The candidate signature spans on each line of a ```` ```reify-schematic ````
@@ -209,10 +261,13 @@ pub(crate) fn parse_or_panic(source: &str, label: &str) -> ParsedModule {
 /// deterministic output. A named argument counts one, exactly as a documented
 /// form counts it.
 ///
-/// `source` must be `structure def`s whose members are all `let` bindings — the
-/// shape of the signature fixtures. Anything else PANICS rather than being
-/// skipped, so growing a fixture a new declaration or member kind is a loud
-/// "extend the walker", never a silent coverage hole.
+/// `source` must be `structure def`s whose members are `let`, `param` or
+/// `constraint` declarations — the shape of the signature fixtures, the
+/// chunks' ```` ```reify ```` fences and the cited examples. A `param`
+/// default and every member's `where` guard are walked too. Any other
+/// declaration or member kind PANICS rather than being skipped, so growing a
+/// source a new kind is a loud "extend the walker", never a silent coverage
+/// hole.
 pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
     let parsed = parse_or_panic(source, label);
 
@@ -226,21 +281,156 @@ pub(crate) fn call_forms(source: &str, label: &str) -> Vec<(String, usize)> {
             );
         };
         for member in &structure.members {
-            let MemberDecl::Let(binding) = member else {
-                panic!(
-                    "{label}: `call_forms` only walks `let` members of `{}`, but it has another \
-                     member kind — extend `call_forms` rather than leaving those call sites \
-                     unchecked",
+            match member {
+                MemberDecl::Let(binding) => {
+                    collect_call_forms(&binding.value, &mut forms);
+                    collect_guard_call_forms(&binding.where_clause, &mut forms);
+                }
+                MemberDecl::Param(param) => {
+                    if let Some(default) = &param.default {
+                        collect_call_forms(default, &mut forms);
+                    }
+                    collect_guard_call_forms(&param.where_clause, &mut forms);
+                }
+                MemberDecl::Constraint(constraint) => {
+                    collect_call_forms(&constraint.expr, &mut forms);
+                    collect_guard_call_forms(&constraint.where_clause, &mut forms);
+                }
+                _ => panic!(
+                    "{label}: `call_forms` only walks `let`, `param` and `constraint` members of \
+                     `{}`, but it has another member kind — extend `call_forms` rather than \
+                     leaving those call sites unchecked",
                     structure.name
-                );
-            };
-            collect_call_forms(&binding.value, &mut forms);
+                ),
+            }
         }
     }
 
     forms.sort();
     forms.dedup();
     forms
+}
+
+/// Every `(call name, arg count)` form across the bare ```` ```reify ````
+/// fences of `markdown`, each fence parsed as its own module through
+/// [`call_forms`] — so prose, other-tagged fences, comments and string literals
+/// contribute nothing. Deduped and sorted across fences.
+///
+/// Every fence is thereby held to the shape [`call_forms`] walks, which is
+/// stricter than compiling clean: a fence that compiles but declares a `fn`,
+/// an `enum` or an `import` panics here until the walker is extended.
+///
+/// `label` says what `markdown` is — a whole chunk, or one section of it —
+/// because fences are numbered within `markdown`, not within the chunk. A
+/// fence that does not parse, or that [`call_forms`] cannot walk, panics naming
+/// `{label} ```reify fence #{n}`, `n` its 1-based position among `markdown`'s
+/// bare ```` ```reify ```` fences.
+pub(crate) fn fence_call_forms(markdown: &str, label: &str) -> Vec<(String, usize)> {
+    let mut forms: Vec<(String, usize)> = tagged_fence_bodies(markdown, "reify", label)
+        .iter()
+        .enumerate()
+        .flat_map(|(index, body)| {
+            call_forms(body, &format!("{label} ```reify fence #{}", index + 1))
+        })
+        .collect();
+    forms.sort();
+    forms.dedup();
+    forms
+}
+
+/// The distinct callee names of `forms`, sorted: every overload of a name
+/// collapses to one entry.
+pub(crate) fn callee_names(forms: &[(String, usize)]) -> Vec<String> {
+    let mut names: Vec<String> = forms.iter().map(|(name, _arity)| name.clone()).collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The arities `name` is DOCUMENTED at in `section`, read off its
+/// `name(<args>) -> <Type>` signatures: code spans of the section's UNFENCED
+/// prose that [`doc_form_of_span`] reads as signature-shaped whole. Fence
+/// bodies (the fence side's jurisdiction) and HTML maintainer notes are never
+/// read. `label` names the chunk `section` came from, in panic text only.
+///
+/// The `->` is what separates a SIGNATURE from a mere mention, and the
+/// distinction is load-bearing: a span without one, such as a call form a
+/// section names only to warn against it, is prose, not a contract the fences
+/// should be held to.
+///
+/// PANICS on unreadable markup, and on a variadic signature, which has no fixed
+/// arity for the fences to mirror.
+pub(crate) fn documented_signature_arities(section: &str, name: &str, label: &str) -> Vec<usize> {
+    documented_unfenced_forms(section)
+        .unwrap_or_else(|e| panic!("{label}: {e} — so no signature in it can be read"))
+        .into_iter()
+        .filter(|documented| documented.form.name == name && documented.span.contains("->"))
+        .map(|documented| match documented.form.arity {
+            Arity::Exact(arity) => arity,
+            Arity::AtLeast(_) => panic!(
+                "{label}: `{}` is a variadic signature, which has no fixed arity for the \
+                 ```reify fences to mirror — document `{name}` at each arity a fence calls it at",
+                documented.span
+            ),
+        })
+        .collect()
+}
+
+/// The arities the compiling fences call `name` at, out of their
+/// [`fence_call_forms`].
+pub(crate) fn fence_arities(fence_forms: &[(String, usize)], name: &str) -> Vec<usize> {
+    fence_forms
+        .iter()
+        .filter(|(callee, _)| callee == name)
+        .map(|(_, arity)| *arity)
+        .collect()
+}
+
+/// Every way the arities `name` is `documented` at in the chunk `label` and the
+/// arities its compiling fences call it at (`exercised`) have drifted apart, in
+/// either direction, one actionable line each.
+pub(crate) fn arity_drift(
+    label: &str,
+    name: &str,
+    documented: &[usize],
+    exercised: &[usize],
+) -> Vec<String> {
+    const FIX: &str = "The fences are what actually compile, so fix whichever of the two is \
+                       wrong — a designer copies whichever they read first.";
+    let distinct = |arities: &[usize]| {
+        let mut arities = arities.to_vec();
+        arities.sort_unstable();
+        arities.dedup();
+        arities
+    };
+    let documented = distinct(documented);
+    let exercised = distinct(exercised);
+
+    let mut drift = Vec::new();
+    for arity in documented.iter().filter(|arity| !exercised.contains(arity)) {
+        drift.push(format!(
+            "{label} documents `{name}` at {arity} argument(s), but no ```reify fence calls \
+             it at that arity (fence call arities: {exercised:?}). Either the documented \
+             signature is a phantom the compiler was never shown, or a fence drifted off the form \
+             it demonstrates. {FIX}"
+        ));
+    }
+    for arity in exercised.iter().filter(|arity| !documented.contains(arity)) {
+        drift.push(format!(
+            "a ```reify fence in {label} calls `{name}` at {arity} argument(s), but no \
+             `{name}(…) -> <Type>` signature documents that arity (documented arities: \
+             {documented:?}). Either the fence demonstrates a form the section never states, or \
+             the section lost the signature. {FIX}"
+        ));
+    }
+    drift
+}
+
+/// [`collect_call_forms`] over a member's `where` guard, when it has one.
+fn collect_guard_call_forms(guard: &Option<WhereClause>, out: &mut Vec<(String, usize)>) {
+    if let Some(guard) = guard {
+        collect_call_forms(&guard.condition, out);
+    }
 }
 
 /// Push `(callee name, arg count)` for every `FunctionCall` in `expr`'s
@@ -480,6 +670,55 @@ fn doc_form_of_span_reads_nothing_else_as_a_signature() {
 }
 
 #[test]
+fn span_callee_reads_the_name_a_span_opens_by_calling() {
+    let cases = [
+        (
+            "translate(z=-height/2)",
+            Some("translate"),
+            "a call-shaped opening, even though the span does not parse",
+        ),
+        (
+            "distance(a, b) > tol",
+            Some("distance"),
+            "the opening is what counts, not the whole span",
+        ),
+        ("mechanism()", Some("mechanism"), "an empty argument list"),
+        (
+            "point3(x, y, z)",
+            Some("point3"),
+            "digits are allowed after the first letter",
+        ),
+        (
+            "let all_faces = faces(b)",
+            None,
+            "a declaration, not a call",
+        ),
+        (
+            "fn faces(solid: Solid) -> List<Surface>",
+            None,
+            "a declaration, not a call",
+        ),
+        ("Selector(Face)", None, "a capitalised name"),
+        ("Engine::new(x)", None, "a qualified name"),
+        (
+            "2*corner_r < min(width, depth)",
+            None,
+            "an expression that does not open with a call",
+        ),
+        ("sel[0]", None, "no paren at all"),
+        (
+            "point3 (x)",
+            None,
+            "the name must be DIRECTLY followed by `(`",
+        ),
+    ];
+
+    for (span, expected, why) in cases {
+        assert_eq!(span_callee(span), expected, "`{span}`: {why}");
+    }
+}
+
+#[test]
 fn is_exercised_by_matches_exact_by_equality_and_at_least_by_minimum() {
     let calls = vec![("rotate".to_string(), 5), ("union_all".to_string(), 3)];
 
@@ -519,6 +758,170 @@ structure def NamedArgument {
         call_forms(source, "named-argument snippet"),
         vec![("isosurface".to_string(), 2), ("sphere".to_string(), 1)],
         "a named argument is one argument, in the same currency the documented form is read in"
+    );
+}
+
+#[test]
+fn call_forms_walks_param_defaults_constraints_and_where_guards() {
+    let source = r#"
+structure def EveryMemberSlot {
+    param h : Length = default_height(40mm) where param_enabled(1mm, 2mm)
+    let b = box(h, h, h) where let_enabled(h)
+    constraint volume(b) > 1mm^3 where constraint_enabled(b, h, h, h)
+}
+"#;
+
+    let forms: Vec<(String, usize)> = [
+        ("box", 3),
+        ("constraint_enabled", 4),
+        ("default_height", 1),
+        ("let_enabled", 1),
+        ("param_enabled", 2),
+        ("volume", 1),
+    ]
+    .iter()
+    .map(|(name, arity)| (name.to_string(), *arity))
+    .collect();
+    assert_eq!(
+        call_forms(source, "member-slot snippet"),
+        forms,
+        "a param default, a constraint expression and every member's `where` guard (the `let` \
+         guard included) are call sites"
+    );
+}
+
+#[test]
+fn fence_call_forms_reads_only_the_parsed_code_of_bare_reify_fences() {
+    let markdown = r#"# Demo chunk
+
+Prose may name `prose_only(a)` in a code span, or prose_only(a) bare.
+
+```reify
+structure def Members {
+    param h : Length = 5mm
+    let s = sphere(h)
+    constraint volume(s) > 1mm^3
+}
+```
+
+```reify-schematic
+schematic_only(a, b)
+```
+
+```reify
+structure def Commented {
+    // line_commented(a, b)
+    /* block_commented(a) */
+    let note = "string_call(a)"
+    let g = box(1mm, 2mm, 3mm)
+    let ball = sphere(1mm)
+}
+```
+"#;
+
+    let forms: Vec<(String, usize)> = [("box", 3), ("sphere", 1), ("volume", 1)]
+        .iter()
+        .map(|(name, arity)| (name.to_string(), *arity))
+        .collect();
+    assert_eq!(
+        fence_call_forms(markdown, "demo.md"),
+        forms,
+        "only the parsed code of bare ```reify fences is read, each fence as its own module: \
+         prose, a schematic listing, comments and string literals contribute nothing, and the \
+         forms of every fence are sorted and deduped together"
+    );
+}
+
+#[test]
+#[should_panic(expected = "demo.md ```reify fence #2 must parse cleanly")]
+fn fence_call_forms_names_an_unparseable_fence_by_label_and_position() {
+    let markdown = r#"```reify-schematic
+schematic_only(a, b)
+```
+
+```reify
+structure def Parses {
+    let s = sphere(1mm)
+}
+```
+
+```reify
+structure def Broken {
+    let s = sphere(1mm
+}
+```
+"#;
+
+    fence_call_forms(markdown, "demo.md");
+}
+
+#[test]
+#[should_panic(expected = "demo.md's Fits section ```reify fence #1: `call_forms` only walks")]
+fn fence_call_forms_names_a_fence_it_cannot_walk_by_label_and_position() {
+    let markdown = "```reify\nenum FitType { Clearance, Transition, Interference }\n```\n";
+
+    fence_call_forms(markdown, "demo.md's Fits section");
+}
+
+#[test]
+fn unfenced_code_spans_reads_every_span_of_unfenced_prose_trimmed_with_its_line() {
+    let markdown = "Intro ` volume(solid)` and `2*r`.\n\n```reify\nlet b = `inner`\n```\n\n\
+                    <!-- `noted(x)` -->\n| `a` | `box(1mm, 1mm, 1mm)` |\n";
+
+    let read: Vec<(usize, String)> = unfenced_code_spans(markdown)
+        .expect("the synthetic chunk's prose is readable")
+        .into_iter()
+        .map(|span| (span.line, span.text))
+        .collect();
+
+    assert_eq!(
+        read,
+        vec![
+            (1, "volume(solid)".to_string()),
+            (1, "2*r".to_string()),
+            (8, "a".to_string()),
+            (8, "box(1mm, 1mm, 1mm)".to_string()),
+        ],
+        "every span of unfenced prose, trimmed, in document order with its line — a fence's or \
+         a maintainer note's never"
+    );
+}
+
+#[test]
+fn documented_unfenced_forms_is_an_err_when_the_prose_cannot_be_read() {
+    let signature = "`volume(solid) -> Scalar<Volume>`\n\n";
+    assert_eq!(
+        documented_unfenced_forms(signature).map(|forms| forms.len()),
+        Ok(1),
+        "control: the signature alone is read"
+    );
+
+    for (defect, why) in [
+        ("```reify\nstructure def Open {\n", "an unterminated fence"),
+        (
+            "<!-- an unterminated note\n",
+            "an unterminated HTML comment",
+        ),
+    ] {
+        assert!(
+            documented_unfenced_forms(&format!("{signature}{defect}")).is_err(),
+            "{why} hides the rest of the chunk, so it is an Err, never a short list of forms"
+        );
+    }
+}
+
+#[test]
+fn callee_names_collapses_overloads_to_sorted_distinct_names() {
+    let forms = vec![
+        ("b".to_string(), 1),
+        ("a".to_string(), 2),
+        ("a".to_string(), 3),
+    ];
+
+    assert_eq!(
+        callee_names(&forms),
+        vec!["a".to_string(), "b".to_string()],
+        "two overloads of one name are one callee name, and the names come back sorted"
     );
 }
 
@@ -611,4 +1014,98 @@ fn a_listed_span_is_read_by_the_same_rule_as_a_prose_span() {
             .collect();
         assert_eq!(read, expected.to_vec(), "`{listing}`: {why}");
     }
+}
+
+// --- arity_drift unit tests --------------------------------------------------
+
+#[test]
+fn arity_drift_reports_a_documented_arity_no_fence_calls() {
+    let drift = arity_drift("demo.md", "interferes", &[1, 2], &[1]);
+
+    assert_eq!(drift.len(), 1, "got {drift:#?}");
+    assert!(
+        drift[0].contains("`interferes`") && drift[0].contains("at 2 argument(s)"),
+        "the line must name the documented form no fence exercises, got: {}",
+        drift[0]
+    );
+}
+
+#[test]
+fn arity_drift_reports_a_fence_arity_no_signature_documents() {
+    let drift = arity_drift("demo.md", "distance", &[2], &[2, 3]);
+
+    assert_eq!(drift.len(), 1, "got {drift:#?}");
+    for needle in ["`distance`", "at 3 argument(s)", "[2]"] {
+        assert!(
+            drift[0].contains(needle),
+            "the line must name the undocumented fence arity and the documented set \
+             (`{needle}`), got: {}",
+            drift[0]
+        );
+    }
+}
+
+#[test]
+fn arity_drift_is_silent_on_equal_sets_whatever_the_duplicates() {
+    assert_eq!(
+        arity_drift("demo.md", "volume", &[1], &[1]),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        arity_drift("demo.md", "volume", &[1, 1], &[1, 1, 1]),
+        Vec::<String>::new(),
+        "a form documented twice or called by several fences is still one arity"
+    );
+    assert_eq!(
+        arity_drift("demo.md", "min_clearance", &[3, 1], &[1, 3]),
+        Vec::<String>::new(),
+        "order does not matter"
+    );
+}
+
+#[test]
+fn arity_drift_reports_both_directions_at_once() {
+    let drift = arity_drift("demo.md", "min_clearance", &[3], &[2]);
+
+    assert_eq!(
+        drift.len(),
+        2,
+        "a documented 3 no fence calls AND a fence 2 nothing documents, got {drift:#?}"
+    );
+}
+
+// --- documented_signature_arities unit tests ---------------------------------
+
+#[test]
+fn documented_signature_arities_reads_only_signature_spans_in_unfenced_prose() {
+    let section = "\
+<!-- SYNC note: `distance(a, b, c) -> Length` was the old form -->
+
+The gap is `distance(a, b) -> Length`; the one-argument `distance(a)` is a trap.
+
+Written bare, distance(x, y, z, w) -> Length is not a code span.
+
+```reify
+structure def Gap {
+    // distance(a, b, c, d, e) -> Length
+    let g = distance(x, y)
+}
+```
+";
+
+    assert_eq!(
+        documented_signature_arities(section, "distance", "demo.md"),
+        vec![2],
+        "only a whole `name(params) -> Type` code span in unfenced prose is a documented \
+         signature: an HTML maintainer note, an un-backticked form, a mention with no `->` and \
+         anything inside a fence (comment or call) are never read as one"
+    );
+}
+
+#[test]
+#[should_panic(expected = "variadic signature")]
+fn documented_signature_arities_panics_on_a_variadic_signature() {
+    let section = "The gap is `distance(a, …) -> Length`.\n";
+
+    let _ = documented_signature_arities(section, "distance", "demo.md");
 }

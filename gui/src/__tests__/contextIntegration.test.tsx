@@ -210,8 +210,8 @@ describe('Context integration', () => {
   it('ChatPanel with violated constraints enables "Violated constraints" context picker option', () => {
     const store = makeStore();
     const constraints = [
-      { expression: 'width > 100', status: 'violated' },
-      { expression: 'height > 0', status: 'satisfied' },
+      makeConstraint({ node_id: 'c1', expression: 'width > 100', status: 'violated' }),
+      makeConstraint({ node_id: 'c2', expression: 'height > 0', status: 'satisfied' }),
     ];
     render(() => (
       <ChatPanel
@@ -229,7 +229,7 @@ describe('Context integration', () => {
     const onSend = vi.fn();
     const store = makeStore({ onSend });
     const constraints = [
-      { expression: 'width > 100', status: 'violated' },
+      makeConstraint({ node_id: 'c1', expression: 'width > 100', status: 'violated' }),
     ];
     render(() => (
       <ChatPanel

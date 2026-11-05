@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { parser } from '../editor/reifyParser.js';
+import { readFixture } from './repoFixtures';
 
 /**
  * Qualified references through an import binding (`pp.Pulley`) on the GUI Lezer
@@ -11,11 +10,13 @@ import { parser } from '../editor/reifyParser.js';
  * the CST→AST lowering in `crates/reify-syntax/src/ts_parser.rs`, and this one.
  * The editor is the surface with no compiler behind it to catch a miss — a
  * qualified reference that the compiler accepts but Lezer rejects degrades
- * silently into error nodes and lost highlighting. `reifyGrammarCorpus.test.ts`
- * catches that at FILE granularity (the two prd-gate fixtures move into its
- * `EXPECTED_CLEAN` ledger alongside this file); what it cannot express is
- * WHICH NODE a qualified reference reduced to, and a shape regression that
- * keeps the error count at zero is exactly the silent kind. That is this file.
+ * silently into error nodes and lost highlighting.
+ * `reifyGrammarCorpusLedger.test.ts` catches that at FILE granularity (the two
+ * prd-gate fixtures move into its pin set,
+ * `reifyGrammarCorpus.expected-clean.json`, alongside this file); what it
+ * cannot express is WHICH NODE a qualified reference reduced to, and a shape
+ * regression that keeps the error count at zero is exactly the silent kind.
+ * That is this file.
  *
  * MEASURED RED BASELINE on this branch, before the grammar productions land —
  * every qualified shape below fails, every control below already passes:
@@ -33,9 +34,6 @@ import { parser } from '../editor/reifyParser.js';
  *   CONTROL param p : Beam::Material  0
  *   CONTROL let x = Foo::bar()     0
  */
-
-/** Repo root, three levels up from `gui/src/__tests__/`. */
-const REPO_ROOT = join(__dirname, '../../..');
 
 // The three helpers below are the ones `reifyGrammarCorpus.test.ts` documents
 // at length; they are re-declared rather than imported because a vitest test
@@ -292,8 +290,7 @@ describe('reify.grammar — prd-gate qualified-reference fixtures', () => {
     'tests/prd-gate/fixtures/stdlib_ns_qualified_type.ri',
   ]) {
     it(`parses ${relPath} with zero error nodes`, () => {
-      const src = readFileSync(join(REPO_ROOT, relPath), 'utf-8');
-      expect(countErrorNodes(src)).toBe(0);
+      expect(countErrorNodes(readFixture(relPath))).toBe(0);
     });
   }
 });

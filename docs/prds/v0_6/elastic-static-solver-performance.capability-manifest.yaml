@@ -1,0 +1,1117 @@
+prd: docs/prds/v0_6/elastic-static-solver-performance.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 8372
+  title: 'elastic static solver performance α: linear_solve seam, Direct tier, policy; SplitCholesky driver
+    shared with explicit Par::Seq; interim Jacobi-PCG tier; zero-RHS rule; linear-solve-fault-injection
+    hook'
+  capabilities:
+  - name: faer-symbolic-exact-factor-size
+    binding: 'existing-substrate — faer 0.24.0 `sparse/linalg/cholesky.rs`: `len_val` is pub on the simplicial
+      and supernodal symbolic structures and on `SymbolicCholesky`; `split_cholesky.rs::SplitCholesky`
+      already reserves the factor from it. Read in the registry source and by git grep on main.'
+    verdict: PASS
+  - name: faer-numeric-llt-explicit-par
+    binding: existing-substrate — `factorize_numeric_llt(…, par, stack, params)` and `factorize_numeric_llt_scratch`
+      take a `Par`; `SplitCholesky` passes `faer::get_global_parallelism()` at three sites today (git
+      grep count 3); the workspace faer is `0.24` with features `std, sparse` only (no rayon).
+    verdict: PASS
+  - name: fallible-allocation-pattern
+    binding: existing-substrate — `try_reserve_exact` and `MemBuffer::try_new` in `split_cholesky.rs`.
+    verdict: PASS
+  - name: faer-symbolic-variant-forcing
+    binding: 'existing-substrate — `CholeskySymbolicParams.supernodal_flop_ratio_threshold` with `SupernodalThreshold::{FORCE_SIMPLICIAL,
+      FORCE_SUPERNODAL}` (faer 0.24.0); simplicial reports `NonPositivePivot { index: k + 1 }`, supernodal
+      `index + s_start`. NOTE: C1''s public API exposes no knob for this, so BT4 needs α to expose the
+      forcing to a seam test (e.g. through the fault-injection feature) — α''s own design point, not a
+      gap.'
+    verdict: PASS
+  - name: seam-module
+    binding: producer-self (S1) — `reify_solver_elastic::linear_solve`, a module directory.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*pub mod linear_solve\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/lib.rs
+  - name: spd-system
+    binding: producer-self (C1) — `SpdSystem::new(k)` checks shape, canonical CSR and a positive stored
+      diagonal, returning `SystemInvalid` (today these are CG panics).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct SpdSystem\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: spd-solver-session
+    binding: producer-self (S2, C1) — `SpdSolver::prepare` / `solve`, lazy until the first non-zero right-hand
+      side.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct SpdSolver\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: typed-solve-stop
+    binding: producer-self (S4) — `SolveStop {Cancelled, NotConverged, ResidualAboveTolerance, Failed}`,
+      no filler fields.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum SolveStop\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: typed-solve-failure
+    binding: producer-self (S4) — `SolveFailure {NotPositiveDefinite, FactorExceedsCeiling, OutOfMemory}`;
+      `WorkerPanicked` arrives with ι.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum SolveFailure\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: choose-strategy-pure
+    binding: producer-self (C4) — the one home of the tier policy.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn choose_strategy\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: linear-solver-choice
+    binding: producer-self (C1) — `LinearSolverChoice {Auto, Direct, Iterative}`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub enum LinearSolverChoice\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: solve-policy
+    binding: producer-self (C4) — `SolvePolicy` with `auto_direct_budget` 2 GiB and `direct_ceiling` 8
+      GiB defaults.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct SolvePolicy\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: explicit-par-seq
+    binding: producer-self (C2) — every faer call in the shared driver passes `Par::Seq` explicitly.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Par::Seq\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: global-parallelism-never-read
+    binding: 'producer-self (C2, BT6) — no code in reify-solver-elastic reads `faer::get_global_parallelism()`.
+      Scoped to a call on a non-comment line (overlay rules 1–2). Accepted gap: an aliased import (`use
+      faer::get_global_parallelism as g`) evades it; the behavioural cover is `tests/split_cholesky.rs`
+      and `tests/eigensolve_shift_contract.rs` green unchanged.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*get_global_parallelism\(
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: fault-injection-feature
+    binding: 'producer-self (C2) — the `linear-solve-fault-injection` cargo feature, compiled only when
+      enabled and inert unless armed: count reservations and numeric calls, fail a reservation. (The barrier
+      and panic arms are tagged ι in C2.)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^linear-solve-fault-injection\s*=
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/Cargo.toml
+  - name: shared-cholesky-driver
+    binding: producer-self (C2) — one internal driver (`analyse`, `factorize`) used by both `SplitCholesky`
+      and the Direct tier.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the driver is crate-internal and its names are not contract; the behavioural cover is tests/split_cholesky.rs
+        and tests/eigensolve_shift_contract.rs green unchanged (BT6).
+  - name: interim-jacobi-pcg-tier
+    binding: producer-self (S3) — the iterative tier is Jacobi-PCG until γ; Auto over budget and `Iterative`
+      resolve to `Pcg(Jacobi)`.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT2 asserts `AutoOverBudget` → `Pcg(Jacobi)`; no variant name is fixed that γ would not
+        also satisfy.
+  - name: zero-rhs-rule
+    binding: producer-self (S8) — `‖f‖ = 0` returns `u = 0`, residual 0, converged, with no factorisation,
+      setup or iteration.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT4b — the fault hook counts no numeric call.
+  - name: predicted-flops-estimate
+    binding: producer-self (Q-I RULED 2026-10-08; C1, C4) — `FactorEstimate.predicted_flops = Σ_j (c_j
+      + c_j(c_j + 1)/2)`, recomputed from the returned column structure (faer 0.24.0 computes `amd::FlopCount`
+      inside `factorize_symbolic_cholesky` and does not return it; `col_ptr`, `supernode_begin`/`supernode_end`,
+      `col_ptr_for_row_idx` are pub). Its reader is `choose_strategy`'s work term (inactive while `auto_direct_work_budget`
+      is `None`, i.e. until γ) and the strategy Info.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \bpredicted_flops\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: bt1-bt6-seam-tests
+    binding: 'producer-self — BT1–BT6 and BT4b against the public seam. BT1''s 2,562-DOF beam (61 × 2
+      × 7 nodes × 3) must be built by α''s own test: the production box mesher is inline in reify-eval''s
+      `solve_cantilever_fea`, which reify-solver-elastic cannot reach. BT1 asserts properties only, so
+      an equivalent box suffices.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT1–BT6, BT4b — reify-solver-elastic integration tests.
+- label: ε
+  task_id: 8373
+  title: 'elastic static solver performance ε: pattern-first, node-owned assembly assemble_stiffness;
+    assemble_global_stiffness becomes a wrapper over it'
+  capabilities:
+  - name: assembly-substrate
+    binding: 'existing-substrate — `assembly/global.rs::assemble_global_stiffness` (Deterministic arm:
+      `BTreeMap<(usize, usize), f64>` in element order; Parallel arm: per-thread triplets), `AssemblyMode`,
+      `detect_orphan_dofs`.'
+    verdict: PASS
+  - name: controlflow-poll-type
+    binding: existing-substrate — `core::ops::ControlFlow<()>` (std), shared with α without an α→ε edge
+      (S4).
+    verdict: PASS
+  - name: assemble-stiffness-primitive
+    binding: producer-self (C12) — `assemble_stiffness(n_nodes, elements, threads, poll)`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn assemble_stiffness\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: btreemap-arm-replaced
+    binding: 'producer-self (C12) — the `BTreeMap` accumulation is gone and `assemble_global_stiffness`
+      delegates to `assemble_stiffness`. NOT mechanised (overlay rule 4): an `absent` grep for `BTreeMap::new()`
+      in `assembly/global.rs` also matches the inline test module''s encounter-order reference oracle
+      (a `BTreeMap<(usize, usize), f64>` built from `emit_element_triplets`), the natural test to keep,
+      so it would hold the check red after delivery. The positive `assemble-stiffness-primitive` check
+      plus BT7/BT8 are the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: rule 4 — the defect construct is also a test-oracle shape in the same file; covered by BT7/BT8
+        and the positive primitive check.
+  - name: wrapper-keeps-every-caller
+    binding: producer-self (C12) — `assemble_global_stiffness(n_nodes, elements, AssemblyMode)` keeps
+      its signature; no caller changes in ε.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: signature preservation; the cover is the workspace compiling with no caller in the diff.
+  - name: bt7-bt8
+    binding: producer-self — BT7 (bitwise across threads ∈ {1, 2, 8}), BT7b (poll breaks on its third
+      call), BT8 (one-off comparison with the pre-ε arm, recorded in the PR).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT7, BT7b seam tests; BT8 is a recorded one-off.
+- label: β
+  task_id: 8374
+  title: 'elastic static solver performance β: elastic static on the seam, every lane; ElasticOptions.linear_solver;
+    strategy Info and failure codes; typed cancel; phase-entry progress'
+  capabilities:
+  - name: prereq-8244-cap-and-fixtures
+    binding: 'producer-upstream — #8244 (pending, hard edge): honours `max_iter`/`cg_tolerance` on every
+      solving route, deletes `SOLVER_MAX_ITER`, makes cap exhaustion a coded Error, and ships `fea_cg_cap_exhausted.ri`
+      / `fea_cg_cap_sufficient.ri` (both the reify-eval-fea-tests and reify-cli copies are in its metadata.files).
+      Covers BT13b and the landed `max_iter` default S14 reads. Read on the record 2026-10-08.'
+    verdict: PASS
+  - name: seam-and-assembly-upstream
+    binding: producer-upstream — α (seam, Direct tier, fault hook for BT13d), ε (`assemble_stiffness`).
+    verdict: PASS
+  - name: adapter-file
+    binding: producer-self (S1) — the solve block moves out of `elastic_static.rs` into the adapter.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/static_linear_solve.rs
+  - name: stdlib-linear-solver-enum
+    binding: producer-self (C6) — `enum LinearSolver { Auto, Direct, Iterative }` in the stdlib.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum LinearSolver *\{
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib
+  - name: stdlib-linear-solver-param
+    binding: 'producer-self (C6) — `param linear_solver : LinearSolver = LinearSolver.Auto`, appended
+      after `adaptive` (today the last of 17 params).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'param linear_solver *: *LinearSolver\b'
+      expect: present
+      paths:
+      - crates/reify-compiler/stdlib/solver_elastic.ri
+  - name: linear-solver-grammar
+    binding: 'grammar-fixture — `tests/prd-gate/fixtures/elastic_solver_linear_solver_option.ri` (PRD
+      §3; draft copy under the session scratch `draft/tests/prd-gate/fixtures/`, lands with the PRD):
+      `enum LinearSolver { Auto, Direct, Iterative }`, a param of that type, `Opts(linear_solver: LinearSolver.Iterative,
+      max_iter: 50)`. Re-probed on the draft copy: tree-sitter 0 ERROR nodes; `reify check` exit 0 ("All
+      constraints satisfied").'
+    verdict: PASS
+  - name: code-FeaLinearSolveStrategy
+    binding: producer-self (C8) — the coded Info on every static solve.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaLinearSolveStrategy\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaStiffnessNotPositiveDefinite
+    binding: producer-self (C8) — found during the solve (unanchored component, `NotPositiveDefinite`,
+      `NonPositiveDiagonal`); C8 now separates it from the existing `FeaSingularStiffness` (task 2929,
+      pre-solve degenerate elements).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaStiffnessNotPositiveDefinite\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaDirectFactorTooLarge
+    binding: producer-self (C8) — explicit Direct over the ceiling.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaDirectFactorTooLarge\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaDirectResidualAboveTolerance
+    binding: producer-self (C8) — Direct's residual check failed.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaDirectResidualAboveTolerance\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: code-FeaSolverOutOfMemory
+    binding: producer-self (C8) — a fallible reservation failed.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaSolverOutOfMemory\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: engine-with-solve-policy
+    binding: producer-self (C4) — `Engine::with_solve_policy(SolvePolicy)`; BT13c here, BT14 (γ) and BT26
+      (ι) consume it. (meshing-service's `with_size_policy` is the pattern, not a dependency — absent
+      on main.)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn with_solve_policy\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: warm-state-value-owned-by-adapter
+    binding: producer-self (C13, new) — the trampoline in `elastic_static.rs` passes the prior `OpaqueState`
+      to the adapter untouched and donates what it returns; the adapter owns the concrete warm-state type
+      and its downcast, so π never edits the hot file.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \bOpaqueState\b
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/static_linear_solve.rs
+  - name: solve-policy-in-dispatch-context
+    binding: producer-self (C4, new) — `run_compute_dispatch` (engine_compute.rs, which already calls
+      `install_solve_dispatch_context`) installs the engine's `SolvePolicy` into the solve dispatch context
+      beside the progress sink and `CancellationHandle`, so a trampoline with no engine parameter (the
+      elastic adapter; θ's buckling trampoline) reads it. Anchored on the type appearing in the context's
+      home module.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \bSolvePolicy\b
+      expect: present
+      paths:
+      - crates/reify-eval/src/solver_progress.rs
+  - name: unanchored-components
+    binding: producer-self (C1) — `boundary::unanchored_components(n_nodes, connectivity, constrained_nodes)`;
+      β's Modules column now lists reify-solver-elastic for it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn unanchored_components\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: cancel-predicate-deleted
+    binding: 'producer-self (S4, BT12) — the `!converged && iterations < max_iter` detection is gone from
+      the hot file (present today, `solve_cantilever_fea`). Narrowed to a non-comment line and tolerant
+      of a `opts.`/`self.` prefix in case #8244 respells it. Accepted gap: a reordered predicate evades
+      it; `solve_cantilever_fea_cancelled_skips_stress_recovery` and BT12 are the cover.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*!\s*[a-z_.]*converged\s*&&\s*[a-z_.]*iterations\s*<
+      expect: absent
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+  - name: execution-modes-gone-from-hot-file
+    binding: 'producer-self (S16, C7) — no `resolve_execution_modes` call and no `PARALLEL_DOF_THRESHOLD`
+      use in `elastic_static.rs` (including its inline tests, which C7 has β delete). `SolverMode::` stays
+      OUT of the pattern: the dual solve''s `SolverMode` argument lives until η, and ξ/η own the SolverMode
+      deletions, so including it could re-red this check after β landed and wedge β''s dependents.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*(resolve_execution_modes\(|PARALLEL_DOF_THRESHOLD)
+      expect: absent
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+  - name: phase-entry-progress-today-shape
+    binding: 'producer-self (C5) — one `SolverProgressUpdate` per phase entry with `solver_kind` `"direct"
+      | "jacobi-pcg"`, `iter: 0`, `residual: 1.0`; the overlay debounce then starts on a Direct solve
+      (`engineStore.ts::applySolverProgress` debounces on the first event).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT12b; string literals like "direct" are not distinctive enough for a grep.
+  - name: gui-engine-test-updated
+    binding: producer-self (C7) — `gui/src-tauri/src/tests/engine_tests.rs`'s `solver_kind == "cg"` /
+      `iter ≥ 1` assertion moves to the phase-entry shape.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the reify-gui engine test itself.
+  - name: deterministic-meaning
+    binding: 'producer-self (Q-H RULED 2026-10-08; S6, C6, C13) — `deterministic: true` = bit-identical
+      regardless of path: Direct is path-independent by construction; on the iterative tier the warm start
+      is the only path-dependent input, so the adapter keeps today''s `!deterministic && warm_start_beneficial`
+      gate (existing in elastic_static.rs, #4869); `false` (default) keeps warm start; bit-identical reuse
+      (ζ, η, π) is allowed under `true`. Residual in-process hole owned by #7052 (C9). β rewrites the
+      stdlib doc.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'the gate is existing behaviour moved into the adapter; BT32''s `deterministic: true` arm
+        (π) is the reuse cover.'
+  - name: stdlib-doc-rewrite
+    binding: producer-self (C6, C7) — `threads`, `max_iter`, `cg_tolerance`, `iterations`, `converged`,
+      `linear_solver` docs and the "across machines" text (Q-B).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: prose; asserting doc wording pins text, not behaviour.
+  - name: options-pin-17-to-18
+    binding: producer-self (C6) — `solver_elastic_tests.rs` "exactly 17 param cells" moves to 18 (17 verified
+      on main).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: a count another landing could move; not a stable dispatch gate.
+  - name: persistent-cache-invalidation
+    binding: existing-substrate (S10, awaiting Leo's ratification) — `engine_hash_algo.rs::WORKSPACE_CRATE_COVERAGE`
+      has reify-solver-elastic as `Coverage::Hashed` (src + Cargo.toml) and `engine_hash_closure.txt`
+      lists `faer`, so every Jacobi-era persistent entry misses once β lands. If Leo keeps the decided
+      constant, it is a one-line β addition.
+    verdict: PASS
+  - name: bt9-bt13e-cli-and-engine
+    binding: 'producer-self — BT9 (premise probed: thin plate `converged = false`, `iterations = 2000`
+      on `target/debug/reify` of 2026-10-06), BT11–BT13e, BT12b, BT18 (Jacobi).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: CLI and engine integration tests.
+  - name: bt10-thread-invariance-body
+    binding: 'producer-self over existing substrate (resolved 2026-10-08, rev 3) — BT10 meshes BT30''s
+      plate with a hole ONCE in-process (engine-installed gmsh, as BT11) into a `SolverMesh` (≈ 136k DOF)
+      and solves that one mesh through `solve_cantilever_fea` (BT13''s provided-mesh shape, existing)
+      at threads ∈ {1, 4, 16}, `deterministic: false`, after first asserting the strategy Info''s DOF
+      count > 10,000. Sharing one mesh removes gmsh''s run-to-run variation (the plain realization producer
+      still meshes at host parallelism until meshing-service β #8285), so no edge to #8285 is needed.
+      Producers: `threads` → `assemble_stiffness` (ε) wired by β; `Par::Seq` (α); the DOF count in the
+      Info (β). Heavy partition.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT10 engine test.
+  - name: param-drop-declaration-coordination
+    binding: 'producer-self (C6) — if #7080 (pending; depends on #7079, #8244) has landed, β adds `linear_solver`
+      to its C1 declaration; otherwise #7080 does (amendment).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'cross-task ordering; #7080 owns the declaration.'
+- label: ξ
+  task_id: 8375
+  title: 'elastic static solver performance ξ: retire the execution-mode API; move the remaining assembly
+    callers to assemble_stiffness; rebuild tests/determinism.rs'
+  capabilities:
+  - name: upstream-beta
+    binding: producer-upstream — β (no hot-file user of the mode API left).
+    verdict: PASS
+  - name: solver-mode-parallel-deleted
+    binding: producer-self (C7) — the `Parallel { threads }` variant of `SolverMode`. Anchored on the
+      variant declaration line in solver.rs (`SolverMode::Parallel {` match arms start with `SolverMode::`
+      and cannot match).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*Parallel\s*\{
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/solver.rs
+  - name: parallel-helpers-deleted
+    binding: producer-self (C7) — `spmv_parallel`, `dot_parallel` and siblings.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*fn (spmv|dot)_parallel\b
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: threshold-const-deleted
+    binding: producer-self (S16) — `PARALLEL_DOF_THRESHOLD` (solver.rs).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*const PARALLEL_DOF_THRESHOLD\b
+      expect: absent
+      paths:
+      - crates
+  - name: resolve-execution-modes-deleted
+    binding: producer-self (S16) — `resolve_execution_modes` (solver.rs).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*fn resolve_execution_modes\b
+      expect: absent
+      paths:
+      - crates
+  - name: assembly-mode-deleted
+    binding: producer-self (C12) — `AssemblyMode` (assembly/global.rs).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*enum AssemblyMode\b
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: assembly-wrapper-deleted
+    binding: producer-self (C12) — ε's `assemble_global_stiffness` wrapper.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*fn assemble_global_stiffness\b
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: morph-caller-moved
+    binding: producer-self (C12) — reify-mesh-morph's elasticity calls `assemble_stiffness`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: assemble_stiffness\(
+      expect: present
+      paths:
+      - crates/reify-mesh-morph/src
+  - name: modal-caller-moved
+    binding: producer-self (C12) — `modal_ops` calls `assemble_stiffness`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: assemble_stiffness\(
+      expect: present
+      paths:
+      - crates/reify-eval/src/modal_ops.rs
+  - name: determinism-test-rebuilt
+    binding: producer-self (C7) — `tests/determinism.rs` on the seam and `assemble_stiffness`, bitwise
+      across threads ∈ {1, 4, 16}.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the rebuilt test is the signal.
+- label: γ
+  task_id: 8376
+  title: 'elastic static solver performance γ: SA-AMG tier and the shared PCG loop; solve_cg re-expressed
+    on it; NearNullspace; Auto over budget and Iterative become AMG'
+  capabilities:
+  - name: upstream-xi-beta
+    binding: producer-upstream — ξ (solver.rs cleaned; transitively β, whose adapter and `Engine::with_solve_policy`
+      BT14 uses).
+    verdict: PASS
+  - name: amg-prototype-substrate
+    binding: 'existing-substrate (off main) — the measured SA-AMG prototype on the throwaway branch `task/solver-perf-bench`
+      (`solver_perf_iter.rs` at `3ea4f78320`, an ancestor of the branch tip `de5bbcbc3b`): `amg_setup`,
+      `tentative`, `node_graph`, `aggregate`, `Amg::vcycle`. Verified to exist by git.'
+    verdict: PASS
+  - name: near-nullspace
+    binding: producer-self (S15, C1) — `NearNullspace { dof_node, dof_component, node_coords }`; `SpdSystem::new`
+      gains it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct NearNullspace\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: preconditioner-trait
+    binding: producer-self (S11) — one PCG loop generic over `Preconditioner`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub trait Preconditioner\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: sa-amg-preconditioner
+    binding: producer-self (C3) — `SmoothedAggregation` implements it. Anchored on the impl, not the name,
+      so a variant α might declare early cannot satisfy it.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: impl Preconditioner for SmoothedAggregation\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: solve-cg-on-shared-loop
+    binding: 'producer-self (S11) — `solve_cg` keeps its signature (incl. `mode: SolverMode` until η),
+      panics and zero-RHS return.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT17b — the existing solve_cg callers' tests green unchanged.
+  - name: adapter-builds-near-nullspace
+    binding: producer-self — `dof = 3·node + axis` on full systems (verified).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT14/BT15 through the engine.
+  - name: q-i-work-budget-calibration
+    binding: producer-self (Q-I RULED 2026-10-08; C4, BT17c) — γ calibrates `auto_direct_work_budget`
+      on R1–R5, T1, B20–B41 so Direct is chosen only where its numeric time ≤ AMG setup + solve, records
+      cases, flops and both times (no timing assertion), and sets it in `SolvePolicy::default()`; `AutoOverWorkBudget`
+      becomes reachable. Anchored on the default turning `Some`, which α (whose default is `None`) cannot
+      satisfy early.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: auto_direct_work_budget:\s*Some\(
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: bt14-bt17
+    binding: producer-self — BT14 (engine), BT15 (≤ 1e-5, 30× above P5's worst 3.4e-7), BT16, BT17, BT17b,
+      BT18 (AMG).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: engine and seam tests.
+- label: δ
+  task_id: 8377
+  title: 'elastic static solver performance δ: max_iter not applicable under Direct (ParamNotApplicable)'
+  capabilities:
+  - name: upstream-beta-option
+    binding: 'producer-upstream — β (`linear_solver`, the adapter, the landed `max_iter` default via #8244
+      in β''s closure).'
+    verdict: PASS
+  - name: param-not-applicable-code
+    binding: 'producer-upstream — #7079 (param-drop α, pending): mints `DiagnosticCode::ParamNotApplicable`
+      (its manifest''s check `ParamNotApplicable` in diagnostics.rs; absent on main today).'
+    verdict: PASS
+  - name: param-drop-declaration
+    binding: 'producer-upstream — #7080 (param-drop β, pending; depends on #7079 and #8244 — read on the
+      record 2026-10-08): the ElasticOptions C1 declaration with `max_iter` honoured. δ''s warning is
+      conditional (Direct only), so `max_iter` stays honoured.'
+    verdict: PASS
+  - name: adapter-emits-not-applicable
+    binding: producer-self (S14) — the adapter emits `ParamNotApplicable` naming `ElasticOptions.max_iter`
+      when a solve resolves to Direct with `max_iter` off its landed default.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DiagnosticCode::ParamNotApplicable\b
+      expect: present
+      paths:
+      - crates/reify-eval/src/compute_targets/static_linear_solve.rs
+  - name: bt19-bt20
+    binding: 'producer-self — BT19/BT20 (CLI). NOTE: before γ, BT19''s `Iterative` arm (Jacobi, `max_iter:
+      50`, 5,082 DOF) will exit non-zero by #8244''s cap Error; the row asserts only the warning''s absence,
+      which holds — do not add an exit-0 assertion to that arm.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: CLI tests; D3 blocked only by a Prover fixture-path artefact.
+- label: ζ
+  task_id: 8378
+  title: 'elastic static solver performance ζ: solve_load_cases factor reuse'
+  capabilities:
+  - name: upstream-beta
+    binding: producer-upstream — β.
+    verdict: PASS
+  - name: per-case-options-substrate
+    binding: 'existing-substrate — `LoadCase.options : Option<ElasticOptions> = none` (`stdlib/fea_multi_case.ri`)
+      and `multi_case.rs::solve_multi_case_trampoline`.'
+    verdict: PASS
+  - name: dims-supports-do-not-reach-k
+    binding: 'existing-substrate (D3 finding) — `SYNTHETIC_CLAMP_FACE` in `elastic_static.rs`: the dims
+      path always clamps the root, so BT21 differentiates case C by `linear_solver`.'
+    verdict: PASS
+  - name: solver-reuse-scope
+    binding: producer-self (C10) — one `SolverReuse` per call, keyed by `(content_hash, LinearSolverChoice)`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct SolverReuse\b
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: system-content-hash
+    binding: producer-self (S9) — `SpdSystem::content_hash`; C1 now marks it as ζ's, so α's landing cannot
+      satisfy this check early.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn content_hash\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: bt21
+    binding: 'producer-self — BT21 (CLI): Direct, "factor reused (case A)", C on the iterative strategy;
+      B bitwise equal to its single-case solve.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: CLI test; the multi_case.rs header correction is prose.
+- label: η
+  task_id: 8381
+  title: 'elastic static solver performance η: DWR dual on the primal''s session; solve_dual_cg takes
+    the session; SolverMode deleted'
+  capabilities:
+  - name: upstream-beta-gamma-theta-7453
+    binding: 'producer-upstream — β (new edge: the adapter, and the dual moved onto the adapter''s session
+      by whichever of β and #7453 lands second — C10, S16), γ (session on both tiers), θ (no buckling/morph
+      `solve_cg` user), #7453 (goal-oriented γ, pending; deps #7452 done, #7456 pending; amended so that,
+      if it lands after β, it puts the dual on the adapter''s session). η edits the adapter only, never
+      the hot file. Both orders are covered: β-second has α''s `SpdSolver` upstream; #7453-second finds
+      β''s session already landed.'
+    verdict: PASS
+  - name: solver-mode-deleted
+    binding: producer-self (S16) — the single-variant `SolverMode` enum; `solve_cg` loses `mode`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*enum SolverMode\b
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: dual-on-primal-session
+    binding: producer-self (C10) — η routes the adapter's dual call through a session-taking `solve_dual_cg`.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'BT22; not mechanised, because the dual call reaches the adapter with β or #7453 (second
+        to land), so a `solve_dual_cg(` grep there could go green before η.'
+  - name: bt22
+    binding: producer-self — BT22 (engine).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: engine test.
+- label: θ
+  task_id: 8380
+  title: 'elastic static solver performance θ: buckling pre-stress (P1, P2) and mesh-morph elasticity
+    on the seam'
+  capabilities:
+  - name: upstream-gamma
+    binding: producer-upstream — γ (and ξ through it).
+    verdict: PASS
+  - name: buckling-substrate
+    binding: existing-substrate — `buckling_kernel.rs::{solve_buckling_kernel, solve_buckling_kernel_p2,
+      build_expansion_map, project_with_expansion}`.
+    verdict: PASS
+  - name: morph-substrate
+    binding: existing-substrate — `reify-mesh-morph/src/elasticity.rs::{elasticity_morph_with_cg_opts,
+      ElasticityFailure::SolverNotConverged, elasticity_morph_is_deterministic_across_runs_with_same_input}`;
+      cited in `reify-audit/tests/engine_seam_g_allow_cites_live.rs`.
+    verdict: PASS
+  - name: buckling-prestress-typed
+    binding: producer-self (C11) — `BucklingKernelError::PreStress(SolveStop)` replaces the `assert!`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: PreStress\(SolveStop\)
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/buckling_kernel.rs
+  - name: buckling-on-seam
+    binding: producer-self (C11) — `K_red` becomes an `SpdSystem`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: SpdSystem::new\(
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/buckling_kernel.rs
+  - name: morph-on-seam
+    binding: producer-self (C11) — `elasticity_morph_with_cg_opts` takes a `LinearSolverChoice` and `SolveLimits`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: \bLinearSolverChoice\b
+      expect: present
+      paths:
+      - crates/reify-mesh-morph/src/elasticity.rs
+  - name: bt23-buckling-amg-engine-arm
+    binding: producer-upstream + producer-self (resolved 2026-10-08) — BT23's CLI arm is Auto-only (Direct;
+      `FeaLinearSolveStrategy` from β). The AMG arm is an engine test that lowers `auto_direct_budget`
+      below `K_red`'s factor via `Engine::with_solve_policy` (β), so Auto resolves to `amg-pcg` (γ) with
+      reason `AutoOverBudget`. The buckling trampoline sees the lowered budget because `run_compute_dispatch`
+      installs the policy in the dispatch context (β, C4) — buckling is a registered ComputeNode trampoline
+      (`"solver::buckling"` in `compute_targets/mod.rs`), so it is reached through `run_compute_dispatch`.
+      `BucklingOptions` gains no `linear_solver`. All producers upstream (θ → γ → ξ → β).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT23 CLI and engine arms.
+  - name: buckling-reads-policy-from-context
+    binding: producer-self (C4) — the buckling trampoline reads `SolvePolicy` from the dispatch context;
+      with no context (direct Rust callers) it uses `SolvePolicy::default()`.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT23's engine arm is the behavioural cover; the trampoline file name is not fixed by the
+        PRD.
+  - name: bt24
+    binding: producer-self — BT24 (morph tests; `Iterative` with `max_iter = 1` still `SolverNotConverged`;
+      the reify-audit cite updated).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: reify-mesh-morph and reify-audit tests.
+- label: ι
+  task_id: 8382
+  title: 'elastic static solver performance ι: bounded-detach cancel (E′) — FactorLedger, detach worker,
+    catch_unwind, Heartbeat, AwaitOrphan, FeaSolverWorkerPanicked'
+  capabilities:
+  - name: upstream-alpha-beta
+    binding: producer-upstream — α (fault hook), β (adapter); the per-dispatch carrier exists (`solver_progress.rs::install_solve_dispatch_context`
+      / `current_solve_dispatch_context`).
+    verdict: PASS
+  - name: factor-ledger
+    binding: producer-self (C5) — one `FactorLedger` per Engine, drop-guarded orphan slot, memory admission
+      (S12).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct FactorLedger\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: code-FeaSolverWorkerPanicked
+    binding: producer-self (C8).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^    FeaSolverWorkerPanicked\b
+      expect: present
+      paths:
+      - crates/reify-core/src/diagnostics.rs
+  - name: worker-catch-unwind
+    binding: producer-self (C5) — the worker body runs under `catch_unwind`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: catch_unwind
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: hook-barrier-panic-thread
+    binding: producer-self — ι extends α's hook with the barrier and panic arms (tagged ι in C2) and the
+      "records the thread" arm BT26(a) reads, which C2's list omits.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT25–BT27 exercise it.
+  - name: bt25-bt27
+    binding: producer-self — BT25, BT26 (a)/(b), BT27 (a)/(b) (engine).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: engine tests; heartbeat interval decided in ι.
+- label: κ
+  task_id: 8383
+  title: 'elastic static solver performance κ: GUI phase-shaped solver-progress wire; overlay renders
+    phases and unknown names generically'
+  capabilities:
+  - name: upstream-beta
+    binding: producer-upstream — β (phase-entry events).
+    verdict: PASS
+  - name: wire-phase-field
+    binding: 'producer-self (C5) — `SolverProgressUpdate` gains `phase: &''static str` and optional `iter`/`residual`
+      (today: `solver_kind`, `iter: u32`, `residual: f64`).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub phase: &\''static str'
+      expect: present
+      paths:
+      - crates/reify-eval/src/solver_progress.rs
+  - name: tauri-and-overlay
+    binding: producer-self — the Tauri `SolverProgress` struct, `SolverProgressOverlay`, `docs/gui-event-channels/solver-progress.md`.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT29 vitest and the reify-gui engine test.
+  - name: bt28-bt29
+    binding: producer-self — BT28 (engine; its `AmgSetup` arm only once γ has landed, stated in the row),
+      BT29 (GUI).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: engine test and vitest.
+- label: λ
+  task_id: 8384
+  title: 'elastic static solver performance λ: docs-truth — FEA chunk solver section, fea_solver_choice.ri
+    exemplar and INDEX row, reify-design index line'
+  capabilities:
+  - name: upstream-delta-zeta-theta-iota-kappa-pi
+    binding: producer-upstream — δ, ζ, θ, ι, κ, π (closure includes α, β, γ, ε, ξ); π's "reused (cached)"
+      Info is documented here.
+    verdict: PASS
+  - name: doc-gates-substrate
+    binding: existing-substrate — `harness_compilation_surface/examples_smoke.rs`, `harness_doc_chunks/fence_gate.rs`,
+      `harness_corpus_gates/best_practices_constraint_gate.rs`.
+    verdict: PASS
+  - name: exemplar
+    binding: producer-self — `examples/best_practices/fea_solver_choice.ri`.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - examples/best_practices/fea_solver_choice.ri
+  - name: exemplar-index-row
+    binding: producer-self — its `INDEX.md` row.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_solver_choice
+      expect: present
+      paths:
+      - examples/best_practices/INDEX.md
+  - name: chunk-solver-section
+    binding: 'producer-self — the FEA chunk documents `linear_solver` (`chunks/fea.md` is extended if
+      #8259, #7088 or #8296 created it, else created). Directory-scoped so either creator satisfies it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: linear_solver
+      expect: present
+      paths:
+      - crates/reify-mcp/src/tools/chunks
+  - name: reify-design-index-line
+    binding: producer-self — one line in the reify-design skill index.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fea_solver_choice|linear_solver
+      expect: present
+      paths:
+      - .claude/skills/reify-design/SKILL.md
+- label: μ
+  task_id: 8385
+  title: 'elastic static solver performance μ: integration gate — a realized plate with a hole from the
+    CLI'
+  capabilities:
+  - name: upstream-beta-gamma-6660
+    binding: 'producer-upstream — β, γ (BT30''s Iterative arm), #6660 (pending; gmsh registered in the
+      author binaries — body solves from the CLI; refuses selector BCs, which BT30 does not use).'
+    verdict: PASS
+  - name: bt30-fixture-spellings
+    binding: 'fixture probe — `reify check` exit 0 on `/tmp/prd-gate-fixtures/solverperf_bt30_plate_hole.ri`
+      (lead, debug build 2026-10-07) and on M1''s x-offset variant `m1probe/two_boxes_x.ri` (`translate(box(100mm,
+      20mm, 20mm), 200mm, 0mm, 0mm)`; `target/debug/reify` of 2026-10-06). NOTE: the lead''s on-disk two-box
+      fixture still carries the y offset the PRD rejected. `check` falls back to body-inlining (no trampoline
+      in the CLI until #6660), so this proves spelling, not the solve.'
+    verdict: PASS
+  - name: unanchored-code-upstream
+    binding: producer-upstream — `FeaStiffnessNotPositiveDefinite` (unanchored) from β.
+    verdict: PASS
+  - name: two-box-unanchored-fires
+    binding: residual — that the union of two separated boxes meshes as two components and that `realized_cantilever_bc_node_sets`
+      clamps only the first (x_min face) is inferred from the code, not executed.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: μ's implementer confirms on its first CLI run (B1-notes D3 fold).
+  - name: bt30
+    binding: 'producer-self — BT30 (CLI): Auto, Iterative ≤ 100 iterations (2.4× above P3''s 42), displacement
+      within 1e-5, the two-box Error.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: reify-cli test.
+- label: ν
+  task_id: 8386
+  title: 'elastic static solver performance ν: integration gate — the thin plate on coordinate-target''s
+    plate grid'
+  capabilities:
+  - name: upstream-beta-gamma-8252
+    binding: 'producer-upstream — β, γ, #8252 (coordinate-target ζ, pending; depends on #8251 → #7189):
+      `synthetic_grid` gives the dims mesh `y` resolution when a coordinate kind is present.'
+    verdict: PASS
+  - name: point-supports-static
+    binding: 'producer-upstream (transitive) — `PointSupport` is absent on main (no stdlib or reify-eval
+      hit); #7189 (pending) delivers it, in #8252''s closure.'
+    verdict: PASS
+  - name: fully-restrained-point-supports
+    binding: 'producer-upstream, transitive (resolved 2026-10-08) — BT31 now supports the plate on three
+      FULLY restrained non-collinear `PointSupport`s (kinematically sufficient). Fully restrained point
+      supports are #7189''s, in ν''s closure via #8252 → #8251 → #7189 (#8252''s own fixture uses the
+      same three-point fully restrained shape). No directional restraint (#8256) and no new edge are needed.'
+    verdict: PASS
+  - name: bt31
+    binding: 'producer-self — BT31 (CLI): converged, Info names strategy and DOFs; #8252''s DOF-ceiling
+      note records the solve.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: reify-cli test.
+- label: π
+  task_id: 8379
+  title: 'elastic static solver performance π: numeric-factor cache across evaluations — factor and symbolic
+    analysis in the adapter''s warm-state value, keyed by content_hash + choice and pattern_hash; reuse
+    Info; orphan factors never cached'
+  capabilities:
+  - name: upstream-beta-zeta
+    binding: producer-upstream — β (the adapter owns the warm-state value, C13; the strategy Info code;
+      `deterministic` gate), ζ (`SpdSystem::content_hash`, `FactorReuse::SessionFactor` precedent). Closure
+      includes α (session API, fault hook) and ε.
+    verdict: PASS
+  - name: warm-pool-substrate
+    binding: existing-substrate — `warm_pool.rs::WarmStatePool` (`donate_with_cost`, `checkout`, cost-weighted
+      eviction, `drain_events` → `WarmPoolEvent::Evicted { node_id, size_bytes }`, budget from config
+      / `REIFY_WARM_STATE_BUDGET_BYTES`, `DEFAULT_BUDGET_BYTES` 2 GiB, a single item larger than the budget
+      is kept); `Engine::warm_pool_mut` (BT34's budget); the prior `OpaqueState` reaches the trampoline
+      through `run_compute_dispatch` (its own test `run_compute_dispatch_reads_prior_warm_state_from_cache_and_passes_to_trampoline`).
+    verdict: PASS
+  - name: pattern-hash
+    binding: producer-self (C14) — `SpdSystem::pattern_hash` over CSR row pointers and column indices.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn pattern_hash\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: cached-factor-type
+    binding: producer-self (C14) — `CachedFactor` (factor + symbolic + both keys). The `FactorReuse` variants
+      were renamed (`CachedAcrossEvaluations`, `SymbolicAcrossEvaluations`) to avoid a heuristic-1 name
+      clash with this struct. Anchored on `pub struct`.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub struct CachedFactor\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: into-cached
+    binding: producer-self (C14) — `SpdSolver::into_cached(self) -> Option<CachedFactor>` (Direct only).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn into_cached\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: prepare-from-cache
+    binding: producer-self (C14) — `SpdSolver::prepare_from_cache(system, choice, policy, cached, ctl)`
+      applying the three reuse rules and reporting `FactorReuse::{CachedAcrossEvaluations, SymbolicAcrossEvaluations}`.
+      Anchored on the π-only function, not on the enum variants C1 shows beside α's types.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn prepare_from_cache\b
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src/linear_solve
+  - name: reuse-under-deterministic
+    binding: producer-self (C14, Q-H) — the adapter reads the prior warm state for its factor even when
+      `deterministic` forbids the iterative warm start; both reuses are bitwise a fresh solve.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'BT32''s `deterministic: true` arm.'
+  - name: symbolic-call-counting-hook
+    binding: producer-self — BT33 asserts "one numeric, zero symbolic calls" through α's fault hook, but
+      C2 lists only reservations and numeric calls. π extends the hook (π's modules include reify-solver-elastic),
+      or C2 adds "symbolic calls (π)". Not a DAG failure.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT33.
+  - name: orphan-factors-never-cached
+    binding: by construction (C5, C14) — an orphan's result is dropped on completion and never returns
+      to a live solve, so it can never reach `into_cached`. ι may land before or after π; the invariant
+      holds either way. No BT row asserts it directly.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: structural; BT25/BT27(b) exercise orphans.
+  - name: pool-memory-accounting
+    binding: 'producer-self (C14) — `estimated_size_bytes = 8n + factor_bytes` counted against the pool
+      budget. ADVISORY: eviction removes the LOWEST `cost_per_byte` first, and the elastic trampoline
+      today sets `cost_per_byte = 1 / size_bytes`, so a large factor would be the first victim; π should
+      derive it from the factorisation''s cost (e.g. `predicted_flops` per byte).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: BT34 (eviction observed through `drain_events`).
+  - name: bt32-bt34
+    binding: 'producer-self — BT32 (load edit → "factor reused (cached)", bitwise a fresh Engine, also
+      under `deterministic: true`), BT33 (material edit → "symbolic analysis reused (cached)", one numeric,
+      zero symbolic), BT34 (budget below both factors → `Evicted`, re-factor, bits equal).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: reify-eval engine tests.
+- label: ω
+  task_id: 8387
+  title: 'elastic static solver performance ω: PRD close'
+  capabilities:
+  - name: upstream-all
+    binding: producer-upstream — α–ν, ξ and π.
+    verdict: PASS
+  - name: terminal-status-header
+    binding: producer-self — the PRD's terminal `Status` header per the overlay's freeze shape.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: prose header; PPRDSTATUS (#6932) detects the leaf/status half.

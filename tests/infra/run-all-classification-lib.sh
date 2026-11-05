@@ -3,13 +3,11 @@
 #
 # This library is the SINGLE implementation of "which bucket (pool /
 # intra-run-serial / host-exclusive) does each tests/infra/test_*.sh belong
-# to". It is sourced by:
-#   - tests/infra/test_run_all_classification.sh  (drift catcher)
-# and its classification_discovered_set function mirrors the discovery
-# predicate tests/infra/run_all.sh's own for-loop uses, so the guard's
-# discovered set and run_all.sh's discovered set cannot drift apart by
-# construction (H2 will refactor run_all.sh's discovery to consume this
-# function directly).
+# to", and its classification_discovered_set is THE discovery predicate:
+# every branch of tests/infra/run_all.sh and its REIFY_RUN_ALL_SUBSET_COUNT_ONLY
+# probe consume it, as do the classification drift guards. Every sort and comm
+# below runs under a per-command LC_ALL=C, so run_all.sh's branches and the
+# gate accessors agree under any ambient locale; the lib never exports it.
 #
 # Designed to be sourced, not executed directly:
 #   source "$(dirname "${BASH_SOURCE[0]}")/run-all-classification-lib.sh"
@@ -36,13 +34,12 @@
 #                                     thereby excluded from the union and
 #                                     surfaces as coverage drift instead of
 #                                     being silently accepted.
-#   classification_discovered_set [d]  prints the sorted set of test_*.sh
-#                                     basenames that tests/infra/run_all.sh
-#                                     would discover in dir [d] (default:
-#                                     this library's own directory): mirrors
-#                                     run_all.sh's for-loop exactly (iterate
-#                                     test_*.sh, [ -f ] guard, exclude
-#                                     test_helpers.sh by basename).
+#   classification_discovered_set [d]  prints run_all.sh's discovered
+#                                     members in dir [d] (default: this
+#                                     library's own directory): regular files
+#                                     ([ -f ], symlinks followed) matching
+#                                     test_*.sh, minus test_helpers.sh,
+#                                     LC_ALL=C sorted.
 #   classification_coverage_diff [m] [d]  prints the diff between the
 #                                     declared union (from manifest [m]) and
 #                                     the discovered set (from dir [d])
@@ -163,14 +160,14 @@ classification_declared_union() {
     local _b
     while IFS= read -r _b; do
         classification_bucket "$_b" "$_manifest"
-    done < <(classification_all_buckets) | sort -u
+    done < <(classification_all_buckets) | LC_ALL=C sort -u
 }
 
-# classification_discovered_set [dir] — the set of test_*.sh basenames that
-# tests/infra/run_all.sh discovers in [dir] (default: this library's own
-# directory). Mirrors run_all.sh's for-loop EXACTLY: iterate test_*.sh in the
-# infra dir, [ -f ]-guard (skip a literal no-match glob), exclude
-# test_helpers.sh by basename. Sorted output.
+# classification_discovered_set [dir] — the discovery predicate: the
+# test_*.sh basenames in [dir] (default: this library's own directory) that
+# are regular files ([ -f ] follows symlinks; it also skips a literal
+# no-match glob), minus test_helpers.sh (a shared library, not a member).
+# LC_ALL=C sorted, so the order is the same under any ambient locale.
 classification_discovered_set() {
     local _dir="${1:-$(classification_infra_dir)}"
     local _f _base
@@ -179,7 +176,7 @@ classification_discovered_set() {
         _base="$(basename "$_f")"
         [ "$_base" = "test_helpers.sh" ] && continue
         printf '%s\n' "$_base"
-    done | sort
+    done | LC_ALL=C sort
 }
 
 # classification_coverage_diff [manifest] [dir] — diff of the declared union
@@ -211,7 +208,7 @@ classification_undeclared() {
     local _manifest="${1:-$(classification_manifest_path)}"
     local _dir="${2:-$(classification_infra_dir)}"
     [ -f "$_manifest" ] || return 0
-    comm -13 <(classification_declared_union "$_manifest") \
+    LC_ALL=C comm -13 <(classification_declared_union "$_manifest") \
              <(classification_discovered_set "$_dir")
 }
 
@@ -224,7 +221,7 @@ classification_orphaned() {
     local _manifest="${1:-$(classification_manifest_path)}"
     local _dir="${2:-$(classification_infra_dir)}"
     [ -f "$_manifest" ] || return 0
-    comm -23 <(classification_declared_union "$_manifest") \
+    LC_ALL=C comm -23 <(classification_declared_union "$_manifest") \
              <(classification_discovered_set "$_dir")
 }
 
@@ -237,7 +234,7 @@ classification_overlap() {
     grep -v '^[[:space:]]*#' "$_manifest" \
         | grep -v '^[[:space:]]*$' \
         | awk '{print $1}' \
-        | sort | uniq -d
+        | LC_ALL=C sort | LC_ALL=C uniq -d
 }
 
 # classification_malformed_rows [manifest] — print each malformed row (the

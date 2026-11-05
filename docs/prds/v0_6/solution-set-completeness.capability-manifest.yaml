@@ -257,7 +257,9 @@ tasks:
   - name: warm-paths-exist
     binding: capability→producer — edit_param (crates/reify-eval/src/engine_edit.rs) seeds current_values
       from the prior snapshot INCLUDING previously solved autos; reached from the GUI set_parameter and
-      crates/reify-cli/src/mcp_context.rs. Engine::eval_cached is the second warm path.
+      crates/reify-cli/src/mcp_context.rs (that CLI caller was deleted by bbfbc7dd29 (#6665); the GUI path
+      EngineSession::preview_parameter → Engine::edit_check → Engine::edit_param remains). Engine::eval_cached
+      is the second warm path.
     verdict: PASS
   - name: cold-only-hole-is-real
     binding: capability→producer — W_SOLVER_OPTIMALITY_UNPROVEN and detect_underdetermined have production

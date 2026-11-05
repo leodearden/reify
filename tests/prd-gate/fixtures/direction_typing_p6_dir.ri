@@ -1,0 +1,11 @@
+module p6_dir
+structure def X {
+    param d : Direction = axis_y(point3(0mm, 0mm, 0mm)).dir
+}
+structure def Main {
+    let x = X()
+    let r = x.d
+    let l = [axis_y(point3(0mm, 0mm, 0mm)).dir, axis_x(point3(0mm, 0mm, 0mm)).dir]
+    let d1 = axis_y(point3(0mm, 0mm, 0mm)).dir
+    let e = d1
+}

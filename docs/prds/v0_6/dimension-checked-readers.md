@@ -122,8 +122,8 @@ declared type lying.
 `PressureLoad` − 4 locally-shadowed `PressureLoad` defs in
 `struct_ctor_field_conformance_tests.rs` + 2 `TractionLoad`), split 35 `.ri` / 77 `.rs`
 fixtures; **zero** of them pass a dimensioned literal today. `Gravity`'s 16 sites are already
-dimensioned. The precedent that the target type works end-to-end is `modal_analysis.ri:483`
-`StepForce { param magnitude : Force }`, called as `magnitude: 10N` in
+dimensioned. The precedent that the target type works end-to-end is
+`StepForce { param magnitude : Force }` in `modal_analysis.ri`, called as `magnitude: 10N` in
 `examples/modal/transient_step_response.ri:105`.
 
 ### 2.4 Premise corrections to the research note (re-verified; the note is wrong on three counts)
@@ -304,6 +304,14 @@ PRD 1 builds the source-text-driven behavioural probe over the compiler's
 `reify-stdlib` `eval_builtin` names with no compiler signature and no `.ri` declaration
 (`reify-stdlib/src/geometry.rs:820` is the whole of `plane_yz`). This PRD adds the **second
 probe universe**, additively — no harness rewrite.
+
+*Amended 2026-10-11 (task 7484):* the surface also includes the rest of the construction-datum
+constructors — `midplane`/`axis_through`/`plane_through`/arity-2 `offset`/`frame_at` and
+`bbox`/`bbox_size`/`bbox_center` — arms of the same `eval_geometry` match as `plane_*`/`axis_*`
+(LENGTH-gated at eval: task 6591 for the first five, task 6081 for `bbox`). The compiler's
+`DATUM_CONSTRUCTOR_NAMES`, which lists the whole family, is pinned disjoint from
+`GEOMETRY_FUNCTION_NAMES`, so PRD 1's universe cannot reach any of them; decision 10's derived
+universe does by construction, and row B11 makes that membership a mechanical check.
 
 ### Leg F — the documented surface
 
@@ -568,6 +576,7 @@ pub enum FieldAcceptance { Accepted(f64), Absent, Undefined, Rejected(ArgRejecti
 | B8 | override actually applied | `ElasticOptions(shell_voxel_size: 0.5mm)` vs default | the medial-axis tolerance observably differs (today byte-identical — the override is discarded) |
 | B9 | closure guard, anti-vacuity | shrink the second-universe allowlist by one entry | the guard **fails**; restoring it passes (mirrors `version_id_discipline_gate.rs`'s seeded self-tests) |
 | B10 | closure guard, universe independence | add a new `eval_builtin` match arm with a bare-accepting numeric position | the guard fails **without** the guard file being edited (the universe is derived, decision 10) |
+| B11 | closure guard, datum-family membership | the derived universe (decision 10), and the compiler's `DATUM_CONSTRUCTOR_NAMES` widened from `pub(crate)` and re-exported at the `reify_compiler` crate root, as task 5055 γ did for `GEOMETRY_FUNCTION_NAMES` | every `DATUM_CONSTRUCTOR_NAMES` entry is a member of the derived universe, iterating the re-exported slice itself, never a hand-copied list; a scan that stops reaching `eval_geometry`'s arms, or a datum constructor moved to computed dispatch, makes the self-test **fail**. The registry-driven analogue of λ's `prb_cantilever_beam` membership self-test; its two sources are independent. *Added 2026-10-11 by task 7484* |
 
 ---
 
@@ -672,7 +681,7 @@ waiver. No G7 waivers are required.
 **Phase 6 — guard, docs, integration gate**
 
 - **λ — closure-guard second universe.** Prereq: **PRD 1's harness leaf (hard cross-PRD
-  edge)** + β…ι. *Signal:* B9 + B10. Additive universe + `DimensionVector`-keyed allowlist +
+  edge)** + β…ι. *Signal:* B9 + B10 + B11. Additive universe + `DimensionVector`-keyed allowlist +
   seeded anti-vacuity self-tests. **Drift-guard registrations ship in this same diff** —
   `tests/infra/run-all-classification.manifest` row if it lands a shell test, `.config/nextest.toml`
   partition entry, and no new wall-clock bound (esc-4914-162).

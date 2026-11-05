@@ -52,7 +52,7 @@ fn layer1_non_solver_origins_recorded() {
     let module = layer1_module();
 
     // Engine with capture ON.
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -110,7 +110,7 @@ fn layer1_non_solver_origins_recorded() {
     );
 
     // Engine with capture OFF leaves undef_causes() empty.
-    let mut engine_off = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_off = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine_off.eval(&module);
     assert!(
         engine_off.undef_causes().is_empty(),
@@ -130,7 +130,7 @@ fn solve_failed_origin_recorded() {
         MockConstraintSolver::new_infeasible(vec![Diagnostic::error("constraints are infeasible")]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -161,7 +161,7 @@ fn no_progress_solve_failed_origin_recorded() {
     let solver = MockConstraintSolver::new_no_progress("iteration limit reached");
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
     engine.set_capture_undef_causes(true);
     engine.eval(&module);
 
@@ -192,12 +192,12 @@ fn capture_is_byte_transparent() {
     let module = layer1_module();
 
     // Run with capture OFF (default).
-    let mut engine_off = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_off = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine_off.eval(&module);
     let snap_off = engine_off.snapshot().expect("snapshot present after eval");
 
     // Run with capture ON.
-    let mut engine_on = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_on = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine_on.set_capture_undef_causes(true);
     engine_on.eval(&module);
     let snap_on = engine_on.snapshot().expect("snapshot present after eval");
@@ -230,9 +230,9 @@ fn capture_is_byte_transparent() {
     // `Diagnostic` does not implement `PartialEq`, so compare via Debug-format
     // strings — this captures all fields (level, message, code, labels) and
     // is sufficient for a transparency regression gate.
-    let mut engine_off2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_off2 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result_off = engine_off2.eval(&module);
-    let mut engine_on2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_on2 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine_on2.set_capture_undef_causes(true);
     let result_on = engine_on2.eval(&module);
     assert_eq!(

@@ -490,7 +490,7 @@ fn e2e_cantilever_first_mode_within_two_percent() {
 // ── step-5 (task 4548): Mode.frequency is a dimensioned Scalar<Frequency> ─────
 //
 // `Mode.frequency` tightens from the `Real` PLACEHOLDER to `Frequency`
-// (modal_analysis.ri:189; task 4548). This e2e gate matches the PRODUCED
+// (`structure def Mode` in modal_analysis.ri; task 4548). This e2e gate matches the PRODUCED
 // `frequency` field variant EXPLICITLY — deliberately NOT through the tolerant
 // `read_frequency` / `as_f64` helpers (which accept Real OR Scalar) — so it
 // pins the modal producer to construct a dimensioned `Value::Scalar`, not a

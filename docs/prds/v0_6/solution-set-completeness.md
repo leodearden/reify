@@ -34,7 +34,7 @@ All four verified at the anchor commit by direct probe (`reify eval`; see §2.1 
 
 2. **Strict `auto` with two genuine roots is reported as infeasibility.** `finalise_uniqueness` demotes the whole result to `SolveResult::Infeasible` with `DiagnosticCode::ConstraintNonUnique` and the text *"strict auto parameter resolution is not uniquely determined — consider using auto(free) for exploration"*; the cell goes `undef` with `UndefCause::SolveFailed { detail: "infeasible" }`. A model with two answers is told it has none. Measured on a two-root fixture (`(L − 130mm)² == (30mm)²`, roots 100mm and 160mm): both roots exist, neither is named, `eval` exits 1.
 
-3. **When the uniqueness probe fails, the code assumes uniqueness.** `verify_uniqueness`'s non-convergence arm returns `true` — *"cannot prove non-uniqueness — conservatively assume unique"* — which is conservative in the wrong direction: it converts *no evidence* into *a claim*. And it is not a rare path: `build_auto_param_list` sets `bounds: None` **unconditionally**, so `effective_bounds` always degrades to `default_bounds_for`, the reflected anchor always lands outside any real bracket, and the re-solve fails. This is task **#5711** (in-progress), whose own measurement records that wiring the derived box in flips six previously-`Solved` fixtures to `ConstraintNonUnique` — at least one of them falsely, because it is really evidence of suboptimality, not multiplicity.
+3. **When the uniqueness probe fails, the code assumes uniqueness.** `verify_uniqueness`'s non-convergence arm returns `true` — *"cannot prove non-uniqueness — conservatively assume unique"* — which is conservative in the wrong direction: it converts *no evidence* into *a claim*. And it is not a rare path: `build_auto_param_list` sets `bounds: None` **unconditionally**, so `effective_bounds` always degrades to `default_bounds_for`, the reflected anchor always lands outside any real bracket, and the re-solve fails. This is task **#5711**, whose own measurement records that wiring the derived box in flips six previously-`Solved` fixtures to `ConstraintNonUnique` — at least one of them falsely, because it is really evidence of suboptimality, not multiplicity.
 
 4. **Two production drivers assert completeness they never computed.** `SolveSpaceSolver::solve` hardcodes `unique: true` on every libslvs `Ok` arm; `relate_solve::solve_frame` sets `unique = fully_pinned && !unknown.free`, where `fully_pinned` is **local Jacobian rank** — local isolation reported as global uniqueness. Neither ever reaches `verify_uniqueness`, which is private to `solver.rs`.
 
@@ -56,7 +56,7 @@ Reify already has one honest instance of this, on the discrete side: `SolveAllRe
 
 | Rung | Multiplicity source | Engine | Verdict reachable | Owner |
 |---|---|---|---|---|
-| 1 | **Declared** discrete (`Int` / `Enum` / `discrete_set` domains) | CP-SAT backtracker | `Exhaustive` when enumeration completes | **PRD 2** (`discrete-cost-minimisation.md`) — β #5468 landed, γ #5469, δ #5470, ζ #5472 pending. **Adopted, not duplicated.** |
+| 1 | **Declared** discrete (`Int` / `Enum` / `discrete_set` domains) | CP-SAT backtracker | `Exhaustive` when enumeration completes | **PRD 2** (`discrete-cost-minimisation.md`) — β #5468 landed, γ #5469, δ #5470, ζ #5472 pending. **Adopted, not duplicated.** *(2026-10-08: `discrete_set` domains moved to `docs/prds/v0_6/catalog-membership-constraint.md` — catalog membership is the constraint `x in C`, with `discrete_set` as sugar; δ #5470 keeps the domain channel.)* |
 | 2 | **Undeclared**, interval-representable, bounded, small | box branch-and-bound over #6655's HC4 propagator | `Exhaustive` / `Refuted` | **this PRD** |
 | 3 | **Undeclared**, beyond rung 2's envelope | the same subdivision, truncated: surviving boxes seed the existing Nelder-Mead multistart | `Partial{reason}` only | **this PRD** |
 
@@ -136,7 +136,7 @@ Consequences for this PRD, both deliberate:
 
 Three substrate facts the design deliberately does **not** rely on, each probe-confirmed absent:
 
-- `@solver_hint("discrete_set", …)` parses and kind-validates but has **zero solve-time readers** (audit finding M-008; probe: a hint-annotated auto minimised against a stock set resolves to `13.2mm`, not a catalogue member). Wiring it is PRD 2 δ **#5470**.
+- `@solver_hint("discrete_set", …)` parses and kind-validates but has **zero solve-time readers** (audit finding M-008; probe: a hint-annotated auto minimised against a stock set resolves to `13.2mm`, not a catalogue member). Wiring it is PRD 2 δ **#5470**. *(2026-10-08: no longer δ's — `discrete_set` becomes sugar for `constraint x in C` in `docs/prds/v0_6/catalog-membership-constraint.md` β #8356 / γ #8357, Leo esc-5470-5.)*
 - `param s : SomeEnum = auto` parses and compiles, then reaches the continuous solver and fails with `solve failed: infeasible` at residual `1.00e0`. Enum domains are PRD 2's.
 - `minimize … where …` parses; the guard is **silently discarded** — a constant-false guard changes nothing, with no error and no warning. That is **#6647**, already filed; this PRD does not touch objectives' guard semantics.
 
@@ -461,7 +461,7 @@ Walked against `docs/legibility/design-invariants.md` (reify's normative list: t
 - The `solutions()` language surface, purposes-as-solve-scopes, and any solution-set *value* type in the language → PRD 2 bookmark **θ #5474**.
 - The mixed discrete×continuous outer loop → PRD 2 **ζ #5472**. MINLP / SCIP / `russcip` remain rejected (M-WHOLE §3.1, binding).
 - The HC4 propagator and the whole-box pre-solve refutation → **#6655** (this PRD consumes both).
-- CP-SAT registry population, `Int` bound-mining, `discrete_set` wiring → PRD 2 **γ #5469** / **δ #5470**.
+- CP-SAT registry population, `Int` bound-mining, `discrete_set` wiring → PRD 2 **γ #5469** / **δ #5470**. *(2026-10-08: `discrete_set` wiring → `docs/prds/v0_6/catalog-membership-constraint.md`.)*
 - **Integrality for `Int` autos.** `param n : Int = auto(free)` resolves to `3.3` with the type annotation erased and no diagnostic. Real defect, adjacent, not this PRD — §10.
 - **Enum autos reaching a solver at all** (`solve failed: infeasible` at residual `1.00e0` today) → PRD 2.
 - `@solver_hint` consumption of any kind → PRD 2 δ / `solver-hint-payloads.md`.
@@ -471,7 +471,7 @@ Walked against `docs/legibility/design-invariants.md` (reify's normative list: t
 - A stochastic global optimiser for above-envelope components (D5) → future PRD, triggered only if real models need it.
 - Pareto-front exploration → spec §10.4, a tooling concern.
 - GUI rendering of the solution set. The GUI drops eval diagnostics wholesale (`get_diagnostics` reads `compiled.diagnostics` only; `CheckResult.diagnostics` / `EvalResult.diagnostics` are never read in `gui/src-tauri/`), so surfacing anything there is a GUI-plumbing PRD, not this one → **P4 solver legibility**.
-- MCP exposure of solve verdicts (`CliToolContext::get_constraints` hardcodes `status: "unknown"`; `load_file`/`update_source` discard `EvalResult` entirely) → **P4**.
+- MCP exposure of solve verdicts (`CliToolContext::get_constraints` hardcodes `status: "unknown"`; `load_file`/`update_source` discard `EvalResult` entirely) *(`CliToolContext` was deleted by bbfbc7dd29 (#6665))* → **P4**.
 
 ---
 

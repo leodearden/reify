@@ -31,7 +31,7 @@
 #![allow(dead_code)]
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::Severity;
+use reify_core::{DiagnosticCode, Severity};
 use reify_eval::{BuildResult, BuildScheduler, Engine};
 use reify_ir::{ExportFormat, GeometryHandleId, GeometryKernel, GeometryOp, Satisfaction, Value};
 use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with_stdlib, errors_only};
@@ -64,7 +64,7 @@ pub fn build_with_kernel(
     kernel: Box<dyn GeometryKernel>,
 ) -> BuildResult {
     let compiled = compile_source(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
     engine.set_build_scheduler(scheduler);
     engine.build(&compiled, ExportFormat::Step)
 }
@@ -90,7 +90,7 @@ pub fn build_with_kernel_stdlib(
     kernel: Box<dyn GeometryKernel>,
 ) -> BuildResult {
     let compiled = compile_source_with_stdlib(source);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
     engine.set_build_scheduler(scheduler);
     engine.build(&compiled, ExportFormat::Step)
 }
@@ -558,14 +558,14 @@ structure SmallPart {
 ///       This is the direct flip of today's all-Indeterminate result (step-1 RED).
 ///
 ///   (b) **Distinct per-instance ops** — the kernel's recorded op list contains a
-///       `GeometryOp::Box` with `width == 0.30 m` (binding `a`, 300mm) AND one
-///       with `width == 0.03 m` (binding `b`, 30mm), and their `result_handle`
+///       `GeometryOp::Box` with `size_x == 0.30 m` (binding `a`, 300mm) AND one
+///       with `size_x == 0.03 m` (binding `b`, 30mm), and their `result_handle`
 ///       values DIFFER. This proves each binding was re-realized against its own
 ///       override (not the shared `box(200mm)` default or each other's handle).
 ///
 /// Technique borrowed from `cross_sub_two_subs_with_distinct_overrides_get_distinct_handles`
 /// (cross_sub_geometry_e2e.rs): capture `kernel.operations_ref()` before boxing,
-/// build, then inspect recorded ops by concrete width value.
+/// build, then inspect recorded ops by concrete size_x value.
 ///
 /// Contrast `unified_dag_cross_sub_build_volume_constraint_is_definite`: the
 /// SINGLE-instance `let proc = FdmPrinter()` form (count == 1) still folds to a
@@ -668,11 +668,11 @@ structure MultiPrinter {
     };
 
     let box_300 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_300,
+        GeometryOp::Box { size_x, .. } => size_x == &size_300,
         _ => false,
     });
     let box_30 = recorded.iter().find(|rec| match &rec.op {
-        GeometryOp::Box { width, .. } => width == &size_30,
+        GeometryOp::Box { size_x, .. } => size_x == &size_30,
         _ => false,
     });
 
@@ -855,9 +855,9 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///     recorded ops, but on its own it says nothing about WHICH branch
 ///     dispatched it.
 ///
-/// Every box carries `height == width`, so matching recorded boxes by their
-/// concrete `Scalar` HEIGHT keys all three realizations uniformly (`p` → 0.010m,
-/// `q` → 0.020m, `r` → 0.005m).
+/// Every box is a cube (`size_x == size_y == size_z`), so matching recorded
+/// boxes by their concrete `Scalar` `size_y` keys all three realizations
+/// uniformly (`p` → 0.010m, `q` → 0.020m, `r` → 0.005m).
 ///
 /// Asserts, under `UnifiedDag`:
 ///   (a) δ surfaces `DiagnosticCode::EvalCycle` (confirming the planner is on the
@@ -871,7 +871,7 @@ fn fits_build_volume_satisfaction(result: &BuildResult) -> Satisfaction {
 ///       `a` — was actually ATTEMPTED, witnessed by the D10 "unresolved (Undef)"
 ///       compile error it now raises (and by zero `Fillet` ops reaching the
 ///       kernel). Without (c) the test's stated subject is unpinned: `r`'s Box
-///       alone is fully concrete, so `box_height_count(0.005) == 1` would hold
+///       alone is fully concrete, so `box_size_y_count(0.005) == 1` would hold
 ///       whether or not `r` was classified as residue and whether or not the
 ///       fallback-append branch ran at all (reviewer amendment).
 #[test]
@@ -939,16 +939,16 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
     );
 
     // (b) exactly-once dispatch for every realization, keyed by the box's concrete
-    //     `Scalar` HEIGHT — the one key shared by all three realizations. `r`'s
+    //     `Scalar` `size_y` — the one key shared by all three realizations. `r`'s
     //     Undef lives on its FILLET radius, not on any box dimension, so every
-    //     recorded box has a concrete height to match on.
+    //     recorded box has a concrete `size_y` to match on.
     let ops = ops_ref.lock().unwrap().clone();
     let recorded: Vec<&GeometryOp> = ops.iter().map(|rec| &rec.op).collect();
-    let box_height_count = |si_metres: f64| -> usize {
+    let box_size_y_count = |si_metres: f64| -> usize {
         ops.iter()
             .filter(|rec| match &rec.op {
                 GeometryOp::Box {
-                    height: Value::Scalar { si_value, .. },
+                    size_y: Value::Scalar { si_value, .. },
                     ..
                 } => (*si_value - si_metres).abs() < 1e-9,
                 _ => false,
@@ -956,19 +956,19 @@ fn unified_dag_residue_realizations_dispatch_exactly_once() {
             .count()
     };
     assert_eq!(
-        box_height_count(0.010),
+        box_size_y_count(0.010),
         1,
         "the scheduled `p` (box 10mm) must dispatch EXACTLY ONCE — no duplicate \
          Realize, no dropped realization; recorded ops={recorded:?}",
     );
     assert_eq!(
-        box_height_count(0.020),
+        box_size_y_count(0.020),
         1,
         "the scheduled `q` (box 20mm) must dispatch EXACTLY ONCE — no duplicate \
          Realize, no dropped realization; recorded ops={recorded:?}",
     );
     assert_eq!(
-        box_height_count(0.005),
+        box_size_y_count(0.005),
         1,
         "the RESIDUE `r` (`fillet(box(5mm,5mm,5mm), a)`, whose fillet radius reads \
          the cyclic `a`) must dispatch EXACTLY ONCE via the \
@@ -1459,7 +1459,7 @@ fn build_occt_recording(source: &str) -> (BuildResult, Vec<GeometryOp>) {
     );
     let recorder = OcctOpRecorder::new(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let ops_ref = recorder.ops_ref();
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(recorder)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(recorder)));
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     let result = engine.build(&compiled, ExportFormat::Step);
     let ops = ops_ref.lock().unwrap().clone();
@@ -1705,4 +1705,343 @@ fn unified_dag_chained_curated_chamfers_resolve_every_stage() {
          (non-empty) edge list; recorded ops={ops:?}"
     );
     positive_scalar(&result, "v");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// task #7270: a curated fillet whose edges come from a `flat_map`-over-lambda
+// topology walk — the shape of examples/topology_selectors/fillet_top_edges.ri.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The shipped example's walk on a box: the `+Z` face, its four side
+/// neighbours, and the edge each neighbour shares with it.
+const FLAT_MAP_FILLET_SOURCE: &str = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
+    let f = fillet(b, top_edges, 1mm)
+}"#;
+
+/// The four top-perimeter edges [`flat_map_topology_kernel`] hands back.
+const FLAT_MAP_TOP_EDGES: [u64; 4] = [60, 61, 62, 63];
+
+/// A box topology on parent handle 1 (the box is the first `execute`): faces
+/// 50..=55 with the `+Z` face 55 at index 5, whose side neighbours (indices
+/// 0..4) each share edge `60 + i` with it.
+fn flat_map_topology_kernel() -> MockGeometryKernel {
+    box_walk_kernel(&[0, 1, 2, 3], None)
+}
+
+/// [`flat_map_topology_kernel`]'s box, except that `adjacent_faces` of the `+Z`
+/// face answers only `sides`, and `orphan_face` (if any) has no recorded owner
+/// body, so a `shared_edges` over it fails.
+fn box_walk_kernel(sides: &[usize], orphan_face: Option<GeometryHandleId>) -> MockGeometryKernel {
+    let parent = GeometryHandleId(1);
+    let faces: Vec<GeometryHandleId> = (50..=55).map(GeometryHandleId).collect();
+    let normals: [[f64; 3]; 6] = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 1.0],
+    ];
+    let side_indices = sides.iter().map(|&side| Value::Int(side as i64)).collect();
+    let mut kernel = MockGeometryKernel::new()
+        .with_extracted_faces(parent, faces.clone())
+        .with_extracted_edges(parent, (60..=71).map(GeometryHandleId).collect())
+        .with_adjacent_faces_result(parent, 5, Value::List(side_indices));
+    for (face, [x, y, z]) in faces.into_iter().zip(normals) {
+        let normal = format!("{{\"x\":{x:?},\"y\":{y:?},\"z\":{z:?}}}");
+        kernel = kernel.with_face_normal_result(face, Value::String(normal));
+        if Some(face) != orphan_face {
+            kernel = kernel.with_owner_body_result(face, parent);
+        }
+    }
+    for &side in sides {
+        let shared = Value::List(vec![Value::Int(side as i64)]);
+        kernel = kernel.with_shared_edges_result(parent, 5, side, shared);
+    }
+    kernel
+}
+
+/// The build raised no Error and dispatched exactly one Fillet, over
+/// [`FLAT_MAP_TOP_EDGES`].
+fn assert_flat_map_fillet_dispatched(result: &BuildResult, ops: &[GeometryOp]) {
+    let errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "the flat_map-selector curated fillet must build with no Error diagnostic; \
+         errors={errors:#?}"
+    );
+    let fillet_edges: Vec<Vec<u64>> = ops
+        .iter()
+        .filter_map(|op| match op {
+            GeometryOp::Fillet { edges, .. } => {
+                let mut ids: Vec<u64> = edges.iter().map(|e| e.0).collect();
+                ids.sort_unstable();
+                Some(ids)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        fillet_edges,
+        vec![FLAT_MAP_TOP_EDGES.to_vec()],
+        "exactly one Fillet must dispatch, over the four edges the flat_map walk \
+         collects; recorded ops={ops:?}"
+    );
+}
+
+/// `Engine::build` (the CLI's eval/check/build path) resolves the `flat_map`
+/// cell through the kernel, so the curated fillet dispatches over the four
+/// top-perimeter edges instead of failing on an Undef edge selector.
+#[test]
+fn unified_dag_curated_fillet_over_flat_map_lambda_selector_resolves_edges() {
+    let kernel = flat_map_topology_kernel();
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel_stdlib(
+        FLAT_MAP_FILLET_SOURCE,
+        BuildScheduler::UnifiedDag,
+        Box::new(kernel),
+    );
+
+    let top_edges = result
+        .values
+        .get(&reify_core::ValueCellId::new("S", "top_edges"));
+    match top_edges {
+        Some(Value::List(items)) => assert!(
+            items.len() == 4
+                && items
+                    .iter()
+                    .all(|v| matches!(v, Value::GeometryHandle { .. })),
+            "S.top_edges must be a List of 4 edge sub-handles, got {items:?}"
+        ),
+        other => panic!("S.top_edges must resolve to a List of edge handles, got {other:?}"),
+    }
+    let ops: Vec<GeometryOp> = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_flat_map_fillet_dispatched(&result, &ops);
+}
+
+/// Compile `source` with the stdlib, `eval` it on a fresh UnifiedDag engine over
+/// `kernel`, then return `build_snapshot`'s result. `eval` is kernel-free, so
+/// the first realization `build_snapshot` executes gets handle 1.
+fn build_snapshot_under_unified_dag(source: &str, kernel: Box<dyn GeometryKernel>) -> BuildResult {
+    let compiled = compile_source_with_stdlib(source);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
+    engine.set_build_scheduler(BuildScheduler::UnifiedDag);
+    engine.eval(&compiled);
+    engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("eval_state present after eval()")
+}
+
+/// `Engine::build_snapshot` hydrates a named-let curated selector cell at its
+/// UnifiedDag slot, so the consuming fillet dispatches with resolved edges (the
+/// same program and seeding as `unified_dag_curated_fillet_resolves_edges_in_loop`).
+#[test]
+fn build_snapshot_resolves_named_let_curated_selector_under_unified_dag() {
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let e = edges_at_height(b, 5mm, 1mm)
+    let f = fillet(b, e, 2mm)
+}"#;
+    let parent = GeometryHandleId(1);
+    let edge_ids = [
+        GeometryHandleId(50),
+        GeometryHandleId(51),
+        GeometryHandleId(52),
+    ];
+    let flat_bbox_at_5mm = Value::String(
+        "{\"xmin\":0.0,\"ymin\":0.0,\"zmin\":0.005,\"xmax\":0.01,\"ymax\":0.01,\"zmax\":0.005}"
+            .into(),
+    );
+    let mut kernel = MockGeometryKernel::new().with_extracted_edges(parent, edge_ids.to_vec());
+    for id in edge_ids {
+        kernel = kernel.with_bbox_result(id, flat_bbox_at_5mm.clone());
+    }
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_snapshot_under_unified_dag(source, Box::new(kernel));
+
+    let errors: Vec<&str> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build_snapshot must resolve the named-let selector before the fillet \
+         dispatches; errors={errors:#?}"
+    );
+    let ops = ops_ref.lock().unwrap();
+    let curated_fillets = ops
+        .iter()
+        .filter(|r| matches!(&r.op, GeometryOp::Fillet { edges, .. } if !edges.is_empty()))
+        .count();
+    assert_eq!(
+        curated_fillets,
+        1,
+        "build_snapshot must dispatch exactly one curated Fillet with resolved edges; \
+         recorded ops={:?}",
+        ops.iter().map(|r| &r.op).collect::<Vec<_>>()
+    );
+}
+
+/// `Engine::build_snapshot` resolves the shipped example's flat_map-over-lambda
+/// edge cell under UnifiedDag, exactly as `Engine::build` does.
+#[test]
+fn build_snapshot_resolves_flat_map_lambda_curated_selector_under_unified_dag() {
+    let kernel = flat_map_topology_kernel();
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_snapshot_under_unified_dag(FLAT_MAP_FILLET_SOURCE, Box::new(kernel));
+
+    let ops: Vec<GeometryOp> = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_flat_map_fillet_dispatched(&result, &ops);
+}
+
+/// The `flat_map` list arg may name another selector cell: under UnifiedDag the
+/// `sides` cell is hydrated at its scheduled slot, before `top_edges` reads it.
+#[test]
+fn unified_dag_curated_fillet_over_flat_map_of_a_list_cell_resolves_edges() {
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let sides = adjacent_faces(b, top)
+    let top_edges = flat_map(sides, |f| shared_edges(top, f))
+    let f = fillet(b, top_edges, 1mm)
+}"#;
+    let kernel = flat_map_topology_kernel();
+    let ops_ref = kernel.operations_ref();
+
+    let result = build_with_kernel_stdlib(source, BuildScheduler::UnifiedDag, Box::new(kernel));
+
+    let ops: Vec<GeometryOp> = ops_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.op.clone())
+        .collect();
+    assert_flat_map_fillet_dispatched(&result, &ops);
+}
+
+/// A `flat_map` whose lambda body is a list-returning builtin call that is not a
+/// topology selector (`generate`) is not a topology walk: the build keeps its
+/// pure-eval list rather than overwriting it.
+#[test]
+fn unified_dag_flat_map_over_a_non_selector_body_keeps_its_pure_eval_list() {
+    let source = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let xs = [1.0, 2.0, 3.0]
+    let doubled = flat_map(xs, |x| generate(2, |i| x))
+}"#;
+
+    let result = build_with_kernel_stdlib(
+        source,
+        BuildScheduler::UnifiedDag,
+        Box::new(MockGeometryKernel::new()),
+    );
+
+    let cell = |name: &str| result.values.get(&reify_core::ValueCellId::new("S", name));
+    let Some(Value::List(xs)) = cell("xs") else {
+        panic!("S.xs must evaluate to a list, got {:?}", cell("xs"));
+    };
+    let expected = Value::List(xs.iter().flat_map(|x| [x.clone(), x.clone()]).collect());
+    assert_eq!(
+        cell("doubled"),
+        Some(&expected),
+        "S.doubled must keep its pure-eval value; diagnostics={:#?}",
+        result.diagnostics
+    );
+}
+
+/// The shipped example's walk with no fillet consuming it, so each test below
+/// observes only how the `flat_map` cell itself resolves.
+const FLAT_MAP_WALK_SOURCE: &str = r#"pub structure S {
+    let b = box(10mm, 10mm, 10mm)
+    let top = single(faces_by_normal(b, vec3(0.0, 0.0, 1.0), 1deg))
+    let top_edges = flat_map(adjacent_faces(b, top), |f| shared_edges(top, f))
+}"#;
+
+fn top_edges_of(result: &BuildResult) -> Option<&Value> {
+    result
+        .values
+        .get(&reify_core::ValueCellId::new("S", "top_edges"))
+}
+
+/// A face with no neighbours walks to no edges: an empty list, not a value
+/// left unresolved.
+#[test]
+fn unified_dag_flat_map_over_an_empty_walk_resolves_to_an_empty_list() {
+    let result = build_with_kernel_stdlib(
+        FLAT_MAP_WALK_SOURCE,
+        BuildScheduler::UnifiedDag,
+        Box::new(box_walk_kernel(&[], None)),
+    );
+
+    assert_eq!(
+        top_edges_of(&result),
+        Some(&Value::List(Vec::new())),
+        "diagnostics={:#?}",
+        result.diagnostics
+    );
+}
+
+/// One failing element makes the whole walk Undef, never a partial edge list,
+/// and the failure is the one the nested `shared_edges` reported.
+#[test]
+fn unified_dag_flat_map_with_a_failing_element_is_undef_not_a_partial_list() {
+    let kernel = box_walk_kernel(&[0, 1, 2, 3], Some(GeometryHandleId(52)));
+
+    let result = build_with_kernel_stdlib(
+        FLAT_MAP_WALK_SOURCE,
+        BuildScheduler::UnifiedDag,
+        Box::new(kernel),
+    );
+
+    assert_eq!(top_edges_of(&result), Some(&Value::Undef));
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.starts_with("shared_edges OwnerBody(")),
+        "the shared_edges failure must be reported; diagnostics={:#?}",
+        result.diagnostics
+    );
+}
+
+/// `Engine::build_snapshot` reports the UnifiedDag scheduler's cycle diagnostic
+/// itself, so a snapshot taken straight after `eval()` still surfaces it.
+#[test]
+fn build_snapshot_reports_eval_cycle_under_unified_dag() {
+    let source = "structure S {\n    let a = b + 1.0\n    let b = a + 1.0\n}";
+
+    let result = build_snapshot_under_unified_dag(source, Box::new(MockGeometryKernel::new()));
+
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::EvalCycle)),
+        "build_snapshot under UnifiedDag must emit DiagnosticCode::EvalCycle on a cyclic \
+         module; diagnostics={:#?}",
+        result.diagnostics
+    );
 }

@@ -1,8 +1,9 @@
 //! The SIGNATURE FIXTURES: compile-verified `.ri` sources whose calls stand for
 //! documented signatures — where each lives, how it is read, and the one
-//! definition of "compiles clean" every one of them is held to.
+//! definition of "compiles clean" every one of them is held to, which
+//! `prose_idiom_gate.rs` holds a prose idiom's calls to as well.
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_test_support::compile_source_with_stdlib;
 
 use crate::chunk_io::repo_root;
@@ -36,36 +37,40 @@ pub(crate) fn read_fixture(path: &str) -> String {
         .unwrap_or_else(|e| panic!("{path} must be readable ({e}) — it is a signature fixture"))
 }
 
-/// The diagnostics that make a signature fixture's calls untrustworthy, rendered
-/// one per line: any `Severity::Error`, a call to a name nothing resolves, and a
-/// builtin called at an argument shape it does not recognise. Any other warning
-/// never counts.
+/// Does `diagnostic` make a call that stands for documentation untrustworthy?
+/// Any `Severity::Error`, a call to a name nothing resolves, and a builtin called
+/// at an argument shape it does not recognise do. Any other warning never does.
 ///
 /// Deliberately STRICTER than the doc-sample sense of clean
-/// (`module_compile::compile_module`, Errors only): a fixture's calls stand for
-/// signatures, so the two warnings that mean "no such signature" count too.
+/// (`module_compile::compile_module`, Errors only): such a call stands for a
+/// signature, so the two warnings that mean "no such signature" count too.
+pub(crate) fn discredits_calls(diagnostic: &Diagnostic) -> bool {
+    diagnostic.severity == Severity::Error
+        || matches!(
+            diagnostic.code,
+            Some(DiagnosticCode::UnresolvedFunction | DiagnosticCode::BuiltinArgShapeUnrecognized)
+        )
+}
+
+/// `diagnostic` as one line: its severity, its code when it has one, and its
+/// message.
+pub(crate) fn rendered_diagnostic(diagnostic: &Diagnostic) -> String {
+    let code = diagnostic
+        .code
+        .as_ref()
+        .map(|code| format!(" {code:?}"))
+        .unwrap_or_default();
+    format!("{:?}{code}: {}", diagnostic.severity, diagnostic.message)
+}
+
+/// The diagnostics that make a signature fixture's calls untrustworthy
+/// ([`discredits_calls`]), rendered one per line.
 pub(crate) fn fixture_compile_violations(source: &str) -> Vec<String> {
     compile_source_with_stdlib(source)
         .diagnostics
         .iter()
-        .filter(|diagnostic| {
-            diagnostic.severity == Severity::Error
-                || matches!(
-                    diagnostic.code,
-                    Some(
-                        DiagnosticCode::UnresolvedFunction
-                            | DiagnosticCode::BuiltinArgShapeUnrecognized
-                    )
-                )
-        })
-        .map(|diagnostic| {
-            let code = diagnostic
-                .code
-                .as_ref()
-                .map(|code| format!(" {code:?}"))
-                .unwrap_or_default();
-            format!("{:?}{code}: {}", diagnostic.severity, diagnostic.message)
-        })
+        .filter(|diagnostic| discredits_calls(diagnostic))
+        .map(rendered_diagnostic)
         .collect()
 }
 

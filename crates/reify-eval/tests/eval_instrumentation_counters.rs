@@ -22,7 +22,7 @@ use reify_test_support::parse_and_compile_with_stdlib;
 #[test]
 fn param_override_type_kind_rejection_counter_increments() {
     let compiled = parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
     // Warm the engine state; no override yet.
     let _ = engine.eval(&compiled);
@@ -57,7 +57,7 @@ fn param_override_type_kind_rejection_counter_increments() {
 #[test]
 fn param_override_dimension_rejection_counter_increments() {
     let compiled = parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
     // Warm the engine state; no override yet.
     let _ = engine.eval(&compiled);
@@ -109,7 +109,7 @@ fn sub_component_unknown_structure_counter_increments_in_eval_and_eval_cached() 
         reify_compiler::compile_with_stdlib(&parsed)
     };
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
     // eval() path — writer site at engine_eval.rs (first eval pass).
     let _ = engine.eval(&compiled);
