@@ -35,8 +35,7 @@ use crate::engine_helpers::collect_member_list;
 use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
 use crate::snapshot::Snapshot;
 use crate::symbolic_cell_mint::{
-    RealizationSource, SymbolicMintOrder, SymbolicMintOutcome, SymbolicMintScope,
-    mint_symbolic_if_undef,
+    RealizationSource, SymbolicMintOutcome, SymbolicMintScope, mint_symbolic_if_undef,
 };
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};
 use crate::{
@@ -8558,7 +8557,7 @@ impl Engine {
                             // R3d (#4900): see `symbolic_cell_mint`.
                             let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
                                 val,
-                                SymbolicMintOrder::GeometryHandleFirst,
+                                cell.kind,
                                 &cell.id,
                                 cell.default_expr.as_ref(),
                                 &SymbolicMintScope {
@@ -8756,7 +8755,7 @@ impl Engine {
                             // R3d (#4900): see `symbolic_cell_mint`.
                             let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
                                 val,
-                                SymbolicMintOrder::SelectorFirst,
+                                cell.kind,
                                 &cell.id,
                                 Some(expr),
                                 &SymbolicMintScope {
@@ -10305,7 +10304,7 @@ impl Engine {
                     // is byte-identical to the build path.
                     let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
                         val,
-                        SymbolicMintOrder::GeometryHandleFirst,
+                        cell.kind,
                         &cell.id,
                         cell.default_expr.as_ref(),
                         &SymbolicMintScope {
@@ -10798,7 +10797,7 @@ impl Engine {
                     // R3d (#4900): see `symbolic_cell_mint`.
                     let SymbolicMintOutcome { value: val, minted } = mint_symbolic_if_undef(
                         val,
-                        SymbolicMintOrder::SelectorFirst,
+                        cell.kind,
                         &cell_id,
                         Some(expr),
                         &SymbolicMintScope {

@@ -355,11 +355,13 @@ fn literal_int(expr: &CompiledExpr) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use reify_compiler::CompiledModule;
     use reify_constraints::SimpleConstraintChecker;
     use reify_core::ModulePath;
 
-    use super::{contributed_cell_types, contributed_cells};
+    use super::{Source, contributed_cell_types, contributed_cells, sub_instances};
 
     fn compile(src: &str) -> CompiledModule {
         let parsed = reify_compiler::parse_with_stdlib(src, ModulePath::single("test"));
@@ -389,6 +391,47 @@ mod tests {
             type_count(&few),
             "contributed_cell_types must collapse a collection's instances, so its \
              length is the same for 50 screws (left) as for 2 (right)",
+        );
+    }
+
+    #[test]
+    fn sub_instances_maps_every_instance_slot_with_cells_to_its_child_template() {
+        let module = compile(
+            "structure def Bolt { param len : Real = 1.0 }\n\
+             structure Rig {\n    sub single = Bolt()\n    sub rack : List<Bolt>\n    \
+             constraint rack.count == 2\n    sub keyed : Keyed<Bolt> {\n        \
+             \"a\" => { len = 2.0 }\n    }\n}\n",
+        );
+        let in_fixture = |entity: &String| entity.starts_with("Rig.");
+        let registry: BTreeMap<String, &str> = sub_instances(&module.templates)
+            .filter(|(entity, _)| in_fixture(entity))
+            .collect();
+
+        let mut stamped: BTreeMap<String, &str> = BTreeMap::new();
+        for cell in contributed_cells(&module.templates) {
+            if let Source::SubInstance { slot, decl } = cell.0
+                && in_fixture(&slot.scoped_entity())
+            {
+                stamped.insert(slot.scoped_entity(), decl.id.entity.as_str());
+            }
+        }
+
+        let expected_slots: BTreeSet<&str> = [
+            "Rig.single",
+            "Rig.rack[0]",
+            "Rig.rack[1]",
+            "Rig.keyed[\"a\"]",
+        ]
+        .into();
+        assert_eq!(
+            stamped.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            expected_slots,
+            "anti-vacuity: the fixture must stamp a single, a positional and a keyed slot"
+        );
+        assert_eq!(
+            registry, stamped,
+            "sub_instances (left) must name every slot contributed_cells stamps, each \
+             mapped to the template its cells are declared in (right)"
         );
     }
 }

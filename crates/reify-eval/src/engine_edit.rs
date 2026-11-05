@@ -1333,23 +1333,27 @@ impl Engine {
                     ),
                 );
                 // R3d (#4900): if eval returned Undef, try the in-walk symbolic
-                // mint — geometry handle first (for solid params and lets with a
-                // graph realization node), then topology selector — so downstream
-                // consumer cells that reference this cell read the minted value
-                // at topo-order time rather than Undef.  Uses the graph's
-                // RealizationNodeData (same operations, same upstream_values_hash
-                // fold) because edit_param has no access to the CompiledModule.
-                // Note: `diagnostics` is declared later in this function; use
-                // `selector_mint_diagnostics` (declared above, alongside
-                // `runtime_sink`) here instead. This in-walk mint is the SOLE
-                // edit-path mint mechanism (γ, task 4954 — geometry-let cells
-                // ride the dirty cone and mint at their topo slot here);
-                // edit_param has no post-eval backstop mint pass. Diagnostics
-                // pushed by `try_eval_symbolic_topology_selector` (e.g. a
-                // selector kind-closure violation leaving the cell at `Undef`)
-                // are accumulated into `selector_mint_diagnostics` and drained
-                // into the function's `diagnostics` output below, matching
-                // edit_source's whole-module pass instead of dropping them.
+                // mint, so downstream consumer cells that reference this cell
+                // read the minted value at topo-order time rather than Undef.
+                // The walk is edit_param's only mint for the cells it visits
+                // (γ, task 4954: geometry-let cells ride the dirty cone and
+                // mint at their topo slot here); edit_param has no post-eval
+                // backstop mint pass.
+                //
+                // A sub-instance cell mints in its instance's scope through
+                // `symbolic_cell_mint::InstanceMintScope` (#8102), which also
+                // serves the collection resize and grown-instance reseed below;
+                // its doc lists every site, and it owns the order and
+                // diagnostics policy. Any other cell takes the inline
+                // template-scope arm, geometry handle first, then topology
+                // selector, over the graph's RealizationNodeData (same
+                // operations, same upstream_values_hash fold) because
+                // edit_param has no access to the CompiledModule. Folding that
+                // arm onto `symbolic_cell_mint` is #8209's. Its selector
+                // diagnostics (e.g. a kind-closure violation leaving the cell
+                // `Undef`) are accumulated into `selector_mint_diagnostics`,
+                // since `diagnostics` is declared later in this function, and
+                // drained into its output below.
                 let was_undef = matches!(val, Value::Undef);
                 let instance_scope = InstanceMintScope {
                     graph: &new_snapshot.graph,
@@ -1357,16 +1361,11 @@ impl Engine {
                     functions: &functions,
                     meta_map: &self.meta_map,
                 };
-                // #8102: a sub-instance cell mints in its instance's scope,
-                // ahead of the template-scope arm.
                 let val = if !was_undef {
                     val
-                } else if let Some(minted) = instance_scope.mint_undef_instance_cell(
-                    vcid,
-                    node.kind,
-                    expr,
-                    &mut selector_mint_diagnostics,
-                ) {
+                } else if let Some(minted) =
+                    instance_scope.mint_undef_instance_cell(vcid, node.kind, expr)
+                {
                     minted
                 } else {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
@@ -2373,9 +2372,6 @@ impl Engine {
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    new_snapshot
-                        .graph
-                        .record_sub_instance(scoped_entity.clone(), col_sub.structure_name.clone());
                     for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
@@ -2392,8 +2388,7 @@ impl Engine {
                         };
                         new_snapshot
                             .graph
-                            .value_cells
-                            .insert(scoped_id.clone(), node);
+                            .insert_sub_instance_cell(&col_sub.structure_name, node);
 
                         // Evaluate the cell, minting it in its instance's scope
                         // when that returns Undef (#8102).
@@ -2415,13 +2410,7 @@ impl Engine {
                                 functions: &functions,
                                 meta_map: &self.meta_map,
                             }
-                            .mint_instance_cell_if_undef(
-                                evaluated,
-                                &scoped_id,
-                                *kind,
-                                expr,
-                                &mut diagnostics,
-                            )
+                            .mint_instance_cell_if_undef(evaluated, &scoped_id, *kind, expr)
                         } else {
                             Value::Undef
                         };
@@ -2852,7 +2841,6 @@ impl Engine {
                                 vcid,
                                 cell_node.kind,
                                 expr,
-                                &mut diagnostics,
                             );
                             // Commit via the cell-commit primitive (task δ
                             // #5056): atomically writes values/snapshot/
@@ -4484,9 +4472,6 @@ impl Engine {
                 for i in 0..new_count {
                     let scoped_entity =
                         format!("{}.{}[{}]", col_sub.parent_entity, col_sub.sub_name, i);
-                    new_snapshot
-                        .graph
-                        .record_sub_instance(scoped_entity.clone(), col_sub.structure_name.clone());
                     for (member, kind, cell_type, default_expr) in &col_sub.child_value_cells {
                         let scoped_id = ValueCellId::new(&scoped_entity, member);
                         let id_hash = ContentHash::of_str(&format!("{}", scoped_id));
@@ -4503,8 +4488,7 @@ impl Engine {
                         };
                         new_snapshot
                             .graph
-                            .value_cells
-                            .insert(scoped_id.clone(), node);
+                            .insert_sub_instance_cell(&col_sub.structure_name, node);
 
                         // Minted in its instance's scope when the plain
                         // evaluation returns Undef (#8102).
@@ -4520,13 +4504,7 @@ impl Engine {
                                 functions: &functions,
                                 meta_map: &self.meta_map,
                             }
-                            .mint_instance_cell_if_undef(
-                                evaluated,
-                                &scoped_id,
-                                *kind,
-                                expr,
-                                &mut diagnostics,
-                            )
+                            .mint_instance_cell_if_undef(evaluated, &scoped_id, *kind, expr)
                         } else {
                             Value::Undef
                         };

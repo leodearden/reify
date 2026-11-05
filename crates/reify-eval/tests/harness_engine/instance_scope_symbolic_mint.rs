@@ -504,3 +504,68 @@ fn edit_param_growing_a_collection_mints_every_slot_like_a_cold_eval() {
         assert_edited_body_like_cold(&after_edit, &cold, slot);
     }
 }
+
+/// `edit_source`'s collection resize re-creates a grown collection's slots as
+/// `edit_param`'s does, so a source edit that grows the count must leave every
+/// slot's geometry cell minted like a cold eval of the edited source.
+#[test]
+fn edit_source_growing_a_collection_mints_every_slot_like_a_cold_eval() {
+    let grown_source = BOLT_RACK.replace("param n : Int = 2", "param n : Int = 3");
+    assert_ne!(
+        grown_source, BOLT_RACK,
+        "premise: the source edit must change the count default"
+    );
+    let grown = parse_and_compile_with_stdlib(&grown_source);
+    let mut warm = make_simple_engine();
+    let before = warm.eval(&parse_and_compile_with_stdlib(BOLT_RACK));
+    let after_edit = warm
+        .edit_source(&grown)
+        .unwrap_or_else(|e| panic!("edit_source must succeed after eval: {e:?}"));
+    let cold = make_simple_engine().eval(&grown);
+
+    for slot in ["CRack.bolts[0]", "CRack.bolts[1]"] {
+        assert_minted_at_eval(&before, slot);
+    }
+    for slot in ["CRack.bolts[0]", "CRack.bolts[1]", "CRack.bolts[2]"] {
+        assert_edited_body_like_cold(&after_edit, &cold, slot);
+    }
+}
+
+/// A rack whose element's `body` consumes a GUARDED geometry let. The compiler
+/// inlines `core`'s box into `body`'s realization, so `body`'s handle hash
+/// folds `len`, which `body`'s own expression never reads.
+const GUARDED_CORE_RACK: &str = r#"
+    structure GBolt {
+        param len : Length = 10mm
+        param on : Bool = true
+        where on {
+            let core = box(len, 10mm, 10mm)
+        }
+        let body = translate(core, 1mm, 0mm, 0mm)
+    }
+
+    structure GRack {
+        param n : Int = 2
+        sub bolts : List<GBolt>
+        constraint bolts.count == n
+    }
+"#;
+
+/// The edit path's instance mint must fold every input of the realization's
+/// operations, not only the reads of the cell's expression: a slot re-created
+/// by a resize mints `body` over the slot's own `len`, as a cold eval does.
+#[test]
+fn edit_param_growing_a_collection_mints_a_body_over_a_guarded_geometry_let_like_a_cold_eval() {
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        GUARDED_CORE_RACK,
+        &ValueCellId::new("GRack", "n"),
+        Value::Int(3),
+    );
+
+    for slot in ["GRack.bolts[0]", "GRack.bolts[1]"] {
+        assert_minted_at_eval(&before, slot);
+    }
+    for slot in ["GRack.bolts[0]", "GRack.bolts[1]", "GRack.bolts[2]"] {
+        assert_edited_body_like_cold(&after_edit, &cold, slot);
+    }
+}

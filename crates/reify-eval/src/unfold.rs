@@ -17,7 +17,7 @@ use crate::eval_ctx_with_meta;
 use crate::journal::{EventJournal, TraceSource};
 use crate::snapshot::Snapshot;
 use crate::symbolic_cell_mint::{
-    RealizationSource, SymbolicMintOrder, SymbolicMintScope, mint_symbolic_if_undef,
+    RealizationSource, SymbolicMintScope, mint_template_keyed_instance_cell,
 };
 
 /// Instance-scope reuse of a template's already-dispatched `@optimized` value —
@@ -1278,22 +1278,6 @@ fn eval_child_expr(
     reify_expr::eval_expr(expr, &ctx)
 }
 
-/// [`mint_symbolic_if_undef`] at instance scope, so an instance cell agrees with
-/// its template cell for value-identical inputs. `cell_id` is the
-/// template-scoped id and `scope.values` the map `val` was evaluated against.
-///
-/// The mint's diagnostics are discarded, as `runtime_sink`'s are: they are
-/// type-level, so template scope already reports them once for this expression.
-fn mint_instance_cell_if_undef(
-    val: Value,
-    order: SymbolicMintOrder,
-    cell_id: &ValueCellId,
-    expr: &reify_ir::CompiledExpr,
-    scope: &SymbolicMintScope<'_>,
-) -> Value {
-    mint_symbolic_if_undef(val, order, cell_id, Some(expr), scope, &mut Vec::new()).value
-}
-
 /// The value of a SCRATCH let: one evaluated into a phase-local map (phase 1's
 /// `scope`, phase 1.5's `overlay`) so later cells can read it, and never
 /// committed. Phase 2 owns the commit.
@@ -1338,7 +1322,7 @@ fn eval_scratch_let(
     ) {
         OptimizedInstanceResolution::Reuse(v) => v,
         OptimizedInstanceResolution::NotOptimized
-        | OptimizedInstanceResolution::Unreusable { .. } => mint_instance_cell_if_undef(
+        | OptimizedInstanceResolution::Unreusable { .. } => mint_template_keyed_instance_cell(
             eval_child_expr(
                 scope,
                 expr,
@@ -1348,7 +1332,7 @@ fn eval_scratch_let(
                 runtime_sink,
                 &NoContainment,
             ),
-            SymbolicMintOrder::SelectorFirst,
+            ValueCellKind::Let,
             key,
             expr,
             &SymbolicMintScope {
@@ -1541,9 +1525,9 @@ fn elaborate_child_params_only<'f>(
                         &runtime_sink,
                         &containment,
                     );
-                    mint_instance_cell_if_undef(
+                    mint_template_keyed_instance_cell(
                         evaluated,
-                        SymbolicMintOrder::GeometryHandleFirst,
+                        cell.kind,
                         &cell.id,
                         default_expr,
                         &SymbolicMintScope {
@@ -1869,9 +1853,9 @@ fn elaborate_child_lets_only<'t, 'f>(
                     &runtime_sink,
                     &containment,
                 );
-                mint_instance_cell_if_undef(
+                mint_template_keyed_instance_cell(
                     evaluated,
-                    SymbolicMintOrder::SelectorFirst,
+                    ValueCellKind::Let,
                     child_cell_id,
                     expr,
                     &SymbolicMintScope {

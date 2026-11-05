@@ -271,8 +271,9 @@ pub struct EvaluationGraph {
     /// `P.s[i]`, `P.s["k"]`), mapped to the name of the template those cells
     /// are stamped from. Read through [`Self::sub_instance_template`].
     /// `from_templates` fills it from [`cell_contributions::sub_instances`],
-    /// the same slot enumeration that stamps those cells; the collection
-    /// resize keeps it in step.
+    /// the same slot enumeration that stamps those cells. The edit path's
+    /// collection resizes stamp through [`Self::insert_sub_instance_cell`],
+    /// which records the slot as it inserts the cell, so the two do not drift.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
     /// instance cells it names are already in the fingerprint via
@@ -609,10 +610,19 @@ impl EvaluationGraph {
         self.sub_instance_templates.get(entity).map(String::as_str)
     }
 
-    /// Record that `entity`'s cells are stamped from `template`. Called for
-    /// every instance whose cells enter `value_cells`.
-    pub(crate) fn record_sub_instance(&mut self, entity: String, template: String) {
+    /// Record that `entity`'s cells are stamped from `template`.
+    fn record_sub_instance(&mut self, entity: String, template: String) {
         self.sub_instance_templates.insert(entity, template);
+    }
+
+    /// Stamp `node`, a cell of sub instance `node.id.entity` whose cells come
+    /// from `template`, into `value_cells`, recording the instance if it is not
+    /// yet recorded.
+    pub(crate) fn insert_sub_instance_cell(&mut self, template: &str, node: ValueCellNode) {
+        if !self.sub_instance_templates.contains_key(&node.id.entity) {
+            self.record_sub_instance(node.id.entity.clone(), template.to_string());
+        }
+        self.value_cells.insert(node.id.clone(), node);
     }
 
     /// Forget sub instance `entity`, whose cells have left `value_cells`.

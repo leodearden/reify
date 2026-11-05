@@ -9,22 +9,24 @@
 use std::collections::HashMap;
 
 use reify_compiler::{TopologyTemplate, ValueCellKind};
-use reify_core::{Diagnostic, ValueCellId};
+use reify_core::{Diagnostic, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, Value, ValueMap};
 
-use crate::graph::EvaluationGraph;
+use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
+use crate::geometry_ops::is_symbolic_eval_wired_selector_ctor;
+use crate::graph::{EvaluationGraph, RealizationNodeData};
 
-/// Which mint a cell tries first. Param sites try the geometry handle first,
-/// Let sites the selector.
+/// Which mint a cell tries first; the first `Some` wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SymbolicMintOrder {
+enum SymbolicMintOrder {
     GeometryHandleFirst,
     SelectorFirst,
 }
 
 impl SymbolicMintOrder {
     /// The order a cell of `kind` takes: a param (an `auto` one included) tries
-    /// the geometry handle first, a let the selector.
+    /// the geometry handle first, a let the selector. Every mint in this module
+    /// derives its order here.
     fn for_kind(kind: ValueCellKind) -> Self {
         match kind {
             ValueCellKind::Let => Self::SelectorFirst,
@@ -61,11 +63,11 @@ pub(crate) struct SymbolicMintOutcome {
     pub(crate) minted: bool,
 }
 
-/// `evaluated` unchanged unless it is `Undef`; then `cell_id` (a cell of the
-/// template `scope.realizations` belongs to) is minted symbolically, trying
-/// the two mints in `order` (the first `Some` wins). A selector kind-closure
-/// violation leaves the cell `Undef`, with its diagnostic pushed to
-/// `diagnostics`.
+/// `evaluated` unchanged unless it is `Undef`; then `cell_id`, a cell of `kind`
+/// in the template `scope.realizations` belongs to, is minted symbolically,
+/// trying the two mints in the order [`SymbolicMintOrder::for_kind`] gives
+/// `kind`. A selector kind-closure violation leaves the cell `Undef`, with its
+/// diagnostic pushed to `diagnostics`.
 ///
 /// Realization identity: a minted handle names the template's
 /// `RealizationDecl` id at EVERY scope and folds its `upstream_values_hash` over
@@ -76,7 +78,7 @@ pub(crate) struct SymbolicMintOutcome {
 /// overrides.
 pub(crate) fn mint_symbolic_if_undef(
     evaluated: Value,
-    order: SymbolicMintOrder,
+    kind: ValueCellKind,
     cell_id: &ValueCellId,
     default_expr: Option<&CompiledExpr>,
     scope: &SymbolicMintScope<'_>,
@@ -88,6 +90,7 @@ pub(crate) fn mint_symbolic_if_undef(
             minted: false,
         };
     }
+    let order = SymbolicMintOrder::for_kind(kind);
     match mint_symbolic(order, cell_id, default_expr, scope, diagnostics) {
         Some(value) if !matches!(value, Value::Undef) => SymbolicMintOutcome {
             value,
@@ -98,6 +101,33 @@ pub(crate) fn mint_symbolic_if_undef(
             minted: false,
         },
     }
+}
+
+/// [`mint_symbolic_if_undef`] for a sub-instance cell, addressed by its
+/// TEMPLATE-scoped id `template_cell`; `scope.values` holds the instance's
+/// values keyed in the template's scope.
+///
+/// The one home of the instance-scope diagnostics policy: the mint's
+/// diagnostics are discarded. They are type-level, a property of the expression
+/// every instance shares with its template, so template scope reports each one
+/// once. Reporting them here as well would repeat it per instance, and per slot
+/// of a collection.
+pub(crate) fn mint_template_keyed_instance_cell(
+    evaluated: Value,
+    kind: ValueCellKind,
+    template_cell: &ValueCellId,
+    expr: &CompiledExpr,
+    scope: &SymbolicMintScope<'_>,
+) -> Value {
+    mint_symbolic_if_undef(
+        evaluated,
+        kind,
+        template_cell,
+        Some(expr),
+        scope,
+        &mut Vec::new(),
+    )
+    .value
 }
 
 fn mint_symbolic(
@@ -154,57 +184,88 @@ pub(crate) struct InstanceMintScope<'a> {
 }
 
 impl InstanceMintScope<'_> {
-    /// The value an `Undef` cell `cell` of `kind`, whose expression is `expr`,
-    /// takes when it is a sub-instance cell of `self.graph`; `None` when it is
-    /// not one.
+    /// The value an `Undef` cell takes when `instance_cell`, an INSTANCE-scoped
+    /// id such as `P.s.body`, is a sub-instance cell of `self.graph`; `None`
+    /// when it is not one. `kind` and `expr` are the cell's.
     ///
-    /// It mints as `unfold` mints it at `eval()`: an instance cell's
-    /// expression is its template declaration's, so it mints as the template's
-    /// cell over the instance's own values ([`project_instance_reads`]). A
-    /// realization's operations lower that same expression, so the projected
-    /// reads cover every cell its hash folds. `Undef` when nothing mints.
+    /// It mints as `unfold` mints it at `eval()`. An instance cell's expression
+    /// is its template declaration's, so it mints as the template's cell
+    /// ([`mint_template_keyed_instance_cell`]) over the instance's own values
+    /// ([`project_instance_reads`]). Those values cover every cell the mint
+    /// reads: the expression's reads, plus, for a geometry cell, the reads of
+    /// its realization's operations, which the handle's hash folds. The two
+    /// sets differ when the compiler inlines a guarded geometry let into the
+    /// operations. `Undef` when nothing mints.
     pub(crate) fn mint_undef_instance_cell(
         &self,
-        cell: &ValueCellId,
+        instance_cell: &ValueCellId,
         kind: ValueCellKind,
         expr: &CompiledExpr,
-        diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<Value> {
-        let template = self.graph.sub_instance_template(&cell.entity)?;
-        let reads = crate::deps::extract_dependency_trace(expr).reads;
-        let instance_values = project_instance_reads(self.values, &cell.entity, template, &reads);
-        let outcome = mint_symbolic_if_undef(
+        let template = self.graph.sub_instance_template(&instance_cell.entity)?;
+        let template_cell = ValueCellId::new(template, &instance_cell.member);
+        let realization = self.geometry_cell_realization(&template_cell);
+        if realization.is_none() && !is_symbolic_eval_wired_selector_ctor(expr) {
+            return Some(Value::Undef);
+        }
+        let mut reads = extract_dependency_trace(expr).reads;
+        if let Some(realization) = realization {
+            reads.extend(extract_realization_dependencies(&realization.operations).reads);
+        }
+        let instance_values =
+            project_instance_reads(self.values, &instance_cell.entity, template, &reads);
+        Some(mint_template_keyed_instance_cell(
             Value::Undef,
-            SymbolicMintOrder::for_kind(kind),
-            &ValueCellId::new(template, &cell.member),
-            Some(expr),
+            kind,
+            &template_cell,
+            expr,
             &SymbolicMintScope {
                 realizations: RealizationSource::Graph(self.graph),
                 values: &instance_values,
                 functions: self.functions,
                 meta_map: self.meta_map,
             },
-            diagnostics,
-        );
-        Some(outcome.value)
+        ))
     }
 
-    /// `evaluated`, unless it is `Undef` and `cell` is a sub-instance cell of
-    /// `self.graph`; then the cell minted by [`Self::mint_undef_instance_cell`].
+    /// `evaluated`, unless it is `Undef` and `instance_cell` is a sub-instance
+    /// cell of `self.graph`; then the cell minted by
+    /// [`Self::mint_undef_instance_cell`].
     pub(crate) fn mint_instance_cell_if_undef(
         &self,
         evaluated: Value,
-        cell: &ValueCellId,
+        instance_cell: &ValueCellId,
         kind: ValueCellKind,
         expr: &CompiledExpr,
-        diagnostics: &mut Vec<Diagnostic>,
     ) -> Value {
         match evaluated {
             Value::Undef => self
-                .mint_undef_instance_cell(cell, kind, expr, diagnostics)
+                .mint_undef_instance_cell(instance_cell, kind, expr)
                 .unwrap_or(Value::Undef),
             evaluated => evaluated,
         }
+    }
+
+    /// The realization a scalar geometry cell's handle names, found as
+    /// [`crate::Engine::mint_symbolic_geometry_handle_for_cell_from_graph`]
+    /// finds it. `None` for any other cell, which only the selector mint can
+    /// resolve.
+    fn geometry_cell_realization(
+        &self,
+        template_cell: &ValueCellId,
+    ) -> Option<&RealizationNodeData> {
+        let is_geometry = self
+            .graph
+            .value_cells
+            .get(template_cell)
+            .is_some_and(|cell| cell.cell_type == Type::Geometry);
+        if !is_geometry {
+            return None;
+        }
+        self.graph
+            .realizations
+            .values()
+            .find(|realization| realization.geometry_cell.as_ref() == Some(template_cell))
     }
 }
 
@@ -232,4 +293,70 @@ fn project_instance_reads(
         }
     }
     scope
+}
+
+#[cfg(test)]
+mod tests {
+    use reify_compiler::ValueCellKind;
+    use reify_core::ValueCellId;
+    use reify_ir::{Value, ValueMap};
+
+    use super::{SymbolicMintOrder, project_instance_reads};
+
+    fn id(entity: &str, member: &str) -> ValueCellId {
+        ValueCellId::new(entity, member)
+    }
+
+    #[test]
+    fn project_instance_reads_rekeys_the_instance_and_its_nested_subs_onto_the_template() {
+        let mut values = ValueMap::new();
+        values.insert(id("Asm.s", "len"), Value::Int(1));
+        values.insert(id("Asm.s.x", "m"), Value::Int(2));
+        values.insert(id("T", "len"), Value::Int(3));
+        values.insert(id("Other", "k"), Value::Int(4));
+        values.insert(id("Asm.s", "k"), Value::Int(5));
+        let reads = [
+            id("T", "len"),
+            id("T.x", "m"),
+            id("T", "absent"),
+            id("Other", "k"),
+            id("Tx", "k"),
+        ];
+
+        let projected = project_instance_reads(&values, "Asm.s", "T", &reads);
+
+        assert_eq!(
+            projected.get(&id("T", "len")),
+            Some(&Value::Int(1)),
+            "T.len must come from the instance's Asm.s.len, not the template's T.len"
+        );
+        assert_eq!(
+            projected.get(&id("T.x", "m")),
+            Some(&Value::Int(2)),
+            "a nested sub's T.x.m must come from Asm.s.x.m"
+        );
+        assert_eq!(
+            projected.len(),
+            2,
+            "a read with no instance entry (T.absent), one outside the template \
+             (Other.k), and one whose entity merely starts with the template's \
+             name (Tx.k, not T or T.*) must all be left out"
+        );
+    }
+
+    #[test]
+    fn a_param_tries_the_geometry_handle_first_and_a_let_the_selector() {
+        assert_eq!(
+            SymbolicMintOrder::for_kind(ValueCellKind::Param),
+            SymbolicMintOrder::GeometryHandleFirst
+        );
+        assert_eq!(
+            SymbolicMintOrder::for_kind(ValueCellKind::Auto { free: false }),
+            SymbolicMintOrder::GeometryHandleFirst
+        );
+        assert_eq!(
+            SymbolicMintOrder::for_kind(ValueCellKind::Let),
+            SymbolicMintOrder::SelectorFirst
+        );
+    }
 }
