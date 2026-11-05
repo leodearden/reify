@@ -65,6 +65,10 @@
 #       1420 default, and the runner announces it.
 #   D2 (caller-pinned): the launcher sees exactly the caller's value.
 #
+# ── ARM E (task 9730): exactly one of --fixture / --no-fixture ────────────────
+# Lifecycle-level, not per-runner: --no-fixture hands the launcher no file (the
+# Start view), --fixture exactly one, and both or neither is a usage error.
+#
 # Auto-discovered by tests/infra/run_all.sh (matches test_*.sh pattern).
 
 set -euo pipefail
@@ -411,5 +415,102 @@ for _runner_base in "${RUNNERS[@]}"; do
     _arm_c "$_runner_base" "$_runner_path"
     _arm_d "$_runner_base" "$_runner_path"
 done
+
+# ===========================================================================
+# ARM E (task 9730) — exactly one of --fixture / --no-fixture.
+#
+# A launcher smoke starts reify-gui on the Start view, so e2e_smoke_run takes
+# --no-fixture as the explicit alternative to --fixture and then hands the
+# launcher NO file argument. Driven through a throwaway runner that sources
+# the real lib, since no committed runner passes every argument shape.
+# The curl stub reports ready only once the launcher has recorded its argc
+# (ARM D's race closure).
+# ===========================================================================
+echo ""
+echo "--- e2e_smoke_run: --fixture / --no-fixture ---"
+
+# _mk_lifecycle_runner <path> <e2e_smoke_run args...> — a runner whose single
+# statement is e2e_smoke_run with exactly those (shell-quoted) arguments.
+_mk_lifecycle_runner() {
+    local path="$1"
+    shift
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -euo pipefail'
+        printf 'source %q\n' "$REPO_ROOT/gui/test/visual/lib_e2e_smoke.sh"
+        printf 'e2e_smoke_run'
+        printf ' %q' "$@"
+        echo
+    } > "$path"
+}
+
+_arm_e() {
+    local bin dump
+    _new_bindir; bin="$_BINDIR"
+    dump="$bin/launcher-argc"
+
+    _write_stub "$bin/stub_launcher.sh" \
+        'printf "%s" "$#" > "$_ARGC_DUMP"' \
+        'exec sleep 20'
+    _write_stub "$bin/curl" \
+        '[ -e "$_ARGC_DUMP" ] && exit 0' \
+        'exit 7'
+    _write_stub "$bin/node" 'exit 0'
+
+    local name=(--name arm_e_lifecycle)
+    local driver=(--driver gui/test/visual/smoke_find_uses.mjs)
+    local fixture=(--fixture gui/test/fixtures/find_uses_smoke.ri)
+
+    # --- E1: --no-fixture → the launcher gets no arguments ---
+    _mk_lifecycle_runner "$bin/runner_no_fixture.sh" "${name[@]}" --no-fixture "${driver[@]}"
+    _alloc_port
+    _smoke_arm_run "$bin" "$bin/runner_no_fixture.sh" "$_PORT" 30000 _ARGC_DUMP="$dump"
+    local e1_rc="$_ARM_RC" e1_argc
+    e1_argc=$(cat "$dump" 2>/dev/null || true)
+
+    assert "ARM E1: --no-fixture exits 0 on the happy path" \
+        bash -c '[ "$1" -eq 0 ]' _ "$e1_rc"
+
+    assert "ARM E1: --no-fixture hands the launcher zero arguments" \
+        bash -c '[ "$1" = 0 ]' _ "$e1_argc"
+
+    # --- E2: --fixture <f> → the launcher gets exactly one ---
+    rm -f "$dump"
+    _mk_lifecycle_runner "$bin/runner_fixture.sh" "${name[@]}" "${fixture[@]}" "${driver[@]}"
+    _alloc_port
+    _smoke_arm_run "$bin" "$bin/runner_fixture.sh" "$_PORT" 30000 _ARGC_DUMP="$dump"
+    local e2_rc="$_ARM_RC" e2_argc
+    e2_argc=$(cat "$dump" 2>/dev/null || true)
+
+    assert "ARM E2: --fixture exits 0 on the happy path" \
+        bash -c '[ "$1" -eq 0 ]' _ "$e2_rc"
+
+    assert "ARM E2: --fixture hands the launcher exactly one argument" \
+        bash -c '[ "$1" = 1 ]' _ "$e2_argc"
+
+    # --- E3 / E4: both, or neither → usage error, launcher never started ---
+    local shape
+    for shape in both neither; do
+        rm -f "$dump"
+        if [ "$shape" = both ]; then
+            _mk_lifecycle_runner "$bin/runner_$shape.sh" "${name[@]}" "${fixture[@]}" --no-fixture "${driver[@]}"
+        else
+            _mk_lifecycle_runner "$bin/runner_$shape.sh" "${name[@]}" "${driver[@]}"
+        fi
+        _alloc_port
+        _smoke_arm_run "$bin" "$bin/runner_$shape.sh" "$_PORT" 30000 _ARGC_DUMP="$dump"
+
+        assert "ARM E ($shape of --fixture/--no-fixture): exits 2" \
+            bash -c '[ "$1" -eq 2 ]' _ "$_ARM_RC"
+
+        assert "ARM E ($shape of --fixture/--no-fixture): prints the usage line" \
+            bash -c 'printf "%s\n" "$1" | grep -qF "usage: e2e_smoke_run"' _ "$_ARM_OUT"
+
+        assert "ARM E ($shape of --fixture/--no-fixture): the launcher is never started" \
+            bash -c '! [ -e "$1" ]' _ "$dump"
+    done
+}
+
+_arm_e
 
 test_summary
