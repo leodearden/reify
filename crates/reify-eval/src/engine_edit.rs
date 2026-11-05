@@ -164,10 +164,7 @@ use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
     stale_realizations,
 };
-use crate::symbolic_cell_mint::{
-    RealizationSource, SymbolicMintOrder, SymbolicMintScope, mint_symbolic_if_undef,
-    project_instance_reads,
-};
+use crate::symbolic_cell_mint::InstanceMintScope;
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,
@@ -1353,33 +1350,25 @@ impl Engine {
                 // are accumulated into `selector_mint_diagnostics` and drained
                 // into the function's `diagnostics` output below, matching
                 // edit_source's whole-module pass instead of dropping them.
-                let trace = extract_dependency_trace(expr);
                 let was_undef = matches!(val, Value::Undef);
-                let val = if was_undef
-                    && let Some(template) = new_snapshot.graph.sub_instance_template(&vcid.entity)
-                {
-                    // #8102: a sub-instance cell's expression is its template
-                    // declaration's, so it mints as the template's cell over the
-                    // instance's own values, as `unfold` mints it at `eval()`. A
-                    // realization's operations lower that same expression, so
-                    // projecting its reads gives the hash fold every cell it reads.
-                    let instance_values =
-                        project_instance_reads(&values, &vcid.entity, template, &trace.reads);
-                    mint_symbolic_if_undef(
-                        val,
-                        SymbolicMintOrder::for_kind(node.kind),
-                        &ValueCellId::new(template, &vcid.member),
-                        Some(expr),
-                        &SymbolicMintScope {
-                            realizations: RealizationSource::Graph(&new_snapshot.graph),
-                            values: &instance_values,
-                            functions: &functions,
-                            meta_map: &self.meta_map,
-                        },
-                        &mut selector_mint_diagnostics,
-                    )
-                    .value
-                } else if was_undef {
+                let instance_scope = InstanceMintScope {
+                    graph: &new_snapshot.graph,
+                    values: &values,
+                    functions: &functions,
+                    meta_map: &self.meta_map,
+                };
+                // #8102: a sub-instance cell mints in its instance's scope,
+                // ahead of the template-scope arm.
+                let val = if !was_undef {
+                    val
+                } else if let Some(minted) = instance_scope.mint_undef_instance_cell(
+                    vcid,
+                    node.kind,
+                    expr,
+                    &mut selector_mint_diagnostics,
+                ) {
+                    minted
+                } else {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
                         vcid,
                         &new_snapshot.graph,
@@ -1400,8 +1389,6 @@ impl Engine {
                         selector_mint_diagnostics.extend(sel_diags);
                         selector_val
                     }
-                } else {
-                    val
                 };
                 // R3e (#4907): record cells the in-walk mint actually
                 // resolved, so the post-mint re-eval pass after this loop
@@ -1429,6 +1416,7 @@ impl Engine {
                 // the pre-commit eval+mint span, it must NOT read this
                 // Duration for that purpose; it would need its own Custom
                 // payload recorded before the commit_cell_result call.
+                let trace = extract_dependency_trace(expr);
                 let commit_outcome = commit_cell_result(
                     CommitLegs {
                         values: &mut values,
@@ -2407,9 +2395,10 @@ impl Engine {
                             .value_cells
                             .insert(scoped_id.clone(), node);
 
-                        // Evaluate the cell
+                        // Evaluate the cell, minting it in its instance's scope
+                        // when that returns Undef (#8102).
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(
+                            let evaluated = reify_expr::eval_expr(
                                 expr,
                                 &cell_eval_ctx(
                                     &values,
@@ -2419,6 +2408,19 @@ impl Engine {
                                     &runtime_sink,
                                     self,
                                 ),
+                            );
+                            InstanceMintScope {
+                                graph: &new_snapshot.graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            }
+                            .mint_instance_cell_if_undef(
+                                evaluated,
+                                &scoped_id,
+                                *kind,
+                                expr,
+                                &mut diagnostics,
                             )
                         } else {
                             Value::Undef
@@ -2826,7 +2828,7 @@ impl Engine {
                             && let Some(cell_node) = graph.value_cells.get(vcid)
                             && let Some(ref expr) = cell_node.default_expr
                         {
-                            let val = reify_expr::eval_expr(
+                            let evaluated = reify_expr::eval_expr(
                                 expr,
                                 &cell_eval_ctx(
                                     &values,
@@ -2836,6 +2838,21 @@ impl Engine {
                                     &runtime_sink,
                                     self,
                                 ),
+                            );
+                            // #8102: as final writer of a grown cell, mint a
+                            // grown sub-instance cell as the resize above did.
+                            let val = InstanceMintScope {
+                                graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            }
+                            .mint_instance_cell_if_undef(
+                                evaluated,
+                                vcid,
+                                cell_node.kind,
+                                expr,
+                                &mut diagnostics,
                             );
                             // Commit via the cell-commit primitive (task δ
                             // #5056): atomically writes values/snapshot/
@@ -4489,11 +4506,26 @@ impl Engine {
                             .value_cells
                             .insert(scoped_id.clone(), node);
 
+                        // Minted in its instance's scope when the plain
+                        // evaluation returns Undef (#8102).
                         let val = if let Some(expr) = default_expr {
-                            reify_expr::eval_expr(
+                            let evaluated = reify_expr::eval_expr(
                                 expr,
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                     .with_runtime_diagnostics(&runtime_sink),
+                            );
+                            InstanceMintScope {
+                                graph: &new_snapshot.graph,
+                                values: &values,
+                                functions: &functions,
+                                meta_map: &self.meta_map,
+                            }
+                            .mint_instance_cell_if_undef(
+                                evaluated,
+                                &scoped_id,
+                                *kind,
+                                expr,
+                                &mut diagnostics,
                             )
                         } else {
                             Value::Undef

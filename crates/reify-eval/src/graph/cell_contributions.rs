@@ -189,11 +189,37 @@ fn declared_cell(decl: &ValueCellDecl) -> ContributedCell<'_> {
     ContributedCell(Source::Declared(decl))
 }
 
+/// Every sub instance whose cells [`contributed_cells`] yields: its scoped
+/// entity (`P.s`, `P.s[i]`, `P.s["k"]`) and the name of the child template
+/// its cells are stamped from.
+pub(crate) fn sub_instances(
+    templates: &[TopologyTemplate],
+) -> impl Iterator<Item = (String, &str)> {
+    templates.iter().flat_map(move |parent| {
+        instance_slots(templates, parent, Instances::Every)
+            .map(|(slot, child)| (slot.scoped_entity(), child.name.as_str()))
+    })
+}
+
 fn sub_instance_cells<'a>(
     templates: &'a [TopologyTemplate],
     parent: &'a TopologyTemplate,
     instances: Instances,
 ) -> impl Iterator<Item = ContributedCell<'a>> {
+    instance_slots(templates, parent, instances).flat_map(|(slot, child)| {
+        child
+            .value_cells
+            .iter()
+            .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
+    })
+}
+
+/// `parent`'s instance slots, each with the child template it is stamped from.
+fn instance_slots<'a>(
+    templates: &'a [TopologyTemplate],
+    parent: &'a TopologyTemplate,
+    instances: Instances,
+) -> impl Iterator<Item = (InstanceSlot<'a>, &'a TopologyTemplate)> {
     parent
         .sub_components
         .iter()
@@ -202,16 +228,13 @@ fn sub_instance_cells<'a>(
             let SubElaboration { sub, child, .. } = elab;
             elab.slot_indices()
                 .take(instances.limit())
-                .flat_map(move |index| {
+                .map(move |index| {
                     let slot = InstanceSlot {
                         parent: &parent.name,
                         sub_name: &sub.name,
                         index,
                     };
-                    child
-                        .value_cells
-                        .iter()
-                        .map(move |decl| ContributedCell(Source::SubInstance { slot, decl }))
+                    (slot, child)
                 })
         })
 }

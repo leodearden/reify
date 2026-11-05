@@ -25,7 +25,7 @@ pub(crate) enum SymbolicMintOrder {
 impl SymbolicMintOrder {
     /// The order a cell of `kind` takes: a param (an `auto` one included) tries
     /// the geometry handle first, a let the selector.
-    pub(crate) fn for_kind(kind: ValueCellKind) -> Self {
+    fn for_kind(kind: ValueCellKind) -> Self {
         match kind {
             ValueCellKind::Let => Self::SelectorFirst,
             ValueCellKind::Param | ValueCellKind::Auto { .. } => Self::GeometryHandleFirst,
@@ -141,15 +141,76 @@ fn mint_symbolic(
     }
 }
 
+/// The graph-backed scope the edit path mints a sub-instance cell in: the
+/// `edit_param` walk, and the collection resizes of `edit_param` and
+/// `edit_source`, none of which has a template.
+pub(crate) struct InstanceMintScope<'a> {
+    pub(crate) graph: &'a EvaluationGraph,
+    pub(crate) values: &'a ValueMap,
+    pub(crate) functions: &'a [CompiledFunction],
+    pub(crate) meta_map: &'a HashMap<String, HashMap<String, String>>,
+}
+
+impl InstanceMintScope<'_> {
+    /// The value an `Undef` cell `cell` of `kind`, whose expression is `expr`,
+    /// takes when it is a sub-instance cell of `self.graph`; `None` when it is
+    /// not one.
+    ///
+    /// It mints as `unfold` mints it at `eval()`: an instance cell's
+    /// expression is its template declaration's, so it mints as the template's
+    /// cell over the instance's own values ([`project_instance_reads`]). A
+    /// realization's operations lower that same expression, so the projected
+    /// reads cover every cell its hash folds. `Undef` when nothing mints.
+    pub(crate) fn mint_undef_instance_cell(
+        &self,
+        cell: &ValueCellId,
+        kind: ValueCellKind,
+        expr: &CompiledExpr,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<Value> {
+        let template = self.graph.sub_instance_template(&cell.entity)?;
+        let reads = crate::deps::extract_dependency_trace(expr).reads;
+        let instance_values = project_instance_reads(self.values, &cell.entity, template, &reads);
+        let outcome = mint_symbolic_if_undef(
+            Value::Undef,
+            SymbolicMintOrder::for_kind(kind),
+            &ValueCellId::new(template, &cell.member),
+            Some(expr),
+            &SymbolicMintScope {
+                realizations: RealizationSource::Graph(self.graph),
+                values: &instance_values,
+                functions: self.functions,
+                meta_map: self.meta_map,
+            },
+            diagnostics,
+        );
+        Some(outcome.value)
+    }
+
+    /// `evaluated`, unless it is `Undef` and `cell` is a sub-instance cell of
+    /// `self.graph`; then the cell minted by [`Self::mint_undef_instance_cell`].
+    pub(crate) fn mint_instance_cell_if_undef(
+        &self,
+        evaluated: Value,
+        cell: &ValueCellId,
+        kind: ValueCellKind,
+        expr: &CompiledExpr,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Value {
+        match evaluated {
+            Value::Undef => self
+                .mint_undef_instance_cell(cell, kind, expr, diagnostics)
+                .unwrap_or(Value::Undef),
+            evaluated => evaluated,
+        }
+    }
+}
+
 /// The `values` entries a template-scoped expression of `template` `reads`,
 /// taken from sub instance `instance`: `T.m` from `I.m`, and a nested sub's
 /// `T.x.m` from `I.x.m`, as `unfold`'s phase-2 projection keys them. A read
 /// outside `template`'s scope is left out, since an instance scope holds none.
-///
-/// This is the instance scope the `edit_param` walk mints in. An instance cell's
-/// expression is its template declaration's, so evaluated against the global
-/// map it would read the TEMPLATE's cells.
-pub(crate) fn project_instance_reads(
+fn project_instance_reads(
     values: &ValueMap,
     instance: &str,
     template: &str,

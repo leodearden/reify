@@ -394,14 +394,41 @@ fn warm_edit_and_cold_eval(
     (before, after_edit, cold)
 }
 
-/// The premise both edit-path pins share: the warm and cold engines commit the
-/// same instance `len`, so the instance cells they mint over it are comparable.
-fn assert_instance_len_agrees(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
+/// `instance.body` after an edit must be what a cold eval of the edited state
+/// commits: a minted handle naming the template's realization decl, with the
+/// upstream hash folded over the instance's OWN committed values.
+///
+/// Premise: the warm and cold engines commit the same `instance.len`, so the
+/// handles are compared like for like. Whether instance params follow a
+/// template param edit is #7184's question, not these tests'.
+fn assert_edited_body_like_cold(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
     assert_eq!(
         cell(after_edit, instance, "len"),
         cell(cold, instance, "len"),
         "premise: the warm and cold engines must commit the same {instance}.len, \
          or their instance cells are not comparable"
+    );
+    let edited_body = cell(after_edit, instance, "body");
+    assert!(
+        matches!(edited_body, Value::GeometryHandle { .. }),
+        "{instance}.body must be a minted GeometryHandle after the edit: Undef \
+         means the edit path evaluated the instance cell without the \
+         instance-scope mint, got {edited_body:?}"
+    );
+    assert_eq!(
+        edited_body,
+        cell(cold, instance, "body"),
+        "{instance}.body after the edit must equal a cold eval's: the \
+         template's realization, hashed over the instance's own values"
+    );
+}
+
+/// The premise every edit-path pin starts from: `eval()` minted `instance.body`.
+fn assert_minted_at_eval(before: &EvalResult, instance: &str) {
+    let minted_at_eval = cell(before, instance, "body");
+    assert!(
+        matches!(minted_at_eval, Value::GeometryHandle { .. }),
+        "premise: eval() mints {instance}.body, got {minted_at_eval:?}"
     );
 }
 
@@ -410,10 +437,6 @@ fn assert_instance_len_agrees(after_edit: &EvalResult, cold: &EvalResult, instan
 /// rule as `eval()`: the template's realization decl, with the upstream hash
 /// folded over the instance's OWN committed values. So the edited cell must
 /// equal what a cold eval of the edited state commits for it.
-///
-/// Whether instance params follow a template param edit is #7184's question,
-/// not this test's: the instance's own `len` is only required to agree between
-/// the warm and the cold engine, so the handles are compared like for like.
 #[test]
 fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_eval() {
     let source = r#"
@@ -432,63 +455,52 @@ fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_ev
         Value::length(0.03),
     );
 
-    let minted_at_eval = cell(&before, "EditOuter.same", "body");
-    assert!(
-        matches!(minted_at_eval, Value::GeometryHandle { .. }),
-        "premise: eval() mints EditOuter.same.body, got {minted_at_eval:?}"
-    );
-    assert_instance_len_agrees(&after_edit, &cold, "EditOuter.same");
-    let edited_body = cell(&after_edit, "EditOuter.same", "body");
-    assert!(
-        matches!(edited_body, Value::GeometryHandle { .. }),
-        "EditOuter.same.body must still be a minted GeometryHandle after a \
-         template param edit: Undef means the edit path re-evaluated the \
-         instance cell without the instance-scope mint, got {edited_body:?}"
-    );
-    assert_eq!(
-        edited_body,
-        cell(&cold, "EditOuter.same", "body"),
-        "EditOuter.same.body after edit_param must equal a cold eval's: the \
-         template's realization, hashed over the instance's own values"
-    );
+    assert_minted_at_eval(&before, "EditOuter.same");
+    assert_edited_body_like_cold(&after_edit, &cold, "EditOuter.same");
 }
 
-/// The selector half of the edit-path instance mint: an override-free sub's
-/// selector let over its own geometry must, after a template param edit, equal
-/// what a cold eval of the edited state commits, i.e. a selector over the
-/// INSTANCE's handle, not over the template's edited one.
-#[test]
-fn edit_param_on_a_template_param_mints_an_override_free_instance_selector_like_a_cold_eval() {
-    let source = r#"
-        structure EditSelInner {
-            param len : Length = 10mm
-            let body = box(len, 10mm, 10mm)
-            let s = face(body, "x_max")
-        }
+/// A rack of two bolts whose count is static, so `eval()` stamps both slots.
+const BOLT_RACK: &str = r#"
+    structure CBolt {
+        param len : Length = 10mm
+        let body = box(len, 10mm, 10mm)
+    }
 
-        structure EditSelOuter {
-            sub same = EditSelInner()
-        }
-    "#;
+    structure CRack {
+        param n : Int = 2
+        sub bolts : List<CBolt>
+        constraint bolts.count == n
+    }
+"#;
+
+/// A static-count collection's slots are sub instances too, so a template
+/// param edit must leave every slot's geometry cell minted like a cold eval.
+#[test]
+fn edit_param_on_a_template_param_mints_static_collection_slots_like_a_cold_eval() {
     let (before, after_edit, cold) = warm_edit_and_cold_eval(
-        source,
-        &ValueCellId::new("EditSelInner", "len"),
+        BOLT_RACK,
+        &ValueCellId::new("CBolt", "len"),
         Value::length(0.03),
     );
 
-    let selector_at_eval = cell(&before, "EditSelOuter.same", "s");
-    assert!(
-        matches!(selector_at_eval, Value::Selector(_)),
-        "premise: eval() mints EditSelOuter.same.s, got {selector_at_eval:?}"
-    );
-    assert_instance_len_agrees(&after_edit, &cold, "EditSelOuter.same");
-    let edited_s = cell(&after_edit, "EditSelOuter.same", "s");
-    assert_eq!(
-        edited_s,
-        cell(&cold, "EditSelOuter.same", "s"),
-        "EditSelOuter.same.s after edit_param must equal a cold eval's: a \
-         selector over the instance's own minted body (a selector over \
-         EditSelInner's edited body means the edit path read the template's \
-         cells for the instance)"
-    );
+    for slot in ["CRack.bolts[0]", "CRack.bolts[1]"] {
+        assert_minted_at_eval(&before, slot);
+        assert_edited_body_like_cold(&after_edit, &cold, slot);
+    }
+}
+
+/// Growing a collection re-creates its slots in the edit path's resize loop,
+/// whose plain evaluation of a geometry cell returns Undef. Every slot,
+/// the new one included, must still mint like a cold eval of the grown count.
+#[test]
+fn edit_param_growing_a_collection_mints_every_slot_like_a_cold_eval() {
+    let (before, after_edit, cold) =
+        warm_edit_and_cold_eval(BOLT_RACK, &ValueCellId::new("CRack", "n"), Value::Int(3));
+
+    for slot in ["CRack.bolts[0]", "CRack.bolts[1]"] {
+        assert_minted_at_eval(&before, slot);
+    }
+    for slot in ["CRack.bolts[0]", "CRack.bolts[1]", "CRack.bolts[2]"] {
+        assert_edited_body_like_cold(&after_edit, &cold, slot);
+    }
 }

@@ -270,6 +270,9 @@ pub struct EvaluationGraph {
     /// Every sub-instance entity whose cells are in `value_cells` (`P.s`,
     /// `P.s[i]`, `P.s["k"]`), mapped to the name of the template those cells
     /// are stamped from. Read through [`Self::sub_instance_template`].
+    /// `from_templates` fills it from [`cell_contributions::sub_instances`],
+    /// the same slot enumeration that stamps those cells; the collection
+    /// resize keeps it in step.
     ///
     /// **NOT mixed into `topology_fingerprint` or any other hash:** the
     /// instance cells it names are already in the fingerprint via
@@ -552,6 +555,9 @@ impl EvaluationGraph {
 
         for cell in contributed_cells(templates) {
             insert_contributed_cell(&mut graph.value_cells, cell);
+        }
+        for (entity, template) in cell_contributions::sub_instances(templates) {
+            graph.record_sub_instance(entity, template.to_string());
         }
 
         graph
