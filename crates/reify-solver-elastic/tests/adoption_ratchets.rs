@@ -215,7 +215,7 @@ const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "duplicated-test-helpers",
         home: "tests/common/fea_harness.rs (solver-crates-layering D11, leaf ι)",
-        baseline: 58,
+        baseline: 56,
         measure: Measure::DuplicateTopLevelFns {
             root: "tests/",
             shared_dir: "tests/common/",
