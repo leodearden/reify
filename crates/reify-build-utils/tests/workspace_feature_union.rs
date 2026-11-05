@@ -43,7 +43,7 @@ fn line_has_all(line: &str, needles: &[&str]) -> bool {
     needles.iter().all(|needle| line.contains(needle))
 }
 
-const FINDING_KINDS: [&str; 3] = ["SPLIT ", "UNCOVERED ", "HOST-MEMBER "];
+const FINDING_KINDS: [&str; 3] = ["SPLIT ", "UNCOVERED ", "HOST-UNION "];
 
 fn finding_lines(stdout: &str) -> Vec<&str> {
     stdout
@@ -137,18 +137,25 @@ fn real_workspace_resolves_every_member_like_the_workspace() {
 struct Member {
     name: &'static str,
     deps: Vec<(&'static str, Option<&'static str>)>,
+    lib_kind: &'static str,
 }
 
 fn member(name: &'static str, normal_deps: &[&'static str]) -> Member {
     Member {
         name,
         deps: normal_deps.iter().map(|dep| (*dep, None)).collect(),
+        lib_kind: "lib",
     }
 }
 
 impl Member {
     fn build_dep(mut self, name: &'static str) -> Member {
         self.deps.push((name, Some("build")));
+        self
+    }
+
+    fn proc_macro(mut self) -> Member {
+        self.lib_kind = "proc-macro";
         self
     }
 }
@@ -170,11 +177,13 @@ fn metadata_json(root: &Path, members: &[Member]) -> String {
                 })
                 .collect::<Vec<_>>();
             format!(
-                "{{\"name\": \"{}\", \"id\": \"{}\", \"manifest_path\": \"{}\", \"dependencies\": [{}]}}",
+                "{{\"name\": \"{}\", \"id\": \"{}\", \"manifest_path\": \"{}\", \"dependencies\": [{}], \
+                 \"targets\": [{{\"kind\": [\"{}\"]}}]}}",
                 m.name,
                 package_id(m.name),
                 manifest_path(root, m.name).display(),
-                deps.join(", ")
+                deps.join(", "),
+                m.lib_kind
             )
         })
         .collect::<Vec<_>>();
@@ -196,7 +205,9 @@ fn manifest_path(root: &Path, name: &str) -> PathBuf {
 /// A stand-in for cargo that serves the fixture's canned files by argv and
 /// logs every argv to cargo-argv.log. `tree -p NAME` serves
 /// tree-NAME.after.txt once the union manifest matches the grep pattern in
-/// after-pattern, and tree-NAME.txt before that.
+/// after-pattern, and tree-NAME.txt before that. Like real cargo, an
+/// `--offline` tree may rewrite Cargo.lock: the stub appends its argv to the
+/// fixture's Cargo.lock when one exists.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -208,6 +219,9 @@ case "${1:-}" in
   metadata)
     exec cat "$here/metadata.json" ;;
   tree)
+    if [ -e "$here/Cargo.lock" ] && [[ " $* " == *" --offline "* ]]; then
+      printf 'resolved by: %s\n' "$*" >> "$here/Cargo.lock"
+    fi
     if [ -e "$here/tree-fail" ]; then
       echo 'error: boom' >&2
       exit 101
@@ -496,39 +510,167 @@ b v0.1.0 (/fixture/crates/b)|
     );
 }
 
-#[test]
-fn check_reds_on_a_build_dependency_member_that_depends_on_the_union() {
-    let tree_a_with_u = "\
+const UNION_NODE: &str =
+    "workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|";
+
+/// `--workspace` with `a` building with member `u`, whose subtree below its
+/// `[build-dependencies]` line is `u_children` (each line indented under u).
+fn workspace_building_a_with_u(u_children: &[&str]) -> String {
+    let below_u: String = u_children
+        .iter()
+        .map(|line| format!("    {line}\n"))
+        .collect();
+    let tree_a = format!(
+        "a v0.1.0 (/fixture/crates/a)|\n\
+         |-- {UNION_NODE}\n\
+         `-- memchr v2.0.0|std\n\
+         [build-dependencies]\n\
+         `-- u v0.1.0 (/fixture/crates/u)|\n\
+         {below_u}"
+    );
+    workspace_of(&[&tree_a, TREE_UNION])
+}
+
+const TREE_A_UNION_MEMCHR: &str = "\
 a v0.1.0 (/fixture/crates/a)|
 |-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
 `-- memchr v2.0.0|std
-[build-dependencies]
-`-- u v0.1.0 (/fixture/crates/u)|
 ";
-    let ws = workspace_of(&[tree_a_with_u, TREE_UNION]);
 
-    let host_member = vec![
+#[test]
+fn check_reds_when_a_build_dependency_member_puts_the_union_on_the_host_side() {
+    let members = vec![
         member("a", &[UNION]).build_dep("u"),
         member("u", &[UNION]),
         member(UNION, &[]),
     ];
+    let fixture = Fixture::new(
+        &members,
+        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
+    )
+    .tree("a", TREE_A_UNION_MEMCHR);
+    let manifest = fixture.manifest("u");
     assert_findings(
-        &Fixture::new(&host_member, &ws)
-            .tree("a", tree_a_with_u)
-            .check(),
-        &[&["HOST-MEMBER u", "{a}"]],
+        &fixture.check(),
+        &[&[
+            "HOST-UNION u",
+            "a -[build]-> u -> workspace-feature-union",
+            "remove u's dependency on workspace-feature-union",
+            &manifest,
+        ]],
         "u is a build-dependency of a and depends on the union",
     );
+}
 
-    let lean = vec![
+#[test]
+fn check_reds_when_a_build_dependency_member_reaches_the_union_through_a_covered_member() {
+    let members = vec![
+        member("a", &[UNION]).build_dep("u"),
+        member("u", &["core"]),
+        member("core", &[UNION]),
+        member(UNION, &[]),
+    ];
+    let tree_core = format!("core v0.1.0 (/fixture/crates/core)|\n`-- {UNION_NODE}\n");
+    let fixture = Fixture::new(
+        &members,
+        &workspace_building_a_with_u(&[
+            "`-- core v0.1.0 (/fixture/crates/core)|",
+            &format!("    `-- {UNION_NODE}"),
+        ]),
+    )
+    .tree("a", TREE_A_UNION_MEMCHR)
+    .tree("core", &tree_core);
+    let manifest = fixture.manifest("u");
+    assert_findings(
+        &fixture.check(),
+        &[&[
+            "HOST-UNION u",
+            "a -[build]-> u -> core -> workspace-feature-union",
+            "remove u's dependency on core",
+            &manifest,
+        ]],
+        "u never names the union, but its dependency core does",
+    );
+}
+
+#[test]
+fn check_is_green_when_a_build_dependency_member_stays_off_the_union() {
+    let members = vec![
         member("a", &[UNION]).build_dep("u"),
         member("u", &[]),
         member(UNION, &[]),
     ];
     assert_green(
-        &Fixture::new(&lean, &ws).tree("a", tree_a_with_u).check(),
+        &Fixture::new(&members, &workspace_building_a_with_u(&[]))
+            .tree("a", TREE_A_UNION_MEMCHR)
+            .check(),
         "a build-dependency member is neither required to depend on the union nor \
          resolved with -p (the stub exits 3 on -p u)",
+    );
+}
+
+/// `--workspace` with `a` depending on the proc-macro member `pm`, whose
+/// subtree is `pm_children`; pm is also a root of its own.
+fn workspace_using_proc_macro_pm(pm_children: &[&str]) -> String {
+    let below_pm: String = pm_children
+        .iter()
+        .map(|line| format!("    {line}\n"))
+        .collect();
+    let root_pm: String = pm_children.iter().map(|line| format!("{line}\n")).collect();
+    let tree_a = format!(
+        "a v0.1.0 (/fixture/crates/a)|\n\
+         |-- {UNION_NODE}\n\
+         `-- pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n\
+         {below_pm}"
+    );
+    let tree_pm = format!("pm v0.1.0 (proc-macro) (/fixture/crates/pm)|\n{root_pm}");
+    workspace_of(&[&tree_a, &tree_pm, TREE_UNION])
+}
+
+const TREE_A_UNION_PM: &str = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+`-- pm v0.1.0 (proc-macro) (/fixture/crates/pm)|
+";
+
+#[test]
+fn check_exempts_a_proc_macro_member_from_coverage() {
+    let members = vec![
+        member("a", &[UNION, "pm"]),
+        member("pm", &[]).proc_macro(),
+        member(UNION, &[]),
+    ];
+    assert_green(
+        &Fixture::new(&members, &workspace_using_proc_macro_pm(&[]))
+            .tree("a", TREE_A_UNION_PM)
+            .check(),
+        "a proc-macro member is compiled for the host: it is neither required to depend \
+         on the union nor resolved with -p (the stub exits 3 on -p pm)",
+    );
+}
+
+#[test]
+fn check_reds_when_a_proc_macro_member_puts_the_union_on_the_host_side() {
+    let members = vec![
+        member("a", &[UNION, "pm"]),
+        member("pm", &[UNION]).proc_macro(),
+        member(UNION, &[]),
+    ];
+    let fixture = Fixture::new(
+        &members,
+        &workspace_using_proc_macro_pm(&[&format!("`-- {UNION_NODE}")]),
+    )
+    .tree("a", TREE_A_UNION_PM);
+    let manifest = fixture.manifest("pm");
+    assert_findings(
+        &fixture.check(),
+        &[&[
+            "HOST-UNION pm",
+            "pm (proc-macro) -> workspace-feature-union",
+            "remove pm's dependency on workspace-feature-union",
+            &manifest,
+        ]],
+        "one finding for pm, though the union sits below pm under a and as pm's own root",
     );
 }
 
@@ -807,12 +949,15 @@ fn generate_refuses_to_write_while_the_coverage_rule_has_findings() {
     ];
     let original =
         empty_union_manifest().replace(END_MARKER, &format!("stale = \"1\"\n{END_MARKER}"));
-    let fixture =
-        Fixture::new(&members, &workspace_of(&[TREE_A, TREE_UNION])).with_union_manifest(&original);
+    let fixture = Fixture::new(
+        &members,
+        &workspace_building_a_with_u(&[&format!("`-- {UNION_NODE}")]),
+    )
+    .with_union_manifest(&original);
 
     assert_findings(
         &fixture.generate(),
-        &[&["UNCOVERED b"], &["HOST-MEMBER u", "{a}"]],
+        &[&["UNCOVERED b"], &["HOST-UNION u"]],
         "b lacks the union and build-dependency u depends on it",
     );
     assert_eq!(
@@ -832,5 +977,44 @@ fn generate_exits_2_naming_the_union_manifest_when_a_marker_is_missing() {
         &fixture.generate(),
         &[&manifest, "END"],
         "the union manifest has no END marker",
+    );
+}
+
+#[test]
+fn generate_restores_the_union_manifest_and_cargo_lock_when_cargo_fails_part_way() {
+    let original = empty_union_manifest().replace(
+        END_MARKER,
+        &format!("[target.{HOST}.dependencies]\nserde = {{ version = \"1\" }}\n{END_MARKER}"),
+    );
+    let lock = "# the stub appends to this on every --offline cargo tree\n";
+    // No `-p a` tree: the stub exits 3 on `cargo tree -p a`, which generate
+    // reaches only after it has rewritten the region and resolved --workspace.
+    let fixture = Fixture::new(&covered_a(), &workspace_of(&[TREE_A, TREE_UNION]))
+        .with_union_manifest(&original);
+    fixture.write("Cargo.lock", lock);
+
+    let out = fixture.generate();
+    assert_input_error(
+        &out,
+        &["-p a", "restored"],
+        "cargo tree -p a fails part-way",
+    );
+    let log = fixture.cargo_argv_log();
+    assert!(
+        log.lines()
+            .any(|line| line.starts_with("tree") && line.contains("-p a")),
+        "the failure must come after generate began rewriting\n{log}"
+    );
+    assert_eq!(
+        fixture.union_manifest(),
+        original,
+        "a failed generate must leave the union manifest byte-identical\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.path("Cargo.lock")).expect("read the fixture Cargo.lock"),
+        lock,
+        "a failed generate must leave Cargo.lock byte-identical\n{}",
+        describe(&out)
     );
 }

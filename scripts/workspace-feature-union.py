@@ -10,21 +10,24 @@ rebuilds it cold. The workspace-feature-union crate pins, per side, the
 features `--workspace` resolves; every member depends on it, so any `-p`
 selection resolves the same variants.
 
-The rule, checked by `cargo tree` resolution alone (no compile):
-  - every workspace member that is not a build-dependency of another member
-    depends on workspace-feature-union (a normal dependency);
-  - a member that IS a build-dependency of another member does not: the
-    union's target pins would enter every build-script graph it is part of;
+A side is HOST for build-dependencies, proc-macros and everything below
+them, TARGET otherwise; resolver 2 keeps one feature set per side. A member
+is host-side when it is a build-dependency of another member or a
+proc-macro. The rule, checked by `cargo tree` resolution alone (no compile):
+  - every member that is not host-side depends on workspace-feature-union (a
+    normal dependency); a host-side member is exempt and is not resolved
+    with `-p`, so `-p <host-side member>` stays split;
+  - `cargo tree --workspace` never reaches workspace-feature-union on the host
+    side, where its target pins would become host units;
   - for every covered member M, each external (name, version, side, features)
     variant of `cargo tree -p M` also occurs in `cargo tree --workspace`.
-    A side is HOST for build-dependencies, proc-macros and everything below
-    them, TARGET otherwise; resolver 2 keeps one feature set per side.
 
 Reading a failure:
     UNCOVERED <m>: ...          add `workspace-feature-union.workspace = true`
                                 under [dependencies] in the named manifest.
-    HOST-MEMBER <m>: ...        <m> is a build-dependency of the named members;
-                                remove its workspace-feature-union dependency.
+    HOST-UNION <m>: <path> ...  the path reaches workspace-feature-union on the
+                                host side; remove the dependency of <m> that
+                                the line names, from the named manifest.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
@@ -32,10 +35,15 @@ Reading a failure:
                                 then regenerate crates/reify-eval/engine_hash_closure.txt
                                 with the command in its header.
 
+`check` is a lower bound: the union's own pins are part of `--workspace`, so a
+pin no member needs any more passes it. `generate` starts from an empty
+region, so it is what sheds a stale pin.
+
 `check` resolves with `--frozen`: it never writes Cargo.lock and never touches
 the network. `generate` rewrites the marked region of
 crates/workspace-feature-union/Cargo.toml to a fixpoint and resolves with
-`--offline`, so the rewrite may update Cargo.lock.
+`--offline`, so the rewrite may update Cargo.lock; if an input fails part-way
+it puts both files back as it found them.
 
 The gate runs from crates/reify-build-utils/tests/workspace_feature_union.rs
 (`cargo test -p reify-build-utils --test workspace_feature_union`). Design,
@@ -154,12 +162,16 @@ PACKAGE_HEAD = re.compile(
 class TreeNode:
     """A package on the current ancestry path, with the section its children
     are listed under."""
+    name: str
     host: bool
     proc_macro: bool
     section: Section = Section.NORMAL
 
     def child_is_host(self) -> bool:
         return self.host or self.proc_macro or self.section is Section.BUILD
+
+    def label(self) -> str:
+        return f"{self.name} (proc-macro)" if self.proc_macro else self.name
 
 
 @dataclass(frozen=True)
@@ -195,10 +207,22 @@ def parse_package(body: str, where: str) -> TreePackage:
                        features=frozenset(f for f in features.split(",") if f))
 
 
-def parse_tree(text: str, source: str) -> frozenset[Variant]:
-    """Every registry package variant in `cargo tree -f '{p}|{f}' --charset
-    ascii` output, each attributed to the side its ancestry puts it on."""
+Ancestry = tuple[TreeNode, ...]
+
+
+@dataclass(frozen=True)
+class Tree:
+    """A parsed `cargo tree`: every registry package variant, and the ancestry
+    of every host-side occurrence of the union crate."""
+    variants: frozenset[Variant]
+    host_unions: tuple[Ancestry, ...]
+
+
+def parse_tree(text: str, source: str) -> Tree:
+    """`cargo tree -f '{p}|{f}' --charset ascii` output, each package
+    attributed to the side its ancestry puts it on."""
     variants: set[Variant] = set()
+    host_unions: list[Ancestry] = []
     stack: list[TreeNode] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -220,14 +244,16 @@ def parse_tree(text: str, source: str) -> frozenset[Variant]:
         package = parse_package(body, where)
         host = package.proc_macro or (depth > 0 and stack[depth - 1].child_is_host())
         del stack[depth:]
-        stack.append(TreeNode(host=host, proc_macro=package.proc_macro))
+        stack.append(TreeNode(name=package.name, host=host, proc_macro=package.proc_macro))
         if not package.path_source:
             side = Side.HOST if host else Side.TARGET
             variants.add(variant(package.name, package.version, side, package.features))
-    return frozenset(variants)
+        elif package.name == UNION_CRATE and host:
+            host_unions.append(tuple(stack))
+    return Tree(variants=frozenset(variants), host_unions=tuple(host_unions))
 
 
-def resolve(root: Path, mode: LockMode, host: str, selection: Sequence[str]) -> frozenset[Variant]:
+def resolve(root: Path, mode: LockMode, host: str, selection: Sequence[str]) -> Tree:
     args = ["tree", mode.value, *selection, "-e", "normal,build,dev", "-f", "{p}|{f}",
             "--charset", "ascii", "--target", host]
     return parse_tree(cargo(root, args), f"`cargo tree {' '.join(selection)}`")
@@ -241,6 +267,12 @@ class Member:
     manifest_path: str
     depends_on_union: bool
     build_dependents: frozenset[str]
+    proc_macro: bool
+
+    @property
+    def host_side(self) -> bool:
+        """Compiled for the host wherever another member uses it."""
+        return self.proc_macro or bool(self.build_dependents)
 
 
 @dataclass(frozen=True)
@@ -251,11 +283,10 @@ class Workspace:
     @property
     def covered(self) -> tuple[Member, ...]:
         """The members that must depend on the union crate."""
-        return tuple(m for m in self.members if not m.build_dependents)
+        return tuple(m for m in self.members if not m.host_side)
 
-    @property
-    def build_dependency_members(self) -> tuple[Member, ...]:
-        return tuple(m for m in self.members if m.build_dependents)
+    def manifest_of(self, name: str) -> str | None:
+        return next((m.manifest_path for m in self.members if m.name == name), None)
 
 
 DEPENDENCY_KINDS = frozenset({None, "build", "dev"})
@@ -281,7 +312,8 @@ def workspace_of(metadata: object) -> Workspace:
             (Member(name=p["name"], manifest_path=p["manifest_path"],
                     depends_on_union=any(d["name"] == UNION_CRATE and d["kind"] is None
                                          for d in p["dependencies"]),
-                    build_dependents=build_dependents[p["name"]])
+                    build_dependents=build_dependents[p["name"]],
+                    proc_macro=any("proc-macro" in t["kind"] for t in p["targets"]))
              for p in packages if p["name"] != UNION_CRATE),
             key=lambda m: m.name))
         union = [Path(p["manifest_path"]) for p in packages if p["name"] == UNION_CRATE]
@@ -302,16 +334,35 @@ def read_workspace(root: Path, mode: LockMode) -> Workspace:
 # --- findings ---------------------------------------------------------------
 
 def coverage_findings(ws: Workspace) -> list[str]:
-    return [
-        *(f"UNCOVERED {m.name}: does not depend on {UNION_CRATE} — add "
-          f"`{UNION_CRATE}.workspace = true` under [dependencies] in {m.manifest_path}"
-          for m in ws.covered if not m.depends_on_union),
-        *(f"HOST-MEMBER {m.name}: is a build-dependency of "
-          f"{{{', '.join(sorted(m.build_dependents))}}} — the union's target pins would "
-          f"enter their build-script graphs; remove its {UNION_CRATE} dependency from "
-          f"{m.manifest_path}"
-          for m in ws.build_dependency_members if m.depends_on_union),
-    ]
+    return [f"UNCOVERED {m.name}: does not depend on {UNION_CRATE} — add "
+            f"`{UNION_CRATE}.workspace = true` under [dependencies] in {m.manifest_path}"
+            for m in ws.covered if not m.depends_on_union]
+
+
+EDGE_NOUN = {Section.NORMAL: "dependency", Section.BUILD: "build-dependency",
+             Section.DEV: "dev-dependency"}
+EDGE_ARROW = {Section.NORMAL: " -> ", Section.BUILD: " -[build]-> ", Section.DEV: " -[dev]-> "}
+
+
+def host_union_findings(tree: Tree, ws: Workspace) -> list[str]:
+    """One finding per dependency edge that brings the union, or a covered
+    member (which reaches the union by the coverage rule), onto the host
+    side; the first path through each edge is quoted."""
+    brings_union = {m.name for m in ws.covered} | {UNION_CRATE}
+    by_edge: dict[tuple[str, str], str] = {}
+    for ancestry in tree.host_unions:
+        at = next(i for i, node in enumerate(ancestry[1:])
+                  if node.host and node.name in brings_union)
+        parent, child = ancestry[at], ancestry[at + 1]
+        path = "".join(node.label() + EDGE_ARROW[node.section] for node in ancestry[:-1])
+        manifest = ws.manifest_of(parent.name)
+        by_edge.setdefault(
+            (parent.name, child.name),
+            f"HOST-UNION {parent.name}: {path}{ancestry[-1].label()} resolves {UNION_CRATE} "
+            f"on the host side, where its target pins would become host units — remove "
+            f"{parent.name}'s {EDGE_NOUN[parent.section]} on {child.name}"
+            + (f" from {manifest}" if manifest else ""))
+    return [by_edge[edge] for edge in sorted(by_edge)]
 
 
 @dataclass(frozen=True)
@@ -339,17 +390,18 @@ def features_by_key(variants: frozenset[Variant]) -> dict[VariantKey, tuple[froz
 
 @dataclass(frozen=True)
 class Resolution:
-    workspace: frozenset[Variant]
+    workspace: Tree
     splits: tuple[Split, ...]
 
 
 def resolve_splits(root: Path, mode: LockMode, host: str, ws: Workspace) -> Resolution:
     workspace = resolve(root, mode, host, ["--workspace"])
-    in_workspace = features_by_key(workspace)
+    in_workspace = features_by_key(workspace.variants)
     found = []
     for member in ws.covered:
-        selected = resolve(root, mode, host, ["-p", member.name])
-        for v in sorted(selected - workspace, key=lambda v: (v.key.sort_key(), sorted(v.features))):
+        selected = resolve(root, mode, host, ["-p", member.name]).variants
+        for v in sorted(selected - workspace.variants,
+                        key=lambda v: (v.key.sort_key(), sorted(v.features))):
             found.append(Split(member.name, v, in_workspace.get(v.key, ())))
     return Resolution(workspace=workspace, splits=tuple(found))
 
@@ -444,7 +496,7 @@ def grown(pins: Pins, resolution: Resolution) -> Pins:
     """`pins` with every split key's features widened to the union of the
     workspace's variants of that key; a key the workspace never builds on that
     side stays unpinned."""
-    in_workspace = features_by_key(resolution.workspace)
+    in_workspace = features_by_key(resolution.workspace.variants)
     result = dict(pins)
     for split in resolution.splits:
         key = split.variant.key
@@ -464,8 +516,10 @@ def fail(lines: Sequence[str], *trailer: str) -> Verdict:
 
 def run_check(root: Path) -> Verdict:
     ws = read_workspace(root, LockMode.FROZEN)
-    found = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws).splits
-    lines = [*coverage_findings(ws), *map(str, found)]
+    resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
+    found = resolution.splits
+    lines = [*coverage_findings(ws), *host_union_findings(resolution.workspace, ws),
+             *map(str, found)]
     if lines:
         return fail(lines, *([GENERATE_REMEDY] if found else []))
     print(f"workspace-feature-union: OK ({len(ws.covered)} members resolve every external "
@@ -473,16 +527,47 @@ def run_check(root: Path) -> Verdict:
     return Verdict.OK
 
 
+@dataclass(frozen=True)
+class Snapshot:
+    """Files as they were before generate wrote anything; a missing file is
+    recorded as None."""
+    contents: tuple[tuple[Path, bytes | None], ...]
+
+    @classmethod
+    def take(cls, *paths: Path) -> Snapshot:
+        return cls(tuple((path, path.read_bytes() if path.exists() else None)
+                         for path in paths))
+
+    def restore(self) -> str:
+        for path, data in self.contents:
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(data)
+        return " and ".join(str(path) for path, _ in self.contents)
+
+
 def run_generate(root: Path, max_iterations: int) -> Verdict:
     mode = LockMode.OFFLINE
     ws = read_workspace(root, mode)
-    coverage = coverage_findings(ws)
-    if coverage:
-        return fail(coverage, "generate writes nothing until the coverage rule holds")
     if ws.union_manifest is None:
         raise InputError(f"cargo metadata: the workspace has no {UNION_CRATE} package")
     manifest = read_union_manifest(ws.union_manifest)
     host = host_triple(root)
+    snapshot = Snapshot.take(manifest.path, root / "Cargo.lock")
+    try:
+        return converge(root, mode, host, ws, manifest, max_iterations)
+    except (InputError, OSError) as error:
+        restored = snapshot.restore()
+        raise InputError(f"{error}\ngenerate restored {restored} as it found them") from None
+
+
+def converge(root: Path, mode: LockMode, host: str, ws: Workspace, manifest: UnionManifest,
+             max_iterations: int) -> Verdict:
+    refusals = [*coverage_findings(ws),
+                *host_union_findings(resolve(root, mode, host, ["--workspace"]), ws)]
+    if refusals:
+        return fail(refusals, "generate writes nothing until the coverage rule holds")
     pins: Pins = {}
     manifest.write(render_region(pins, host))
     resolution = resolve_splits(root, mode, host, ws)
