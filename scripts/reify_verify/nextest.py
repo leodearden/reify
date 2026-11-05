@@ -2,7 +2,9 @@
 
 emit_pass builds every test pass, the gui-feature pass included: what varies
 per pass is its PassSpec, and what the role sets for all of them is the
-TestRunner. Without nextest the pass falls back to cargo test.
+TestRunner. Without nextest the pass falls back to cargo test. A spec's
+PassKind says which pass it is: its ledger phase, and whether it records
+failing ids for --confirm-failed.
 
 nextest_config_path is the package's only call of gen-nextest-config.sh. The
 test region calls it once per plan and hands the value to every pass, so the
@@ -16,21 +18,20 @@ from pathlib import Path
 
 from reify_verify import bashcall, knobs
 from reify_verify.bashcall import ScriptCall
+from reify_verify.gatepaths import CrateGuard
 from reify_verify.plan import (
     CONFIRM_RECORDER,
     CargoTestRun,
-    Chain,
     ConfirmRecorded,
-    Guarded,
     NextestFlags,
     NextestRun,
     Phase,
     Refused,
-    Script,
     Selector,
     SlotFdClosed,
     Step,
     StepKind,
+    unquotable_knob,
 )
 from reify_verify.policy import PROFILE_TABLE, HeavyPartition, Profile
 
@@ -54,6 +55,11 @@ class NextestConfig:
     path: str
     origin: ConfigOrigin
     diagnostics: tuple[str, ...] = ()
+
+    def discard(self) -> None:
+        """Remove a generated file no plan will name; the caller's file and the placeholder stay."""
+        if self.origin is ConfigOrigin.GENERATED:
+            Path(self.path).unlink(missing_ok=True)
 
 
 def nextest_config_path(
@@ -93,25 +99,42 @@ def nextest_config_path(
     )
 
 
-@dataclass(frozen=True)
-class PassGuard:
-    """The pass runs only when `manifest` exists, after `setup`."""
+class PassKind(Enum):
+    """Which pass a spec is: a profile's own test pass, or the gui-feature pass beside them."""
 
-    manifest: str
-    setup: Script
+    PROFILE = "profile"
+    GUI_FEATURE = "gui_feature"
+
+    @property
+    def records(self) -> bool:
+        """Only a profile's pass records its failing ids, into that profile's confirm manifest."""
+        return self is PassKind.PROFILE
 
 
 @dataclass(frozen=True)
 class PassSpec:
-    """What one test pass runs: the facts that vary from pass to pass."""
+    """What one test pass runs: the facts that vary from pass to pass.
 
+    The gui-feature pass never carries a filter: one would narrow away the
+    gui-gated tests it exists to run.
+    """
+
+    kind: PassKind
     profile: Profile
     selector: Selector
     wall: str
     features: tuple[str, ...] = ()
     heavy: HeavyPartition = HeavyPartition.INCLUDED
     retry_ids: tuple[str, ...] = ()
-    guard: PassGuard | None = None
+    guard: CrateGuard | None = None
+
+    def __post_init__(self):
+        filtered = self.heavy is not HeavyPartition.INCLUDED or self.retry_ids
+        if self.kind is PassKind.GUI_FEATURE and filtered:
+            raise ValueError(
+                f"PassSpec: the gui-feature pass carries no filter (heavy={self.heavy.value}, "
+                f"retry_ids={self.retry_ids!r})"
+            )
 
 
 @dataclass(frozen=True)
@@ -128,19 +151,32 @@ class ConfirmRecording:
     per_profile: tuple[tuple[Profile, ConfirmPaths], ...]
 
     @classmethod
-    def resolve(cls, raw_env: Mapping[str, str]) -> "ConfirmRecording":
-        """The paths as bash reads them at load, from the raw env."""
+    def resolve(
+        cls, raw_env: Mapping[str, str], profiles: tuple[Profile, ...]
+    ) -> "ConfirmRecording | Refused":
+        """The paths `profiles`' passes record to, as bash reads them at load, from the raw env.
+
+        A path the recorder's quotes cannot hold refuses the plan.
+        """
+        read = {knobs.CONFIRM_JUNIT.name: str(knobs.resolve(knobs.CONFIRM_JUNIT, raw_env).value)}
+        for profile in profiles:
+            policy = PROFILE_TABLE[profile]
+            for knob in (policy.confirm_manifest, policy.confirm_sidecar):
+                read[knob.name] = str(knobs.resolve(knob, raw_env).value)
+        refused = unquotable_knob(read.items(), ConfirmRecorded.PATH_QUOTE)
+        if refused is not None:
+            return refused
         return cls(
-            str(knobs.resolve(knobs.CONFIRM_JUNIT, raw_env).value),
+            read[knobs.CONFIRM_JUNIT.name],
             tuple(
                 (
                     profile,
                     ConfirmPaths(
-                        str(knobs.resolve(policy.confirm_manifest, raw_env).value),
-                        str(knobs.resolve(policy.confirm_sidecar, raw_env).value),
+                        read[PROFILE_TABLE[profile].confirm_manifest.name],
+                        read[PROFILE_TABLE[profile].confirm_sidecar.name],
                     ),
                 )
-                for profile, policy in PROFILE_TABLE.items()
+                for profile in profiles
             ),
         )
 
@@ -150,7 +186,11 @@ class ConfirmRecording:
 
 @dataclass(frozen=True)
 class TestRunner:
-    """What the role sets for every pass alike; config None means no nextest, so cargo test runs."""
+    """What the role sets for every pass alike; config None means no nextest, so cargo test runs.
+
+    A recording run keeps going past a failure, so the manifest it records
+    lists every failing test, not only the first (bash's write gate).
+    """
 
     prio: str
     test_threads: int | None
@@ -159,13 +199,17 @@ class TestRunner:
     no_fail_fast: bool
     confirm: ConfirmRecording | None
 
+    def __post_init__(self):
+        if self.confirm is not None and not self.no_fail_fast:
+            raise ValueError("TestRunner: a run that records a confirm manifest runs --no-fail-fast")
+
 
 def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
     """The one test pass `spec` describes, run as `runner` runs every pass.
 
-    A recording runner wraps a nextest pass in the confirm recorder; the
-    cargo-test fallback records nothing. The pass runs without the semaphore
-    slot's descriptor.
+    A recording runner wraps a nextest pass of a recording kind in the confirm
+    recorder; the cargo-test fallback records nothing. The pass runs without
+    the semaphore slot's descriptor.
     """
     release = bool(PROFILE_TABLE[spec.profile].cargo_release_flag)
     gate_path = None
@@ -180,13 +224,13 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
         run = NextestRun(
             spec.selector, release, spec.features, spec.wall, runner.prio, flags, runner.config.path
         )
-        if runner.confirm is not None:
+        if runner.confirm is not None and spec.kind.records:
             paths = runner.confirm.paths(spec.profile)
             run = ConfirmRecorded(run, runner.confirm.junit, paths.manifest, paths.sidecar, spec.profile)
             gate_path = CONFIRM_RECORDER
     guard_file = None
     if spec.guard is not None:
-        run = Guarded("-f", spec.guard.manifest, Chain((spec.guard.setup, run)))
+        run = spec.guard.around(run)
         gate_path, guard_file = spec.guard.setup.path, spec.guard.manifest
     phase = _phase(spec, nextest=runner.config is not None)
     return Step(StepKind.CARGO, phase, SlotFdClosed(run), gate_path, guard_file)
@@ -194,7 +238,7 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
 
 def _phase(spec: PassSpec, nextest: bool) -> Phase:
     """The ledger phase: the gui-feature pass, else the profile's pass; run by nextest or cargo test."""
-    if spec.features:
+    if spec.kind is PassKind.GUI_FEATURE:
         return Phase.GUI_FEATURE_NEXTEST if nextest else Phase.GUI_FEATURE_CARGO_TEST
     if spec.profile is Profile.RELEASE:
         return Phase.RELEASE_NEXTEST if nextest else Phase.RELEASE_CARGO_TEST

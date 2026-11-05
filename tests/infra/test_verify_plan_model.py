@@ -11,9 +11,15 @@ here:
 
 - the invariants: a step's command record must suit its kind, an emitter must
   declare every gate path its steps name, PlanInputs holds a test region
-  exactly when the plan has one, and a record rendered inside quotes refuses
-  that quote;
-- nextest.nextest_config_path's generate arm, which only the executor reaches;
+  exactly when the plan has one, a record rendered inside quotes refuses
+  that quote, the slot-closed wrapper holds one test pass, a recording runner
+  runs --no-fail-fast, and the gui-feature pass is never filtered nor
+  recorded;
+- the region's refusal of a quote-bearing path knob for every path it
+  renders, of which B1 asserts one (the attempt sidecar), and the retry
+  subset's own lines;
+- nextest.nextest_config_path's generate arm, which only the executor reaches,
+  and the removal of a generated config when planning fails after it;
 - bashcall.source_delta over a scratch ~/.cargo/env, and the shell options
   the lib seams run under, over a scratch lib.
 
@@ -23,10 +29,12 @@ thin wrapper tests/infra/test_verify_plan_model.sh.
 
 import dataclasses
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 INFRA_DIR = Path(__file__).resolve().parent
 REPO_ROOT = INFRA_DIR.parents[1]
@@ -39,6 +47,7 @@ from reify_verify import (  # noqa: E402
     build,
     cli,
     environment,
+    gatepaths,
     narrowing,
     nextest,
     policy,
@@ -50,22 +59,43 @@ from reify_verify import (  # noqa: E402
 )
 from reify_verify.bashcall import BashCallError, SourcedFile  # noqa: E402
 from reify_verify.invocation import Action  # noqa: E402
+from reify_verify.nextest import (  # noqa: E402
+    ConfigOrigin,
+    ConfirmPaths,
+    ConfirmRecording,
+    NextestConfig,
+    PassKind,
+    PassSpec,
+    TestRunner,
+)
 from reify_verify.plan import (  # noqa: E402
+    CONFIRM_RECORDER,
     ArtifactAssertion,
     AttemptStamp,
+    Cargo,
+    CargoTestRun,
+    Chain,
+    ConfirmRecorded,
     Guarded,
     Marker,
     NextestFlags,
+    NextestRun,
     NodeProject,
+    Packages,
     Phase,
     Refused,
     Script,
+    SlotFdClosed,
     Step,
     StepKind,
+    Workspace,
 )
-from reify_verify.policy import HeavyPartition, Profile  # noqa: E402
+from reify_verify.policy import HeavyPartition, Profile, Role  # noqa: E402
 
 LINT_ALL_INFRA = ["lint", "--scope", "all", "--include-infra", "--print-plan"]
+GUI_CRATE = Packages((narrowing.GUI_CRATE,))
+OVERRIDE_CONFIG = NextestConfig("/caller/nextest.toml", ConfigOrigin.OVERRIDE)
+RECORDING = ConfirmRecording("j.xml", ((Profile.DEBUG, ConfirmPaths("m.txt", "s.json")),))
 
 
 def base_env(**overrides):
@@ -291,6 +321,19 @@ class TestNextestConfigPath(unittest.TestCase):
     def config_files(self) -> set[Path]:
         return set(self.tmpdir.glob("reify-nextest-occt.*"))
 
+    def generator_stderr(self, env, test_threads) -> list[str]:
+        """What gen-nextest-config.sh itself prints on stderr under `env` and the CLI thread count."""
+        run = subprocess.run(
+            [str(REPO_ROOT / nextest.GEN_NEXTEST_CONFIG.path)],
+            cwd=REPO_ROOT,
+            env={**env, nextest.CLI_TEST_THREADS: str(test_threads)},
+            capture_output=True,
+            text=True,
+        )
+        if run.returncode == 0:
+            Path(run.stdout.rstrip("\n")).unlink(missing_ok=True)
+        return run.stderr.splitlines()
+
     def config_path(self, executing, raw_env, planning_env=None, test_threads=None):
         return nextest.nextest_config_path(
             executing,
@@ -353,10 +396,9 @@ class TestNextestConfigPath(unittest.TestCase):
         self.assertIsInstance(config, nextest.NextestConfig)
         self.addCleanup(Path(config.path).unlink, missing_ok=True)
         self.assertEqual(config.origin, nextest.ConfigOrigin.GENERATED)
-        self.assertEqual(len(config.diagnostics), 1, config.diagnostics)
-        note = config.diagnostics[0]
-        self.assertTrue(note.startswith("gen-nextest-config.sh: note"), note)
-        self.assertIn("--test-threads=1", note)
+        expected = self.generator_stderr(env, 1)
+        self.assertTrue(expected, "premise: a CLI cap under the pool makes the generator print a note")
+        self.assertEqual(list(config.diagnostics), expected)
 
     def test_a_cli_thread_count_above_the_pool_is_the_generators_refusal(self):
         env = base_env(TMPDIR=str(self.tmpdir), REIFY_NEXTEST_TEST_THREADS="2")
@@ -365,12 +407,9 @@ class TestNextestConfigPath(unittest.TestCase):
         self.assertIsInstance(refused, Refused)
         self.assertEqual(refused.exit_code, 64)
         self.assertEqual(refused.lines[-1], self.DIE_LINE)
-        self.assertGreater(len(refused.lines), 1, refused.lines)
-        self.assertTrue(
-            all(line.startswith("gen-nextest-config.sh:") for line in refused.lines[:-1]),
-            refused.lines,
-        )
-        self.assertIn("--test-threads=8", refused.lines[0])
+        expected = self.generator_stderr(env, 8)
+        self.assertTrue(expected, "premise: the generator prints why it refuses")
+        self.assertEqual(list(refused.lines[:-1]), expected)
         self.assertEqual(env, before)
         self.assertNotIn("REIFY_NEXTEST_CLI_TEST_THREADS", env)
         self.assertEqual(self.config_files(), set())
@@ -447,6 +486,261 @@ class TestQuotedRegionRecords(unittest.TestCase):
         self.assert_refused(
             lambda: AttemptStamp('target/"attempt".json', (Profile.DEBUG,)), "AttemptStamp", "path"
         )
+
+    def test_a_heavy_filter_holding_a_single_quote_beside_retry_ids(self):
+        self.assert_refused(
+            lambda: self.flags(heavy_filter="test('x')", retry_ids=("a::b",)), "NextestFlags", "heavy_filter"
+        )
+
+    def test_a_heavy_filter_holding_a_single_quote_alone_is_double_quoted(self):
+        run = nextest_run(flags=self.flags(heavy_filter="test('x')"))
+        self.assertIn(""" -E "not (test('x'))" """, render.render_command(run))
+
+    def test_a_confirm_path_holding_a_double_quote(self):
+        for field in ("junit", "manifest", "sidecar"):
+            with self.subTest(field=field):
+                paths = {"junit": "j.xml", "manifest": "m.txt", "sidecar": "s.json", field: 'a"b'}
+                self.assert_refused(
+                    lambda: ConfirmRecorded(nextest_run(), profile=Profile.DEBUG, **paths),
+                    "ConfirmRecorded",
+                    field,
+                )
+
+
+def nextest_run(**overrides) -> NextestRun:
+    fields = dict(
+        selector=Workspace(), release=False, features=(), wall="60m", prio="",
+        flags=NextestFlags(HeavyPartition.INCLUDED, "H", False, None, ()), config_file="c.toml",
+    )
+    fields.update(overrides)
+    return NextestRun(**fields)
+
+
+def recording_runner(**overrides) -> TestRunner:
+    fields = dict(
+        prio="", test_threads=None, config=OVERRIDE_CONFIG, heavy_filter="H", no_fail_fast=True,
+        confirm=RECORDING,
+    )
+    fields.update(overrides)
+    return TestRunner(**fields)
+
+
+def region_inputs(role: Role, raw_env=None, **overrides) -> testregion.RegionInputs:
+    """A print-mode region over both profiles that reaches reify-gui, under `raw_env` as both envs."""
+    env = base_env() if raw_env is None else raw_env
+    fields = dict(
+        role_policy=policy.ROLE_TABLE[role],
+        profiles=(Profile.DEBUG, Profile.RELEASE),
+        debug_selector=Workspace(),
+        release_declared=("reify-doc",),
+        release_delta_skips=False,
+        reaches_gui=True,
+        walls=testregion.PassWalls("60m", "90m", "30m"),
+        prio="",
+        test_threads=None,
+        heavy_filter="H",
+        nextest=True,
+        executing=False,
+        raw_env=env,
+        planning_env=env,
+        repo_root=REPO_ROOT,
+    )
+    fields.update(overrides)
+    return testregion.RegionInputs(**fields)
+
+
+class TestSlotFdClosed(unittest.TestCase):
+    """The slot-closed wrapper a CARGO step admits holds one test pass, bare or behind its crate's guard."""
+
+    def test_a_bare_or_guarded_test_pass_is_held(self):
+        run = nextest_run()
+        bodies = (
+            run,
+            CargoTestRun(Workspace(), False, (), "60m", "", 1),
+            ConfirmRecorded(run, "j.xml", "m.txt", "s.json", Profile.DEBUG),
+            gatepaths.GUI_CRATE_GUARD.around(run),
+        )
+        for body in bodies:
+            with self.subTest(body=type(body).__name__):
+                step = Step(StepKind.CARGO, Phase.DEBUG_NEXTEST, SlotFdClosed(body), None, None)
+                self.assertTrue(render.render_step(step).endswith(" 9<&-"))
+
+    def test_any_other_body_is_refused(self):
+        bodies = (
+            Script("scripts/x.sh"),
+            Cargo("build", Workspace(), (), "60m", ""),
+            Guarded("-f", "Cargo.toml", Script("scripts/x.sh")),
+            Guarded("-f", "Cargo.toml", Chain((nextest_run(), Script("scripts/x.sh")))),
+        )
+        for body in bodies:
+            with self.subTest(body=body):
+                with self.assertRaises(ValueError) as raised:
+                    SlotFdClosed(body)
+                self.assertIn("SlotFdClosed", str(raised.exception))
+
+
+class TestPassInvariants(unittest.TestCase):
+    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded."""
+
+    def test_a_recording_runner_runs_no_fail_fast(self):
+        with self.assertRaises(ValueError) as raised:
+            recording_runner(no_fail_fast=False)
+        self.assertIn("--no-fail-fast", str(raised.exception))
+
+    def test_the_gui_feature_pass_carries_no_filter(self):
+        for label, extra in (
+            ("heavy excluded", {"heavy": HeavyPartition.EXCLUDED}),
+            ("retry ids", {"retry_ids": ("a::b",)}),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(ValueError) as raised:
+                    PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", **extra)
+                self.assertIn("gui-feature", str(raised.exception))
+
+    def test_only_a_profile_pass_records(self):
+        runner = recording_runner()
+        profile = nextest.emit_pass(PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m"), runner)
+        gui = nextest.emit_pass(
+            PassSpec(
+                PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",),
+                guard=gatepaths.GUI_CRATE_GUARD,
+            ),
+            runner,
+        )
+        self.assertIn(f"./{CONFIRM_RECORDER} record", render.render_step(profile))
+        self.assertEqual(profile.gate_path, CONFIRM_RECORDER)
+        self.assertNotIn(CONFIRM_RECORDER, render.render_step(gui))
+        self.assertEqual(gui.gate_path, gatepaths.GUI_CRATE_GUARD.setup.path)
+
+    def test_the_kind_not_the_features_names_the_phase(self):
+        runner = recording_runner(confirm=None, no_fail_fast=False)
+        gui = PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m")
+        cases = (
+            (gui, runner, Phase.GUI_FEATURE_NEXTEST),
+            (gui, dataclasses.replace(runner, config=None), Phase.GUI_FEATURE_CARGO_TEST),
+            (PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", features=("x",)), runner, Phase.DEBUG_NEXTEST),
+            (PassSpec(PassKind.PROFILE, Profile.RELEASE, Workspace(), "90m"), runner, Phase.RELEASE_NEXTEST),
+        )
+        for spec, run_as, phase in cases:
+            with self.subTest(phase=phase.value):
+                self.assertEqual(nextest.emit_pass(spec, run_as).phase, phase)
+
+    def test_every_roles_region_resolves(self):
+        for role in Role:
+            with self.subTest(role=role.value):
+                region = testregion.resolve(region_inputs(role))
+                self.assertIsInstance(region, testregion.TestRegion)
+                gui = [step for step in testregion.steps(region) if step.phase is Phase.GUI_FEATURE_NEXTEST]
+                self.assertEqual(len(gui), int(policy.ROLE_TABLE[role].gui_feature_test_pass))
+                for step in gui:
+                    self.assertNotIn(CONFIRM_RECORDER, render.render_step(step))
+
+
+class TestQuotedPathKnobs(unittest.TestCase):
+    """A path knob holding the quote its step renders it inside refuses the region, naming knob and value."""
+
+    def assert_knob_refused(self, outcome, knob, value):
+        self.assertIsInstance(outcome, Refused)
+        self.assertEqual(outcome.exit_code, 1)
+        self.assertEqual(len(outcome.lines), 1, outcome.lines)
+        self.assertTrue(outcome.lines[0].startswith("verify.sh: ERROR — "), outcome.lines)
+        self.assertIn(f"{knob}={value} holds a double quote", outcome.lines[0])
+
+    def test_the_attempt_sidecar(self):
+        value = 'target/a"b.json'
+        outcome = testregion.resolve(region_inputs(Role.MERGE, base_env(REIFY_VERIFY_ATTEMPT_SIDECAR=value)))
+        self.assert_knob_refused(outcome, "REIFY_VERIFY_ATTEMPT_SIDECAR", value)
+
+    def test_a_role_that_stamps_no_sidecar_reads_none(self):
+        env = base_env(REIFY_VERIFY_ATTEMPT_SIDECAR='target/a"b.json')
+        self.assertIsInstance(testregion.resolve(region_inputs(Role.TASK, env)), testregion.TestRegion)
+
+    def test_each_confirm_path(self):
+        names = (
+            "REIFY_VERIFY_CONFIRM_JUNIT",
+            "REIFY_VERIFY_CONFIRM_MANIFEST_DEBUG",
+            "REIFY_VERIFY_CONFIRM_SIDECAR_DEBUG",
+            "REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE",
+            "REIFY_VERIFY_CONFIRM_SIDECAR_RELEASE",
+        )
+        for knob in names:
+            with self.subTest(knob=knob):
+                value = f'target/{knob.lower()}"x'
+                outcome = testregion.resolve(region_inputs(Role.OFFLINE, base_env(**{knob: value})))
+                self.assert_knob_refused(outcome, knob, value)
+
+    def test_only_the_paths_a_pass_records_to_are_read(self):
+        env = base_env(REIFY_VERIFY_CONFIRM_MANIFEST_RELEASE='target/m"x')
+        for label, overrides in (
+            ("debug only", {"profiles": (Profile.DEBUG,)}),
+            ("cargo test records nothing", {"nextest": False}),
+        ):
+            with self.subTest(label):
+                outcome = testregion.resolve(region_inputs(Role.OFFLINE, env, **overrides))
+                self.assertIsInstance(outcome, testregion.TestRegion)
+
+
+class TestRetrySubsetLines(unittest.TestCase):
+    """retry.subset's lines of the package's own: the unquotable id and the non-integer ceiling."""
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.filter_file = Path(scratch.name) / "filter.txt"
+
+    def subset(self, ids, max_subset="5000"):
+        self.filter_file.write_text(ids, encoding="utf-8")
+        planning = base_env(REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE=str(self.filter_file))
+        return retry.subset(Profile.DEBUG, planning, max_subset, REPO_ROOT)
+
+    def test_an_unquotable_id_runs_the_pass_in_full(self):
+        ids, lines = self.subset("a::b\nit's::c\n")
+        self.assertEqual(ids, ())
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith(f"{retry.REFUSED}unquotable id — it's::c "), lines)
+        self.assertTrue(lines[0].endswith("(profile=debug, full verify)"), lines)
+
+    def test_a_non_integer_ceiling_warns_and_applies_none(self):
+        ids, lines = self.subset("a::b\nc::d\n", max_subset="abc")
+        self.assertEqual(ids, ("a::b", "c::d"))
+        self.assertEqual(lines, (retry.no_ceiling_warning("abc"),))
+        self.assertIn("REIFY_VERIFY_RETRY_MAX_SUBSET=abc", lines[0])
+
+    def test_an_integer_ceiling_prints_nothing(self):
+        self.assertEqual(self.subset("a::b\n", max_subset=" 5"), (("a::b",), ()))
+
+
+class TestGeneratedConfigCleanup(unittest.TestCase):
+    """A nextest config execute mode generated is removed when no plan will name it."""
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.tmpdir = Path(scratch.name)
+
+    def generated(self) -> list[Path]:
+        return sorted(self.tmpdir.glob("reify-nextest-occt.*"))
+
+    def test_discard_removes_only_a_generated_file(self):
+        for origin in ConfigOrigin:
+            with self.subTest(origin=origin.value):
+                path = self.tmpdir / f"config-{origin.value}.toml"
+                path.write_text("x", encoding="utf-8")
+                NextestConfig(str(path), origin).discard()
+                self.assertEqual(path.exists(), origin is not ConfigOrigin.GENERATED)
+
+    def test_a_failure_after_the_region_removes_its_generated_config(self):
+        env = base_env(TMPDIR=str(self.tmpdir))
+        invocation = cli.parse_invocation(["test", "--scope", "all"], env)
+        self.assertIsNone(invocation.plan_format, "premise: an execute-mode invocation")
+        self.assertIsInstance(build.plan_invocation(invocation, env, REPO_ROOT), build.Planned)
+        self.assertEqual(len(self.generated()), 1, "premise: planning it generates one config")
+        for path in self.generated():
+            path.unlink()
+        with mock.patch.object(build, "build_steps", side_effect=RuntimeError("after the region")):
+            with self.assertRaises(RuntimeError):
+                build.plan_invocation(invocation, env, REPO_ROOT)
+        self.assertEqual(self.generated(), [])
 
 
 if __name__ == "__main__":

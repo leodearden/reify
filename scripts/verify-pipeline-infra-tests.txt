@@ -927,3 +927,7 @@ scripts/reify_verify/retry.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/retry.py    tests/infra/test_verify_policy.sh
 scripts/reify_verify/testregion.py    tests/infra/test_verify_*.sh
 scripts/reify_verify/testregion.py    tests/infra/test_verify_policy.sh
+scripts/reify_verify/gatepaths.py    tests/infra/test_verify_*.sh
+scripts/reify_verify/gatepaths.py    tests/infra/test_verify_policy.sh
+# The plan-model member compares nextest_config_path's lines with the generator's own stderr.
+scripts/gen-nextest-config.sh    tests/infra/test_verify_plan_model.sh

@@ -3,7 +3,10 @@
 A retry narrows its nextest passes only when the attempt-0 sidecar's tree_oid
 is the tree DF retries, so the warm target/ is the one that tree built.
 read_sidecar_tree_oid is the one reader of that sidecar. Every refusal is
-loud: the pass runs in full and stderr says why, in bash's words.
+loud: the pass runs in full and stderr says why, in bash's words. Two lines
+are the package's own, where bash prints a broken plan or its shell's error:
+an id the filterset's quotes cannot hold refuses its pass, and a ceiling
+that is not an integer warns that none applies.
 
 The marker opens stdout iff some suite really narrowed: a nextest profile
 that applied its subset, run_all's matched members, or the gui specs.
@@ -16,14 +19,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from reify_verify import childproc, knobs
-from reify_verify.bashcall import DataFile
-from reify_verify.plan import RetryMarker
+from reify_verify.gatepaths import RUN_ALL
+from reify_verify.plan import QUOTE_NAMES, NextestFlags, RetryMarker
 from reify_verify.policy import PROFILE_TABLE, Profile
 
 RETRY_SCOPE_NARROWED = "failed_only"
 REFUSED = "verify.sh: retry refused: "
 NO_NEXTEST_REFUSAL = f"{REFUSED}no nextest — cargo-test fallback has no -E filterset support (full verify)"
-RUN_ALL_COUNT_PROBE = DataFile("tests/infra/run_all.sh")
 RUN_ALL_SUBSET_MATCHED = re.compile(r"@@REIFY_RUN_ALL_SUBSET_MATCHED=([0-9]+)@@")
 IFS_WORDS = re.compile(r"[^ \t\n]+")
 # bash's [[:space:]] over ASCII, the class its sed extractor and id trimming use.
@@ -65,10 +67,12 @@ def eligibility(sidecar: Path, planning: Mapping[str, str]) -> tuple[bool, tuple
 def subset(
     profile: Profile, planning: Mapping[str, str], max_subset: str, repo_root: Path
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """The profile pass's exact test ids, or none and the refusal that runs it in full.
+    """The profile pass's exact test ids, or none and the refusal that runs it in full; and the lines it prints.
 
     The profile's own filter file wins when set; the base file stands in.
-    max_subset is REIFY_VERIFY_RETRY_MAX_SUBSET's text, which bash reads at load.
+    max_subset is REIFY_VERIFY_RETRY_MAX_SUBSET's text, which bash reads at
+    load. A ceiling that is not an integer warns where bash's `[ -gt ]` errors,
+    and applies none.
     """
     base = knobs.resolve(knobs.RETRY_NEXTEST_FILTER_FILE, planning).value
     named = str(knobs.resolve(PROFILE_TABLE[profile].retry_filter_env, planning, default=base).value)
@@ -76,9 +80,24 @@ def subset(
     where = f"(profile={profile.value}, full verify)"
     if not ids:
         return (), (f"{REFUSED}no subset — filter file {named or '<unset>'} absent/empty/unreadable {where}",)
-    if CEILING.fullmatch(max_subset) and len(ids) > int(max_subset):
+    if not CEILING.fullmatch(max_subset):
+        warned = (no_ceiling_warning(max_subset),)
+    elif len(ids) > int(max_subset):
         return (), (f"{REFUSED}subset too large — {len(ids)} > ceiling {max_subset} {where}",)
-    return ids, ()
+    else:
+        warned = ()
+    quote = NextestFlags.RETRY_ID_QUOTE
+    unquotable = next((test_id for test_id in ids if quote in test_id), None)
+    if unquotable is not None:
+        return (), (
+            *warned,
+            f"{REFUSED}unquotable id — {unquotable} holds a {QUOTE_NAMES[quote]} quote {where}",
+        )
+    return ids, warned
+
+
+def no_ceiling_warning(max_subset: str) -> str:
+    return f"verify.sh: WARNING: invalid {knobs.RETRY_MAX_SUBSET.name}={max_subset}; applying no subset ceiling"
 
 
 def _filter_ids(path: Path) -> tuple[str, ...]:
@@ -130,9 +149,9 @@ def _run_all_subset_size(env: Mapping[str, str], repo_root: Path) -> int:
     members = knobs.resolve(knobs.RUN_ALL_MEMBER_SUBSET, env).value
     if not members:
         return 0
-    if RUN_ALL_COUNT_PROBE.is_file(repo_root):
+    if RUN_ALL.is_file(repo_root):
         probe = childproc.run(
-            ["bash", RUN_ALL_COUNT_PROBE.path],
+            ["bash", RUN_ALL.path],
             repo_root,
             {**env, "REIFY_RUN_ALL_SUBSET_COUNT_ONLY": "1", knobs.RUN_ALL_MEMBER_SUBSET.name: members},
         )

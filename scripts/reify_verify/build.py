@@ -14,7 +14,9 @@ plan_invocation joins the diagnostics in stage order:
   which bash reads and decides at load for every action;
 - probe: nextest availability, under the planning env, as bash's probe runs;
 - compose: the plan's inputs (the test region among them, when the plan runs
-  the test family over the Rust crates), header and steps.
+  the test family over the Rust crates), header and steps. A nextest config
+  execute mode generated for the region is removed again if composing fails
+  after it.
 
 The steps come from EMITTERS, in bash's phase order. Each emitter declares
 the gate paths its steps may name, and build_steps refuses a step whose
@@ -39,19 +41,19 @@ from reify_verify import (
     selection,
     testregion,
 )
-from reify_verify.bashcall import BashCall, BashExport, DataFile
+from reify_verify.bashcall import BashCall, BashExport
 from reify_verify.environment import (
     NextestAvailable,
     NextestBroken,
     ProbeSleepFailed,
     StepEnvironment,
 )
+from reify_verify.gatepaths import COMPILE_GATE, GUI_CRATE_GUARD, RUN_ALL
 from reify_verify.invocation import Action, Invocation
 from reify_verify.narrowing import Narrowing
 from reify_verify.plan import (
     ArtifactAssertion,
     Cargo,
-    Chain,
     Guarded,
     HeadStamp,
     InfraLeafLoop,
@@ -81,17 +83,10 @@ from reify_verify.policy import (
 from reify_verify.retry import NO_NEXTEST_SUBSETS
 from reify_verify.scope import ScopeDecision
 from reify_verify.selection import Selection
-from reify_verify.testregion import (
-    COMPILE_GATE,
-    GUI_CRATE_MANIFEST,
-    GUI_SIDECAR_PLACEHOLDER,
-    PassWalls,
-    TestRegion,
-)
+from reify_verify.testregion import PassWalls, RegionInputs, TestRegion
 
 ERROR = "verify.sh: ERROR — "
 GIT_ENV_SCRUB_PREFIX = BashCall("scripts/lib_git_env_scrub.sh", "reify_git_env_scrub_prefix")
-RUN_ALL = DataFile("tests/infra/run_all.sh")
 HEAVY_FILTER = BashExport("scripts/heavy-test-filter-lib.sh", "REIFY_HEAVY_NEXTEST_FILTER")
 # The libs verify.sh sources at load, in its order; the first missing one refuses the run.
 LOAD_TIME_LIBS = tuple(
@@ -242,7 +237,10 @@ def _compose(
 ) -> Planned | Refused:
     """The plan; its diagnostics are the warnings composing its steps prints.
 
-    Execute mode refuses when the nextest config cannot be generated.
+    The test region refuses an unrenderable knob value, and execute mode
+    refuses when the nextest config cannot be generated. Once the region holds
+    a generated config, any failure composing the rest removes the file: no
+    plan will name it, so no executor will.
     """
     planning = decided.step_env.planning
     families, role_policy = decided.families, started.role_policy
@@ -257,9 +255,30 @@ def _compose(
     )
     region = None
     if _has_test_region(families, decided.decision):
-        region = _resolve_region(invocation, header, started, decided, env, repo_root)
+        region = testregion.resolve(_region_inputs(invocation, header, started, decided, env, repo_root))
         if isinstance(region, Refused):
             return Refused((*vitest_warnings, *region.lines), region.exit_code)
+    try:
+        plan = _assemble(invocation, header, started, decided, vitest, region, repo_root)
+    except BaseException:
+        if region is not None:
+            region.discard_config()
+        raise
+    return Planned(plan, (*vitest_warnings, *(region.diagnostics if region else ())))
+
+
+def _assemble(
+    invocation: Invocation,
+    header: PlanHeader,
+    started: Started,
+    decided: Decided,
+    vitest: "VitestArm | None",
+    region: TestRegion | None,
+    repo_root: Path,
+) -> Plan:
+    """The plan's inputs, retry marker and steps around the region already resolved."""
+    planning = decided.step_env.planning
+    families, role_policy = decided.families, started.role_policy
     node_lane = NodeLane.compose(families, decided.decision, vitest)
     infra_suite_active = knobs.resolve(knobs.INFRA_SUITE_ACTIVE, planning).value
     runs_selective = _runs_selective_infra(
@@ -280,7 +299,7 @@ def _compose(
         git_env_scrub_prefix=_git_env_scrub_prefix(repo_root, planning) if runs_selective else None,
         test_region=region,
     )
-    plan = Plan(
+    return Plan(
         retry_marker=retry.marker(
             region.retry_applied if region else NO_NEXTEST_SUBSETS,
             node_lane.gui_specs_applied if node_lane else 0,
@@ -296,7 +315,6 @@ def _compose(
         environment=decided.step_env.lines,
         steps=build_steps(inputs),
     )
-    return Planned(plan, (*vitest_warnings, *(region.diagnostics if region else ())))
 
 
 def _has_test_region(families: "Families", decision: ScopeDecision) -> bool:
@@ -309,16 +327,16 @@ def _selector(narrowed: Narrowing) -> Selector:
     return Packages(narrowed.packages) if narrowed.packages else Workspace()
 
 
-def _resolve_region(
+def _region_inputs(
     invocation: Invocation,
     header: PlanHeader,
     started: Started,
     decided: Decided,
     env: Mapping[str, str],
     repo_root: Path,
-) -> TestRegion | Refused:
+) -> RegionInputs:
     walls, narrowed = started.walls, decided.narrowing
-    return testregion.resolve(
+    return RegionInputs(
         role_policy=started.role_policy,
         profiles=header.profiles,
         debug_selector=_selector(narrowed),
@@ -623,14 +641,14 @@ def _gui_feature_check(inputs: PlanInputs) -> tuple[Step, ...]:
     if not inputs.lints_rust:
         return ()
     check = Cargo(
-        "check", Packages(("reify-gui",)), ("--features", "gui", "--tests"),
+        "check", Packages((narrowing.GUI_CRATE,)), ("--features", "gui", "--tests"),
         inputs.walls.clippy, inputs.cargo_prio,
     )
-    command = Guarded("-f", GUI_CRATE_MANIFEST, Chain((Script(GUI_SIDECAR_PLACEHOLDER), check)))
+    guard = GUI_CRATE_GUARD
     return (
         Step(
-            StepKind.CARGO, Phase.GUI_FEATURE_CHECK, command, GUI_SIDECAR_PLACEHOLDER,
-            GUI_CRATE_MANIFEST,
+            StepKind.CARGO, Phase.GUI_FEATURE_CHECK, guard.around(check), guard.setup.path,
+            guard.manifest,
         ),
     )
 
@@ -748,7 +766,7 @@ EMITTERS = (
     Emitter("cargo check", (), _cargo_check),
     Emitter("node lane start", (GUI_VITEST_RUN,), _node_lane_start),
     Emitter("clippy", (), _clippy),
-    Emitter("gui feature check", (GUI_SIDECAR_PLACEHOLDER,), _gui_feature_check),
+    Emitter("gui feature check", (GUI_CRATE_GUARD.setup.path,), _gui_feature_check),
     Emitter("node lane join", (), _node_lane_join),
     Emitter("node lane, plain", (GUI_VITEST_RUN,), _node_lane_plain),
     Emitter("test infra checks", tuple(path for path, _ in TEST_INFRA_CHECKS), _test_infra_checks),

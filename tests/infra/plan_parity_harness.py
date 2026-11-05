@@ -17,9 +17,11 @@ the first differing line, the plan section it sits in, the module of
 scripts/reify_verify/ that produces that section, and the port-window rule.
 
 EXPECTED_DIVERGENCES is the whole list of differences B1 accepts: PRD D8's
-listed divergences that B1's corpus reaches and PRD §12's single plan
-divergence, each asserted positively both ways by check_divergence(). Every
-other scenario compares byte-equal; there is no per-scenario opt-out.
+listed divergences that B1's corpus reaches, PRD §12's single plan
+divergence, and the package's three refusals of a knob value bash plans
+through (introduced by #9099, where bash prints a broken plan line or its
+shell's own error), each asserted positively both ways by check_divergence().
+Every other scenario compares byte-equal; there is no per-scenario opt-out.
 
 GridParity runs one action's full grid (PRD D13: role × profile × scope, with
 --include-infra) in two clone states; each grid shard member subclasses it.
@@ -107,7 +109,8 @@ HEADER_HINTS = (
     ("# heavy partition — ", "testregion.py"),
 )
 STDERR_HINTS = (
-    (re.compile(r"retry refused"), "retry.py"),
+    (re.compile(r"retry refused|REIFY_VERIFY_RETRY_MAX_SUBSET"), "retry.py"),
+    (re.compile(r"holds a (single|double) quote"), "testregion.py / nextest.py (the line: plan.py)"),
     (re.compile(r"gen-nextest-config"), "nextest.py"),
     (re.compile(r"release-sensitive"), "testregion.py"),
     (re.compile(r"stale jobserver FIFO"), "environment.py"),
@@ -502,6 +505,41 @@ def _write_merge_head(clone: Clone):
     clone.merge_head().write_text(f"{clone.base}\n", encoding="utf-8")
 
 
+def _with_stderr_line(line: str) -> Callable[[Outcome], Outcome]:
+    return lambda bash: dataclasses.replace(bash, stderr=f"{bash.stderr}{line}\n")
+
+
+def _refused_with(line: str) -> Callable[[Outcome], Outcome]:
+    """bash's outcome as a refusal: no plan, exit 1, and `line` after what bash printed on its way."""
+    return lambda bash: dataclasses.replace(bash, returncode=1, stdout="", stderr=f"{bash.stderr}{line}\n")
+
+
+def _warned_instead_of_shell_error(bash: Outcome) -> Outcome:
+    lines = bash.stderr.splitlines(keepends=True)
+    edited = [f"{NO_CEILING_WARNING}\n" if CEILING_SHELL_ERROR.fullmatch(line.rstrip("\n")) else line for line in lines]
+    return dataclasses.replace(bash, stderr="".join(edited))
+
+
+def _eligible_retry(ids: str, **env: str) -> Callable[[Clone], Mapping[str, str]]:
+    """A failed_only retry whose sidecar pins the tree it retries, over a base filter file holding `ids`."""
+
+    def setup(clone: Clone) -> Mapping[str, str]:
+        scratch = clone.root.parent / "b1-divergence-retry"
+        scratch.mkdir(exist_ok=True)
+        sidecar, filter_file = scratch / "attempt.json", scratch / "filter.txt"
+        sidecar.write_text(f'{{"tree_oid":"{DIVERGENCE_TREE}"}}\n', encoding="utf-8")
+        filter_file.write_text(ids, encoding="utf-8")
+        return {
+            "REIFY_VERIFY_RETRY_SCOPE": "failed_only",
+            "REIFY_VERIFY_ATTEMPT_SIDECAR": str(sidecar),
+            "REIFY_VERIFY_RETRY_TREE_OID": DIVERGENCE_TREE,
+            "REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE": str(filter_file),
+            **env,
+        }
+
+    return setup
+
+
 @dataclass(frozen=True)
 class ExpectedDivergence:
     """One of PRD D8's listed divergences, asserted positively both ways.
@@ -533,6 +571,22 @@ MERGE_HEAD_FROM_SCRIPTS = Scenario(
     "MERGE_HEAD present, run from scripts/", ("lint", "--scope", "staged", "--print-plan"),
     setup=_write_merge_head, cwd="scripts",
 )
+TEST_ALL_PLAN = ("test", "--scope", "all", "--print-plan")
+QUOTED_SIDECAR = 'target/b1-"quoted"-attempt.json'
+QUOTED_SIDECAR_REFUSAL = (
+    f"verify.sh: ERROR — REIFY_VERIFY_ATTEMPT_SIDECAR={QUOTED_SIDECAR} holds a double quote, and the "
+    "plan renders it inside double quotes; refusing to plan a broken command line"
+)
+DIVERGENCE_TREE = "b1-divergence-tree"
+QUOTED_ID = "reify_doc::tests::it's"
+UNQUOTABLE_ID_REFUSAL = (
+    f"verify.sh: retry refused: unquotable id — {QUOTED_ID} holds a single quote "
+    "(profile=debug, full verify)"
+)
+NO_CEILING_WARNING = (
+    "verify.sh: WARNING: invalid REIFY_VERIFY_RETRY_MAX_SUBSET=abc; applying no subset ceiling"
+)
+CEILING_SHELL_ERROR = re.compile(r".*verify\.sh: line [0-9]+: \[: abc: integer expression expected")
 
 EXPECTED_DIVERGENCES = (
     ExpectedDivergence(
@@ -571,6 +625,38 @@ EXPECTED_DIVERGENCES = (
             {"REIFY_VERIFY_NEXTEST_CONFIG": CALLER_NEXTEST_CONFIG},
         ),
         _gui_pass_names_the_override,
+    ),
+    ExpectedDivergence(
+        "quoted-path-knob-refused",
+        "#9099: a path knob holding the quote its step renders it inside refuses the plan, where "
+        "bash prints the broken line and exits 0 (REIFY_VERIFY_CONFIRM_* likewise: "
+        "test_verify_plan_model.py)",
+        Scenario(
+            "merge role, attempt sidecar path with a double quote", TEST_ALL_PLAN,
+            {"DF_VERIFY_ROLE": "merge", "REIFY_VERIFY_ATTEMPT_SIDECAR": QUOTED_SIDECAR},
+        ),
+        _refused_with(QUOTED_SIDECAR_REFUSAL),
+    ),
+    ExpectedDivergence(
+        "unquotable-retry-id-refused",
+        "#9099: a retry id holding the single quote its filterset renders it inside refuses that "
+        "pass's subset, which runs in full, where bash prints the broken -E",
+        Scenario(
+            "retry subset with a single-quoted id", TEST_ALL_PLAN,
+            setup=_eligible_retry(f"reify_doc::tests::alpha\n{QUOTED_ID}\n"),
+        ),
+        _with_stderr_line(UNQUOTABLE_ID_REFUSAL),
+        reference=Scenario("not a retry", TEST_ALL_PLAN),
+    ),
+    ExpectedDivergence(
+        "non-integer-retry-ceiling-warns",
+        "#9099: a REIFY_VERIFY_RETRY_MAX_SUBSET that is not an integer warns that no ceiling "
+        "applies, where bash's `[ -gt ]` prints its shell error; both apply none",
+        Scenario(
+            "retry subset, ceiling abc", TEST_ALL_PLAN,
+            setup=_eligible_retry("reify_doc::tests::alpha\n", REIFY_VERIFY_RETRY_MAX_SUBSET="abc"),
+        ),
+        _warned_instead_of_shell_error,
     ),
 )
 

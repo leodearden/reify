@@ -10,10 +10,15 @@ The environment section's lines are records here too (EnvLine); environment
 builds them, so it imports this module, never the other way round.
 
 A record whose text render puts inside single (or double) quotes refuses that
-quote, since the rendered shell line would otherwise break.
+quote, since the rendered shell line would otherwise break. A record that
+renders an operator's knob value names that quote as a class constant, so the
+resolver that reads the knob refuses the value with unquotable_knob before any
+record is built.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import ClassVar
 from enum import Enum
 from types import MappingProxyType
 
@@ -59,19 +64,21 @@ class JobserverUnset:
 EnvLine = CargoEnvSourced | CargoEnvMissing | Exported | JobserverUnset
 
 
-_QUOTE_NAMES = {"'": "single", '"': "double"}
+SINGLE_QUOTE = "'"
+DOUBLE_QUOTE = '"'
+QUOTE_NAMES = MappingProxyType({SINGLE_QUOTE: "single", DOUBLE_QUOTE: "double"})
 
 
 def _refuse_quote(record: str, field: str, text: str | None, quote: str) -> None:
     if text is not None and quote in text:
         raise ValueError(
-            f"{record}: {field} renders inside {_QUOTE_NAMES[quote]} quotes, so it cannot hold one "
+            f"{record}: {field} renders inside {QUOTE_NAMES[quote]} quotes, so it cannot hold one "
             f"({text!r})"
         )
 
 
 def _refuse_single_quote(record: str, field: str, text: str | None) -> None:
-    _refuse_quote(record, field, text, "'")
+    _refuse_quote(record, field, text, SINGLE_QUOTE)
 
 
 class Execution(Enum):
@@ -268,9 +275,11 @@ class NextestFlags:
     """A nextest pass's flags: its one filter expression, --no-fail-fast and --test-threads.
 
     Without retry ids the heavy filter, when the partition applies one, is
-    double-quoted; with them it joins the ids' expression single-quoted, so it
-    refuses both quotes there.
+    double-quoted; with them it joins the ids' expression inside
+    RETRY_ID_QUOTE, so it refuses both quotes there.
     """
+
+    RETRY_ID_QUOTE: ClassVar[str] = SINGLE_QUOTE
 
     heavy: HeavyPartition
     heavy_filter: str
@@ -279,11 +288,11 @@ class NextestFlags:
     retry_ids: tuple[str, ...]
 
     def __post_init__(self):
-        _refuse_quote("NextestFlags", "heavy_filter", self.heavy_filter, '"')
+        _refuse_quote("NextestFlags", "heavy_filter", self.heavy_filter, DOUBLE_QUOTE)
         if self.retry_ids and self.heavy is not HeavyPartition.INCLUDED:
-            _refuse_single_quote("NextestFlags", "heavy_filter", self.heavy_filter)
+            _refuse_quote("NextestFlags", "heavy_filter", self.heavy_filter, self.RETRY_ID_QUOTE)
         for test_id in self.retry_ids:
-            _refuse_single_quote("NextestFlags", "retry_ids", test_id)
+            _refuse_quote("NextestFlags", "retry_ids", test_id, self.RETRY_ID_QUOTE)
 
 
 @dataclass(frozen=True)
@@ -316,7 +325,12 @@ CONFIRM_RECORDER = "scripts/confirm-failed-manifest.sh"
 
 @dataclass(frozen=True)
 class ConfirmRecorded:
-    """`( <run>; CONFIRM_RECORDER records the failing ids for --confirm-failed; exit with the run's status )`."""
+    """`( <run>; CONFIRM_RECORDER records the failing ids for --confirm-failed; exit with the run's status )`.
+
+    The recorder's paths render inside PATH_QUOTE.
+    """
+
+    PATH_QUOTE: ClassVar[str] = DOUBLE_QUOTE
 
     run: NextestRun
     junit: str
@@ -326,14 +340,36 @@ class ConfirmRecorded:
 
     def __post_init__(self):
         for field in ("junit", "manifest", "sidecar"):
-            _refuse_quote("ConfirmRecorded", field, getattr(self, field), '"')
+            _refuse_quote("ConfirmRecorded", field, getattr(self, field), self.PATH_QUOTE)
+
+
+TEST_PASSES = (NextestRun, CargoTestRun, ConfirmRecorded)
+TestPass = NextestRun | CargoTestRun | ConfirmRecorded
+
+
+def _is_guarded_test_pass(command) -> bool:
+    """`if test -f <manifest>; then <script> && … && <test pass>; fi`: a test pass behind its crate's guard."""
+    match command:
+        case Guarded(body=Chain(parts=(*setup, run))):
+            return isinstance(run, TEST_PASSES) and all(isinstance(part, Script) for part in setup)
+    return False
 
 
 @dataclass(frozen=True)
 class SlotFdClosed:
-    """`<body> 9<&-`: the test pass runs without the semaphore slot's descriptor."""
+    """`<body> 9<&-`: the test pass runs without the semaphore slot's descriptor.
 
-    body: "Command"
+    The body is one test pass, bare or behind its crate's guard: a CARGO step
+    admits this record, so it must not carry any other command past that check.
+    """
+
+    body: "TestPass | Guarded"
+
+    def __post_init__(self):
+        if not (isinstance(self.body, TEST_PASSES) or _is_guarded_test_pass(self.body)):
+            raise ValueError(
+                f"SlotFdClosed: the body is one test pass, bare or guarded, not {self.body!r}"
+            )
 
 
 @dataclass(frozen=True)
@@ -348,13 +384,18 @@ class Marker:
 
 @dataclass(frozen=True)
 class AttemptStamp:
-    """The attempt sidecar: the tree a run built from, its profiles and the time, written to `path`."""
+    """The attempt sidecar: the tree a run built from, its profiles and the time, written to `path`.
+
+    The path renders inside PATH_QUOTE.
+    """
+
+    PATH_QUOTE: ClassVar[str] = DOUBLE_QUOTE
 
     path: str
     profiles: tuple[Profile, ...]
 
     def __post_init__(self):
-        _refuse_quote("AttemptStamp", "path", self.path, '"')
+        _refuse_quote("AttemptStamp", "path", self.path, self.PATH_QUOTE)
 
 
 @dataclass(frozen=True)
@@ -460,3 +501,21 @@ class Refused:
 
     lines: tuple[str, ...]
     exit_code: int
+
+
+def unquotable_knob(values: Iterable[tuple[str, str]], quote: str) -> Refused | None:
+    """The refusal for the first (knob name, value) whose value holds `quote`, which its step renders it inside.
+
+    bash would print the broken line; the plan refuses it instead, exit 1.
+    """
+    for name, value in values:
+        if quote in value:
+            return Refused(
+                (
+                    f"verify.sh: ERROR — {name}={value} holds a {QUOTE_NAMES[quote]} quote, and the "
+                    f"plan renders it inside {QUOTE_NAMES[quote]} quotes; refusing to plan a broken "
+                    "command line",
+                ),
+                1,
+            )
+    return None
