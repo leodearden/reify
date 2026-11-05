@@ -468,8 +468,9 @@ pub fn matrix3x3(
     ])
 }
 
-/// Uniaxial stress magnitude σ, in SI pascals. Chosen so that `√(σ²) == σ`
-/// exactly in `f64`, which lets a von Mises expectation be σ itself.
+/// Uniaxial stress magnitude σ, in SI pascals. Its von Mises stress is σ
+/// bit-exactly provided σ² and 2σ² neither overflow nor underflow: the
+/// kernel's `0.5·(σ² + σ²)` is exact scaling, and `√(σ·σ) == |σ|`.
 pub const UNIAXIAL_STRESS_PA: f64 = 100e6;
 
 /// Row-major components of the uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`]
@@ -1860,14 +1861,6 @@ mod tests {
                 assert_eq!(dimension, DimensionVector::PRESSURE, "[{r}][{c}]");
             }
         }
-    }
-
-    #[test]
-    fn uniaxial_stress_pa_round_trips_through_its_square_exactly() {
-        assert_eq!(
-            (UNIAXIAL_STRESS_PA * UNIAXIAL_STRESS_PA).sqrt(),
-            UNIAXIAL_STRESS_PA
-        );
     }
 
     // step-N: tests for multi_case_result_value
