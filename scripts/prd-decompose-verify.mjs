@@ -289,11 +289,33 @@ function batchEnvelope(rawArgs) {
         key => Object.prototype.hasOwnProperty.call(value, key)) ? value : null;
 }
 
+// The invariant a malformed envelope breaks, or null.  A malformed envelope is
+// an invocation error, so it throws before any agent is paid rather than
+// returning a verdict that would read as a premise falsification.  Whether the
+// binary exists is α's to report (a launch HARNESS_ERROR); this script cannot
+// stat it.
+function envelopeRefusal(envelope) {
+    const unknown = Object.keys(envelope).filter(key => !BATCH_ENVELOPE_KEYS.includes(key));
+    if (unknown.length > 0) {
+        return `the envelope accepts only ${BATCH_ENVELOPE_KEYS.join(", ")}; `
+            + `unknown key(s): ${JSON.stringify(unknown)}`;
+    }
+    if (envelope.leaves == null) return "an envelope needs leaves (the leaf array)";
+    const bin = envelope.reify_bin;
+    if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
+        return "reify_bin must be the absolute path of the reify binary α probes with; "
+            + `got ${JSON.stringify(bin)}`;
+    }
+    return null;
+}
+
 function batchArgs(rawArgs, warn) {
     const envelope = batchEnvelope(rawArgs);
     if (envelope === null) {
         return { leaves: normalizeLeaves(rawArgs, warn), reifyBin: null };
     }
+    const refusal = envelopeRefusal(envelope);
+    if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
     return { leaves: normalizeLeaves(envelope.leaves, warn), reifyBin: envelope.reify_bin ?? null };
 }
 
