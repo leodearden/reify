@@ -30,6 +30,7 @@ mod new_file_template_tests;
 #[cfg(has_openvdb)]
 mod openvdb_kernel_tests;
 mod path_key_tests;
+mod recent_files_tests;
 mod screenshot_save_tests;
 mod sidecar_env_tests;
 mod tcp_port_tests;
