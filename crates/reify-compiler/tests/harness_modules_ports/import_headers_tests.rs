@@ -281,6 +281,17 @@ fn callees_attribute_to_functions_structures_and_constraint_defs() {
     }
 }
 
+#[test]
+fn a_local_function_needs_no_import_for_its_own_call() {
+    let universe = compile_universe(&[FNS]);
+    let plan = derive(
+        "fn twice(x: Real) -> Real { x }\n\
+         structure def S { let y = twice(1.0) }\n",
+        &universe,
+    );
+    assert!(plan.modules().is_empty(), "{:?}", dotted_modules(&plan));
+}
+
 // ─── e2: enum accesses in both lowerings ───────────────────────────────────
 
 #[test]
@@ -398,6 +409,52 @@ fn a_module_binder_shadows_a_std_value_of_the_same_name() {
             dotted_modules(&plan)
         );
     }
+}
+
+#[test]
+fn a_module_binder_does_not_shadow_a_std_function_in_call_position() {
+    let universe = compile_universe(&[FNS]);
+    for source in [
+        "structure def S {\n\
+             param twice : Real = 1.0\n\
+             let y = twice(3.0)\n\
+         }\n",
+        "fn apply(twice: (Real) -> Real) -> Real { twice(1.0) }\n",
+    ] {
+        let plan = derive(source, &universe);
+        assert_needs(
+            &plan,
+            "std.fake.fns",
+            &[name_use("twice", NameRole::Callee)],
+            source,
+        );
+    }
+}
+
+#[test]
+fn a_std_callee_named_like_a_value_param_leaves_a_residual_the_derived_import_clears() {
+    let universe = compile_universe(&[FNS, SHAPES]);
+    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
+    let parsed = parse_clean(
+        "structure def S {\n\
+             param twice : Real = 1.0\n\
+             let y = twice(3.0)\n\
+         }\n",
+        SUBJECT_PATH,
+    );
+
+    let residual = residual_diagnostics(&parsed, &[], &universe_refs);
+    assert!(
+        residual
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Warning
+                && diagnostic.code == Some(DiagnosticCode::UnresolvedFunction)),
+        "expected an UnresolvedFunction warning; got {residual:?}"
+    );
+
+    let plan = derive_parsed(&parsed, &universe);
+    let residual = residual_diagnostics(&parsed, &plan.modules(), &universe_refs);
+    assert!(residual.is_empty(), "{residual:?}");
 }
 
 // ─── e6: member names ──────────────────────────────────────────────────────
