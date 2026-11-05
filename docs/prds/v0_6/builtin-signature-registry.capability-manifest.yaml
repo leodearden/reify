@@ -333,8 +333,22 @@ tasks:
       E_BuiltinArgShape diagnostics (section 3 decision 5) starts landing. (b) representative_probes
       returns a LIST of probes per row (each a Vec<(Value, Type)>), so a tau row can register
       a second argument SHAPE alongside its first instead of the exhaustive match freezing
-      in one shape per row forever; a row is reported at its most severe probe (worst_probe),
-      because a shape that matches does not certify a shape never compared
+      in one shape per row forever; a row is reported at its most severe probe (worst_probe), because
+      a shape that matches does not certify a shape never compared. AMENDED 2026-10-31 by task 7563
+      — the executor is now reify_expr::eval_expr over a synthesized
+      FunctionCall (evaluate_call, row.name still passed as a VARIABLE), the path the engine evaluates
+      calls through. For every shape reify-expr does not intercept it reaches
+      reify_stdlib::eval_builtin through reify-expr's catch-all arm, so everything the old path
+      asserted is still asserted, and it additionally reaches reify-expr's Field intercepts, which
+      eval_builtin has none of. von_mises / max_shear / principal_stresses / safety_factor now each
+      sweep a concrete, a Callable Field and a Grid Field probe. A Field probe is compared on two legs
+      (probe_legs) — its call result against the declared Field, then one sample of that result
+      against the declared codomain — both by the same value_type_kind_matches oracle, and a row is
+      reported at the worst leg of its worst probe. The argument data moved to the child module
+      crates/reify-eval/src/registry_parity_tests/probes.rs. At task 7563's amendment pass worst_probe
+      became worst_outcome, which takes the legs grouped per probe, so the fold that places each leg
+      at its probe is under its unit test; a mutation keeping only each probe's Call leg reds that
+      test, with every other test green (observed by mutate-run-revert, 2026-11-01)
     verdict: PASS
     delivered_check:
       kind: grep
@@ -368,25 +382,33 @@ tasks:
       - crates/reify-eval/src
       expect: present
   - name: residue-psi-does-not-close-type-field-half-of-argaware-rows
-    binding: Recorded 2026-09-15 so the next tau author does not read the harness wider than
-      it is. reduce_tensor_arg (crates/reify-builtins/src/resolvers.rs) has TWO branches —
-      a Type::Field arm (task 6577) and a concrete fall-through — so von_mises / max_shear
-      / principal_stresses / safety_factor each declare a Field<D, ..> result for a Field
-      argument. Every psi probe is concrete, and a Field probe CANNOT be added to this harness —
-      reify_stdlib::eval_builtin has no Field handling at all (crates/reify-stdlib/src/analysis.rs
-      contains zero Value::Field), because the lazy wrap_tensor_field that produces one lives
-      in crates/reify-expr/src/analysis.rs behind reify-expr's evaluator ladder — so a Field
-      probe here would evaluate to Value::Undef and certify nothing. The section 3 decision
-      12 residue therefore stays OPEN for the Field half of those four rows; it is reify-expr's
-      to close, not psi's. What IS covered is one side of the pair only — the resolvers' Type-level
-      Field contract has unit tests in crates/reify-builtins/src/resolvers.rs (ported from
-      6577), which is type algebra with no execution in it. Filed as follow-up (ticket
-      tkt_0RTNCFGC08S8W935JZPBZ0CR8J); psi's representative_probes already returns a LIST
-      so that shape can be registered when a leaf routes Field evaluation through this path
-    verdict: PASS — ceiling RECORDED (the residue itself stays open, by scope, not by waiver)
+    binding: CLOSED 2026-10-31 by task 7563 for all four rows. The harness now executes every probe through
+      reify_expr::eval_expr instead of reify_stdlib::eval_builtin, so a Field argument reaches
+      reify-expr's analysis intercepts (crates/reify-expr/src/analysis.rs, compute_von_mises /
+      compute_max_shear / compute_principal_stresses / compute_safety_factor) instead of evaluating to
+      Value::Undef. Beside each row's concrete probe, representative_probes registers a Callable
+      (Analytical constant lambda) and a Grid (Sampled Regular3D 2x2x2 over Point3<Length>, the
+      solve_elastic_static stress backing) stress-tensor Field probe, one per backing tensor_backing
+      admits. Each Field probe is compared on two legs through the same value_type_kind_matches oracle
+      (I-REG-4, no second matcher) — the call result against the declared Field<D, ..>, then one
+      sample of it (reify-expr's sample intercept) against the declared codomain. The second leg is
+      what tells the four rows apart, because the oracle maps a Value::Field onto any Type::Field and
+      the rows' Field claims differ only in codomain. Observed non-vacuous by mutation Legs 4-6
+      (module header) — an eager compute_max_shear reds MaxShear at a Field probe's Call leg; a bare
+      scalar codomain label on compute_principal_stresses reds PrincipalStresses at the Grid probe's
+      Sample leg only; an eager Field claim in reduce_tensor_arg reds all four rows at a Field probe's
+      Call leg. Originally recorded 2026-09-15 as OPEN, when every probe was concrete and
+      eval_builtin's lack of Field handling made a Field probe read Vacuous (follow-up ticket
+      tkt_0RTNCFGC08S8W935JZPBZ0CR8J). What stays outside is listed under the module header's 'What
+      this harness cannot see' — a kind-level oracle, one sample point per Field result, only the
+      two backings tensor_backing admits, and a call stamped with the very type it is judged against.
+      The delivered_check greps probe_legs, the codomain-sample mechanism the closure rests on; the
+      'What this harness cannot see' heading it grepped until task 7563's amendment pass showed only that
+      the ceiling was recorded, not that the residue was closed
+    verdict: PASS — residue CLOSED for the four rows by task 7563 (Callable and Grid Field probes, call and codomain-sample legs)
     delivered_check:
       kind: grep
-      pattern: What this harness cannot see
+      pattern: fn probe_legs
       paths:
       - crates/reify-eval/src
       expect: present
