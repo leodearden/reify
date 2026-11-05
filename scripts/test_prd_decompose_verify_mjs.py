@@ -1831,5 +1831,83 @@ class TestMjsSchemaParity(unittest.TestCase, _MjsScenarioMixin):
                 self.assertTrue(_states_as_one_list(verdicts, prompt), verdicts)
 
 
+# ---------------------------------------------------------------------------
+# task #9772: the operator names α's reify binary through an args envelope
+# ---------------------------------------------------------------------------
+
+_ALPHA_RUNNER = "python3 scripts/prd-capability-check.py --json"
+
+
+def _role_prompts(calls, phase):
+    return [call["prompt"] for call in calls if call["phase"] == phase]
+
+
+class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
+    """args may be an envelope {leaves, reify_bin}.  Its reify_bin reaches
+    every α call the Prover and Adversary make as REIFY_BIN; without one the
+    α command stays bare, so a REIFY_BIN the session exported is what α
+    inherits."""
+
+    _REIFY_BIN = "/opt/reify/bin/reify"
+    _ENVELOPE_JS = ('{ leaves: [{ signal: "leaf a" }, { signal: "leaf b" }], '
+                    'reify_bin: "/opt/reify/bin/reify" }')
+
+    def _alpha_prompts(self, args_js, leaf_count):
+        """The prove and adversary prompts by phase, after checking that the
+        batch fanned out to `leaf_count` leaves."""
+        calls = self._run_scenario_agent_calls(args_js, self.VERIFIED_RESPONSES)
+        self.assertEqual(len(_role_prompts(calls, "enumerate")), leaf_count)
+        prompts = {phase: _role_prompts(calls, phase) for phase in ("prove", "adversary")}
+        for phase, phase_prompts in prompts.items():
+            self.assertEqual(len(phase_prompts), leaf_count, phase)
+        return prompts
+
+    def _assert_alpha_runs_with(self, prompts, prefix):
+        for phase, phase_prompts in prompts.items():
+            for prompt in phase_prompts:
+                with self.subTest(phase=phase):
+                    self.assertIn(prefix + _ALPHA_RUNNER, prompt)
+
+    def _assert_alpha_runs_bare(self, prompts):
+        for phase, phase_prompts in prompts.items():
+            for prompt in phase_prompts:
+                with self.subTest(phase=phase):
+                    self.assertIn(_ALPHA_RUNNER, prompt)
+                    self.assertNotIn("REIFY_BIN=", prompt)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_envelope_fans_out_and_prefixes_every_alpha_call(self):
+        prompts = self._alpha_prompts(self._ENVELOPE_JS, 2)
+        self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_stringified_envelope_is_the_same_envelope(self):
+        prompts = self._alpha_prompts(f"JSON.stringify({self._ENVELOPE_JS})", 2)
+        self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_reify_bin_survives_a_real_shell(self):
+        path = "/tmp/a b/it's/reify"
+        args_js = f'{{ leaves: [{{ signal: "quoted leaf" }}], reify_bin: {json.dumps(path)} }}'
+        for phase, [prompt] in self._alpha_prompts(args_js, 1).items():
+            with self.subTest(phase=phase):
+                word = re.search(r"REIFY_BIN=(.+?) " + re.escape(_ALPHA_RUNNER), prompt)
+                self.assertIsNotNone(word, prompt)
+                shell = subprocess.run(
+                    ["bash", "-c", f"REIFY_BIN={word.group(1)} printenv REIFY_BIN"],
+                    capture_output=True, text=True, timeout=30,
+                )
+                self.assertEqual(shell.stdout, path + "\n", shell.stderr)
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_plain_leaf_array_leaves_alpha_bare(self):
+        self._assert_alpha_runs_bare(self._alpha_prompts('[{ signal: "plain leaf" }]', 1))
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_envelope_without_reify_bin_fans_out_and_leaves_alpha_bare(self):
+        args_js = '{ leaves: [{ signal: "env a" }, { signal: "env b" }] }'
+        self._assert_alpha_runs_bare(self._alpha_prompts(args_js, 2))
+
+
 if __name__ == "__main__":
     unittest.main()
