@@ -22,6 +22,7 @@ import {
   SolverProgressOverlay,
   BucklingPanel,
   FeaDiagnosticsPanel,
+  StartView,
 } from './panels';
 import type { DiagnosticEntry } from './panels';
 import { referenceSourceLocation, type ReferenceResult } from './editor/references';
@@ -29,7 +30,8 @@ import { WarmPoolDebugPanel } from './debug/WarmPoolDebugPanel';
 import { registerDebugPanel } from './debug/types';
 import { Splitter } from './components/Splitter';
 import { alwaysMounted, mountedEntries, sidePanelTracks, type SidePanelEntry } from './app/sidePanel';
-import { createSubscriptionSet, type SubscriptionRow } from './app/subscriptionSet';
+import { createSubscriptionSet, type SubscriptionRow, type Unsubscribe } from './app/subscriptionSet';
+import { createLauncherActions, LaunchFailure } from './app/launcherActions';
 import { KeyboardHelp } from './components/KeyboardHelp';
 import { CommandPalette } from './components/CommandPalette';
 import { useKeyboardShortcuts, paletteCommands, runCommand } from './hooks/useKeyboardShortcuts';
@@ -41,6 +43,7 @@ import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore, type ViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
 import { createViewportDisplayStore } from './stores/viewportDisplayStore';
+import { createLauncherStore, isDocumentLoaded } from './stores/launcherStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
@@ -60,6 +63,10 @@ import {
   openFile as bridgeOpenFile,
   openFileEngine as bridgeOpenFileEngine,
   saveFile as bridgeSaveFile,
+  createNewFile as bridgeCreateNewFile,
+  listRecent as bridgeListRecent,
+  recordRecent as bridgeRecordRecent,
+  setMode as bridgeSetMode,
   onFileChanged,
   onFileRemoved,
   onSerializationError,
@@ -109,8 +116,6 @@ import { loadViewPersistence, createDebouncedSaver, type DebouncedSaver } from '
 import { findFuzzyCandidate } from './stores/fuzzyPathMatcher';
 import type { PersistentViewState, ViewportLayoutState } from './types';
 import styles from './App.module.css';
-
-export const NEW_FILE_TEMPLATE = '// New design\n';
 
 /** Type alias for a single pane's computed group (pane index + its realized meshes). */
 export interface PaneGroup {
@@ -902,6 +907,7 @@ const App: Component = () => {
   }
 
   const layoutStore = createLayoutStore();
+  const launcherStore = createLauncherStore();
 
   // Init phase: loading → ready | error
   const [initPhase, setInitPhase] = createSignal<'loading' | 'ready' | 'error'>('loading');
@@ -1211,14 +1217,19 @@ const App: Component = () => {
     return await bridgeAsk('You have unsaved changes. Discard them?');
   }
 
+  /** A File-menu failure's toast text: a LaunchFailure leads with its code. */
+  function launchFailureText(err: unknown): string {
+    return err instanceof LaunchFailure ? `${err.code}: ${err.message}` : errorMessage(err);
+  }
+
   async function handleOpen() {
     if (!(await confirmDiscardIfDirty())) return;
     try {
       const path = await pickOpenPath();
       if (!path) return;
-      await loadPathIntoStores(path);
+      await launcherActions.openDocument(path);
     } catch (err) {
-      const msg = errorMessage(err);
+      const msg = launchFailureText(err);
       console.error('Open file failed:', msg);
       showToast(`Open file failed: ${msg}`, 'error');
     }
@@ -1229,15 +1240,11 @@ const App: Component = () => {
     try {
       const path = await pickSavePath('untitled.ri', 'ri');
       if (!path) return;
-      await bridgeSaveFile(path, NEW_FILE_TEMPLATE);
-      // Partial-failure note: if bridgeSaveFile succeeds but loadPathIntoStores
-      // throws (e.g. the engine rejects the new file), the stub .ri template is
-      // left on disk at the user-chosen path.  This is intentional — the file is
-      // a valid .ri starting point and the error toast lets the user open it
-      // manually via File→Open once the underlying issue is resolved.
-      await loadPathIntoStores(path);
+      // A load failure after a successful create leaves the starter file on
+      // disk at the chosen path: a valid .ri the user can open via File→Open.
+      await launcherActions.createDocument(path);
     } catch (err) {
-      const msg = errorMessage(err);
+      const msg = launchFailureText(err);
       console.error('New file failed:', msg);
       showToast(`New file failed: ${msg}`, 'error');
     }
@@ -1459,25 +1466,53 @@ const App: Component = () => {
       subscribe: () => subscribeModeShapeFrames(bucklingStore),
       onFailure: (err) => console.error('[buckling] subscribeModeShapeFrames failed:', err),
     },
-    // Debug bridge when REIFY_DEBUG=1 (dynamic import for tree-shaking).
+    // Debug bridge when the reify-debug server is already live (REIFY_DEBUG=1
+    // at launch, or Debug mode selected before a Retry): report Debug mode.
     {
       subscribe: async () => {
         if (!(await isDebugEnabled())) return () => {};
-        setDebugEnabled(true);
-        const { initDebugBridge } = await import('./debug');
-        return initDebugBridge({
-          engine: engineStore,
-          editor: editorStore,
-          selection: selectionStore,
-          claude: claudeStore,
-          viewState: viewStateStore,
-          layout: layoutStore,
-          viewportDisplay: viewportDisplayStore,
-        });
+        launcherStore.applyModeState(await bridgeSetMode('debug'));
+        return startDebugBridge();
       },
-      onFailure: (err) => console.error('[debug-bridge] init failed:', err),
+      onFailure: reportDebugBridgeFailure,
     },
   ];
+
+  function reportDebugBridgeFailure(err: unknown): void {
+    console.error('[debug-bridge] init failed:', err);
+  }
+
+  /** The frontend half of the reify-debug server (dynamic import for tree-shaking). */
+  async function startDebugBridge(): Promise<Unsubscribe> {
+    setDebugEnabled(true);
+    const { initDebugBridge } = await import('./debug');
+    return initDebugBridge({
+      engine: engineStore,
+      editor: editorStore,
+      selection: selectionStore,
+      claude: claudeStore,
+      viewState: viewStateStore,
+      layout: layoutStore,
+      viewportDisplay: viewportDisplayStore,
+    });
+  }
+
+  // Debug mode selected at runtime: the bridge handle joins the same
+  // subscription set, so a Retry disposes it and the row above re-inits it once.
+  const launcherActions = createLauncherActions(launcherStore, {
+    loadDocument: loadPathIntoStores,
+    createNewFile: bridgeCreateNewFile,
+    recordRecent: bridgeRecordRecent,
+    listRecent: bridgeListRecent,
+    setMode: bridgeSetMode,
+    showAssistant: (open) => {
+      setChatOpen(open);
+      clampToContainer();
+    },
+    startDebugBridge: () =>
+      subscriptions.subscribeAll([{ subscribe: startDebugBridge, onFailure: reportDebugBridgeFailure }]),
+    notify: (message) => showToast(message, 'info'),
+  });
 
   async function initApp() {
     subscriptions.disposeAll();
@@ -2231,6 +2266,10 @@ const App: Component = () => {
             </For>
           </div>
         </div>
+        {/* Over the still-mounted layout, so its initPhase-keyed effects run unchanged. */}
+        <Show when={!isDocumentLoaded(editorStore.state)}>
+          <StartView launcher={launcherStore} actions={launcherActions} />
+        </Show>
       </Show>
     </>
   );
