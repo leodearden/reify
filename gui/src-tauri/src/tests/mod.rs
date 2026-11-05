@@ -20,6 +20,7 @@ mod gui_state_macro_tests;
 mod gui_state_parity_tests;
 mod kernel_status_tests;
 mod large_stack_tests;
+mod launch_mode_tests;
 mod lsp_bridge_tests;
 mod lsp_lane_routing_tests;
 mod main_helpers_tests;
