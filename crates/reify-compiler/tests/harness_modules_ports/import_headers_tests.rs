@@ -400,6 +400,30 @@ fn a_module_binder_shadows_a_std_value_of_the_same_name() {
     }
 }
 
+#[test]
+fn a_module_binder_does_not_shadow_a_std_function_in_call_position() {
+    let universe = compile_universe(&[FNS, SHAPES]);
+    let universe_refs: Vec<&CompiledModule> = universe.iter().collect();
+    for source in [
+        "structure def S {\n\
+             param twice : Real = 1.0\n\
+             let y = twice(3.0)\n\
+         }\n",
+        "fn apply(twice: (Real) -> Real) -> Real { twice(1.0) }\n",
+    ] {
+        let parsed = parse_clean(source, SUBJECT_PATH);
+        let plan = derive_parsed(&parsed, &universe);
+        assert_needs(
+            &plan,
+            "std.fake.fns",
+            &[name_use("twice", NameRole::Callee)],
+            source,
+        );
+        let residual = residual_diagnostics(&parsed, &plan.modules(), &universe_refs);
+        assert!(residual.is_empty(), "{residual:?}\nsource:\n{source}");
+    }
+}
+
 // ─── e6: member names ──────────────────────────────────────────────────────
 
 #[test]
