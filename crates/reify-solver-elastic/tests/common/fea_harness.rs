@@ -126,9 +126,10 @@ pub fn dirichlet_fix_face(
 /// of the six bounding planes of `[0,lx]×[0,ly]×[0,lz]` (within `tol`).
 ///
 /// Prescribing an affine `field` on the whole boundary of a homogeneous body,
-/// with no other loads, makes the interior P1/P2 solution that same field,
-/// because P1 and P2 tets represent affine displacements exactly. This is the
-/// constant-strain patch-test property: uniform strain, hence uniform stress.
+/// with no other loads, makes the interior P1/P2 solution that same field: the
+/// affine field is the exact continuum solution (uniform strain, hence uniform
+/// stress, so div σ = 0), and P1/P2 tets represent it exactly. This is the
+/// constant-strain patch-test property.
 pub fn dirichlet_prescribe_boundary_field(
     nodes: &[[f64; 3]],
     lx: f64,
