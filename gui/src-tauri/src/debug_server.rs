@@ -3278,24 +3278,6 @@ impl BoundDebugListener {
     }
 }
 
-/// The bound listener when `debug_enabled` and the bind succeeds; `None` means
-/// the debug server is not live in this process.
-pub fn bind_debug_listener(debug_enabled: bool, port: u16) -> Option<BoundDebugListener> {
-    if !debug_enabled {
-        return None;
-    }
-    match BoundDebugListener::bind(port) {
-        Ok(listener) => Some(listener),
-        Err(e) => {
-            eprintln!(
-                "REIFY_DEBUG=1 but the debug server is NOT live on port {port} ({e}); \
-                 the in-app assistant will get no reify-debug tools"
-            );
-            None
-        }
-    }
-}
-
 // --- Server spawn ---
 
 pub async fn spawn_debug_server(
