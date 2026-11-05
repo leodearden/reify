@@ -6,6 +6,7 @@ license.workspace = true
 description = "Voxel-medial mid-surface extraction for v0.4 shell-element FEA (PRD docs/prds/v0_4/structural-analysis-shells.md)"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 # `PersistentlyCacheable` trait was moved from `reify-eval::persistent_cache`

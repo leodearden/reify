@@ -8,6 +8,7 @@ description = "Kernel-pair conformance matrix: producer×consumer tests over rea
 build = "build.rs"
 
 [dependencies]
+workspace-feature-union.workspace = true
 
 [features]
 # Pure compile-gate (no optional dep, unlike reify-kernel-occt's namesake

@@ -10,6 +10,7 @@ build = "build.rs"
 reify-build-utils.workspace = true
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ir.workspace = true
 reify-kernel-gmsh = { workspace = true }
 faer = { workspace = true }

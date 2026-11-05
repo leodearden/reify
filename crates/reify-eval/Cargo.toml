@@ -6,6 +6,7 @@ license.workspace = true
 description = "Engine facade and evaluation loop for Reify"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 # Task 7245: the persistent compute cache persists `DiagnosticCode` by its serde
 # name (src/persistent_cache.rs), and reify-core gates those derives behind its

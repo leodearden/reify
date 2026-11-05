@@ -12,6 +12,7 @@ description = "Reify architecture audit forensics — phantom-done detector and 
 test-support = []
 
 [dependencies]
+workspace-feature-union.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 # rusqlite: first SQLite use in the workspace. `bundled` avoids depending on

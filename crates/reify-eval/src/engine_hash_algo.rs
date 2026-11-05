@@ -234,6 +234,12 @@ pub(crate) const WORKSPACE_CRATE_COVERAGE: &[WorkspaceCrateCoverage] = &[
         crate_name: "tree-sitter-reify",
         coverage: Coverage::NotHashed(NotHashedBecause::UpstreamOfPersistentKey),
     },
+    // The feature selection the engine's external dependencies compile with;
+    // the (name, version) pins alone miss a feature change.
+    WorkspaceCrateCoverage {
+        crate_name: "workspace-feature-union",
+        coverage: Coverage::Hashed(&["../workspace-feature-union/Cargo.toml"]),
+    },
 ];
 
 /// One row of [`WORKSPACE_CRATE_COVERAGE`]: a workspace path crate, named as in
