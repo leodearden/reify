@@ -371,3 +371,64 @@ fn phase1_scratch_let_mints_so_a_param_default_reading_a_selector_let_reuses() {
          {warnings:?}"
     );
 }
+
+/// `edit_param` on a TEMPLATE param re-evaluates an override-free sub's
+/// geometry cell, and the edit path must mint it by the same instance-scope
+/// rule as `eval()`: the template's realization decl, with the upstream hash
+/// folded over the instance's OWN committed values. So the edited cell must
+/// equal what a cold eval of the edited state commits for it.
+///
+/// Whether instance params follow a template param edit is #7184's question,
+/// not this test's: the instance's own `len` is only required to agree between
+/// the warm and the cold engine, so the handles are compared like for like.
+#[test]
+fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_eval() {
+    let source = r#"
+        structure EditInner {
+            param len : Length = 10mm
+            let body = box(len, 10mm, 10mm)
+        }
+
+        structure EditOuter {
+            sub same = EditInner()
+        }
+    "#;
+    let compiled = parse_and_compile_with_stdlib(source);
+    let template_len = ValueCellId::new("EditInner", "len");
+    let edited_len = Value::length(0.03);
+
+    let mut warm = make_simple_engine();
+    let before = warm.eval(&compiled);
+    let minted_at_eval = cell(&before, "EditOuter.same", "body");
+    assert!(
+        matches!(minted_at_eval, Value::GeometryHandle { .. }),
+        "premise: eval() mints EditOuter.same.body, got {minted_at_eval:?}"
+    );
+    let edited = warm
+        .edit_param(template_len.clone(), edited_len.clone())
+        .expect("edit_param(EditInner.len, 30mm) must succeed after eval");
+
+    let mut cold = make_simple_engine();
+    cold.set_param_and_invalidate(&template_len, edited_len);
+    let cold = cold.eval(&compiled);
+
+    assert_eq!(
+        cell(&edited, "EditOuter.same", "len"),
+        cell(&cold, "EditOuter.same", "len"),
+        "premise: the warm and cold engines must commit the same instance `len`, \
+         or their instance handles are not comparable"
+    );
+    let edited_body = cell(&edited, "EditOuter.same", "body");
+    assert!(
+        matches!(edited_body, Value::GeometryHandle { .. }),
+        "EditOuter.same.body must still be a minted GeometryHandle after a \
+         template param edit: Undef means the edit path re-evaluated the \
+         instance cell without the instance-scope mint, got {edited_body:?}"
+    );
+    assert_eq!(
+        edited_body,
+        cell(&cold, "EditOuter.same", "body"),
+        "EditOuter.same.body after edit_param must equal a cold eval's: the \
+         template's realization, hashed over the instance's own values"
+    );
+}
