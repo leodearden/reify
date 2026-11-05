@@ -22,6 +22,9 @@ from _pcc_test_support import _SCRIPTS_DIR
 # The alias every α/pdv test binds the checker module to.
 _ALPHA_NAME = "pcc"
 
+# The _pdv_test_support function that returns α to a pdv partition.
+_ALPHA_LOADER = "load_pcc"
+
 # The name α is registered under in sys.modules, as a dotted patch target sees it.
 _ALPHA_MODULE_PREFIX = "prd_capability_check."
 
@@ -43,10 +46,19 @@ def _scoped_files():
 
 
 def _is_alpha(node):
-    """True for a reference to α: the bare alias, or an attribute ending in it (pdv.pcc)."""
+    """True for an expression that is α: the bare alias, an attribute ending in it
+    (pdv.pcc), a load_pcc() call, or a conditional with α on a branch."""
     if isinstance(node, ast.Name):
         return node.id == _ALPHA_NAME
-    return isinstance(node, ast.Attribute) and node.attr == _ALPHA_NAME
+    if isinstance(node, ast.Attribute):
+        return node.attr == _ALPHA_NAME
+    if isinstance(node, ast.Call):
+        return _dotted(node.func)[-1:] == (_ALPHA_LOADER,)
+    if isinstance(node, ast.IfExp):
+        return _is_alpha(node.body) or _is_alpha(node.orelse)
+    if isinstance(node, ast.BoolOp):
+        return any(_is_alpha(value) for value in node.values)
+    return False
 
 
 def _is_private(name):
@@ -98,6 +110,59 @@ def _alpha_string_patches(tree, source):
                 and isinstance(node.args[0].value, str)
                 and node.args[0].value.startswith(_ALPHA_MODULE_PREFIX)):
             yield node.lineno, _first_line(source, node)
+
+
+def _bound_name(target):
+    """The name an assignment target binds; None for a subscript, tuple or starred target."""
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        return target.attr
+    return None
+
+
+def _parameter_defaults(arguments):
+    """(parameter, default) for each parameter that has a default."""
+    positional = arguments.posonlyargs + arguments.args
+    yield from zip(positional[len(positional) - len(arguments.defaults):], arguments.defaults)
+    for parameter, default in zip(arguments.kwonlyargs, arguments.kw_defaults):
+        if default is not None:
+            yield parameter, default
+
+
+def _name_bindings(tree):
+    """(bound name, value, anchor) for each assignment, keyword argument and
+    parameter default; the bound name is None where no name is bound."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                yield _bound_name(target), node.value, node
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            yield _bound_name(node.target), node.value, node
+        elif isinstance(node, ast.keyword):
+            yield node.arg, node.value, node
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for parameter, default in _parameter_defaults(node.args):
+                yield parameter.arg, default, node
+
+
+def _aliased_alpha_imports(tree):
+    """Imports of the alias or the loader under another name."""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if (alias.name in (_ALPHA_NAME, _ALPHA_LOADER)
+                        and alias.asname not in (None, alias.name)):
+                    yield node
+
+
+def _alpha_rebindings(tree, source):
+    """α bound to a name other than its alias, where no other counter can follow it."""
+    for name, value, anchor in _name_bindings(tree):
+        if name not in (None, _ALPHA_NAME) and _is_alpha(value):
+            yield anchor.lineno, _first_line(source, anchor)
+    for node in _aliased_alpha_imports(tree):
+        yield node.lineno, _first_line(source, node)
 
 
 _COUNTERS = {
