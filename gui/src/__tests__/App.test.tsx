@@ -207,7 +207,7 @@ vi.mock('../stores/viewPersistence', async (importOriginal) => {
   };
 });
 
-import App, { NEW_FILE_TEMPLATE, computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
+import App, { computePaneGroups, reconcilePaneViewports, syncActiveViewToViewports, collectViewportLayout, applyViewportLayout, computeAppearanceOverrides } from '../App';
 import * as bridge from '../bridge';
 import { STORAGE_KEY } from '../hooks/useLayoutPersistence';
 import { VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
@@ -3135,6 +3135,9 @@ describe('App Ctrl+O open file', () => {
     await waitFor(() => {
       expect(bridge.openFile).toHaveBeenCalledWith('/project/other.ri');
     });
+    await waitFor(() => {
+      expect(bridge.recordRecent).toHaveBeenCalledWith('/project/other.ri');
+    });
   });
 });
 
@@ -3290,13 +3293,13 @@ describe('App whole-state replies honour the publish generation', () => {
   });
 });
 
-describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
+describe('App File→New (Ctrl+N) create-and-open flow', () => {
   const newPath = '/user/chosen/new.ri';
-  const newContent = NEW_FILE_TEMPLATE;
+  const newContent = '// New design\n';
 
   function setupHappyPathMocks() {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
-    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.createNewFile).mockResolvedValue({ path: newPath, content: newContent });
     vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
     vi.mocked(bridge.openFileEngine).mockResolvedValue(published({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
@@ -3309,7 +3312,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
     }));
   }
 
-  it('Ctrl+N happy path: calls pickSavePath, saveFile, openFile, openFileEngine in order', async () => {
+  it('Ctrl+N happy path: calls pickSavePath, createNewFile, openFile, openFileEngine in order', async () => {
     setupHappyPathMocks();
     await renderAndWaitForReady();
 
@@ -3319,7 +3322,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
       expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
     });
     await waitFor(() => {
-      expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+      expect(bridge.createNewFile).toHaveBeenCalledWith(newPath);
     });
     await waitFor(() => {
       expect(bridge.openFile).toHaveBeenCalledWith(newPath);
@@ -3342,14 +3345,14 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
       expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
     });
     await waitFor(() => {
-      expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+      expect(bridge.createNewFile).toHaveBeenCalledWith(newPath);
     });
     await waitFor(() => {
       expect(bridge.openFile).toHaveBeenCalledWith(newPath);
     });
   });
 
-  it('cancel: pickSavePath returns null → saveFile and openFile not called', async () => {
+  it('cancel: pickSavePath returns null → createNewFile and openFile not called', async () => {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(null);
     await renderAndWaitForReady();
 
@@ -3360,12 +3363,12 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
     });
     await flushMacrotasks();
 
-    expect(bridge.saveFile).not.toHaveBeenCalled();
+    expect(bridge.createNewFile).not.toHaveBeenCalled();
     expect(bridge.openFile).not.toHaveBeenCalled();
     expect(bridge.openFileEngine).not.toHaveBeenCalled();
   });
 
-  it('error: pickSavePath rejects → shows "New file failed" toast, saveFile not called', async () => {
+  it('error: pickSavePath rejects → shows "New file failed" toast, createNewFile not called', async () => {
     await withSuppressedRejections(async () => {
       vi.mocked(bridge.pickSavePath).mockRejectedValue(new Error('Plugin not registered'));
       await renderAndWaitForReady();
@@ -3375,14 +3378,14 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
       await waitFor(() => {
         expect(screen.getByText(/New file failed/)).toBeTruthy();
       });
-      expect(bridge.saveFile).not.toHaveBeenCalled();
+      expect(bridge.createNewFile).not.toHaveBeenCalled();
     });
   });
 
-  it('error: saveFile rejects → shows "New file failed" toast with error message, openFile not called', async () => {
+  it('error: createNewFile rejects → shows a coded "New file failed" toast with the error message, openFile not called', async () => {
     await withSuppressedRejections(async () => {
       vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
-      vi.mocked(bridge.saveFile).mockRejectedValue(new Error('disk full'));
+      vi.mocked(bridge.createNewFile).mockRejectedValue(new Error('disk full'));
       await renderAndWaitForReady();
 
       fireEvent.keyDown(document, { key: 'n', ctrlKey: true });
@@ -3391,7 +3394,7 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
         expect(screen.getByText(/New file failed/)).toBeTruthy();
       });
       await waitFor(() => {
-        expect(screen.getByText(/disk full/)).toBeTruthy();
+        expect(screen.getByText(/E_GUI_TEMPLATE_WRITE_FAILED: disk full/)).toBeTruthy();
       });
       expect(bridge.openFile).not.toHaveBeenCalled();
     });
@@ -3413,11 +3416,11 @@ describe('App File→New (Ctrl+N) save-as-you-go flow', () => {
 
 describe('App handleNew dirty-check confirmation', () => {
   const newPath = '/user/chosen/new.ri';
-  const newContent = NEW_FILE_TEMPLATE;
+  const newContent = '// New design\n';
 
   function setupHappyPathMocks() {
     vi.mocked(bridge.pickSavePath).mockResolvedValue(newPath);
-    vi.mocked(bridge.saveFile).mockResolvedValue(undefined);
+    vi.mocked(bridge.createNewFile).mockResolvedValue({ path: newPath, content: newContent });
     vi.mocked(bridge.openFile).mockResolvedValue({ path: newPath, content: newContent });
     vi.mocked(bridge.openFileEngine).mockResolvedValue(published({ fea_convergence: null,
       meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [],
@@ -3441,7 +3444,7 @@ describe('App handleNew dirty-check confirmation', () => {
     await flushMacrotasks();
     expect(bridge.ask).toHaveBeenCalledTimes(1);
     expect(bridge.pickSavePath).not.toHaveBeenCalled();
-    expect(bridge.saveFile).not.toHaveBeenCalled();
+    expect(bridge.createNewFile).not.toHaveBeenCalled();
     expect(bridge.openFile).not.toHaveBeenCalled();
     expect(bridge.openFileEngine).not.toHaveBeenCalled();
   });
@@ -3458,7 +3461,7 @@ describe('App handleNew dirty-check confirmation', () => {
       expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
     });
     await waitFor(() => {
-      expect(bridge.saveFile).toHaveBeenCalledWith(newPath, newContent);
+      expect(bridge.createNewFile).toHaveBeenCalledWith(newPath);
     });
     await waitFor(() => {
       expect(bridge.openFile).toHaveBeenCalledWith(newPath);
@@ -3478,6 +3481,120 @@ describe('App handleNew dirty-check confirmation', () => {
       expect(bridge.pickSavePath).toHaveBeenCalledWith('untitled.ri', 'ri');
     });
     expect(bridge.ask).not.toHaveBeenCalled();
+  });
+});
+
+describe('App launcher Start view (alpha-spine β)', () => {
+  const oneFileState = (): GuiState => ({
+    ...emptyState,
+    files: [{ path: '/project/bracket.ri', content: 'structure Bracket {}' }],
+  });
+
+  function typeStartPath(path: string) {
+    fireEvent.input(screen.getByTestId('start-path-input'), { target: { value: path } });
+  }
+
+  it('shows the start view over a still-mounted layout when no document is open', async () => {
+    await renderAndWaitForReady();
+
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(screen.getByTestId('app-layout')).toBeTruthy();
+  });
+
+  it('shows no start view when the launch opened a document', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
+
+    await renderAndWaitForReady();
+
+    expect(screen.queryByTestId('start-view')).toBeNull();
+  });
+
+  it('opening a typed path loads it, records it as recent and dismisses the start view', async () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+    expect(bridge.openFile).toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(bridge.openFileEngine).toHaveBeenCalledWith('/designs/bracket.ri');
+    expect(vi.mocked(bridge.openFile).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(bridge.openFileEngine).mock.invocationCallOrder[0],
+    );
+    await waitFor(() => expect(bridge.recordRecent).toHaveBeenCalledWith('/designs/bracket.ri'));
+  });
+
+  it('a failed open keeps the start view with E_GUI_OPEN_FAILED (B4)', async () => {
+    vi.mocked(bridge.openFile).mockRejectedValue('No such file: /designs/missing.ri');
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/missing.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+
+    const error = await screen.findByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_OPEN_FAILED');
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(bridge.recordRecent).not.toHaveBeenCalled();
+  });
+
+  it('creating a typed path writes the template, then opens the path the backend returned', async () => {
+    vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' });
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' });
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/created');
+    fireEvent.click(screen.getByTestId('start-create-path'));
+
+    await waitFor(() => expect(bridge.openFileEngine).toHaveBeenCalledWith('/designs/created.ri'));
+    expect(bridge.createNewFile).toHaveBeenCalledWith('/designs/created');
+    expect(bridge.openFile).toHaveBeenCalledWith('/designs/created.ri');
+    expect(bridge.saveFile).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+  });
+
+  it('Design closes the chat panel and Assistant reopens it', async () => {
+    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({ mode, debug_port: null }));
+    await renderAndWaitForReady();
+    expect(screen.getByTestId('chat-panel')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('start-mode-design'));
+    await waitFor(() => expect(screen.queryByTestId('chat-panel')).toBeNull());
+    expect(bridge.setMode).toHaveBeenCalledWith('design');
+    expect(screen.getByTestId('start-mode-design').getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(screen.getByTestId('start-mode-assistant'));
+    await waitFor(() => expect(screen.getByTestId('chat-panel')).toBeTruthy());
+    expect(bridge.setMode).toHaveBeenCalledWith('assistant');
+  });
+
+  it('Debug selects debug mode through set_mode and starts the debug bridge', async () => {
+    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
+      mode,
+      debug_port: mode === 'debug' ? 3939 : null,
+    }));
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1));
+    expect(bridge.setMode).toHaveBeenCalledWith('debug');
+    expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByTestId('start-debug-port').textContent).toContain('3939');
+  });
+
+  it('an env-launched debug session reports Debug mode', async () => {
+    vi.mocked(bridge.isDebugEnabled).mockResolvedValue(true);
+    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
+      mode,
+      debug_port: mode === 'debug' ? 3939 : null,
+    }));
+
+    await renderAndWaitForReady();
+
+    expect(bridge.setMode).toHaveBeenCalledWith('debug');
+    expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true');
+    expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
   });
 });
 
