@@ -3429,15 +3429,15 @@ fn compile_expr_guarded_with_expected_inner(
                     // `fea_envelope_result_type` (#4629 W2) →
                     // `is_field_op` → `is_orientation_typed_fn` (task 5344) →
                     // `is_orientation_decomposer_fn` (tasks #6082/#6306) →
-                    // first-arg fallback. The five geometry-name families plus the
-                    // RBD-β `is_dynamics_query` family (task 3829), the task-4278
-                    // `is_dynamics_constructor` family, the std.fields α
-                    // `is_field_op` family (task 4219), the #4629 W2
-                    // `fea_envelope_result_type` family, and the task-#5476
-                    // `is_flexure_typed_fn` family are pinned disjoint in
-                    // `units.rs::tests::builtin_name_families_are_pairwise_disjoint`,
-                    // so within this arm the ordering is unobservable — no name can
-                    // satisfy two predicates. `selector_composition_result_type` is
+                    // first-arg fallback. Every name family above is a
+                    // `BUILTIN_NAME_FAMILIES` row, and
+                    // `unresolved_function::tests::builtin_name_families_are_pairwise_disjoint`
+                    // pins the rows pairwise disjoint; the registry arm is pinned
+                    // disjoint from every row by
+                    // `registry_rows_and_shared_verbs_are_disjoint_from_every_family`.
+                    // So within this arm the ordering is unobservable, save for the
+                    // allowlisted `union`/`difference` overlap:
+                    // `selector_composition_result_type` is
                     // arg-aware (returns None for CSG non-selector operands) so CSG
                     // `union`/`difference` still reach `is_geometry_function`.
                     // task 4118 γ — list-helper selector coercion (insertion

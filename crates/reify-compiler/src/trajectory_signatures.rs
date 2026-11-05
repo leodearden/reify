@@ -12,8 +12,10 @@
 //! is carried statically only, until #9283 dimensions it at runtime.
 //!
 //! The list-valued trajectory intrinsics stay in `EVAL_DEFERRED_BUILTIN_NAMES`
-//! under #6007. Should a `reify-builtins` row ever type either name here, the
-//! name leaves this family in the same diff:
+//! under #6007. This slice is retired by #6014 (registry ω), which deletes
+//! every `BUILTIN_NAME_FAMILIES` slice once the typing ladder is a single
+//! registry arm. Should a `reify-builtins` row type either name before then,
+//! the name leaves this family in the same diff:
 //! `registry_rows_and_shared_verbs_are_disjoint_from_every_family` reds while
 //! both claim it.
 
