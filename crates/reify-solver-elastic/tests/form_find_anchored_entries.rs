@@ -197,7 +197,7 @@ fn member_forces_are_q_times_solved_length_and_q_is_echoed() {
     );
 }
 
-// (b) A free node with no member path to any anchor leaves a zero row in the
+// A free node with no member path to any anchor leaves a zero row in the
 // reduced stiffness D_ff → singular. The solve cannot recover that node.
 #[test]
 fn disconnected_free_node_is_singular_reduced_stiffness() {
@@ -217,7 +217,7 @@ fn disconnected_free_node_is_singular_reduced_stiffness() {
     );
 }
 
-// (b2) TASK 7046 — a NUMERICALLY singular D_ff must be reported too,
+// TASK 7046 — a NUMERICALLY singular D_ff must be reported too,
 // identically at every gauge, while the control (half the critical strut
 // density) stays Ok. LU returns finite but huge (~1e13) coordinates, so
 // the residual branch rejects, and structurally rather than by rounding
@@ -269,7 +269,7 @@ fn near_singular_reduced_stiffness_is_rejected_at_every_gauge() {
     }
 }
 
-// (c) Anchoring every node leaves no free DOF to solve for.
+// Anchoring every node leaves no free DOF to solve for.
 #[test]
 fn all_nodes_anchored_is_empty_free_set() {
     let nodes = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
@@ -299,7 +299,7 @@ fn tent_membrane() -> MembraneCase {
     (TENT_NODE_COORDS.to_vec(), surfaces, anchors)
 }
 
-// (d) The pure-line path (empty surfaces) through the surface-aware entry
+// The pure-line path (empty surfaces) through the surface-aware entry
 // must return exactly the landed form_find_anchored result, with an empty
 // surface_stresses echo — the additive-extension invariant.
 #[test]
@@ -337,7 +337,7 @@ fn surfaces_empty_matches_line_only_form_find_anchored() {
     }
 }
 
-// (e) TASK 6119 — a free node touched by neither a member nor a triangle
+// TASK 6119 — a free node touched by neither a member nor a triangle
 // leaves its entire free-row block of D identically zero, so the net force
 // on it is 0 for the vacuous reason that nothing acts on it at all. That
 // must not be read as "converged": the honest outcome is
@@ -373,7 +373,8 @@ fn surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back() {
     );
 }
 
-// (e2) TASK 6119 REVIEW — the degenerate-row guard exercised by (e) and
+// TASK 6119 REVIEW — the degenerate-row guard exercised by
+// `surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back` and
 // `fd_criteria`'s unit tests must fire PER ROW: an aggregate guard on the
 // MAX over free rows fires
 // only when EVERY free row of D is zero, so a free node that IS
@@ -443,7 +444,7 @@ fn tent_aniso_fixture() -> (
     (nodes, surfaces, prestress, anchors)
 }
 
-// (e) All nodes anchored → EmptyFreeSet.
+// All nodes anchored → EmptyFreeSet.
 #[test]
 fn aniso_solve_empty_free_set() {
     let (nodes, surfaces, prestress, _) = tent_aniso_fixture();
@@ -466,7 +467,7 @@ fn aniso_solve_empty_free_set() {
     );
 }
 
-// (f) ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
+// ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
 // isotropic solve to ≤ 1e-9 on node positions; converged == true.
 #[test]
 fn aniso_solve_isotropic_equivalence() {

@@ -257,7 +257,7 @@ fn line_only_group_ratios_with_a_disconnected_cable_pair_does_not_converge() {
 
 // ── δ (task 4415): surface-aware form_find_free_surfaces ──────────────────
 
-// (d) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
+// Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
 // must return a result that matches form_find_free in all line-only fields
 // (nodes / member_forces / force_densities / nullity / converged) and
 // carries an empty (NEVER absent) surface_stresses echo.
