@@ -4,7 +4,8 @@ test_pcc_seam_ratchet.py — the INV-5 adoption ratchet for ε's public seams
 (docs/prds/v0_6/prd-probe-gate-typed-outcomes.md D9, §5.5, §8 ε).  No test of
 scripts/prd-capability-check.py (α) or scripts/prd-decompose-verify.py (pdv)
 reads an α private name or patches α: they hand α a ProbeContext and a runner
-instead.
+instead.  Nor does any bind α to a name other than its one alias, where the
+other counters could not follow it.
 
 Every count is over the parsed AST, never the raw text, so a comment or a
 docstring that names a private counts nothing, and a patch call broken across
@@ -19,7 +20,7 @@ import unittest
 
 from _pcc_test_support import _SCRIPTS_DIR
 
-# The alias every α/pdv test binds the checker module to.
+# The one alias α may be bound to in scope, held there by the rebindings counter.
 _ALPHA_NAME = "pcc"
 
 # The _pdv_test_support function that returns α to a pdv partition.
@@ -169,6 +170,7 @@ _COUNTERS = {
     "private reads": _private_reads,
     "α patches": _alpha_patches,
     "α string patches": _alpha_string_patches,
+    "α rebindings": _alpha_rebindings,
 }
 
 
@@ -268,7 +270,7 @@ class TestRatchetCountsCode(unittest.TestCase):
 
 
 class TestNoAlphaReachThrough(unittest.TestCase):
-    """No α/pdv test file reads an α private or patches α."""
+    """No α/pdv test file reads an α private, patches α, or binds α to another name."""
 
     def test_the_scope_covers_both_suites(self):
         names = {os.path.basename(path) for path in _scoped_files()}
