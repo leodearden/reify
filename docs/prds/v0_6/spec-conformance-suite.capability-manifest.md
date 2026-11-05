@@ -19,7 +19,7 @@ out-of-batch / 83 total** after the three cross-PRD wirings — λ ← #6800, χ
 | η | **#6765** | high | γ δ ε | leaf · **the vertical slice** |
 | θ | **#6766** | high | α γ ζ η | leaf · verify wiring |
 | ι | **#6767** | high | γ | leaf · vocabulary bridge |
-| κ | **#6768** | medium | — | leaf · ratchet |
+| κ | **#6768** | medium | — | leaf · consumes PDIAG #5405 *(rescoped 2026-08-28; no ratchet built)* |
 | λ | **#6769** | medium | γ ι · **#5403 #5404** | leaf · CLI tier |
 | μ | **#6770** | medium | γ | leaf · bless server + ledger |
 | ν | **#6771** | medium | μ | leaf · **merge gate (makes μ authoritative)** |
@@ -113,16 +113,17 @@ this manifest preserves: most signals are stated as *a seeded mutant is observed
 **G6 (premise validity).** Three branch-3 cases were resolved by **scoping the signal to its own dependency set**
 rather than by relaxing it — λ, σ, χ (see the sidecar bindings). One branch-1 case, α's "exactly one `13.1`
 heading remaining", was checked by counting: there are exactly two today, so the assertion is achievable. Two
-count-shaped premises (κ's ~700 uncoded sites, ο's ~773 consuming files) are explicitly recorded as
-**expectations, not asserted bounds** — the gen binary's output is the seed, and neither leaf may red on a
-differing count. Branch-2 (closed-form exactness) is handled structurally by the mandatory `regime:` directive:
+count-shaped premises were explicitly recorded as **expectations, not asserted bounds**: ο's ~773 consuming files,
+where the gen binary's output is the seed and the leaf may not red on a differing count; and κ's ~700 uncoded
+sites *(retired with κ's 2026-08-28 rescope — no gen binary or seed was built; PDIAG #5405 baselines the
+population per file)*. Branch-2 (closed-form exactness) is handled structurally by the mandatory `regime:` directive:
 `regime: iterative` forbids byte/exact assertions at the harness level, so the esc-5618-9 error cannot be
 written by accident.
 
-**G7 (design invariants).** No hit, no waiver. The suite *enforces* INV-SF-6 (κ is its ratchet), INV-SF-2
+**G7 (design invariants).** No hit, no waiver. The suite *enforces* INV-SF-6 (via the PDIAG ratchet #5405, which κ consumes), INV-SF-2
 (λ's #5403/#5404 alignment), INV-SF-4 (every `UNPROVABLE` carries an attributable reason — applied to the suite's
 own tooling) and INV-SF-5 (ο's loud-named rungs). Single-derivation discipline — γ's generated manifest, ι's
-reconciler, ε/κ/ο's one-gen-binary rule, and ζ/ε sharing ONE liveness determination — is applied against the
+reconciler, ε/ο's one-gen-binary rule *(κ's retired with its 2026-08-28 rescope: it builds no gen binary)*, and ζ/ε sharing ONE liveness determination — is applied against the
 no-lockstep-duplication invariant at four separate places.
 
 ## Bindings
@@ -218,13 +219,15 @@ no-lockstep-duplication invariant at four separate places.
 - **`message-text-is-explicitly-not-conformance`** — Scope fence (decision 6): the harness compares TYPED codes. Message-text quality is ratified Ring 3 (RQ-8) and out of scope. A fixture asserting on message text would be a scope breach, not a stronger test.
   - verdict **PASS** · check: `manual` — A negative scope fence; enforced by review of the fixture directive vocabulary, which has no message-text key.
 
-### κ — #6768 · spec-conformance κ: uncoded-diagnostics ratchet (INV-SF-6)
+### κ — #6768 · spec-conformance κ: consume the PDIAG ratchet (INV-SF-6)
 
-- **`the-uncoded-population-is-real-and-roughly-sized`** — G6 branch 1, hedged deliberately. Measured at authoring: ~1,139 `Diagnostic::error/warning/info` construction sites vs ~441 `.with_code` calls, i.e. roughly 700 uncoded (~60%). The constructors hardcode `code: None`; coding happens only via `.with_code`. The seed count is an EXPECTATION, not an asserted bound — the gen binary's output is the truth, and the leaf must not red on a count that differs from ~700.
-  - verdict **PASS** · check: `manual` — The seed row count is whatever the gen binary derives; pinning a number here would manufacture a false floor.
-- **`shrink-only-gate-follows-the-landed-PTODO-model`** — G3: fingerprint rows, sole gen binary, shrink-only check — the PTODO machinery verified present at HEAD. Migration is per-section as rejection-surface waves reach each area (leaf ρ), never a big-bang sweep.
-  - verdict **PASS** · check: `manual` — The ratchet's baseline path is not fixed by the PRD; the gate's shape is verified by its own seeded-fire test.
-- **`this-ratchet-ENFORCES-INV-SF-6-rather-than-violating-it`** — G7 walk: docs/legibility/design-invariants.md INV-SF-6 `diagnostics-carry-codes` is the invariant this leaf mechanizes. No waiver required; the leaf is the invariant's enforcement arm.
+> **Rescoped 2026-08-28 (Leo ruling, seam-integrity finding F1).** What follows is the decompose-time record, annotated in place: verdicts are the gate's decompose-time verdicts and are left as recorded; supersession is marked in each binding's text. κ no longer BUILDS an uncoded-diagnostics ratchet: that ratchet is delivered by landed **#5405** (PDIAG — the reify-audit pattern module, per-file baseline `crates/reify-audit/pdiag-baseline.txt`, `pdiag:allow` escapes, own infra gate), and the fingerprint-row / sole-gen-binary design recorded below was **retired unbuilt**. κ only CONSUMES PDIAG and pins the wave-migration contract (`crates/reify-audit/tests/pdiag_wave_protocol.rs`). Live scope: `spec-conformance-suite.md` D8 and the κ leaf bullet. Do not rebuild the retired ratchet from the two superseded bindings.
+
+- **`the-uncoded-population-is-real-and-roughly-sized`** — *(superseded by #5405 — retired design; the ~700 seed-row expectation belonged to the unbuilt fingerprint-row gen binary. PDIAG baselines per-file counts of the same population.)* Originally: G6 branch 1, ~1,139 `Diagnostic::error/warning/info` construction sites vs ~441 `.with_code` calls, roughly 700 uncoded (~60%).
+  - verdict **PASS** · check: `manual` — Retired unbuilt; no leaf asserts or seeds this count.
+- **`shrink-only-gate-follows-the-landed-PTODO-model`** — *(superseded by #5405 — κ builds no gate; PDIAG's shrink-only gate is already landed.)* Originally: fingerprint rows, sole gen binary, shrink-only check on the PTODO model. Migration remains per-section as rejection-surface waves reach each area (leaf ρ), under PDIAG.
+  - verdict **PASS** · check: `manual` — The gate is #5405's own; its seeded-fire test lives with PDIAG, not with κ.
+- **`this-ratchet-ENFORCES-INV-SF-6-rather-than-violating-it`** — G7 walk: docs/legibility/design-invariants.md INV-SF-6 `diagnostics-carry-codes` is the invariant the PDIAG ratchet mechanizes and κ consumes. No waiver required; the suite is not a second enforcement arm.
   - verdict **PASS** · check: `grep -E 'INV-SF-6'` in `docs/legibility/design-invariants.md` → **present**
 
 ### λ — #6769 · spec-conformance λ: CLI-observable tier (external driver runner + staleness UNPROVABLE)
@@ -281,7 +284,7 @@ no-lockstep-duplication invariant at four separate places.
 
 ### ρ — #6778 · spec-conformance ρ: static-semantics rejection wave (§3, §4, §7, §8)
 
-- **`typed-code-reject-fixtures-need-the-bridge-and-the-ratchet`** — G6 branch 3 (producible from the dependency set): asserting a rejection by MNEMONIC requires ι's E_*-to-DiagnosticCode bridge, and migrating a clause's emission from uncoded to coded rides κ's ratchet. Both are hard intra-batch edges, never prose ordering.
+- **`typed-code-reject-fixtures-need-the-bridge-and-the-ratchet`** — G6 branch 3 (producible from the dependency set): asserting a rejection by MNEMONIC requires ι's E_*-to-DiagnosticCode bridge, and migrating a clause's emission from uncoded to coded rides the PDIAG ratchet (#5405) under κ's pinned wave-migration contract. Both are hard intra-batch edges, never prose ordering.
   - verdict **PASS** · check: `manual` — Wave-shaped: per-clause typed-code verdicts are run artifacts.
 - **`every-asserted-rejection-must-be-OBSERVED-to-fire`** — G6 branch 4, the wave's central discipline. The overlay's negative-assertion sentinel: `reify check` exiting 0 with `All constraints satisfied.` and no diagnostic where a rejection was asserted is silent-accept = FAIL (task 4575 precedent). γ's harness enforces this mechanically for `mode: reject`, so the wave inherits it rather than relying on author care.
   - verdict **PASS** · check: `manual` — Enforced by the harness at run time; a repo grep cannot observe a rejection firing.
@@ -354,6 +357,8 @@ no-lockstep-duplication invariant at four separate places.
 *Every binding resolves to PASS. No binding resolved to `declared-only`, `test-only`, `producer-downstream`,
 `producer-absent`, `producer-extent-short`, `fixture-ERROR`, `bound≤floor` or `rejection-absent`, so no leaf was
 re-scoped, re-homed or relaxed to clear the gate.*
+*(As decomposed 2026-08-26. κ was rescoped afterwards, by the 2026-08-28 ruling and not by this gate; its two
+retired-design bindings are marked superseded in place — see κ.)*
 
 ## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
 

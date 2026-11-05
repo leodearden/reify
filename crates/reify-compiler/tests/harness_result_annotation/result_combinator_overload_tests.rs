@@ -79,15 +79,6 @@ structure S {
 /// emission (expr.rs, `is_fallback_combinator`) is reachable for a Result
 /// subject once B1+B2 land.
 ///
-/// The subject `r` is a STRUCTURE param (not a sibling fn's param): a fn
-/// body's own calls resolve only against `ctx.functions` (prior sibling user
-/// fns in source order), NOT the prelude-merged `ctx.resolution_functions` —
-/// so a call inside a fn body would never see the competing stdlib Option
-/// overload and this signal would be vacuously green regardless of B2. A
-/// structure's value cells resolve calls against `ctx.resolution_functions`
-/// (entities_phase.rs), so both the user Result overload and the stdlib
-/// Option overload are visible candidates here, exactly like signal 2 above.
-///
 /// RED (after B1, before B2): `unwrap_or(r, "y")` wildcard-matches both
 /// overloads → `Ambiguous` → poison; the call never reaches the
 /// single-winner `Resolved` arm, so `FallbackType` never fires.

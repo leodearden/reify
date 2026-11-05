@@ -162,6 +162,7 @@ use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
 use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
+    stale_realizations,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -578,6 +579,26 @@ fn assert_realization_ids_unchanged<'a>(
 /// `None` for a node that carries none, so the non-Compute kinds cost one
 /// map lookup.
 ///
+/// # The memoized projection store is evicted too (#7332)
+///
+/// A fifth realization-keyed dependent kind lives outside the reverse index:
+/// `Engine::realization_projection_store`, the `(realization_ref,
+/// content_hash) -> RealizedContent` memo that
+/// `project_realization_read_handle` serves `@optimized` consumers from. Its
+/// second key is the STATIC `content_hash`, which never moves on a
+/// value-driven change (the same property [`compute_changed_realizations`]
+/// exists to work around), so a post-edit lookup re-hits the pre-edit entry
+/// verbatim — that is a stale read, not the unreachable entry the store's own
+/// doc used to claim. Dropping the cache entry alone does not fix it: the
+/// re-dispatch it forces projects through the store and gets the stale content
+/// back.
+///
+/// The evicted set is [`stale_realizations`]`(seeds, cone)`, the same set whose
+/// entities both callers hand to `RealizationCache::evict_family`, so the two
+/// caches drop the same realizations by construction. It includes the
+/// `GeomRef::Sub` consumers [`realization_cone_seeds`] adds, whose
+/// `content_hash` and `input_cone_hash` both stay put on a value edit.
+///
 /// # Which reverse index is used
 ///
 /// Edge #10 is registered by
@@ -631,6 +652,7 @@ fn assert_realization_ids_unchanged<'a>(
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
     warm_pool: &mut WarmStatePool,
+    projection_store: &mut crate::realization_content::RealizationProjectionStore,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
@@ -667,6 +689,9 @@ fn invalidate_realization_dirty_cone(
             warm_pool.donate_with_cost(node.clone(), state, cost);
         }
         cache.invalidate(node);
+    }
+    for rid in stale_realizations(seeds, &dirty) {
+        projection_store.evict(rid);
     }
     dirty
 }
@@ -2849,7 +2874,12 @@ impl Engine {
         //
         // `edit_param` does not rebuild the graph, so the persisting graph
         // is BOTH the prior and the new side of the comparison — the
-        // helper's `edit_param` contract.
+        // helper's `edit_param` contract. The persisting graph also carries
+        // each ComputeNode's `realization_inputs` forward, deliberately: it
+        // is a dependency record, not a redispatch flag (see
+        // `RedispatchPassState::redispatched` in `engine_build.rs`), and
+        // clearing it over the dirty cone would drop edge #10 and
+        // under-evict.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
@@ -2900,6 +2930,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 graph,
                 &self.compiled_fields,
                 reusable_index,
@@ -4696,6 +4727,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,

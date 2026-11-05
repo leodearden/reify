@@ -44,6 +44,7 @@ mod geometry_transform;
 mod guards;
 mod hoist_nested_selectors;
 mod ice;
+pub mod import_headers;
 mod joint_self_check;
 mod joint_signatures;
 mod list_helpers;

@@ -229,15 +229,16 @@ pub(crate) fn sampled_rotation_field(sf: SampledField) -> Value {
 /// at physical strain magnitudes). Callers may therefore pin `rotation == curl/2`
 /// at 0 ULP.
 ///
-/// ## Why rotation is DERIVED at wrap time and never stored
+/// ## Derived, never persisted
 ///
-/// `crates/reify-compute-contract/src/elastic_result.rs` carries a FROZEN binary
-/// wire header with `curl_len: u64` at a fixed byte offset, guarded by that
-/// module's byte-exact golden header test (which pins `curl_len` as literal
-/// hex). Adding a `rotation_len` slab would break that header, invalidate every
-/// persisted cache entry, and force a format version bump — all to carry data
-/// that is a pure ×½ of a slab already on the wire. Deriving instead means
-/// existing cache entries gain a correct `.rotation` for free.
+/// `rotation` carries no information beyond `curl`, so every path that wraps
+/// a curl slab derives it here — the live tet solve and
+/// `value_from_elastic_result`'s persistent-cache reconstruction — and it is
+/// never written to the compute-contract `ElasticResult`. Persisting it would
+/// store a second copy of the curl data that could disagree with the first.
+/// As a consequence, cache entries written before the channel existed still
+/// reconstruct with a correct `.rotation`. [`shear_angles_sf_from_gradient`]
+/// follows the same rule.
 pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
     sampled_field_on_grid_of(
         curl_sf,
@@ -252,8 +253,7 @@ pub(crate) fn rotation_sf_from_curl(curl_sf: &SampledField) -> SampledField {
 ///
 /// A linear projection of each node's ∇u, so it lands on gradient's grid (see
 /// [`sampled_field_on_grid_of`]) with no extra BVH pass. Derived at wrap time
-/// and persisted nowhere, for the same frozen-wire-header reason as
-/// [`rotation_sf_from_curl`].
+/// and persisted nowhere, for the same reason as [`rotation_sf_from_curl`].
 ///
 /// `None` when `grad_sf.data` is not stride-9: the slab may come from a decoded
 /// cache record that nothing upstream stride-checks, so the caller decides
@@ -1036,7 +1036,7 @@ mod tests {
             reason: "test",
         });
     }
-    /// step-3 RED (ruling #6164): the `rotation` derivative channel is the
+    /// Ruling #6164: the `rotation` derivative channel is the
     /// DESIGNATED CROSSING where the radian enters the elastic-result algebra.
     /// This test pins the whole mechanism by which the `rad` tag reaches the
     /// runtime: `sampled_rotation_field` DECLARES a `Vector3<Angle>` codomain,
@@ -1067,9 +1067,6 @@ mod tests {
     /// unchanged (only `data` and `name` may differ), which is what lets the
     /// rotation channel share the curl channel's Regular3D grid with no extra
     /// BVH resample pass.
-    ///
-    /// RED: neither `sampled_rotation_field` nor `rotation_sf_from_curl`
-    /// exists yet, so this does not compile until step-4.
     #[test]
     fn sampled_rotation_field_declares_angle_codomain_and_halves_curl() {
         use reify_ir::{FieldSourceKind, InterpolationKind, SampledField, SampledGridKind, Value};

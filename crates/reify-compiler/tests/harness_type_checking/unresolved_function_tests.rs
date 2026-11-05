@@ -683,9 +683,9 @@ fn zero_arg_mis_shaped_known_builtin_is_not_double_diagnosed() {
 // a user `fn` is not a builtin. The fallback's defect is that it read that
 // `false` as "exists nowhere", which only holds when the caller's function
 // table was COMPLETE. It is not complete inside a `fn` body:
-// `compile_builder/functions_phase.rs` compiles each body against
-// `&ctx.functions`, the user-only table that GROWS as the loop walks source
-// order, and only builds the merged `ctx.resolution_functions` afterwards.
+// `compile_builder/functions_phase.rs` compiles each body against the user
+// fns compiled so far plus the prelude, a table that GROWS in source order,
+// and only builds the merged `ctx.resolution_functions` afterwards.
 // So a call to a later-declared sibling yields `OverloadResolution::
 // NoUserFunctions` and lands on the terminal fallback with a name that is
 // perfectly real. Entity bodies, compiled after that merge, never see this.

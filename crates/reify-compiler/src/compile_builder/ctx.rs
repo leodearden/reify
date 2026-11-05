@@ -83,8 +83,8 @@ pub(crate) struct CompilationCtx {
     /// module-local `enum_defs`. Populated by `enums_phase::bind_resolution_enums`.
     pub(crate) resolution_enums: Vec<reify_ir::EnumDef>,
     /// Function table available for resolution: user functions merged with
-    /// prelude functions via [`crate::merge_prelude_functions`]. Populated by
-    /// `functions_phase::phase_functions`.
+    /// prelude functions via `functions_phase::build_resolution_functions`.
+    /// Populated by `functions_phase::phase_functions`.
     pub(crate) resolution_functions: Vec<CompiledFunction>,
     /// Trait names known at compile time: local trait declarations + prelude
     /// trait defs. Populated by `names_phase::build_resolution_names` BEFORE

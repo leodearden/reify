@@ -2144,7 +2144,7 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
 
     // Collect ls_files() once: the Vec drives the structural sweep; the HashSet
     // is reused by the ζ inverse-lane membership test without a second git call.
-    let tracked_files: Vec<String> = ctx.git.ls_files();
+    let tracked_files: Vec<String> = ctx.git().ls_files();
     let tracked_set: HashSet<String> = tracked_files.iter().cloned().collect();
 
     for path in &tracked_files {
@@ -2201,11 +2201,11 @@ pub fn check_with_stats(ctx: &AuditContext) -> (Vec<Finding>, ScanStats) {
     // existing-but-corrupt DB (resolve error) degrades all DB-backed lanes fail-soft.
     // The exit class is untouched (Medium-neutral) — 125 is reserved for genuine
     // arg/IO misconfig, never an absent optional substrate.
-    let db_path = tasks_db_path(&ctx.project_root);
+    let db_path = tasks_db_path(ctx.project_root());
     let mut inverse_findings: Vec<Finding> = Vec::new();
     match open_tasks_db(&db_path).and_then(|conn| {
         let live = resolve_liveness_keyed(&conn, &cited)?;
-        let inv = resolve_inverse(&conn, ctx.git, &tracked_set)?;
+        let inv = resolve_inverse(&conn, ctx.git(), &tracked_set)?;
         let g_allow = resolve_g_allow_owner_liveness(&conn, &g_allow_cited)?;
         Ok((live, inv, g_allow))
     }) {

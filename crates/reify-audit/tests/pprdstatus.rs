@@ -93,17 +93,8 @@ impl Project {
         git.set_ls_files(self.tracked.clone());
         let conn = Connection::open_in_memory().expect("in-memory sqlite");
         let jcodemunch = MockJCodemunchOps::new();
-        let ctx = AuditContext {
-            project_root: self.root.path().to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jcodemunch,
-            task_metadata: self.tasks.clone(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(self.root.path().to_path_buf(), &conn, &git, &jcodemunch)
+            .with_tasks(self.tasks.clone());
         reify_audit::pprdstatus::check(&ctx)
     }
 }

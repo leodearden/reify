@@ -26,7 +26,7 @@
 //! label decides, belong to `.claude/skills/prd/project.md` → "PRD terminal
 //! status — closed vocabulary + decompose-close stamp". This module consumes
 //! that list and does not define it. Task status and `prd` come from
-//! `ctx.task_metadata` (the fused-memory live loader, or `--tasks-file`),
+//! `ctx.task_metadata()` (the fused-memory live loader, or `--tasks-file`),
 //! never from a direct task-DB read. PRD membership comes from `ls_files()`,
 //! and PRD text from the working tree. Capability manifests are excluded:
 //! they are decompose-time gate artifacts with no Status header.
@@ -180,7 +180,7 @@ struct PrdDoc {
 
 /// Every tracked, readable PRD, keyed and so sorted by path.
 fn tracked_prds(ctx: &AuditContext) -> BTreeMap<String, PrdDoc> {
-    ctx.git
+    ctx.git()
         .ls_files()
         .into_iter()
         .filter(|path| is_prd_path(path))
@@ -461,8 +461,8 @@ fn cite_contradiction_findings(
 /// detector on an empty corpus and prints a breadcrumb instead.
 pub fn check(ctx: &AuditContext) -> Vec<Finding> {
     let prds = tracked_prds(ctx);
-    let mut findings = stale_status_findings(&ctx.task_metadata, &prds);
-    findings.extend(cite_contradiction_findings(&ctx.task_metadata, &prds));
+    let mut findings = stale_status_findings(ctx.task_metadata(), &prds);
+    findings.extend(cite_contradiction_findings(ctx.task_metadata(), &prds));
     findings
 }
 

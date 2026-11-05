@@ -55,6 +55,8 @@ mod cli_build_voxel_to_mesh;
 mod cli_cache_concurrent_writers;
 #[path = "harness_cli/cli_check.rs"]
 mod cli_check;
+#[path = "harness_cli/cli_check_bare_length_exit.rs"]
+mod cli_check_bare_length_exit;
 #[path = "harness_cli/cli_check_cfg.rs"]
 mod cli_check_cfg;
 #[path = "harness_cli/cli_check_cfg_example.rs"]

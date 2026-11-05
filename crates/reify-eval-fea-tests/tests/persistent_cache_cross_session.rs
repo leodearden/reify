@@ -91,9 +91,10 @@
 //! `persistent_cache_compute_round_trip.rs` (the buckling round-trip is gated
 //! only because a buckling solve is ~1000 s in debug).
 
+use reify_compute_contract::ElasticResult;
 use reify_core::Severity;
 use reify_eval::persistent_cache::{
-    ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, backdate_mtime, read_entry,
+    ENGINE_VERSION_HASH, WithDiagnostics, backdate_mtime, read_entry,
 };
 use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};

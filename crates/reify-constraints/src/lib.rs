@@ -12,6 +12,7 @@ mod discrete_fallback;
 mod dual_jacobian;
 pub mod hc4;
 pub mod interval;
+pub mod linalg;
 pub mod relate_solve;
 mod registry;
 pub mod scaling;
@@ -19,6 +20,7 @@ pub mod sketch;
 mod slvs_sys;
 mod solver;
 mod solvespace;
+pub mod trust_region;
 
 pub use classifier::ConstraintClassifier;
 pub use cpsat::{CpSatSolver, SolveAllResult};

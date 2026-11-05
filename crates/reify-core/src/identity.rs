@@ -66,6 +66,13 @@ impl ModulePath {
         }
         Ok(Self::new(dotted.split('.').map(String::from).collect()))
     }
+
+    /// The dot-separated spelling `import` and `module` declarations use
+    /// (`["std", "units"]` → `"std.units"`); the inverse of [`Self::from_dotted`].
+    /// `Display` is slash-separated instead.
+    pub fn to_dotted(&self) -> String {
+        self.0.join(".")
+    }
 }
 
 impl fmt::Display for ModulePath {

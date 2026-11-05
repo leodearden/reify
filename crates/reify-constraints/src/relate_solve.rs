@@ -18,39 +18,41 @@
 //! (`[t_x, t_y, t_z, rot_x, rot_y, rot_z]`) is measured by central finite
 //! differences, giving an `m × 6` Jacobian block per relation. A relation is
 //! *driving* iff its rows add at least one new independent direction to the running
-//! rank (greedy rank-revealing Gram–Schmidt over normalized rows); otherwise every
-//! row already lies in the span and it joins the redundant remainder. The DOF
-//! accounting falls straight out: `spent = combined rank`, `free = 6 − spent`.
+//! rank (an ordered rank-revealing QR over the rows, [`crate::linalg::RowSpaceQr`]);
+//! otherwise every row already lies in the span and it joins the redundant
+//! remainder. The DOF accounting falls straight out: `spent = combined rank`,
+//! `free = 6 − spent`.
 //!
 //! The {driving, redundant} *counts* and the spent total are order-independent
 //! (any maximal independent subset has the same size); the specific relation that
 //! lands in the remainder may depend on input order, which is immaterial — the
 //! remainder is verified, not solved.
 //!
-//! Hand-rolled small linalg over `≤(rows × 6)` — the Frame Jacobian is tiny, so a
-//! heavy linalg dependency (nalgebra) is unjustified (design §4).
+//! The linear algebra is the in-crate [`crate::linalg`] — the Frame Jacobian is
+//! tiny, so a heavy linalg dependency (nalgebra) is unjustified (design §4).
 //!
 //! ## Driving-set solve (step-10)
 //!
-//! [`solve_frame`] takes the partition's **driving set** over realized datum
-//! [`Value`]s + the 6-DOF Frame unknown + a seed [`Pose`] and drives the Frame to
-//! satisfy every driving relation, returning through the existing
-//! [`SolveResult`](reify_ir::SolveResult) contract (`Solved { values, unique }` /
-//! `Infeasible`). It reuses this module's residual + Jacobian model (the same one
-//! the partition measures): a damped Gauss–Newton (Levenberg–Marquardt) iteration
-//! over the 6-DOF pose, with `λI` damping so a residual gauge freedom (e.g. spin
-//! about the shank axis under concentric+flush) is handled gracefully rather than
-//! tripping a singular normal-equations solve. The 6 solved scalars are assembled
-//! into a [`Value::Frame`]; `unique` reflects whether the Jacobian at the solution
-//! pins all 6 DOF. Both the solve and the partition run in the scaled coordinates
-//! of one [`SolveScaling`] (PRD §7.3).
+//! [`solve_frame_outcome`] takes the partition's **driving set** over realized
+//! datum [`Value`]s + the 6-DOF Frame unknown + a seed [`Pose`] and drives the
+//! Frame to satisfy every driving relation. The Frame is a
+//! [`LeastSquaresProblem`] over this module's residual + Jacobian model (the same
+//! one the partition measures), solved by [`trust_region::solve`]; a residual
+//! gauge freedom (e.g. spin about the shank axis under concentric+flush) stays at
+//! its seed. A solved Frame comes with its rank and null space ([`Twist`]s); a
+//! failed one with its typed [`SolveFailureCause`].
+//! [`FrameSolveOutcome::into_solve_result`] reads that outcome through the
+//! existing [`SolveResult`] contract.
+//! Both the solve and the partition run in the scaled coordinates of one
+//! [`SolveScaling`] (PRD §7.3).
 //!
 //! **Backend note (see esc-4386-38).** The plan named a libslvs-backed solve
 //! (extending `solvespace.rs`'s `SystemBuilder`). The bound `Slvs_*` C API models
 //! INDEPENDENT point/line coordinates with no rigid-group primitive, so a single
 //! 6-DOF Frame carrying several rigidly-coupled datums cannot be expressed cleanly
-//! there; the self-contained Gauss–Newton over the already-tested residual model
-//! satisfies the same `SolveResult` contract without a second slvs integration.
+//! there; the self-contained trust-region solve over the already-tested residual
+//! model satisfies the same `SolveResult` contract without a second slvs
+//! integration.
 //!
 //! The tolerance hierarchy `kernel_local ≤ solver_convergence ≤ assertion/dedup`
 //! (PRD §7.1 coherence law) and the row dimensions it is applied by live in
@@ -59,9 +61,11 @@
 use std::collections::HashMap;
 
 use reify_core::{Diagnostic, DimensionVector, ValueCellId};
-use reify_ir::{SolveResult, Value};
+use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, Value};
 
+use crate::linalg::{RankTolerance, RowSpaceQr};
 use crate::scaling::{RelateTolerance, ResidualUnit, SolveScaling, UnknownKind};
+use crate::trust_region::{self, LeastSquaresProblem, SolveBudget};
 
 /// The auto Frame unknown a relate-solve scope must determine — one per `at auto`
 /// sub. Carries the sub's instance name so the partition can tell which relation
@@ -72,7 +76,8 @@ pub struct FrameUnknown {
     /// The auto sub's instance name (e.g. `"bolt"`).
     pub sub: String,
     /// `auto(free)` — whether this unknown waives the uniqueness check (PRD §7.1
-    /// step 3). When `true`, [`solve_frame`] returns `unique:false` even for a
+    /// step 3). When `true`, [`FrameSolveOutcome::into_solve_result`] returns
+    /// `unique:false` even for a
     /// fully-determined system, and any residual DOF is seeded to a concrete value
     /// (never a free variable) rather than reported as under-determined. When
     /// `false` (strict `auto`), a residual DOF is reported via the `unique:false`
@@ -129,6 +134,24 @@ impl Pose {
         Self::default()
     }
 
+    /// The same placement with its rotation magnitude at most π — `None` when it
+    /// already is: a rotation of `θ` about `â` is the rotation of
+    /// `θ − 2π·round(θ/2π)` about `â`. Keeps the exponential map away from its
+    /// singularity at `|θ| = 2π`, and makes the Frame quaternion's
+    /// `w = cos(θ/2) ≥ 0`.
+    fn rewrapped(&self) -> Option<Self> {
+        let angle = norm3(self.rotation);
+        if angle <= std::f64::consts::PI {
+            return None;
+        }
+        let turns = (angle / std::f64::consts::TAU).round();
+        let wrapped = angle - std::f64::consts::TAU * turns;
+        Some(Self {
+            translation: self.translation,
+            rotation: scale3(self.rotation, wrapped / angle),
+        })
+    }
+
     /// A copy with the `dof`-th Frame DOF nudged by `h` (DOF 0..3 = translation
     /// x/y/z; 3..6 = rotation x/y/z).
     fn perturbed(&self, dof: usize, h: f64) -> Self {
@@ -183,24 +206,24 @@ const FRAME_DOF: usize = 6;
 const FD_STEP: f64 = 1e-6;
 /// Below this norm a raw Jacobian row is numerically zero (a residual component
 /// insensitive to every DOF — well under the FD noise floor of ~1e-10). Scaled
-/// rows apply it divided by `ε_rel` ([`RankCutoffs`]).
+/// rows apply it divided by `ε_rel` ([`rank_tolerance`]).
 const ZERO_ROW_FLOOR: f64 = 1e-9;
 
 /// Rank-partition a per-scope relation set at the `witness` config into a driving
 /// set + a redundant remainder, with DOF accounting (ζ step-8).
 ///
 /// The rank is measured on the SCALED Jacobian of `scaling`, so translation and
-/// rotation columns are commensurate: after each row is normalized, a Gram–Schmidt
-/// residual above [`SolveScaling::rank_threshold`] counts as a new independent
-/// direction. See the module docs for the method.
+/// rotation columns are commensurate: a row whose normalized remainder outside the
+/// running span exceeds [`SolveScaling::rank_threshold`] counts as a new
+/// independent direction ([`RowSpaceQr`]). See the module docs for the method.
 pub fn partition_driving_set(
     relations: &[RelationInstance],
     frame_unknown: &FrameUnknown,
     witness: &Pose,
     scaling: &SolveScaling,
 ) -> RelationPartition {
-    let cutoffs = RankCutoffs::of(scaling);
-    let mut basis: Vec<[f64; FRAME_DOF]> = Vec::new();
+    let tolerance = rank_tolerance(scaling);
+    let mut running = RowSpaceQr::new(FRAME_DOF, tolerance);
     let mut driving = Vec::new();
     let mut redundant = Vec::new();
     let mut per_relation = Vec::new();
@@ -209,12 +232,11 @@ pub fn partition_driving_set(
         let (_, rows) = scaled_residual_jacobian(rel, frame_unknown, witness, scaling);
 
         // Individual rank: the rank of this relation's rows on their own (a fresh
-        // basis) — the geometry-measured codimension cross-checked against γ.
-        let mut solo: Vec<[f64; FRAME_DOF]> = Vec::new();
-        let individual_rank = add_rows_rank(&rows, &mut solo, cutoffs) as u32;
+        // factorization) — the geometry-measured codimension cross-checked against γ.
+        let individual_rank = RowSpaceQr::new(FRAME_DOF, tolerance).push_rows(&rows) as u32;
 
         // Contribution to the running rank, in input order.
-        let rank_contribution = add_rows_rank(&rows, &mut basis, cutoffs) as u32;
+        let rank_contribution = running.push_rows(&rows) as u32;
         if rank_contribution > 0 {
             driving.push(i);
         } else {
@@ -229,7 +251,7 @@ pub fn partition_driving_set(
         });
     }
 
-    let spent = basis.len() as u32;
+    let spent = running.rank() as u32;
     let free = (FRAME_DOF as u32).saturating_sub(spent);
     RelationPartition {
         driving,
@@ -307,74 +329,129 @@ fn bbox_diagonal(points: &[[f64; 3]]) -> f64 {
 /// [`SolveResult::Solved`]'s value map (entity = the sub's instance name).
 const POSE_MEMBER: &str = "pose";
 
-/// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is
-/// satisfied, starting from `seed` (ζ step-10).
-///
-/// Returns through the existing [`SolveResult`] contract:
-/// - [`SolveResult::Solved`] — every residual row converged within its own nominal
-///   tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method guarantee).
-///   `values` maps `ValueCellId::new(unknown.sub, "pose")` to a [`Value::Frame`]
-///   assembled from the 6 solved scalars; `unique` is `true` iff the Jacobian at
-///   the solution pins all 6 Frame DOF (no residual gauge freedom).
-/// - [`SolveResult::Infeasible`] — the driving relations are mutually inconsistent
-///   (no pose drives every row within its tolerance). Step-16 refines the geometric
-///   minimal-conflict diagnostic; ζ step-10 maps non-convergence to a build-failing
-///   `Infeasible` so the contract is honoured.
-pub fn solve_frame(
-    driving: &[RelationInstance],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    scaling: &SolveScaling,
-) -> SolveResult {
-    solve_frame_traced(driving, unknown, seed, scaling).0
-}
-
-/// What a [`solve_frame_traced`] run did on its way to its result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FrameSolveTrace {
+/// How a Frame solve ended: the solution, or the typed reason it failed.
+#[derive(Debug, Clone)]
+pub struct FrameSolveOutcome {
     /// Trial steps taken, accepted or rejected (`0` when the seed already
     /// converged).
     pub iterations: u32,
+    /// The solved Frame, or why there is none.
+    pub result: Result<FrameSolution, SolveFailureCause>,
 }
 
-/// [`solve_frame`], also reporting the run's [`FrameSolveTrace`].
-pub fn solve_frame_traced(
+/// A converged Frame solve.
+#[derive(Debug, Clone)]
+pub struct FrameSolution {
+    /// The solved pose.
+    pub pose: Pose,
+    /// How many of the 6 Frame DOF the relations pin at the solution.
+    pub rank: usize,
+    /// A basis of the `6 − rank` rigid motions the relations leave free at the
+    /// solution, as geometric [`Twist`]s (world angular velocity, not exp-map
+    /// chart increments). The basis is not orthonormal in any stated metric.
+    pub null_space: Vec<Twist>,
+}
+
+/// An infinitesimal rigid motion of a Frame: per unit of motion, `translation`
+/// metres of the frame origin and `rotation` radians about the world axis through
+/// that origin (an angular velocity, so its direction IS the rotation axis).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Twist {
+    /// Metres per unit.
+    pub translation: [f64; 3],
+    /// Radians per unit.
+    pub rotation: [f64; 3],
+}
+
+impl FrameSolveOutcome {
+    /// This outcome for the auto Frame `unknown` through the existing
+    /// [`SolveResult`] contract:
+    /// - [`SolveResult::Solved`] — every residual row converged within its own
+    ///   nominal tolerance, `|r_i| ≤ scaling.row_tolerance(unit_i)` (the method
+    ///   guarantee). `values` maps `ValueCellId::new(unknown.sub, "pose")` to a
+    ///   [`Value::Frame`] assembled from the 6 solved scalars; `unique` is `true`
+    ///   iff the Jacobian at the solution pins all 6 Frame DOF (no residual gauge
+    ///   freedom) and `unknown` is strict `auto`.
+    /// - [`SolveResult::Infeasible`] — the driving relations are certified
+    ///   mutually inconsistent; one diagnostic coded [`SolveFailureCause::code`].
+    /// - [`SolveResult::NoProgress`] — the budget ran out or the step stalled; the
+    ///   reason renders the cause.
+    // G-allow: SolveResult adapter (strict/auto(free) uniqueness, PRD §7.1 step 3) owned by #6677, whose registry routing of relate-solve consumes it; no production caller until #6677 lands
+    pub fn into_solve_result(self, unknown: &FrameUnknown) -> SolveResult {
+        match self.result {
+            Ok(solution) => {
+                // `auto(free)` waives the uniqueness check (PRD §7.1 step 3).
+                // Strict `auto` reports `unique:true` only when every Frame DOF is
+                // pinned; a residual surfaces as `unique:false`, the
+                // under-determined signal. Either way the gauge DOF stays at its
+                // concrete seed, never a free variable.
+                let unique = solution.rank == FRAME_DOF && !unknown.free;
+                let mut values = HashMap::new();
+                values.insert(
+                    ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),
+                    frame_value(&solution.pose),
+                );
+                SolveResult::Solved { values, unique }
+            }
+            Err(cause @ SolveFailureCause::Infeasible(_)) => SolveResult::Infeasible {
+                diagnostics: vec![
+                    Diagnostic::error(format!(
+                        "the relations on `{}` cannot be satisfied simultaneously — {cause}",
+                        unknown.sub
+                    ))
+                    .with_code(cause.code()),
+                ],
+            },
+            Err(cause) => SolveResult::NoProgress {
+                reason: format!(
+                    "the relations on `{}` were not solved — {cause}",
+                    unknown.sub
+                ),
+            },
+        }
+    }
+}
+
+/// Solve the 6-DOF auto Frame `unknown` so that every relation in `driving` is
+/// satisfied, starting from `seed`, by [`trust_region::solve`] in the scaled
+/// coordinates of `scaling`, within `budget`.
+pub fn solve_frame_outcome(
     driving: &[RelationInstance],
     unknown: &FrameUnknown,
     seed: &Pose,
     scaling: &SolveScaling,
-) -> (SolveResult, FrameSolveTrace) {
-    let (outcome, iterations) = gauss_newton_solve(driving, unknown, seed, scaling);
-    let result = match outcome {
-        Some((pose, fully_pinned)) => {
-            // `auto(free)` waives the uniqueness check (PRD §7.1 step 3): report
-            // `unique:false` even when all 6 DOF are pinned. Strict `auto` reports
-            // `unique:true` only when the Jacobian pins every Frame DOF — a residual
-            // surfaces as `unique:false`, the under-determined signal. Either way the
-            // solved Frame is fully numeric (the gauge DOF stays at its concrete seed),
-            // never a free variable.
-            let unique = fully_pinned && !unknown.free;
-            let mut values = HashMap::new();
-            values.insert(
-                ValueCellId::new(unknown.sub.clone(), POSE_MEMBER),
-                frame_value(&pose),
-            );
-            SolveResult::Solved { values, unique }
+    budget: SolveBudget,
+) -> FrameSolveOutcome {
+    let problem = FrameProblem::new(driving, unknown, scaling);
+    let run = trust_region::solve(
+        &problem,
+        &problem.scaled(seed),
+        budget,
+        rank_tolerance(scaling),
+    );
+    let result = run.outcome.map(|converged| {
+        let pose = problem.pose(&run.x);
+        let null_space = converged
+            .null_space
+            .iter()
+            .map(|z| problem.twist(z, &pose))
+            .collect();
+        FrameSolution {
+            pose,
+            rank: converged.rank,
+            null_space,
         }
-        None => SolveResult::Infeasible {
-            diagnostics: vec![Diagnostic::error(format!(
-                "the relations on `{}` cannot be satisfied simultaneously — \
-                 the driving set is geometrically inconsistent",
-                unknown.sub
-            ))],
-        },
-    };
-    (result, FrameSolveTrace { iterations })
+    });
+    FrameSolveOutcome {
+        iterations: run.iterations,
+        result,
+    }
 }
 
 /// The largest `|r_i| / bar(unit_i)` over every residual row of `relations` at
-/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose returned
-/// by [`solve_frame`] as `Solved` meets the bar [`SolveScaling::row_tolerance`];
+/// `pose`: `≤ 1` iff every row is within the bar for its own unit. A pose
+/// [`solve_frame_outcome`] returns as solved meets the bar
+/// [`SolveScaling::row_tolerance`];
 /// the redundant-remainder re-check applies [`SolveScaling::assertion_rung`].
 pub fn max_relation_exceedance(
     relations: &[RelationInstance],
@@ -389,8 +466,9 @@ pub fn max_relation_exceedance(
 }
 
 /// Convert a solved [`Value::Frame`] (or [`Value::Transform`]) back into a [`Pose`]
-/// (translation + exponential-map rotation), the inverse of the Frame assembly in
-/// [`solve_frame`]. Returns `None` for any other value or a malformed frame.
+/// (translation + exponential-map rotation), the inverse of [`frame_value`].
+/// Returns `None` for any other value or a malformed frame.
+// G-allow: inverse of frame_value; round-trip consumers are the cross-crate tests (reify-constraints relate_solve/relate_scaling tests, reify-eval relate e2e)
 pub fn pose_from_frame(v: &Value) -> Option<Pose> {
     match v {
         Value::Frame { origin, basis } => Some(Pose {
@@ -1289,6 +1367,21 @@ fn transform_point(p: [f64; 3], x: &Pose) -> [f64; 3] {
     add3(rotate(x.rotation, p), x.translation)
 }
 
+/// `J_l(θ)·v`, the left Jacobian of the exponential map: how a chart increment
+/// `v` of `θ` moves the rotation, as a world angular velocity —
+/// `J_l = I + (1−cos φ)/φ²·[θ]× + (φ−sin φ)/φ³·[θ]×²` with `φ = |θ|`.
+fn exp_map_left_jacobian(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    let angle = norm3(theta);
+    let (a, b) = if angle < 1e-6 {
+        (0.5, 1.0 / 6.0)
+    } else {
+        let sq = angle * angle;
+        ((1.0 - angle.cos()) / sq, (angle - angle.sin()) / (sq * angle))
+    };
+    let once = cross3(theta, v);
+    add3(add3(v, scale3(once, a)), scale3(cross3(theta, once), b))
+}
+
 /// Rotate a 3-vector by the exponential-map vector `theta` (Rodrigues' formula).
 fn rotate(theta: [f64; 3], v: [f64; 3]) -> [f64; 3] {
     let angle = norm3(theta);
@@ -1318,316 +1411,152 @@ fn vector_value(v: [f64; 3]) -> Value {
     Value::Vector(vec![Value::Real(v[0]), Value::Real(v[1]), Value::Real(v[2])])
 }
 
-// ── Rank-revealing Gram–Schmidt ──────────────────────────────────────────────
+// ── Rank tolerance ───────────────────────────────────────────────────────────
 
-/// The cutoffs [`add_rows_rank`] applies to SCALED Jacobian rows.
-#[derive(Debug, Clone, Copy)]
-struct RankCutoffs {
-    /// The Gram–Schmidt residual above which a normalized row is independent.
-    independence: f64,
-    /// The norm below which a row is numerically zero: the raw [`ZERO_ROW_FLOOR`]
-    /// over `ε_rel`, the FD-noise cut of an angular or dimensionless row. A genuine
-    /// row of those units has norm ~`1/ε_rel` at every `L`; a genuine metre row has
-    /// ~`L / row_tolerance(Length)`, which is `1/ε_rel` above the 1 mm crossover and
-    /// `L / floor` below it (100 at the default `kernel_local`). Both stay far
-    /// above this cut.
-    zero_row: f64,
+/// The cutoffs a [`RowSpaceQr`] of SCALED Jacobian rows applies under `scaling`:
+/// independence at [`SolveScaling::rank_threshold`], and numerically zero below
+/// the raw [`ZERO_ROW_FLOOR`] over `ε_rel`, the FD-noise cut of an angular or
+/// dimensionless row. A genuine row of those units has norm ~`1/ε_rel` at every
+/// `L`; a genuine metre row has ~`L / row_tolerance(Length)`, which is `1/ε_rel`
+/// above the 1 mm crossover and `L / floor` below it (100 at the default
+/// `kernel_local`). Both stay far above the zero cut.
+fn rank_tolerance(scaling: &SolveScaling) -> RankTolerance {
+    RankTolerance {
+        independence: scaling.rank_threshold(),
+        zero_row: ZERO_ROW_FLOOR / scaling.relative_convergence(),
+    }
 }
 
-impl RankCutoffs {
-    fn of(scaling: &SolveScaling) -> Self {
+// ── The Frame solve as a least-squares problem ───────────────────────────────
+
+/// A relate-scope Frame solve in the scaled unknowns `x̃_j = x_j / s_j` (`s_j`
+/// the DOF's [`SolveScaling::unknown_scale`]) and the scaled residual rows of
+/// every driving relation, stacked in relation order.
+struct FrameProblem<'a> {
+    relations: &'a [RelationInstance],
+    unknown: &'a FrameUnknown,
+    scaling: &'a SolveScaling,
+    /// How many residual rows each relation contributes. A residual form
+    /// branches only on its operands' shapes, so the count is the same at every
+    /// pose; [`LeastSquaresProblem::residual`] asserts it.
+    row_counts: Vec<usize>,
+}
+
+impl<'a> FrameProblem<'a> {
+    fn new(
+        relations: &'a [RelationInstance],
+        unknown: &'a FrameUnknown,
+        scaling: &'a SolveScaling,
+    ) -> Self {
+        let row_counts = relations
+            .iter()
+            .map(|rel| relation_residual_rows(rel, unknown, &Pose::identity()).len())
+            .collect();
         Self {
-            independence: scaling.rank_threshold(),
-            zero_row: ZERO_ROW_FLOOR / scaling.relative_convergence(),
+            relations,
+            unknown,
+            scaling,
+            row_counts,
+        }
+    }
+
+    /// Each DOF's nominal scale `s_j`, `[translation; rotation]`.
+    fn scales(&self) -> [f64; FRAME_DOF] {
+        std::array::from_fn(|j| self.scaling.unknown_scale(dof_kind(j)))
+    }
+
+    fn scaled(&self, pose: &Pose) -> Vec<f64> {
+        pose.translation
+            .iter()
+            .chain(&pose.rotation)
+            .zip(self.scales())
+            .map(|(x, s)| x / s)
+            .collect()
+    }
+
+    /// `z_j · s_j`: a scaled 6-vector back in each DOF's SI unit.
+    fn unscaled(&self, z: &[f64]) -> [f64; FRAME_DOF] {
+        let s = self.scales();
+        std::array::from_fn(|j| z[j] * s[j])
+    }
+
+    fn pose(&self, x: &[f64]) -> Pose {
+        let [tx, ty, tz, rx, ry, rz] = self.unscaled(x);
+        Pose {
+            translation: [tx, ty, tz],
+            rotation: [rx, ry, rz],
+        }
+    }
+
+    /// The rigid motion of the scaled chart increment `z` at `at`: the
+    /// translation increment already moves the frame origin, while the exp-map
+    /// increment `δθ` becomes the world angular velocity `J_l(θ)·δθ`.
+    fn twist(&self, z: &[f64], at: &Pose) -> Twist {
+        let [tx, ty, tz, rx, ry, rz] = self.unscaled(z);
+        Twist {
+            translation: [tx, ty, tz],
+            rotation: exp_map_left_jacobian(at.rotation, [rx, ry, rz]),
         }
     }
 }
 
-/// Add `rows` to the orthonormal `basis` one at a time, returning how many were
-/// linearly independent of the running span. Each row is normalized before
-/// Gram–Schmidt so the rank test is purely about direction independence; a row
-/// whose post-orthogonalization residual exceeds `cutoffs.independence` is a new
-/// independent direction. Numerically-zero rows are skipped.
-fn add_rows_rank(
-    rows: &[[f64; FRAME_DOF]],
-    basis: &mut Vec<[f64; FRAME_DOF]>,
-    cutoffs: RankCutoffs,
-) -> usize {
-    let mut added = 0;
-    for row in rows {
-        let n = norm6(row);
-        if n < cutoffs.zero_row {
-            continue;
+impl LeastSquaresProblem for FrameProblem<'_> {
+    fn dim(&self) -> usize {
+        FRAME_DOF
+    }
+
+    fn residual(&self, x: &[f64]) -> Vec<f64> {
+        let pose = self.pose(x);
+        let mut residual = Vec::new();
+        for (index, (rel, &expected)) in self.relations.iter().zip(&self.row_counts).enumerate() {
+            let rows = scaled_residual(rel, self.unknown, &pose, self.scaling);
+            assert_eq!(
+                rows.len(),
+                expected,
+                "relation {index} (`{}`) has {} residual rows at {pose:?} but {expected} at \
+                 the identity pose: a residual form's row count must not depend on the pose",
+                rel.name,
+                rows.len()
+            );
+            residual.extend(rows);
         }
-        let mut v = *row;
-        scale6_inplace(&mut v, 1.0 / n);
-        for b in basis.iter() {
-            let d = dot6(&v, b);
-            for k in 0..FRAME_DOF {
-                v[k] -= d * b[k];
+        residual
+    }
+
+    fn jacobian(&self, x: &[f64]) -> Vec<Vec<f64>> {
+        let pose = self.pose(x);
+        self.relations
+            .iter()
+            .flat_map(|rel| scaled_residual_jacobian(rel, self.unknown, &pose, self.scaling).1)
+            .map(|row| row.to_vec())
+            .collect()
+    }
+
+    /// Wraps the rotation slots `x[3..]`; the translation slots, which no wrap
+    /// changes, keep their bits.
+    fn normalize(&self, x: &mut [f64]) {
+        if let Some(wrapped) = self.pose(x).rewrapped() {
+            x[3..].copy_from_slice(&self.scaled(&wrapped)[3..]);
+        }
+    }
+
+    fn row_source(&self, row: usize) -> ResidualSource {
+        let mut rows_so_far = 0;
+        for (index, count) in self.row_counts.iter().enumerate() {
+            rows_so_far += count;
+            if row < rows_so_far {
+                return ResidualSource::Relation(index);
             }
         }
-        let r = norm6(&v);
-        if r > cutoffs.independence {
-            scale6_inplace(&mut v, 1.0 / r);
-            basis.push(v);
-            added += 1;
-        }
+        panic!("row {row} is past the {rows_so_far} residual rows of the relations")
     }
-    added
-}
-
-// ── Damped Gauss–Newton (Levenberg–Marquardt) over the 6-DOF pose ────────────
-
-/// Maximum LM iterations before declaring non-convergence. The Frame residuals are
-/// near-linear in the pose for the canonical mate set, so feasible systems converge
-/// in a handful of iterations; the cap only bounds genuinely-inconsistent inputs.
-const MAX_SOLVE_ITERS: usize = 200;
-
-/// Drive `unknown`'s pose from `seed` to satisfy `relations` by damped Gauss–Newton
-/// in the scaled coordinates of `scaling`, returning the outcome and the number of
-/// trial steps taken.
-///
-/// The outcome is `Some((pose, unique))` once every scaled row is within one
-/// nominal tolerance, `max|r̃| ≤ 1` (`unique` = "all 6 DOF pinned at the
-/// solution"), or `None` when no pose gets there within [`MAX_SOLVE_ITERS`].
-/// Damping keeps the normal-equations solve well-posed even when the Jacobian is
-/// rank-deficient (a residual gauge freedom), so the gauge DOF simply stays near
-/// its seed rather than blowing up.
-fn gauss_newton_solve(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    seed: &Pose,
-    scaling: &SolveScaling,
-) -> (Option<(Pose, bool)>, u32) {
-    let cutoffs = RankCutoffs::of(scaling);
-    let scales: [f64; FRAME_DOF] = std::array::from_fn(|dof| scaling.unknown_scale(dof_kind(dof)));
-    // `λ` is stated relative to the scaled normal matrix's nominal curvature
-    // `ε_rel⁻²`, so the schedule below keeps its unscaled meaning. That is the
-    // curvature of angular rows at every `L` and of metre rows above the 1 mm
-    // crossover. Below it a metre row's is `(L / floor)²`, so the solve starts
-    // over-damped there and spends a few more steps relaxing `λ`.
-    let relative = scaling.relative_convergence();
-    let nominal_curvature = 1.0 / (relative * relative);
-
-    let mut x = pose_to_vec6(seed);
-    let (mut r, mut jac) =
-        combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x), scaling);
-
-    // No residual rows at all (empty/row-free driving set) ⇒ nothing to pin; the
-    // seed trivially "satisfies" the (empty) set and leaves all 6 DOF free.
-    if r.is_empty() {
-        return (Some((vec6_to_pose(&x), false)), 0);
-    }
-
-    let mut cost = sum_sq(&r);
-    let mut lambda = 1e-3_f64;
-    let mut iterations = 0;
-
-    for _ in 0..MAX_SOLVE_ITERS {
-        if max_abs(&r) <= 1.0 {
-            let unique = rank_of(&jac, cutoffs) >= FRAME_DOF;
-            return (Some((vec6_to_pose(&x), unique)), iterations);
-        }
-        iterations += 1;
-
-        // Normal equations: (J̃ᵀJ̃ + λ·ε_rel⁻²·I) δ̃ = J̃ᵀr̃, step is x ← x − δ̃·s.
-        let (mut a, g) = normal_equations(&jac, &r);
-        for (i, row) in a.iter_mut().enumerate() {
-            row[i] += lambda * nominal_curvature;
-        }
-        let delta = match solve6(&a, &g) {
-            Some(d) => d,
-            None => {
-                // Singular even under damping — stiffen and retry.
-                lambda *= 10.0;
-                if lambda > 1e12 {
-                    break;
-                }
-                continue;
-            }
-        };
-
-        let mut x_new = x;
-        for ((xi, di), si) in x_new.iter_mut().zip(delta.iter()).zip(scales.iter()) {
-            *xi -= *di * *si;
-        }
-        let (r_new, jac_new) =
-            combined_residual_jacobian(relations, unknown, &vec6_to_pose(&x_new), scaling);
-        let cost_new = sum_sq(&r_new);
-
-        if cost_new < cost {
-            // Accept the step; relax damping toward pure Gauss–Newton.
-            x = x_new;
-            r = r_new;
-            jac = jac_new;
-            cost = cost_new;
-            lambda = (lambda * 0.5).max(1e-12);
-        } else {
-            // Reject; stiffen toward gradient descent and retry from the same x.
-            lambda *= 4.0;
-            if lambda > 1e12 {
-                break;
-            }
-        }
-    }
-
-    // Converged on the final iterate?
-    let outcome = if max_abs(&r) <= 1.0 {
-        Some((vec6_to_pose(&x), rank_of(&jac, cutoffs) >= FRAME_DOF))
-    } else {
-        None
-    };
-    (outcome, iterations)
-}
-
-/// Concatenate every relation's scaled residual + matching Jacobian rows at `pose`
-/// into one `(residual, jacobian)` pair (rows aligned 1:1). Built together so the
-/// residual vector and Jacobian block can never drift in length.
-fn combined_residual_jacobian(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    pose: &Pose,
-    scaling: &SolveScaling,
-) -> (Vec<f64>, Vec<[f64; FRAME_DOF]>) {
-    let mut res = Vec::new();
-    let mut jac = Vec::new();
-    for rel in relations {
-        let (rr, rows) = scaled_residual_jacobian(rel, unknown, pose, scaling);
-        // `scaled_residual_jacobian` sizes the Jacobian from the residual at the same
-        // pose, so the lengths match. Make the invariant LOUD in debug builds so a future
-        // residual/Jacobian length divergence surfaces in tests rather than silently
-        // dropping a constraint (which could spuriously report `Solved`/under-determined);
-        // the `if` keeps release builds defensively guarded.
-        debug_assert_eq!(
-            rows.len(),
-            rr.len(),
-            "relation `{}` residual ({}) and Jacobian ({}) row counts diverged",
-            rel.name,
-            rr.len(),
-            rows.len()
-        );
-        if rows.len() == rr.len() {
-            res.extend(rr);
-            jac.extend(rows);
-        }
-    }
-    (res, jac)
-}
-
-/// The rank of a Jacobian block (number of linearly-independent rows), via the same
-/// rank-revealing Gram–Schmidt the partition uses.
-fn rank_of(jac: &[[f64; FRAME_DOF]], cutoffs: RankCutoffs) -> usize {
-    let mut basis = Vec::new();
-    add_rows_rank(jac, &mut basis, cutoffs)
-}
-
-/// Form the 6×6 normal matrix `A = JᵀJ` and gradient `g = Jᵀr`.
-fn normal_equations(
-    jac: &[[f64; FRAME_DOF]],
-    r: &[f64],
-) -> ([[f64; FRAME_DOF]; FRAME_DOF], [f64; FRAME_DOF]) {
-    let mut a = [[0.0; FRAME_DOF]; FRAME_DOF];
-    let mut g = [0.0; FRAME_DOF];
-    for (row, &ri) in jac.iter().zip(r.iter()) {
-        for i in 0..FRAME_DOF {
-            g[i] += row[i] * ri;
-            for j in 0..FRAME_DOF {
-                a[i][j] += row[i] * row[j];
-            }
-        }
-    }
-    (a, g)
-}
-
-/// Solve the 6×6 linear system `A x = b` by Gaussian elimination with partial
-/// pivoting. Returns `None` if `A` is numerically singular (a pivot below `1e-18`);
-/// callers stiffen the LM damping and retry. Hand-rolled — no nalgebra (design §4).
-//
-// Index-based by nature: the elimination step writes `m[row]` while reading
-// `m[col]` (col < row), an aliasing that iterator form cannot express without
-// `split_at_mut` gymnastics that would only obscure a textbook algorithm.
-#[allow(clippy::needless_range_loop)]
-fn solve6(
-    a: &[[f64; FRAME_DOF]; FRAME_DOF],
-    b: &[f64; FRAME_DOF],
-) -> Option<[f64; FRAME_DOF]> {
-    let mut m = *a;
-    let mut y = *b;
-
-    for col in 0..FRAME_DOF {
-        // Partial pivot: largest-magnitude entry in this column at/below the diagonal.
-        let mut piv = col;
-        let mut best = m[col][col].abs();
-        for row in (col + 1)..FRAME_DOF {
-            let v = m[row][col].abs();
-            if v > best {
-                best = v;
-                piv = row;
-            }
-        }
-        if best < 1e-18 {
-            return None; // singular
-        }
-        if piv != col {
-            m.swap(col, piv);
-            y.swap(col, piv);
-        }
-        let diag = m[col][col];
-        for row in (col + 1)..FRAME_DOF {
-            let f = m[row][col] / diag;
-            if f != 0.0 {
-                for k in col..FRAME_DOF {
-                    m[row][k] -= f * m[col][k];
-                }
-                y[row] -= f * y[col];
-            }
-        }
-    }
-
-    // Back-substitution.
-    let mut x = [0.0; FRAME_DOF];
-    for col in (0..FRAME_DOF).rev() {
-        let mut s = y[col];
-        for k in (col + 1)..FRAME_DOF {
-            s -= m[col][k] * x[k];
-        }
-        x[col] = s / m[col][col];
-    }
-    Some(x)
-}
-
-fn pose_to_vec6(p: &Pose) -> [f64; FRAME_DOF] {
-    [
-        p.translation[0],
-        p.translation[1],
-        p.translation[2],
-        p.rotation[0],
-        p.rotation[1],
-        p.rotation[2],
-    ]
-}
-
-fn vec6_to_pose(v: &[f64; FRAME_DOF]) -> Pose {
-    Pose {
-        translation: [v[0], v[1], v[2]],
-        rotation: [v[3], v[4], v[5]],
-    }
-}
-
-fn sum_sq(r: &[f64]) -> f64 {
-    r.iter().map(|x| x * x).sum()
-}
-
-fn max_abs(r: &[f64]) -> f64 {
-    r.iter().fold(0.0_f64, |m, x| m.max(x.abs()))
 }
 
 // ── Frame ⇄ Pose assembly ────────────────────────────────────────────────────
 
 /// Assemble a [`Value::Frame`] (origin `Point` + basis `Orientation` quaternion)
 /// from a solved [`Pose`]. The inverse of [`pose_from_frame`].
-fn frame_value(pose: &Pose) -> Value {
+pub fn frame_value(pose: &Pose) -> Value {
     Value::Frame {
         origin: Box::new(point_value(pose.translation)),
         basis: Box::new(orientation_from_exp_map(pose.rotation)),
@@ -1777,18 +1706,4 @@ fn tangent_frame(n: [f64; 3]) -> ([f64; 3], [f64; 3]) {
     };
     let e2 = cross3(nn, e1);
     (e1, e2)
-}
-
-fn dot6(a: &[f64; FRAME_DOF], b: &[f64; FRAME_DOF]) -> f64 {
-    (0..FRAME_DOF).map(|k| a[k] * b[k]).sum()
-}
-
-fn norm6(a: &[f64; FRAME_DOF]) -> f64 {
-    dot6(a, a).sqrt()
-}
-
-fn scale6_inplace(a: &mut [f64; FRAME_DOF], s: f64) {
-    for x in a.iter_mut() {
-        *x *= s;
-    }
 }

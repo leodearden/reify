@@ -4296,6 +4296,7 @@ dependencies = [
  "libc",
  "reify-build-utils",
  "reify-compiler",
+ "reify-compute-contract",
  "reify-config",
  "reify-constraints",
  "reify-core",
@@ -4329,6 +4330,7 @@ dependencies = [
  "reify-builtins",
  "reify-compiler",
  "reify-config",
+ "reify-constraints",
  "reify-core",
  "reify-eval",
  "reify-expr",
@@ -4473,6 +4475,7 @@ name = "reify-eval-fea-tests"
 version = "0.1.0"
 dependencies = [
  "reify-compiler",
+ "reify-compute-contract",
  "reify-constraints",
  "reify-core",
  "reify-eval",

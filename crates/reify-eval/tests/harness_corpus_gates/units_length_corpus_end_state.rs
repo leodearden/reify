@@ -71,7 +71,7 @@ const OPS_REACH_FLOOR: usize = 200;
 /// error, or a fresh `Engine::build` panic swallowed by `catch_unwind` — and row 20's
 /// claim would shrink with them while this gate stayed green. So the skip SET is pinned
 /// exactly, in the shape
-/// `eval_invariant_corpus_sweep::residual_exemptions_and_failure_policy_stay_per_invariant`
+/// `eval_invariant_corpus_sweep::residual_lists_and_bypass_keys_stay_per_invariant`
 /// already uses for its residual exemptions: a new skip reds naming the file and its
 /// cause, and a member that starts building again reds so its dead entry is deleted.
 ///

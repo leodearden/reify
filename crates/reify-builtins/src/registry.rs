@@ -33,6 +33,7 @@ use reify_core::Type;
 use crate::resolvers::{
     dimensionless_ratio, tensor_scalar_reduction, tensor_scalar_reduction_list,
 };
+use crate::row::{BindingKind, BuiltinRow};
 
 crate::macros::registry! {
     EvalBuiltin => EvalBuiltinId, as_eval_builtin {
@@ -313,12 +314,20 @@ crate::macros::registry! {
 /// trailing-radius 3|4 arity. The per-row and group comments say why each was
 /// left unresolved; every other row cites a Ruling, a Physics derivation or a
 /// design doc.
+// G-allow: intentional registry-table accessor — the I-REG-7 Artifact-basis ledger (PRD §7.3(7)), consumed by this module's artifact_basis_ledger_matches_the_reviewed_set lint test and by review, never by production code
 pub fn artifact_basis_rows() -> Vec<&'static str> {
     rows()
         .iter()
         .filter(|r| r.basis.is_artifact())
         .map(|r| r.name)
         .collect()
+}
+
+/// Every row whose binding is `kind`, in declaration order — the one
+/// derivation of a binding-kind group's membership.
+// G-allow: intentional registry-table accessor, test-consumed by design — the one binding-group membership filter shared by cross-crate registry parity tests (reify-eval registry_parity_tests::eval_builtin_rows, reify-stdlib registry_dispatch_seed_parity)
+pub fn rows_bound_by(kind: BindingKind) -> impl Iterator<Item = &'static BuiltinRow<BuiltinId>> {
+    rows().iter().filter(move |row| row.binding == kind)
 }
 
 #[cfg(test)]
@@ -415,13 +424,48 @@ mod tests {
     #[test]
     fn the_seed_table_holds_exactly_the_seven_alpha_rows() {
         assert_eq!(
-            rows()
-                .iter()
-                .filter(|r| r.binding == BindingKind::EvalBuiltin)
+            rows_bound_by(BindingKind::EvalBuiltin)
                 .map(|r| r.name)
                 .collect::<Vec<_>>(),
             SEED_NAMES.to_vec(),
             "α seeds the parse family (2) and the analysis family (5)"
+        );
+    }
+
+    /// Every `BindingKind` variant, so the partition below covers the table.
+    const ALL_KINDS: [BindingKind; 6] = [
+        BindingKind::EvalBuiltin,
+        BindingKind::ExprIntercept,
+        BindingKind::EnginePostProcess,
+        BindingKind::GeometryOp,
+        BindingKind::CompileOnly,
+        BindingKind::Relation,
+    ];
+
+    /// `rows_bound_by` partitions the table: each kind yields only its own
+    /// rows, the kinds together yield every row, and each group's size agrees
+    /// with the cardinality of the sub-enum the macro minted for it.
+    #[test]
+    fn rows_bound_by_partitions_the_table_by_binding_kind() {
+        let mut yielded = 0;
+        for kind in ALL_KINDS {
+            for row in rows_bound_by(kind) {
+                assert_eq!(row.binding, kind, "{} yielded under {kind:?}", row.name);
+                yielded += 1;
+            }
+        }
+        assert_eq!(
+            yielded,
+            rows().len(),
+            "every row belongs to exactly one kind in ALL_KINDS"
+        );
+        assert_eq!(
+            rows_bound_by(BindingKind::EvalBuiltin).count(),
+            EvalBuiltinId::COUNT
+        );
+        assert_eq!(
+            rows_bound_by(BindingKind::Relation).count(),
+            RelationKind::COUNT
         );
     }
 
@@ -486,9 +530,7 @@ mod tests {
         assert_eq!(RelationKind::iter().count(), 12);
         assert_eq!(RelationKind::COUNT, 12);
         assert_eq!(
-            rows()
-                .iter()
-                .filter(|r| r.binding == BindingKind::Relation)
+            rows_bound_by(BindingKind::Relation)
                 .map(|r| r.name)
                 .collect::<Vec<_>>(),
             RELATION_ROWS.map(|(name, _)| name).to_vec(),

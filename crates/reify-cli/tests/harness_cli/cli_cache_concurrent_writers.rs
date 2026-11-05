@@ -43,8 +43,9 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use reify_compute_contract::ElasticResult;
 use reify_eval::persistent_cache::{
-    CacheEntryHeader, ENGINE_VERSION_HASH, ElasticResult, WithDiagnostics, read_entry,
+    CacheEntryHeader, ENGINE_VERSION_HASH, WithDiagnostics, read_entry,
 };
 use tempfile::tempdir;
 

@@ -16,6 +16,11 @@ path = "src/lib.rs"
 
 [features]
 gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog", "dep:tauri-plugin-shell", "dep:reify-mesh-morph"]
+# tauri's custom-protocol, not the cargo profile, picks what the window loads: with it,
+# tauri.conf.json's frontendDist (../dist) is embedded at compile time and served over
+# tauri://; without it, devUrl. gui/dist must already be built, or tauri-codegen panics.
+# Kept out of `gui`: the verify gate and scripts/run-gui-dev.sh build with no dist, on devUrl.
+embedded-frontend = ["gui", "tauri/custom-protocol"]
 
 [dependencies]
 reify-ast.workspace = true

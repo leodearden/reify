@@ -189,9 +189,10 @@
 
 use std::collections::HashSet;
 
-use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows};
+use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows_bound_by};
 use reify_core::{DimensionVector, Type};
 use reify_ir::Value;
+use reify_test_support::values::uniaxial_stress_tensor;
 use strum::{EnumCount, IntoEnumIterator};
 
 // ── the verdict vocabulary ──────────────────────────────────────────────────
@@ -313,28 +314,10 @@ fn classify(value: &Value, declared: &Type) -> ParityVerdict {
 /// The `EvalBuiltinId` half of the pair is what [`representative_probes`] keys
 /// on, so the same derivation feeds both the membership and the argument side.
 ///
-/// Shape reuse, not a shared import: `crates/reify-stdlib/tests/
-/// registry_dispatch_seed_parity.rs`'s `eval_rows()` performs the identical
-/// `BindingKind::EvalBuiltin` filter, and its own doc-comment gives the same
-/// reason ("derived from the registry rather than restated … so a τ row added
-/// later is covered here automatically instead of silently escaping the
-/// sweep"). It cannot be imported as it stands — that is a `reify-stdlib`
-/// integration-test target, this is a `reify-eval` lib unit-test module, and
-/// test targets are separate compilation units with no path between them.
-///
-/// **The duplication is a scope deferral, not a design conclusion** (recorded
-/// at task 6013's amendment pass, correcting an earlier claim here that a
-/// shared home would drag a test helper into a production dependency — it would
-/// not). The right home is `reify_builtins` itself: a
-/// `rows_bound_by(BindingKind)` accessor beside `rows()` is ordinary production
-/// code over the row table, involves no test helper at all, and would give both
-/// callers ONE derivation. That accessor lives in
-/// `crates/reify-builtins/src/lib.rs`, outside this task's lock set, so it is
-/// filed as follow-up work rather than reached for here.
+/// Membership itself comes from `reify_builtins::rows_bound_by`, the single
+/// derivation shared with reify-stdlib's `registry_dispatch_seed_parity` test.
 fn eval_builtin_rows() -> Vec<(EvalBuiltinId, &'static BuiltinRow<BuiltinId>)> {
-    rows()
-        .iter()
-        .filter(|row| row.binding == BindingKind::EvalBuiltin)
+    rows_bound_by(BindingKind::EvalBuiltin)
         .map(|row| {
             let id = row.id.as_eval_builtin().unwrap_or_else(|| {
                 panic!(
@@ -397,47 +380,11 @@ fn sweep_covers_every_eval_builtin_row() {
 
 // ── representative arguments: compile-forced, one arm per row ───────────────
 
-/// The uniaxial stress magnitude every analysis probe is built from, in SI
-/// pascals. The value is irrelevant to a KIND comparison; only the shape and
-/// the dimension are load-bearing.
-const SIGMA_PA: f64 = 100e6;
-
 /// A yield strength for `safety_factor`'s second argument, chosen non-zero so
 /// the ratio is finite and `sanitize_value` does not intervene.
 const YIELD_PA: f64 = 250e6;
 
-/// A 3×3 `Value::Tensor` of `Value::Tensor` of `Value::Scalar`, every element
-/// carrying `dimension`.
-///
-/// Shape reuse of `crates/reify-stdlib/tests/registry_dispatch_seed_parity.rs`'s
-/// `dimensioned_matrix` — the nesting is what `analysis::matrix_components_f64`
-/// reads, so getting it wrong makes every analysis kernel answer `Value::Undef`.
-///
-/// **A third copy, and a scope deferral rather than a design conclusion.** The
-/// right home is `reify_test_support::values`, which already holds exactly this
-/// class of `Value` fixture (`mm`, `newton`, `matrix3x3`, …) and is ALREADY a
-/// dev-dependency of BOTH reify-eval and reify-stdlib — so sharing it would
-/// cost no production dependency edge. That crate is outside this task's lock
-/// set; filed as follow-up work together with the row filter above.
-fn dimensioned_matrix_3x3(rows_f64: &[[f64; 3]; 3], dimension: DimensionVector) -> Value {
-    Value::Tensor(
-        rows_f64
-            .iter()
-            .map(|r| {
-                Value::Tensor(
-                    r.iter()
-                        .map(|&si_value| Value::Scalar {
-                            si_value,
-                            dimension,
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
-/// The static type of [`dimensioned_matrix_3x3`]'s PRESSURE result.
+/// The static type of [`uniaxial_stress_tensor`]'s PRESSURE result.
 ///
 /// `quantity` is a real `Scalar<PRESSURE>` rather than a bare placeholder
 /// because the analysis resolvers read arg0's quantity out of exactly this
@@ -472,7 +419,7 @@ type Probe = Vec<(Value, Type)>;
 
 /// The one-argument concrete-tensor probe the analysis reductions share.
 fn concrete_tensor_probe() -> Probe {
-    vec![(uniaxial_stress(), pressure_tensor_type())]
+    vec![(uniaxial_stress_tensor(), pressure_tensor_type())]
 }
 
 /// Every probe one row is swept at.
@@ -554,7 +501,7 @@ fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // `Value::Undef`. The ratio cancels, so the result is a bare
         // `Value::Real` whatever dimension arg1 carries.
         EvalBuiltinId::SafetyFactor => vec![vec![
-            (uniaxial_stress(), pressure_tensor_type()),
+            (uniaxial_stress_tensor(), pressure_tensor_type()),
             (
                 Value::Scalar {
                     si_value: YIELD_PA,
@@ -572,14 +519,6 @@ fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
         // a degenerate probe here read as a vacuous pass.
         EvalBuiltinId::StressInvariants => vec![concrete_tensor_probe()],
     }
-}
-
-/// The uniaxial 100 MPa stress tensor every analysis probe is fed.
-fn uniaxial_stress() -> Value {
-    dimensioned_matrix_3x3(
-        &[[SIGMA_PA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-        DimensionVector::PRESSURE,
-    )
 }
 
 // ── the three-way verdict, unit-pinned arm by arm ───────────────────────────

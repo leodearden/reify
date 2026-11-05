@@ -103,17 +103,7 @@ fn main() {
     let conn = rusqlite::Connection::open_in_memory()
         .expect("in-memory sqlite connection for AuditContext placeholder");
     let jc = NoopJCodemunchOps;
-    let ctx = AuditContext {
-        project_root: root,
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: std::collections::HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root, &conn, &git, &jc);
 
     // `census_summary` is `live_counts` plus the swept-file count: the counts
     // already omit zero-count files and yield ascending path order, which is

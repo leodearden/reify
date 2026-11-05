@@ -195,8 +195,8 @@ fn as_printed_deflects_more_than_homogeneous() {
     let data_print = extract_displacement_data(&disp_print);
     let data_solid = extract_displacement_data(&disp_solid);
 
-    let defl_print = reify_eval::persistent_cache::max_deflection_magnitude(&data_print);
-    let defl_solid = reify_eval::persistent_cache::max_deflection_magnitude(&data_solid);
+    let defl_print = reify_compute_contract::max_deflection_magnitude(&data_print);
+    let defl_solid = reify_compute_contract::max_deflection_magnitude(&data_solid);
 
     assert!(
         defl_print.is_finite() && defl_print > 0.0,

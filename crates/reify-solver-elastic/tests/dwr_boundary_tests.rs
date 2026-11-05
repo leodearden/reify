@@ -15,32 +15,25 @@
 //! from the a-posteriori convergence suite, whose goldens this task only
 //! touches mechanically.
 //!
-//! # Ported FEA harness, and the debt that comes with it
+//! # Shared FEA harness
 //!
-//! The box-mesh / BC / load helpers below are ported from
-//! `tests/aposteriori_validation.rs` (itself a verbatim port of
-//! `tests/analytical_validation.rs`'s task-2928 harness), so the solve
-//! pipeline shape is identical to the rest of the FEA validation suite.
-//! This is the THIRD copy. Extracting the shared harness is the real SPOT
-//! fix, but it is a large mechanical diff across 2500+ lines of landed
-//! goldens and is out of this leaf's scope; it is recorded as a filed
-//! low-priority follow-up (`agent-followup-7452`) rather than done here or
-//! silently ignored.
+//! The box-mesh / BC / load helpers and the P1 stiffness assembly come from
+//! the shared `common/fea_harness.rs` module.
 //!
-//! One deliberate change from the port: [`assemble_eliminate_and_solve`]
-//! RETAINS the assembled `K`, the eliminated RHS and the deduplicated BC
-//! list, all three of which `solve_p1_pipeline` drops. The dual solve
-//! (§5.3) reuses exactly those three, so retaining them is the whole reason
-//! this copy exists rather than a call into the original.
+//! One deliberate difference from `fea_harness::solve_p1_pipeline`:
+//! [`assemble_eliminate_and_solve`] RETAINS the assembled `K`, the eliminated
+//! RHS and the deduplicated BC list, all three of which `solve_p1_pipeline`
+//! drops. The dual solve (§5.3) reuses exactly those three, so retaining them
+//! is the whole reason this pipeline exists rather than a call into the
+//! shared one.
 
 use faer::sparse::SparseRowMat;
 
 use reify_solver_elastic::{
-    AssemblyElement, AssemblyMode, CgResult, CgSolverOptions, DirichletBc, ElementOrder,
-    ElementStiffness, IsotropicElastic, LocalDisplacementQoi, LocalNormalStressQoi, P1TetMeshRef,
-    QuantityOfInterest, SolverMode, StressElement, ZzIndicator, apply_dirichlet_row_elimination,
-    assemble_global_stiffness, compute_dual_weighted_indicator, compute_zz_indicator,
-    element_stiffness, element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
+    CgResult, CgSolverOptions, DirichletBc, IsotropicElastic, LocalDisplacementQoi,
+    LocalNormalStressQoi, P1TetMeshRef, QuantityOfInterest, SolverMode, StressElement, ZzIndicator,
+    apply_dirichlet_row_elimination, compute_dual_weighted_indicator, compute_zz_indicator,
+    element_stress_p1, solve_cg, solve_dual_cg, tet_volume_p1,
 };
 
 use reify_solver_elastic::{
@@ -49,156 +42,14 @@ use reify_solver_elastic::{
 };
 use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 
-// ─── ported FEA harness helpers (tests/aposteriori_validation.rs) ──────────
+#[path = "common/fea_harness.rs"]
+mod fea_harness;
+use fea_harness::{
+    assemble_p1_stiffness, box_p1_mesh, dedup_bcs, dirichlet_fix_face,
+    dirichlet_prescribe_boundary_field, distributed_tip_load, end_face_nodes, gather_u_p1,
+};
 
-/// Split a hex cell into 6 tetrahedra via the Kuhn triangulation.
-///
-/// Ported verbatim; private dependency of [`box_p1_mesh`].
-fn kuhn_split_hex_to_six_tets(c: [usize; 8]) -> [[usize; 4]; 6] {
-    [
-        [c[0], c[1], c[2], c[6]],
-        [c[0], c[1], c[5], c[6]],
-        [c[0], c[3], c[2], c[6]],
-        [c[0], c[3], c[7], c[6]],
-        [c[0], c[4], c[5], c[6]],
-        [c[0], c[4], c[7], c[6]],
-    ]
-}
-
-/// Build a structured P1 tet mesh for a rectangular box `[0,Lx] x [0,Ly] x
-/// [0,Lz]` with `nx x ny x nz` hex cells (each Kuhn-split into 6 tets).
-///
-/// Ported verbatim. Supplies every fixture in this file: the cantilever
-/// pencils (BT1), the `f = g` self-dual box (BT2) and the unit-cube patch
-/// (BT3).
-fn box_p1_mesh(
-    lx: f64,
-    ly: f64,
-    lz: f64,
-    nx: usize,
-    ny: usize,
-    nz: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
-    let nnx = nx + 1;
-    let nny = ny + 1;
-    let nnz = nz + 1;
-
-    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
-    for iz in 0..nnz {
-        for iy in 0..nny {
-            for ix in 0..nnx {
-                nodes.push([
-                    ix as f64 * lx / nx as f64,
-                    iy as f64 * ly / ny as f64,
-                    iz as f64 * lz / nz as f64,
-                ]);
-            }
-        }
-    }
-
-    let node_idx = |ix: usize, iy: usize, iz: usize| -> usize { iz * nny * nnx + iy * nnx + ix };
-
-    let mut connectivity = Vec::with_capacity(6 * nx * ny * nz);
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let c = [
-                    node_idx(ix, iy, iz),
-                    node_idx(ix + 1, iy, iz),
-                    node_idx(ix + 1, iy + 1, iz),
-                    node_idx(ix, iy + 1, iz),
-                    node_idx(ix, iy, iz + 1),
-                    node_idx(ix + 1, iy, iz + 1),
-                    node_idx(ix + 1, iy + 1, iz + 1),
-                    node_idx(ix, iy + 1, iz + 1),
-                ];
-                for tet in kuhn_split_hex_to_six_tets(c) {
-                    connectivity.push(tet);
-                }
-            }
-        }
-    }
-
-    (nodes, connectivity)
-}
-
-/// Build Dirichlet BCs fixing all 3 DOFs on nodes within `tol` of
-/// `nodes[n][axis] == value`.
-///
-/// Ported verbatim. Clamps the cantilever's `x = 0` face.
-fn dirichlet_fix_face(nodes: &[[f64; 3]], axis: usize, value: f64, tol: f64) -> Vec<DirichletBc> {
-    let mut bcs = Vec::new();
-    for (node, n) in nodes.iter().enumerate() {
-        if (n[axis] - value).abs() < tol {
-            for dof_idx in 0..3_usize {
-                bcs.push(DirichletBc {
-                    dof: node * 3 + dof_idx,
-                    value: 0.0,
-                });
-            }
-        }
-    }
-    bcs
-}
-
-/// Indices of every node on the free-end face `x = l` (within `tol`).
-///
-/// Ported verbatim. Identifies the cantilever's loaded end face.
-fn end_face_nodes(nodes: &[[f64; 3]], l: f64, tol: f64) -> Vec<usize> {
-    nodes
-        .iter()
-        .enumerate()
-        .filter(|(_, n)| (n[0] - l).abs() < tol)
-        .map(|(i, _)| i)
-        .collect()
-}
-
-/// Distribute a transverse shear resultant `f_mag` (in -y) equally over the
-/// `end` nodes — nodal point loads whose resultant is exactly `-f_mag` at
-/// `x = l`.
-///
-/// Ported verbatim. Because the load is DISTRIBUTED over the whole tip face,
-/// no scalar multiple of it can equal a ball-mean QoI's `dual_load` — which
-/// is why BT2 builds its `f = g` fixture directly rather than reusing a
-/// cantilever pencil.
-fn distributed_tip_load(end: &[usize], f_mag: f64) -> Vec<(usize, f64)> {
-    let per = f_mag / end.len() as f64;
-    end.iter().map(|&n| (n * 3 + 1, -per)).collect()
-}
-
-/// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet from
-/// the global displacement vector, in element-local node order.
-///
-/// Ported verbatim.
-fn gather_u_p1(u: &[f64], conn: &[usize; 4]) -> [f64; 12] {
-    let mut ue = [0.0_f64; 12];
-    for (k, &node) in conn.iter().enumerate() {
-        ue[3 * k] = u[3 * node];
-        ue[3 * k + 1] = u[3 * node + 1];
-        ue[3 * k + 2] = u[3 * node + 2];
-    }
-    ue
-}
-
-/// Deduplicate Dirichlet BCs (`apply_dirichlet_row_elimination` panics on
-/// duplicate DOF indices in debug builds).
-///
-/// Ported verbatim.
-fn dedup_bcs(bcs: &mut Vec<DirichletBc>) {
-    bcs.sort_by_key(|bc| bc.dof);
-    if cfg!(debug_assertions) {
-        for w in bcs.windows(2) {
-            if w[0].dof == w[1].dof {
-                assert_eq!(
-                    w[0].value, w[1].value,
-                    "dedup_bcs: conflicting values at DOF {} ({} vs {})",
-                    w[0].dof, w[0].value, w[1].value,
-                );
-            }
-        }
-    }
-    bcs.dedup_by_key(|bc| bc.dof);
-}
+// ─── dual-solve fixtures ────────────────────────────────────────────────────
 
 /// Scatter nodal point loads into a freshly zeroed global RHS of length
 /// `3 * n_nodes`.
@@ -217,9 +68,9 @@ fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec<f64
 /// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, RETAINING
 /// everything the dual solve needs.
 ///
-/// Same pipeline shape as `aposteriori_validation.rs::solve_p1_pipeline`
-/// (`element_stiffness` → `assemble_global_stiffness` →
-/// `apply_dirichlet_row_elimination` → `solve_cg`), with one difference: it
+/// Same pipeline shape as `fea_harness::solve_p1_pipeline`
+/// ([`assemble_p1_stiffness`] → `apply_dirichlet_row_elimination` →
+/// `solve_cg`), with one difference: it
 /// returns `K`, the ELIMINATED RHS and the deduplicated BC list alongside
 /// the `CgResult`, all three of which `solve_p1_pipeline` drops.
 ///
@@ -261,26 +112,7 @@ fn assemble_eliminate_and_solve(
         3 * n_nodes,
     );
 
-    let ke_list: Vec<ElementStiffness> = conns
-        .iter()
-        .map(|conn| {
-            let elem_nodes: Vec<[f64; 3]> = conn.iter().map(|&i| nodes[i]).collect();
-            element_stiffness(ElementOrder::P1, &elem_nodes, mat)
-        })
-        .collect();
-
-    let elements: Vec<AssemblyElement<'_>> = conns
-        .iter()
-        .zip(ke_list.iter())
-        .enumerate()
-        .map(|(i, (conn, ke))| AssemblyElement {
-            id: i,
-            connectivity: conn.as_slice(),
-            k_e: ke,
-        })
-        .collect();
-
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    let mut k = assemble_p1_stiffness(nodes, conns, mat);
 
     let mut f = raw_f.to_vec();
     let mut bcs = bcs;
@@ -407,41 +239,6 @@ fn zz_of_dual(solve: &DualSolve, material: &IsotropicElastic) -> ZzIndicator {
         &mut v,
     );
     compute_zz_indicator(&dual, &mesh, material)
-}
-
-/// Prescribe the full 3-DOF displacement `field(x)` on every node on any of
-/// the six bounding planes of `[0,lx] × [0,ly] × [0,lz]`.
-///
-/// Ported from `tests/aposteriori_validation.rs`. Prescribing the exact
-/// linear field on the WHOLE boundary is what makes the interior solution
-/// that same field — P1 tets represent it exactly — giving the uniform
-/// stress state BT3's patch exactness is stated against.
-fn dirichlet_prescribe_boundary_field(
-    nodes: &[[f64; 3]],
-    lx: f64,
-    ly: f64,
-    lz: f64,
-    tol: f64,
-    field: impl Fn([f64; 3]) -> [f64; 3],
-) -> Vec<DirichletBc> {
-    let mut bcs = Vec::new();
-    for (node, &p) in nodes.iter().enumerate() {
-        let on_boundary = p[0].abs() < tol
-            || (p[0] - lx).abs() < tol
-            || p[1].abs() < tol
-            || (p[1] - ly).abs() < tol
-            || p[2].abs() < tol
-            || (p[2] - lz).abs() < tol;
-        if on_boundary {
-            for (dof_idx, &val) in field(p).iter().enumerate() {
-                bcs.push(DirichletBc {
-                    dof: node * 3 + dof_idx,
-                    value: val,
-                });
-            }
-        }
-    }
-    bcs
 }
 
 /// A solve whose fixture also needs its raw dual load `g` inspected.

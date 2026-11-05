@@ -177,3 +177,7 @@ mod first_class_frame_datum_eval;
 // anti-re-accretion reason as #5196's and #5360's above.
 #[path = "harness_engine/stdlib_material_preset_density_e2e.rs"]
 mod stdlib_material_preset_density_e2e;
+// Task #8393's stdlib-fn-in-user-fn-body e2e lands here for the same
+// anti-re-accretion reason as #5196's and #5360's above.
+#[path = "harness_engine/stdlib_fn_in_user_fn_body_e2e.rs"]
+mod stdlib_fn_in_user_fn_body_e2e;

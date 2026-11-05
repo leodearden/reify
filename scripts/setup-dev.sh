@@ -642,6 +642,13 @@ if [ -d gui ] && [ -f gui/package-lock.json ]; then
     ok "gui npm packages"
 fi
 
+# gui/sidecar is its own package (gui/'s workspaces cover only packages/*); build-sidecar.sh refuses without it.
+if [ -f gui/sidecar/package-lock.json ]; then
+    info "Installing GUI sidecar npm dependencies..."
+    (cd gui/sidecar && npm ci --ignore-scripts)
+    ok "gui/sidecar npm packages"
+fi
+
 # ---------- Verification ----------
 
 info "Running verification build (cargo check)..."

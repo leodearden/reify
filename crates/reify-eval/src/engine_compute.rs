@@ -4801,9 +4801,9 @@ mod tests {
 
     /// The smallest `ElasticResult` a seeded persistent entry needs: a 1×1×1
     /// cell grid (2×2×2 nodes) with every slab sized to match.
-    fn minimal_seed_elastic_result() -> crate::persistent_cache::ElasticResult {
+    fn minimal_seed_elastic_result() -> reify_compute_contract::ElasticResult {
         let total_nodes: usize = 2 * 2 * 2;
-        crate::persistent_cache::ElasticResult {
+        reify_compute_contract::ElasticResult {
             displacement: vec![1.0; total_nodes * 3],
             stress: vec![2.0; total_nodes * 9],
             max_von_mises: 42.0,
@@ -4835,7 +4835,7 @@ mod tests {
     /// [`never_called_trampoline`] registered, so whatever comes back on a HIT
     /// was replayed, never freshly produced.
     fn dispatch_against_seeded_entry(
-        seed: &crate::persistent_cache::WithDiagnostics<crate::persistent_cache::ElasticResult>,
+        seed: &crate::persistent_cache::WithDiagnostics<reify_compute_contract::ElasticResult>,
         cache_key: reify_core::ContentHash,
     ) -> SeededEntryServe {
         use crate::cache::{CachedResult, NodeCache, NodeId};

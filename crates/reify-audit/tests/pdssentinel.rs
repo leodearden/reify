@@ -23,7 +23,6 @@ use reify_audit::{
     AuditContext, EvidenceRef, MockGitOps, MockJCodemunchOps, Pattern, RealGitOps, Severity,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Write `content` to relative `path` inside `root`, creating parent dirs.
@@ -129,17 +128,7 @@ fn test_helper(diagnostics: &mut Vec<Diagnostic>) -> Type {
 
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
     let findings = reify_audit::pdssentinel::check(&ctx);
 
@@ -221,17 +210,7 @@ fn check_returns_empty_for_clean_scoped_files() {
 
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
     let findings = reify_audit::pdssentinel::check(&ctx);
     assert!(
@@ -268,17 +247,7 @@ Type::dimensionless_scalar()
 
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
 
     let findings = reify_audit::pdssentinel::check(&ctx);
 
@@ -333,17 +302,7 @@ fn zero_on_main_scoped_files_have_no_unmarked_offenders() {
     let git = RealGitOps::new(&repo_root);
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: repo_root.clone(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(repo_root.clone(), &conn, &git, &jc);
 
     let findings = reify_audit::pdssentinel::check(&ctx);
 
@@ -351,7 +310,7 @@ fn zero_on_main_scoped_files_have_no_unmarked_offenders() {
     // from an exported/vendored tree without a git index), the scoped-file
     // loop in check() never executes and the assertion below would pass
     // trivially without actually scanning any files.  Fail loudly instead.
-    let all_files = ctx.git.ls_files();
+    let all_files = ctx.git().ls_files();
     assert!(
         !all_files.is_empty(),
         "ls_files() returned an empty file list — the test is likely running \

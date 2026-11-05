@@ -28,11 +28,17 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, comparable_datum_operands,
-    max_relation_exceedance, partition_driving_set, pose_from_frame, solve_frame, solve_scaling,
-    static_relation_residuals,
+    max_relation_exceedance, partition_driving_set, pose_from_frame, static_relation_residuals,
 };
-use reify_constraints::scaling::{RelateTolerance, ResidualUnit, SolveScaling};
+use reify_constraints::scaling::{RelateTolerance, ResidualUnit};
 use reify_ir::{SolveResult, Value};
+
+mod common;
+
+use common::{
+    axis, b5_relations, bolt_unknown, datum, dir, fully_determined_relations, plane, point3,
+    relation, scaling_for, solve_frame_result, unknown, vec3,
+};
 
 /// The largest `|r_i|` over every row of `relations` at `pose`, blind to each row's
 /// unit. Only for the closed-form residual tests here, which compare against a
@@ -44,81 +50,6 @@ fn max_relation_residual(
     pose: &Pose,
 ) -> f64 {
     max_relation_exceedance(relations, unknown, pose, |_| 1.0)
-}
-
-/// The kernel-default scaling a scope partition or solve of `relations` from
-/// `witness` uses. Its rank cutoff acts on normalized scaled rows; an unconstrained
-/// DOF shows up as an exactly-zero column (equal residuals up to float noise), so
-/// the cutoff cleanly separates rank-5 from rank-6.
-fn scaling_for(
-    relations: &[RelationInstance],
-    unknown: &FrameUnknown,
-    witness: &Pose,
-) -> SolveScaling {
-    solve_scaling(
-        relations,
-        unknown,
-        witness,
-        RelateTolerance::kernel_default(),
-    )
-}
-
-// ── synthetic realized-datum builders ───────────────────────────────────────
-
-fn point3(x: f64, y: f64, z: f64) -> Value {
-    Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
-}
-
-fn vec3(x: f64, y: f64, z: f64) -> Value {
-    Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
-}
-
-/// A `Value::Axis` from an origin point (metres) + a direction vector.
-fn axis(o: (f64, f64, f64), d: (f64, f64, f64)) -> Value {
-    Value::Axis {
-        origin: Box::new(point3(o.0, o.1, o.2)),
-        direction: Box::new(vec3(d.0, d.1, d.2)),
-    }
-}
-
-/// A `Value::Plane` from an origin point (metres) + a unit normal vector.
-fn plane(o: (f64, f64, f64), n: (f64, f64, f64)) -> Value {
-    Value::Plane {
-        origin: Box::new(point3(o.0, o.1, o.2)),
-        normal: Box::new(vec3(n.0, n.1, n.2)),
-    }
-}
-
-/// A dimensionless `Value::Direction`.
-fn dir(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
-}
-
-/// A datum operand belonging to sub `sub` (so the partition transforms it by the
-/// witness Frame iff `sub` is the auto unknown).
-fn datum(sub: &str, value: Value) -> Operand {
-    Operand {
-        sub: Some(sub.to_string()),
-        datum: value,
-    }
-}
-
-/// A relation instance: name, ordered operands, and the γ-published nominal ΔDOF
-/// (codimension) the partition cross-checks its measured per-relation rank against.
-fn relation(name: &str, operands: Vec<Operand>, nominal_delta_dof: u32) -> RelationInstance {
-    RelationInstance {
-        name: name.to_string(),
-        operands,
-        nominal_delta_dof: Some(nominal_delta_dof),
-    }
-}
-
-/// The auto Frame unknown for sub `"bolt"` (the §1 moving sub).
-fn bolt_unknown() -> FrameUnknown {
-    FrameUnknown {
-        sub: "bolt".to_string(),
-        free: false,
-    }
 }
 
 /// The §1 driving relations (B1): `concentric(bolt.shank, plate.hole)` +
@@ -364,9 +295,9 @@ fn partition_per_relation_delta_dof_cross_checks_gamma() {
     }
 }
 
-// ── step-9 RED: solve_frame drives the auto Frame to satisfy the driving set ──
+// ── step-9 RED: the Frame solve drives the auto Frame to satisfy the driving set ──
 //
-// `solve_frame(driving, frame_unknown, seed, scaling)` takes the partition's driving set
+// `solve_frame_result(driving, frame_unknown, seed, scaling)` takes the partition's driving set
 // over realized datums + the 6-DOF Frame unknown + a seed pose, and returns a
 // `SolveResult::Solved { values, unique }` whose solved Frame satisfies every driving
 // relation within the solver convergence tolerance. The synthetic §1 scenario starts
@@ -410,7 +341,7 @@ fn b1_solve_relations() -> Vec<RelationInstance> {
 fn solve_frame_b1_converges_within_solver_tol() {
     let relations = b1_solve_relations();
     let tol = RelateTolerance::kernel_default();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &bolt_unknown(),
         &Pose::identity(),
@@ -447,7 +378,7 @@ fn solve_frame_b1_converges_within_solver_tol() {
 
 // ── step-11 RED: auto(free) + residual seeding + seed bias (B5) ───────────────
 //
-// The `free` flag on the Frame unknown + the seed `Pose` change how `solve_frame`
+// The `free` flag on the Frame unknown + the seed `Pose` change how the Frame solve
 // reports and seeds a residual DOF (PRD §7.1 step 3):
 //   * `auto(free)` waives the uniqueness check — even a fully-determined system
 //     returns `unique:false`; a residual DOF is seeded to a CONCRETE value (the
@@ -460,62 +391,12 @@ fn solve_frame_b1_converges_within_solver_tol() {
 // RED until step-12 adds the `free` field to `FrameUnknown` + the free/seed wiring
 // (the `unknown(sub, free)` helper references the not-yet-existing field).
 
-/// A Frame unknown for `sub` with the given `free` flag (`auto` vs `auto(free)`).
-fn unknown(sub: &str, free: bool) -> FrameUnknown {
-    FrameUnknown {
-        sub: sub.to_string(),
-        free,
-    }
-}
-
-/// A fully-determined (rank-6) synthetic scenario for the moving sub `"m"`:
-/// `coincident(point,point)` pins 3 translation DOF; `parallel(+z,+z)` pins 2 tilt
-/// DOF; `parallel(+x,+x)` pins the remaining spin — all 6 Frame DOF determined, all
-/// already satisfied at the identity witness.
-fn fully_determined_relations() -> Vec<RelationInstance> {
-    vec![
-        relation(
-            "coincident",
-            vec![
-                datum("m", point3(0.0, 0.0, 0.0)),
-                datum("a", point3(0.0, 0.0, 0.0)),
-            ],
-            3,
-        ),
-        relation(
-            "parallel",
-            vec![datum("m", dir(0.0, 0.0, 1.0)), datum("a", dir(0.0, 0.0, 1.0))],
-            2,
-        ),
-        relation(
-            "parallel",
-            vec![datum("m", dir(1.0, 0.0, 0.0)), datum("a", dir(1.0, 0.0, 0.0))],
-            2,
-        ),
-    ]
-}
-
-/// B5 — a single `concentric(axis,axis)` leaving a residual DOF. The moving bolt's
-/// LOCAL shank axis sits at the origin; the fixed plate hole axis is offset by
-/// `(0.10, 0.20)` in-plane, both `+z`. concentric pins {2 tilt, 2 perp-position} = 4
-/// DOF; the 2 residual DOF are slide-along-axis (`tz`) + spin-about-axis (`rot_z`).
-fn b5_relations() -> Vec<RelationInstance> {
-    vec![relation(
-        "concentric",
-        vec![
-            datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
-            datum("plate", axis((0.10, 0.20, 0.0), (0.0, 0.0, 1.0))),
-        ],
-        4,
-    )]
-}
-
 /// The `free` flag waives uniqueness: a rank-6 system is `unique:true` under strict
 /// `auto` but `unique:false` under `auto(free)` (the perturbation check is skipped).
 #[test]
 fn solve_frame_free_flag_waives_uniqueness() {
     let relations = fully_determined_relations();
-    let strict = solve_frame(
+    let strict = solve_frame_result(
         &relations,
         &unknown("m", false),
         &Pose::identity(),
@@ -528,7 +409,7 @@ fn solve_frame_free_flag_waives_uniqueness() {
         other => panic!("expected Solved, got {other:?}"),
     }
 
-    let free = solve_frame(
+    let free = solve_frame_result(
         &relations,
         &unknown("m", true),
         &Pose::identity(),
@@ -548,7 +429,7 @@ fn solve_frame_free_flag_waives_uniqueness() {
 #[test]
 fn solve_frame_free_residual_is_fully_numeric() {
     let relations = b5_relations();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &Pose::identity(),
@@ -581,7 +462,7 @@ fn solve_frame_free_residual_is_fully_numeric() {
 #[test]
 fn solve_frame_strict_residual_signals_under_determined() {
     let relations = b5_relations();
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", false),
         &Pose::identity(),
@@ -615,7 +496,7 @@ fn solve_frame_seed_biases_residual_dof() {
         translation: [0.0, 0.0, 0.05],
         rotation: [0.0, 0.0, 0.3],
     };
-    let result = solve_frame(
+    let result = solve_frame_result(
         &relations,
         &unknown("bolt", true),
         &seed,
@@ -901,7 +782,7 @@ fn fasten_solve_grounds_sub_to_identity() {
         rotation: [0.1, -0.05, 0.2],
     };
 
-    let result = solve_frame(
+    let result = solve_frame_result(
         std::slice::from_ref(&rel),
         &a_unknown(),
         &seed,

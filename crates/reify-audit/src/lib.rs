@@ -90,7 +90,7 @@ pub use jcodemunch_ops::{
 #[cfg(any(test, feature = "test-support"))]
 pub use jcodemunch_ops::MockJCodemunchOps;
 pub use model::{
-    AuditContext, DoneProvenance, EvidenceRef, Finding, Pattern, Severity, TaskMetadata, TimeWindow,
+    AuditContext, DoneProvenance, EvidenceRef, Finding, Pattern, Severity, TaskMetadata,
 };
 
 // -----------------------------------------------------------------------

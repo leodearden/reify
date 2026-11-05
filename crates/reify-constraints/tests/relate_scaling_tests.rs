@@ -6,16 +6,30 @@
 
 use reify_constraints::relate_solve::{
     FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
-    pose_from_frame, solve_frame, solve_frame_traced, solve_scaling,
+    pose_from_frame, solve_frame_outcome, solve_scaling,
 };
 use reify_constraints::scaling::{
     RelateTolerance, ResidualUnit, Rung, SolveScaling, ToleranceLadderError, ToleranceRungs,
     UnknownKind,
 };
+use reify_constraints::trust_region::SolveBudget;
 use reify_core::scalar_tolerance::{ANGULAR_REFERENCE_RADIUS_M, LENGTH_FLOOR_M, scalars_equal};
 use reify_core::{DimensionVector, ValueCellId};
 use reify_ir::{SolveResult, Value};
 use reify_test_support::{axis_val, meters, plane_val, point3, vec3_dimensionless};
+
+/// The Frame solve within the default budget, read through the
+/// [`SolveResult`] contract
+/// ([`FrameSolveOutcome::into_solve_result`](reify_constraints::relate_solve::FrameSolveOutcome::into_solve_result)).
+fn solve_frame_result(
+    driving: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> SolveResult {
+    solve_frame_outcome(driving, unknown, seed, scaling, SolveBudget::default())
+        .into_solve_result(unknown)
+}
 
 // ── The tolerance ladder ─────────────────────────────────────────────────────
 
@@ -676,6 +690,18 @@ fn verdict(result: &SolveResult) -> &'static str {
     }
 }
 
+/// A default-budget solve's `SolveResult` and its trial-step count.
+fn solve_counted(
+    relations: &[RelationInstance],
+    unknown: &FrameUnknown,
+    seed: &Pose,
+    scaling: &SolveScaling,
+) -> (SolveResult, u32) {
+    let outcome = solve_frame_outcome(relations, unknown, seed, scaling, SolveBudget::default());
+    let iterations = outcome.iterations;
+    (outcome.into_solve_result(unknown), iterations)
+}
+
 /// The solved pose and `unique` flag of a `Solved` result.
 fn solved(result: &SolveResult) -> (Pose, bool) {
     match result {
@@ -708,23 +734,23 @@ fn b15_precondition_both_instances_are_above_the_crossover() {
 fn b15_convergence_verdict_and_iteration_count_are_scale_invariant() {
     let run = |k: f64| {
         let (relations, unknown, seed) = b15_fixture(k);
-        solve_frame_traced(
+        solve_counted(
             &relations,
             &unknown,
             &seed,
             &scaling_for(&relations, &unknown, &seed),
         )
     };
-    let (base, base_trace) = run(1.0);
-    let (large, large_trace) = run(K);
+    let (base, base_iterations) = run(1.0);
+    let (large, large_iterations) = run(K);
 
     let (base_pose, base_unique) = solved(&base);
     let (large_pose, large_unique) = solved(&large);
     assert_eq!(base_unique, large_unique);
-    assert_eq!(base_trace.iterations, large_trace.iterations);
+    assert_eq!(base_iterations, large_iterations);
     assert!(
-        base_trace.iterations >= 2,
-        "the stop test must fire mid-sequence, not at the seed: {base_trace:?}"
+        base_iterations >= 2,
+        "the stop test must fire mid-sequence, not at the seed: {base_iterations}"
     );
     assert_eq!(large_pose.rotation, base_pose.rotation);
     for i in 0..3 {
@@ -745,11 +771,11 @@ fn b15_fixture_detects_a_scale_leak() {
     let (relations, unknown, seed) = b15_fixture(K);
     let own_scaling = scaling_for(&relations, &unknown, &seed);
 
-    let (scaled, scaled_trace) = solve_frame_traced(&relations, &unknown, &seed, &own_scaling);
-    let (leaky, leaky_trace) = solve_frame_traced(&relations, &unknown, &seed, &base_scaling);
+    let (scaled, scaled_iterations) = solve_counted(&relations, &unknown, &seed, &own_scaling);
+    let (leaky, leaky_iterations) = solve_counted(&relations, &unknown, &seed, &base_scaling);
     assert_ne!(
-        (verdict(&leaky), leaky_trace.iterations),
-        (verdict(&scaled), scaled_trace.iterations),
+        (verdict(&leaky), leaky_iterations),
+        (verdict(&scaled), scaled_iterations),
         "an absolute bar must change the stop iterate, or the B15 fixture cannot see a leak"
     );
 }
@@ -780,13 +806,13 @@ fn b15_infeasible_verdict_is_scale_invariant() {
         };
         let scaling = scaling_for(&relations, &unknown, &seed);
         assert!(scaling.characteristic_length() >= 1e-3, "k = {k}");
-        solve_frame_traced(&relations, &unknown, &seed, &scaling)
+        solve_counted(&relations, &unknown, &seed, &scaling)
     };
-    let (base, base_trace) = run(1.0);
-    let (large, large_trace) = run(K);
+    let (base, base_iterations) = run(1.0);
+    let (large, large_iterations) = run(K);
     assert_eq!(verdict(&base), "infeasible");
     assert_eq!(verdict(&large), "infeasible");
-    assert_eq!(base_trace.iterations, large_trace.iterations);
+    assert_eq!(base_iterations, large_iterations);
 }
 
 #[test]
@@ -831,8 +857,8 @@ fn sub_millimetre_scope_converges_as_fast_as_above_the_crossover() {
     let run = |k: f64| {
         let (relations, unknown, seed) = b15_fixture(k);
         let scaling = scaling_for(&relations, &unknown, &seed);
-        let (result, trace) = solve_frame_traced(&relations, &unknown, &seed, &scaling);
-        (relations, unknown, scaling, result, trace)
+        let (result, iterations) = solve_counted(&relations, &unknown, &seed, &scaling);
+        (relations, unknown, scaling, result, iterations)
     };
     let (.., above) = run(1.0);
     let (relations, unknown, scaling, result, below) = run(1.0 / 16.0);
@@ -850,8 +876,8 @@ fn sub_millimetre_scope_converges_as_fast_as_above_the_crossover() {
         max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
     assert!(exceedance <= 1.0, "max|r̃| = {exceedance}");
     assert!(
-        below.iterations <= above.iterations,
-        "sub-mm {below:?} vs above the crossover {above:?}"
+        below <= above,
+        "sub-mm {below} iterations vs above the crossover {above}"
     );
 }
 
@@ -862,7 +888,7 @@ fn solved_pose_meets_every_row_tolerance() {
     for k in [1.0, K] {
         let (relations, unknown, seed) = b15_fixture(k);
         let scaling = scaling_for(&relations, &unknown, &seed);
-        let (pose, _) = solved(&solve_frame(&relations, &unknown, &seed, &scaling));
+        let (pose, _) = solved(&solve_frame_result(&relations, &unknown, &seed, &scaling));
         let exceedance =
             max_relation_exceedance(&relations, &unknown, &pose, |u| scaling.row_tolerance(u));
         assert!(exceedance <= 1.0, "k = {k}: max|r̃| = {exceedance}");
