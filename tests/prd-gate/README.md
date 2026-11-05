@@ -162,7 +162,7 @@ is still recorded.
 | 0 | All probes PASS |
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
-| 64 | Usage / argument error (`EX_USAGE`) |
+| 64 | Usage / argument error (`EX_USAGE`), or no trusted reify binary: both profile binaries built and `target/.reify-bin-sha` not naming HEAD — set `REIFY_BIN` (the D3 workflow: `args.reify_bin`) |
 | 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set
@@ -170,7 +170,12 @@ is still recorded.
 ```bash
 python3 scripts/prd-capability-check.py tests/prd-gate/example-probe-set.json
 python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
+REIFY_BIN="$PWD/target/debug/reify" python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
 ```
+
+The `REIFY_BIN` form is for when the runner will not choose a binary itself (exit
+64 above). Binary trust is SHA identity, and `scripts/reify-bin-freshness.sh`
+holds that rule.
 
 Each `--json` record also carries the typed probe outcome: `fixture` (as written
 in the probe set), `fixture_present` and `harness_failure`. The record contract is

@@ -104,10 +104,10 @@ Reify's substrate verifier has four probe vectors, all empirically grounded in `
 
 ## Decompose mode — run the substrate-verification workflow
 
-At decompose time, invoke the D3 verification workflow **before finalising the leaf batch**:
+At decompose time, invoke the D3 verification workflow **before finalising the leaf batch**, with the leaves as `args`:
 
 ```
-Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
+Workflow({scriptPath: "scripts/prd-decompose-verify.mjs", args: [<leaf>, …]})
 ```
 
 `scripts/prd-decompose-verify.mjs` is the **entry point** — a thin orchestration shell over `scripts/prd-decompose-verify.py`, the **deterministic harness** it shells out to. All load-bearing adjudication (premise binding, the evidence gate, record classification, the captured-output report) lives in the Python harness and is unit-tested there; the `.mjs` only drives agents and aggregates.
@@ -115,6 +115,17 @@ Workflow({scriptPath: "scripts/prd-decompose-verify.mjs"})
 Per leaf the workflow runs three roles: **Enumerator** → **Prover ‖ Adversary** → **Synthesize**. The Enumerator extracts every premise the leaf signal asserts and enforces the negative-assertion mandate (every "X is rejected" must become a probe that observes the rejection actually fires). Prover and Adversary run in parallel: the Prover authors a probe per premise and runs it through α (`scripts/prd-capability-check.py`); the Adversary independently hunts unlisted premises and falsifications. Synthesize aggregates results.
 
 **Blocks the batch** on any `FAIL`/`UNPROVABLE` with captured command output attached — instead of tabulating an unexecuted promise. (`UNPROVABLE` blocks the same as `FAIL`: "no probe vector can currently observe this" is as dangerous as "the premise is false".) `HARNESS_ERROR` blocks **with or without** captured output: it is the verdict that reports "the probe machinery could not run at all", so absent evidence is its message rather than a defect in its message.
+
+### Choosing the reify binary
+
+α refuses (exit 64, no JSON) when `target/release/reify` and `target/debug/reify` are both built and `target/.reify-bin-sha` does not name `HEAD`. That is the usual state of a dev lane. Every leaf then comes back `BLOCKS`, with a `HARNESS_ERROR` whose stderr is α's refusal naming both binaries. To pick the binary yourself, pass the envelope form of `args`:
+
+```
+Workflow({scriptPath: "scripts/prd-decompose-verify.mjs",
+          args: {leaves: [<leaf>, …], reify_bin: "<absolute path>"}})
+```
+
+Point `reify_bin` at, for example, the lane's `target/debug/reify` or the warm-base debug binary. The workflow then prefixes `REIFY_BIN` on every α call the Prover and Adversary make, so there is no longer any need to patch a scratch copy of the `.mjs`. A plain leaf array still works: α's command stays bare and inherits whatever `REIFY_BIN` the session exported. A malformed envelope is refused before any agent runs: an unknown key, no `leaves`, or a `reify_bin` that is not an absolute-path string. Whether the path exists is α's to report, as a launch `HARNESS_ERROR`. The trust rule itself (SHA identity, never an mtime or profile tie-break) is in `scripts/reify-bin-freshness.sh`.
 
 ### Reading the result — `blocks: false` is not a pass
 
