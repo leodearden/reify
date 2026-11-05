@@ -109,6 +109,28 @@ fn assert_input_error(out: &Output, needles: &[&str], context: &str) {
     );
 }
 
+// --- the real workspace ------------------------------------------------------
+
+/// The gate: the real workspace, resolved with the inherited environment so
+/// the verify env's CARGO and CARGO_HOME reach cargo. On failure the full
+/// output carries every SPLIT/UNCOVERED line and the remedy.
+#[test]
+fn real_workspace_resolves_every_member_like_the_workspace() {
+    let out = Command::new("python3")
+        .arg("-I")
+        .arg(script())
+        .arg("check")
+        .current_dir(workspace_root())
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script().display()));
+    assert!(
+        out.status.success(),
+        "a member resolves an external package unlike --workspace; \
+         docs/notes/workspace-feature-union.md explains the remedy\n{}",
+        describe(&out)
+    );
+}
+
 // --- fixtures ----------------------------------------------------------------
 
 /// One workspace member of a fixture's `cargo metadata --no-deps`.
