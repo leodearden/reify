@@ -36,11 +36,13 @@ to the features `--workspace` resolves, and every member depends on it, so any
   triple keeps the pins away from a wasm build. No build.rs is needed: cargo
   applies a build-dependency's features even when the declaring crate has no
   build script.
-- **Coverage.** Every member that is not a build-dependency of another member
-  depends on the union as a normal dependency. reify-build-utils, the one
-  build-dependency member, must not: its normal deps land in every
-  build-script graph, so the union's target pins would become host units
-  there. As a result `cargo test -p reify-build-utils` alone stays split.
+- **Coverage.** Every member that is not host-side depends on the union as a
+  normal dependency. A host-side member is a build-dependency of another
+  member or a proc-macro. Today the only one is reify-build-utils; no member
+  is a proc-macro. A host-side member must not reach the union, directly or
+  through a covered member, because its graph is compiled for the host and
+  the union's target pins would become host units there. As a result
+  `cargo test -p reify-build-utils` alone stays split.
 - **Normal, not dev, pins.** The pins are computed from the dev-active
   resolution (`-e normal,build,dev`) but declared as normal dependencies. So
   `cargo check -p X` and `cargo build -p X`, not just `cargo test -p X`,
@@ -75,8 +77,14 @@ When it reds after a dependency or feature edit:
 2. Regenerate the data lines of `crates/reify-eval/engine_hash_closure.txt`
    with the command in its header.
 
+If generate fails part-way, for example because `cargo tree` errors, it
+restores the union manifest and `Cargo.lock` as it found them.
+
 An UNCOVERED line names the manifest that needs
-`workspace-feature-union.workspace = true`. `--help` explains every finding.
+`workspace-feature-union.workspace = true`. A HOST-UNION line quotes a
+`--workspace` path that reaches the union on the host side. It also names
+the dependency edge to remove and the manifest that holds it. `--help`
+explains every finding.
 
 ## Probe procedure
 
@@ -130,3 +138,13 @@ refreshed base is #9824.
 - **What the gate proves.** The gate checks `cargo tree` resolution, not
   compiled units. Resolution reproduced the task's observed syn fingerprint
   exactly, and the probes above are the compile-level evidence.
+- **A lower bound only.** `--workspace` includes the union's own pins, so the
+  gate cannot see over-pinning. Two pins pass it:
+  - a pinned feature no member needs any more;
+  - a pinned package no member reaches any more, for example after a
+    dependency is removed.
+
+  Either one is still compiled into every member, release builds included.
+  Only `generate` sheds them, because it starts from an empty region. After
+  removing a dependency or a feature, run `generate` and review the diff of
+  the union manifest.
