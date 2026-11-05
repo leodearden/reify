@@ -5,7 +5,8 @@
 //! the module-path form (`reify_core::diagnostics::SourceSpan`).
 //!
 //! Both spellings remain in sync because `reify-core/src/lib.rs` exports each
-//! module as `pub mod` AND re-exports its symbols at the crate root.
+//! module as `pub mod` AND re-exports its symbols at the crate root — except
+//! `persistent_cache`, which is pinned in module-path form only.
 
 // ── diagnostics (flat form) ──────────────────────────────────────────────────
 use reify_core::{
@@ -95,6 +96,10 @@ use reify_core::overload::{
 
 // ── flat PortDirection ────────────────────────────────────────────────────────
 use reify_core::PortDirection as PortDirectionFlat;
+
+// ── persistent_cache (module-path form only) ─────────────────────────────────
+// The flat `reify_core::PersistentlyCacheable` is deliberately ABSENT (#9759, SPOT).
+use reify_core::persistent_cache::PersistentlyCacheable;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Surface assertions
@@ -383,4 +388,9 @@ fn overload_flat_and_module_path() {
     assert!(!carries_to(&param) && !type_carries_trait_object_mod(&param));
     assert!(carries_tp(&param) && type_carries_type_param_mod(&param));
     assert!(!carries_dp(&param) && !type_carries_dim_param_mod(&param));
+}
+
+#[test]
+fn persistent_cache_trait_module_path_only() {
+    fn _nameable_as_bound<T: PersistentlyCacheable>() {}
 }
