@@ -173,7 +173,7 @@ def _require_reify_binary(test):
     The policy lives once, in _pdv_test_support.require_reify_binary; this asks
     it about the α instance these partitions load.
     """
-    return require_reify_binary(test, alpha=pcc)
+    return require_reify_binary(test, pcc=pcc)
 
 
 # ---------------------------------------------------------------------------

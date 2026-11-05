@@ -36,11 +36,11 @@ def load_pcc():
     return sys.modules["prd_capability_check"]
 
 
-def require_reify_binary(test, alpha=None):
+def require_reify_binary(test, pcc=None):
     """skipTest unless α would run a reify binary with known provenance; return its ctx.
 
     The one home of the reify-e2e skip policy, for α's partitions and pdv's.
-    alpha is the α module instance whose seam answers; default load_pcc().
+    pcc is the α module instance whose seam answers; default load_pcc().
     Asking α's own ProbeContext.from_environment() keeps the skip and the CLI in
     agreement, and an α subprocess inheriting os.environ reaches the same
     answer.  Three skips:
@@ -52,8 +52,8 @@ def require_reify_binary(test, alpha=None):
         checkout's.  A REIFY_BIN path is the caller's explicit choice and runs.
       * the named binary is not there to run.
     """
-    alpha = load_pcc() if alpha is None else alpha
-    ctx = alpha.ProbeContext.from_environment()
+    pcc = load_pcc() if pcc is None else pcc
+    ctx = pcc.ProbeContext.from_environment()
     if ctx.reify_bin is None:
         test.skipTest(f"no trusted reify binary: {ctx.reify_bin_refusal}")
     if not os.path.dirname(ctx.reify_bin):
