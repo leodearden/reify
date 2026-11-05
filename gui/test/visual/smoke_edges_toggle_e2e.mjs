@@ -33,6 +33,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { debugUrlForPort, resolveDebugPort, waitForServer } from './debugServerEndpoint.mjs';
 import { describeRpcFailure, openFileWithRetry } from './smokeDriverGuards.mjs';
 import { countChangedPixels, formatFailures, gradeEdgesToggle } from './edgesToggleGate.mjs';
 
@@ -43,19 +44,8 @@ const FIXTURE = path.join(REPO_ROOT, FIXTURE_RELPATH);
 const VIEWPORT_ID = 'design-main';
 const TOGGLE_TEST_ID = 'toolbar-edges-toggle';
 
-// ─── Port resolution (mirrors endpoint.ts / lib_portable.sh logic) ─────────────
-
-function resolveDebugPort(env = process.env) {
-  const raw = env['REIFY_DEBUG_PORT'];
-  if (raw === undefined) return 3939;
-  if (!/^\d+$/.test(raw)) return 3939;
-  const parsed = parseInt(raw, 10);
-  if (parsed < 1 || parsed > 65535) return 3939;
-  return parsed;
-}
-
-const PORT = resolveDebugPort();
-const DEBUG_URL = `http://127.0.0.1:${PORT}/mcp`;
+const PORT = resolveDebugPort(process.env);
+const DEBUG_URL = debugUrlForPort(PORT);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -71,22 +61,6 @@ function fail(msg) {
 
 // Request shape and envelope decode live in rpcEnvelope.mjs (CI-covered).
 const rpc = makeDebugRpc(DEBUG_URL);
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-async function waitForServer(timeoutMs = 60_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await rpc('health');
-      if (r !== null) return;
-    } catch {}
-    await sleep(500);
-  }
-  fail(`Debug server not ready on port ${PORT} after ${timeoutMs}ms`);
-}
 
 /** Call a tool and fail the run, naming the tool, on any RPC-level failure. */
 async function rpcOrFail(method, args, label) {
@@ -129,7 +103,7 @@ async function main() {
   console.log(`FIXTURE: ${FIXTURE}`);
 
   log('Waiting for debug server…');
-  await waitForServer(60_000);
+  await waitForServer(rpc, PORT, { fail });
 
   log(`Opening ${FIXTURE_RELPATH} via openFileWithRetry…`);
   await openFileWithRetry(rpc, FIXTURE, { fail });

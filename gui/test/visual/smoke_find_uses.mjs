@@ -24,24 +24,15 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeDebugRpc } from './rpcEnvelope.mjs';
+import { debugUrlForPort, resolveDebugPort, waitForServer } from './debugServerEndpoint.mjs';
 import { openFileWithRetry } from './smokeDriverGuards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const FIXTURE_PATH = path.join(REPO_ROOT, 'gui', 'test', 'fixtures', 'find_uses_smoke.ri');
 
-// Inline port resolution (mirrors endpoint.ts logic)
-function resolveDebugPort(env = process.env) {
-  const raw = env['REIFY_DEBUG_PORT'];
-  if (raw === undefined) return 3939;
-  if (!/^\d+$/.test(raw)) return 3939;
-  const parsed = parseInt(raw, 10);
-  if (parsed < 1 || parsed > 65535) return 3939;
-  return parsed;
-}
-
-const PORT = resolveDebugPort();
-const DEBUG_URL = `http://127.0.0.1:${PORT}/mcp`;
+const PORT = resolveDebugPort(process.env);
+const DEBUG_URL = debugUrlForPort(PORT);
 
 let step = 0;
 function log(msg) {
@@ -69,18 +60,6 @@ async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-async function waitForServer(timeoutMs = 30_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const r = await rpc('health');
-      if (r !== null) return;
-    } catch {}
-    await sleep(500);
-  }
-  fail(`Debug server not ready on port ${PORT} after ${timeoutMs}ms`);
-}
-
 async function keyboard(key, { shift = false, ctrl = false, alt = false } = {}) {
   await rpc('keyboard', { key, ...(shift ? { shift: true } : {}), ...(ctrl ? { ctrl: true } : {}), ...(alt ? { alt: true } : {}) });
   await sleep(50);
@@ -92,7 +71,7 @@ async function main() {
 
   // Step 1: health
   log('Waiting for debug server…');
-  await waitForServer(60_000);
+  await waitForServer(rpc, PORT, { fail });
   console.log('  OK: server ready');
 
   // Step 2: open the find_uses_smoke fixture.
