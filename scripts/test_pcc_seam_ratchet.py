@@ -112,9 +112,10 @@ def _count(counter, source, label):
     return [(label, line, text) for line, text in counter(tree, source)]
 
 
-# One instance of each counted form, plus prose and stdlib patches that must count
-# nothing.  Single-line literals with the alias substituted in, so this file holds
-# no patch site of its own for a line-based grep of scripts/ to find.
+# One instance of each counted form, plus prose, stdlib patches and non-α bindings
+# (α bound to its own alias among them) that must count nothing.  Single-line
+# literals with the alias substituted in, so this file holds no patch site of its
+# own for a line-based grep of scripts/ to find.
 _SAMPLE = "\n".join((
     '"""Module prose naming {alpha}._prose_private."""',
     "import os, subprocess, sys, tempfile, unittest.mock",
@@ -139,6 +140,26 @@ _SAMPLE = "\n".join((
     "def helper():",
     '    """Docstring naming {alpha}._doc_private."""',
     "    return None",
+    "loaded = load_pcc()._loaded_private",
+    "checker = {alpha}",
+    "self.checker = pdv.{alpha}",
+    "chosen = load_pcc() if given is None else given",
+    "fallback = given or load_pcc()",
+    "typed: object = {alpha}",
+    "print(named := load_pcc())",
+    "require(test, checker={alpha})",
+    "def pick(test, checker={alpha}):",
+    "    return checker",
+    "from _pcc_test_support import {alpha} as checker",
+    "from _pdv_test_support import load_pcc as loader",
+    "{alpha} = load_pcc() if {alpha} is None else {alpha}",
+    "def fine(test, {alpha}=None):",
+    "    return {alpha}",
+    "schema = {alpha}.published_schemas()['result_record']",
+    "done = subprocess.run(['true'])",
+    "require(test, runner={alpha}.run_probe)",
+    "sys.modules['prd_capability_check'] = {alpha}",
+    "from _pcc_test_support import {alpha}",
 )).replace("{alpha}", _ALPHA_NAME)
 
 
@@ -153,6 +174,21 @@ class TestRatchetCountsCode(unittest.TestCase):
             f"{_ALPHA_NAME}._read_private",
             f"pdv.{_ALPHA_NAME}._nested_private",
             f"getattr({_ALPHA_NAME}, '_fetched_private')",
+            "load_pcc()._loaded_private",
+        ]))
+
+    def test_alpha_rebindings(self):
+        self.assertEqual(self._texts(_alpha_rebindings), sorted([
+            f"checker = {_ALPHA_NAME}",
+            f"self.checker = pdv.{_ALPHA_NAME}",
+            "chosen = load_pcc() if given is None else given",
+            "fallback = given or load_pcc()",
+            f"typed: object = {_ALPHA_NAME}",
+            "named := load_pcc()",
+            f"checker={_ALPHA_NAME}",
+            f"def pick(test, checker={_ALPHA_NAME}):",
+            f"from _pcc_test_support import {_ALPHA_NAME} as checker",
+            "from _pdv_test_support import load_pcc as loader",
         ]))
 
     def test_alpha_patches_whatever_their_line_breaks(self):
