@@ -3,8 +3,8 @@
 //! `Value::GeometryHandle`, a selector-ctor cell a `Value::Selector`.
 //!
 //! The one copy shared by template scope (`engine_eval.rs`) and sub-instance
-//! scope (`unfold.rs` at `eval()`, `engine_edit.rs`'s `edit_param` walk, task
-//! #8102), so the scopes mint identical values for identical inputs.
+//! scope (`unfold.rs` at `eval()`, `engine_edit.rs`'s edit path, task #8102),
+//! so the scopes mint identical values for identical inputs.
 
 use std::collections::HashMap;
 
@@ -39,8 +39,8 @@ pub(crate) enum RealizationSource<'a> {
     /// The compiled template's declarations, which `eval()` has.
     Template(&'a TopologyTemplate),
     /// The graph's realization nodes, which carry the same operations, for the
-    /// `edit_param` walk, which has no template. This is the hook #8209 folds
-    /// that walk's template-scope mint onto.
+    /// edit path, which has no template. This is the hook #8209 folds the
+    /// `edit_param` walk's template-scope mint onto.
     Graph(&'a EvaluationGraph),
 }
 
@@ -62,9 +62,10 @@ pub(crate) struct SymbolicMintOutcome {
 }
 
 /// `evaluated` unchanged unless it is `Undef`; then `cell_id` (a cell of the
-/// template `scope.realizations` belongs to) is minted symbolically, trying the two mints in `order`
-/// (the first `Some` wins). A selector kind-closure violation leaves the cell
-/// `Undef`, with its diagnostic pushed to `diagnostics`.
+/// template `scope.realizations` belongs to) is minted symbolically, trying
+/// the two mints in `order` (the first `Some` wins). A selector kind-closure
+/// violation leaves the cell `Undef`, with its diagnostic pushed to
+/// `diagnostics`.
 ///
 /// Realization identity: a minted handle names the template's
 /// `RealizationDecl` id at EVERY scope and folds its `upstream_values_hash` over
@@ -141,9 +142,10 @@ fn mint_symbolic(
     }
 }
 
-/// The graph-backed scope the edit path mints a sub-instance cell in: the
-/// `edit_param` walk, and the collection resizes of `edit_param` and
-/// `edit_source`, none of which has a template.
+/// The graph-backed scope the edit path mints a sub-instance cell in, since
+/// none of its sites has a template: the `edit_param` walk, `edit_param`'s
+/// collection resize and grown-instance reseed, and `edit_source`'s
+/// collection resize.
 pub(crate) struct InstanceMintScope<'a> {
     pub(crate) graph: &'a EvaluationGraph,
     pub(crate) values: &'a ValueMap,
