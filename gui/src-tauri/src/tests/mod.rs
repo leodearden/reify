@@ -26,6 +26,7 @@ mod main_helpers_tests;
 mod mcp_context_tests;
 mod mcp_dispatch_tests;
 mod mesh_count_parity_fixture_tests;
+mod new_file_template_tests;
 #[cfg(has_openvdb)]
 mod openvdb_kernel_tests;
 mod path_key_tests;
