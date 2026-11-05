@@ -225,7 +225,7 @@ pub fn assemble_p1_stiffness(
 }
 
 /// Scatter nodal point loads into a freshly zeroed global RHS of length
-/// `3 * n_nodes`; loads on the same DOF sum.
+/// `3 * n_nodes`.
 ///
 /// [`assemble_eliminate_and_solve`] takes a whole RHS rather than a
 /// `(dof, value)` list so that a caller can equally pass it a load assembled
@@ -238,24 +238,32 @@ pub fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec
     f
 }
 
-/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, RETAINING
-/// everything a dual (adjoint) solve over the same system needs.
+/// What [`assemble_eliminate_and_solve`] retains of a solve: everything a dual
+/// (adjoint) solve over the same system needs, so that it repeats neither the
+/// assembly nor the elimination.
+pub struct RetainedSolve {
+    /// `K`, already row-eliminated, so a dual solve reuses it verbatim.
+    pub k_eliminated: SparseRowMat<usize, f64>,
+    /// The ELIMINATED right-hand side: the `f` that the reciprocity identity
+    /// `J(u_h) == fᵀz_h` is stated against (`J` a quantity of interest, `u_h`
+    /// the primal solution, `z_h` the dual solution), not the raw one.
+    pub f_eliminated: Vec<f64>,
+    /// The deduplicated BC list, i.e. the DOFs at which a dual load is zeroed:
+    /// exactly those that were actually constrained.
+    pub bcs_deduped: Vec<DirichletBc>,
+    /// The primal CG solve. It is not asserted on, so the caller decides what
+    /// an unconverged solve means.
+    pub primal: CgResult,
+}
+
+/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, retaining
+/// everything a dual (adjoint) solve over the same system needs (see
+/// [`RetainedSolve`]).
 ///
 /// Runs [`assemble_p1_stiffness`] → [`dedup_bcs`] →
-/// `apply_dirichlet_row_elimination` → `solve_cg`, and returns, alongside the
-/// `CgResult`:
-/// * `K`, already row-eliminated, so a dual solve reuses it verbatim with no
-///   second assembly and no second elimination.
-/// * the ELIMINATED RHS, which is the `f` that the reciprocity identity
-///   `J(u_h) == fᵀz_h` is stated against (`J` a quantity of interest, `u_h` the
-///   primal solution, `z_h` the dual solution), not the raw one.
-/// * the deduplicated BC list, i.e. the DOFs at which a dual load is zeroed:
-///   exactly those that were actually constrained.
-///
-/// The `CgResult` is not asserted on, so the caller decides what an unconverged
-/// solve means. `SolverMode::Deterministic` is fixed (not a parameter) for
-/// bit-stable, CI-safe results; `opts` IS a parameter so a caller can tighten
-/// the tolerance below the crate default.
+/// `apply_dirichlet_row_elimination` → `solve_cg`. `SolverMode::Deterministic`
+/// is fixed (not a parameter) for bit-stable, CI-safe results; `opts` IS a
+/// parameter so a caller can tighten the tolerance below the crate default.
 ///
 /// # Panics
 ///
@@ -267,12 +275,7 @@ pub fn assemble_eliminate_and_solve(
     bcs: Vec<DirichletBc>,
     raw_f: &[f64],
     opts: CgSolverOptions,
-) -> (
-    SparseRowMat<usize, f64>,
-    Vec<f64>,
-    Vec<DirichletBc>,
-    CgResult,
-) {
+) -> RetainedSolve {
     let n_nodes = nodes.len();
     assert_eq!(
         raw_f.len(),
@@ -289,9 +292,14 @@ pub fn assemble_eliminate_and_solve(
     dedup_bcs(&mut bcs);
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
-    let result = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+    let primal = solve_cg(&k, &f, opts, SolverMode::Deterministic);
 
-    (k, f, bcs, result)
+    RetainedSolve {
+        k_eliminated: k,
+        f_eliminated: f,
+        bcs_deduped: bcs,
+        primal,
+    }
 }
 
 /// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system, keeping only
@@ -314,7 +322,7 @@ pub fn solve_p1_pipeline(
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
     let f = rhs_from_point_loads(nodes.len(), point_loads);
-    let (_, _, deduped, result) = assemble_eliminate_and_solve(
+    let solved = assemble_eliminate_and_solve(
         nodes,
         conns,
         mat,
@@ -322,13 +330,13 @@ pub fn solve_p1_pipeline(
         &f,
         CgSolverOptions::default(),
     );
-    *bcs = deduped;
+    *bcs = solved.bcs_deduped;
     assert!(
-        result.converged,
+        solved.primal.converged,
         "solve_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
+        solved.primal.iterations,
     );
-    result.u().to_vec()
+    solved.primal.u().to_vec()
 }
 
 /// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet from the
