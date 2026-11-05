@@ -37,13 +37,13 @@ use reify_solver_elastic::linear_solve::{
 };
 use reify_solver_elastic::split_cholesky::SplitCholesky;
 use reify_solver_elastic::{
-    AssemblyElement, DirichletBc, ElementOrder, ElementStiffness, IsotropicElastic,
+    AssemblyElement, ElementOrder, ElementStiffness, IsotropicElastic,
     apply_dirichlet_row_elimination, assemble_stiffness, element_stiffness,
 };
 
 #[path = "common/fea_harness.rs"]
 mod fea_harness;
-use fea_harness::box_p1_mesh;
+use fea_harness::{box_p1_mesh, dirichlet_fix_face, end_face_nodes};
 
 // ---------------------------------------------------------------------------
 // Fixtures and checks (copied from tests/split_cholesky.rs per the
@@ -342,21 +342,8 @@ fn build_cantilever() -> (SparseRowMat<usize, f64>, Vec<f64>) {
     };
 
     let tol = 0.5 * L / NX as f64;
-    let on_face = |x: f64| -> Vec<usize> {
-        (0..nodes.len())
-            .filter(|&n| (nodes[n][0] - x).abs() < tol)
-            .collect()
-    };
-    let clamp: Vec<DirichletBc> = on_face(0.0)
-        .into_iter()
-        .flat_map(|n| {
-            (0..3).map(move |c| DirichletBc {
-                dof: 3 * n + c,
-                value: 0.0,
-            })
-        })
-        .collect();
-    let tip = on_face(L);
+    let clamp = dirichlet_fix_face(&nodes, 0, 0.0, tol);
+    let tip = end_face_nodes(&nodes, L, tol);
     let mut f = vec![0.0; 3 * nodes.len()];
     for &n in &tip {
         f[3 * n + 2] -= 1000.0 / tip.len() as f64;
