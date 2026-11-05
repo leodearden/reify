@@ -9,7 +9,6 @@
 //! declared fault. When this guard reds, fix the file in the same diff, or
 //! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
-use std::any::Any;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
@@ -423,18 +422,10 @@ fn check(
     };
     match panic::catch_unwind(AssertUnwindSafe(|| inspect(&source))) {
         Ok(observed) => violation(expected, &observed),
-        Err(payload) => Some(Violation::ParsePanicked(panic_message(payload.as_ref()))),
+        Err(payload) => Some(Violation::ParsePanicked(
+            reify_core::panic_payload_to_string(payload.as_ref()),
+        )),
     }
-}
-
-fn panic_message(payload: &(dyn Any + Send)) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        return (*message).to_owned();
-    }
-    if let Some(message) = payload.downcast_ref::<String>() {
-        return message.clone();
-    }
-    "a non-string panic payload".to_owned()
 }
 
 // ── verdict unit tests, over inline sources ─────────────────────────────────
