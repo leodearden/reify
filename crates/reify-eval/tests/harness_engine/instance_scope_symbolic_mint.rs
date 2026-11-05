@@ -372,6 +372,39 @@ fn phase1_scratch_let_mints_so_a_param_default_reading_a_selector_let_reuses() {
     );
 }
 
+/// `source` with `template_param` set to `edited`, evaluated two ways: WARM
+/// (`eval`, then `edit_param`) and COLD (`set_param_and_invalidate`, then
+/// `eval`). Returns the warm engine's pre-edit eval, its `edit_param` result,
+/// and the cold eval.
+fn warm_edit_and_cold_eval(
+    source: &str,
+    template_param: &ValueCellId,
+    edited: Value,
+) -> (EvalResult, EvalResult, EvalResult) {
+    let compiled = parse_and_compile_with_stdlib(source);
+    let mut warm = make_simple_engine();
+    let before = warm.eval(&compiled);
+    let after_edit = warm
+        .edit_param(template_param.clone(), edited.clone())
+        .unwrap_or_else(|e| panic!("edit_param({template_param}) must succeed after eval: {e:?}"));
+
+    let mut cold = make_simple_engine();
+    cold.set_param_and_invalidate(template_param, edited);
+    let cold = cold.eval(&compiled);
+    (before, after_edit, cold)
+}
+
+/// The premise both edit-path pins share: the warm and cold engines commit the
+/// same instance `len`, so the instance cells they mint over it are comparable.
+fn assert_instance_len_agrees(after_edit: &EvalResult, cold: &EvalResult, instance: &str) {
+    assert_eq!(
+        cell(after_edit, instance, "len"),
+        cell(cold, instance, "len"),
+        "premise: the warm and cold engines must commit the same {instance}.len, \
+         or their instance cells are not comparable"
+    );
+}
+
 /// `edit_param` on a TEMPLATE param re-evaluates an override-free sub's
 /// geometry cell, and the edit path must mint it by the same instance-scope
 /// rule as `eval()`: the template's realization decl, with the upstream hash
@@ -393,32 +426,19 @@ fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_ev
             sub same = EditInner()
         }
     "#;
-    let compiled = parse_and_compile_with_stdlib(source);
-    let template_len = ValueCellId::new("EditInner", "len");
-    let edited_len = Value::length(0.03);
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        source,
+        &ValueCellId::new("EditInner", "len"),
+        Value::length(0.03),
+    );
 
-    let mut warm = make_simple_engine();
-    let before = warm.eval(&compiled);
     let minted_at_eval = cell(&before, "EditOuter.same", "body");
     assert!(
         matches!(minted_at_eval, Value::GeometryHandle { .. }),
         "premise: eval() mints EditOuter.same.body, got {minted_at_eval:?}"
     );
-    let edited = warm
-        .edit_param(template_len.clone(), edited_len.clone())
-        .expect("edit_param(EditInner.len, 30mm) must succeed after eval");
-
-    let mut cold = make_simple_engine();
-    cold.set_param_and_invalidate(&template_len, edited_len);
-    let cold = cold.eval(&compiled);
-
-    assert_eq!(
-        cell(&edited, "EditOuter.same", "len"),
-        cell(&cold, "EditOuter.same", "len"),
-        "premise: the warm and cold engines must commit the same instance `len`, \
-         or their instance handles are not comparable"
-    );
-    let edited_body = cell(&edited, "EditOuter.same", "body");
+    assert_instance_len_agrees(&after_edit, &cold, "EditOuter.same");
+    let edited_body = cell(&after_edit, "EditOuter.same", "body");
     assert!(
         matches!(edited_body, Value::GeometryHandle { .. }),
         "EditOuter.same.body must still be a minted GeometryHandle after a \
@@ -430,5 +450,45 @@ fn edit_param_on_a_template_param_mints_an_override_free_instance_like_a_cold_ev
         cell(&cold, "EditOuter.same", "body"),
         "EditOuter.same.body after edit_param must equal a cold eval's: the \
          template's realization, hashed over the instance's own values"
+    );
+}
+
+/// The selector half of the edit-path instance mint: an override-free sub's
+/// selector let over its own geometry must, after a template param edit, equal
+/// what a cold eval of the edited state commits, i.e. a selector over the
+/// INSTANCE's handle, not over the template's edited one.
+#[test]
+fn edit_param_on_a_template_param_mints_an_override_free_instance_selector_like_a_cold_eval() {
+    let source = r#"
+        structure EditSelInner {
+            param len : Length = 10mm
+            let body = box(len, 10mm, 10mm)
+            let s = face(body, "x_max")
+        }
+
+        structure EditSelOuter {
+            sub same = EditSelInner()
+        }
+    "#;
+    let (before, after_edit, cold) = warm_edit_and_cold_eval(
+        source,
+        &ValueCellId::new("EditSelInner", "len"),
+        Value::length(0.03),
+    );
+
+    let selector_at_eval = cell(&before, "EditSelOuter.same", "s");
+    assert!(
+        matches!(selector_at_eval, Value::Selector(_)),
+        "premise: eval() mints EditSelOuter.same.s, got {selector_at_eval:?}"
+    );
+    assert_instance_len_agrees(&after_edit, &cold, "EditSelOuter.same");
+    let edited_s = cell(&after_edit, "EditSelOuter.same", "s");
+    assert_eq!(
+        edited_s,
+        cell(&cold, "EditSelOuter.same", "s"),
+        "EditSelOuter.same.s after edit_param must equal a cold eval's: a \
+         selector over the instance's own minted body (a selector over \
+         EditSelInner's edited body means the edit path read the template's \
+         cells for the instance)"
     );
 }
