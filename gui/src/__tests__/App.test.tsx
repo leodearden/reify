@@ -126,6 +126,9 @@ vi.mock('../bridge', () => ({
   updateSource: vi.fn().mockResolvedValue(undefined),
   saveFile: vi.fn().mockResolvedValue(undefined),
   openFile: vi.fn().mockResolvedValue({ path: '', content: '' }),
+  createNewFile: vi.fn().mockResolvedValue({ path: '/new/untitled.ri', content: '' }),
+  listRecent: vi.fn().mockResolvedValue([]),
+  recordRecent: vi.fn().mockResolvedValue([]),
   openFileEngine: vi.fn().mockResolvedValue({ generation: 1, state: { meshes: [], values: [], constraints: [], files: [], tessellation_diagnostics: [], compile_diagnostics: [], tensegrity_wires: [], tensegrity_surfaces: [], display_panes: [], display_appearance: [], fea_diagnostics: [] } }),
   getSourceLocation: vi.fn().mockResolvedValue({ file_path: '/test.ri', line: 1, column: 1, end_line: 1, end_column: 5 }),
   focusEntity: vi.fn().mockResolvedValue(undefined),
@@ -162,6 +165,7 @@ vi.mock('../bridge', () => ({
   claudePermissionDecision: vi.fn().mockResolvedValue(undefined),
   subscribeToClaudeEvents: vi.fn().mockResolvedValue(() => {}),
   isDebugEnabled: vi.fn().mockResolvedValue(false),
+  setMode: vi.fn().mockResolvedValue({ mode: 'design', debug_port: null }),
   onWarmPoolEvent: vi.fn().mockResolvedValue(() => {}),
   getKernelStatus: vi.fn().mockResolvedValue({ available: true, message: null }),
   onKernelStatus: vi.fn().mockResolvedValue(() => {}),
@@ -269,6 +273,10 @@ beforeEach(() => {
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
   vi.mocked(bridge.isDebugEnabled).mockResolvedValue(false);
+  vi.mocked(bridge.setMode).mockResolvedValue({ mode: 'design', debug_port: null });
+  vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/new/untitled.ri', content: '' });
+  vi.mocked(bridge.listRecent).mockResolvedValue([]);
+  vi.mocked(bridge.recordRecent).mockResolvedValue([]);
   vi.mocked((bridge as any).ask).mockResolvedValue(false);
   // Below: names some test overrides persistently but nothing used to restore,
   // so the override leaked into every later test (truth table row 3). Added
