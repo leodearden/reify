@@ -48,9 +48,9 @@
 //! `Value` reproducing what the pre-registry string path returned. Where the
 //! arithmetic is exactly representable in `f64` the expectation is spelled as
 //! that arithmetic (`parse_length("12mm")` → `12.0 * 0.001`; von Mises of the
-//! shared uniaxial window → `√(σ²)` = exactly σ, which `reify-test-support`
-//! pins for its `UNIAXIAL_STRESS_PA`; `safety_factor` → `YIELD_PA / σ`, the
-//! kernel's own single division of yield by that exact von Mises). Where it is
+//! shared uniaxial window → `√(σ²)` = exactly σ; `safety_factor` →
+//! `YIELD_PA / σ`, the kernel's own single division of yield by that exact von
+//! Mises). Where it is
 //! NOT — `max_shear` and `principal_stresses` both run the iterative
 //! `compute_eigenvalues_3x3` — the expectation is built from the crate's own
 //! PUBLIC kernel (`reify_stdlib::compute_max_shear_3x3` /
