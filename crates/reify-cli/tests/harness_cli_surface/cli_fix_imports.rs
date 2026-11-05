@@ -18,11 +18,15 @@ const PLATE: &str = "structure def Plate {
 
 const HEADER: &str = "import std.materials.appearance\nimport std.si_units\n\n";
 
-/// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation.
+/// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation,
+/// leaving an unresolved type, while `MPa` still needs std.si_units: a header for the refused fix
+/// to withhold. If the binders become scope-aware, re-point this at another fixture that leaves a
+/// residual; a perfect derivation never refuses.
 const TYPE_PARAM_HIDES_COLOR: &str = "fn same<Color>(x: Color) -> Color = x
 
 structure def Plate {
     param tint : Color
+    let stress = 2MPa
 }
 ";
 
