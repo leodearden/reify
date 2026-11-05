@@ -78,9 +78,8 @@ export interface EditorProps {
   /**
    * Called when Shift+F12 (Find uses) resolves references for the symbol under
    * the cursor.  App opens the Find-uses panel with these results.  Results are
-   * in native LSP (0-based) coordinates; the +1 conversion to the editor's
-   * 1-based SourceLocation happens at App's onNavigate click handler, mirroring
-   * the diagnostics setScrollToLocation path.
+   * in native LSP (0-based) coordinates; a navigated row is converted by
+   * referenceSourceLocation and revealed through App's revealInEditor.
    */
   onShowReferences?: (results: ReferenceResult[]) => void;
 }
@@ -92,17 +91,6 @@ export function Editor(props: EditorProps) {
   let lspDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   let previousActiveFile: string | null = null;
   const docVersions = createDocumentVersions();
-  /**
-   * The single key form `docVersions` is keyed by: the DECODED `file://` URI.
-   *
-   * One document reaches this component under two spellings — store paths are
-   * decoded (`/proj/hello world.ri`), while URIs minted by the backend's `url`
-   * crate are percent-encoded (`file:///proj/hello%20world.ri`) — and they must
-   * not open separate counters. A split disarms the rename version-skew guard
-   * exactly where it is needed: the guard reads a server-sent URI, finds no
-   * counter under that spelling, and judges every edit fresh.
-   */
-  const versionKey = (uriOrPath: string): string => pathToUri(canonicalizeKey(uriOrPath));
   const fileStates = new Map<string, EditorState>();
   let extensions: Extension[];
   let unlistenDiagnostics: (() => void) | undefined;
@@ -159,7 +147,7 @@ export function Editor(props: EditorProps) {
   /** Tell the server about `text`, advancing that document's own version. */
   const sendDidChange = (uri: string, text: string): Promise<void> =>
     lspClient
-      .didChange(uri, text, docVersions.next(versionKey(uri)))
+      .didChange(uri, text, docVersions.next(canonicalizeKey(uri)))
       .catch((err: unknown) => console.error('LSP didChange error:', err));
 
   /** Drop a pending didChange unsent — the text it described is no longer live. */
@@ -208,7 +196,7 @@ export function Editor(props: EditorProps) {
       const uriAtKeypress = currentUri;
       flushed
         .then(() => {
-          if (!cmView.dom.isConnected || currentUri !== uriAtKeypress) return;
+          if (!cmView.dom.isConnected || !isSameFile(currentUri, uriAtKeypress)) return;
           command(cmView);
         })
         .catch((err: unknown) => console.error('LSP command after didChange flush failed:', err));
@@ -410,12 +398,7 @@ export function Editor(props: EditorProps) {
           sendDidChange(uri, newContent);
           // Invalidate cached EditorState so switching to this tab reloads from
           // the updated store content rather than the pre-rename CM snapshot.
-          // Use pathToUri(key) — the same decoded, non-percent-encoded form that
-          // fileStates entries are keyed by — rather than the raw WorkspaceEdit URI
-          // (which may be percent-encoded by Url::from_file_path on the backend).
-          // For ASCII-only paths both are equal; for paths with spaces/non-ASCII the
-          // raw URI would be a no-op delete and leave a stale EditorState in the map.
-          fileStates.delete(pathToUri(key));
+          fileStates.delete(key);
         },
         applyClosed: (uri, edits) => {
           const path = normalizePath(uri);
@@ -433,7 +416,7 @@ export function Editor(props: EditorProps) {
 
     // Shared version-skew guard for position-based commands.
     const versionSkewGuard: VersionSkewGuard = {
-      currentVersion: (uri) => docVersions.current(versionKey(uri)),
+      currentVersion: (uri) => docVersions.current(canonicalizeKey(uri)),
       syncServer: flushPendingLspChange,
     };
     const renameF2 = renameCommand(() => currentUri, lspClient, renameUi, applyEditFn, versionSkewGuard);
@@ -663,7 +646,7 @@ export function Editor(props: EditorProps) {
     // backend sets workspace_root and activates κ cross-file references/rename.
     // When no file is active, workspaceRootUriForFile returns undefined which
     // preserves the existing single-file fallback behaviour.
-    const initialVersion = activeFile ? docVersions.next(versionKey(initialUri)) : undefined;
+    const initialVersion = activeFile ? docVersions.next(canonicalizeKey(initialUri)) : undefined;
     fileOpsPromise = lspClient
       .initialize(workspaceRootUriForFile(activeFile))
       .then(() => lspClient.initialized())
@@ -682,7 +665,7 @@ export function Editor(props: EditorProps) {
     createDiagnosticsListener((event) => {
       if (!view) return;
       // Only apply diagnostics for the currently active file
-      if (event.uri !== currentUri) return;
+      if (!isSameFile(event.uri, currentUri)) return;
       lspCmDiagnostics = event.diagnostics
         .map((d) => {
           try {
@@ -734,19 +717,19 @@ export function Editor(props: EditorProps) {
     // Update the mutable URI so extension getters resolve to the new file
     currentUri = newUri;
 
-    // Save current file's EditorState (keyed by URI) before switching
-    fileStates.set(oldUri, view.state);
+    // Save current file's EditorState (keyed by document identity) before switching
+    fileStates.set(canonicalizeKey(oldUri), view.state);
 
     // Restore or create EditorState for the new file.
     //
-    // The per-URI fileStates cache preserves cursor/scroll/undo and, crucially, a
+    // The per-document fileStates cache preserves cursor/scroll/undo and, crucially, a
     // dirty file's unsaved edits across tab switches.  But when a CLEAN file's store
     // content was refreshed while it was inactive (debug open_file / reload of an
     // already-open path — task-5359), the cached buffer holds stale disk content and
     // must be rebuilt from the fresh store content.  Restore the cache only when the
     // file is dirty (preserve unsaved edits) or the cache already matches the store;
     // otherwise rebuild from newContent so a clean, diverged tab reflects disk.
-    const savedState = fileStates.get(newUri);
+    const savedState = fileStates.get(canonicalizeKey(newUri));
     const isDirty = activeFile ? props.store.state.dirtyFiles.includes(activeFile) : false;
     if (savedState && (isDirty || savedState.doc.toString() === newContent)) {
       view.setState(savedState);
@@ -765,8 +748,8 @@ export function Editor(props: EditorProps) {
     // the numbers in the order their notifications were queued. didClose ends
     // the old document's life on the server, so its counter is dropped with it —
     // a later reopen then starts a fresh sequence at 1, as a new didOpen must.
-    const version = docVersions.next(versionKey(newUri));
-    docVersions.forget(versionKey(oldUri));
+    const version = docVersions.next(canonicalizeKey(newUri));
+    docVersions.forget(canonicalizeKey(oldUri));
     fileOpsPromise = fileOpsPromise
       .then(() => lspClient.didClose(oldUri))
       .then(() => {

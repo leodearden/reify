@@ -89,7 +89,7 @@ fn std_fields_surface_constraints_all_satisfied() {
     let compiled = compile_surface_fixture();
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // No eval-level errors. The module also contains RestrictSurface (restrict
@@ -146,7 +146,7 @@ structure def B3NonGridDemo {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     assert!(
@@ -180,7 +180,7 @@ structure def B4RbfDemo {
     let compiled = parse_and_compile_with_stdlib(source);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     assert!(
@@ -221,7 +221,7 @@ fn std_fields_surface_b5_restrict_occt_gated() {
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // v_in: inside the box (0mm,0mm,0mm) → inner field value 42.0.

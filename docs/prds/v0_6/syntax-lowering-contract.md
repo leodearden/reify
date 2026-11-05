@@ -596,7 +596,7 @@ adoption-ratchet ts-parser-child-* | shipped` to `docs/legibility/design-invaria
 
 | scenario | preconditions | postconditions |
 |---|---|---|
-| Tracked corpus guard (α) | every tracked `.ri` | not in `MUST_ERROR_RI_FIXTURES` ⇒ Rust CST clean ∧ `errors` empty; in it ⇒ CST faulty (reason stated) |
+| Tracked corpus guard (α) | every tracked `.ri`, except UNDECLARED members of `tests/prd-gate/fixtures/` and `crates/reify-spec-conformance/fixtures/` (two reasoned `UNSWEPT_RI_TREES` rows: chartered probe / must-reject inputs that need not parse; amended 2026-10-21, Leo, ratifying #9343's plan) | not in `MUST_ERROR_RI_FIXTURES` ⇒ Rust CST clean ∧ `errors` empty; in it ⇒ CST faulty (reason stated) |
 | Corpus must-error (β) | the 8 corpus fault entries | Rust tree `has_error`; `parse(input).errors` non-empty; the debug assert does not fire |
 | Probe table (β) | §6.1 rows | at least one error intersects each fault offset |
 | Root ERROR (β, #7810) | `slc_root_error.ri`; #7810's fixture | no `unexpected '…' in source file`; at least one located error |

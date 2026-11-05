@@ -23,9 +23,9 @@ use reify_test_support::{MockGeometryKernel, compile_source_with_stdlib};
 const DIC_INERT_CONNECT: &str =
     include_str!("../../../reify-cli/tests/fixtures/dic_inert_connect.ri");
 
-/// The `reify check` fixture the CLI harness drives: the `auto` tolerance is
-/// never resolved, so the constraint that reads it is Indeterminate for want
-/// of an input.
+/// The `reify check` fixture the CLI harness drives: the tolerance divides by
+/// a zero param and is Undef, so the constraint that reads it is Indeterminate
+/// for want of an input.
 const BRACKET_INDETERMINATE: &str =
     include_str!("../../../reify-cli/tests/fixtures/bracket_indeterminate.ri");
 
@@ -65,7 +65,7 @@ fn check_compiled(compiled: reify_compiler::CompiledModule) -> CheckResult {
         compile_errors.is_empty(),
         "fixture must be compile-clean; got {compile_errors:?}"
     );
-    Engine::new(Box::new(SimpleConstraintChecker), None).check(&compiled)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None).check(&compiled)
 }
 
 fn display_name(entry: &ConstraintCheckEntry) -> String {
@@ -104,7 +104,7 @@ fn inert_connect_records_the_operator_undefined_reason() {
 }
 
 #[test]
-fn unresolved_auto_records_the_undefined_input_cell() {
+fn undef_input_records_the_undefined_input_cell() {
     let result = check_kernel_less(BRACKET_INDETERMINATE);
 
     let tolerance = entry_named(&result, "Bracket#constraint[1]");
@@ -205,7 +205,7 @@ fn build_recheck_upgrade_clears_the_recorded_reason() {
     let kernel = (1..=4u64).fold(MockGeometryKernel::new(), |kernel, handle| {
         kernel.with_volume_result(GeometryHandleId(handle), Value::Real(1e-6))
     });
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
     engine.set_build_scheduler(BuildScheduler::UnifiedDag);
     let built = engine.build(
         &compile_source_with_stdlib(VOLUME_GATED),

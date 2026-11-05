@@ -125,8 +125,9 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # host-wide arithmetic, corrected task 6018:
 #   REIFY_TEST_SEMAPHORE_CONCURRENCY is 1, not the 2 an earlier draft of this
 #   paragraph cited (dropped 2 -> 1 in dark-factory commit 712e6230d6 and
-#   hot-reloaded; dark-factory-orchestrator.yaml:331).  With one task slot plus
-#   the merge role's bypass (scripts/lib_test_semaphore.sh:91 — DF_VERIFY_ROLE
+#   hot-reloaded; the REIFY_TEST_SEMAPHORE_CONCURRENCY key in
+#   dark-factory-orchestrator.yaml verify_env).  With one task slot plus
+#   the merge role's bypass (test_semaphore_acquire in scripts/lib_test_semaphore.sh — DF_VERIFY_ROLE
 #   = merge skips acquisition entirely), the reachable steady state is
 #   2 × test-threads: ~32 before task 6018, ~64 after.
 #
@@ -285,6 +286,11 @@ test-group = 'occt'
 # (reify-eval), analytical_validation, determinism (reify-solver-elastic):
 # secondary tier (priority = 50) — still schedule early but yield the first
 #   slot to the straggler.
+#
+# Deliberately in NEITHER tier: reify-eval's harness_corpus_gates corpus sweep.
+# In the recorded gate runs its straggler finished hundreds of seconds before
+# the makespan, so an earlier start cannot shorten the run — see
+# docs/notes/eval-slow-tail-profile-2026-09.md §5.
 #
 # Drift guard: tests/infra/test_nextest_slow_priority.sh asserts that each
 # filter resolves to a real crates/<pkg>/tests/<bin>.rs on disk so a typo or

@@ -68,16 +68,16 @@
 # of an ALREADY-saturated host — at 70 the gate engages on ~13.5% of busy ticks
 # and 0% of quiet ones, and by 75 it is inert on both. A 5-point window whose
 # useful end discriminates only the worst tenth of a bad day is not a signal
-# worth carrying. The load1/nproc arm separates the same two regimes ~3x (2.4x
-# cores quiet, 7.1x cores busy) and was already doing all the real work.
+# worth carrying. The 2.4x / 7.1x figures (quiet / busy) that separate the same two
+# regimes ~3x are procs_running-derived (dark_factory's runqueue arm), NOT this
+# detector's load1/nproc; this detector reads field 1 of /proc/loadavg and has not
+# been calibrated on those samples.
 #
 # (Those engagement fractions are measured, from the same two samples; the full
-# per-threshold table is in dark-factory-orchestrator.yaml's PsiAdmissionConfig
-# comment. That gate reads the SAME signal and retuned to 70 rather than
-# dropping it — not a contradiction: a per-dispatch admission gate is USEFUL
-# when it engages on the worst tenth of a busy day, whereas a fleet monitor
-# that only speaks then, and never on a merely-loaded host, adds nothing the
-# ratio arm does not already say sooner.)
+# per-threshold table is in docs/prds/cpu-load-admission-control.md, "Amendment
+# 2026-09-08". The dispatch-admission gate has since dropped this signal too:
+# psi_admission.cpu_some_avg10 is off in dark-factory-orchestrator.yaml, for the
+# reasons recorded in that Amendment.)
 #
 # This SUPERSEDES docs/prds/cpu-load-admission-control.md §G6's dual-axis
 # rationale FOR THIS DETECTOR ONLY. §G6's PSI-over-loadavg argument still
@@ -85,8 +85,10 @@
 # short timescale rather than a host monitor, and is untouched here.
 #
 # The ratio arm's threshold (4.0) and semantics are UNCHANGED by 5985, so
-# dark_factory:3590's `PsiAdmissionConfig.runqueue_ratio` default of 4.0 —
-# added specifically to mirror this arm — needs NO follow-up change.
+# dark_factory:3590's `PsiAdmissionConfig.runqueue_ratio` of 4.0 shares only the
+# numeral with this arm: that ratio is instantaneous procs_running/sched_getaffinity,
+# this one is load1/nproc (a 1-minute decayed average). The two are separately
+# calibrated; neither corroborates the other.
 #
 # The VERDICT LINE did change, though, and a DF-side parser must expect the
 # narrowed shape: 5985 removed the `avg10=` and `avg10_threshold=` fields from

@@ -8,6 +8,7 @@
 //! file must be recompiled in the target worktree to resolve snapshot paths correctly.
 
 use reify_doc::cross_refs::CrossRefs;
+use reify_doc::expr_text::ExprText;
 use reify_doc::fmt_html::{render_html, render_html_pages};
 use reify_doc::model::{
     AnnotationDoc, ConstraintDoc, DocModel, ItemDoc, ItemHeader, ItemKind, ModuleDoc, ParamDoc,
@@ -324,7 +325,7 @@ fn item_section_h2_per_variant() {
                     pragmas: vec![],
                 },
                 kind: ItemKind::Purpose {
-                    expr_repr: "x".into(),
+                    expr_repr: ExprText::Source("x".into()),
                     direction: "minimize".into(),
                 },
             },
@@ -385,7 +386,7 @@ fn item_section_h2_per_variant() {
                     pragmas: vec![],
                 },
                 kind: ItemKind::ConstraintDef {
-                    expr_repr: "x > 0".into(),
+                    expr_repr: ExprText::Source("x > 0".into()),
                 },
             },
             "constraint Foo",
@@ -686,7 +687,7 @@ fn parameters_table_renders() {
                 name: "length".into(),
                 doc: Some("Bolt length.".into()),
                 type_repr: "Length".into(),
-                default_repr: Some("100 mm".into()),
+                default_repr: Some(ExprText::Source("100 mm".into())),
                 annotations: vec![],
             },
             ParamDoc {
@@ -870,13 +871,13 @@ fn constraints_section_renders() {
         vec![
             ConstraintDoc {
                 label: None,
-                expr_repr: "length >= diameter".into(),
+                expr_repr: ExprText::Source("length >= diameter".into()),
                 annotations: vec![],
                 line: Some(42),
             },
             ConstraintDoc {
                 label: Some("safe_v".into()),
-                expr_repr: "v <= 5.5 V".into(),
+                expr_repr: ExprText::Source("v <= 5.5 V".into()),
                 annotations: vec![],
                 line: None,
             },
@@ -1112,7 +1113,7 @@ fn field_body_renders_with_default() {
         },
         kind: ItemKind::Field {
             type_repr: "Voltage".into(),
-            default_repr: Some("3.3 V".into()),
+            default_repr: Some(ExprText::Source("3.3 V".into())),
         },
     };
     let out = render_one_item(with_default);
@@ -1168,7 +1169,7 @@ fn purpose_body_renders() {
             pragmas: vec![],
         },
         kind: ItemKind::Purpose {
-            expr_repr: "total_area".into(),
+            expr_repr: ExprText::Source("total_area".into()),
             direction: "minimize".into(),
         },
     };
@@ -1300,7 +1301,7 @@ fn constraint_def_body_renders() {
             pragmas: vec![],
         },
         kind: ItemKind::ConstraintDef {
-            expr_repr: "v <= 5.5 V".into(),
+            expr_repr: ExprText::Source("v <= 5.5 V".into()),
         },
     };
     let out = render_one_item(item);
@@ -2106,7 +2107,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::ConstraintDef {
-                        expr_repr: "v > 0mm".into(),
+                        expr_repr: ExprText::Source("v > 0mm".into()),
                     },
                 },
                 ItemDoc {
@@ -2118,7 +2119,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                         pragmas: vec![],
                     },
                     kind: ItemKind::Purpose {
-                        expr_repr: "total_area".into(),
+                        expr_repr: ExprText::Source("total_area".into()),
                         direction: "minimize".into(),
                     },
                 },
@@ -2139,7 +2140,7 @@ fn build_integration_full_v01_fixture() -> DocModel {
                                 name: "length".into(),
                                 doc: Some("Bolt length.".into()),
                                 type_repr: "Length".into(),
-                                default_repr: Some("100 mm".into()),
+                                default_repr: Some(ExprText::Source("100 mm".into())),
                                 annotations: vec![AnnotationDoc {
                                     name: "solver_hint".into(),
                                     args: vec!["discrete_set(standard_bolt_lengths)".into()],
@@ -2149,14 +2150,14 @@ fn build_integration_full_v01_fixture() -> DocModel {
                                 name: "diameter".into(),
                                 doc: None,
                                 type_repr: "Length".into(),
-                                default_repr: Some("M8".into()),
+                                default_repr: Some(ExprText::Source("M8".into())),
                                 annotations: vec![],
                             },
                         ],
                         ports: vec![],
                         constraints: vec![ConstraintDoc {
                             label: None,
-                            expr_repr: "length >= diameter".into(),
+                            expr_repr: ExprText::Source("length >= diameter".into()),
                             annotations: vec![],
                             line: Some(42),
                         }],

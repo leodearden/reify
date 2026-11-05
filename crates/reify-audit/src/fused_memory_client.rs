@@ -1,9 +1,12 @@
 //! Minimal sync MCP HTTP client for loading [`TaskMetadata`] from
 //! fused-memory.
 //!
-//! Used by the `reify-audit` binary's production loader path (T-4). The
-//! JSON-file loader (`--tasks-file <path>`) remains for tests and one-off
-//! offline runs; see `bin/reify-audit.rs`.
+//! This is the `reify-audit` binary's production loader (T-4), and
+//! [`task_metadata_from_wire`] is the only fused-memory-wire → [`TaskMetadata`]
+//! adapter. Its production callers are `scripts/reify-audit-predone-wrapper.sh`
+//! (pre-done: one `get_task`) and the `/audit` skill (sweep: one `get_tasks`).
+//! `--tasks-file <path>` reads already-`TaskMetadata`-shaped test fixtures
+//! only; see `bin/reify-audit.rs`.
 //!
 //! ## Wire protocol
 //!
@@ -30,7 +33,7 @@
 
 use std::cell::Cell;
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -39,6 +42,7 @@ use crate::{DoneProvenance, TaskMetadata};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const CLIENT_NAME: &str = "reify-audit";
+/// Ceiling on any one POST, with or without a session budget.
 const HTTP_TIMEOUT_SECS: u64 = 30;
 
 /// Errors returned by [`FusedMemoryClient`]. All variants map to exit code
@@ -74,31 +78,57 @@ impl std::error::Error for LoadError {}
 ///
 /// [`TaskMetadata::done_at`] is the done-flip stamp when fused-memory supplies
 /// `metadata.done_at`, otherwise it is approximated from `updatedAt` (last-edit
-/// time), derived like the wire→snapshot jq filter feeding `--tasks-file`. See
-/// `docs/architecture-audit/f-infra-design.md` §11.2 (residual divergences:
-/// §11.2.1).
+/// time). See `docs/architecture-audit/f-infra-design.md` §11.2.
 pub struct FusedMemoryClient {
     url: String,
     session_id: String,
     agent: ureq::Agent,
     next_id: Cell<u64>,
+    /// When the whole session must be done by; see [`Self::with_budget`].
+    deadline: Option<Instant>,
 }
 
 impl FusedMemoryClient {
     /// Connect to `url` (e.g. `http://localhost:8002/mcp/`) and complete
     /// the MCP handshake (initialize + notifications/initialized).
     pub fn new(url: impl Into<String>) -> Result<Self, LoadError> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
-            .build();
+        Self::connect(url.into(), None)
+    }
+
+    /// As [`Self::new`], but the handshake and every later call share one
+    /// `budget`, counted from now. A request still unanswered when it runs
+    /// out fails as [`LoadError::Http`], naming the timeout.
+    pub fn with_budget(url: impl Into<String>, budget: Duration) -> Result<Self, LoadError> {
+        Self::connect(url.into(), Some(Instant::now() + budget))
+    }
+
+    fn connect(url: String, deadline: Option<Instant>) -> Result<Self, LoadError> {
         let client = Self {
-            url: url.into(),
+            url,
             session_id: random_hex_32(),
-            agent,
+            agent: ureq::AgentBuilder::new().build(),
             next_id: Cell::new(1),
+            deadline,
         };
         client.initialize()?;
         Ok(client)
+    }
+
+    /// How long the next POST may take: the per-request ceiling, cut to
+    /// whatever is left of the session budget.
+    fn request_timeout(&self) -> Result<Duration, LoadError> {
+        let ceiling = Duration::from_secs(HTTP_TIMEOUT_SECS);
+        let Some(deadline) = self.deadline else {
+            return Ok(ceiling);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(LoadError::Http(format!(
+                "POST {}: timed out: the session budget ran out before the request was sent",
+                self.url
+            )));
+        }
+        Ok(remaining.min(ceiling))
     }
 
     fn initialize(&self) -> Result<(), LoadError> {
@@ -145,6 +175,7 @@ impl FusedMemoryClient {
         let response = self
             .agent
             .post(&self.url)
+            .timeout(self.request_timeout()?)
             .set("Content-Type", "application/json")
             .set("Accept", "application/json, text/event-stream")
             .set("mcp-session-id", &self.session_id)
@@ -250,27 +281,28 @@ impl FusedMemoryClient {
             "get_tasks",
             json!({"project_root": project_root, "with_subtasks": true}),
         )?;
-        // Refuse to treat a missing/non-array `tasks` field as an
-        // (empty) success — a server response like `{}` or an
-        // unexpectedly-shaped success payload would otherwise let the
-        // sweep silently return zero tasks and exit 0 (looking
-        // healthy). Raising Protocol routes through the binary's
-        // load-error arm and exits 125, matching the get_task
-        // refuse-on-malformed contract.
-        let tasks = v
-            .get("tasks")
-            .and_then(|t| t.as_array())
-            .ok_or_else(|| {
-                LoadError::Protocol(format!(
-                    "get_tasks: missing or non-array `tasks` field in response: {v}"
-                ))
-            })?;
-        let mut out = Vec::new();
-        for t in tasks {
-            collect_tasks_recursive(t, &mut out);
-        }
-        Ok(out)
+        tasks_from_get_tasks_reply(&v)
     }
+}
+
+/// `get_tasks`' `{"tasks": [...]}` reply → every task and subtask, flattened.
+///
+/// Total per row: a row [`task_metadata_from_wire`] cannot decode is skipped
+/// and the rest of the corpus is kept. A missing or non-array `tasks` field is
+/// refused as `Protocol` rather than read as an empty corpus, which would
+/// otherwise let a sweep exit 0 looking healthy; the binary maps it to 125,
+/// matching `get_task`'s refuse-on-malformed contract.
+fn tasks_from_get_tasks_reply(v: &Value) -> Result<Vec<TaskMetadata>, LoadError> {
+    let tasks = v.get("tasks").and_then(|t| t.as_array()).ok_or_else(|| {
+        LoadError::Protocol(format!(
+            "get_tasks: missing or non-array `tasks` field in response: {v}"
+        ))
+    })?;
+    let mut out = Vec::new();
+    for t in tasks {
+        collect_tasks_recursive(t, &mut out);
+    }
+    Ok(out)
 }
 
 fn collect_tasks_recursive(node: &Value, out: &mut Vec<TaskMetadata>) {
@@ -323,10 +355,7 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
         .filter(|v| !v.is_null())
         .and_then(|v| serde_json::from_value::<DoneProvenance>(v.clone()).ok());
 
-    let prd = metadata
-        .get("prd")
-        .and_then(|p| p.as_str())
-        .map(String::from);
+    let prd = source_prd(&metadata);
     let consumer_ref = metadata
         .get("consumer_ref")
         .and_then(|p| p.as_str())
@@ -352,17 +381,27 @@ fn task_metadata_from_wire(v: &Value) -> Option<TaskMetadata> {
     })
 }
 
-/// `done_at` of a `done` task, mirroring the precedence in
-/// `scripts/reify-audit-snapshot-filter.jq`: an explicit epoch-seconds
-/// `metadata.done_at` wins, else the `updatedAt` proxy. Why, and the residual
-/// non-integer-stamp divergence from the jq path:
-/// `docs/architecture-audit/f-infra-design.md` §11.2.1.
+/// `done_at` of a `done` task. An integer epoch-seconds `metadata.done_at`
+/// wins. Any other stamp (string, float, null, false, absent) falls back to
+/// the `updatedAt` proxy for THAT row, and an unparseable `updatedAt` yields
+/// `None` for that row only, so one malformed row never fails the corpus.
+/// Why: `docs/architecture-audit/f-infra-design.md` §11.2.
 fn done_flip_epoch(task: &Value, metadata: &Value) -> Option<i64> {
     metadata.get("done_at").and_then(Value::as_i64).or_else(|| {
         task.get("updatedAt")
             .and_then(Value::as_str)
             .and_then(parse_iso8601_to_epoch)
     })
+}
+
+/// The PRD a task was decomposed from: `metadata.prd` (the legacy key), else
+/// `metadata.prd_path` (the key the current `/prd` decompose writes). The
+/// first STRING value wins; a non-string value is skipped, never fatal.
+fn source_prd(metadata: &Value) -> Option<String> {
+    ["prd", "prd_path"]
+        .into_iter()
+        .find_map(|key| metadata.get(key).and_then(Value::as_str))
+        .map(String::from)
 }
 
 // -----------------------------------------------------------------------
@@ -630,6 +669,51 @@ mod tests {
     }
 
     #[test]
+    fn wire_adapter_unusable_done_at_and_garbage_updated_at_keeps_row_without_done_at() {
+        let stamps = [
+            ("string", Some(json!("2026-01-01T00:00:00Z"))),
+            ("float", Some(json!(1700000000.5))),
+            ("absent", None),
+        ];
+        let updated_ats = [json!("garbage"), json!(12345)];
+        for (stamp_label, stamp) in &stamps {
+            for updated_at in &updated_ats {
+                let mut metadata = json!({"files": ["a.rs"]});
+                if let Some(stamp) = stamp {
+                    metadata["done_at"] = stamp.clone();
+                }
+                let case = format!("stamp = {stamp_label}, updatedAt = {updated_at}");
+                let tm = task_metadata_from_wire(&done_task_wire(updated_at.clone(), metadata))
+                    .unwrap_or_else(|| panic!("row dropped ({case})"));
+                assert_eq!(tm.task_id, "7233", "{case}");
+                assert_eq!(tm.status, "done", "{case}");
+                assert_eq!(tm.files, vec!["a.rs".to_string()], "{case}");
+                assert_eq!(tm.done_at, None, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn corpus_one_malformed_row_does_not_cost_its_neighbour() {
+        let mut malformed =
+            done_task_wire(json!("garbage"), json!({"done_at": "2026-01-01T00:00:00Z"}));
+        malformed["id"] = json!("8076");
+        let undecodable = json!({"title": "no id", "status": "done"});
+        let neighbour = done_task_wire(json!("2026-05-16T07:39:04Z"), json!({}));
+        let out =
+            tasks_from_get_tasks_reply(&json!({"tasks": [malformed, undecodable, neighbour]}))
+                .expect("a well-formed get_tasks envelope decodes");
+        let done_at_by_id: Vec<(&str, Option<i64>)> = out
+            .iter()
+            .map(|tm| (tm.task_id.as_str(), tm.done_at))
+            .collect();
+        assert_eq!(
+            done_at_by_id,
+            vec![("8076", None), ("7233", Some(1778917144))]
+        );
+    }
+
+    #[test]
     fn wire_adapter_pending_task_ignores_metadata_done_at() {
         let v = json!({
             "id": "7233",
@@ -640,6 +724,48 @@ mod tests {
         });
         let tm = task_metadata_from_wire(&v).expect("pending decode");
         assert!(tm.done_at.is_none());
+    }
+
+    #[test]
+    fn wire_adapter_resolves_prd_from_prd_then_prd_path() {
+        let rows = [
+            (
+                "p1",
+                json!({"prd": "docs/prds/a.md"}),
+                Some("docs/prds/a.md"),
+            ),
+            (
+                "p2",
+                json!({"prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            (
+                "p3",
+                json!({"prd": "docs/prds/a.md", "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/a.md"),
+            ),
+            (
+                "p4",
+                json!({"prd": null, "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            (
+                "p5",
+                json!({"prd": 42, "prd_path": "docs/prds/b.md"}),
+                Some("docs/prds/b.md"),
+            ),
+            ("p6", json!({"prd_path": ["docs/prds/b.md"]}), None),
+            ("p7", json!({}), None),
+        ];
+        for (label, metadata, expected) in rows {
+            let v = json!({"id": label, "status": "pending", "metadata": metadata});
+            let tm = task_metadata_from_wire(&v).unwrap_or_else(|| panic!("row {label} dropped"));
+            assert_eq!(
+                tm.prd.as_deref(),
+                expected,
+                "row {label}: metadata = {metadata}"
+            );
+        }
     }
 
     #[test]

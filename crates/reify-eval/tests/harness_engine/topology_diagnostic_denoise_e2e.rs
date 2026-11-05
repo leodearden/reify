@@ -126,7 +126,7 @@ fn compile_no_errors_for_engine(source: &str) -> reify_compiler::CompiledModule 
 
 fn engine_with_occt_handle() -> Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
-    Engine::new(Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(OcctKernelHandle::spawn())))
 }
 
 /// True iff `diagnostics` contains a `Severity::Warning` entry carrying
@@ -429,7 +429,7 @@ fn build_with_drop_injecting_kernel(source: &str) -> reify_eval::BuildResult {
             ..Default::default()
         },
     );
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), Some(Box::new(kernel)));
     engine.build(&compiled, ExportFormat::Step)
 }
 

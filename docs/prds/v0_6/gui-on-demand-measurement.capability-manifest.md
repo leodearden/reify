@@ -243,6 +243,11 @@ exact. The three substantive findings are **A1** (the detectors are binary-crate
 extraction is a move, not a re-call), **A2** (the `--purpose` branch bypasses the arm entirely)
 and **A3** (`tessellate_snapshot` already captures).
 
+**[Amended 2026-10-22, υ #8775 BLK-1]** delivered check `reference-arm-sequence-is-wired-and-line-exact` (#6898, mirrored into its
+retired constituent #6740) re-scoped from `crates/reify-cli/src/main.rs` to `crates/reify-cli/src`: `cmd_check`'s reference arm, with its
+`let has_geometric_conforms = module_has_geometric_conforms` line, moved to
+`crates/reify-cli/src/cmd/check.rs`.
+
 `refine`'s absence is bound as a G6 branch-4 vacuity check and holds strongly: every `refine` hit
 in `crates/reify-eval/src/` is trait refinement, FEA a-posteriori adaptive refinement, or FDM
 progressive refinement. The only repr-tolerance references are two forward-looking docstrings

@@ -55,13 +55,54 @@ const IMPORT_ENTRY_MAX_BYTES: usize = ENTRY_HEADER_ENCODED_LEN + 256 * 1024 * 10
 const IMPORT_ENTRY_MAX_COUNT: usize = 1024;
 
 /// Usage line printed to stderr for any `reify cache` dispatcher error.
-const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import|stats|clear|gc)";
+pub(crate) const CACHE_USAGE: &str = "Usage: reify cache (export <hash>|import|stats|clear|gc)";
 
-/// Usage line for `reify cache export` argument errors.
-const EXPORT_USAGE: &str = "Usage: reify cache export <hash>";
+/// One `reify cache` subcommand: the arguments it takes and what it does. Its usage-error
+/// banner and its row in `reify cache --help` both render from this.
+pub(crate) struct CacheSubcommand {
+    pub(crate) synopsis: &'static str,
+    pub(crate) summary: &'static str,
+}
 
-/// Usage line for `reify cache import` argument errors.
-const IMPORT_USAGE: &str = "Usage: reify cache import";
+impl CacheSubcommand {
+    fn print_usage(&self) {
+        eprintln!("Usage: reify cache {}", self.synopsis);
+    }
+}
+
+const EXPORT: CacheSubcommand = CacheSubcommand {
+    synopsis: "export <hash>",
+    summary: "Write a single cache entry to stdout as a tarball",
+};
+
+const IMPORT: CacheSubcommand = CacheSubcommand {
+    synopsis: "import",
+    summary: "Read a cache tarball from stdin into the local cache",
+};
+
+const STATS: CacheSubcommand = CacheSubcommand {
+    synopsis: "stats [--cache-dir <path>]",
+    summary: "Print cache directory, entry count, total size, and top-N largest entries",
+};
+
+const CLEAR: CacheSubcommand = CacheSubcommand {
+    synopsis: "clear [--cache-dir <path>] [--engine-version <hash>] --yes",
+    summary: "Empty the cache (or one engine-version subdir); --yes required",
+};
+
+/// The `(live engine version only)` qualifier mirrors the design decision that
+/// `gc` operates only on the live `ENGINE_VERSION_HASH` subdir — cross-version
+/// reclaim is the startup-sweep concern called out in the PRD, not an operator
+/// surface here.  Surfacing the scope in the usage banner prevents the
+/// post-upgrade "I ran gc and disk usage didn't drop" confusion noted in the
+/// amendment-pass review.
+const GC: CacheSubcommand = CacheSubcommand {
+    synopsis: "gc [--cache-dir <path>] (live engine version only)",
+    summary: "Force LRU eviction down to the configured cache cap",
+};
+
+/// In the order `reify cache --help` lists them.
+pub(crate) const CACHE_SUBCOMMANDS: &[CacheSubcommand] = &[EXPORT, IMPORT, STATS, CLEAR, GC];
 
 /// Render a 32-byte echo field (e.g. `header.engine_version_hash`) as a
 /// stderr-safe lowercase-hex string.  Used in warn-and-skip error messages
@@ -129,7 +170,7 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
         }
     };
     if !rest.is_empty() {
-        eprintln!("Usage: reify cache stats [--cache-dir <path>]");
+        STATS.print_usage();
         return ExitCode::FAILURE;
     }
     let cache_root = match resolve_cache_root_with_cli(cli_dir.as_deref()) {
@@ -184,20 +225,6 @@ fn cmd_cache_stats(args: &[String]) -> ExitCode {
 /// eating disk?" signal without producing an unbounded report).
 const STATS_TOP_N: usize = 5;
 
-/// Usage line for `reify cache clear` argument errors.
-const CLEAR_USAGE: &str =
-    "Usage: reify cache clear [--cache-dir <path>] [--engine-version <hash>] --yes";
-
-/// Usage line for `reify cache gc` argument errors.
-///
-/// The `(live engine version only)` qualifier mirrors the design decision that
-/// `gc` operates only on the live `ENGINE_VERSION_HASH` subdir — cross-version
-/// reclaim is the startup-sweep concern called out in the PRD, not an operator
-/// surface here.  Surfacing the scope in the usage banner prevents the
-/// post-upgrade "I ran gc and disk usage didn't drop" confusion noted in the
-/// amendment-pass review.
-const GC_USAGE: &str = "Usage: reify cache gc [--cache-dir <path>] (live engine version only)";
-
 /// `reify cache gc` — force LRU eviction down to the configured cache cap.
 ///
 /// Per the design decision, gc operates ONLY on the live `ENGINE_VERSION_HASH`
@@ -213,7 +240,7 @@ fn cmd_cache_gc(args: &[String]) -> ExitCode {
         }
     };
     if !rest.is_empty() {
-        eprintln!("{GC_USAGE}");
+        GC.print_usage();
         return ExitCode::FAILURE;
     }
     let (cache_root, max_bytes) = match resolve_cache_root_with_cli(cli_dir.as_deref()) {
@@ -263,7 +290,7 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
             "--engine-version" => {
                 if i + 1 >= rest.len() {
                     eprintln!("reify cache clear: --engine-version requires a value");
-                    eprintln!("{CLEAR_USAGE}");
+                    CLEAR.print_usage();
                     return ExitCode::FAILURE;
                 }
                 engine_version = Some(rest[i + 1].clone());
@@ -271,19 +298,19 @@ fn cmd_cache_clear(args: &[String]) -> ExitCode {
             }
             flag if flag.starts_with("--") => {
                 eprintln!("reify cache clear: unknown flag: {flag}");
-                eprintln!("{CLEAR_USAGE}");
+                CLEAR.print_usage();
                 return ExitCode::FAILURE;
             }
             _ => {
                 eprintln!("reify cache clear: unexpected positional argument: {a}");
-                eprintln!("{CLEAR_USAGE}");
+                CLEAR.print_usage();
                 return ExitCode::FAILURE;
             }
         }
     }
     if !yes {
         eprintln!("reify cache clear: refusing to clear without --yes (destructive operation)");
-        eprintln!("{CLEAR_USAGE}");
+        CLEAR.print_usage();
         return ExitCode::FAILURE;
     }
     let cache_root = match resolve_cache_root_with_cli(cli_dir.as_deref()) {
@@ -483,7 +510,7 @@ fn collect_cache_entries(cache_root: &Path) -> std::io::Result<Vec<(String, u64)
 /// entry's existence and short-circuits on miss.
 fn cmd_cache_export(args: &[String]) -> ExitCode {
     if args.len() != 1 {
-        eprintln!("{EXPORT_USAGE}");
+        EXPORT.print_usage();
         return ExitCode::FAILURE;
     }
     let hash = &args[0];
@@ -690,9 +717,9 @@ fn resolve_cache_root_with_cli(cli_dir: Option<&Path>) -> Result<(PathBuf, u64),
 ///
 /// Hand-rolled per-handler parsing keeps the flag schema local to each
 /// sub-subcommand and matches the existing `cmd_gui` / `cmd_doc` patterns
-/// in `main.rs`.  Unknown `--`-prefixed tokens are NOT rejected here — the
-/// caller is responsible for its own typo gate so it can use a
-/// subcommand-specific usage banner.
+/// in `cmd/gui.rs` / `cmd/doc.rs`.  Unknown `--`-prefixed tokens are NOT
+/// rejected here — the caller is responsible for its own typo gate so it can
+/// use a subcommand-specific usage banner.
 fn parse_cache_dir_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
     let mut cache_dir: Option<PathBuf> = None;
     let mut rest: Vec<String> = Vec::with_capacity(args.len());
@@ -740,7 +767,7 @@ fn parse_cache_dir_flag(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>
 /// Engine-version-mismatch warn-and-skip lands in step-14.
 fn cmd_cache_import(args: &[String]) -> ExitCode {
     if !args.is_empty() {
-        eprintln!("{IMPORT_USAGE}");
+        IMPORT.print_usage();
         return ExitCode::FAILURE;
     }
 

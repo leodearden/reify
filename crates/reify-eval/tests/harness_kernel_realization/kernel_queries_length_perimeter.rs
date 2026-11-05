@@ -81,9 +81,9 @@ fn length_perimeter_compiles_and_occt_queries_match_expected() {
 
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.020),
-            depth: Value::Real(0.030),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.020),
+            size_z: Value::Real(0.030),
         })
         .expect("box(10mm, 20mm, 30mm) should build successfully");
 
@@ -141,9 +141,9 @@ fn length_perimeter_compiles_and_occt_queries_match_expected() {
 
     let cube_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(0.010),
-            height: Value::Real(0.010),
-            depth: Value::Real(0.010),
+            size_x: Value::Real(0.010),
+            size_y: Value::Real(0.010),
+            size_z: Value::Real(0.010),
         })
         .expect("box(10mm, 10mm, 10mm) should build successfully");
 

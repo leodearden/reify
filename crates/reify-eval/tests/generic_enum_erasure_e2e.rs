@@ -39,7 +39,7 @@ use reify_test_support::parse_and_compile;
 fn eval_source(source: &str) -> reify_eval::EvalResult {
     let compiled = parse_and_compile(source);
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     engine.eval(&compiled)
 }
 
@@ -338,7 +338,7 @@ fn edit_param_err_override_of_applied_result_param_is_accepted() {
     let compiled = parse_and_compile(RESULT_PARAM_SOURCE);
     assert_r_cell_is_applied_result(&compiled);
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     assert_demo_bore_is(&engine.eval(&compiled), 0.005);
 
     let edited = engine
@@ -358,7 +358,7 @@ fn cold_eval_honours_err_override_of_applied_result_param() {
     let compiled = parse_and_compile(RESULT_PARAM_SOURCE);
     assert_r_cell_is_applied_result(&compiled);
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     assert_demo_bore_is(&engine.eval(&compiled), 0.005);
 
     engine.set_param_and_invalidate(&ValueCellId::new("Demo", "r"), err_override("x"));
@@ -379,7 +379,7 @@ fn edit_param_override_payload_is_not_checked_against_applied_type_args_c5() {
     let compiled = parse_and_compile(RESULT_PARAM_SOURCE);
     assert_r_cell_is_applied_result(&compiled);
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     assert_demo_bore_is(&engine.eval(&compiled), 0.005);
 
     let ok_carrying_mass = Value::Enum {

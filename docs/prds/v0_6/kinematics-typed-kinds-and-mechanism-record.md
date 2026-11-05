@@ -18,7 +18,7 @@ Quality heuristics are cited by name from `/home/leo/src/dark-factory/docs/code-
 
 A joint's kind, a geometric relation's kind and a loop closure each become a typed value. Each is parsed **once**, and its consumers dispatch on it **exhaustively**:
 
-- `JointKind` and `RelationKind` live in reify-ir, below every consumer.
+- **[Amended 2026-10-20, retro-critic R6]** `JointKind` lives in reify-ir and `RelationKind` lives in reify-builtins, below every consumer.
 - A typed `Joint` view in reify-stdlib carries the per-kind behaviour as exhaustive methods: transform, Jacobian columns, motion subspace, value encode/decode, midpoint, force shape.
 - `append_body` builds a loop-closure record **normalized** to the loop proper, read by one parser.
 - The solver treats **every unbound joint in a loop** as an unknown, whichever side of the loop the `body()` order put it on.
@@ -106,7 +106,7 @@ Seat maps and probe outputs: `tests/prd-gate/fixtures/s6_*.ri` are the committed
 
 ## 3. Sketch of approach
 
-1. **Kinds in reify-ir** (β, γ, δ). `JointKind` and `RelationKind` with exhaustive name maps. The compiler, constraints, eval and GUI tables derive from them.
+1. **Typed kinds** (β, γ, δ). **[Amended 2026-10-20, retro-critic R6]** `JointKind` in reify-ir with an exhaustive name map; `RelationKind` is the builtin registry's generated `Relation` sub-enum (S8-ψ #9418), which γ binds. The compiler, constraints, eval and GUI tables derive from them.
 2. **Typed joint view, typed joint value** (ε, ζ, η, ι, λ₀, λ, μ).
    - Typed transform primitives.
    - `Joint` with `Joint::from_value` as the single parser, plus the codec.
@@ -149,16 +149,18 @@ The ratchet member α lands first, with one row per retired pattern. Each leaf l
 
 `reify_stdlib::loop_closure_value::JointKind` becomes `pub use reify_ir::JointKind` (ruling). `flat_len` callers move to `storage_width`.
 
-### C2: `reify_ir::RelationKind`
+### C2: `reify_builtins::RelationKind`
 
-`pub enum RelationKind` has 12 variants: `Coincident, On, Parallel, Antiparallel, Perpendicular, Concentric, Flush, Offset, Tangent, Fasten, Angle, Distance`. It provides `ALL`, `as_str()` (the DSL names) and `from_name(&str)`. It carries **no** relation semantics; those stay with S9 λ's `RelationSig` (R4).
+~~`pub enum RelationKind` has 12 variants: `Coincident, On, Parallel, Antiparallel, Perpendicular, Concentric, Flush, Offset, Tangent, Fasten, Angle, Distance`. It provides `ALL`, `as_str()` (the DSL names) and `from_name(&str)`. It carries **no** relation semantics; those stay with S9 λ's `RelationSig` (R4).~~ (superseded by retro-critic R6)
+
+**[Amended 2026-10-20, retro-critic R6]** `pub enum RelationKind` is `reify_builtins::RelationKind`: the registry's generated `Relation` binding-kind sub-enum, minted by `registry!` from the 12 relation rows of S8-ψ #9418 (`Coincident, On, Parallel, Antiparallel, Perpendicular, Concentric, Flush, Offset, Tangent, Fasten, Angle, Distance`). γ does not hand-write it and creates no `relation_kind.rs` in reify-ir. `ALL` is `RelationKind::iter()`; `as_str()` is the row's name (`row_for(kind.into()).name`); `from_name` does not exist (I-REG-1: `lookup(name, argc)` is the one string→builtin parser). Name, arity and result type live on the row; operand policy and metric slot are S9 λ's `relation_sig(RelationKind)`. reify-constraints and reify-eval take reify-builtins as a normal dependency (strata-legal).
 
 What changes:
-- **Instance and rank carry the kind.** `reify_constraints::RelationInstance.name` and `RelationRank.name` become `kind: RelationKind`. The only construction site, `reify_eval::relate_solve::relation_instance`, sets it with `RelationKind::from_name`.
-- **Unknown names stop being silent.** A relation-typed call whose name is not a `RelationKind` takes the existing `skipped` path and its `unconsumable_relation_diagnostic`. Today it yields zero residual rows and says nothing.
-- **Exhaustive matches.** `residual_dispatch` and `describe_demand` match exhaustively, and `fasten` gets an explicit phrase.
+- **Instance and rank carry the kind.** `reify_constraints::RelationInstance.name` and `RelationRank.name` become `kind: RelationKind`. The only construction site, `reify_eval::relate_solve::relation_instance`, sets it — **[Amended 2026-10-20, retro-critic R6]** via `lookup(function.name, args.len()).and_then(BuiltinId::as_relation)`, or the `BuiltinId` the `CompiledExpr` carries once registry β #6002 lands. R4's parse point stands; only the parser is the registry's.
+- **Unknown names stop being silent.** A relation-typed call whose `(name, argc)` resolves to no `Relation` row takes the existing `skipped` path and its `unconsumable_relation_diagnostic`. Today it yields zero residual rows and says nothing.
+- **Exhaustive matches.** `residual_dispatch` and `describe_demand` match exhaustively over the generated enum (I-REG-2 for the `Relation` group), and `fasten` gets an explicit phrase.
 - **One metric accessor.** `RelationInstance::metric()` replaces the two independent single-metric derivations.
-- **Qualified-name parsers go through `RelationKind`.** reify-constraints' `solvespace.rs` relation dispatch (`qn.contains("parallel")`, which also matches `antiparallel`) and `classifier.rs::is_geometry_qualified_name` both strip the `std::` prefix and use `RelationKind::from_name`. Whether `std::fasten` (absent today) belongs in the classifier's set is decided in γ by reading the classifier's consumer (§12.6).
+- **Qualified-name parsers go through `RelationKind`.** reify-constraints' `solvespace.rs` relation dispatch (`qn.contains("parallel")`, which also matches `antiparallel`) and `classifier.rs::is_geometry_qualified_name` both strip the `std::` prefix and resolve through the registry's `lookup` to a `RelationKind` (**[Amended 2026-10-20, retro-critic R6]**; no `from_name`). Whether `std::fasten` (absent today) belongs in the classifier's set is decided in γ by reading the classifier's consumer (§12.6).
 
 ### C3: `reify_stdlib::joints::Joint` (a parsed view, never a replacement value)
 
@@ -378,7 +380,7 @@ After σ₀, σ's typed `snapshot_for_sample` call (dynamics→snapshot) and `co
 | T12 | Input failure has a reason | Rust boundary test below the compiler: a record missing `chain_b`, and a chain joint that does not parse | the named `LoopClosureInputError` variant, as a snapshot error Map → coded diagnostic through the engine scan |
 | T13 | Status fields are Bools | non-singular, converged snapshot | `s.is_singular` reads `false` and `s.converged` reads `true`; `four_bar_singular.ri` emits exactly one singularity warning |
 | T14 | Tree bodies by id | `s6_idyn_open_after_closing.ri` | forces for ids 0, 1, 3 with 45.24 N on id 3 |
-| T15 | Closed-chain compliance | `s6_idyn_closed_flexure.ri` | sample 1 τ_a = −14.31375 N, equal to `s6_idyn_open_flexure_control.ri` (this loop's constraint is projected out by `reduce_constraint_rank`, so the closed answer equals the open one) |
+| T15 | Closed-chain compliance | `s6_idyn_closed_flexure.ri` | **[Amended 2026-10-30, #9566]** sample 1 τ = [τ_a, τ_b] = [−20.72, 8.85875] N, whose sum equals `s6_idyn_open_flexure_control.ri`'s (derivation, invariant and today's value: "T15 re-derivation after #7312" below). ~~sample 1 τ_a = −14.31375 N, equal to `s6_idyn_open_flexure_control.ri` (this loop's constraint is projected out by `reduce_constraint_rank`, so the closed answer equals the open one)~~ (superseded: #7312 retired that projection) |
 | T16 | Coupling dynamics refused loudly | `s6_idyn_coupling.ri` | coded refusal naming the coupling joint |
 | T17 | Relation kinds | per-kind relate fixtures; a `fn … -> Relation` wrapper | identical poses and conflict phrases (fasten explicit); the wrapper gets `unconsumable_relation_diagnostic`; `antiparallel` dispatches as itself in `solvespace` |
 | T18 | Kind exhaustiveness | review compile probe adding a variant | every consumer named in §1 item 4 fails to compile |
@@ -499,18 +501,18 @@ Existing tasks dispositioned at decompose:
 
 | Artefact / PRD | Direction | Mechanism | Owner |
 |---|---|---|---|
-| Home of `JointKind` / `RelationKind` (program G4 row) | this PRD **owns** | C1, C2; compiler, constraints, eval and GUI tables derive (β, γ, δ, λ₀) | **S6** |
+| Home of `JointKind` / `RelationKind` (program G4 row) | this PRD **owns** `JointKind`; **[Amended 2026-10-20, retro-critic R6]** `RelationKind`'s home is S8-ψ #9418 (reify-builtins), which γ binds | C1, C2; compiler, constraints, eval and GUI tables derive (β, γ, δ, λ₀) | **S6** (`JointKind`); **S8** (`RelationKind`) |
 | JointValue flat-storage width contract with `sweep::build_snapshot_list` and the `.ri` warm-start rows (program G4 row) | this PRD **owns**, and **replaces** it | C7: per-joint `free_values` and a Snapshot warm start; flat storage becomes private | **S6** |
 | #7188 SingleDofKind / #7974 consolidation (program G4 row) | this PRD **owns**, ruled R2 | #7188 depends on ι; #7974 is cancelled as superseded by μ | **S6** |
 | `JointPosition` + `bind` value contract (new row) | this PRD **owns** | C4 | **S6**. S8's reify-builtins `bind` row reads it; #6007 (registry τ5: typing `snapshot`/`sweep` and `Snapshot` fields) adopts C4/C7 |
 | `loop_closure_record` pub surface (new row) | this PRD **owns** | C5 | **S6**. reify-eval `modal_ops` / `engine_eval` / `dynamics_ops` and S15 ο consume |
-| S9 λ #8741 `RelationSig` | S9 **consumes** γ | keyed by `RelationKind`, using the same `from_name`. Parsing happens at `relation_instance`, not in the compiler (R4): **the lead amends λ's held-contract wording**. `classifier.rs`'s set is γ's | S9 |
+| S9 λ #8741 `RelationSig` | S9 **consumes** S8-ψ #9418 and γ | **[Amended 2026-10-20, retro-critic R6]** λ's `relation_sig(RelationKind) -> { operands, metric_slot }` is a total fn over `reify_builtins::RelationKind`, reading arity and result type from the S8-ψ rows; ~~keyed by `RelationKind`, using the same `from_name`~~ (superseded by retro-critic R6 — there is no `from_name`). Parsing happens at `relation_instance`, not in the compiler (R4), via the registry's `lookup`. `classifier.rs`'s set is γ's | S9 |
 | S9 ο #8745 (`conformance/mod.rs` partition) | file contention, **ordered** | δ (Path B deletion) and λ (static bind check) edit the "joint bound" partition after #8745 | S9 |
 | S7 ζ #8623 (`conformance/` imports) | file contention | upstream of #8745, so δ and λ are ordered transitively | S7 |
 | #6669 LoweringTable | **consumes** γ | keyed by `RelationKind`; its `Row.codim` and λ's `RelationSig.codim` both claim `relation_delta_dof`: one table, owners' call (cross-reference) | that PRD |
 | S15 ο #8718 | S15 **consumes** ρ, σ, λ | ο partitions after `MechanismTree`, `Joint` adoption, the bindings move and the center-of-mass move | S15 |
 | S15 η #8697 (`MassProperties` in `dynamics/mass_props.rs`) | file contention | σ's `dynamics/com.rs` consumes whichever `MassProperties` reader is current | S15 |
-| S8 builtin registry | **produces** χ's substrate; **consumes** C1, C4 | typed diagnose-hook column; joint/relation builtin rows derive from `JointKind::from_ctor_name` / `RelationKind::ALL` | S8 |
+| S8 builtin registry | **produces** χ's substrate and S8-ψ #9418's `RelationKind`; **consumes** C1, C4 | typed diagnose-hook column; **[Amended 2026-10-20, retro-critic R6]** the relation rows mint `RelationKind` and γ binds it (γ #8830 ← S8-ψ #9418) — ~~relation builtin rows derive from `RelationKind::ALL`~~ (superseded by retro-critic R6: direction reversed, rows mint, S6 binds); joint builtin rows derive from `JointKind::from_ctor_name` — **open point (flagged by retro-critic R6, not ruled):** this joint twin claims the same direction a leaf reify-builtins cannot take (#6945 ← #8829) | S8 |
 | S10 kernel interface | S10 **consumes** C1, C2 | typed kinds in reify-ir | S10 |
 | goal-oriented-error-estimation α #7456 | **builds on** | `VariantCtor` | that PRD |
 | S3 INV-ARCH-1 | complies | D9 | S3 (tool), S6 (its rows) |
@@ -526,7 +528,7 @@ Every leaf adds tests to **existing** test binaries. New e2e modules join `harne
 |---|---|---|---|---|---|
 | α #8828 | Kinematics typed-dispatch ratchet member (C10): Python unittest + `.sh` wrapper + manifest row; one case per row with baselines measured at its HEAD under C10's scan rule; seeded red fixtures | tests/infra | member green on the real tree; each seeded fixture reds its own case | — | INV cand 5 |
 | β #8829 | `JointKind` in reify-ir (C1) incl. `position_variant_name`; stdlib re-export; `flat_len` → `storage_width`; `JointKind::from_str`'s stdlib string table gone | reify-ir, reify-stdlib | adding a variant fails to compile every reify-ir method; kinematic e2e unchanged | α, **#8545** | — |
-| γ #8830 | `RelationKind` in reify-ir (C2); `RelationInstance.kind` / `RelationRank.kind`; exhaustive `residual_dispatch` / `describe_demand`; `metric()`; `solvespace.rs` and `classifier.rs` through `RelationKind`; uncurated-name test → eval-level skipped-relation test | reify-ir, reify-constraints, reify-eval | T17; `relation-name-match` at 0 | α | fk-45c54d189935 |
+| γ #8830 | **[Amended 2026-10-20, retro-critic R6]** binds `reify_builtins::RelationKind` (S8-ψ; C2), no reify-ir enum and no `from_name`; `RelationInstance.kind` / `RelationRank.kind`; exhaustive `residual_dispatch` / `describe_demand`; `metric()`; `solvespace.rs` and `classifier.rs` through the registry's `lookup`; uncurated-name test → eval-level skipped-relation test | reify-constraints, reify-eval (each takes reify-builtins as a normal `[dependencies]` entry) | T17; `relation-name-match` at 0 | α, S8-ψ #9418 | fk-45c54d189935 |
 | δ #8831 | Compiler and eval joint tables derive from `JointKind`: `joint_ctor_result_type` + the joint part of `JOINT_TYPED_FN_NAMES` (its `joint_jacobian` arm unchanged, see #6261); conformance Path B + DRIFT NOTE + `l2_joint_constructor_name_mapping_exhaustive` deleted; `is_motion_joint_cell_type` via `from_nominal_type_name` + `accepts_relate_mount`, tautological test deleted; new compiler test pins `kinematic.ri` `DrivingJoint` conformance == `is_driving` | reify-compiler, reify-eval | `mechanism_nondriving_joint_diag_e2e` and `mounted_joint_cell_matches_each_driving_joint_kind` unchanged; the cross-check reds on a seeded disagreement | β, γ, **#8745** | fk-ca97659733e9, fk-726aff24a191 |
 | ε #8832 | Typed transform primitives `transform_inverse`, `transform_log`, `transform_identity` (`pub(crate)` in `geometry.rs`, called by the builtin arms); the two private identity copies deduplicated | reify-stdlib | transform builtin outputs byte-identical; intermediate for ι, μ | α | — |
 | ζ #8833 | Delete `per_joint_jacobian_local`, its 10 tests and every comment site shaped around it; rewrite the two `chain_jacobian_fd_*_matches_analytic` oracles against `joint_jacobian_value` | reify-stdlib, reify-eval test comment | the fn is absent; both oracles green | α | fk-6467cfff64bc |
@@ -577,7 +579,7 @@ No waiver is needed.
 - **A rank-based over/underconstraint policy.** A known gap; a future rank test uses the LDLᵀ pivots `solve_normal_equations` already computes.
 - **Stacked simultaneous multi-loop solves.** #8145 for dynamics. Snapshot uses C5's record-order rule with final re-measurement.
 - **Coupling inverse dynamics.** σ makes it a coded refusal.
-- **`reduce_constraint_rank`'s cut-joint treatment of the closing joint.** It projects the closing joint's subspace out, which differs from snapshot's rigid-tie rule (§12.7). Follow-up candidate, not filed here.
+- **`reduce_constraint_rank`'s cut-joint treatment of the closing joint.** **[Resolved 2026-10-30 by #7312]** The function now drops only zero or linearly dependent rows, so the KKT constraint has the zero set of snapshot's rigid-tie residual, and T15 is re-derived on that basis. ~~It projects the closing joint's subspace out, which differs from snapshot's rigid-tie rule (§12.7). Follow-up candidate, not filed here.~~ The other half of the mismatch, that a closing body's mass never loads a joint in inverse dynamics, is #8883.
 - **TOTS `force_limit` / `actuator_limits` (#7083) and dimension gating of trajectory readers (#6941).**
 - **The trajectory `JointValue = Real` alias** (profile scalars).
 - **The `JointParent` / `Mechanism.joint_parents` declaration mismatch.** Follow-up candidate.
@@ -591,7 +593,7 @@ No waiver is needed.
 4. **A sweep whose free set changes mid-sweep (π).** A newly free joint seeds at its midpoint. Pin it with a test.
 5. **`Value::Enum` display (η).** Measure the payload-enum goldens first (`cli_eval_generic_enum.rs`, `getar_*` fixtures) and list them per D10.
 6. **`classifier.rs` and `std::fasten` (γ).** Read `is_geometry_qualified_name`'s consumer, decide whether fasten belongs, and pin it.
-7. **The cut-joint vs rigid-tie note for `reduce_constraint_rank`.** File a follow-up when ρ lands, if T15's equality turns out to depend on it.
+7. **The cut-joint vs rigid-tie note for `reduce_constraint_rank`.** **[Resolved 2026-10-30]** T15's equality did depend on it. #7312 retired the projection, and #9566 re-derived T15 ("T15 re-derivation after #7312" below). ~~File a follow-up when ρ lands, if T15's equality turns out to depend on it.~~
 
 ## 13. Rulings (Leo, 2026-10-13, this session)
 
@@ -610,3 +612,19 @@ Rulings from `plans/gap-fill-deliberation-reify-20261016.md` (Leo, 2026-10-16). 
 
 - **§K6-D5** — new leaf φ₂ #9281 (§10 row above): `gcode_import`'s outcomes coded, after S8-α1 #8888 and φ #8850; ω₂ #8856 depends on it; file contention with #9192 (fk-5d64b909dfdf). S8 §9 records that this arm leaves S8's legacy list.
 - **§K6-D6** — S6 follow-on (standalone, like #8881): task #9283 makes `simulate_trajectory`'s `EndEffectorTrack` honest after ψ₃ #8854 moves the accessors — `modal_result` passed through, no fake `nominal_pose`/`combined_pose`, accessors return Undef with a cause instead of 0.0, an unresolvable FaceSelector location is a coded rejection, deviations carry Length, a C4-style parity test (fk-c2cca28ae7c5). #8881 is amended to own per-sample FK from q(t) and the Pose3 / Vec3<Length> population, and depends on #9283 (fk-6166c9f2a331). Notes on #7101 (owners of the two C2′ fakes) and #8119 (`peak_deviation_at`'s runtime returns Real until #9283 lands).
+
+## Retro-critic sitting amendments (2026-10-20)
+
+- **S9 B1 / retro-critic R6 (C1)** — `RelationKind` is `reify_builtins::RelationKind`, the builtin registry's generated `Relation` sub-enum minted by the S8 leaf S8-ψ #9418; supersedes C2's hand-written reify-ir enum (C2 amended in place: `ALL` → `iter()`, `as_str` → the row's name, `from_name` deleted under I-REG-1; R4's parse point stands, the parser is `lookup`). §1 goal, §3 step 1, §9 rows (home of the kinds, S9 λ, S8 — direction reversed: rows mint, S6 binds) and the §10 γ row amended. γ #8830: modules reify-constraints and reify-eval (both take reify-builtins as a normal dependency); reify-ir `relation_kind.rs` is not created; new edge #8830 ← #9418; delivered checks `no-hand-written-relation-kind-parser` (replacing the `pub enum RelationKind` check) and `instance-carries-kind`. **Flagged, not ruled:** the joint twin — §9's S8 row still has joint builtin rows derive from `JointKind::from_ctor_name` (#6945 ← #8829), the same direction a leaf reify-builtins cannot take. Pointer: `plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6`.
+
+## T15 re-derivation after #7312 (2026-10-30)
+
+#7312 (landed `10eb8ca95b`) retired the closing-joint motion-subspace projection in `dynamics/closed_chain.rs::reduce_constraint_rank`, which now drops only zero or linearly dependent rows. T15's old target held only because that projection deleted this loop's one constraint row. #9566 re-derived it by hand, and that derivation is the authority for T15's target. Its inputs are the fixtures' masses and topology plus the open control's τ_open, which anyone can re-measure on main; the scratch build under **Corroboration** only supports it:
+- **The loop.** j_a (the flexure, prismatic z, 0.5 kg) and j_b (prismatic z, 0.25 kg) are both world-rooted. The 0.125 kg closing body re-parents j_b onto j_a, so the closure is q_b = q_a: one live row, A = [1, −1] (m_eff = 1, the same shape as `closed_2prismatic_idyn.ri`).
+- **Inputs.** M = diag(0.5, 0.25) kg. ρ decides compliance once (C8), so the closed chain's τ_open is the open control's sample 1, measured with `target/debug/reify eval` built from main `ec9e47f729`: [m_a·g + f_s, m_b·g] = [−14.31375, 2.4525] N. The flexure spring term at q_a = 0.3 mm is f_s = τ_a − m_a·g = −19.21875 N.
+- **KKT.** λ = (A·M⁻¹·τ_open)/(A·M⁻¹·Aᵀ) = (2·(−14.31375) − 4·2.4525)/(2 + 4) = −6.40625 N, and τ = τ_open + Aᵀλ = [−20.72, 8.85875] N. In closed form λ = f_s·m_b/(m_a + m_b). Gravity alone gives A·M⁻¹·τ_open = 0, which is why today's answer, with no spring term, has λ = 0.
+- **Invariant.** Aᵀλ is orthogonal to ker(A) = span(1, 1), so τ_a + τ_b = −11.86125 N equals the open control's sum whatever the split. The split assumes today's massless closing body. #8883 owns that model and re-derives T15 if it changes.
+- **Why the runtime reproduces it.** The loop residual is linear in both prismatic coordinates, so the FD Jacobian is ±1 to rounding and the solver's A equals the hand A. ρ asserts the derived value without retuning.
+- **Corroboration.** Built the same way, the closed fixture gives [4.905, 2.4525] N today: the derivation's λ = 0 case, since no spring term reaches the closed chain yet. A scratch build, reverted and not recorded anywhere, wired compliance into `closed_chain_inverse_dynamics` the way `snapshot_inverse_dynamics` does and gave sample 1 = [−20.72, 8.85875] N. It cannot be replayed, so it is supporting evidence only; ρ's own run is the first reproducible measurement of the target.
+- **T14 is unaffected.** Every joint in its loop carries the same q̈ + g, so λ = 0 and "45.24 N on id 3" stands. Its before-image did move: the closing body is still in today's positional slice, and the now-live row gives ids 0, 1, 2 = 16.45, 40.10, 17.48 N (was 22.62, 33.93, 11.31 N).
+- **Records.** #8845's signal carries these values. #8883 is narrowed to the closing-body-mass half.

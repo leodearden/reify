@@ -71,6 +71,7 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
     // are dispatched.
     let (d_all, mesh_all, body_a_mesh_all) = {
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -97,6 +98,7 @@ fn warm_tessellate_snapshot_prunes_hidden_body_geometry_dispatch() {
     // enters the seed and schedule; R(b)'s box op is never dispatched.
     let (d_hidden, mesh_hidden, body_a_mesh_hidden) = {
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -205,6 +207,7 @@ fn build_preserves_eval_cycle_diagnostic_under_unified_dag() {
     let compiled = compile_source(source);
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -243,6 +246,7 @@ fn build_ignores_selective_demand_and_realizes_all_bodies() {
     // Session A: plain build with full_scope (no explicit selective demand).
     let d_full = {
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -254,6 +258,7 @@ fn build_ignores_selective_demand_and_realizes_all_bodies() {
     // Session B: set selective demand (body_b hidden) then build.
     let (d_selective_build, full_scope_after) = {
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -306,6 +311,7 @@ fn all_visible_selective_tessellate_snapshot_matches_full_scope_dispatch() {
     // Session C1: eval() leaves full_scope=true → tessellate_snapshot is full scope.
     let d_full_scope = {
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );
@@ -322,6 +328,7 @@ fn all_visible_selective_tessellate_snapshot_matches_full_scope_dispatch() {
     // selective (full_scope=OFF, both bodies demanded).
     let d_all_visible = {
         let mut engine = Engine::new(
+            reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             Some(Box::new(MockGeometryKernel::new())),
         );

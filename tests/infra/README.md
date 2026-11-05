@@ -479,6 +479,20 @@ ratchet. The row grammar lives in the manifest header. Measure with
 `docs/prds/v0_6/run-all-runner-infra-harness.md` adds its row at its
 post-extraction count.
 
+## Compiler namespace ratchet (`compiler-namespace-ratchet-baseline.txt`)
+
+`test_compiler_namespace_ratchet.sh` holds reify-compiler's glob re-exports and
+glob imports at an exact baseline, so each leaf of PRD
+`docs/prds/v0_6/compiler-module-namespace.md` lowers its row in the same diff.
+Contract: that PRD's §4 C7. The counters are `COUNTERS` in
+`test_compiler_namespace_ratchet.py`; the counting rules are the module
+docstring of the engine, `source_count_ratchet.py`.
+
+A new count ratchet picks its engine by shape: an exact two-way baseline over
+Rust production code, skipping `#[cfg(test)]` child files, is
+`source_count_ratchet.py`; a one-way ceiling over any path glob is
+`adoption_ratchet.py` (above).
+
 ## Verify event channel
 
 `REIFY_VERIFY_EVENT_LOG` names a JSON-lines file: the verify tree's structured
@@ -499,9 +513,9 @@ the single home of the emitters' positional signatures and of the writer
 contract: inert when unset, one line per record within `EVENT_LOG_LINE_MAX`
 bytes, list fields fitted to that cap, never fatal.
 
-- `run_all.sh` writes `run_start`, `member_start`, `member_finish` and
-  `run_finish`, on every branch (pool, serial, member subset, `--scope
-  host-infra`).
+- `run_all.sh` writes `run_start`, `member_start`, `member_finish`,
+  `phase_finish` and `run_finish`, on every branch (pool, serial, member
+  subset, `--scope host-infra`).
 - `scripts/lib_slot_acquire.sh::slot_emit_timeout` writes `slot_timeout` for
   every finite-WAIT deadline in the verify tree, after its unchanged
   `@@REIFY_SLOT_TIMEOUT@@` text line. `emitter` is `slot_acquire`'s optional
@@ -509,6 +523,15 @@ bytes, list fields fitted to that cap, never fatal.
   `slot_acquire` (`lib_test_semaphore.sh`, `cargo-test-occt-gated.sh`,
   `lib_lane_x_flock.sh`), and to `unknown` when there is no caller file (a
   `bash -c` body). `run_all.sh`'s pool worker passes `run_all_pool`.
+
+The lib has a second sink, `EVENT_LOG_COPY_TO`: a path every record is also
+appended to, held in a shell variable its caller never exports, so only that
+shell and its subshells write it. `run_all.sh` moves
+`REIFY_RUN_ALL_TIMING_OUT` (the per-step file `scripts/verify.sh` allocates for
+the verify ledger) into it at startup and unsets the input. The step file
+therefore holds the same records as the channel, the pool workers' soft
+`slot_timeout` records included, whether or not the channel is set, and no
+member inherits either path.
 
 ### Schema (v1)
 
@@ -519,13 +542,21 @@ or boolean field may be `null`; the lib header says when.
 |---|---|---|
 | `run_start` | `run_id`, `scope` (`all`/`host-infra`), `branch` (`pool`/`serial`/`subset`/`host-infra`), `discovered` | `run_all.sh`, once discovery is known |
 | `member_start` | `member` (basename), `attempt` (1/2), `mode` (`capture`/`stream`) | `_ra_run_member` |
-| `member_finish` | `member`, `attempt`, `rc`, `verdict` (`PASS`/`FAIL`/`FLAKY_PASS`/`SKIP`), `duration_ms`, `fail_detail` (list), `fail_detail_omitted` | `_ra_record_result`, once per member; `_ra_record_subset_skip` for `SKIP` |
+| `member_finish` | `member`, `attempt`, `rc`, `verdict` (`PASS`/`FAIL`/`FLAKY_PASS`/`SKIP`), `duration_ms`, `queued_ns`, `started_ns`, `ended_ns`, `fail_detail` (list), `fail_detail_omitted` | `_ra_record_result`, once per member; `_ra_record_subset_skip` for `SKIP` |
+| `phase_finish` | `phase` (`pool`/`serial`/`retry` on the pool branch, `serial` on every serial branch), `started_ns`, `ended_ns` | `_ra_phase_finish`, once per phase, at its end |
 | `slot_timeout` | `reason`, `slots`, `waited`, `disposition` (`fatal`/`soft`), `lock`, `emitter` | `slot_emit_timeout` |
 | `run_finish` | `discovered`, `failures`, `failed`, `flaky`, `skipped` (lists), `interrupted`, `names_omitted` | `run_all.sh`, once per run: whichever of the normal path, `_ra_on_term` and the worktree-gone exit 99 comes first |
 
+The `*_ns` fields are epoch nanoseconds on the `ts_ns` clock
+(`event_log_clock_ns`). A `member_finish` times the attempt it reports, so a
+retried member's record times its retry. `queued_ns` is set only for a pool
+member's attempt 1: the moment its worker began waiting for a slot.
+`duration_ms` is `(ended_ns - started_ns)` in whole milliseconds.
+
 This leaf refines C2 in three places, and the refinements are contract:
 
-- A `SKIP` record carries `attempt` 0, `rc` null and `duration_ms` null.
+- A `SKIP` record carries `attempt` 0, and `rc`, `duration_ms`, `queued_ns`,
+  `started_ns` and `ended_ns` all null.
 - `fail_detail` keeps the newest `_RA_FAIL_DETAIL_MAX` sanitized FAIL lines,
   each cut to the lib's `EVENT_LOG_DETAIL_ENTRY_MAX` and always valid UTF-8,
   and newer entries win when the line cap bites.
@@ -539,8 +570,10 @@ This leaf refines C2 in three places, and the refinements are contract:
 
 ### Reader
 
-`tests/infra/verify_events.py` is the stdlib reader (`import json`, safe under
-`python3 -I`). Readers never parse JSON in bash.
+The parser lives in `scripts/verify_events_lib.py` (stdlib only, safe under
+`python3 -I`), which `scripts/verify-ledger.py` shares to fold a step file into
+its record. `tests/infra/verify_events.py` is the CLI and query module over
+it. Readers never parse JSON in bash.
 
 ```
 python3 -I tests/infra/verify_events.py summary PATH
@@ -550,11 +583,12 @@ python3 -I tests/infra/verify_events.py wait PATH [--event E] [--where K=V ...] 
 
 `summary` prints `key=value` scalars, `query` prints matching records as JSON
 lines, and `wait` exits 0 once enough records match or 1 when the timeout
-passes. Imported, the module offers `read_events(path)` (a frozen `Events`
-with `records`, `skipped_lines` and `channel_present`), `select`, `summarize`
-and `wait_for`. It applies C3 rule 1: a line that is not a v1 JSON object (it
-fails `json.loads`, or its `v` is not the integer 1) is skipped and counted,
-and a file with no `run_start` is "channel absent".
+passes. Imported, `verify_events_lib` offers `read_events(path)` (a frozen
+`Events` with `records`, `skipped_lines` and `channel_present`), and
+`verify_events` offers `select`, `summarize` and `wait_for` over it. The
+parser applies C3 rule 1: a line that is not a v1 JSON object (it fails
+`json.loads`, or its `v` is not the integer 1) is skipped and counted, and a
+file with no `run_start` is "channel absent".
 
 ### Isolation (C4)
 
@@ -655,10 +689,15 @@ ignores INT and QUIT (measured `SigIgn` `…06`).
 |------|---------|
 | `run_all.sh` | Discovery runner — runs every member `classification_discovered_set` returns |
 | `run-all-classification-lib.sh` | Shared library: the discovery predicate (`classification_discovered_set`) and the manifest bucket accessors |
+| `run-all-member-budget-lib.sh` | Shared library: runs one member under its wall-clock budget in a process group of its own (`member_budget_run`) and attributes a timeout (`member_budget_exceeded`) |
 | `adoption_ratchet.py` | Adoption-ratchet engine and report CLI |
 | `adoption-ratchet.manifest` | Adoption-ratchet rows (grammar in its header) |
 | `test_infra_adoption_ratchet.sh` | Regression guard: no adoption-ratchet row exceeds its ceiling |
 | `test_infra_adoption_ratchet.py` | Its stdlib-unittest body, driving `adoption_ratchet.py` |
+| `source_count_ratchet.py` | Shared engine: counts line constructs in Rust production files against an exact baseline |
+| `compiler-namespace-ratchet-baseline.txt` | Exact counts for the compiler namespace ratchet |
+| `test_compiler_namespace_ratchet.sh` | Regression guard: reify-compiler glob re-exports and glob imports match their exact baseline |
+| `test_compiler_namespace_ratchet.py` | Its stdlib-unittest body, driving `source_count_ratchet.py` |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
 | `cited-test-path-lib.sh` | Shared library: cited-test-path scan, resolve and fingerprint derivation |
 | `cited-test-path-baseline.manifest` | Grandfather baseline for the cited-test-path ratchet |

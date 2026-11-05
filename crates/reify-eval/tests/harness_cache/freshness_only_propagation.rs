@@ -71,7 +71,7 @@ fn two_cell_module() -> reify_compiler::CompiledModule {
 fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval populates the cache and `eval_state` (with
     // `reverse_index`); after eval all params/let-bindings are Final.
@@ -221,7 +221,7 @@ fn walk_over_engine_propagates_intermediate_to_final_without_value_recomputation
 fn walk_over_engine_propagates_failed_upstream_to_pending_with_cause() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval: a and b are both Final after eval.
     engine.eval(&module);
@@ -346,7 +346,7 @@ fn walk_over_engine_propagates_failed_upstream_to_pending_with_cause() {
 fn walk_over_engine_forwards_pending_cause_through_chain() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval: a and b are both Final after eval.
     engine.eval(&module);

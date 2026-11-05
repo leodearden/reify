@@ -163,17 +163,8 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata);
 
         // Default-empty mock → no changed symbols → no findings.
         let findings: Vec<Finding> = p1_producer_orphan::check(&ctx);
@@ -216,17 +207,9 @@ mod tests {
             done_meta("7001", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -300,17 +283,9 @@ mod tests {
             done_meta("7003", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -386,17 +361,9 @@ mod tests {
         let mut task_metadata = HashMap::new();
         task_metadata.insert("6504".to_string(), done_meta("6504", NOW - 30 * DAY, None));
 
-        let ctx = AuditContext {
-            project_root: tmp.path().to_path_buf(),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &ops,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(tmp.path().to_path_buf(), &conn, &git, &ops)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
         let findings = p1_producer_orphan::check(&ctx);
         mock.stop();
         findings
@@ -460,17 +427,9 @@ mod tests {
             done_meta("7002", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -529,17 +488,9 @@ mod tests {
                 ..done_meta("8001", done_at, Some("docs/x.md"))
             },
         );
-        let ctx_a = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: tm_foundation,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx_a = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(tm_foundation)
+            .at_time(NOW);
         let findings_a = p1_producer_orphan::check(&ctx_a);
         assert!(
             findings_a.is_empty(),
@@ -567,17 +518,9 @@ mod tests {
                 done_at: None,
             },
         );
-        let ctx_b = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: tm_consumer,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx_b = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(tm_consumer)
+            .at_time(NOW);
         let findings_b = p1_producer_orphan::check(&ctx_b);
         assert!(
             findings_b.is_empty(),
@@ -631,17 +574,9 @@ mod tests {
             done_meta("9001", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -721,17 +656,9 @@ mod tests {
             done_meta("7100", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -788,17 +715,9 @@ mod tests {
             let mut task_metadata = HashMap::new();
             task_metadata.insert(name.to_string(), done_meta(name, done_at, Some("docs/x.md")));
 
-            let ctx = AuditContext {
-                project_root: PathBuf::from("/tmp/fake-project"),
-                conn: &conn,
-                git: &git,
-                jcodemunch: &jc,
-                task_metadata,
-                target_task_id: None,
-                window: None,
-                now: Some(NOW),
-                producer_branch: None,
-            };
+            let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+                .with_tasks(task_metadata)
+                .at_time(NOW);
 
             let findings = p1_producer_orphan::check(&ctx);
             assert_eq!(
@@ -816,13 +735,14 @@ mod tests {
         }
     }
 
-    /// Step 3 (RED→GREEN via step 4) — when `target_task_id` is set, P1
-    /// restricts scanning to that single task only (mirroring p2's guard).
+    /// Step 3 (RED→GREEN via step 4) — when the context targets a task, P1
+    /// restricts scanning to that single task only (mirroring P2's target
+    /// narrowing).
     ///
     /// Two done orphan-candidate tasks (both 15 days past grace, zero refs),
     /// each introducing their own symbol. AuditContext built with
-    /// `target_task_id: Some("task_A")`. Expected: exactly one finding, for
-    /// task_A only; task_B's symbol is not reported.
+    /// `.targeting("task_A")`. Expected: exactly one finding, for task_A
+    /// only; task_B's symbol is not reported.
     ///
     /// RED: current `check()` ignores target_task_id and scans both tasks,
     /// producing two findings.
@@ -864,17 +784,10 @@ mod tests {
         );
 
         // With target_task_id pointing at task_A, only task_A is scanned.
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: Some("task_A".to_string()),
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .targeting("task_A")
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -918,17 +831,9 @@ mod tests {
         task_metadata.insert("task_A".to_string(), done_meta("task_A", done_at, None));
         task_metadata.insert("task_B".to_string(), done_meta("task_B", done_at, None));
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         let unexamined: Vec<&Finding> = findings
@@ -966,6 +871,179 @@ mod tests {
         );
     }
 
+    /// A `find_references` call that FAILED is not an answer of "no caller".
+    /// Read as one, it turns a timeout into a Medium `P1ProducerOrphan` that
+    /// `/audit` would auto-file as `Wire alpha consumer`. So the symbol whose
+    /// lookup failed is SKIPPED, the task's other symbols are still examined
+    /// (`beta`'s genuine orphan is still reported), and the skip surfaces as
+    /// the task's one Low `P1TaskUnexamined`, naming the skipped symbol and
+    /// citing its declaration.
+    #[test]
+    fn a_failed_find_references_skips_the_symbol_and_reports_the_task_unexamined() {
+        let sha_a = task_sha("task_A");
+        const TIMEOUT: &str = "read body: timed out reading response";
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha_a}^1"),
+            &sha_a,
+            vec![
+                changed_symbol("alpha", "crates/reify-x/src/a.rs"),
+                changed_symbol("beta", "crates/reify-x/src/b.rs"),
+            ],
+        );
+        jc.fail_find_references("crates/reify-x/src/a.rs", "alpha", TIMEOUT);
+        jc.set_find_references("crates/reify-x/src/b.rs", "beta", vec![]);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", NOW - 15 * DAY, None),
+        );
+
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
+
+        let findings = p1_producer_orphan::check(&ctx);
+        let orphans: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1ProducerOrphan)
+            .collect();
+        assert!(
+            !orphans.iter().any(|f| f.summary.contains("`alpha`")),
+            "a failed lookup proves nothing about callers, so `alpha` must not \
+             be reported as an orphan; got {findings:?}"
+        );
+        assert_eq!(
+            orphans.len(),
+            1,
+            "the task's other symbol must still be examined: `beta`'s orphan \
+             must be reported; got {findings:?}"
+        );
+        assert!(
+            orphans[0].summary.contains("`beta`"),
+            "the surviving orphan must be `beta`'s; got {:?}",
+            orphans[0]
+        );
+
+        let unexamined: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1TaskUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "the skipped symbol must surface as exactly one P1TaskUnexamined; \
+             got {findings:?}"
+        );
+        let f = unexamined[0];
+        assert_eq!(f.task_id, "task_A", "it must name the task; got {f:?}");
+        assert_eq!(
+            f.severity,
+            Severity::Low,
+            "an optional substrate's failure must never move the exit code; got {f:?}"
+        );
+        for needle in ["`alpha`", sha_a.as_str(), TIMEOUT] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the skipped symbol, the \
+                 range and the failure); got {:?}",
+                f.summary
+            );
+        }
+        assert!(
+            !f.summary.contains("`beta`"),
+            "`beta` was examined, so the unexamined finding must not name it; \
+             got {:?}",
+            f.summary
+        );
+        assert_eq!(
+            f.evidence,
+            vec![EvidenceRef::FileLine {
+                path: "crates/reify-x/src/a.rs".to_string(),
+                line: 42,
+                symbol: Some("alpha".to_string()),
+            }],
+            "the evidence must cite the skipped symbol's declaration"
+        );
+    }
+
+    /// The volume contract severity-routing.md §2 states: however many of a
+    /// task's lookups fail, the task yields ONE unexamined finding, naming
+    /// every skipped symbol and citing each declaration once.
+    #[test]
+    fn failed_find_references_calls_yield_one_unexamined_finding_per_task() {
+        let sha_a = task_sha("task_A");
+        const TIMEOUT: &str = "read body: timed out reading response";
+
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.set_changed_symbols(
+            &format!("{sha_a}^1"),
+            &sha_a,
+            vec![
+                changed_symbol("alpha", "crates/reify-x/src/a.rs"),
+                changed_symbol("gamma", "crates/reify-x/src/c.rs"),
+            ],
+        );
+        jc.fail_find_references("crates/reify-x/src/a.rs", "alpha", TIMEOUT);
+        jc.fail_find_references("crates/reify-x/src/c.rs", "gamma", TIMEOUT);
+
+        let mut task_metadata = HashMap::new();
+        task_metadata.insert(
+            "task_A".to_string(),
+            done_meta("task_A", NOW - 15 * DAY, None),
+        );
+
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
+
+        let findings = p1_producer_orphan::check(&ctx);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| f.pattern == Pattern::P1ProducerOrphan),
+            "no lookup answered, so no symbol can be an orphan; got {findings:?}"
+        );
+        let unexamined: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.pattern == Pattern::P1TaskUnexamined)
+            .collect();
+        assert_eq!(
+            unexamined.len(),
+            1,
+            "two failed lookups in one task must yield ONE P1TaskUnexamined, \
+             not one per symbol; got {findings:?}"
+        );
+        let f = unexamined[0];
+        assert!(
+            f.summary.contains("`alpha`") && f.summary.contains("`gamma`"),
+            "the one finding must name every skipped symbol; got {:?}",
+            f.summary
+        );
+        assert_eq!(
+            f.evidence,
+            vec![
+                EvidenceRef::FileLine {
+                    path: "crates/reify-x/src/a.rs".to_string(),
+                    line: 42,
+                    symbol: Some("alpha".to_string()),
+                },
+                EvidenceRef::FileLine {
+                    path: "crates/reify-x/src/c.rs".to_string(),
+                    line: 42,
+                    symbol: Some("gamma".to_string()),
+                },
+            ],
+            "one FileLine per skipped symbol, in the order they were examined"
+        );
+    }
+
     /// The other half of the distinction: a range jcodemunch answered with no
     /// symbol is an ordinary no-op, not an unexamined task. The mock answers
     /// an unkeyed range with an empty `Ok`.
@@ -981,17 +1059,9 @@ mod tests {
             done_meta("task_A", NOW - 15 * DAY, None),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1008,8 +1078,8 @@ mod tests {
     /// one `review`-status consumer task with `consumer_ref="docs/x.md"`.
     /// Expected: zero P1 findings.
     ///
-    /// RED: current `has_pending_consumer` only matches `"pending"` |
-    /// `"in-progress"`, so the `review` consumer is invisible and a finding fires.
+    /// RED: P1's pending-consumer check then matched only `"pending"` |
+    /// `"in-progress"`, so the `review` consumer was invisible and a finding fired.
     #[test]
     fn review_status_consumer_suppresses_finding() {
         let done_at = NOW - 15 * DAY;
@@ -1049,17 +1119,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1117,17 +1179,9 @@ mod tests {
             done_meta("5000", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -1148,26 +1202,26 @@ mod tests {
     }
 
     /// Amendment (reviewer_comprehensive) — pins the subtle interaction
-    /// between `target_task_id` scoping and `has_pending_consumer` suppression.
+    /// between `target_task_id` scoping and `pending_consumer_prds` suppression.
     ///
     /// The `target_task_id` guard skips non-target entries in the *producer*
-    /// loop; `has_pending_consumer` independently scans the *full*
+    /// loop; `pending_consumer_prds` independently scans the *full*
     /// `task_metadata` map. These are two different traversals: the first
     /// decides which producer tasks to audit; the second decides whether any
     /// consumer task (regardless of its own task_id) is already in-flight.
     ///
     /// A future refactor that moves the scoping filter earlier — e.g.
     /// pre-filtering `task_metadata` to `{ target }` before running check —
-    /// would hide the consumer task from `has_pending_consumer` and silently
+    /// would hide the consumer task from `pending_consumer_prds` and silently
     /// break suppression. Neither `target_task_id_scopes_p1_to_one_task` (no
     /// consumer tasks) nor `review_status_consumer_suppresses_finding` (no
     /// target) exercises this cross-product; this test does.
     ///
     /// Setup: producer `"prod_1"` (done, 15 days past grace, prd="docs/p.md",
     /// zero refs) + `"review"`-status consumer `"cons_1"` (consumer_ref=
-    /// "docs/p.md"). AuditContext has `target_task_id: Some("prod_1")`.
+    /// "docs/p.md"). AuditContext built with `.targeting("prod_1")`.
     /// Expected: zero findings — the scoped sweep still suppresses because
-    /// `has_pending_consumer` scans the unfiltered metadata map.
+    /// `pending_consumer_prds` scans the unfiltered metadata map.
     #[test]
     fn target_task_id_does_not_hide_consumer_from_suppression() {
         let done_at = NOW - 15 * DAY;
@@ -1192,8 +1246,8 @@ mod tests {
             done_meta("prod_1", done_at, Some("docs/p.md")),
         );
         // A consumer whose task_id != target_task_id. The producer loop skips
-        // it (it is not a candidate producer), but has_pending_consumer must
-        // still discover it via ctx.task_metadata.values().
+        // it (it is not a candidate producer), but pending_consumer_prds must
+        // still discover it via ctx.task_metadata().values().
         task_metadata.insert(
             "cons_1".to_string(),
             TaskMetadata {
@@ -1209,17 +1263,10 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: Some("prod_1".to_string()),
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .targeting("prod_1")
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1292,21 +1339,25 @@ mod tests {
         let _: Pattern = Pattern::PLayerViolation;
 
         // New mock methods: default-empty mock must return empty Vecs.
-        let dead = jc.get_dead_code(0.5);
+        let dead = jc.get_dead_code(0.5).expect("the mock answers get_dead_code");
         assert!(
             dead.is_empty(),
             "default mock get_dead_code must return empty Vec; got {:?}",
             dead
         );
 
-        let untested = jc.get_untested_symbols(0.5);
+        let untested = jc
+            .get_untested_symbols(0.5)
+            .expect("the mock answers get_untested_symbols");
         assert!(
             untested.is_empty(),
             "default mock get_untested_symbols must return empty Vec; got {:?}",
             untested
         );
 
-        let violations = jc.get_layer_violations();
+        let violations = jc
+            .get_layer_violations()
+            .expect("the mock answers get_layer_violations");
         assert!(
             violations.is_empty(),
             "default mock get_layer_violations must return empty Vec; got {:?}",
@@ -1379,7 +1430,7 @@ mod tests {
             },
         ]);
 
-        let dead = jc.get_dead_code(0.5);
+        let dead = jc.get_dead_code(0.5).expect("the mock answers get_dead_code");
         assert_eq!(
             dead.len(),
             2,
@@ -1389,7 +1440,9 @@ mod tests {
         assert!(dead.iter().all(|s| s.confidence >= 0.5));
         assert!(!dead.iter().any(|s| s.confidence < 0.5));
 
-        let untested = jc.get_untested_symbols(0.5);
+        let untested = jc
+            .get_untested_symbols(0.5)
+            .expect("the mock answers get_untested_symbols");
         assert_eq!(
             untested.len(),
             2,
@@ -1438,17 +1491,9 @@ mod tests {
             },
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert!(
@@ -1539,17 +1584,9 @@ mod tests {
             done_meta("4150", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -1623,17 +1660,9 @@ mod tests {
             done_meta("7600", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(
@@ -1707,17 +1736,9 @@ mod tests {
             done_meta("7601", done_at, Some("docs/x.md")),
         );
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata,
-            target_task_id: None,
-            window: None,
-            now: Some(NOW),
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc)
+            .with_tasks(task_metadata)
+            .at_time(NOW);
 
         let findings = p1_producer_orphan::check(&ctx);
         assert_eq!(

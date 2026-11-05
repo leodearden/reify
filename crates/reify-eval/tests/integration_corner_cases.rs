@@ -20,7 +20,8 @@ use std::sync::OnceLock;
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{Diagnostic, DimensionVector, ModulePath, Severity, ValueCellId};
-use reify_ir::{Satisfaction, Value};
+use reify_ir::{ExportFormat, Satisfaction, Value};
+use reify_test_support::MockGeometryKernel;
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -73,7 +74,7 @@ fn compiled() -> reify_compiler::CompiledModule {
 fn eval_ri_file() -> reify_eval::EvalResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics
@@ -95,7 +96,7 @@ fn eval_ri_file() -> reify_eval::EvalResult {
 fn eval_and_check_ri() -> reify_eval::CheckResult {
     let compiled = compiled();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&compiled);
     assert_no_errors(
         &result.diagnostics,
@@ -196,7 +197,7 @@ fn trait_all_member_kinds() {
 
     // ── single engine: check() gives values + constraint_results in one eval pass ──
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let check_result = engine.check(&compiled);
 
     // Assert no eval-severity errors from the single CheckResult.
@@ -399,6 +400,32 @@ fn recursive_depth_zero_no_child() {
         !result.values.contains(&child_depth_id),
         "RecTree.child.depth should not exist when depth=0 (guard prevented unfolding), but was found"
     );
+}
+
+/// `Engine::build` agrees with eval: the guard-declined `RecTree.child` has no
+/// instance, so the build neither materialises its cells nor trips on their absence.
+#[test]
+fn corner_rec_tree_build_skips_guard_declined_child() {
+    let compiled = compiled();
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let result = engine.build(&compiled, ExportFormat::Step);
+
+    let child_cells: Vec<&ValueCellId> = result
+        .values
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|id| id.entity == "RecTree.child" || id.entity.starts_with("RecTree.child."))
+        .collect();
+    assert!(
+        child_cells.is_empty(),
+        "no RecTree.child.* cell may exist after build when depth=0 (guard declined the \
+         child); got {child_cells:?}"
+    );
+    assert_no_errors(&result.diagnostics, "integration_corner_cases.ri build");
 }
 
 // ── step-13: chained 4-element comparison ────────────────────────────────────

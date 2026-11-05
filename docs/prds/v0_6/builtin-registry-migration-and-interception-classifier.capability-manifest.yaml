@@ -23,6 +23,27 @@ tasks:
           pattern: 'fn eval_builtin\(.*\) -> BuiltinOutcome'
           paths: ["crates/reify-stdlib/src/lib.rs"]
           expect: present
+  - label: "S8-ψ"
+    task_id: 9418
+    title: "Relation binding kind: the 12 relation rows mint RelationKind; one home for relation name, arity and result type"
+    note: "Added by the retro-critic sitting 2026-10-20 (plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R6); carved out of #6944's τ9 relation half. Both checks confirmed red at main 66dcd71ef5."
+    capabilities:
+      - name: "relation-rows-mint-relation-kind"
+        binding: "producer:S8-ψ — crates/reify-builtins/src/registry.rs has no Relation group at main; RelationKind exists nowhere (git grep RelationKind -- crates/ = 0)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'Relation => RelationKind'
+          paths: ["crates/reify-builtins/src/registry.rs"]
+          expect: present
+      - name: "relation-binding-kind-exists"
+        binding: "producer:S8-ψ — BindingKind declares EvalBuiltin, ExprIntercept, EnginePostProcess, GeometryOp, CompileOnly at main; relations are documented CompileOnly though residual_dispatch binds them at runtime"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: 'BindingKind::Relation\b'
+          paths: ["crates/reify-builtins/src"]
+          expect: present
   - label: "S8-α2"
     task_id: 8889
     title: "Success-path advisories for dfm, flexure and snapshot; three emit fns deleted"

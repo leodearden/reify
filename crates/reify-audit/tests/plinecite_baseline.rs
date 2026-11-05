@@ -12,7 +12,7 @@
 use reify_audit::plinecite_baseline::{BASELINE_PATH, CiteRow, render_baseline};
 use reify_audit::{AuditContext, Finding, MockJCodemunchOps, RealGitOps};
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -26,10 +26,10 @@ fn git_available(check: &str) -> bool {
 }
 
 /// Run `git` in `root`, panicking on failure. Built through
-/// `reify_audit::git_env` so an ambient `GIT_INDEX_FILE` (exported by
+/// `reify_git_env` so an ambient `GIT_INDEX_FILE` (exported by
 /// `hooks/pre-commit`) cannot redirect staging into the parent repository.
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -66,17 +66,7 @@ fn check_real(root: &Path) -> Vec<Finding> {
     let git = RealGitOps::new(root.to_path_buf());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root.to_path_buf(),
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root.to_path_buf(), &conn, &git, &jc);
     reify_audit::plinecite::check(&ctx)
 }
 
@@ -85,7 +75,7 @@ fn check_real(root: &Path) -> Vec<Finding> {
 fn run_generator(root: &Path, extra: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_plinecite-baseline-gen"));
     cmd.arg("--project-root").arg(root).args(extra);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     cmd.output().expect("plinecite-baseline-gen spawns")
 }
 
@@ -248,7 +238,7 @@ fn a_shrink_only_run_refuses_a_ledger_its_own_redirect_truncated() {
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_plinecite-baseline-gen"));
     cmd.arg("--project-root").arg(dir.path()).stdout(redirect);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     let out = cmd.output().expect("plinecite-baseline-gen spawns");
 
     assert_eq!(out.status.code(), Some(3), "stderr:\n{}", stderr_of(&out));

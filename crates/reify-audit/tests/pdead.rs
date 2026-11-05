@@ -11,9 +11,8 @@
 //! convention.
 //!
 //! All tests use in-memory rusqlite + MockJCodemunchOps + MockGitOps so they
-//! remain hermetic. PDEAD is repo-wide (ignores task_metadata/target_task_id/
-//! window), so task_metadata is empty and target_task_id/window/now/
-//! producer_branch are all None.
+//! remain hermetic. PDEAD is repo-wide (ignores the task corpus and the
+//! target), so each context is a bare `AuditContext::new` with no builders.
 
 mod pdead {
 
@@ -22,7 +21,6 @@ use reify_audit::{
     Severity, pdead_dead_code,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn dead_sym(
@@ -67,17 +65,7 @@ mod tests {
             dead_sym("sym-c", "certain_fn",  "function", "crates/reify-x/src/c.rs", 30, 0.9, vec!["no_callers"]),
         ]);
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = pdead_dead_code::check(&ctx);
 
@@ -161,17 +149,7 @@ mod tests {
         let git = MockGitOps::new();
         let jc = MockJCodemunchOps::new();
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = pdead_dead_code::check(&ctx);
         assert!(
@@ -203,17 +181,7 @@ mod tests {
             dead_sym("s4", "live_sym",     "function", "crates/reify-x/src/live.rs",         4, 0.9, vec!["no_callers"]),
         ]);
 
-        let ctx = AuditContext {
-            project_root: PathBuf::from("/tmp/fake-project"),
-            conn: &conn,
-            git: &git,
-            jcodemunch: &jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        };
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
 
         let findings = pdead_dead_code::check(&ctx);
 
@@ -231,6 +199,41 @@ mod tests {
             "surviving finding must cite live.rs; got {:?}",
             findings[0].evidence
         );
+    }
+
+    /// A `get_dead_code_v2` query that FAILED is not a repo with no dead
+    /// code. PDEAD's one query is its whole sweep, so the failure replaces
+    /// the run's result with exactly one Low `PDeadCodeUnexamined` naming the
+    /// tool and the failure — the record that stops zero findings reading as
+    /// clean.
+    #[test]
+    fn a_failed_dead_code_query_reports_pdead_unexamined_not_clean() {
+        const TIMEOUT: &str = "read body: timed out reading response";
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        let git = MockGitOps::new();
+        let mut jc = MockJCodemunchOps::new();
+        jc.fail_dead_code(TIMEOUT);
+
+        let ctx = AuditContext::new(PathBuf::from("/tmp/fake-project"), &conn, &git, &jc);
+
+        let findings = pdead_dead_code::check(&ctx);
+        assert_eq!(
+            findings.len(),
+            1,
+            "a failed query must yield exactly one finding; got {findings:?}"
+        );
+        let f = &findings[0];
+        assert_eq!(f.pattern, Pattern::PDeadCodeUnexamined, "got {f:?}");
+        assert_eq!(f.severity, Severity::Low, "Low keeps the exit code neutral");
+        assert_eq!(f.task_id, "", "PDEAD is repo-wide; got {f:?}");
+        for needle in ["get_dead_code_v2", TIMEOUT] {
+            assert!(
+                f.summary.contains(needle),
+                "the summary must carry {needle:?} (the failed tool and the \
+                 failure); got {:?}",
+                f.summary
+            );
+        }
     }
 
 } // mod tests

@@ -1,26 +1,35 @@
 #!/usr/bin/env bash
 # scripts/lib_event_log.sh — encode verify events as JSON lines and append them
-# to $REIFY_VERIFY_EVENT_LOG (sourced-only).
+# to the event sinks (sourced-only).
+#
+# SINKS — every record goes to each one that is set, channel first:
+#   REIFY_VERIFY_EVENT_LOG  the exported verify-tree channel.
+#   EVENT_LOG_COPY_TO       a caller's own copy path. A shell variable the
+#                           caller never exports, so only its shell and its
+#                           subshells write it, never a child process.
 #
 # CONTRACT:
-#   Inert when REIFY_VERIFY_EVENT_LOG is unset or empty: every emitter's FIRST
-#   statement returns, so a call costs no byte, no fork and no open.
-#   One record per physical line, appended by ONE O_APPEND printf, at most
-#   EVENT_LOG_LINE_MAX bytes including its newline. List fields are fitted to
-#   that cap and what they drop is counted in the record.
-#   Never fatal and silent: every emitter returns 0 and an unwritable channel
+#   Inert when both sinks are unset or empty: every emitter's FIRST statement
+#   returns, so a call costs no byte, no fork and no open.
+#   One record per physical line, appended to each sink by ONE O_APPEND
+#   printf, at most EVENT_LOG_LINE_MAX bytes including its newline. List
+#   fields are fitted to that cap and what they drop is counted in the record.
+#   Never fatal and silent: every emitter returns 0 and an unwritable sink
 #   prints nothing, so a caller's control flow under set -e never changes.
+#   ts_ns and every *_NS argument a caller passes read event_log_clock_ns.
 #
 # EMITTERS (positional, PRD D3):
 #   event_log_emit_run_start     RUN_ID SCOPE BRANCH DISCOVERED
 #   event_log_emit_member_start  MEMBER ATTEMPT MODE
-#   event_log_emit_member_finish MEMBER ATTEMPT RC VERDICT DURATION_MS PRE_OMITTED [DETAIL_LINE...]
+#   event_log_emit_member_finish MEMBER ATTEMPT RC VERDICT DURATION_MS QUEUED_NS STARTED_NS ENDED_NS PRE_OMITTED [DETAIL_LINE...]
+#   event_log_emit_phase_finish  PHASE STARTED_NS ENDED_NS
 #   event_log_emit_slot_timeout  REASON SLOTS WAITED DISPOSITION LOCK EMITTER
 #   event_log_emit_run_finish    DISCOVERED FAILURES INTERRUPTED N_FAILED [name...] N_FLAKY [name...] N_SKIPPED [name...]
 # An int argument that is not an integer, and a bool that is not true/false,
 # encodes JSON null.
 #
-# Schema, writers and the reader (tests/infra/verify_events.py):
+# Readers: scripts/verify_events_lib.py (the parser) and
+# tests/infra/verify_events.py (the CLI over it). Schema and writers:
 # tests/infra/README.md "Verify event channel". Contract and consumer rules:
 # PRD docs/prds/v0_6/run-all-runner-infra-harness.md §4. This lib lives in
 # scripts/ because scripts/lib_slot_acquire.sh sources it and must not depend
@@ -100,14 +109,27 @@ _event_log_add() {
     printf -v "$1" '%s,"%s":%s' "${!1}" "$3" "$_ela_v"
 }
 
+# event_log_clock_ns OUT_VAR — the one event clock: epoch nanoseconds (at
+# microsecond resolution under bash 5's EPOCHREALTIME), else empty.
+event_log_clock_ns() {
+    local _elc_ts="${EPOCHREALTIME:-}"
+    if [ -n "$_elc_ts" ]; then
+        _elc_ts="${_elc_ts//[.,]/}000"
+    else
+        _elc_ts="$(date +%s%N 2>/dev/null)" || _elc_ts=""
+    fi
+    printf -v "$1" '%s' "$_elc_ts"
+}
+
+# _event_log_no_sink — true when neither sink is set: the inert guard.
+_event_log_no_sink() {
+    [ -z "${REIFY_VERIFY_EVENT_LOG:-}" ] && [ -z "${EVENT_LOG_COPY_TO:-}" ]
+}
+
 # _event_log_head OUT_VAR EVENT — the record's opening: v, ts_ns, pid, event.
 _event_log_head() {
-    local _elh_ts="${EPOCHREALTIME:-}"
-    if [ -n "$_elh_ts" ]; then
-        _elh_ts="${_elh_ts//[.,]/}000"
-    else
-        _elh_ts="$(date +%s%N 2>/dev/null)" || _elh_ts=""
-    fi
+    local _elh_ts
+    event_log_clock_ns _elh_ts
     _event_json_int _elh_ts "$_elh_ts"
     printf -v "$1" '{"v":1,"ts_ns":%s,"pid":%s,"event":"%s"' "$_elh_ts" "$BASHPID" "$2"
 }
@@ -170,18 +192,22 @@ _event_log_fit_list() {
     printf -v "$3" '%d' "$_efl_used"
 }
 
-# _event_log_append LINE EVENT — the one writer. A line over the cap is
-# dropped with one stderr diagnostic; only an oversized scalar (say a
-# multi-KB lock path) can reach that, since list fields are fitted first.
+# _event_log_append LINE EVENT — the one writer, to each set sink. A line
+# over the cap is dropped with one stderr diagnostic; only an oversized scalar
+# (say a multi-KB lock path) can reach that, since list fields are fitted first.
 _event_log_append() {
     local LC_ALL=C
-    local _elap_bytes=$(( ${#1} + 1 ))
+    local _elap_bytes=$(( ${#1} + 1 )) _elap_sink
     if [ "$_elap_bytes" -gt "$EVENT_LOG_LINE_MAX" ]; then
         printf 'lib_event_log.sh: %s record of %d bytes exceeds the %d-byte line cap; not written\n' \
             "$2" "$_elap_bytes" "$EVENT_LOG_LINE_MAX" >&2 || true
         return 0
     fi
-    { printf '%s\n' "$1" >> "$REIFY_VERIFY_EVENT_LOG"; } 2>/dev/null || return 0
+    for _elap_sink in "${REIFY_VERIFY_EVENT_LOG:-}" "${EVENT_LOG_COPY_TO:-}"; do
+        [ -n "$_elap_sink" ] || continue
+        { printf '%s\n' "$1" >> "$_elap_sink"; } 2>/dev/null || true
+    done
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -189,7 +215,7 @@ _event_log_append() {
 # the helpers never restores the caller's locale more than once per call.
 # ---------------------------------------------------------------------------
 event_log_emit_run_start() {
-    [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
+    _event_log_no_sink && return 0
     local LC_ALL=C
     local _line
     _event_log_head _line run_start
@@ -202,7 +228,7 @@ event_log_emit_run_start() {
 }
 
 event_log_emit_member_start() {
-    [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
+    _event_log_no_sink && return 0
     local LC_ALL=C
     local _line
     _event_log_head _line member_start
@@ -214,12 +240,12 @@ event_log_emit_member_start() {
 }
 
 event_log_emit_member_finish() {
-    [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
+    _event_log_no_sink && return 0
     # Cut in the caller's locale: at a character under UTF-8, at a byte under
     # C, where a character the cut splits is then dropped whole.
     local -a _entries=()
     local _entry
-    for _entry in "${@:7}"; do
+    for _entry in "${@:10}"; do
         _entries+=("${_entry:0:EVENT_LOG_DETAIL_ENTRY_MAX}")
     done
     local LC_ALL=C
@@ -234,7 +260,10 @@ event_log_emit_member_finish() {
     _event_log_add _line int rc "${3-}"
     _event_log_add _line str verdict "${4-}"
     _event_log_add _line int duration_ms "${5-}"
-    _event_json_int _pre "${6-}"
+    _event_log_add _line int queued_ns "${6-}"
+    _event_log_add _line int started_ns "${7-}"
+    _event_log_add _line int ended_ns "${8-}"
+    _event_json_int _pre "${9-}"
     _event_log_budget _budget "$_line" ',"fail_detail":[],"fail_detail_omitted":}'
     _event_log_fit_list _detail _dropped _used "$_budget" tail \
         "${_entries[@]+"${_entries[@]}"}"
@@ -244,8 +273,20 @@ event_log_emit_member_finish() {
     return 0
 }
 
+event_log_emit_phase_finish() {
+    _event_log_no_sink && return 0
+    local LC_ALL=C
+    local _line
+    _event_log_head _line phase_finish
+    _event_log_add _line str phase "${1-}"
+    _event_log_add _line int started_ns "${2-}"
+    _event_log_add _line int ended_ns "${3-}"
+    _event_log_append "$_line}" phase_finish
+    return 0
+}
+
 event_log_emit_slot_timeout() {
-    [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
+    _event_log_no_sink && return 0
     local LC_ALL=C
     local _line
     _event_log_head _line slot_timeout
@@ -266,7 +307,7 @@ event_log_emit_slot_timeout() {
 # count that is not a non-negative integer, or exceeds the arguments left,
 # encodes that list and every later one as [] rather than mis-slicing.
 event_log_emit_run_finish() {
-    [ -n "${REIFY_VERIFY_EVENT_LOG:-}" ] || return 0
+    _event_log_no_sink && return 0
     local LC_ALL=C
     local _line _interrupted _budget _list _count _json _dropped _used
     local _omitted=0 _malformed=0

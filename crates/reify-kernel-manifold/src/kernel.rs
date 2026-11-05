@@ -196,6 +196,19 @@ impl ManifoldKernel {
         self.sub_shapes.insert(id, sub);
         GeometryHandleId(id)
     }
+
+    /// The coalesced planar-face topology of a stored shape — what
+    /// `AdjacentFaces` / `SharedEdges` answer from.
+    fn planar_face_topology(
+        &self,
+        shape: GeometryHandleId,
+    ) -> Result<crate::queries::PlanarFaceTopology, QueryError> {
+        let m = self
+            .get_manifold(shape)
+            .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+        let (verts, tris) = crate::queries::mesh_geometry(m);
+        Ok(crate::queries::PlanarFaceTopology::of_mesh(&verts, &tris))
+    }
 }
 
 impl Default for ManifoldKernel {
@@ -558,75 +571,52 @@ impl GeometryKernel for ManifoldKernel {
             }
             // Performance note — per-query re-extraction (accepted v0.2 cost).
             // The four topology/mass arms below each call `mesh_geometry` (a
-            // full `to_mesh_f64` + vertex copy) on every invocation, and
-            // `SharedEdges` additionally rebuilds the `canonical_edges` BTreeSet
-            // per call; iterating queries over many face/edge pairs of one shape
-            // is therefore O(pairs · mesh_size) with repeated full-mesh
-            // re-extraction. This mirrors OCCT's per-query model and is left
-            // un-memoized intentionally for v0.2. If profiling shows these hot,
-            // cache `(verts, triangles, canonical_edges)` alongside `shapes`,
-            // invalidated whenever a handle's mesh is (re)stored.
+            // full `to_mesh_f64` + vertex copy) on every invocation, and the two
+            // adjacency arms additionally rebuild a `PlanarFaceTopology`
+            // (coplanar grouping + `canonical_edges`) per call; iterating
+            // queries over many face/edge pairs of one shape is therefore
+            // O(pairs · mesh_size) with repeated full-mesh re-extraction. This
+            // mirrors OCCT's per-query model and is left un-memoized
+            // intentionally for v0.2. If profiling shows these hot, cache the
+            // `PlanarFaceTopology` (and the mass-property mesh) alongside
+            // `shapes`, invalidated whenever a handle's mesh is (re)stored.
             //
-            // Faces (mesh triangles) sharing at least one edge with triangle
-            // `face_index`, self excluded, ascending — Value::List<Value::Int>
-            // mirroring OCCT's AdjacentFaces wire format. On the closed cube
-            // each triangle has exactly 3 such neighbours. (KGQ-π / task 3625.)
-            //
-            // NOTE: `face_index` is a raw mesh-triangle index (0..num_triangles),
-            // NOT an index into the coalesced planar-face handles returned by
-            // `extract_faces`. These two index spaces are disjoint. A unit cube
-            // has 12 raw triangles (face_index in 0..12) and 6 planar-face
-            // handles from extract_faces; the two cannot be used interchangeably.
+            // Coalesced planar faces (`extract_faces` positions) sharing at
+            // least one edge with face `face_index`, self excluded, ascending —
+            // Value::List<Value::Int> mirroring OCCT's AdjacentFaces wire
+            // format. (KGQ-π / task 3625.)
             GeometryQuery::AdjacentFaces { shape, face_index } => {
-                let (_verts, tris) = {
-                    let m = self
-                        .get_manifold(*shape)
-                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
-                    crate::queries::mesh_geometry(m)
-                };
-                let triangles = crate::queries::triangles_of(&tris);
-                match crate::queries::adjacent_faces(&triangles, *face_index) {
+                let topology = self.planar_face_topology(*shape)?;
+                match topology.adjacent_faces(*face_index) {
                     Some(neighbours) => Ok(Value::List(
                         neighbours.into_iter().map(|i| Value::Int(i as i64)).collect(),
                     )),
                     None => Err(QueryError::QueryFailed(format!(
-                        "AdjacentFaces: face_index {} out of range 0..{}",
-                        face_index,
-                        triangles.len()
+                        "AdjacentFaces: face_index {face_index} out of range 0..{} \
+                         (coalesced planar faces)",
+                        topology.face_count()
                     ))),
                 }
             }
-            // Canonical edge indices shared by triangles `face_a` and `face_b`,
-            // ascending — Value::List<Value::Int> mirroring OCCT. `face_a ==
-            // face_b` yields an empty list (design decision). Edge indices are
-            // into the same canonical_edges enumeration extract_edges exposes,
-            // so SharedEdges and extract_edges agree. (KGQ-π / task 3625.)
-            //
-            // NOTE: `face_a` and `face_b` are raw mesh-triangle indices
-            // (0..num_triangles), NOT handles or indices from extract_faces'
-            // coalesced planar-face space. These two index spaces are disjoint.
+            // `extract_edges` positions of the edges shared by faces `face_a`
+            // and `face_b` (`extract_faces` positions), ascending —
+            // Value::List<Value::Int> mirroring OCCT. Both indices are
+            // range-checked before `face_a == face_b` yields an empty list, as
+            // on OCCT. (KGQ-π / task 3625.)
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
                 face_b,
             } => {
-                let (verts, tris) = {
-                    let m = self
-                        .get_manifold(*shape)
-                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
-                    crate::queries::mesh_geometry(m)
-                };
-                let triangles = crate::queries::triangles_of(&tris);
-                let (index_pairs, _endpoints) = crate::queries::canonical_edges(&verts, &tris);
-                match crate::queries::shared_edges(&triangles, &index_pairs, *face_a, *face_b) {
+                let topology = self.planar_face_topology(*shape)?;
+                match topology.shared_edges(*face_a, *face_b) {
                     Some(shared) => Ok(Value::List(
                         shared.into_iter().map(|i| Value::Int(i as i64)).collect(),
                     )),
                     None => Err(QueryError::QueryFailed(format!(
-                        "SharedEdges: face index out of range 0..{} (face_a={}, face_b={})",
-                        triangles.len(),
-                        face_a,
-                        face_b
+                        "SharedEdges: face index out of range 0..{} (coalesced planar \
+                         faces; face_a={face_a}, face_b={face_b})",
+                        topology.face_count()
                     ))),
                 }
             }

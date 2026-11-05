@@ -373,7 +373,7 @@ tasks:
     binding: 'measured — 63 lines match (Orientation|Frame|Transform3?)<[0-9N]> over docs/reify-stdlib-reference.md, docs/reify-language-spec.md, crates/reify-mcp/src/tools/chunks (48), crates/reify-lsp/src/completion.rs, crates/reify-eval/src/geometry_ops.rs and crates/reify-compiler/src/geometry.rs (15 user-visible strings and comments) (2026-10-18); no .ri code writes the spelling. Comments count too: ε respells them.'
     verdict: PASS
   - name: orientation-arg-spellings-gone
-    binding: 'producer-self — every documented type-argument spelling of the family is respelled (R9).'
+    binding: 'producer-self — every documented type-argument spelling of the family is respelled (R9). Paths widened 2026-10-20 (retro-critic R9 M6) to include crates/reify-eval/src/geometry_ops/, because S13 δ #8750 moves transform_rotate/transform_apply/pattern_arbitrary into geometry_ops/compile/*.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -386,6 +386,7 @@ tasks:
       - crates/reify-lsp/src/completion.rs
       - crates/reify-eval/src/geometry_ops.rs
       - crates/reify-compiler/src/geometry.rs
+      - crates/reify-eval/src/geometry_ops/
   - name: chunks-state-behaviour
     binding: 'behavioural — types.md / structures.md / enums.md state the new behaviour and harness_doc_chunks is green.'
     verdict: PASS

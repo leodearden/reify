@@ -40,19 +40,26 @@ use reify_core::Type;
 /// yields `None`. α seeds no overloads, so that is unreachable today; it exists
 /// so the first τ to register one gets a conservative fall-through rather than
 /// an arbitrary first-row answer.
+///
+/// So does a Relation row: see [`sole_row_id`].
 pub(crate) fn registry_result_type(name: &str, args: &[Type]) -> Option<Type> {
     reify_builtins::row_for(sole_row_id(name)?).result.resolve(args)
 }
 
 /// The one row that owns `name`, or `None` for an unregistered name (empty
-/// group) or a multi-row group (an arity overload).
+/// group), a multi-row group (an arity overload) or a Relation row.
+///
+/// Relation rows are typed by relation_signatures' arity-gated arm, which
+/// precedes this one in `expr.rs`, until S9 λ #8741 rewires that typing onto
+/// the rows. Answering here would claim calls that arm deliberately declines,
+/// e.g. `offset(x)` at argc 1.
 ///
 /// Both entry points are written in terms of this, which is what makes
 /// [`registry_owns`] *definitionally* [`registry_result_type`]'s precondition
 /// rather than a restatement that could drift.
 fn sole_row_id(name: &str) -> Option<reify_builtins::BuiltinId> {
     match reify_builtins::name_group(name) {
-        [id] => Some(*id),
+        [id] if id.as_relation().is_none() => Some(*id),
         _ => None,
     }
 }

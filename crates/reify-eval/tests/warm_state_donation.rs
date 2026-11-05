@@ -44,7 +44,7 @@ use reify_test_support::{
 
 /// Build a fresh Engine (no prior eval) backed by the real constraint checker.
 fn fresh_engine() -> Engine {
-    Engine::new(Box::new(SimpleConstraintChecker), None)
+    Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None)
 }
 
 /// Bracket source with a single configurable let so tests can drop just the

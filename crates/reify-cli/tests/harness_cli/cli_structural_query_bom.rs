@@ -55,7 +55,7 @@ fn check_forall_members_constraint_is_satisfied_not_indeterminate() {
     // which is exactly what this test is guarding.  String-based discrimination
     // is intentional and load-bearing here, not a fragility:
     // `"INDETERMINATE"` / `"VIOLATED"` / `"All constraints satisfied."` are the
-    // stable status tokens emitted by `report_constraint_results` (main.rs:2263+)
+    // stable status tokens emitted by `report_constraint_results` (crates/reify-cli/src/constraint_report.rs)
     // and are exercised broadly across the existing CLI test suite.
     assert!(
         status.success(),

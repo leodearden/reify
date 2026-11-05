@@ -27,6 +27,9 @@ import xml.etree.ElementTree as ElementTree
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from verify_events_lib import read_events  # noqa: E402  (imported after sys.path manipulation)
+
 RECORD_SCHEMA = "reify.verify-run/1"
 LEDGER_FILE = "verify-runs.jsonl"
 SEED_STAMP_SCHEMA = "reify.lane-seed/1"
@@ -180,7 +183,8 @@ def split_nul(text):
 # ---------------------------------------------------------------------------
 # Journal: <journal>/plan.nul (verify.sh), meta.json (run-begin),
 # journal.jsonl (step events from verify.sh, observations from boundary),
-# step-<i>.run-all.jsonl (run_all.sh), errors.log (every instrument failure).
+# step-<i>.run-all.jsonl (run_all.sh's copy of its C2 event records, through
+# lib_event_log.sh's EVENT_LOG_COPY_TO), errors.log (every instrument failure).
 # ---------------------------------------------------------------------------
 
 
@@ -224,19 +228,76 @@ def read_run_all(journal, index):
     path = journal_path(journal, f"step-{index}.run-all.jsonl")
     if not path.exists():
         return None
-    summary, members = None, []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
+    return fold_run_all(read_events(path).records)
+
+
+def ns_to_secs(ns):
+    """Epoch nanoseconds as epoch seconds; anything but an int is unknown."""
+    return round(ns / 1_000_000_000, 6) if type(ns) is int else None
+
+
+def fold_run_all(records):
+    """run_all.sh's C2 records as the step's run_all block: {summary, members}."""
+    run = first_run(records)
+    return {
+        "summary": run_all_summary(run),
+        "members": [run_all_member(r) for r in run if r.get("event") == "member_finish"],
+    }
+
+
+def first_run(records):
+    """The first run_start's own records, through its run_finish; every record without one.
+
+    A step member that runs nested run_all.sh fixtures passes the step file on
+    to them, so one file can interleave several runs. Each run's records share
+    the pid of its run_start.
+    """
+    start = next((i for i, r in enumerate(records) if r.get("event") == "run_start"), None)
+    if start is None:
+        return list(records)
+    pid = records[start].get("pid")
+    run = []
+    for record in records[start:]:
+        if record.get("pid") != pid:
             continue
-        if not isinstance(row, dict):
-            continue
-        if row.get("kind") == "summary" and summary is None:
-            summary = row
-        elif row.get("kind") == "member":
-            members.append(row)
-    return {"summary": summary, "members": members}
+        run.append(record)
+        if record.get("event") == "run_finish":
+            break
+    return run
+
+
+def run_all_summary(records):
+    """The run's run_start identity plus each phase's window; None without a run_start."""
+    run_start = next((r for r in records if r.get("event") == "run_start"), None)
+    if run_start is None:
+        return None
+    phases = {}
+    for r in records:
+        phase = r.get("phase")
+        if r.get("event") == "phase_finish" and isinstance(phase, str) and phase not in phases:
+            phases[phase] = {
+                "began_at": ns_to_secs(r.get("started_ns")),
+                "ended_at": ns_to_secs(r.get("ended_ns")),
+            }
+    return {
+        "run_id": run_start.get("run_id"),
+        "branch": run_start.get("branch"),
+        "discovered": run_start.get("discovered"),
+        "phases": phases,
+    }
+
+
+def run_all_member(record):
+    """One member_finish record as a member row, its times in epoch seconds."""
+    return {
+        "name": record.get("member"),
+        "attempt": record.get("attempt"),
+        "verdict": record.get("verdict"),
+        "rc": record.get("rc"),
+        "queued_at": ns_to_secs(record.get("queued_ns")),
+        "started_at": ns_to_secs(record.get("started_ns")),
+        "ended_at": ns_to_secs(record.get("ended_ns")),
+    }
 
 
 # ---------------------------------------------------------------------------

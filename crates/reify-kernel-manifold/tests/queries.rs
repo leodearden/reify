@@ -33,8 +33,12 @@ compile_error!(
      in [dev-dependencies]."
 );
 
-use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Value};
+use reify_ir::{GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, QueryError, Value};
 use reify_kernel_manifold::{kernel::ManifoldKernel, test_fixtures::unit_cube_mesh};
+
+#[path = "support/query_wire.rs"]
+mod query_wire;
+use query_wire::parse_bbox;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -680,37 +684,6 @@ fn query_sub_face_surface_area_and_normal_unit_cube() {
     );
 }
 
-/// Parse the OCCT-compatible `{"xmin":_,...,"zmax":_}` BoundingBox JSON wire
-/// format into `[xmin, ymin, zmin, xmax, ymax, zmax]`.
-fn parse_bbox(s: &str) -> [f64; 6] {
-    let mut out = [f64::NAN; 6];
-    let trimmed = s.trim().trim_start_matches('{').trim_end_matches('}');
-    for field in trimmed.split(',') {
-        let (key, val) = field
-            .split_once(':')
-            .unwrap_or_else(|| panic!("malformed bbox field {field:?} in {s:?}"));
-        let key = key.trim().trim_matches('"');
-        let val: f64 = val
-            .trim()
-            .parse()
-            .unwrap_or_else(|_| panic!("non-numeric value in field {field:?} of {s:?}"));
-        let idx = match key {
-            "xmin" => 0,
-            "ymin" => 1,
-            "zmin" => 2,
-            "xmax" => 3,
-            "ymax" => 4,
-            "zmax" => 5,
-            other => panic!("unexpected key {other:?} in bbox JSON {s:?}"),
-        };
-        out[idx] = val;
-    }
-    for (i, c) in out.iter().enumerate() {
-        assert!(!c.is_nan(), "bbox JSON {s:?} missing component {i}");
-    }
-    out
-}
-
 /// Sub-edge `EdgeTangent` and `BoundingBox` over the unit cube's 18 edges.
 ///
 /// The closed cube mesh's 18 unique edges partition exactly into **12
@@ -809,178 +782,310 @@ fn query_sub_edge_tangent_and_bbox_unit_cube() {
 // Topology adjacency: AdjacentFaces (steps 9 + 10), SharedEdges (steps 11 + 12)
 // ---------------------------------------------------------------------------
 
-/// Decode an `Ok(Value::List)` of `Value::Int` into `Vec<i64>`, panicking with
-/// a descriptive message on any other shape. Shared by the `AdjacentFaces` and
-/// `SharedEdges` tests (both mirror OCCT's `Value::List<Value::Int>` wire
-/// format: `crates/reify-kernel-occt/src/lib.rs`).
-fn query_int_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<i64> {
+/// The indices an `AdjacentFaces` / `SharedEdges` query replies with,
+/// panicking unless the reply is OCCT's `Value::List<Value::Int>` wire format
+/// (`crates/reify-kernel-occt/src/lib.rs`).
+fn query_index_list(kernel: &ManifoldKernel, q: &GeometryQuery) -> Vec<usize> {
     match kernel.query(q) {
-        Ok(Value::List(items)) => items
-            .iter()
-            .map(|v| match v {
-                Value::Int(i) => *i,
-                other => panic!("AdjacentFaces/SharedEdges list must hold Value::Int; got {other:?}"),
-            })
-            .collect(),
-        other => panic!("query({q:?}) must return Ok(Value::List(_)); got {other:?}"),
+        Ok(value) => query_wire::index_list(&value),
+        Err(e) => panic!("query({q:?}) must succeed; got {e:?}"),
     }
 }
 
-/// `AdjacentFaces` over the unit cube: every mesh triangle has exactly 3
-/// edge-adjacent neighbours.
+/// Face indices `AdjacentFaces { shape, face_index }` reports, checked against
+/// the wire contract every caller relies on (OCCT's `std::set` reply shape):
+/// ascending, distinct, the queried face excluded, each a position in
+/// `0..face_count` — i.e. an index into `extract_faces(shape)`.
+fn adjacent_face_indices(
+    kernel: &ManifoldKernel,
+    shape: GeometryHandleId,
+    face_index: usize,
+    face_count: usize,
+) -> Vec<usize> {
+    let neighbours = query_index_list(kernel, &GeometryQuery::AdjacentFaces { shape, face_index });
+    assert!(
+        neighbours.windows(2).all(|w| w[0] < w[1]),
+        "AdjacentFaces({face_index}) must be ascending and distinct; got {neighbours:?}",
+    );
+    assert!(
+        !neighbours.contains(&face_index),
+        "AdjacentFaces({face_index}) must exclude the queried face; got {neighbours:?}",
+    );
+    assert!(
+        neighbours.iter().all(|&n| n < face_count),
+        "AdjacentFaces({face_index}) must index extract_faces (0..{face_count}); \
+         got {neighbours:?}",
+    );
+    neighbours
+}
+
+/// Edge indices `SharedEdges { shape, face_a, face_b }` reports, as positions
+/// into `extract_edges(shape)`.
+fn shared_edge_indices(
+    kernel: &ManifoldKernel,
+    shape: GeometryHandleId,
+    face_a: usize,
+    face_b: usize,
+) -> Vec<usize> {
+    query_index_list(
+        kernel,
+        &GeometryQuery::SharedEdges {
+            shape,
+            face_a,
+            face_b,
+        },
+    )
+}
+
+/// Assert `query` is rejected with `QueryError::QueryFailed`.
+fn assert_query_failed(kernel: &ManifoldKernel, query: &GeometryQuery) {
+    match kernel.query(query) {
+        Err(QueryError::QueryFailed(_)) => {}
+        other => panic!("query({query:?}) must fail with QueryFailed; got {other:?}"),
+    }
+}
+
+/// `FaceNormal` of every face handle, in `faces` order.
+fn face_normals(kernel: &ManifoldKernel, faces: &[GeometryHandleId]) -> Vec<[f64; 3]> {
+    faces
+        .iter()
+        .map(|&f| match kernel.query(&GeometryQuery::FaceNormal(f)) {
+            Ok(Value::String(s)) => parse_xyz(&s),
+            other => panic!("FaceNormal({f:?}) must return Ok(Value::String(_)); got {other:?}"),
+        })
+        .collect()
+}
+
+/// Per-axis extent `[dx, dy, dz]` of an edge handle's `BoundingBox`.
+fn edge_span(kernel: &ManifoldKernel, edge: GeometryHandleId) -> [f64; 3] {
+    let bb = match kernel.query(&GeometryQuery::BoundingBox(edge)) {
+        Ok(Value::String(s)) => parse_bbox(&s),
+        other => panic!("BoundingBox({edge:?}) must return Ok(Value::String(_)); got {other:?}"),
+    };
+    [bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]]
+}
+
+/// The axis an axis-aligned face normal points along.
+fn normal_axis(n: [f64; 3]) -> usize {
+    n.iter()
+        .position(|c| (c.abs() - 1.0).abs() < AXIS_TOL)
+        .unwrap_or_else(|| panic!("face normal {n:?} must be axis-aligned"))
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Every coordinate in these fixtures is an exact dyadic value (0, 0.5, 1,
+/// 1.5) in both f32 and f64, so normals, spans and dot products are exact;
+/// this is a representation margin, not a tuned bound.
+const AXIS_TOL: f64 = 1e-9;
+
+/// `AdjacentFaces` answers in `extract_faces`' coalesced planar-face space:
+/// each of the unit cube's 6 faces touches exactly the 4 perpendicular faces
+/// and not the opposite one, matching OCCT's BRep cube.
 ///
-/// Closed-2-manifold invariant: the cube mesh has 12 triangles and 18 edges,
-/// each edge shared by exactly 2 triangles (`12·3 = 36 = 18·2`). Two distinct
-/// triangles cannot share two edges without being identical, so each triangle's
-/// 3 edges reach 3 *distinct* neighbours — exactly 3, for **every** triangle
-/// index (the assertion is therefore triangle-order-independent). The query
-/// excludes the triangle itself and returns the neighbour indices as an
-/// ascending `Value::List<Value::Int>`, mirroring OCCT's wire format.
-///
-/// `AdjacentFaces` and `SharedEdges` index **raw mesh triangles** (0..12 for
-/// the unit cube) — they are NOT affected by task-4262's coplanar coalescing
-/// of `extract_faces` from 12 handles to 6.  This test is intentionally
-/// decoupled from `extract_faces` to remain GREEN after that semantic change.
+/// Index 6 is past the 6-face space, so it must be rejected — this also
+/// discriminates the face space from the 12-triangle mesh space.
 #[test]
-fn query_adjacent_faces_unit_cube_exactly_three_neighbours() {
+fn adjacent_faces_unit_cube_four_neighbours_in_face_space() {
     let mut kernel = ManifoldKernel::new();
     let shape = ingest(&mut kernel, [0.0, 0.0, 0.0]);
-    // The unit cube tessellates to 12 raw mesh triangles.  This raw-triangle
-    // count is the index space AdjacentFaces/SharedEdges operate on; it is
-    // independent of extract_faces' coalesced-planar-face count.
-    let raw_tri_count = 12usize;
+    let faces = kernel
+        .extract_faces(shape)
+        .expect("extract_faces must succeed");
+    assert_eq!(
+        faces.len(),
+        6,
+        "unit cube must have 6 coalesced planar faces"
+    );
+    let normals = face_normals(&kernel, &faces);
 
-    // A spread of triangle indices — the "exactly 3" invariant holds for all.
-    for &face_index in &[0usize, 1, 6, 11] {
-        let neighbours =
-            query_int_list(&kernel, &GeometryQuery::AdjacentFaces { shape, face_index });
+    for face_index in 0..faces.len() {
+        let neighbours = adjacent_face_indices(&kernel, shape, face_index, faces.len());
         assert_eq!(
             neighbours.len(),
-            3,
-            "triangle {face_index} must have exactly 3 edge-adjacent neighbours \
-             (closed-2-manifold); got {neighbours:?}",
+            4,
+            "cube face {face_index} must have exactly 4 adjacent faces; got {neighbours:?}",
         );
-        // Self excluded.
-        assert!(
-            !neighbours.contains(&(face_index as i64)),
-            "AdjacentFaces({face_index}) must exclude the queried triangle; got {neighbours:?}",
-        );
-        // All entries are valid triangle indices in 0..raw_tri_count.
-        for &n in &neighbours {
+        for &j in &neighbours {
             assert!(
-                (0..raw_tri_count as i64).contains(&n),
-                "neighbour {n} of triangle {face_index} out of range 0..{raw_tri_count}",
+                dot(normals[face_index], normals[j]).abs() < AXIS_TOL,
+                "neighbour {j} of face {face_index} must be perpendicular to it; \
+                 normals {:?} vs {:?}",
+                normals[face_index],
+                normals[j],
             );
         }
-        // Ascending and distinct.
-        let mut sorted = neighbours.clone();
-        sorted.sort_unstable();
+        let rest: Vec<usize> = (0..faces.len())
+            .filter(|&j| j != face_index && !neighbours.contains(&j))
+            .collect();
         assert_eq!(
-            neighbours, sorted,
-            "AdjacentFaces({face_index}) must be ascending; got {neighbours:?}",
+            rest.len(),
+            1,
+            "exactly one cube face is not adjacent to face {face_index}"
         );
-        let mut deduped = sorted.clone();
-        deduped.dedup();
-        assert_eq!(
-            deduped.len(),
-            neighbours.len(),
-            "AdjacentFaces({face_index}) must have distinct entries; got {neighbours:?}",
+        assert!(
+            (dot(normals[face_index], normals[rest[0]]) + 1.0).abs() < AXIS_TOL,
+            "the non-adjacent face {} must be opposite face {face_index}",
+            rest[0],
         );
     }
+
+    assert_query_failed(
+        &kernel,
+        &GeometryQuery::AdjacentFaces {
+            shape,
+            face_index: faces.len(),
+        },
+    );
 }
 
-/// `SharedEdges` over the unit cube, cross-validated against `AdjacentFaces`.
-///
-/// Two distinct triangles cannot share two undirected edges without coinciding,
-/// so every *edge-adjacent* pair shares **exactly one** canonical edge, and
-/// every *non-adjacent* pair shares **none**. Driving the pairs off
-/// `AdjacentFaces(0)` keeps the test independent of the fixture's triangle
-/// winding/order while pinning the SharedEdges contract:
-/// - (a) each of triangle 0's 3 neighbours shares exactly one edge, a valid
-///   index in `0..18` (the canonical `extract_edges` enumeration), and the
-///   three shared indices are triangle 0's own 3 distinct edges;
-/// - (b) `face_a == face_b` returns an empty list (design decision);
-/// - (c) a non-adjacent triangle shares no edge (empty list).
-///
-/// `SharedEdges` indexes **raw mesh triangles** (0..12) — unaffected by
-/// task-4262's coplanar coalescing of `extract_faces`.  This test is
-/// intentionally decoupled from `extract_faces` to remain GREEN after that
-/// semantic change.
+/// `SharedEdges` answers in `extract_faces` face space with `extract_edges`
+/// edge positions: two adjacent cube faces share exactly their common cube
+/// edge — never one of the 6 face diagonals, which are interior triangulation
+/// edges of a single coalesced face.
 #[test]
-fn query_shared_edges_unit_cube() {
+fn shared_edges_unit_cube_one_boundary_edge_per_adjacent_pair() {
     let mut kernel = ManifoldKernel::new();
     let shape = ingest(&mut kernel, [0.0, 0.0, 0.0]);
-    // The unit cube has 12 raw mesh triangles and 18 canonical edges.
-    // AdjacentFaces/SharedEdges index the raw-triangle space (0..12)
-    // independently of extract_faces' coalesced-planar-face count (0..6).
+    let faces = kernel
+        .extract_faces(shape)
+        .expect("extract_faces must succeed");
+    let edges = kernel
+        .extract_edges(shape)
+        .expect("extract_edges must succeed");
+    assert_eq!(edges.len(), 18, "unit cube must have 18 canonical edges");
 
-    // (a) Every edge-adjacent pair shares exactly one canonical edge.
-    let neighbours =
-        query_int_list(&kernel, &GeometryQuery::AdjacentFaces { shape, face_index: 0 });
-    assert_eq!(neighbours.len(), 3, "triangle 0 must have 3 neighbours");
+    let neighbours = adjacent_face_indices(&kernel, shape, 0, faces.len());
+    assert_eq!(
+        neighbours.len(),
+        4,
+        "cube face 0 must have 4 adjacent faces"
+    );
     let mut shared_ids = Vec::new();
     for &nb in &neighbours {
-        let shared = query_int_list(
-            &kernel,
-            &GeometryQuery::SharedEdges {
-                shape,
-                face_a: 0,
-                face_b: nb as usize,
-            },
-        );
+        let shared = shared_edge_indices(&kernel, shape, 0, nb);
         assert_eq!(
             shared.len(),
             1,
-            "edge-adjacent triangles 0 and {nb} must share exactly one edge; got {shared:?}",
+            "adjacent cube faces 0 and {nb} must share exactly one edge; got {shared:?}",
         );
         let e = shared[0];
         assert!(
-            (0..18).contains(&e),
-            "shared edge index {e} (triangles 0,{nb}) out of range 0..18",
+            e < edges.len(),
+            "shared edge {e} must index extract_edges (0..{})",
+            edges.len()
+        );
+        let span = edge_span(&kernel, edges[e]);
+        let spanning = span.iter().filter(|s| (*s - 1.0).abs() < AXIS_TOL).count();
+        let degenerate = span.iter().filter(|s| s.abs() < AXIS_TOL).count();
+        assert_eq!(
+            (spanning, degenerate),
+            (1, 2),
+            "edge {e} shared by faces 0 and {nb} must be a cube edge (one unit axis), \
+             not a face diagonal; bbox span {span:?}",
         );
         shared_ids.push(e);
     }
-    // Triangle 0's three shared edges are its own three *distinct* edges.
     shared_ids.sort_unstable();
-    let before = shared_ids.len();
     shared_ids.dedup();
     assert_eq!(
         shared_ids.len(),
-        before,
-        "triangle 0's three shared edges must be distinct; got {shared_ids:?}",
+        4,
+        "face 0's four shared edges must be distinct"
     );
 
-    // (b) face_a == face_b => empty list (design decision).
-    let self_shared = query_int_list(
-        &kernel,
-        &GeometryQuery::SharedEdges {
-            shape,
-            face_a: 3,
-            face_b: 3,
-        },
-    );
     assert!(
-        self_shared.is_empty(),
-        "SharedEdges(f, f) must be empty; got {self_shared:?}",
+        shared_edge_indices(&kernel, shape, 3, 3).is_empty(),
+        "SharedEdges(f, f) must be empty",
     );
-
-    // (c) A non-adjacent triangle (neither 0 nor a neighbour of 0) shares no
-    //     edge — 3 neighbours < 11 others, so one always exists.
-    let non_adjacent = (1..12i64)
-        .find(|i| !neighbours.contains(i))
-        .expect("a non-adjacent triangle must exist");
-    let none_shared = query_int_list(
+    let opposite = (1..faces.len())
+        .find(|j| !neighbours.contains(j))
+        .expect("the face opposite face 0 exists");
+    assert!(
+        shared_edge_indices(&kernel, shape, 0, opposite).is_empty(),
+        "opposite faces 0 and {opposite} must share no edge",
+    );
+    assert_query_failed(
         &kernel,
         &GeometryQuery::SharedEdges {
             shape,
             face_a: 0,
-            face_b: non_adjacent as usize,
+            face_b: faces.len(),
         },
     );
-    assert!(
-        none_shared.is_empty(),
-        "non-adjacent triangles 0 and {non_adjacent} must share no edge; got {none_shared:?}",
+}
+
+/// Adjacency on a boolean result stays in the coalesced face space even when
+/// the mesh has far more triangles than faces.
+///
+/// `[0,1]³ ∪ [0.5,1.5]×[0,1]²` is the box `[0,1.5]×[0,1]²`: 6 coalesced faces
+/// over a ~28-triangle mesh whose x-direction box edges are split into several
+/// canonical segments at x = 0.5 and x = 1. So `SharedEdges` of two adjacent
+/// faces is the set of segments on their common line, which together span the
+/// box along the free axis — the count is deliberately not pinned.
+#[test]
+fn adjacency_on_boolean_union_box_answers_in_coalesced_face_space() {
+    const BOX_EXTENT: [f64; 3] = [1.5, 1.0, 1.0];
+    let mut kernel = ManifoldKernel::new();
+    let left = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+    let right = ingest(&mut kernel, [0.5, 0.0, 0.0]);
+    let body = kernel
+        .execute(&GeometryOp::Union { left, right })
+        .expect("union of two overlapping cubes must succeed")
+        .id;
+    let faces = kernel
+        .extract_faces(body)
+        .expect("extract_faces must succeed");
+    assert_eq!(
+        faces.len(),
+        6,
+        "the union box must have 6 coalesced planar faces"
     );
+    let edges = kernel
+        .extract_edges(body)
+        .expect("extract_edges must succeed");
+    let normals = face_normals(&kernel, &faces);
+
+    for i in 0..faces.len() {
+        let neighbours = adjacent_face_indices(&kernel, body, i, faces.len());
+        assert_eq!(
+            neighbours.len(),
+            4,
+            "union-box face {i} must have exactly 4 adjacent faces; got {neighbours:?}",
+        );
+        for &j in &neighbours {
+            assert!(
+                dot(normals[i], normals[j]).abs() < AXIS_TOL,
+                "neighbour {j} of union-box face {i} must be perpendicular to it",
+            );
+            let (axis_i, axis_j) = (normal_axis(normals[i]), normal_axis(normals[j]));
+            let free_axis = 3 - axis_i - axis_j;
+            let shared = shared_edge_indices(&kernel, body, i, j);
+            assert!(
+                !shared.is_empty(),
+                "adjacent union-box faces {i},{j} must share edges"
+            );
+            let mut covered = 0.0;
+            for &e in &shared {
+                assert!(e < edges.len(), "shared edge {e} must index extract_edges");
+                let span = edge_span(&kernel, edges[e]);
+                assert!(
+                    span[axis_i].abs() < AXIS_TOL && span[axis_j].abs() < AXIS_TOL,
+                    "edge {e} shared by faces {i},{j} must lie on their common line; \
+                     bbox span {span:?}",
+                );
+                covered += span[free_axis];
+            }
+            assert!(
+                (covered - BOX_EXTENT[free_axis]).abs() < AXIS_TOL,
+                "edges shared by faces {i},{j} must cover the box along axis {free_axis} \
+                 ({}); got {covered} from {shared:?}",
+                BOX_EXTENT[free_axis],
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

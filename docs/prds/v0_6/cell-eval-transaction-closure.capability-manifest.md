@@ -59,7 +59,7 @@ Verdicts: PASS = the binding held at authoring (read or probed this session, or 
 | π | partition-symbols-located | cache h14 P1/P3 present; P4 deleted by #8675 | PASS | path `crates/reify-eval/src/freshness_derive.rs` present |
 | π | nodeid-move-vs-s3-oq5 | ruled OQ-4 (A); no `cache → cell_commit` edge with the seal in `cache.rs` | PASS (ruled) | path `crates/reify-eval/src/node_id.rs` present |
 | ρ | hash-algo-tests-misfiled | 29 tests in persistent_cache's `mod tests`; existing home `engine_hash_tests.rs` (9 tests) | PASS | grep `fn compose_engine_version_hash_is_order_sensitive` present in `engine_hash_tests.rs` |
-| ρ | shims-are-s7 | #8551 pending | PASS | — |
+| ρ | shims-are-s7 | #8551 landed (merge 514cc0b991, 2026-11-04) | PASS | — |
 | υ | differential-harness-exists | `tests/common/differential.rs` included by `harness_cache` binaries; fixture sources inlined | PASS | manual |
 | ω | terminal-status-stamped | overlay closed terminal vocabulary | PASS | grep `^\*\*Status:\*\* SHIPPED` present in the PRD |
 | φ | replay-entry-absent | no `replay_last_eval` in `crates/reify-eval/src` at main c7bbfe2519 (gap-fill K3-D1) | PASS | grep `fn replay_last_eval` present in `crates/reify-eval/src/` |

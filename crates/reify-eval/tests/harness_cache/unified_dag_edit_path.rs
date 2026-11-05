@@ -137,6 +137,7 @@ const DRIVER_ORDER_P2_SRC: &str = r#"structure DriverOrder {
 /// inline constructor used across the unified-dag test modules.
 fn fresh_engine(scheduler: BuildScheduler) -> Engine {
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
     );
@@ -179,7 +180,7 @@ fn edit_param_revaluates_in_driver_schedule_order() {
     // re-evaluation order restricted to the eval_set.
     let started: Vec<NodeId> = engine.journal().all_events()[len_before..]
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .map(|e| e.node_id.clone())
         .collect();
 
@@ -749,6 +750,7 @@ fn edit_param_guard_flip_then_revert_counts_single_phase() {
     ])) as Box<dyn ConstraintSolver>;
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new()) as Box<dyn GeometryKernel>),
     )
@@ -848,7 +850,7 @@ fn edit_source_revaluates_in_driver_schedule_order() {
 
     let started: Vec<NodeId> = engine.journal().all_events()[len_before..]
         .iter()
-        .filter(|e| matches!(e.kind, EventKind::Started))
+        .filter(|e| matches!(e.kind, EventKind::Started { .. }))
         .map(|e| e.node_id.clone())
         .collect();
 
@@ -972,6 +974,7 @@ fn edit_param_p0_latency_gate_bracket_width() {
 
     let compiled = compile_source(BRACKET_EDIT_SRC);
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(kernel) as Box<dyn GeometryKernel>),
     );

@@ -65,7 +65,7 @@ pub enum StiffnessRule {
 
 // ── MorphFailure ──────────────────────────────────────────────────────────────
 
-/// Structured failure result from [`crate::morph`].
+/// Structured failure result from [`crate::compose_morph`].
 ///
 /// Four variants covering the full failure-mode taxonomy in PRD
 /// `docs/prds/v0_3/mesh-morphing.md` §"Failure-mode visibility":
@@ -229,9 +229,9 @@ impl Default for MorphOptions {
             // data point yet.  A real-CAD morph that produces min_sj=0.012 due
             // to genuine distortion (not fixture-intrinsic geometry) now passes
             // the floor that the old 0.02 would have caught.  Re-evaluate the
-            // floor against real CAD-derived meshes once PRD task #10 (engine
-            // wiring, `lib.rs::morph()`) lands and production mesh distributions
-            // are observable.
+            // floor against real CAD-derived meshes as they flow through PRD
+            // task #10's landed engine wiring (`compose_morph`, installed on the
+            // Engine by `register_morph_producer`).
             quality_floor_min_scaled_jacobian: 0.01,
             // PRD seed 0.01 retained as the production default (task #3434
             // follow-up to #2950). Earlier calibration relaxed the default to
@@ -243,8 +243,8 @@ impl Default for MorphOptions {
             // because the procedural fixtures' structured hex-to-6-tet
             // decomposition produces populations skewed toward sj < 0.25
             // (task #3451 baseline: from_scratch pct ∈ [0.74, 0.99]). Re-evaluate
-            // the production default against real CAD-derived meshes once PRD
-            // task #10 (engine wiring, `lib.rs::morph()`) lands.
+            // the production default against real CAD-derived meshes as they
+            // flow through `compose_morph` (PRD task #10's landed engine wiring).
             quality_floor_pct_below_025: 0.01,
             // PRD seed 2.0 retained — calibration confirmed it discriminates
             // bracket fillet-radius distortion (AR ≈ 2.75 at target=0.15
@@ -267,31 +267,10 @@ impl Default for MorphOptions {
             fictitious_poisson_ratio: 0.3,
             laplacian_iterations: 8,
             // PRD task #8: InverseVolume is the prescribed default for
-            // mesh-gradation preservation (small elements stay stiff).
-            // Backward-compatibility audit: all pre-task-#8 tests in this
-            // crate use rigid-body BCs (invariant to E scaling — rigid modes
-            // lie in the kernel of every K_e) or zero-displacement BCs
-            // (post-Dirichlet K → diag(1.0), E-invariant). No pinned-output
-            // tests were broken by switching the default from Uniform.
-            //
-            // Wider-workspace audit (task #3422): no workspace crate outside
-            // `crates/reify-mesh-morph/` depends on this crate (verified via
-            // `find . -name Cargo.toml | xargs grep -l reify-mesh-morph` —
-            // only the crate's own Cargo.toml and the workspace root reference
-            // it; `grep -r MorphOptions::default` and `grep -r reify_mesh_morph::`
-            // produce zero hits in gui/, crates/reify-cli/, or any other crate).
-            // Within-crate non-elasticity callers are not E-sensitive: lib.rs's
-            // default-call tests only verify Err(MorphFailure::*) projections
-            // (morph() short-circuits before any elasticity solve); quality.rs's
-            // default-call tests build morphed meshes by hand and call
-            // quality_check directly without invoking elasticity_morph.
-            // The calibration sweep tests in tests/calibration.rs DO call
-            // elasticity_morph under MorphOptions::default() and are therefore
-            // E-sensitive — but they were explicitly calibrated TO the
-            // InverseVolume default by task #2950 (quality_floor_min_scaled_
-            // jacobian = 0.02 was tuned to admit the synthetic procedural
-            // fixtures' baseline distribution under InverseVolume). No call
-            // site needs an explicit `stiffness_rule: Uniform` override.
+            // mesh-gradation preservation (small elements stay stiff). The
+            // tests/calibration.rs sweeps call elasticity_morph under this default
+            // and were calibrated TO it, so no call site needs an explicit
+            // `stiffness_rule: Uniform` override.
             stiffness_rule: StiffnessRule::InverseVolume,
         }
     }

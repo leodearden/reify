@@ -396,7 +396,7 @@ describe("one home — meshCountParity.mjs no longer carries an envelope decoder
     expect(typeof meshCountParity.checkMeshCountParity).toBe("function");
     expect(typeof meshCountParity.extractMeshCountInputs).toBe("function");
     expect(typeof meshCountParity.formatFailures).toBe("function");
-    expect(typeof meshCountParity.MESH_COUNT_PARITY_MIN_BODIES).toBe("number");
+    expect(typeof meshCountParity.MESH_COUNT_PARITY_MIN_RENDERED_BODIES).toBe("number");
   });
 
   it("still routes its own outage diagnosis through the SHARED discriminator", () => {

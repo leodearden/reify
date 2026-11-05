@@ -1,75 +1,9 @@
-// The staleness primitives shared with `tests/build_logic_tests.rs`.
+// The build-script logic shared with `tests/build_logic_tests.rs`.
 //
 // A build script cannot be `use`d by a test target, and the old workaround —
 // hand-copying this logic into the test file — is how `#6992` shipped: the
 // replica was green while this file was wrong. One source, two include sites.
 include!("build_support.rs");
-
-use std::hash::{Hash, Hasher};
-
-/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
-/// Used for staleness detection — not for security.
-fn content_hash(path: &std::path::Path) -> String {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
-    let mut hasher = std::hash::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
-/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
-///
-/// IMPORTANT: Child stdout is discarded (Stdio::null) for two reasons:
-///   1. Cargo parses build-script stdout line-by-line for "cargo:" directives.
-///      If the child emits anything to stdout, Cargo would misinterpret it.
-///   2. Using Stdio::piped() creates a deadlock risk: the parent only drains
-///      the pipe after try_wait() returns Some(status), but if the child writes
-///      \>64KB to stdout, the pipe buffer fills, the child blocks, and try_wait()
-///      returns Ok(None) indefinitely — a hard deadlock until the timeout fires.
-///
-/// tree-sitter generate writes its useful diagnostics to stderr, which is
-/// inherited directly (Stdio::inherit) and displayed by Cargo as-is.
-fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new(cmd)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
-
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    return Ok(());
-                } else {
-                    return Err(format!(
-                        "'{}' failed with exit code {}",
-                        cmd,
-                        status.code().unwrap_or(-1)
-                    ));
-                }
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait(); // Reap the process.
-                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait(); // Reap the process to prevent orphans.
-                return Err(format!("Error waiting for '{}': {}", cmd, e));
-            }
-        }
-    }
-}
 
 /// Default timeout for tree-sitter generate subprocess (seconds).
 const GENERATE_TIMEOUT_SECS: u64 = 60;
@@ -98,6 +32,8 @@ fn run_tree_sitter_generate() {
 /// Headers come from a sorted `read_dir` rather than a hardcoded
 /// alloc.h/array.h/parser.h list: a hardcoded list is exactly how this defect
 /// class recurs (someone adds a header, nothing watches it). See `#5629`.
+///
+/// Reads the disk at call time, so call it after generation.
 fn compilation_inputs() -> Vec<String> {
     let mut headers: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir("src/tree_sitter") {
@@ -200,76 +136,17 @@ fn write_inputs_stamp(out_dir: &str) {
     }
 }
 
-/// Verify that all expected output files exist after generation.
-/// Panics with a clear message naming whichever file is missing.
-fn verify_outputs(src_dir: &std::path::Path) {
-    let mut missing = Vec::new();
-    for name in EXPECTED_OUTPUTS {
-        if !src_dir.join(name).exists() {
-            missing.push(*name);
-        }
-    }
-    if !missing.is_empty() {
-        panic!(
-            "tree-sitter generate succeeded but these output files are missing: {}. \
-             Check tree-sitter CLI version.",
-            missing.join(", ")
-        );
-    }
-}
-
 fn main() {
     let src_dir = std::path::Path::new("src");
     let parser_path = src_dir.join("parser.c");
     let grammar_path = std::path::Path::new("grammar.js");
 
-    // Declare every input cargo must watch. Two halves, for two different reasons
-    // (`#5629`, esc-5392-1):
-    //
-    //   src/parser.c IS watched, since `#6992`. This build script WRITES it, and
-    //   the old exclusion cited the resulting "double execution" — but that cost
-    //   is BOUNDED and CONVERGENT, not a loop: cargo re-runs this script once
-    //   because parser.c is newer than its recorded reference, that run finds
-    //   both shell stamps current and writes nothing, and the run after it is
-    //   clean. One extra `cc::Build::compile` after a grammar change is a build
-    //   you were going to pay for anyway. (Pinned by
-    //   `test_gating_predicates_converge_after_one_regeneration`.)
-    //
-    //   What it buys is the reverse direction, which the exclusion left wide
-    //   open: cargo narrows a build script's watch set to EXACTLY the emitted
-    //   rerun-if-changed list, so an UNWATCHED parser.c could be deleted (the
-    //   `git clean -xfd -e target` every lane acquire runs) or CoW-replaced with
-    //   a copy from a different base, with grammar.js untouched — and cargo had
-    //   no reason to re-run this script at all. The previously-built
-    //   libtree_sitter_reify.a stayed linked and the change was never under test.
-    //
-    //   src/scanner.c and src/tree_sitter/*.h ARE watched. This build script never
-    //   writes them, so the double-execution objection does not apply — and before
-    //   this change they were watched by NOTHING. `cargo:rerun-if-changed=grammar.js`
-    //   was the only directive emitted, and the `cc` crate emits none of its own
-    //   (task #5784 verified this against the vendored cc-1.2.62: zero
-    //   `rerun-if-changed` occurrences in its sources), and cargo narrows a build
-    //   script's watch set to EXACTLY the emitted `rerun-if-changed` list.
-    //   The consequence was a false GREEN: an edit confined to src/scanner.c gave
-    //   cargo no reason to re-run this script, so cc::Build::compile was never
-    //   re-invoked, the previously-built libtree_sitter_reify.a stayed linked, and
-    //   the external-scanner change was simply never under test.
-    //
-    // Task #5784 fixed the scanner.c half of that with a single hardcoded
-    // `cargo:rerun-if-changed=src/scanner.c` line. This loop SUBSUMES it: it
-    // derives the watch set from `compilation_inputs()` — the same single
-    // enumeration the stamp writer uses — so it covers src/scanner.c AND every
-    // tracked src/tree_sitter/*.h, and a header added later is watched
-    // automatically rather than silently unwatched (which is exactly how this
-    // defect class recurs).
+    // The compiled inputs are watched too, after generation (below).
     println!("cargo:rerun-if-changed=grammar.js");
     // The shared staleness logic is `include!`d, not a separate crate, so
     // cargo does not learn about it from the module graph — it must be
     // declared here or an edit to the predicates never re-runs them.
     println!("cargo:rerun-if-changed=build_support.rs");
-    for rel in compilation_inputs() {
-        println!("cargo:rerun-if-changed={}", rel);
-    }
 
     // Auto-generate from grammar.js when missing or stale.
     let output_paths: Vec<std::path::PathBuf> =
@@ -301,7 +178,7 @@ fn main() {
             let grammar_sha_before = sha256_of_path(grammar_path);
             run_tree_sitter_generate();
             // Verify all 3 output files were created.
-            verify_outputs(src_dir);
+            verify_outputs(src_dir).unwrap_or_else(|msg| panic!("{msg}"));
             // Re-attest what was just generated (`#6992`, Hole B). Before this,
             // build.rs could regenerate parser.c and leave
             // `src/.grammar_hash.stamp` describing the PREVIOUS grammar — so a
@@ -346,9 +223,22 @@ fn main() {
         // Write the OUT_DIR stamp whether we regenerated or bypassed —
         // subsequent build-script invocations will hit the fast path in
         // `needs_generate` and skip everything.
-        std::fs::write(&stamp_path, &grammar_hash).unwrap_or_else(|e| {
-            eprintln!("warning: failed to write stamp file: {}", e);
-        });
+        write_out_dir_grammar_stamp(&stamp_path, &grammar_hash);
+    }
+
+    // Watch every compiled input (`#5629`, esc-5392-1). cargo narrows a build
+    // script's watch set to EXACTLY the emitted rerun-if-changed list, and `cc`
+    // emits none (task #5784), so an unwatched input can be edited or deleted
+    // with no rerun while the old libtree_sitter_reify.a stays linked.
+    //
+    // That includes src/parser.c and src/tree_sitter/*.h, which the generate
+    // above writes (the headers are untracked since #9741). Watching an output
+    // costs one bounded extra run after a regeneration
+    // (test_gating_predicates_converge_after_one_regeneration) and buys a
+    // rebuild when one is deleted. Emitted AFTER generation so a fresh clone's
+    // headers are in the set (test_build_rs_restores_deleted_generated_headers).
+    for rel in compilation_inputs() {
+        println!("cargo:rerun-if-changed={}", rel);
     }
 
     let mut c_config = cc::Build::new();

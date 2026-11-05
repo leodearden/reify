@@ -231,7 +231,7 @@ fn linear_guide_port_dof_constraint_violation() {
         compile_errors
     );
 
-    let mut engine = reify_eval::Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let check_result = engine.check(&compiled);
 
     // BadGuide (dof=2) must violate `degrees_of_freedom == 1`.

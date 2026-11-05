@@ -389,9 +389,8 @@ fn is_editor_debris(file_name: &OsStr) -> bool {
 /// Returns a 32-character lowercase hexadecimal string.
 ///
 /// **Production caller**: [`engine_version_hash_for`] calls this after
-/// accumulating all contributor walk parts (via [`walk_contributor`]). The function is `pub`
-/// so `persistent_cache::ENGINE_VERSION_HASH`'s doc comment can reference it
-/// by name, and so the algorithm-drift sentinel test
+/// accumulating all contributor walk parts (via [`walk_contributor`]). This file
+/// is `include!`d verbatim into `build.rs`, so the algorithm-drift sentinel test
 /// (`compose_engine_version_hash_pins_fixed_input_to_exact_hex_literal`)
 /// pins the single canonical algorithm shared by both the library and the
 /// build script.

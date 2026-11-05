@@ -620,6 +620,7 @@ fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_disciplin
     // discipline every real caller follows — to empirically settle whether
     // the checker itself would exempt the resulting cell.
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         None,
     );

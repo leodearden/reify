@@ -361,7 +361,7 @@ fn attributed_boundary_nodes_lie_on_locus_of_attributed_handle() {
 ///   dim-2 (faces):    10
 ///
 /// If these counts change, there are two possible causes: a gmsh upgrade, or
-/// a change to `CLASSIFY_FEATURE_ANGLE`/`CLASSIFY_CURVE_ANGLE` (kernel_real.rs)
+/// a change to `CLASSIFY_FEATURE_ANGLE`/`CLASSIFY_CURVE_ANGLE` (meshable_region.rs)
 /// — the test body computes which and reports it in the assertion failure.
 /// Re-pinning the expected triple is correct for EITHER cause (a gmsh upgrade
 /// gets a comment with the new gmsh version; a constants change gets a comment
@@ -405,7 +405,7 @@ fn classify_surfaces_over_decomposes_unit_cube() {
          the cause is a gmsh upgrade"
     } else {
         "CLASSIFY_FEATURE_ANGLE/CLASSIFY_CURVE_ANGLE have moved off π/4 in \
-         kernel_real.rs, so the cause is that constant change"
+         meshable_region.rs, so the cause is that constant change"
     };
     assert_eq!(
         (n0, n1, n2),

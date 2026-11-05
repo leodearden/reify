@@ -50,7 +50,7 @@ fn ensure_gmsh_kernel_adds_gmsh_and_is_idempotent() {
     use reify_kernel_gmsh::register::GMSH_KERNEL_NAME;
     use reify_test_support::mocks::MockConstraintChecker;
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
     // Baseline: `Engine::new(checker, None)` holds zero kernels; gmsh absent.
     let baseline = engine.kernel_count();
@@ -101,7 +101,7 @@ fn ensure_gmsh_kernel_adds_gmsh_and_is_idempotent() {
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// `cfg(has_gmsh)`: the demand → execute call edge writes VolumeMesh + Gmsh.
@@ -645,7 +645,7 @@ fn ensure_gmsh_kernel_returns_false_without_gmsh() {
          (stub-mode build); ensure_gmsh_kernel() must return false"
     );
 
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     assert!(
         !engine.ensure_gmsh_kernel(),
         "stub mode: ensure_gmsh_kernel() must return false when the gmsh adapter \

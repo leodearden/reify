@@ -619,7 +619,7 @@ mod tests {
         let r0_ops = vec![CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
             args: vec![(
-                "width".to_string(),
+                "size_x".to_string(),
                 CompiledExpr::value_ref(width.clone(), Type::length()),
             )],
         }];

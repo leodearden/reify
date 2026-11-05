@@ -70,7 +70,7 @@ fn underdetermined_gamma_model_names_param_side_and_fallback_bound() {
         "{FIXTURE_PATH} should compile without errors: {compile_errors:#?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 

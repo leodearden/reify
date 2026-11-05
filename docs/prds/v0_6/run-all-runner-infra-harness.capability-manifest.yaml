@@ -291,13 +291,13 @@ tasks:
       - tests/infra/test_helpers.sh
       expect: present
   - name: base-constructor
-    binding: deliverable.
+    binding: 'deliverable. Retro-critic R1 M4 (2026-10-20): `_make_base` lives in tests/infra/test_helpers.sh beside make_isolated_lane (the warm-lane facility''s home), so μ₂''s partition of test_seed_warm_lane.sh cannot redden this check; path repointed in three writes (yaml, md, task metadata).'
     verdict: OPEN
     delivered_check:
       kind: grep
       pattern: ^_make_base\(\)
       paths:
-      - tests/infra/test_seed_warm_lane.sh
+      - tests/infra/test_helpers.sh
       expect: present
   - name: shared-handshake-primitive-exists
     binding: tests/infra/slot_holder_handshake_lib.sh holder_wait_for_marker — already adopted by test_warm_lane_gc.sh and test_warm_lane_pool.sh.
@@ -358,7 +358,7 @@ tasks:
   title: 'run-all-runner ο: test_tree_sitter_pipeline.sh onto test_helpers.sh; h14 partition (5)'
   capabilities:
   - name: private-harness-and-substring-discovery-today
-    binding: test_tree_sitter_pipeline.sh defines PASS_COUNT/FAIL_COUNT and discovers cases via declare -F | awk '/test_/'; run_all.sh _ra_collect_fail_detail ERE matches neither 'ASSERTION FAILED' nor 'RUN … FAIL'.
+    binding: 'test_tree_sitter_pipeline.sh defines PASS_COUNT/FAIL_COUNT and discovers cases via declare -F | awk ''/test_/''; run_all.sh _ra_collect_fail_detail ERE matches neither ''ASSERTION FAILED'' nor ''RUN … FAIL''. Polarity (retro-critic R1): the pattern also matches the comment at test_tree_sitter_pipeline.sh:36; comment hit deleted in-diff by ο.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -402,7 +402,7 @@ tasks:
   title: 'run-all-runner ρ: jobserver unit oracle to stdlib unittest; setup-dev checks moved'
   capabilities:
   - name: importlib-heredocs-today
-    binding: test_jobserver_balancer.sh — 13 spec_from_file_location heredocs, 4 mod._transfer_burst calls; scripts/jobserver-balancer.py defines _transfer_burst and decide.
+    binding: 'test_jobserver_balancer.sh — 13 spec_from_file_location heredocs, 4 mod._transfer_burst calls; scripts/jobserver-balancer.py defines _transfer_burst and decide. Polarity (retro-critic R1): the pattern also matches the comment at test_jobserver_balancer.sh:577; comment hit deleted in-diff by ρ.'
     verdict: PASS
     delivered_check:
       kind: grep
@@ -436,11 +436,11 @@ tasks:
       - tests/infra/run-all-classification.manifest
       expect: absent
   - name: lib-reads-the-pragma
-    binding: 'deliverable — classification_discovered_set / classification_bucket read the `# run-all-bucket:` pragma and fail closed on a missing or unknown bucket; 0 hits for run-all-bucket: in the lib at main.'
+    binding: 'deliverable — classification_discovered_set / classification_bucket <bucket> <dir> read the `# run-all-bucket:` pragma and fail closed (discovery reports a named FAIL, the remaining members still run) on a missing or unknown bucket; 0 hits for run-all-bucket: in the lib at main. Retro-critic R1 B2: anchored on code (`^[^#]*run-all-bucket:`) so a comment alone cannot satisfy it.'
     verdict: OPEN
     delivered_check:
       kind: grep
-      pattern: 'run-all-bucket:'
+      pattern: '^[^#]*run-all-bucket:'
       paths:
       - tests/infra/run-all-classification-lib.sh
       expect: present
@@ -449,13 +449,14 @@ tasks:
   title: 'run-all-runner φ: one per-member timing emitter on the γ event channel; _ra_timing_* deleted'
   capabilities:
   - name: pool-only-timing-ledger-today
-    binding: 'gap-fill 2026-10-16 §D-K8-9 — tests/infra/run_all.sh defines _ra_timing_member and _ra_timing_pool_lines at main c7bbfe2519; _ra_mark tq/ts/te sit only at the pool call sites and _ra_run_serial_member records none. Delivered when the pool-only ledger writer is gone and timing rides member_finish.'
+    binding: 'gap-fill 2026-10-16 §D-K8-9 — tests/infra/run_all.sh defines _ra_timing_member and _ra_timing_pool_lines at main c7bbfe2519; _ra_mark tq/ts/te sit only at the pool call sites and _ra_run_serial_member records none. Delivered when the pool-only ledger writer is gone and timing rides member_finish (retro-critic R1 B3: one emitter, two sinks — the event channel and, when REIFY_RUN_ALL_TIMING_OUT is set, the step file). Paths widened to run_all*.sh (R1 M1) so a δ relocation cannot satisfy it vacuously.'
     verdict: PASS
     delivered_check:
       kind: grep
       pattern: ^_ra_timing_pool_lines\(\)
       paths:
       - tests/infra/run_all.sh
+      - tests/infra/run_all_*.sh
       expect: absent
 - label: Ω
   task_id: 8729

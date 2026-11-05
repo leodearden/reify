@@ -791,18 +791,20 @@ _t10b() {
 # bare `&`) cannot turn that self-signal into a no-op; where the host cannot
 # reset it, that sub-arm SKIPs instead of being counted.
 #
-# WHY THE PROBE SIGKILLS ITSELF AFTERWARDS — this is the whole difference between
-# this arm and a vacuous one. _nextest_absent_trap_dispatch deliberately does not
-# re-raise, so once the handler returns the shell RESUMES, runs to the end and
-# exits NORMALLY — firing the EXIT trap and appending CALLER_RAN whether or not
-# the signal dispatch replayed anything at all. Measured: the first version of
-# this arm reported PASS against a lib that stashed nothing for INT/TERM/HUP, for
-# exactly that reason. SIGKILL is uncatchable and untrappable, so it removes the
-# second path outright: past that line CALLER_RAN can only have been written by
-# the <signal> dispatch. SURVIVED_KILL is asserted ABSENT rather than assumed, so
-# a probe that somehow outlived its own KILL is reported instead of silently
-# restoring the vacuity. rc is deliberately never asserted on — the probe is
-# EXPECTED to die 137.
+# WHAT CALLER_RAN PROVES HERE, since task 9441. The dispatcher now ends the
+# shell on INT/TERM/HUP with `exit 128+n` (10m below pins that), and the exit
+# runs the EXIT dispatch, which replays the caller's EXIT handler as well. So
+# for this EXIT-only caller CALLER_RAN can come from either dispatch, and a lib
+# that stashed nothing for INT/TERM/HUP would pass. The first version of this
+# arm passed such a lib for the same reason, back when the dispatcher let the
+# shell resume and exit normally; that is why the probe SIGKILLs itself after
+# the signal. The gap no longer hides a defect a caller can observe: an
+# EXIT-only caller's handler now runs on the signal either way. What this arm
+# still pins is that outcome, per signal: the caller's handler fired and the
+# lib's workdir is gone. The trailing SIGKILL still stops a lib that RESUMES
+# from reaching a normal exit, and SURVIVED_KILL is asserted ABSENT rather than
+# assumed. Termination itself (no RESUMED, exit 128+n) is 10m's assert, so rc
+# is not asserted here.
 NX_TRAP_SIG="$NX_TRAP_DIR/signal.sh"
 cat > "$NX_TRAP_SIG" <<'TRAP_SIG'
 # argv: <repo-root> <marker-file> <signal>
@@ -930,8 +932,10 @@ _t10c_probe_once() {
     return "$_T10C_RC_OK"
 }
 
-# _t10c_probe SIG MARKER — retry _t10c_probe_once over STARVATION SIGNATURES
-# ONLY, within a load-scaled budget (esc-6426-2, task 6247).
+# _t10c_probe SIG MARKER [ONCE-FN] — retry ONCE-FN (default _t10c_probe_once)
+# over STARVATION SIGNATURES ONLY, within a load-scaled budget (esc-6426-2,
+# task 6247). Arm 10m passes its own single attempt, which speaks the same four
+# verdict codes.
 #
 # `load_tolerant_attempts 1` is exactly 1 on an idle host, so this arm behaves
 # byte-for-byte as it did before the retry existed; under load it rises with the
@@ -944,13 +948,13 @@ _t10c_probe_once() {
 # is scheduler-independent, and what a saturated host breaks is delivery of the
 # fork, not an ordering the test could observe.
 _t10c_probe() {
-    local _sig="$1" _marker="$2"
+    local _sig="$1" _marker="$2" _once="${3:-_t10c_probe_once}"
     local _attempts _n=0 _rc=0
     _attempts="$(load_tolerant_attempts 1)"
     while [ "$_n" -lt "$_attempts" ]; do
         _n=$(( _n + 1 ))
         _rc=0
-        _t10c_probe_once "$_sig" "$_marker" || _rc=$?
+        "$_once" "$_sig" "$_marker" || _rc=$?
         if [ "$_rc" -ne "$_T10C_RC_STARVED" ]; then
             return "$_rc"
         fi
@@ -1324,6 +1328,89 @@ _t10l() {
 
 assert "10l: a 10c sub-arm whose signal was ignored on entry is reported as a loud SKIP naming the signal and the inherited disposition, never as a PASS or FAIL" \
     _t10l
+
+# -- Test 10m: a fatal signal TERMINATES a lib-consuming shell (task 9441) -----
+#
+# 10c proves the composed handler RUNS on INT/TERM/HUP. This arm proves the
+# shell then ENDS: after the lib's teardown and the caller's replayed handler,
+# the shell exits 128+n rather than resuming. A lib that swallows the signal
+# lets its consumer keep running against a harness it has just deleted.
+# Measured before this arm: test_verify_nextest_absent_suites.sh, TERMed by
+# the merge envelope, kept running its nested suites against the removed
+# NX_WORKDIR, and they failed with rc 143 and rc 1.
+#
+# Same probe and spawn as 10c (NX_TRAP_SIG through _t10c_spawn, SIG at
+# default disposition), so the same IGNORED_ON_ENTRY SKIP applies. The probe
+# writes RESUMED only if its shell outlives the signal, and then SIGKILLs
+# itself: a status of 137 means the lib swallowed the signal, and 128+n means
+# the shell terminated on it.
+echo ""
+echo "--- Test 10m: a fatal INT/TERM/HUP terminates the lib-consuming shell after teardown ---"
+
+# _t10m_probe_once SIG MARKER — ONE attempt; returns 10c's verdict codes.
+_t10m_probe_once() {
+    local _sig="$1" _m="$2" _rc=0 _want _wd _contract=0
+    _want=$(( 128 + $(kill -l "$_sig") ))
+    rm -f "$_m"
+    # 2>/dev/null: a probe that resumes dies of its own SIGKILL, which the
+    # parent shell reports as "Killed".
+    _t10c_spawn "$_sig" "$_m" 2>/dev/null || _rc=$?
+    echo "--- SIG$_sig (probe exit status $_rc) ---"
+    if [ ! -f "$_m" ]; then
+        echo "SIG$_sig: the probe wrote no marker at all"
+        return "$_T10C_RC_STARVED"
+    fi
+    cat "$_m"
+    if grep -q '^IGNORED_ON_ENTRY$' "$_m"; then
+        echo "SIG$_sig: SIG$_sig was IGNORED ON ENTRY to the probe shell, so this sub-arm could not be run."
+        return "$_T10C_RC_IGNORED_ON_ENTRY"
+    fi
+    _wd="$(sed -n 's/^WORKDIR=//p' "$_m" | tail -1)"
+    if [ -z "$_wd" ]; then
+        echo "SIG$_sig: probe never reported its workdir"
+        return "$_T10C_RC_STARVED"
+    fi
+    if grep -q '^RESUMED$' "$_m"; then
+        echo "SIG$_sig: the shell RESUMED after the lib's dispatch -- the lib swallowed a fatal signal."
+        _contract=1
+    fi
+    if ! grep -q '^CALLER_RAN$' "$_m"; then
+        echo "SIG$_sig: the caller's handler never ran."
+        _contract=1
+    fi
+    if [ -d "$_wd" ]; then
+        echo "SIG$_sig: the lib's workdir was left behind: $_wd"
+        rm -rf "$_wd"
+        _contract=1
+    fi
+    if [ "$_rc" -ne "$_want" ]; then
+        echo "SIG$_sig: the probe exited $_rc, not $_want (128+SIG$_sig); 137 is its own SIGKILL after resuming."
+        _contract=1
+    fi
+    if [ "$_contract" -eq 1 ]; then
+        return "$_T10C_RC_CONTRACT"
+    fi
+    return "$_T10C_RC_OK"
+}
+
+# _t10m_report SIG — run 10m's SIG sub-arm and report it as ONE verdict, with
+# 10c's loud SKIP for a signal ignored on entry.
+_t10m_report() {
+    local _sig="$1" _out="$NX_TRAP_DIR/terminate-$1.out" _rc=0
+    _t10c_probe "$_sig" "$NX_TRAP_DIR/terminate-$_sig.marker" _t10m_probe_once > "$_out" 2>&1 || _rc=$?
+    if [ "$_rc" -eq "$_T10C_RC_IGNORED_ON_ENTRY" ]; then
+        echo "  SKIP: 10m SIG$_sig sub-arm not run: SIG$_sig was ignored on entry to the probe shell (inherited SIG_IGN) and could not be reset on this host -- not a trap-contract verdict"
+        sed 's/^/  | /' "$_out"
+        return 0
+    fi
+    assert "10m: a fatal SIG$_sig ends the lib-consuming shell after teardown -- no resume, caller handler ran, workdir gone, exit 128+n" \
+        _t10c_replay "$_out" "$_rc"
+}
+
+for _sig in INT TERM HUP; do
+    _t10m_report "$_sig"
+done
+unset _sig
 
 # -- Test 11: nextest_absent_init fails loudly on a SECOND, non-mirror-source --
 # -- PATH directory that still exposes cargo-nextest (task 5645) -------------

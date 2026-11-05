@@ -57,6 +57,7 @@ fn edit_param_let_backed_selector_consumer_reresolves_and_invariant_green() {
     );
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -206,6 +207,7 @@ fn edit_source_geometry_let_selector_chain_invariant_green() {
     );
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

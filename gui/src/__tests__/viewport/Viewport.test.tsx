@@ -74,6 +74,7 @@ const mockMeshRebuildMaterials = vi.fn();
 const mockMeshSetDeformation = vi.fn();
 const mockMeshGetDeformedOverlays = vi.fn(() => new Map());
 const mockMeshSetDisplayAppearance = vi.fn();
+const mockMeshSetEdges = vi.fn();
 
 // adjustClipping and fitHelpers are named spies (not inline vi.fn()s) so the two
 // calls can be COMPARED: #6588's contract is that helper sizing and camera clipping
@@ -152,6 +153,8 @@ vi.mock('../../viewport/meshManager', () => ({
     setDeformation: mockMeshSetDeformation,
     getDeformedOverlays: mockMeshGetDeformedOverlays,
     setDisplayAppearance: mockMeshSetDisplayAppearance,
+    setEdges: mockMeshSetEdges,
+    getEdgesOverlays: vi.fn(() => new Map()),
   })),
 }));
 
@@ -188,6 +191,21 @@ vi.mock('../../viewport/feaDiagnosticOverlay', () => ({
     sync: mockDiagnosticOverlaySync,
     dispose: mockDiagnosticOverlayDispose,
   })),
+}));
+
+// ── ProbeSystem mock (#9280) ──────────────────────────────────────────────────
+// The real one constructs a three Raycaster, which this file's Box3-only 'three'
+// mock lacks, as soon as FEA mode auto-enables. Viewport.probe.test.tsx runs it for real.
+vi.mock('../../viewport/ProbeSystem', () => ({
+  createProbeSystem: vi.fn(() => ({
+    addProbe: vi.fn(),
+    pickAndAddProbe: vi.fn(),
+    resampleAll: vi.fn(),
+    removeProbe: vi.fn(),
+    refreshMarkers: vi.fn(),
+    dispose: vi.fn(),
+  })),
+  ProbePopup: () => null,
 }));
 
 const mockSelectionSetHovered = vi.fn();
@@ -231,6 +249,7 @@ beforeEach(() => {
   mockMeshRebuildMaterials.mockClear();
   mockMeshSetDeformation.mockClear();
   mockMeshGetDeformedOverlays.mockClear();
+  mockMeshSetEdges.mockClear();
   mockBakeColours.mockClear();
   mockAdjustClipping.mockClear();
   mockFitHelpers.mockClear();
@@ -1711,6 +1730,33 @@ describe('Viewport displayAppearance prop', () => {
 
     // No displayAppearance prop → setDisplayAppearance({}) to clear any leftover overrides.
     expect(mockMeshSetDisplayAppearance).toHaveBeenCalledWith({});
+  });
+});
+
+// ── Viewport showEdges prop (task 9731 γ) ─────────────────────────────────────
+
+describe('Viewport showEdges prop', () => {
+  it('showEdges={true} turns the edges overlay on at mount', () => {
+    render(() => <Viewport meshes={{}} viewportId="test-edges-vp" showEdges={true} />);
+
+    expect(mockMeshSetEdges).toHaveBeenCalledWith(true);
+  });
+
+  it('flipping showEdges re-calls setEdges reactively', () => {
+    const [showEdges, setShowEdges] = createSignal(true);
+    render(() => <Viewport meshes={{}} viewportId="test-edges-vp2" showEdges={showEdges()} />);
+    expect(mockMeshSetEdges).toHaveBeenLastCalledWith(true);
+
+    setShowEdges(false);
+
+    expect(mockMeshSetEdges).toHaveBeenLastCalledWith(false);
+  });
+
+  it('no showEdges prop leaves the overlay off', () => {
+    render(() => <Viewport meshes={{}} viewportId="test-edges-vp3" />);
+
+    expect(mockMeshSetEdges).toHaveBeenCalledWith(false);
+    expect(mockMeshSetEdges).not.toHaveBeenCalledWith(true);
   });
 });
 

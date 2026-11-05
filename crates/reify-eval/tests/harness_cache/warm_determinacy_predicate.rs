@@ -19,7 +19,7 @@
 use reify_constraints::DimensionalSolver;
 use reify_core::{ValueCellId, VersionId};
 use reify_ir::Value;
-use reify_test_support::{make_engine, make_simple_engine, parse_and_compile};
+use reify_test_support::{make_engine, parse_and_compile};
 
 /// Source shared across all three warm tests:
 ///   param x  : Length = 10mm
@@ -241,7 +241,12 @@ const SOLVER_TOL_M: f64 = 1e-6;
 /// A `SimpleConstraintChecker` + `DimensionalSolver` engine, no geometry
 /// kernel — used by all three legs (cold / edit_param / edit_source) below.
 fn solver_engine() -> reify_eval::Engine {
-    make_simple_engine().with_solver(Box::new(DimensionalSolver))
+    reify_eval::Engine::new(
+        reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH),
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        None,
+    )
+    .with_solver(Box::new(DimensionalSolver))
 }
 
 /// A solver-driven `determined(x)` / `if determined(x) then x else 0mm` must

@@ -167,7 +167,7 @@ const REALIZED_CYLINDER_GRID_NODES: usize = REALIZED_CYLINDER_GRID_AXES[0]
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Extract a named field from an ElasticResult `Value` (StructureInstance or the

@@ -298,16 +298,19 @@ fn registry_result_type_is_arity_insensitive_like_the_legacy_arms() {
 ///
 /// This pins that implication in both directions it admits:
 ///
-/// - Row-derived, never a restated list: every registered name is `owns`,
-///   swept over `reify_builtins::rows()` so a name added by a later τ is
-///   covered without touching this test.
+/// - Row-derived, never a restated list: every registered name outside the
+///   Relation kind is `owns`, swept over `reify_builtins::rows()` so a name
+///   added by a later τ is covered without touching this test. Relation rows
+///   are declined by the seam on purpose; see
+///   `relation_rows_are_not_typed_through_the_registry_seam`.
 /// - `!owns(n)` ⇒ `registry_result_type(n, args) == None`, checked over the
 ///   unregistered names AND at several arities, since the guard drops the
 ///   argument types entirely.
 ///
-/// The converse is deliberately NOT asserted: an `ArgAware` row may own a name
-/// and still decline the arguments it is handed, which is a legal `None` on
-/// the hit path.
+/// The converse is not part of the precondition contract: an `ArgAware` row may
+/// own a name and still legally decline the arguments it is handed. That no
+/// registered row declines today is pinned separately, by
+/// `registry_result_type_is_total_over_every_name_registry_owns`.
 #[test]
 fn registry_owns_is_exactly_registry_result_type_s_precondition() {
     use reify_compiler::__registry_owns_for_test as registry_owns;
@@ -315,7 +318,15 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
     let t = pressure_tensor();
     let arg_shapes: [&[Type]; 3] = [&[], std::slice::from_ref(&t), &[t.clone(), t.clone()]];
 
-    for r in reify_builtins::rows() {
+    let typed_rows: Vec<_> = reify_builtins::rows()
+        .iter()
+        .filter(|r| r.binding != reify_builtins::BindingKind::Relation)
+        .collect();
+    assert!(
+        !typed_rows.is_empty(),
+        "premise guard: no non-Relation row exists, so the sweep asserts nothing"
+    );
+    for r in typed_rows {
         assert!(
             registry_owns(r.name),
             "registry row {:?} must be claimed by registry_owns — otherwise \
@@ -340,6 +351,151 @@ fn registry_owns_is_exactly_registry_result_type_s_precondition() {
             );
         }
     }
+}
+
+/// **Past the guard, the registry always answers.**
+///
+/// For every name `registry_owns` claims, `registry_result_type` is `Some` at
+/// every argument sequence (argc 0..=3) over the alphabet below. `expr.rs`'s
+/// registry-arm comment relies on this: its `let Some(t)` failing is
+/// unreachable today. This is the converse half that
+/// `registry_owns_is_exactly_registry_result_type_s_precondition` leaves out.
+///
+/// Names are row-derived over `reify_builtins::rows()`, so a new row is swept
+/// automatically. The alphabet is not: it must grow when a resolver reads an
+/// argument type outside it.
+#[test]
+fn registry_result_type_is_total_over_every_name_registry_owns() {
+    use reify_compiler::__registry_owns_for_test as registry_owns;
+
+    let owned: std::collections::BTreeSet<&str> = reify_builtins::rows()
+        .iter()
+        .map(|r| r.name)
+        .filter(|name| registry_owns(name))
+        .collect();
+    assert!(
+        !owned.is_empty(),
+        "premise guard: registry_owns claims no row, so the sweep asserts nothing"
+    );
+    assert!(
+        reify_builtins::rows()
+            .iter()
+            .any(|r| registry_owns(r.name) && r.result.const_type().is_none()),
+        "premise guard: no owned row is ArgAware, so the sweep reaches no resolver"
+    );
+
+    let field_of = |codomain: Type| Type::Field {
+        domain: Box::new(Type::point3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        })),
+        codomain: Box::new(codomain),
+    };
+    let string_tensor = Type::Tensor {
+        rank: 2,
+        n: 3,
+        quantity: Box::new(Type::String),
+    };
+    let alphabet = [
+        Type::String,
+        Type::Plane,
+        Type::Int,
+        Type::dimensionless_scalar(),
+        Type::List(Box::new(pressure_tensor())),
+        scalar_pressure(),
+        pressure_tensor(),
+        Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(scalar_pressure()),
+        },
+        string_tensor.clone(),
+        field_of(pressure_tensor()),
+        field_of(Type::Matrix {
+            m: 3,
+            n: 3,
+            quantity: Box::new(Type::Int),
+        }),
+        field_of(string_tensor),
+        field_of(scalar_pressure()),
+    ];
+
+    let mut calls: Vec<Vec<Type>> = vec![Vec::new()];
+    let mut frontier: Vec<Vec<Type>> = vec![Vec::new()];
+    for _ in 0..3 {
+        frontier = frontier
+            .iter()
+            .flat_map(|prefix| {
+                alphabet.iter().map(move |t| {
+                    let mut call = prefix.clone();
+                    call.push(t.clone());
+                    call
+                })
+            })
+            .collect();
+        calls.extend(frontier.iter().cloned());
+    }
+
+    let declined: Vec<String> = owned
+        .iter()
+        .flat_map(|name| calls.iter().map(move |args| (*name, args)))
+        .filter(|(name, args)| registry_result_type(name, args).is_none())
+        .map(|(name, args)| format!("{name}({args:?})"))
+        .collect();
+    assert!(
+        declined.is_empty(),
+        "registry_owns admitted these calls, so expr.rs's registry ladder arm \
+         reached `let Some(t) = registry_result_type(..)` and fell through \
+         SILENTLY to the arms below and the first-arg fallback. A declining \
+         resolver is τ-numeric's `E_BuiltinArgShape` work (PRD §3 decision 5): \
+         wire the diagnostic at that arm, then narrow this pin.\n{}",
+        declined.join("\n")
+    );
+}
+
+/// **Relation rows are declined by the compiler seam.**
+///
+/// expr.rs reaches the registry arm only after the relation, datum-constructor
+/// and geometry-query arms have declined, and the seam does not look at argc.
+/// If it answered for a relation name it would claim calls those arity-gated
+/// arms deliberately decline — `offset(x)` at argc 1 would type as
+/// `Relation` instead of reaching the first-arg fallback. Relation typing
+/// stays in relation_signatures until S9 λ #8741 rewires it onto the rows.
+#[test]
+fn relation_rows_are_not_typed_through_the_registry_seam() {
+    use reify_compiler::__registry_owns_for_test as registry_owns;
+
+    let relation_rows: Vec<_> = reify_builtins::rows()
+        .iter()
+        .filter(|r| r.binding == reify_builtins::BindingKind::Relation)
+        .collect();
+    assert!(
+        !relation_rows.is_empty(),
+        "premise guard: no Relation row exists, so the sweep asserts nothing"
+    );
+    for r in relation_rows {
+        assert!(
+            !registry_owns(r.name),
+            "Relation row {:?} must not be claimed by registry_owns",
+            r.name
+        );
+        for argc in 0..=4 {
+            assert_eq!(
+                registry_result_type(r.name, &vec![Type::Plane; argc]),
+                None,
+                "Relation row {:?} must not be typed through the registry seam \
+                 at argc {argc}",
+                r.name
+            );
+        }
+    }
+
+    assert_eq!(
+        registry_result_type("offset", &[Type::Plane]),
+        None,
+        "`offset(plane)` at argc 1 must keep reaching expr.rs's first-arg \
+         fallback, as before the relation rows existed; relation typing stays \
+         in relation_signatures until S9 λ #8741"
+    );
 }
 
 // ── (c) #6577's Field-argument contract reaches the resolver ────────────────

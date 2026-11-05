@@ -732,8 +732,8 @@ structure S : MutualLets {
 ///
 /// **Single root-cause diagnostic — no secondary phantom cascade.**  Exactly one
 /// root-cause "unresolved `b`" error must be present.  No cascade diagnostics of
-/// the form "available default has Real" (which would indicate a poisoned
-/// `inferred_let_exprs` entry was advertised as a valid default) and no
+/// the form "available default has Real" (which would indicate a let that failed
+/// to compile was advertised as a valid default) and no
 /// "type mismatch for trait member 'a'" phantom from the same root cause.
 ///
 /// The error count is pinned at `<= 1` as a prose-independent backstop (check (d)):
@@ -897,8 +897,8 @@ structure S : ReverseOrder {
 ///
 /// `trait T { let a = b + 1mm; let c = a * 2mm }` — `a` depends on `b`, which is
 /// undefined.  Without scope poisoning, Pass 2 of `check_phase_pre_register_default_types`
-/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` in
-/// `pass2_compile_errors` — but does NOT register `a` in scope.  When it then compiles
+/// compiles `a`'s expression, gets an "unresolved name: b" error, records `a` as a
+/// compile error — but does NOT register `a` in scope.  When it then compiles
 /// `c`'s expression, the scope lookup for `a` fails and emits a SECOND "unresolved name: a"
 /// cascade on top of the root-cause error.
 ///

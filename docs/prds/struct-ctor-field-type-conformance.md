@@ -118,17 +118,19 @@ The living normative copy for `.ri` authors is [`docs/reify-language-spec.md` §
 | 2 | dimensionless `Scalar` (`Real`) | `Int` | legal | `type_compat.rs:233` |
 | 3 | `Scalar`/`Tensor`/`Vector`/`Matrix` family | per Rules 2a/2b/3 | legal | `implicitly_converts_to` |
 | 4 | `List<Geometry>` | `Selector(k)` | legal (one-way) | 4117β |
-| 5 | `AnySelector` | `Selector(k)` | legal (one-way) | 4369 |
+| 5 | kind-agnostic `Selector` (spelled bare, not `AnySelector`) | `Selector(k)` | legal (one-way) | 4369 |
 | 6 | `Option<T>` | bare `T'` where `T'` legal for `T` | legal (implicit-Some) | **new arm**, probe 3/5 |
 | 7 | `Option<T>` | `none` | legal | existing |
 | 8 | trait / `List<TraitObject>` / `Option<TraitObject>` | conforming `StructureRef` | legal | 4444/4584 |
-| 9 | `Vector{n}` | vector-shaped, same arity, any quantity | legal | 4622 |
+| 9 | `Vector{n}` | vector-shaped, same arity; a dimensionless vector at any quantity, a dimensioned vector only at the matching quantity (`vec3(1kg, 2kg, 3kg)` at `Vector3<Length>` is illegal) | legal | 4622 |
 | 10 | any | arg type `Error`/`TypeParam`/`Geometry`/`TraitObject` | **skip** (never reject) | anti-cascade / undecidable |
-| 11 | `Selector(k)` | `Selector(j)`, j≠k, or `AnySelector` | **illegal** — `E_SELECTOR_KIND_MISMATCH` | D2 |
+| 11 | `Selector(k)` | `Selector(j)`, j≠k, or a kind-agnostic `Selector` | **illegal** — `E_SELECTOR_KIND_MISMATCH` | D2 |
 | 12 | selector-typed | `Frame`/`Transform`/`Point` | **illegal** — pose-vs-set hint | D2, 4833 |
 | 13 | selector-typed (bare or `Option`-wrapped) | `String` | **illegal** | disallow-string |
 | 14 | any concrete leaf | `type_compatible` = false | **illegal** — `E_ARG_TYPE_MISMATCH` | D1 |
 | 15 | bare `TraitObject` | anything | exempt at ctor sites | D6 |
+
+**Amendment (2026-10-22, ruling esc-5307-3 part C, applied under esc-7956-6):** rows 5, 9 and 11 now state the as-built spelling and scope recorded in the language spec §4.9.
 
 **C2 — Invariants.** (i) Anti-cascade: `Type::Error` on either side short-circuits — never a second diagnostic atop an upstream error. (ii) At most one diagnostic per (arg, leaf). (iii) No false positive on unresolved types — skips are skips, not passes to be revisited at eval. (iv) Severity is read from the single knob; codes and messages are severity-invariant. (v) The predicate is `type_compatible` — walker arms may not embed ad-hoc type rules (Vector's landed arity logic is the one grandfathered exception, 4622).
 

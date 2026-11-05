@@ -23,8 +23,9 @@
 # find -name or ls alike.
 inline-discovery-loop | test_["']?[*] | tests/infra/run_all.sh | 0 | α #8678
 # member-spawn-site: every run_all member spawn goes through _ra_spawn_member,
-# the one line carrying the git-env scrub, env isolation and FD hygiene.
-member-spawn-site | reify_git_env_scrub (bash|env) | tests/infra/run_all.sh | 1 | β #8681
+# the one line carrying the member budget, git-env scrub, env isolation and FD
+# hygiene.
+member-spawn-site | bash "[$]INFRA_DIR/ | tests/infra/run_all.sh | 1 | β #8681
 # result-fail-recorder: a member FAIL verdict is printed only by
 # _ra_record_result.
 result-fail-recorder | RESULT: FAIL | tests/infra/run_all.sh | 1 | β #8681
@@ -63,3 +64,12 @@ gc-inline-seed-stub | > *"?[$][{]?[A-Z0-9_]*SEED_STUB[}]?"? *<<|<<.*> *"?[$][{]?
 # ordered-scope-grep: scope-decision fields are read with plan_capture_lib.sh's
 # plan_header_field, order-independently; ξ #9113 lowers this to 0.
 ordered-scope-grep | RUN_RUST=[01] RUN_GUI=[01] | tests/infra/test_*.sh | 82 | θ #9105
+# planner-fixture-name-literal: the planner derives its coupled fixture sets (D6), so no reify_verify module quotes a fixture name.
+planner-fixture-name-literal | [A-Za-z0-9_]+[.]ri['"] | scripts/reify_verify/*.py | 0 | S18 β #9097
+# gui-reload-pipeline: the reload pipeline runs once, in
+# EngineSession::reload_compiled, so only the definition and that call spell
+# the check helper.
+gui-reload-pipeline | check_with_solve_slot\( | gui/src-tauri/src/engine.rs | 2 | ζ #8942
+# auditcontext-struct-literal: the constructor in crates/reify-audit/src/model.rs
+# is the only struct literal; detectors, bins and tests build through AuditContext::new.
+auditcontext-struct-literal | AuditContext [{] | crates/reify-audit/**/*.rs | 1 | β #8807

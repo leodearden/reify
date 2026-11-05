@@ -316,12 +316,13 @@ pub(crate) fn collect_all_requirements(
                 }
                 // Only record the hash when the structure does NOT override this name.
                 // When overridden, conflict diagnostics are suppressed and the default
-                // is filtered at injection time (~line 327), so hash-recording is
-                // unnecessary.  As a side-effect, when multiple traits provide
-                // `let x = <different>` and the structure overrides `x`, each trait's
-                // default is pushed into `ctx.defaults` without dedup — producing
-                // redundant entries.  This is harmless: the injection loop re-checks
-                // `structure_members.contains_key(name)` and discards all of them.
+                // is never injected, because check_phase_pre_register_default_types
+                // records it as `DefaultDisposition::OverriddenByConformer`, so
+                // hash-recording is unnecessary.  As a side-effect, when multiple traits
+                // provide `let x = <different>` and the structure overrides `x`, each
+                // trait's default is pushed into `ctx.defaults` without dedup — producing
+                // redundant entries.  This is harmless: each redundant entry is recorded
+                // `OverriddenByConformer`, which check_phase_inject_defaults never injects.
                 if !structure_members.contains_key(name.as_str()) {
                     ctx.seen_let_hashes.insert(
                         name.clone(),

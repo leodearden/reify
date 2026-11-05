@@ -9,7 +9,7 @@
 /// Consumer-neutral name for the morph-engine's input snapshot.
 ///
 /// Defined as a type alias over [`crate::eligibility::MorphSnapshot`] so that:
-/// - morph-engine callers (`morph()`, `eligible()`) use the PRD name `BRep`
+/// - morph-engine callers (`compose_morph()`) use the PRD name `BRep`
 ///   (per PRD §"Generic crate scope").
 /// - eligibility-only callers (failure-mode visibility counters, GUI badge —
 ///   PRD tasks #11/#12) continue to use the more descriptive `MorphSnapshot`

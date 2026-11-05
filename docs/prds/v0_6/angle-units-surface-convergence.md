@@ -670,7 +670,9 @@ Facing both sides of each seam. These are μ's and ρ's observable signals.
    asserted structurally rather than by parsing. Decide during λ/μ.
 3. **Where μ lives.** It needs `reify-core` (S1/S2/S4) + `reify-ir` (S3) + the parser. Only
    `reify-compiler` depends on all of `reify-ast`/`reify-core`/`reify-ir`/`reify-syntax`, so
-   `crates/reify-compiler/tests/unit_label_round_trip.rs` is the natural home. Confirm at
+   `crates/reify-compiler/tests/harness_units/unit_label_round_trip.rs` (behind the
+   `harness_units.rs` compile-unit root — a standalone `tests/<file>.rs` trips the
+   harness-layout ratchet; see the manifest's M1) is the natural home. Confirm at
    decompose that resolving a literal from a test there needs no `reify-eval`.
 4. **Draft's arity forms.** `draft()` accepts 3 or 4 args (probe-verified); δ must gate the
    angle in both `modify_draft` arms (`geometry_ops.rs:1991`, `:2049`). Mechanical.
@@ -802,7 +804,7 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
   *Prereqs:* none (label alphabet is already in-grammar, §3.8).
 
 - **μ — Round-trip property test (Invariant R). Integration gate for cluster C.**
-  *Modules:* `crates/reify-compiler/tests/unit_label_round_trip.rs` (new; §11 Q3).
+  *Modules:* `crates/reify-compiler/tests/harness_units/unit_label_round_trip.rs` (new; §11 Q3).
   *Change:* for every dimension in NAMED_DIMENSIONS (`crates/reify-core/src/dimension.rs`,
   superseding the earlier `:514-595` **[drift]** note) and every label from S1–S4, assert
   Invariant R. **Iterate the slice — do not hardcode a row count.** Every count written down
@@ -820,6 +822,9 @@ Every leaf that adds or changes a diagnostic must give it a `DiagnosticCode` (IN
   row it shares a vector with, so the first-match scan in `canonical_name()` returns the
   canonical name: `"TranslationalStiffness"`, `"Curvature"`, and `"Momentum"` come back as
   `"Stiffness"`, `"AbsorptionCoeff"`, and `"Impulse"`.
+  [amended by #6179: `Curvature` now has its own vector (rad·m⁻¹) and canonicalises to
+  itself, so only `"TranslationalStiffness"` → `"Stiffness"` and `"Momentum"` → `"Impulse"`
+  remain.]
   Seed one anti-vacuity self-test: a deliberately non-ASCII label injected into the harness's
   input makes it fail.
   *Signal:* the test is red on pre-κ/pre-λ main (for `·` and for `L`) and green after; a new

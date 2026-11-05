@@ -1560,9 +1560,12 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Fix: touch (to now) only the seeded tests/ and benches/ .rs sources that
     # contain one of these macros, forcing cargo to recompile+relink ONLY those
     # integration/bench test binaries (each is its own compilation-unit root —
-    # no lib rlib cascade).  src/ unit-test env!() usage is an accepted,
-    # documented limitation (touching a src/ file would force a lib recompile
-    # and cascade to every downstream dependent — expensive and unobserved).
+    # no lib rlib cascade).  src/ env!() usage, lib or unit-test, is
+    # deliberately NOT relinked: touching a src/ file forces a lib recompile
+    # that cascades to every dependent.  The gap is real (task #8927: a Fresh
+    # reify-test-support rlib kept _merge-verify's path), so src/ code that
+    # needs a workspace path must resolve it at run time, e.g.
+    # crates/reify-test-support/src/workspace_root.rs, never via env!().
     #
     # MAINTENANCE: extend this regex if a new cargo-internal path-baking env!()
     # macro is identified (mirrors the _NONRELOCATABLE_BUILD_GLOBS allow-list

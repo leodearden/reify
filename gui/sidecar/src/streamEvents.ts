@@ -13,13 +13,8 @@ export interface StreamState {
   /** The current turn's message.id; a different id starts a new turn. */
   readonly assistantMessageId: string | null;
   readonly missingMessageIdNoticed: boolean;
-  /** Every tool_use announced and not yet claimed, by tool_use_id. */
+  /** Every tool_use announced in this invocation, by tool_use_id; names its tool_result blocks. */
   readonly toolNameById: ReadonlyMap<string, string>;
-  /**
-   * The same tool_uses queued per tool_name in announcement order, for hosts that do
-   * not echo tool_use_id; correct only when same-name results arrive in that order.
-   */
-  readonly pendingToolUseIds: ReadonlyMap<string, readonly string[]>;
 }
 
 export interface StreamStep {
@@ -43,7 +38,6 @@ export function initialStreamState(invocationId: string): StreamState {
     assistantMessageId: null,
     missingMessageIdNoticed: false,
     toolNameById: new Map(),
-    pendingToolUseIds: new Map(),
   };
 }
 
@@ -139,7 +133,6 @@ function mapToolUseBlock(block: JsonObject, state: StreamState): StreamStep {
   if (typeof id !== 'string' || id === '' || typeof name !== 'string' || state.toolNameById.has(id)) {
     return withoutOutputs(state);
   }
-  const queue = state.pendingToolUseIds.get(name) ?? [];
   return {
     outputs: [{
       type: 'tool_call',
@@ -148,11 +141,7 @@ function mapToolUseBlock(block: JsonObject, state: StreamState): StreamStep {
       tool_name: name,
       tool_input: isObject(input) ? input : {},
     }],
-    state: {
-      ...state,
-      toolNameById: new Map(state.toolNameById).set(id, name),
-      pendingToolUseIds: new Map(state.pendingToolUseIds).set(name, [...queue, id]),
-    },
+    state: { ...state, toolNameById: new Map(state.toolNameById).set(id, name) },
   };
 }
 
@@ -168,55 +157,6 @@ function mapToolResultBlock(block: JsonObject, state: StreamState): StreamStep {
 function mapResult(sessionId: unknown, state: StreamState): StreamStep {
   if (typeof sessionId !== 'string' || sessionId === '') return withoutOutputs(state);
   return { outputs: [], state, finished: { sessionId } };
-}
-
-export type ToolUseClaim =
-  | { readonly ok: true; readonly toolUseId: string; readonly state: StreamState }
-  | { readonly ok: false; readonly error: string };
-
-/**
- * Consume the announced tool_use a host tool_result for `toolName` answers: the echoed
- * `toolUseId` when the host sent one, otherwise the oldest queued tool_use of that name.
- * Each tool_use can be claimed once.
- */
-export function claimToolUse(state: StreamState, toolName: string, toolUseId?: string): ToolUseClaim {
-  if (toolUseId === undefined) return claimOldest(state, toolName);
-  const registeredName = state.toolNameById.get(toolUseId);
-  if (registeredName === undefined) {
-    return refused(`unknown tool_use_id=${toolUseId} for tool_name=${toolName}`);
-  }
-  if (registeredName !== toolName) {
-    return refused(`tool_use_id=${toolUseId} does not match tool_name=${toolName} (registered as ${registeredName})`);
-  }
-  return claimed(state, toolName, toolUseId);
-}
-
-/** The state with no tool_use left to claim; delta offsets and the turn are kept. */
-export function forgetToolUses(state: StreamState): StreamState {
-  return { ...state, toolNameById: new Map(), pendingToolUseIds: new Map() };
-}
-
-function claimOldest(state: StreamState, toolName: string): ToolUseClaim {
-  const oldest = state.pendingToolUseIds.get(toolName)?.[0];
-  if (oldest === undefined) return refused(`no pending tool_use for tool_name=${toolName}`);
-  return claimed(state, toolName, oldest);
-}
-
-function claimed(state: StreamState, toolName: string, toolUseId: string): ToolUseClaim {
-  const toolNameById = new Map(state.toolNameById);
-  toolNameById.delete(toolUseId);
-  const pendingToolUseIds = new Map(state.pendingToolUseIds);
-  const stillPending = (state.pendingToolUseIds.get(toolName) ?? []).filter((id) => id !== toolUseId);
-  if (stillPending.length === 0) {
-    pendingToolUseIds.delete(toolName);
-  } else {
-    pendingToolUseIds.set(toolName, stillPending);
-  }
-  return { ok: true, toolUseId, state: { ...state, toolNameById, pendingToolUseIds } };
-}
-
-function refused(error: string): ToolUseClaim {
-  return { ok: false, error };
 }
 
 function unseenSuffix(full: unknown, emittedLen: number): string | null {

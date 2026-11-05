@@ -28,7 +28,7 @@ use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, mm};
 fn cold_start_eval_produces_correct_values() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let result = engine.eval(&module);
 
@@ -83,7 +83,7 @@ fn cold_start_eval_produces_correct_values() {
 fn edit_param_returns_updated_values() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     let initial = engine.eval(&module);
@@ -138,7 +138,7 @@ fn edit_param_returns_updated_values() {
 fn edit_param_snapshot_provenance() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
 
@@ -177,7 +177,7 @@ fn edit_param_snapshot_provenance() {
 fn edit_param_partial_reeval_only_dirty_demanded() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
 
@@ -269,7 +269,7 @@ fn content_hash_early_cutoff_prevents_downstream_eval() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     let initial = engine.eval(&module);
@@ -315,7 +315,7 @@ fn content_hash_early_cutoff_prevents_downstream_eval() {
 fn freshness_final_after_cold_start() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     engine.eval(&module);
 
@@ -350,7 +350,7 @@ fn freshness_final_after_cold_start() {
 fn freshness_all_final_after_edit_param() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
 
@@ -433,7 +433,7 @@ fn early_cutoff_skipped_nodes_have_final_freshness() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval
     engine.eval(&module);
@@ -474,7 +474,7 @@ fn early_cutoff_skipped_nodes_have_final_freshness() {
 fn mark_pending_is_called_for_eval_set_nodes() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
 
@@ -524,7 +524,7 @@ fn mark_pending_is_called_for_eval_set_nodes() {
 fn consecutive_edit_param_only_reevaluates_affected_nodes() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
 
@@ -766,7 +766,7 @@ fn mixed_fan_in_edit_param_unchanged_upstream_does_not_skip_shared_downstream() 
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start: a=5, x=1, y=6
     let initial = engine.eval(&module);
@@ -869,7 +869,7 @@ fn triple_fan_in_mixed_changed_unchanged_edit_param() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start: a=5, x=1, z=2, y=8
     let initial = engine.eval(&module);
@@ -937,7 +937,7 @@ fn freshness_all_final_after_mixed_fan_in_edit_param() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start
     engine.eval(&module);
@@ -1004,7 +1004,7 @@ fn linear_chain_early_cutoff_still_skips_after_fix() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start
     let initial = engine.eval(&module);
@@ -1079,7 +1079,7 @@ fn edit_param_re_resolves_auto_params_when_constraints_dirty() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: solver resolves x to mm(5.0)
     let result = engine.eval(&module);
@@ -1175,7 +1175,7 @@ fn edit_param_let_binding_re_evaluates_after_re_resolution() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: solver returns x=mm(5.0), y = 0.005 * 2 = 0.01
     let result = engine.eval(&module);
@@ -1242,7 +1242,7 @@ fn edit_check_returns_incremental_constraint_satisfaction() {
         .build();
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
     let result = engine.check(&module);
@@ -1296,7 +1296,7 @@ fn edit_check_constraint_transitions_satisfied_to_violated_and_back() {
         .build();
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold check: width=mm(10.0) > mm(5.0) → Satisfied
     let result = engine.check(&module);
@@ -1362,7 +1362,7 @@ fn edit_param_solver_diagnostics_propagated() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: solver returns Solved
     let result = engine.eval(&module);
@@ -1440,7 +1440,7 @@ fn edit_param_snapshot_updated_after_re_resolution() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval
     engine.eval(&module);
@@ -1529,7 +1529,7 @@ fn edit_param_no_re_resolution_when_auto_constraints_not_dirty() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     // Cold eval: x resolved to mm(5.0), y = mm(2.0) * 2 = 0.004
     let result = engine.eval(&module);
@@ -1608,7 +1608,7 @@ fn edit_check_preserves_constraint_labels() {
         .build();
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold check: both constraints satisfied, labels correct
     let result = engine.check(&module);
@@ -1737,7 +1737,7 @@ fn forward_let_ref_cold_start_simple() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     let x_val = result.values.get(&x_id).expect("x should be in values");
@@ -1779,7 +1779,7 @@ fn forward_let_ref_cold_start_deep_reverse_chain() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     let x_val = result.values.get(&x_id).expect("x should be in values");
@@ -1823,7 +1823,7 @@ fn forward_let_ref_cold_start_diamond() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     let b_val = result.values.get(&b_id).expect("b should be in values");
@@ -1880,7 +1880,7 @@ fn forward_let_ref_post_resolution() {
         .build();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver));
 
     let result = engine.eval(&module);
 
@@ -1942,7 +1942,7 @@ fn forward_let_ref_incremental_edit_param() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     // Cold-start: x = 15, y = 16
@@ -1995,7 +1995,7 @@ fn forward_let_ref_cold_start_matches_incremental() {
         .template(template1)
         .build();
 
-    let mut engine1 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine1 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result1 = engine1.eval(&module1);
 
     // Cold-start: b=10, c=20
@@ -2021,7 +2021,7 @@ fn forward_let_ref_cold_start_matches_incremental() {
         .template(template2)
         .build();
 
-    let mut engine2 = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine2 = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result2 = engine2.eval(&module2);
 
     let fresh_b = result2.values.get(&b_id).unwrap().clone();
@@ -2088,10 +2088,10 @@ fn forward_let_ref_declaration_order_irrelevant() {
         .build();
 
     // -- Cold-start both --
-    let mut engine_a = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_a = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result_a = engine_a.eval(&module_a);
 
-    let mut engine_b = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine_b = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result_b = engine_b.eval(&module_b);
 
     // Both must produce identical values
@@ -2160,7 +2160,7 @@ fn forward_let_ref_diamond_incremental_edit() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     // Cold-start: b=11, c=12, d=23
@@ -2222,7 +2222,7 @@ fn forward_let_ref_deep_chain_incremental_edit() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     // Cold-start: x=1, y=2, z=3
@@ -2284,7 +2284,7 @@ fn forward_let_ref_mixed_forward_backward() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     // Cold-start: b=2, c=3, d=5
@@ -2360,7 +2360,7 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
         .template(template)
         .build();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
 
     // Cold-start: x=0.0, y=1.0
@@ -2413,7 +2413,7 @@ fn forward_let_ref_early_cutoff_with_forward_decl() {
 fn edit_param_updates_param_cache_entry() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
     engine.eval(&module);
@@ -2448,7 +2448,7 @@ fn edit_param_updates_param_cache_entry() {
 fn double_edit_param_updates_param_cache_both_times() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
     engine.eval(&module);
@@ -2531,7 +2531,7 @@ fn edit_param_on_undef_param_updates_cache() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start: a has no default, so a=Undef (not cached for params without default_expr)
     engine.eval(&module);
@@ -2565,7 +2565,7 @@ fn edit_param_on_undef_param_updates_cache() {
 fn edit_param_cache_basis_version_updated() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let e = "Bracket";
     engine.eval(&module);

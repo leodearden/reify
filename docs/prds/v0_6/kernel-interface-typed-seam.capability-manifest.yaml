@@ -212,19 +212,25 @@ tasks:
   - name: every-detector-requires
     binding: nine build scripts detect a native dep today (five kernels incl. conformance, plus reify-cli, reify-eval, reify-mesh-morph, gui) via reify_build_utils::find(..).is_some()/match; all switch
       to require
+    verdict: 'PASS (corrected 2026-10-20, retro-critic R12: grep → ratchet row)'
+    delivered_check:
+      kind: manual
+      reason: 'R12 polarity: a find()-private diff alone (the subsumed S21 β #8646) would turn a `reify_build_utils::find\(` absent grep green without any require() existing, so it is vacuous as evidence of β₁. It is held as a tests/infra/adoption-ratchet.manifest row at ceiling 0 (S21 M1); require-helper and hand-written-cfg-sites-gone are the delivered checks.'
+  - name: hand-written-cfg-sites-gone
+    binding: 'moved from S21 β #8646 (subsumed, R12): the 10 hand-written cargo:rustc-cfg=has_<dep> lines in the 8 build.rs are gone; require() emits the cfg for as long as has_* lives (β₂/β₃ sweep it). Baseline at S21 authoring (main 8e6ffcac9d): 10.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: reify_build_utils::find\(
+      pattern: rustc-cfg=has_
       expect: absent
       paths:
+      - crates/reify-eval/build.rs
+      - crates/reify-cli/build.rs
+      - crates/reify-kernel-conformance/build.rs
+      - crates/reify-mesh-morph/build.rs
       - crates/reify-kernel-occt/build.rs
       - crates/reify-kernel-gmsh/build.rs
       - crates/reify-kernel-openvdb/build.rs
-      - crates/reify-kernel-conformance/build.rs
-      - crates/reify-cli/build.rs
-      - crates/reify-eval/build.rs
-      - crates/reify-mesh-morph/build.rs
       - gui/src-tauri/build.rs
 - label: β₂
   task_id: 8936

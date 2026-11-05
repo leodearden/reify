@@ -661,20 +661,18 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // Same load-bearing guard: index 1 is `ox` at arity 9 but `axis` at
         // arity 4.
         //
-        // MEASURED PREFIX DIVERGENCE. This layer is keyed on the CALL, so it
-        // reports the SURFACE name `circular_pattern:`, while the eval layer
-        // renders its `{builtin}` from `PatternKind::Circular`'s `Display` — its
-        // `kind_label` — which is `"circular"` (the `PatternKind::Circular` arm
-        // of its `Display` impl in `types.rs`). That is the same class as the
-        // `box_centered`-vs-`box` divergence already recorded under
-        // `check_builtin_arg_types`' "# Message format", and it holds this way
-        // deliberately: reporting the name the author actually typed beats
-        // reporting a lowering detail they never wrote. `mirror` does NOT
-        // diverge — `PatternKind::Mirror` displays as `"mirror"` (the
-        // `PatternKind::Mirror` arm of the same `Display` impl) — so the two
-        // layers agree byte-for-byte there. Both halves are pinned by
-        // `circular_pattern_slot_names_the_surface_builtin_not_the_lowered_kind`
-        // in `tests/builtin_arg_signature_tests.rs`.
+        // PREFIX AGREEMENT. This layer is keyed on the CALL, so it reports the
+        // SURFACE name. The eval layer's `kind_label` (`PatternKind`'s
+        // `Display`) renders that same name, so for `circular_pattern:` and
+        // `mirror:` the two layers agree byte-for-byte.
+        // Only the `_centered` aliases still diverge; see
+        // `check_builtin_arg_types`' "# Message format". This layer's half is
+        // pinned by `circular_pattern_bare_origin_is_rejected_naming_the_origin_components`
+        // and `mirror_bare_origin_is_rejected_naming_the_origin_components` in
+        // `tests/harness_type_checking/builtin_arg_signature_tests.rs`; the eval
+        // half by reify-eval's `expected_length_rejection("circular_pattern", …)`
+        // assertions in `src/geometry_ops/tests.rs`, e.g.
+        // `compile_geometry_op_circular_pattern_origin_rejection_label_agrees_across_forms`.
         //
         // These two arms make `reify check` a REAL gate for these positions, not
         // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
@@ -803,12 +801,12 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         //   are the inert `c0`…`cN` that `geometry.rs` synthesises. There is no
         //   index-keyed `CheckableArg` to write.
         //
-        // box(width, height, depth) / box_centered(width, height, depth)
-        //   NOTE index 1 is `height` — the Y extent — NOT `depth`.
+        // box(width, depth, height) / box_centered(…) — X/Y/Z extents, slot
+        //   names size_x/size_y/size_z
         "box" | "box_centered" => const { &[
-            length_arg(0, "width"),
-            length_arg(1, "height"),
-            length_arg(2, "depth"),
+            length_arg(0, "size_x"),
+            length_arg(1, "size_y"),
+            length_arg(2, "size_z"),
         ] },
 
         // cylinder(radius, height) / cylinder_centered(radius, height)
@@ -843,9 +841,6 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         ] },
 
         // wedge(width, depth, height, top_width)
-        //   NOTE this orders its triple width/DEPTH/height — the opposite of
-        //   `box`'s width/height/depth. Both orders are copied from their own
-        //   lowering site rather than shared, which is why they can differ.
         "wedge" => const { &[
             length_arg(0, "width"),
             length_arg(1, "depth"),
@@ -1194,7 +1189,7 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
 /// `"{builtin}: {arg_name} argument expects {type_name}, got {actual}; {hint}"`
 ///
 /// Concretely, for a LENGTH slot:
-/// `"box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
+/// `"box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`"`
 ///
 /// Every dimension renders this hinted form — LENGTH, ANGLE and DENSITY alike —
 /// because the field is non-optional. Only [`ExpectedArg::Int`] and
@@ -1279,8 +1274,8 @@ pub(crate) fn check_builtin_arg_types(
                 // `type_compat::is_mul_div_gradualism_skip` (type_compat.rs,
                 // cited from expr.rs:2037) already lists `ScalarParam`
                 // alongside `TypeParam` as a DEFER kind; and
-                // `conformance::scalar_param_arg_defers_at_scalar_slot`
-                // (conformance/mod.rs, task 5627 γ D4-5 / PRD invariant I5)
+                // `type_acceptance::scalar_param_arg_defers_at_scalar_slot`
+                // (task 5627 γ D4-5 / PRD invariant I5)
                 // makes the identical call at the struct-ctor layer.
                 //
                 // MEASURED symptom this closes: before task 6862,
@@ -1377,7 +1372,7 @@ pub(crate) fn check_builtin_arg_types(
                 // instantiating, so rejecting is correct and loses nothing.
                 //
                 // The precedent is narrow in exactly the same way:
-                // `conformance::scalar_param_arg_defers_at_scalar_slot` gates
+                // `type_acceptance::scalar_param_arg_defers_at_scalar_slot` gates
                 // on `matches!(param_type, Type::Scalar { .. })`, so it too
                 // defers only at a scalar slot and nowhere else.
                 //
@@ -1866,21 +1861,21 @@ mod tests {
         }
     }
 
-    /// box / box_centered → [width@0, height@1, depth@2].
+    /// box / box_centered → [size_x@0, size_y@1, size_z@2].
     ///
-    /// NOTE index 1 is `height`, NOT `depth`: `geometry.rs`'s shared Box arm
-    /// orders the triple width/height/depth, so `height` is the Y extent. A
-    /// transposed pair here would still type-check but would misname the
-    /// offending argument in every diagnostic the slot emits.
+    /// The positional `box(width, depth, height)` binds to the X/Y/Z extents,
+    /// so the slots are named for their axis. A transposed pair here would
+    /// still type-check but would misname the offending argument in every
+    /// diagnostic the slot emits.
     #[test]
     fn box_primitives_have_three_length_slots() {
         for name in ["box", "box_centered"] {
             assert_slots_at_every_arity(
                 name,
                 &[
-                    length_slot(0, "width"),
-                    length_slot(1, "height"),
-                    length_slot(2, "depth"),
+                    length_slot(0, "size_x"),
+                    length_slot(1, "size_y"),
+                    length_slot(2, "size_z"),
                 ],
             );
         }
@@ -1933,10 +1928,6 @@ mod tests {
     }
 
     /// wedge → [width@0, depth@1, height@2, top_width@3].
-    ///
-    /// NOTE the wedge orders its triple width/DEPTH/height — the opposite of
-    /// `box`'s width/height/depth. Both orders are copied from their own
-    /// lowering site rather than shared, which is why they can differ.
     #[test]
     fn wedge_has_four_length_slots() {
         assert_slots_at_every_arity(
@@ -2500,7 +2491,7 @@ mod tests {
             "solid_body",
             "volume",
             // `"box"` used to sit here. Task 5750 (units-length η) gave it
-            // width/height/depth LENGTH slots, so it is no longer an unchecked
+            // three LENGTH slots, so it is no longer an unchecked
             // name; `box_primitives_have_three_length_slots` is now its pin.
             // `union` replaces it as a still-unslotted CSG producer so this
             // list keeps covering that shape.

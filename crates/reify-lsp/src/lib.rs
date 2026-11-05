@@ -59,12 +59,13 @@ mod tests {
     use crate::blocking_work::test_support::{
         IDLE_POOL_WOULD_HAVE_RUN_IT_BY, SaturatedBlockingPool, blocking_work_requests, poll_once,
     };
+    use crate::server::ReifyLanguageServer;
 
     const URI: &str = "file:///stdio.ri";
 
     type Resolution<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + 'a>>;
 
-    /// Reduce a handler's answer to whether it resolved, so the four
+    /// Reduce a handler's answer to whether it resolved, so the
     /// differently-typed handlers can be driven side by side.
     fn resolution<'a, T: 'a>(
         answer: impl Future<Output = jsonrpc::Result<Option<T>>> + 'a,
@@ -80,6 +81,27 @@ mod tests {
 
     fn params<P: serde::de::DeserializeOwned>(request: serde_json::Value) -> P {
         serde_json::from_value(request).expect("the request's params deserialize")
+    }
+
+    /// Drive the typed handler that serves `method`.
+    fn answer<'a>(
+        server: &'a ReifyLanguageServer,
+        method: &str,
+        request: serde_json::Value,
+    ) -> Resolution<'a> {
+        match method {
+            "textDocument/definition" => resolution(server.goto_definition(params(request))),
+            "textDocument/prepareRename" => resolution(server.prepare_rename(params(request))),
+            "textDocument/rename" => resolution(server.rename(params(request))),
+            "textDocument/references" => resolution(server.references(params(request))),
+            "textDocument/hover" => resolution(server.hover(params(request))),
+            "textDocument/completion" => resolution(server.completion(params(request))),
+            "textDocument/documentSymbol" => resolution(server.document_symbol(params(request))),
+            "textDocument/documentHighlight" => {
+                resolution(server.document_highlight(params(request)))
+            }
+            other => panic!("no handler arm for {other}"),
+        }
     }
 
     #[test]
@@ -106,22 +128,8 @@ mod tests {
                 })
                 .await;
 
-            let [definition, prepare_rename, rename, references] = blocking_work_requests(URI);
-            let mut answers = [
-                (
-                    definition.0,
-                    resolution(server.goto_definition(params(definition.1))),
-                ),
-                (
-                    prepare_rename.0,
-                    resolution(server.prepare_rename(params(prepare_rename.1))),
-                ),
-                (rename.0, resolution(server.rename(params(rename.1)))),
-                (
-                    references.0,
-                    resolution(server.references(params(references.1))),
-                ),
-            ];
+            let mut answers = blocking_work_requests(URI)
+                .map(|(method, request)| (method, answer(server, method, request)));
 
             for (method, answer) in &mut answers {
                 assert!(

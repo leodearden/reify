@@ -1,6 +1,6 @@
 # PRD: reify-audit PLINECITE — stale hard line-cite detector (scope decision record)
 
-**Status:** active — scope decided and built by #6935, which coalesced #5872 and #5874.
+**Status:** active — scope decided and built by #6935, which coalesced #5872 and #5874; spelled lead-ins added by #9188.
 
 Measurements and code anchors taken at main 12d47d8429 (2026-10-11); counts are
 dated, not live. The `<file>:<line>` examples quoted below are part of that dated
@@ -32,7 +32,7 @@ A convention alone has measurably not held:
 |---|---|---|
 | Build a detector? | Yes. The convention has not held (§1). | — |
 | Design | Syntactic: report every hard cite, resolve none. | §3 |
-| Grammar | Comment-leading lines only; `.rs`/`.ri` targets; decline-only. | §4 |
+| Grammar | Comment-leading lines only; `.rs`/`.ri` targets; colon and measured spelled lead-ins; decline-only. | §4 |
 | Scope | `crates/reify-compiler/stdlib/**.ri` plus `crates/<crate>/src/**.rs`, minus `crates/reify-audit/`. | §5 |
 | `docs/` | Excluded permanently. | §5 |
 | Residual | A ratchet ledger, `crates/reify-audit/plinecite-baseline.txt`, settled by `check()`. | §6 |
@@ -67,9 +67,17 @@ ones that no longer hold. It was rejected:
 - A **comment line** is a line whose trimmed start begins `//`. That covers
   `//`, `///` and `//!`.
 - A **cite** is a stem of bytes `[A-Za-z0-9_./-]` ending in a word byte, then
-  `.rs` or `.ri`, then either `:<digit>` or ` esc-<digits and hyphens>:<digit>`.
-- The **reported token** runs from the stem's start through the first digit
-  run, so `cache.rs:617-621` is reported as `cache.rs:617`.
+  `.rs` or `.ri`, then an optional ` esc-<digits and hyphens>` anchor, then one
+  lead-in from the closed set `:`, `:~`, ` ~`, ` (~`, ` line `, ` lines `
+  (`plinecite::LINE_NUMBER_LEADS`), then a digit. Each lead-in is matched
+  literally, so the digit must follow it directly.
+- The **reported token** is verbatim, from the stem's start through the first
+  digit run: `cache.rs:617-621` is reported as `cache.rs:617`, and
+  `entity.rs (~2726-2790)` as `entity.rs (~2726`. Re-spelling a cite is
+  therefore new debt, exactly as re-numbering is (§6).
+- **The lead-in set is closed.** A lead-in joins it only on a measured live
+  instance in scope. #9188 admitted the five spelled ones on the instances
+  §5 records.
 - A bare `esc-<id>` anchor with no line number is legal and is not a cite.
 - A same-line `plinecite:allow — <reason>` exempts that line. The marker
   grammar is the crate's shared one (`scan_util::allow_marker_body`). A marker
@@ -77,7 +85,11 @@ ones that no longer hold. It was rejected:
 
 **Out of grammar, by design:**
 
-- the prose form, `line N of foo.rs` or `foo.rs line N`;
+- the prefix prose form, `line N of foo.rs`;
+- spellings with no measured live instance: `foo.rs, line N`, `foo.rs (line N`,
+  `foo.rs line ~N`, `foo.rs L12`, `foo.rs ~ N`;
+- a bare parenthesised number, `foo.rs (N)`, which the corpus uses for counts
+  (`beam.rs (2)`), not lines;
 - a cite whose digits wrap onto the next line;
 - string literals, including the 15 assertion-message cites measured in scope;
 - block comments and trailing comments, of which 0 were measured in scope;
@@ -87,6 +99,14 @@ ones that no longer hold. It was rejected:
 PLINECITE **reports**; it never **certifies** a file free of line cites. A
 clean run means no in-grammar cite was found, nothing more. Hardening the
 matcher to close these gaps is rejected for the reason 593aaeb4f0 gives.
+
+The spelled lead-ins are not that hardening. 593aaeb4f0 rejected an
+open-ended matcher behind a gate, where each new spelling evades the next
+matcher. The lead-in set is closed, each member is admitted on a measured live
+instance, and the lane stays report-only. #9188 admitted the set because,
+without it, S23's ledger burn-down (`docs/prds/v0_6/prose-rehoming-and-symbol-citations.md`
+D1, whose done-state is "no ledger row under the leaf's paths") could reach
+done with these cites still in place.
 
 ## 5. Scope
 
@@ -132,6 +152,18 @@ into trees that no longer exist, such as the deleted `crates/reify-types`.
 | `reify-audit --pattern PLINECITE`, real tree | 0 findings, exit 0 |
 | Shrink-only regeneration over the seeded ledger | byte-identical |
 
+**Measured at #9188** (main 8113685867, 2026-10-24), the lead-in widening:
+
+| Measure | Value |
+|---|---|
+| Rows admitted by the spelled lead-ins | 28: ` ~` 16, `:~` 7, ` (~` 2, ` lines ` 2, ` line ` 1 (19 in reify-compiler) |
+| … sample tokens | `entity.rs (~2145`, `entity.rs:~631`, `graph.rs ~429`, `lib.rs line 444`, `kernel.rs lines 178` |
+| False positives | 1, `parts.ri line 0` in reify-lsp `server.rs` (an LSP position a test asserts), settled by `plinecite:allow` |
+| Carried-over colon rows, un-ledgered on the base after a file move | 2: kernel-occt `lib.rs` → `op_args.rs`, reify-lsp `references.rs` → `references/cross_file/tests.rs` |
+| Stale rows dropped, the same set any regeneration on the base drops | 32 |
+| Ledger rows after `--admit-new` | 737 (the same run with the base's grammar writes 709) |
+| Shrink-only regeneration over the written ledger | byte-identical; 0 stale, 0 new debt |
+
 ## 6. Residual ledger
 
 About 740 pre-existing cites (exact, dated counts: §5's landing table) span
@@ -142,7 +174,8 @@ ledger, `crates/reify-audit/plinecite-baseline.txt`:
 
 - **Row grammar:** `<path> :: <cite>`, one per line, for example
   `crates/reify-eval/src/cache.rs :: engine_eval.rs:3884`. The separator is
-  the first ` :: `, because a path has no spaces and an esc-anchored cite does.
+  the first ` :: `, because a path has no spaces and a cite can (an esc anchor,
+  ` ~`, ` line `).
 - **Why (path, cite), not a per-file count.** The cite's target number is part
   of the row, so re-pointing a stale number is reported as new debt.
   Re-numbering is not the fix; naming the symbol is. Under a per-file count, a
@@ -173,7 +206,7 @@ only, so PLINECITE never moves it, even when a gate selects the pattern.
 
 **Why no gate now.** 593aaeb4f0 removed a *gating* substring line-cite test.
 The grammar is decline-only and blind to wrapped and prose forms, so a gate
-pressures authors into out-of-grammar spellings such as `foo.rs line 12`,
+pressures authors into out-of-grammar spellings such as `line 12 of foo.rs`,
 which are worse than the cite they replace because nothing reports them. The
 size of that displacement needs measuring before anything gates on this
 grammar.

@@ -40,7 +40,7 @@ fn occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)))
 }
 
 fn example_source() -> String {
@@ -302,9 +302,11 @@ fn fourbar_example_source() -> String {
 /// the post-seam joint values that do carry the correct origin.
 #[test]
 fn relate_mounted_fourbar_closed_loop_closes_with_relate_origin() {
-    use reify_constraints::{JointValue, NewtonConfig, NewtonOutcome, StartStrategy,
-                            solve_loop_closure};
     use reify_stdlib::loop_closure::loop_residual_twist;
+    use reify_stdlib::loop_closure_solver::{
+        NewtonConfig, NewtonOutcome, StartStrategy, solve_loop_closure,
+    };
+    use reify_stdlib::loop_closure_value::JointValue;
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(

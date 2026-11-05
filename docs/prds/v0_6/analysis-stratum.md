@@ -82,7 +82,7 @@ The finding records in `plans/review-all-reify-20261010.json` carry the full mea
   - `StructuredComputeDetail::Fea(reify_solver_elastic::FeaDiagnosticDetail)`. That is a 3-variant enum with no serde; its persisted form is a reify-eval mirror in `persistent_cache/diagnostics_wire.rs`.
   - From `elastic_result.rs`: `BudgetReason`, `ConvergenceStatus` (the public field type of `AposterioriEstimate.convergence_status`) and `progressive::PartialElasticResult`.
   - `elastic_result.rs` is 2,563 of the crate's 2,883 lines.
-  - The orphan rule ties `ElasticResult` only to `reify_core::PersistentlyCacheable`.
+  - The orphan rule ties `ElasticResult` only to `reify_core::persistent_cache::PersistentlyCacheable`.
   - `reify-eval` is the contract's only consumer crate.
 - **Per-target behaviour is string-keyed in 11 production sites (fk-34bddf1fcbce, fk-7d4f2be7b634).**
   - `run_compute_dispatch`'s two shell-extract fold sites, one in the persistent-HIT arm and one in the Completed arm. A prose NOTE asks future paths to mirror them.
@@ -334,7 +334,7 @@ A family move is one diff that does all of the following.
    - `engine_hash_algo` coverage rows (C5);
    - `scripts/check-nan-safe-ordering.sh` `SCOPE_PATHSPECS`, which gain `crates/reify-analysis/*.rs`, with the (hK) pins in `tests/infra/test_nan_safe_ordering_guard_wired.sh` and `docs/prds/compute-fea-hardening.md` decision 9 in the same change;
    - `scripts/check-compute-trampoline-registration.sh`'s definition-file list (§13 R4);
-   - S13's `tests/infra/test_selector_resolution_ratchet.py` scan roots and ceilings, when a move relocates code it counts (μ);
+   - **[Amended 2026-10-20, retro-critic R9]** S13's rows in `tests/infra/adoption-ratchet.manifest` (S13 α/ε): their scan roots and ceilings, when a move relocates code they count (μ);
    - `.config/nextest.toml` partitions and `scripts/release-sensitive-crates.txt`, if a moved test is heavy or release-only;
    - after S24 ο #8822 lands, `plinecite-baseline-gen --rename <old>=<new>`.
 4. **Repoints broken checks.** Runs `reify-audit --pattern PDCHECK` and repoints every live task's `delivered_checks` path the move broke, as three writes: `.yaml`, the `.md` twin, and the task's complete `metadata.delivered_checks`. This step applies to **every** S5 leaf that moves, renames or deletes a file or symbol a live check names, not only family moves. Known cases: δ (`solver_progress.rs`: #6731, #8374, #8383), ε (`compute_targets/mod.rs` demand registration: #7142, #8290), κ₁ and π (`compute_targets/mod.rs`: #6773).
@@ -463,7 +463,7 @@ A family move is one diff that does all of the following.
 ## 8. Pre-conditions (G3, verified on main 2026-10-13)
 
 **Present at main.** No grammar change is needed, so `grammar_confirmed: true` holds on every leaf.
-- `reify_core::PersistentlyCacheable`.
+- `reify_core::persistent_cache::PersistentlyCacheable`.
 - `reify_ir::{TopologyAttributeTable, TopologyAttribute, SelectorValue}`.
 - `CompiledFunction.optimized_target`.
 - `Engine::{set_active_solve_cancel, set_solver_progress_sink}`.

@@ -158,7 +158,7 @@ structure CheckerC {
 /// Case (c): emptiness IS F's scoping predicate.
 ///
 /// `bounds.is_empty()` must mean "the module declares no bound", i.e. exactly
-/// `!module_has_representation_within(module)` (reify-cli main.rs). Both
+/// `!module_has_representation_within(module)` (reify-cli module_capabilities.rs). Both
 /// directions are pinned here: a plain module yields an empty table, and case
 /// (a)'s module yields a non-empty one.
 ///

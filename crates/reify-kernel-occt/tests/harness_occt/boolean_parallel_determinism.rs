@@ -112,9 +112,9 @@ fn fingerprint(kernel: &mut OcctKernel, shape: GeometryHandleId) -> ShapeFingerp
 fn plate(kernel: &mut OcctKernel) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(PLATE_SIDE),
-            height: Value::Real(PLATE_SIDE),
-            depth: Value::Real(PLATE_THICKNESS),
+            size_x: Value::Real(PLATE_SIDE),
+            size_y: Value::Real(PLATE_SIDE),
+            size_z: Value::Real(PLATE_THICKNESS),
         })
         .expect("plate box must succeed")
         .id

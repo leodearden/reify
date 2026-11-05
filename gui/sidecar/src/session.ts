@@ -8,13 +8,7 @@ import type { PermissionServer } from './permission-server.js';
 import { wrapClaudeArgs } from './sandbox.js';
 import { sidecarMcpServers } from './tool-surface.js';
 import { buildClaudeArgs } from './claudeArgs.js';
-import {
-  claimToolUse,
-  forgetToolUses,
-  initialStreamState,
-  mapStreamEvent,
-  type StreamState,
-} from './streamEvents.js';
+import { initialStreamState, mapStreamEvent, type StreamStep } from './streamEvents.js';
 import { errorMessage } from './utils.js';
 
 export interface SessionConfig {
@@ -82,11 +76,6 @@ export class SidecarSession {
   private sessionId: string | null = null;
   private abortController: AbortController | null = null;
   private destroyed = false;
-
-  /** The in-flight invocation's stream state (delta offsets, tool_use correlation), if any. */
-  private stream: StreamState | null = null;
-  /** The stdin of the currently in-flight claude CLI process, if any. */
-  private currentStdin: NodeJS.WritableStream | null = null;
 
   /**
    * Maps request_id → tool_name for pending permission requests.
@@ -212,9 +201,6 @@ export class SidecarSession {
       case 'clear_session':
         this.handleClearSession();
         break;
-      case 'tool_result':
-        this.handleToolResult(msg.tool_name, msg.result, msg.id, msg.tool_use_id);
-        break;
       case 'permission_decision':
         this.handlePermissionDecision(msg.request_id, msg.behavior, msg.message, msg.updated_input, msg.remember);
         break;
@@ -315,8 +301,8 @@ export class SidecarSession {
     });
 
     // Attach an 'error' listener so an unhandled stream error cannot crash the sidecar process.
-    // Error reporting for *correlated* writes flows through per-write callbacks (see writes below),
-    // which capture the correct id for each write rather than the outer send_message id.
+    // Error reporting for the prompt write flows through its per-write callback (see below),
+    // which tags the error with the send_message id.
     //
     // Orphan stream errors (fired to the 'error' listener without a pending write callback, e.g.
     // when the underlying fd is closed externally) are now surfaced as a console.warn diagnostic
@@ -334,8 +320,7 @@ export class SidecarSession {
       }
     });
 
-    // Write the initial user prompt as a stream-json message line.
-    // Stdin is kept open until a 'result' event arrives so tool_result blocks can follow.
+    // Write the user prompt as a stream-json message line.
     // Per-write callback captures the send_message id for correct error correlation.
     proc.stdin?.write(
       JSON.stringify({
@@ -346,11 +331,8 @@ export class SidecarSession {
         if (err) this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
       }
     );
-
-    // Register the in-flight stdin and a fresh stream state so handleToolResult can
-    // claim this invocation's tool_uses and write their results.
-    this.currentStdin = proc.stdin ?? null;
-    this.stream = initialStreamState(id);
+    // The prompt is the only input; closing stdin lets the CLI exit once the turn's result is out.
+    proc.stdin?.end();
 
     // Start timeout timer
     const timeoutMs = this.config.timeoutMs ?? 300_000;
@@ -370,11 +352,9 @@ export class SidecarSession {
     });
 
     try {
-      await this.consumeStream(proc);
+      await this.consumeStream(proc, id);
     } finally {
       clearTimeout(timeoutId);
-      this.currentStdin = null;
-      this.stream = null;
     }
 
     // Wait for process exit and check exit code
@@ -385,12 +365,14 @@ export class SidecarSession {
   }
 
   /**
-   * Read the claude child's stream-json stdout to its end, applying each event. A line
-   * that is not JSON is skipped with a warning. If applying an event throws, the child is
+   * Read the claude child's stream-json stdout to its end, folding each event into the
+   * invocation's stream state and forwarding the outputs it implies. A line that is not
+   * JSON is skipped with a warning. If mapping or forwarding an event throws, the child is
    * killed (it would otherwise keep running tools for a turn that has already failed)
    * and the error propagates, so the turn ends with an error outbound.
    */
-  private async consumeStream(proc: ChildProcess): Promise<void> {
+  private async consumeStream(proc: ChildProcess, invocationId: string): Promise<void> {
+    let state = initialStreamState(invocationId);
     for await (const line of createLineReader(proc.stdout!)) {
       let event: unknown;
       try {
@@ -400,7 +382,9 @@ export class SidecarSession {
         continue;
       }
       try {
-        this.applyStreamEvent(event, proc);
+        const step = mapStreamEvent(event, state);
+        state = step.state;
+        this.forwardStep(step);
       } catch (error) {
         proc.kill();
         throw error;
@@ -409,15 +393,10 @@ export class SidecarSession {
   }
 
   /**
-   * Advance the in-flight stream state by one event and forward the outputs it implies.
-   * The state is re-read from `this.stream` on every event, so claims and forgets made
-   * between events survive, and it is committed BEFORE forwarding, so a host answering a
-   * tool_call synchronously finds its tool_use.
+   * Forward one event's outputs to the host and, when it was the result that ends the
+   * turn, record the CLI session id for --resume.
    */
-  private applyStreamEvent(event: unknown, proc: ChildProcess): void {
-    if (this.stream === null) throw new Error('stream event received with no in-flight invocation state');
-    const step = mapStreamEvent(event, this.stream);
-    this.stream = step.state;
+  private forwardStep(step: StreamStep): void {
     for (const msg of step.outputs) {
       if (msg.type === 'notice') {
         this.emitNotice(msg);
@@ -425,19 +404,7 @@ export class SidecarSession {
         this.onOutput(msg);
       }
     }
-    if (step.finished !== undefined) this.finishTurn(step.finished.sessionId, proc);
-  }
-
-  /**
-   * Record the CLI session id for --resume and close stdin: no tool_result follows a
-   * result event, and the CLI in stream-json input mode exits only once stdin closes.
-   * currentStdin is nulled at once so a late tool_result hits the "no in-flight" guard
-   * rather than writing to an ended stream.
-   */
-  private finishTurn(sessionId: string, proc: ChildProcess): void {
-    this.sessionId = sessionId;
-    proc.stdin?.end();
-    this.currentStdin = null;
+    if (step.finished !== undefined) this.sessionId = step.finished.sessionId;
   }
 
   /**
@@ -508,39 +475,6 @@ export class SidecarSession {
   }
 
   /**
-   * Forward a tool_result inbound from the host to the in-flight claude CLI's stdin,
-   * claiming the tool_use it answers (streamEvents.ts::claimToolUse). Emits an error
-   * outbound when no invocation is in flight or no announced tool_use matches.
-   */
-  private handleToolResult(toolName: string, result: unknown, id: string, inboundToolUseId?: string): void {
-    if (this.currentStdin === null || this.stream === null) {
-      this.onOutput({ type: 'error', id, message: 'no in-flight claude CLI process' });
-      return;
-    }
-    const claim = claimToolUse(this.stream, toolName, inboundToolUseId);
-    if (!claim.ok) {
-      this.onOutput({ type: 'error', id, message: claim.error });
-      return;
-    }
-    // The tool_use is consumed whether or not the write below succeeds: on a write error
-    // the host retries the whole send_message, and re-sending this tool_result would
-    // hit the unknown tool_use_id error.
-    this.stream = claim.state;
-    this.currentStdin.write(
-      JSON.stringify({
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: claim.toolUseId, content: result }],
-        },
-      }) + '\n',
-      (err) => {
-        if (err) this.onOutput({ type: 'error', id, message: `stdin write error: ${err.message}` });
-      }
-    );
-  }
-
-  /**
    * Abort the current in-flight SDK request.
    */
   private handleAbort(): void {
@@ -554,7 +488,6 @@ export class SidecarSession {
    */
   private handleClearSession(): void {
     this.sessionId = null;
-    if (this.stream !== null) this.stream = forgetToolUses(this.stream);
     // Cancel any in-flight permission requests before clearing the tracking map.
     // Without this, the HTTP handlers awaiting pendingPromises in the permission
     // server would hang forever (no one calls decide() after the map is cleared).

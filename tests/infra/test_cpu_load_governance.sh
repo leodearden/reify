@@ -157,10 +157,27 @@
 #                                       ~200+ load-avg host, stall_fraction=0.001).
 #   REIFY_CPU_GOV_TEST_PROC_PATH        synthetic-PSI injection seam (testability seam —
 #                                       mirrors REIFY_CPU_ADMIT_PROC_PATH used in ROW4-BYPASS)
-#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4;
-#                                       ROW4 default warmup+measure+4 if unset)
-#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp before sampling (default 3)
+#   REIFY_CPU_GOV_TEST_BURN_S           per-fixture burn duration seconds (default 4).
+#                                       ROW4 clamps it UP to the deadline-derived
+#                                       cap (ready-deadline + warmup + measure + 4),
+#                                       which is also its default when unset; ROW4
+#                                       stops its burns explicitly after the AFTER
+#                                       sample, so the cap never lengthens a run
+#   REIFY_CPU_GOV_TEST_ROW4_WARMUP_S    ROW4 steady-state ramp, counted from both
+#                                       burns reporting ready, before sampling
+#                                       (default 3)
 #   REIFY_CPU_GOV_TEST_ROW4_MEASURE_S   ROW4 steady-state delta window (default 8)
+#   REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S  ROW4 anti-hang bound on waiting for BOTH
+#                                       burns to report ready through the fixture's
+#                                       --ready-file (default 30; task 9698).
+#                                       Technique T (docs/prds/infra-test-wallclock-
+#                                       deflake.md): it only keeps a burn that never
+#                                       reports from hanging the suite and NEVER
+#                                       discriminates pass from fail — when it
+#                                       expires ROW4-1 SKIPs, there being no window
+#                                       to measure.  Generous by an order of
+#                                       magnitude over a governed launch, and the
+#                                       base of the ROW4 burn cap above
 #   REIFY_CPU_GOV_TEST_ROW4_BYPASS_SLOW_S  ROW4-BYPASS-VACUITY-2 slow-but-
 #                                       correct stub sleep seconds (default 6;
 #                                       strictly ABOVE the retired 5 s bound,
@@ -192,10 +209,16 @@
 #                                       anti-#4901); bounds the ROW4 parent-slice quota,
 #                                       the confined per-role worker count, and the
 #                                       confined pin-list size (CONFINE_CPUS below)
-#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit taskset -c pin list override for the
-#                                       ROW4 confined burns (default: derived at runtime
-#                                       as the LAST confine-cores CPUs of this process's
-#                                       own Cpus_allowed_list; esc-4926-3 ruling)
+#   REIFY_CPU_GOV_TEST_CONFINE_CPUS     explicit pin list override for the ROW4
+#                                       confined burns: CPU ids and ascending N-M
+#                                       ranges, comma-separated ("30,31" or "30-31").
+#                                       Expanded to single ids, since each worker is
+#                                       pinned to ONE CPU (cpu_load_fixture.sh
+#                                       --pin-cpus); anything else (a stride, a
+#                                       typo) exits 64 at startup.  (default: derived
+#                                       at runtime as the LAST confine-cores CPUs of
+#                                       this process's own Cpus_allowed_list;
+#                                       esc-4926-3 ruling)
 #   REIFY_GOVTEST_TEST_MODE             ARMING KEY for the two seams below (task
 #                                       5930). Both are refused unless this is 1.
 #                                       Nothing in the repo sets it except
@@ -332,6 +355,9 @@ WORK="$(mktemp -d)"
 # nothing to record.  See govtest_slice_teardown in govtest_slice_reaper_lib.sh
 # for why the flags were removed rather than repaired.
 _ALL_MIX_PIDS=""
+# Wrapper pids of ROW4 burns not yet stopped (task 9698); see
+# _row4_launch_role_burn / _row4_stop_burns.
+_ROW4_BURN_PIDS=""
 
 # ---------------------------------------------------------------------------
 # Hermeticity: neutralize default-ON memory gating (task 4911) for the live-PSI
@@ -355,6 +381,15 @@ _cleanup_all() {
     # Kill any lingering ROW2_3 mix background processes (crash-path reap).
     if [ -n "${_ALL_MIX_PIDS:-}" ]; then
         for _cpid in ${_ALL_MIX_PIDS}; do
+            kill "$_cpid" 2>/dev/null || true
+        done
+    fi
+    # Likewise any ROW4 burn this run was cut short before it could stop
+    # (task 9698).  The hermetic-guard burns run in this script's own cgroup,
+    # outside the govtest slices, so govtest_slice_teardown below cannot reach
+    # them.
+    if [ -n "${_ROW4_BURN_PIDS:-}" ]; then
+        for _cpid in ${_ROW4_BURN_PIDS}; do
             kill "$_cpid" 2>/dev/null || true
         done
     fi
@@ -577,18 +612,24 @@ fi
 # instead bounds the whole subtree's CPU footprint for the pool while leaving
 # each child scope's cpu.max=max.
 #
-# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling): the quota
-# alone does NOT reproduce the weight ratio — CPUQuota is an aggregate
-# TIME-budget throttle that never forces sibling threads onto shared per-CPU
-# runqueues, and cpu.weight only arbitrates between siblings CO-RESIDENT on a
-# runqueue.  With 2×confine-cores runnable threads spread across a large idle
-# box, weight never bites and the shared quota drains ~FCFS → ~50/50
-# (empirical false-RED, esc-4926-3).  `taskset -c` affinity pinning of the
-# burns to confine-cores CPUs (CONFINE_CPUS below) is what CREATES the
-# per-CPU co-residency weight arbitration requires; the parent quota stays as
-# the aggregate footprint bound.  Pinned, the ratio is host-load-independent:
-# foreign load and concurrent pool runs on the same CPUs only deepen
-# co-residency and empirically IMPROVE convergence toward W_merge/(W+W).
+# MECHANISM (PRD §1 G6 #3 as REVISED by the esc-4926-3 ruling, refined by task
+# 9698): the quota alone does NOT reproduce the weight ratio — CPUQuota is an
+# aggregate TIME-budget throttle that never forces sibling threads onto shared
+# per-CPU runqueues, and cpu.weight only arbitrates between siblings
+# CO-RESIDENT on a runqueue.  With 2×confine-cores runnable threads spread
+# across a large idle box, weight never bites and the shared quota drains ~FCFS
+# → ~50/50 (empirical false-RED, esc-4926-3).  Confining the burns to
+# confine-cores CPUs (CONFINE_CPUS below) makes co-residency POSSIBLE, but a
+# set-mask does not make it HAPPEN: with every spinner free to run on any
+# listed CPU, where the load balancer puts each one decides the split (one
+# merge and one task spinner per CPU gives 0.75, both merge spinners on one CPU
+# gives 0.50).  Co-residency therefore comes from per-WORKER pinning:
+# cpu_load_fixture.sh --pin-cpus pins worker i of a role to CPUS[i mod n],
+# identically for both roles, so every listed CPU hosts one merge and one task
+# worker whatever the balancer does (_row4_pin_coresident checks it on the live
+# workers).  The parent quota stays as the aggregate footprint bound.  Foreign
+# load on those CPUs shrinks the parent's time there, but it can no longer
+# re-place a spinner onto a CPU the other role does not share.
 #
 # _row4_confine_cores/_row4_confine_quota/_row4_confine_workers are pure (no
 # I/O beyond the fixed knob read, never nproc) so CONFINE-2's
@@ -613,9 +654,32 @@ _row4_confine_workers() {
     # oversubscription idiom, scaled down to the confined budget).
     _row4_confine_cores
 }
+# _row4_expand_cpu_list <list>
+#   Expands a CPU list of ids and N-M ranges ("0-3,7,9-10") into one decimal id
+#   per line.  Returns 1 for anything else — an empty or non-numeric entry, a
+#   descending range, a stride — with whatever it had expanded so far on stdout,
+#   so a caller must discard the output when it fails.
+_row4_expand_cpu_list() {
+    awk -v list="$1" 'BEGIN {
+        n = split(list, entry, ",")
+        for (i = 1; i <= n; i++) {
+            if (entry[i] ~ /^[0-9]+$/) { print entry[i] + 0; continue }
+            if (split(entry[i], bound, "-") == 2 &&
+                    bound[1] ~ /^[0-9]+$/ && bound[2] ~ /^[0-9]+$/ &&
+                    bound[1] + 0 <= bound[2] + 0) {
+                for (cpu = bound[1] + 0; cpu <= bound[2] + 0; cpu++) print cpu
+                continue
+            }
+            malformed = 1
+        }
+        exit malformed
+    }'
+}
 _row4_confine_cpus() {
     # Confined burn pin list (esc-4926-3 ruling): the LAST confine-cores CPUs
-    # of this process's OWN allowed set, comma-joined for `taskset -c`.
+    # of this process's OWN allowed set, comma-joined as SINGLE ids — every
+    # worker is pinned to one of them (cpu_load_fixture.sh --pin-cpus takes ids
+    # and commas only), and the same list serves `taskset -c` for the launcher.
     # SHARED, not per-run: concurrent pool runs deliberately derive the SAME
     # list — cross-run contention on the pair deepens per-CPU co-residency
     # and empirically improves ratio convergence (0.74 shared vs 0.69
@@ -626,17 +690,25 @@ _row4_confine_cpus() {
     # guaranteed ~50/50 false-RED).  The LAST CPUs (not the first) avoid
     # cpu0-adjacent housekeeping/IRQ bias.
     if [ -n "${REIFY_CPU_GOV_TEST_CONFINE_CPUS:-}" ]; then
-        echo "$REIFY_CPU_GOV_TEST_CONFINE_CPUS"
+        # The override is an operator's value, so it is expanded to single ids
+        # here and refused if it is not a CPU list at all: handed on as it
+        # stands, a range or a typo only surfaces as a fixture that never
+        # reports ready.  Exit 64 aborts the suite (set -e) at the hoisted
+        # _ROW4_CONFINE_CPUS assignment, before any guard that uses the list.
+        local override_ids
+        if ! override_ids="$(_row4_expand_cpu_list "$REIFY_CPU_GOV_TEST_CONFINE_CPUS")"; then
+            echo "ERROR: REIFY_CPU_GOV_TEST_CONFINE_CPUS must list CPU ids and ascending N-M ranges, e.g. 30,31 or 30-31 (got '${REIFY_CPU_GOV_TEST_CONFINE_CPUS}')" >&2
+            return 64
+        fi
+        echo "${override_ids//$'\n'/,}"
         return 0
     fi
     local want mask
     want="$(_row4_confine_cores)"
     mask="$(awk '/^Cpus_allowed_list/{print $2}' /proc/self/status 2>/dev/null)"
     [ -z "$mask" ] && return 0
-    # Expand "0-3,7,9-10" → one id per line; keep the last $want; comma-join.
-    printf '%s\n' "$mask" | tr ',' '\n' | while IFS=- read -r lo hi; do
-        if [ -n "$hi" ]; then seq "$lo" "$hi"; else echo "$lo"; fi
-    done | tail -n "$want" | paste -sd, -
+    # Keep the last $want ids of the expanded mask; comma-join.
+    _row4_expand_cpu_list "$mask" | tail -n "$want" | paste -sd, -
 }
 # _row4_confine_apply_quota <parent_slice> <quota>
 #   Best-effort: vivify the parent slice (systemctl --user start) then set
@@ -686,6 +758,545 @@ _ROW4_CONFINE_CPUS="$(_row4_confine_cpus)"
 # validates — the confinement target IS that parent, never an
 # independently-derived path (CONFINE-1).
 _ROW4_CONFINE_PARENT="$_row4_naming_parent_task"
+
+# ----------------------------------------------------------------------------
+# Per-worker pinning + readiness machinery (task 9698), REUSED by the always-on
+# guards below and by Cycle ROW4.  ROW4-1's 3:1 split is only as good as the
+# placement of its spinners and the moment its window opens, so ROW4 pins each
+# WORKER to one CPU, opens the window on a readiness report from both burns
+# rather than on a launch-anchored sleep, and checks both on the live workers.
+# ----------------------------------------------------------------------------
+
+# _row4_await_ready <deadline_s> <file>...
+#   Returns 0 as soon as EVERY named file exists AND is non-empty; 1 when the
+#   deadline passes first.  Technique T (docs/prds/infra-test-wallclock-
+#   deflake.md): <deadline_s> only keeps a burn that never reports from hanging
+#   the suite — it never discriminates pass from fail, so callers size it
+#   generously and never assert on how long the poll took.  A file must be
+#   non-empty because a ready file is "PIDs, then an atomic rename": an empty
+#   one can only be a writer caught mid-flight.  Readiness is checked BEFORE the
+#   deadline, so files already present at a 0-second deadline still count.
+_row4_await_ready() {
+    local deadline=$(( SECONDS + $1 ))
+    shift
+    local f all_reported
+    while true; do
+        all_reported=1
+        for f in "$@"; do
+            [ -s "$f" ] || { all_reported=0; break; }
+        done
+        if [ "$all_reported" -eq 1 ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _row4_pin_coresident <task_affinities> <merge_affinities>
+#   cpu.weight only arbitrates between groups that share a per-CPU runqueue, so
+#   ROW4's split is 3:1 by construction only while EVERY pinned CPU hosts
+#   equally many task and merge workers.  Each argument is a newline-separated
+#   list of per-worker Cpus_allowed_list strings (see _row4_worker_affinities).
+#   Returns 0 iff both lists are non-empty, every entry is ONE cpu id (a range
+#   such as "30-31" is a worker the load balancer can still move, and
+#   "unavailable" is a worker that vanished), and the two lists sorted
+#   numerically are identical.
+#   awk/sort only, so its guard stays always-on.  The sorted lists are captured
+#   into variables rather than piped into an early-closing reader: this file
+#   runs under `set -o pipefail`.
+_row4_pin_coresident() {
+    local task_cpus="$1" merge_cpus="$2"
+    [ -n "$task_cpus" ] && [ -n "$merge_cpus" ] || return 1
+
+    local all_single_cpu
+    all_single_cpu="$(printf '%s\n%s\n' "$task_cpus" "$merge_cpus" \
+        | awk 'BEGIN { ok = "yes" } $0 !~ /^[0-9]+$/ { ok = "no" } END { print ok }')"
+    [ "$all_single_cpu" = "yes" ] || return 1
+
+    local task_sorted merge_sorted
+    task_sorted="$(printf '%s\n' "$task_cpus" | sort -n)"
+    merge_sorted="$(printf '%s\n' "$merge_cpus" | sort -n)"
+    [ "$task_sorted" = "$merge_sorted" ]
+}
+
+# _row4_worker_affinities <ready_file>
+#   Prints one Cpus_allowed_list per pid line of a cpu_load_fixture.sh
+#   --ready-file, in file order, or the literal "unavailable" for a pid whose
+#   /proc/<pid>/status cannot be read (the worker is gone).  "unavailable" is
+#   not a cpu id, so _row4_pin_coresident rejects it: a vanished worker is never
+#   co-resident.  Callers capture it as `$(... || true)`: an unreadable ready
+#   file makes this return non-zero, and the empty capture then fails the
+#   predicate on its own.
+_row4_worker_affinities() {
+    local ready_file="$1" pid mask
+    while IFS= read -r pid; do
+        [ -n "$pid" ] || continue
+        mask="$(awk '/^Cpus_allowed_list:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null || true)"
+        printf '%s\n' "${mask:-unavailable}"
+    done < "$ready_file"
+}
+
+# _row4_collect_spinners <deadline_s> <ready_file> <out_file>
+#   Records in <out_file>, one pid per line, the busy-spin child of every worker
+#   listed in a fixture --ready-file.  A ready file names the worker HANDLES
+#   (taskset execs into timeout(1)); the spinner is timeout's child, forked
+#   after that report, so this polls until every worker has one.  Returns 0
+#   then, and 1 when <deadline_s> passes first (anti-hang only, technique T) or
+#   a worker's /proc entry is gone or has no children file (kernel without
+#   CONFIG_PROC_CHILDREN).  <out_file> always exists afterwards and holds
+#   whatever was found, so a caller can read it whatever the rc.
+#   Children are read from /proc/<pid>/task/<pid>/children with the `read`
+#   builtin, not pgrep(1): pgrep scans all of /proc, which cost 0.3-1.6 s a call
+#   on a loaded host.  Take the census BEFORE stopping the burn: a handle killed
+#   with SIGKILL cannot forward the signal, so its spinner is re-parented and is
+#   no longer found from the handle.
+_row4_collect_spinners() {
+    local deadline=$(( SECONDS + $1 )) ready_file="$2" out_file="$3"
+    local worker children_file children child found all_forked
+    : > "$out_file"
+    while true; do
+        found=""
+        all_forked=1
+        while IFS= read -r worker; do
+            [ -n "$worker" ] || continue
+            children_file="/proc/${worker}/task/${worker}/children"
+            [ -r "$children_file" ] || return 1
+            children=""
+            IFS= read -r children 2>/dev/null < "$children_file" || true
+            [ -n "$children" ] || all_forked=0
+            for child in $children; do
+                found+="${child}"$'\n'
+            done
+        done < "$ready_file"
+        printf '%s' "$found" > "$out_file"
+        if [ "$all_forked" -eq 1 ] && [ -n "$found" ]; then
+            return 0
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            return 1
+        fi
+        sleep 0.1
+    done
+}
+
+# _row4_launch_role_burn <gov_exec> <role> <cpus_csv> <workers> <burn_s> <ready_file>
+#   Backgrounds ONE role's burn and appends its wrapper pid to the global
+#   _ROW4_BURN_PIDS, for _row4_stop_burns (and _cleanup_all) to end.  The burn
+#   is the fixture run through <gov_exec> with per-WORKER pinning: both roles
+#   get the same worker count and the same <cpus_csv>, so every listed CPU
+#   hosts one worker of each role and cpu.weight arbitrates between them on a
+#   shared runqueue wherever the load balancer would have put them.  The
+#   launcher itself is also confined to <cpus_csv>, keeping the governed-exec
+#   subtree (its D-Bus clients included) off every other CPU.
+#   Both slice variables are set on every launch: cpu-governed-exec.sh picks
+#   one by --role, so there is no role branch here.  <gov_exec> is a parameter
+#   so the hermetic ROW4-LAUNCH-VACUITY block can pass a pass-through stub.
+#   The outer timeout is only a backstop for a burn that never ends; ROW4 stops
+#   its burns explicitly, long before it.
+#   Appends to a global, so call it in the CURRENT shell, never inside $(...).
+_row4_launch_role_burn() {
+    local gov_exec="$1" role="$2" cpus_csv="$3" workers="$4" burn_s="$5" ready_file="$6"
+    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
+    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
+    timeout $(( burn_s + 15 )) taskset -c "$cpus_csv" \
+        bash "$gov_exec" --role "$role" -- \
+        bash "$FIXTURE" "$workers" "$burn_s" --pin-cpus "$cpus_csv" --ready-file "$ready_file" \
+        >/dev/null 2>&1 &
+    _ROW4_BURN_PIDS="${_ROW4_BURN_PIDS}${_ROW4_BURN_PIDS:+ }$!"
+}
+
+# _row4_stop_burns
+#   SIGTERMs every recorded burn wrapper, waits for each, and clears the list.
+#   TERM rather than KILL: the fixture's EXIT trap reaps its workers on TERM,
+#   whereas killing a bare payload orphans its spinners into the next window.
+#   Every error is ignored (a burn may already have ended), so the call is total
+#   and safe to run bare under `set -e`.
+_row4_stop_burns() {
+    local pid
+    for pid in ${_ROW4_BURN_PIDS:-}; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for pid in ${_ROW4_BURN_PIDS:-}; do
+        wait "$pid" 2>/dev/null || true
+    done
+    _ROW4_BURN_PIDS=""
+}
+
+# ============================================================================
+# ROW4 per-worker pinning + readiness — always-on guards (task 9698).
+#
+# The helpers above these blocks are the machinery ROW4-1 stands on; each block
+# drives one of them with synthetic input, so none needs cgroup governance and
+# none can be vacuously green: every block carries a NON-VACUITY CRUX case that
+# a degenerate implementation (one that always says "ready" / "co-resident")
+# would fail.  Conventions shared by all of them:
+#   - rc capture is `_rc=0; helper ... || _rc=$?`, never a bare top-level call
+#     (`set -e` would abort the suite on the helper's meaningful rc 1, and an
+#     undefined helper would read as 127 — which the cases below assert as
+#     EXACT rcs, never `-ne 0`, so 127 is a FAIL and not a vacuous pass);
+#   - no assertion here bounds an elapsed time; a deadline passed to a helper
+#     is an anti-hang guard only (technique T, docs/prds/infra-test-wallclock-
+#     deflake.md), never what discriminates pass from fail.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# ROW4-READY-VACUITY: the readiness condition-poll that opens ROW4's window.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-READY-VACUITY: readiness condition-poll (always-on) ---"
+
+_row4_ready_dir="$(mktemp -d -p "$WORK" row4-ready.XXXXXX)"
+
+# (1) Every named file present and non-empty => ready.
+printf '1111\n' > "$_row4_ready_dir/reported-a"
+printf '2222\n' > "$_row4_ready_dir/reported-b"
+_row4_ready_vacuity1_rc=0
+_row4_await_ready 5 "$_row4_ready_dir/reported-a" "$_row4_ready_dir/reported-b" \
+    || _row4_ready_vacuity1_rc=$?
+assert "ROW4-READY-VACUITY-1: both ready files present and non-empty => rc 0 (got ${_row4_ready_vacuity1_rc})" \
+    test "$_row4_ready_vacuity1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: one burn has reported, the other never does.  The poll
+# must never declare ready a burn that has not reported — otherwise ROW4 would
+# open its window with one role still launching, which is the defect this
+# readiness gate exists to remove.  Asserts the EXACT rc 1 (deadline expired).
+_row4_ready_vacuity2_rc=0
+_row4_await_ready 1 "$_row4_ready_dir/reported-a" "$_row4_ready_dir/never-created" \
+    || _row4_ready_vacuity2_rc=$?
+assert "ROW4-READY-VACUITY-2: NON-VACUITY CRUX -- one file reported, the other never created => rc EXACTLY 1 (got ${_row4_ready_vacuity2_rc}); the poll never declares ready a burn that has not reported" \
+    test "$_row4_ready_vacuity2_rc" -eq 1
+
+# (3) A zero-byte file is not a report: the writer's contract is "PIDs, then an
+# atomic rename", so an empty file can only be a writer caught mid-flight.
+: > "$_row4_ready_dir/empty"
+_row4_ready_vacuity3_rc=0
+_row4_await_ready 1 "$_row4_ready_dir/empty" || _row4_ready_vacuity3_rc=$?
+assert "ROW4-READY-VACUITY-3: a zero-byte file => rc EXACTLY 1 (got ${_row4_ready_vacuity3_rc}); an empty file is not a report" \
+    test "$_row4_ready_vacuity3_rc" -eq 1
+
+# (4) The helper POLLS rather than checking once: the file appears 0.5 s AFTER
+# the poll starts, so a single-shot check at t=0 returns 1.  The generous
+# deadline is an anti-hang guard only and is deliberately not asserted on.
+_row4_ready_late="$_row4_ready_dir/appears-late"
+(
+    sleep 0.5
+    printf '3333\n' > "${_row4_ready_late}.tmp"
+    mv -f "${_row4_ready_late}.tmp" "$_row4_ready_late"
+) &
+_row4_ready_writer_pid=$!
+_row4_ready_vacuity4_rc=0
+_row4_await_ready 30 "$_row4_ready_late" || _row4_ready_vacuity4_rc=$?
+wait "$_row4_ready_writer_pid" 2>/dev/null || true
+assert "ROW4-READY-VACUITY-4: file written by a background subshell AFTER the poll started => rc 0 (got ${_row4_ready_vacuity4_rc}); the helper polls, a single-shot check at t=0 would return 1" \
+    test "$_row4_ready_vacuity4_rc" -eq 0
+
+# ----------------------------------------------------------------------------
+# ROW4-PIN-VACUITY: the per-CPU co-residency predicate.  Each argument is a
+# newline-separated list of per-worker Cpus_allowed_list strings; the predicate
+# holds iff both lists are non-empty, every entry is ONE cpu id, and the two
+# lists name the same multiset of CPUs (every pinned CPU hosts equally many task
+# and merge workers).
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-PIN-VACUITY: per-CPU co-residency predicate (always-on) ---"
+
+# (1) Each pinned CPU hosts one task and one merge worker; list order is
+# irrelevant (workers are listed in fork order, which differs per role).
+_row4_pin_vacuity1_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 31)" "$(printf '%s\n%s' 31 30)" \
+    || _row4_pin_vacuity1_rc=$?
+assert "ROW4-PIN-VACUITY-1: task {30,31} vs merge {31,30} => rc 0 (got ${_row4_pin_vacuity1_rc}); order-insensitive" \
+    test "$_row4_pin_vacuity1_rc" -eq 0
+
+# (2) NON-VACUITY CRUX: today's set-pinned shape.  Every worker of both roles
+# reports the whole mask "30-31": the two lists are identical, yet nothing is
+# pinned, so the load balancer is free to stack both merge workers on one CPU
+# (field merge shares 0.51-0.65).  Identical lists alone must NOT satisfy the
+# predicate, or it would bless exactly the placement it exists to forbid.
+_row4_pin_vacuity2_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30-31 30-31)" "$(printf '%s\n%s' 30-31 30-31)" \
+    || _row4_pin_vacuity2_rc=$?
+assert "ROW4-PIN-VACUITY-2: NON-VACUITY CRUX -- both roles report the whole mask 30-31 (today's set-pinned shape) => rc EXACTLY 1 (got ${_row4_pin_vacuity2_rc}); identical lists of un-pinned workers are not co-residency" \
+    test "$_row4_pin_vacuity2_rc" -eq 1
+
+# (3) Unbalanced: CPU 31 hosts a merge worker and no task worker, so that
+# merge worker runs uncontended and inflates the share.
+_row4_pin_vacuity3_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 30)" "$(printf '%s\n%s' 30 31)" \
+    || _row4_pin_vacuity3_rc=$?
+assert "ROW4-PIN-VACUITY-3: task {30,30} vs merge {30,31} => rc EXACTLY 1 (got ${_row4_pin_vacuity3_rc}); CPU 31 has a merge worker but no task worker" \
+    test "$_row4_pin_vacuity3_rc" -eq 1
+
+# (4) FAIL-SAFE: a worker whose /proc entry could not be read is reported as
+# "unavailable", and a vanished worker is never co-resident.
+_row4_pin_vacuity4_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 30 unavailable)" "$(printf '%s\n%s' 30 31)" \
+    || _row4_pin_vacuity4_rc=$?
+assert "ROW4-PIN-VACUITY-4: task {30,unavailable} vs merge {30,31} => rc EXACTLY 1 (got ${_row4_pin_vacuity4_rc}); a vanished worker is never co-resident" \
+    test "$_row4_pin_vacuity4_rc" -eq 1
+
+# (4b) The same fail-safe where the two lists are IDENTICAL: case (4) alone
+# would pass for a predicate that only compares the lists, since there they
+# differ anyway.  When every worker of both roles has vanished (the burns ended
+# early), both lists read "unavailable" and compare equal — only the per-entry
+# validation keeps that from being reported as co-residency.
+_row4_pin_vacuity4b_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' unavailable unavailable)" "$(printf '%s\n%s' unavailable unavailable)" \
+    || _row4_pin_vacuity4b_rc=$?
+assert "ROW4-PIN-VACUITY-4b: every worker of both roles unavailable (identical lists) => rc EXACTLY 1 (got ${_row4_pin_vacuity4b_rc}); equal lists of vanished workers are not co-residency" \
+    test "$_row4_pin_vacuity4b_rc" -eq 1
+
+# (5) Nothing was listed at all (e.g. an unreadable ready file).
+_row4_pin_vacuity5_rc=0
+_row4_pin_coresident "" "" || _row4_pin_vacuity5_rc=$?
+assert "ROW4-PIN-VACUITY-5: both lists empty => rc EXACTLY 1 (got ${_row4_pin_vacuity5_rc}); an empty observation is not co-residency" \
+    test "$_row4_pin_vacuity5_rc" -eq 1
+
+# (6) A one-CPU affinity mask with round-robin pinning puts every worker of
+# both roles on that one CPU: still co-resident, and the 3:1 split still holds.
+_row4_pin_vacuity6_rc=0
+_row4_pin_coresident "$(printf '%s\n%s' 5 5)" "$(printf '%s\n%s' 5 5)" \
+    || _row4_pin_vacuity6_rc=$?
+assert "ROW4-PIN-VACUITY-6: task {5,5} vs merge {5,5} => rc 0 (got ${_row4_pin_vacuity6_rc}); a one-CPU mask is still co-resident" \
+    test "$_row4_pin_vacuity6_rc" -eq 0
+
+# ----------------------------------------------------------------------------
+# FIXTURE-PIN: the cpu_load_fixture.sh `--pin-cpus` / `--ready-file` contract
+# and the `_row4_worker_affinities` reader that observes it.  Needs taskset and
+# a confined pin list (the same preconditions ROW4 itself has), not cgroup
+# governance: the fixture is driven directly, outside any governed scope.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- FIXTURE-PIN: --pin-cpus / --ready-file contract ---"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP FIXTURE-PIN: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP FIXTURE-PIN: own Cpus_allowed_list unreadable — no confined pin list to pass"
+else
+    # The placement the fixture must produce: the pin list repeated
+    # round-robin to one entry per worker, the same way ROW4 hands it to both
+    # roles.  Derived from the file's own _ROW4_CONFINE_* values, never nproc.
+    _fixture_pin_expected="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" \
+        | tr ',' '\n' \
+        | awk -v w="$_ROW4_CONFINE_W" '{ cpu[n++] = $0 } END { for (i = 0; i < w; i++) print cpu[i % n] }')"
+
+    # ── reader: a live pid reads its Cpus_allowed_list, a vanished one reads
+    # the literal "unavailable" (the sentinel _row4_pin_coresident rejects).
+    ( : ) &
+    _fixture_pin_dead_pid=$!
+    wait "$_fixture_pin_dead_pid" 2>/dev/null || true
+    printf '%s\n%s\n' "$$" "$_fixture_pin_dead_pid" > "$WORK/fixture-pin-reader-pids"
+    _fixture_pin_self_mask="$(awk '/^Cpus_allowed_list:/{print $2}' "/proc/$$/status")"
+    _fixture_pin_reader_expected="${_fixture_pin_self_mask}"$'\n'"unavailable"
+    _fixture_pin_reader_got="$(_row4_worker_affinities "$WORK/fixture-pin-reader-pids" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-READER-1: ready file listing a live pid and a reaped one => its Cpus_allowed_list, then 'unavailable' (got '${_fixture_pin_reader_got//$'\n'/,}')" \
+        test "$_fixture_pin_reader_got" = "$_fixture_pin_reader_expected"
+
+    # ── (1)-(3) pinned launch: reports ready, lists one pid per worker, and
+    # every worker is pinned to its round-robin CPU.
+    _fixture_pin_ready="$WORK/fixture-pin-ready"
+    bash "$FIXTURE" "$_ROW4_CONFINE_W" 5 --pin-cpus "$_ROW4_CONFINE_CPUS" \
+        --ready-file "$_fixture_pin_ready" >/dev/null 2>&1 &
+    _fixture_pin_pid=$!
+
+    _fixture_pin1_rc=0
+    _row4_await_ready 30 "$_fixture_pin_ready" || _fixture_pin1_rc=$?
+    assert "FIXTURE-PIN-1: --pin-cpus ${_ROW4_CONFINE_CPUS} --ready-file => the ready file appears (rc ${_fixture_pin1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_fixture_pin1_rc" -eq 0
+
+    _fixture_pin_lines="$(awk '/^[0-9]+$/ { n++ } END { print n + 0, NR }' "$_fixture_pin_ready" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-2: ready file is exactly ${_ROW4_CONFINE_W} pid lines and nothing else (got 'numeric-lines total-lines' = '${_fixture_pin_lines}')" \
+        test "$_fixture_pin_lines" = "${_ROW4_CONFINE_W} ${_ROW4_CONFINE_W}"
+
+    _fixture_pin_actual="$(_row4_worker_affinities "$_fixture_pin_ready" 2>/dev/null || true)"
+    assert "FIXTURE-PIN-3: every worker pinned to its round-robin CPU (workers=${_fixture_pin_actual//$'\n'/,}, expected=${_fixture_pin_expected//$'\n'/,})" \
+        _row4_pin_coresident "$_fixture_pin_actual" "$_fixture_pin_expected"
+
+    kill -TERM "$_fixture_pin_pid" 2>/dev/null || true
+    wait "$_fixture_pin_pid" 2>/dev/null || true
+
+    # ── (4) NON-VACUITY CRUX: today's ROW4 shape — the SAME fixture, no
+    # --pin-cpus, the whole role set-pinned from outside with taskset.  Its
+    # workers inherit the multi-CPU mask, so the predicate must reject them:
+    # the single-CPU affinity of (3) comes from the OPTION, not from inheriting
+    # the launcher's mask.  Needs a pin list of >=2 CPUs: with one CPU the
+    # inherited mask is already a single CPU and the two shapes coincide.
+    _fixture_pin_ncpus="$(printf '%s\n' "$_ROW4_CONFINE_CPUS" | tr ',' '\n' | awk 'END { print NR }')"
+    if [ "$_fixture_pin_ncpus" -lt 2 ]; then
+        echo "  SKIP FIXTURE-PIN-4: pin list '${_ROW4_CONFINE_CPUS}' is a single CPU — set-pinning and per-worker pinning coincide"
+    else
+        _fixture_pin_ready_inherited="$WORK/fixture-pin-ready-inherited"
+        taskset -c "$_ROW4_CONFINE_CPUS" bash "$FIXTURE" "$_ROW4_CONFINE_W" 5 \
+            --ready-file "$_fixture_pin_ready_inherited" >/dev/null 2>&1 &
+        _fixture_pin_inherited_pid=$!
+
+        # (4a) The fixture reported, so (4b)'s rc cannot be the vacuous rc 1 of
+        # an empty observation.
+        _fixture_pin4a_rc=0
+        _row4_await_ready 30 "$_fixture_pin_ready_inherited" || _fixture_pin4a_rc=$?
+        assert "FIXTURE-PIN-4a: unpinned fixture under 'taskset -c ${_ROW4_CONFINE_CPUS}' still reports ready (rc ${_fixture_pin4a_rc}); precondition of -4b" \
+            test "$_fixture_pin4a_rc" -eq 0
+
+        _fixture_pin_inherited="$(_row4_worker_affinities "$_fixture_pin_ready_inherited" 2>/dev/null || true)"
+        _fixture_pin4b_rc=0
+        _row4_pin_coresident "$_fixture_pin_inherited" "$_fixture_pin_expected" || _fixture_pin4b_rc=$?
+        assert "FIXTURE-PIN-4b: NON-VACUITY CRUX -- same fixture WITHOUT --pin-cpus (workers=${_fixture_pin_inherited//$'\n'/,}) => predicate rc EXACTLY 1 (got ${_fixture_pin4b_rc}); the single-CPU affinity of -3 comes from the option, not from inheritance" \
+            test "$_fixture_pin4b_rc" -eq 1
+
+        kill -TERM "$_fixture_pin_inherited_pid" 2>/dev/null || true
+        wait "$_fixture_pin_inherited_pid" 2>/dev/null || true
+    fi
+
+    # ── (5) Malformed lists are rejected with the usage exit code before any
+    # worker exists: a ranged, non-numeric, empty-entry or trailing-comma list
+    # must never be half-honoured.  Each runs in the foreground — the fixture
+    # exits at once — and none may leave a ready file behind.
+    _fixture_pin_bad_ready="$WORK/fixture-pin-ready-bad"
+    for _fixture_pin_bad in "30-31" "a,b" "30,,31" "30,"; do
+        _fixture_pin5_rc=0
+        bash "$FIXTURE" 2 5 --pin-cpus "$_fixture_pin_bad" \
+            --ready-file "$_fixture_pin_bad_ready" >/dev/null 2>&1 || _fixture_pin5_rc=$?
+        assert "FIXTURE-PIN-5: malformed --pin-cpus '${_fixture_pin_bad}' => exit EXACTLY 64 (got ${_fixture_pin5_rc})" \
+            test "$_fixture_pin5_rc" -eq 64
+    done
+    assert "FIXTURE-PIN-5: no malformed --pin-cpus run wrote a ready file (no workers were forked)" \
+        test ! -e "$_fixture_pin_bad_ready"
+
+    # ── (6) Pinning is never silently dropped: with taskset absent from PATH
+    # the option is refused (EX_UNAVAILABLE) instead of running unpinned, which
+    # would be a ~50/50-prone measurement presented as a pinned one.
+    _fixture_pin_empty_path="$(mktemp -d -p "$WORK" fixture-pin-nopath.XXXXXX)"
+    _fixture_pin6_rc=0
+    PATH="$_fixture_pin_empty_path" "$BASH" "$FIXTURE" 1 1 --pin-cpus 0 >/dev/null 2>&1 \
+        || _fixture_pin6_rc=$?
+    assert "FIXTURE-PIN-6: --pin-cpus with taskset absent from PATH => exit EXACTLY 69 (got ${_fixture_pin6_rc}); pinning is refused, never silently dropped" \
+        test "$_fixture_pin6_rc" -eq 69
+fi
+
+# ----------------------------------------------------------------------------
+# ROW4-LAUNCH-VACUITY: the launch/stop seam ROW4 starts and ends its burns
+# through.  `_row4_launch_role_burn` takes the governed-exec wrapper as a
+# parameter, so this block hands it a pass-through stub: the REAL fixture and
+# its pinning run, with no cgroup governance at all — which is what keeps the
+# block always-on, including under the deflake meta-test's
+# REIFY_CPU_GOVERN_DISABLE=1.  Same preconditions as FIXTURE-PIN, plus a kernel
+# with /proc/<pid>/task/<tid>/children for the spinner census (-3b, -3c, -4d):
+# the stop is only proven to reap spinners by watching the spinners, so without
+# the census those cases FAIL rather than skip.
+# ----------------------------------------------------------------------------
+echo ""
+echo "--- ROW4-LAUNCH-VACUITY: launch/stop seam (always-on) ---"
+
+if ! command -v taskset >/dev/null 2>&1; then
+    echo "  SKIP ROW4-LAUNCH-VACUITY: taskset unavailable — cannot observe per-worker pinning"
+elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
+    echo "  SKIP ROW4-LAUNCH-VACUITY: own Cpus_allowed_list unreadable — no confined pin list to pass"
+else
+    # Stand-in for cpu-governed-exec.sh: drop `--role <r> --` and run the
+    # payload directly.  The seam picks the role's slice by env var and role,
+    # neither of which matters without governance.
+    _row4_launch_stub="$WORK/row4-launch-stub-gov-exec.sh"
+    cat > "$_row4_launch_stub" << 'EOF_LAUNCH_STUB'
+#!/usr/bin/env bash
+shift 2
+[ "${1:-}" = "--" ] && shift
+exec "$@"
+EOF_LAUNCH_STUB
+
+    # The burns only have to outlast the work between launch and stop, which
+    # the stop ends early: a generous bound costs a normal run nothing.
+    _row4_launch_burn_s=20
+    _row4_launch_ready_task="$WORK/row4-launch-ready-task"
+    _row4_launch_ready_merge="$WORK/row4-launch-ready-merge"
+    _row4_launch_rc=0
+    _row4_launch_role_burn "$_row4_launch_stub" task "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_row4_launch_burn_s" "$_row4_launch_ready_task" || _row4_launch_rc=$?
+    _row4_launch_role_burn "$_row4_launch_stub" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_CONFINE_W" \
+        "$_row4_launch_burn_s" "$_row4_launch_ready_merge" || _row4_launch_rc=$?
+
+    # (1) Both roles, launched through the seam, report ready.
+    _row4_launch1_rc=0
+    _row4_await_ready 30 "$_row4_launch_ready_task" "$_row4_launch_ready_merge" \
+        || _row4_launch1_rc=$?
+    assert "ROW4-LAUNCH-VACUITY-1: task and merge burns launched through the seam both report ready (rc ${_row4_launch1_rc}; the 30 s deadline is an anti-hang guard only)" \
+        test "$_row4_launch1_rc" -eq 0
+
+    # (2) The property the live ROW4-1 depends on: each pinned CPU hosts one
+    # task and one merge worker.
+    _row4_launch_task_cpus="$(_row4_worker_affinities "$_row4_launch_ready_task" 2>/dev/null || true)"
+    _row4_launch_merge_cpus="$(_row4_worker_affinities "$_row4_launch_ready_merge" 2>/dev/null || true)"
+    assert "ROW4-LAUNCH-VACUITY-2: each pinned CPU hosts one task and one merge worker (task=${_row4_launch_task_cpus//$'\n'/,}, merge=${_row4_launch_merge_cpus//$'\n'/,})" \
+        _row4_pin_coresident "$_row4_launch_task_cpus" "$_row4_launch_merge_cpus"
+
+    # (3) One recorded wrapper pid per launched role.
+    _row4_launch_pid_count="$(awk '{ print NF }' <<< "${_ROW4_BURN_PIDS:-}")"
+    assert "ROW4-LAUNCH-VACUITY-3: _ROW4_BURN_PIDS holds exactly 2 wrapper pids, one per role (got ${_row4_launch_pid_count}: '${_ROW4_BURN_PIDS:-}')" \
+        test "$_row4_launch_pid_count" -eq 2
+
+    # (3b) Census the SPINNERS before the stop.  The ready files above list the
+    # fixture's worker HANDLES, and a handle is not what burns: it is a
+    # timeout(1), and the busy-spin `sh` is its child.  A stop that SIGKILLed a
+    # handle would leave the handle reading 'unavailable' while the spinner,
+    # re-parented, kept burning its pinned CPU — so -4d watches the spinners,
+    # and they can only be found from their handles while the handles live.
+    # (The deadline is an anti-hang guard only, and so is not asserted on.)
+    _row4_launch_spinners_task="$WORK/row4-launch-spinners-task"
+    _row4_launch_spinners_merge="$WORK/row4-launch-spinners-merge"
+    _row4_launch3b_rc=0
+    _row4_collect_spinners 30 "$_row4_launch_ready_task" "$_row4_launch_spinners_task" \
+        || _row4_launch3b_rc=$?
+    _row4_collect_spinners 30 "$_row4_launch_ready_merge" "$_row4_launch_spinners_merge" \
+        || _row4_launch3b_rc=$?
+    assert "ROW4-LAUNCH-VACUITY-3b: every worker of both roles has forked its busy-spin child (rc ${_row4_launch3b_rc}; read from /proc/<pid>/task/<pid>/children, which needs CONFIG_PROC_CHILDREN; the 30 s deadline is an anti-hang guard only)" \
+        test "$_row4_launch3b_rc" -eq 0
+
+    # (3c) Those spinners are live and pinned, one task and one merge per CPU.
+    # That is the precondition that makes -4d's 'unavailable' mean REAPED, and
+    # it checks the claim ROW4-PIN-LIVE and FIXTURE-PIN-3 lean on: they read a
+    # handle's mask, which stands for its spinner's only because the spinner
+    # inherits it.
+    _row4_launch_spinner_task_cpus="$(_row4_worker_affinities "$_row4_launch_spinners_task" 2>/dev/null || true)"
+    _row4_launch_spinner_merge_cpus="$(_row4_worker_affinities "$_row4_launch_spinners_merge" 2>/dev/null || true)"
+    assert "ROW4-LAUNCH-VACUITY-3c: the spinners themselves are pinned, one task and one merge per CPU (task=${_row4_launch_spinner_task_cpus//$'\n'/,}, merge=${_row4_launch_spinner_merge_cpus//$'\n'/,})" \
+        _row4_pin_coresident "$_row4_launch_spinner_task_cpus" "$_row4_launch_spinner_merge_cpus"
+
+    # (4) NON-VACUITY CRUX for the stop: -2 proved the workers were alive and
+    # pinned, so "unavailable" afterwards can only mean the stop ended them.
+    # This covers the HANDLES; -4d covers what they spawned.
+    _row4_stop_rc=0
+    _row4_stop_burns || _row4_stop_rc=$?
+    _row4_launch_after="$({ _row4_worker_affinities "$_row4_launch_ready_task"
+                            _row4_worker_affinities "$_row4_launch_ready_merge"; } 2>/dev/null | sort -u || true)"
+    assert "ROW4-LAUNCH-VACUITY-4: after _row4_stop_burns every worker handle listed in both ready files reads 'unavailable' (got '${_row4_launch_after//$'\n'/,}'); the stop ends the workers" \
+        test "$_row4_launch_after" = "unavailable"
+    assert "ROW4-LAUNCH-VACUITY-4b: _ROW4_BURN_PIDS is empty after the stop (got '${_ROW4_BURN_PIDS:-}')" \
+        test -z "${_ROW4_BURN_PIDS:-}"
+    # ROW4 calls the stop bare, under `set -e`: a non-zero rc would abort the suite.
+    assert "ROW4-LAUNCH-VACUITY-4c: _row4_stop_burns returns 0 (got ${_row4_stop_rc}); it runs bare under set -e" \
+        test "$_row4_stop_rc" -eq 0
+
+    # (4d) NON-VACUITY CRUX for the stop, on the spinners: -3c proved each was
+    # live and pinned, so 'unavailable' afterwards can only mean the stop reaped
+    # it.  An orphaned spinner is what contaminated the next window when the
+    # burns were ended by killing a bare payload instead, and a handle that is
+    # gone says nothing about it: only the spinner's own entry does.
+    _row4_launch_spinners_after="$({ _row4_worker_affinities "$_row4_launch_spinners_task"
+                                     _row4_worker_affinities "$_row4_launch_spinners_merge"; } 2>/dev/null | sort -u || true)"
+    assert "ROW4-LAUNCH-VACUITY-4d: after _row4_stop_burns every busy-spin child of those workers reads 'unavailable' too (got '${_row4_launch_spinners_after//$'\n'/,}'); the stop reaps the spinners, never orphans them" \
+        test "$_row4_launch_spinners_after" = "unavailable"
+    # A spinner that outlived its stop has no timeout left behind it and would
+    # burn its pinned CPU through every later window, so a regression ends here
+    # rather than contaminating the rest of the run.
+    for _row4_launch_census in "$_row4_launch_spinners_task" "$_row4_launch_spinners_merge"; do
+        while IFS= read -r _row4_launch_leaked; do
+            [ ! -d "/proc/${_row4_launch_leaked}" ] || kill "$_row4_launch_leaked" 2>/dev/null || true
+        done < "$_row4_launch_census"
+    done
+fi
 
 # ============================================================================
 # Cycle ROW1 — §8 Row 1: lone governed source, box idle.
@@ -2063,11 +2674,24 @@ fi
 #   Contention: 2×NWORKERS total workers (W merge + W task, 2W > nproc)
 #   ensures real CPU contention so cgroup weight scheduling fires.
 #
+#   Placement (task 9698): each WORKER is pinned to one CPU of the confined
+#   pin list, round-robin and identically for both roles (cpu_load_fixture.sh
+#   --pin-cpus), so every pinned CPU hosts one merge and one task worker and
+#   cpu.weight arbitrates between them on a shared runqueue — the 3:1 split no
+#   longer depends on where the load balancer puts the spinners.  ROW4-PIN-LIVE
+#   asserts that placement on the live workers, and it is re-checked at the
+#   window's close.
+#
 # §8 Row 4 assertion:
 #   merge_share = Δmerge / (Δmerge + Δtask)  ≥  W_merge/(W_merge+W_task) - tol
 #              = 0.75 − 0.10 = 0.65  (STATED proportional floor, not 0)
 #   Δ sampled over a steady-state window (warm-up + measure), not the whole
-#   burn, so the startup stagger does not bias the share (step-12 fix).
+#   burn.  The window opens WARMUP_S after BOTH burns report ready (each
+#   fixture's --ready-file), not WARMUP_S after launch: a governed launch makes
+#   several user-manager D-Bus round-trips before its fixture even starts, so a
+#   launch-anchored sleep let one role run alone, and bank uncontended CPU,
+#   while the other was still starting (step-12 fix, made structural by task
+#   9698).
 #
 # Merge-bypass smoke (Cycle ROW4-BYPASS, §8 row 9 echo):
 #   DF_VERIFY_ROLE=merge + avg10=99 PSI fixture → cpu-admit.sh admit exits 0
@@ -2089,18 +2713,31 @@ _ROW4_TOL="${REIFY_CPU_GOV_TEST_SHARE_TOL:-0.10}"
 # burn (including the asymmetric startup stagger — scope creation + worker
 # spawn for each role) let one role bank uncontended CPU before its sibling's
 # scope existed, biasing merge_share DOWN (observed 0.639 vs floor 0.65 — a
-# ~0.01 false-RED).  Fix: launch both burns, wait WARMUP_S for both to ramp,
-# THEN bracket the usage_usec delta over a MEASURE_S steady-state window while
-# both are still burning.  Mirrors the ROW2_3 warm-up design + PRD §11 Q5.
+# ~0.01 false-RED).  Fix: launch both burns, wait for BOTH to report ready,
+# let them ramp for WARMUP_S, THEN bracket the usage_usec delta over a
+# MEASURE_S steady-state window while both are still burning.  Mirrors the
+# ROW2_3 warm-up design + PRD §11 Q5.
 _ROW4_WARMUP_S="${REIFY_CPU_GOV_TEST_ROW4_WARMUP_S:-3}"
 _ROW4_MEASURE_S="${REIFY_CPU_GOV_TEST_ROW4_MEASURE_S:-8}"
-# Burn must outlast warm-up + measure window + a settle margin so the AFTER
-# sample lands while BOTH roles are still contending (never during teardown).
+# Readiness anti-hang bound (task 9698; technique T, docs/prds/infra-test-
+# wallclock-deflake.md).  Waiting for both burns to report ready is bounded
+# only so a burn that never reports cannot hang the suite; it never
+# discriminates pass from fail.  When it expires ROW4-1 SKIPs as a
+# measurement-integrity failure, like the slice-discovery SKIP below.
+_ROW4_READY_DEADLINE_S="${REIFY_CPU_GOV_TEST_ROW4_READY_DEADLINE_S:-30}"
+# Burn must outlast readiness wait + warm-up + measure window + a settle margin
+# so the AFTER sample lands while BOTH roles are still contending (never during
+# teardown).  Derived from the readiness deadline so that holds by construction:
+# every burn starts at or after launch and the window opens no later than
+# launch + deadline, so however the two roles' start times stagger, the
+# earliest burn still ends after the window closes.  ROW4 stops its burns
+# explicitly right after the AFTER sample (_row4_stop_burns), so the larger cap
+# costs no wall time.
 # Clamp up if a shared BURN_S override (used by ROW1/ROW2_3 for speed) is too
 # small for ROW4's steady-state window — otherwise the AFTER sample would land
 # during teardown and re-introduce the stagger bias this fix removes.
-_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))}"
-_ROW4_BURN_MIN=$(( _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+_ROW4_BURN_MIN=$(( _ROW4_READY_DEADLINE_S + _ROW4_WARMUP_S + _ROW4_MEASURE_S + 4 ))
+_ROW4_BURN_S="${REIFY_CPU_GOV_TEST_BURN_S:-$_ROW4_BURN_MIN}"
 [ "$_ROW4_BURN_S" -lt "$_ROW4_BURN_MIN" ] && _ROW4_BURN_S="$_ROW4_BURN_MIN"
 # Quiet-box gate (mirrors ROW1/ROW2_3; reuses shared QUIET_CEILING knob).
 _ROW4_QUIET_CEILING="${REIFY_CPU_GOV_TEST_QUIET_CEILING:-20}"
@@ -2297,8 +2934,9 @@ assert "NAMING-3: task/merge slice names are distinct" \
 # ----------------------------------------------------------------------------
 # H5 (task 4926): confining the SHARED PARENT slice's CPUQuota (never the
 # child scope/slice itself, C-G1) makes the two ROW4 child slices split ONE
-# bounded budget, and pinning the burns to confine-cores CPUs (CONFINE_CPUS,
-# esc-4926-3 ruling) creates the per-CPU runqueue co-residency that
+# bounded budget, and pinning each burn WORKER to one of the confine-cores CPUs
+# (CONFINE_CPUS, esc-4926-3 ruling; per worker since task 9698 — see MECHANISM
+# above) creates the per-CPU runqueue co-residency that
 # cpu.weight arbitration requires — TOGETHER these make the proportional
 # ratio host-load-independent (PRD §1 G6 #3 as revised; quota alone drains
 # weight-blind ~FCFS → ~50/50 false-RED).
@@ -2379,6 +3017,38 @@ _confine_pin_nproc_hi="$(
 )"
 assert "CONFINE-PIN-2: pin list is byte-identical under faked nproc=4 vs nproc=64 ('${_confine_pin_nproc_lo}' == '${_confine_pin_nproc_hi}')" \
     test "$_confine_pin_nproc_lo" = "$_confine_pin_nproc_hi"
+
+# CONFINE-PIN-3: the REIFY_CPU_GOV_TEST_CONFINE_CPUS override reaches
+# cpu_load_fixture.sh --pin-cpus, which takes single CPU ids and commas only, so
+# _row4_confine_cpus must hand over single ids.  A range passed through verbatim
+# made every guard that runs the fixture wait out its readiness deadline and then
+# blame a missing ready file, and a malformed value did the same.
+_confine_pin_override_range="$(
+    REIFY_CPU_GOV_TEST_CONFINE_CPUS='5-7,30' _row4_confine_cpus 2>/dev/null || echo "rejected"
+)"
+assert "CONFINE-PIN-3a: a range override '5-7,30' is expanded to single ids (got '${_confine_pin_override_range}', want '5,6,7,30')" \
+    test "$_confine_pin_override_range" = "5,6,7,30"
+
+# The identity case: an override that is already single ids is handed over
+# untouched, so nobody who sets it today sees a change.
+_confine_pin_override_plain="$(
+    REIFY_CPU_GOV_TEST_CONFINE_CPUS='30,31' _row4_confine_cpus 2>/dev/null || echo "rejected"
+)"
+assert "CONFINE-PIN-3b: an override of single ids passes through unchanged (got '${_confine_pin_override_plain}', want '30,31')" \
+    test "$_confine_pin_override_plain" = "30,31"
+
+# NON-VACUITY CRUX: a value that is not a CPU list is refused up front with the
+# usage exit code and nothing on stdout, rather than handed to the fixture to
+# fail there.  Descending ranges are in the set: they expand to no CPU at all.
+for _confine_pin_override_bad in "a,b" "30-" "30,,31" "0-8:2" "31-30"; do
+    _confine_pin_override_bad_rc=0
+    _confine_pin_override_bad_out="$(
+        REIFY_CPU_GOV_TEST_CONFINE_CPUS="$_confine_pin_override_bad" _row4_confine_cpus 2>/dev/null
+    )" || _confine_pin_override_bad_rc=$?
+    _confine_pin_override_bad_got="rc ${_confine_pin_override_bad_rc}, stdout '${_confine_pin_override_bad_out}'"
+    assert "CONFINE-PIN-3c: malformed override '${_confine_pin_override_bad}' => rc EXACTLY 64 and empty stdout (got ${_confine_pin_override_bad_got})" \
+        test "$_confine_pin_override_bad_got" = "rc 64, stdout ''"
+done
 
 # CONFINE-VACUITY: pin non-vacuity of share_ge_proportional at ROW4-1's exact
 # weights (w_merge=300, w_task=100) + tol — an equal-usage (broken)
@@ -2736,10 +3406,11 @@ elif [ -z "${_ROW4_CONFINE_CPUS:-}" ]; then
 else
     # ── ROW4 ORCHESTRATION (step-10, confined H5/task 4926) ──────────────────
     # Confine the shared parent slice's CPUQuota BEFORE any measurement, and
-    # pin the burns to the confined CPU list (esc-4926-3): the quota bounds
-    # the subtree's aggregate footprint while the pinning creates the per-CPU
-    # runqueue co-residency cpu.weight arbitration requires — together they
-    # make the ratio host-load-independent (PRD §1 G6 #3 as revised), so the
+    # pin every burn WORKER to one CPU of the confined list (esc-4926-3; per
+    # worker since task 9698): the quota bounds the subtree's aggregate
+    # footprint while the pinning creates the per-CPU runqueue co-residency
+    # cpu.weight arbitration requires — together they make the ratio
+    # host-load-independent (PRD §1 G6 #3 as revised), so the
     # PRIMARY quiet-box pre/post gate that used to wrap this block is DROPPED
     # on this delegated path -- the row now runs unconditionally once
     # host_supports_governance is true (checked above) and can go RED under
@@ -2788,68 +3459,120 @@ else
     #     scale. Using nproc workers here (as the pre-H5 unconfined design
     #     did) against a small confined cap over-oversubscribes by nproc/
     #     confine-cores×, which empirically degrades weight-ratio convergence.
-    #     `taskset -c` pins both roles' burns to the SAME confine-cores CPUs
-    #     (esc-4926-3): affinity inherits through cpu-governed-exec's
-    #     `systemd-run --user --scope` (the payload stays a direct child), and
-    #     the co-residency it forces is what lets cpu.weight arbitrate at all
-    #     — unpinned, the 2W threads spread across the idle box and the quota
-    #     drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is a TEST-
-    #     HARNESS mechanism only: production cpu-governed-exec stays unpinned
-    #     and work-conserving (C-G1 untouched).
+    #     Each WORKER is pinned to ONE of the confine-cores CPUs, round-robin
+    #     and identically for both roles (task 9698: _row4_launch_role_burn →
+    #     cpu_load_fixture.sh --pin-cpus; affinity still inherits through
+    #     cpu-governed-exec's `systemd-run --user --scope`, the payload staying
+    #     a direct child).  Every pinned CPU then hosts one merge and one task
+    #     worker, and that shared per-CPU runqueue is what lets cpu.weight
+    #     arbitrate at all.  A set-mask over all the workers (esc-4926-3's
+    #     first form) only made it possible: the load balancer then decided the
+    #     split.  Unpinned altogether, the 2W threads spread across the idle box
+    #     and the quota drains weight-blind ~FCFS → ~50/50 false-RED. Pinning is
+    #     a TEST-HARNESS mechanism only: production cpu-governed-exec stays
+    #     unpinned and work-conserving (C-G1 untouched).
     _ROW4_W="$_ROW4_CONFINE_W"  # W per role; 2W = 2*confine-cores → 2× oversubscription
+    _ROW4_READY_TASK="$WORK/row4-ready-task"
+    _ROW4_READY_MERGE="$WORK/row4-ready-merge"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" task "$_ROW4_CONFINE_CPUS" "$_ROW4_W" \
+        "$_ROW4_BURN_S" "$_ROW4_READY_TASK"
+    _row4_launch_role_burn "$CPU_GOV_EXEC" merge "$_ROW4_CONFINE_CPUS" "$_ROW4_W" \
+        "$_ROW4_BURN_S" "$_ROW4_READY_MERGE"
 
-    REIFY_CPU_GOVERN_SLICE_TASK="$_ROW4_SLICE_TASK" \
-    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role task -- \
-        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW4_TASK_BG=$!
+    # Everything the window fills in starts as the "unavailable" sentinel, so a
+    # window that never opens leaves the bracket below with nothing to judge
+    # (the ROW4-1 chain SKIPs it) rather than with a coerced number.
+    _ROW4_TASK_BEFORE="unavailable"
+    _ROW4_MERGE_BEFORE="unavailable"
+    _ROW4_TASK_AFTER="unavailable"
+    _ROW4_MERGE_AFTER="unavailable"
+    _ROW4_HOST_AVG10="unavailable"
+    _ROW4_READY=0
+    _ROW4_PIN_LIVE_RC=1
+    _ROW4_PIN_HELD=0
+    _ROW4_PIN_TASK_CPUS=""
+    _ROW4_PIN_MERGE_CPUS=""
+    _ROW4_PIN_TASK_CPUS_END=""
+    _ROW4_PIN_MERGE_CPUS_END=""
 
-    REIFY_CPU_GOVERN_SLICE_MERGE="$_ROW4_SLICE_MERGE" \
-    timeout $(( _ROW4_BURN_S + 15 )) taskset -c "$_ROW4_CONFINE_CPUS" \
-        bash "$CPU_GOV_EXEC" --role merge -- \
-        bash "$FIXTURE" "$_ROW4_W" "$_ROW4_BURN_S" \
-        >/dev/null 2>&1 &
-    _ROW4_MERGE_BG=$!
+    # (d) Open the window on READINESS, not on launch.  Each governed launch
+    #     makes several user-manager D-Bus round-trips before its fixture even
+    #     starts, so a launch-anchored sleep let one role run alone — banking
+    #     uncontended CPU — while the other was still starting.  A role reports
+    #     ready (its --ready-file) once all its workers are up and pinned; the
+    #     deadline is an anti-hang bound only (technique T), never what
+    #     discriminates, and when it expires ROW4-1 SKIPs below.
+    if _row4_await_ready "$_ROW4_READY_DEADLINE_S" "$_ROW4_READY_TASK" "$_ROW4_READY_MERGE"; then
+        _ROW4_READY=1
 
-    # (d) Warm-up: let BOTH burns ramp to full contention before sampling, so
-    #     the startup stagger (scope creation + worker spawn) is OUTSIDE the
-    #     measured window and cannot bank uncontended CPU into either delta.
-    sleep "$_ROW4_WARMUP_S"
+        # (d1) Co-residency, ASSERTED on the live workers: every pinned CPU
+        #      hosts one task and one merge worker, the property the 3:1 split
+        #      is only guaranteed under.  A violation here is a harness
+        #      regression (the pinning did not take), not load, so it is a FAIL
+        #      — and ROW4-1 then SKIPs below rather than double-report it.
+        _ROW4_PIN_TASK_CPUS="$(_row4_worker_affinities "$_ROW4_READY_TASK" 2>/dev/null || true)"
+        _ROW4_PIN_MERGE_CPUS="$(_row4_worker_affinities "$_ROW4_READY_MERGE" 2>/dev/null || true)"
+        _ROW4_PIN_LIVE_RC=0
+        _row4_pin_coresident "$_ROW4_PIN_TASK_CPUS" "$_ROW4_PIN_MERGE_CPUS" \
+            || _ROW4_PIN_LIVE_RC=$?
+        assert "ROW4-PIN-LIVE: each pinned CPU hosts one task and one merge worker (task=${_ROW4_PIN_TASK_CPUS//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS//$'\n'/,})" \
+            test "$_ROW4_PIN_LIVE_RC" -eq 0
 
-    # (e) Sample usage_usec at the START of the steady-state window.
-    #     Slices are persistent; usage_usec accumulates — must use before/after delta.
-    _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
+        # (d2) Warm-up: let BOTH burns ramp to full contention before sampling,
+        #      so the residual startup stagger is OUTSIDE the measured window
+        #      and cannot bank uncontended CPU into either delta.
+        sleep "$_ROW4_WARMUP_S"
 
-    # (f) Hold the steady-state measurement window (both still burning).
-    sleep "$_ROW4_MEASURE_S"
+        # (e) Sample usage_usec at the START of the steady-state window.
+        #     Slices are persistent; usage_usec accumulates — must use before/after delta.
+        _ROW4_TASK_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+        _ROW4_MERGE_BEFORE="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
 
-    # (g) Sample usage_usec at the END of the steady-state window — taken WHILE
-    #     both roles are still contending (burn outlasts warmup+measure+margin),
-    #     so the delta reflects pure steady-state weight scheduling, not teardown.
-    _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
-    _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
-        2>/dev/null || echo "unavailable")"
+        # (f) Hold the steady-state measurement window (both still burning).
+        sleep "$_ROW4_MEASURE_S"
 
-    # (g2) Sample HOST-WIDE PSI at the same instant the window closes, before
-    #      the reap below — as close to the bracketed interval as possible, so
-    #      the sample describes the interval that was actually measured rather
-    #      than teardown.  Host-wide (not slice-relative) is deliberate: the
-    #      ROW4 parent is quota-capped, and a cgroup's `some` pressure counts
-    #      runnable-but-not-running time, which INCLUDES quota throttling — so
-    #      a quota-capped slice always shows high stall and slice-relative PSI
-    #      is useless as a foreign-load discriminator here.  What actually
-    #      breaks this measurement is other work contending for the pinned
-    #      CPUs, which is exactly what host-wide PSI measures.
-    _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+        # (g) Sample usage_usec at the END of the steady-state window — taken
+        #     WHILE both roles are still contending (the burn cap outlasts
+        #     ready-deadline+warmup+measure+margin), so the delta reflects pure
+        #     steady-state weight scheduling, not teardown.
+        _ROW4_TASK_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_TASK_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
+        _ROW4_MERGE_AFTER="$(python3 "$INSTRUMENT" cgroup-usage "$_ROW4_MERGE_SLICE_REL" \
+            2>/dev/null || echo "unavailable")"
 
-    # (h) Reap both burns (natural completion or timeout) before cleanup.
-    wait "$_ROW4_TASK_BG" 2>/dev/null || true
-    wait "$_ROW4_MERGE_BG" 2>/dev/null || true
+        # (g2) Sample HOST-WIDE PSI at the same instant the window closes,
+        #      before the stop below — as close to the bracketed interval as
+        #      possible, so the sample describes the interval that was actually
+        #      measured rather than teardown.  Host-wide (not slice-relative) is
+        #      deliberate: the ROW4 parent is quota-capped, and a cgroup's
+        #      `some` pressure counts runnable-but-not-running time, which
+        #      INCLUDES quota throttling — so a quota-capped slice always shows
+        #      high stall and slice-relative PSI is useless as a foreign-load
+        #      discriminator here.  What actually breaks this measurement is
+        #      other work contending for the pinned CPUs, which is exactly what
+        #      host-wide PSI measures.
+        _ROW4_HOST_AVG10="$(_row4_sample_host_avg10 "$_ROW4_PROC_PATH")"
+
+        # (g3) Re-check co-residency at the window's close, while both burns are
+        #      still alive: the same predicate on the same workers, as the
+        #      invariant's second enforcement point.  A worker that vanished
+        #      inside the window reads "unavailable", which can never be
+        #      co-resident — a loss of measurement integrity (the ROW4-1 chain
+        #      SKIPs it), not a governance verdict.
+        _ROW4_PIN_TASK_CPUS_END="$(_row4_worker_affinities "$_ROW4_READY_TASK" 2>/dev/null || true)"
+        _ROW4_PIN_MERGE_CPUS_END="$(_row4_worker_affinities "$_ROW4_READY_MERGE" 2>/dev/null || true)"
+        if _row4_pin_coresident "$_ROW4_PIN_TASK_CPUS_END" "$_ROW4_PIN_MERGE_CPUS_END"; then
+            _ROW4_PIN_HELD=1
+        fi
+    fi
+
+    # (h) Stop both burns now that the AFTER sample is taken (or the window never
+    #     opened).  Explicit, rather than waiting out the burn cap — which is
+    #     sized to outlive even a slow-to-ready window, so a typical run ends
+    #     well before it.
+    _row4_stop_burns
 
     # An unreadable endpoint stays OUT of the numeric coercion (task 5998
     # amendment).  Initializing the deltas to 0 instead made a FAILED cpu.stat
@@ -2877,8 +3600,9 @@ else
 
     # ROW4-1: merge_share >= W_merge/(W_merge+W_task) - tol.
     # Asserts the C-G2 proportional cpu.weight enforcement under contention,
-    # measured INSIDE the confined parent-slice budget with the burns pinned
-    # to the confined CPUs (H5 + esc-4926-3).
+    # measured INSIDE the confined parent-slice budget with every burn worker
+    # pinned to one of the confined CPUs (H5 + esc-4926-3; per worker since
+    # task 9698).
     #
     # SCOPE OF THE CONFINEMENT (task 5998 — corrects the earlier claim that
     # pinning makes this bound host-load-independent, and the "foreign load
@@ -2899,12 +3623,21 @@ else
     # Overridable via REIFY_CPU_GOV_TEST_SHARE_TOL. INHERITED VERBATIM (G6) --
     # no new number, tol untouched (re-tightening reopens the #4656 flake class).
     #
+    # Skip when no window was measured at all (task 9698): the burns never
+    # reported ready within the anti-hang bound, or ROW4-PIN-LIVE already failed
+    # — that FAIL reds the suite on its own, so the share of a mis-placed burn is
+    # not reported a second time.
+    #
     # Skip if slice discovery failed (empty rel-path — probe timed out/errored) or
     # both deltas are zero (measurement inconclusive).  Without this guard an empty
     # rel-path causes cgroup-usage to read the root cgroup, both roles get the same
     # usage_usec, merge_share ≈ 0.5 which is below the 0.65 floor — a false-RED.
     # These are measurement-integrity guards (not load-based) and are retained.
-    if [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
+    if [ "$_ROW4_READY" -eq 0 ]; then
+        echo "  SKIP ROW4-1: burns did not report ready within the ${_ROW4_READY_DEADLINE_S}s anti-hang bound — no window to measure"
+    elif [ "$_ROW4_PIN_LIVE_RC" -ne 0 ]; then
+        echo "  SKIP ROW4-1: ROW4-PIN-LIVE failed (task=${_ROW4_PIN_TASK_CPUS//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS//$'\n'/,}) — that FAIL already reds the suite; the share of a mis-placed burn is not a governance verdict"
+    elif [ -z "${_ROW4_TASK_SLICE_REL:-}" ] || [ -z "${_ROW4_MERGE_SLICE_REL:-}" ]; then
         echo "  SKIP ROW4-1: slice rel-path discovery failed (empty) — cannot compute share"
     elif [ "$_ROW4_TASK_DELTA" = "unavailable" ] || \
          [ "$_ROW4_MERGE_DELTA" = "unavailable" ]; then
@@ -2916,6 +3649,13 @@ else
         echo "  SKIP ROW4-1: cpu.stat read failed (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA}) — no measurement to judge"
     elif [ "$_ROW4_TASK_DELTA" -le 0 ] && [ "$_ROW4_MERGE_DELTA" -le 0 ]; then
         echo "  SKIP ROW4-1: both cpu.stat deltas are zero — measurement inconclusive"
+    elif [ "$_ROW4_PIN_HELD" -eq 0 ]; then
+        # Co-residency held when the window opened (ROW4-PIN-LIVE) but not when
+        # it closed: a worker exited inside the window — the burn ended early or
+        # was reaped — so part of it ran with one role short and the split is
+        # not the steady-state one this row judges.  Measurement integrity, like
+        # the arms above, and deliberately NOT load-based.
+        echo "  SKIP ROW4-1: a pinned worker exited inside the measured window (co-residency not held at window close: task=${_ROW4_PIN_TASK_CPUS_END//$'\n'/,}, merge=${_ROW4_PIN_MERGE_CPUS_END//$'\n'/,}) — teardown contaminates the split"
     elif _row4_share_inconclusive "$_ROW4_MERGE_DELTA" "$_ROW4_TASK_DELTA" \
             "$_ROW4_W_MERGE" "$_ROW4_W_TASK" "$_ROW4_TOL" \
             "$_ROW4_HOST_AVG10" "$_ROW4_QUIET_CEILING"; then
@@ -2935,7 +3675,7 @@ else
         # REIFY_CPU_GOV_TEST_QUIET_CEILING.
         echo "  SKIP ROW4-1: inconclusive — sub-floor merge_share (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},tol=${_ROW4_TOL}) measured on a NON-QUIET box (host avg10=${_ROW4_HOST_AVG10} >= ceiling=${_ROW4_QUIET_CEILING}) — foreign load on the pinned CPUs dilutes cpu.weight proportionality, not a governance failure"
     else
-        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK})" \
+        assert "ROW4-1: merge_share >= W_merge/(W_merge+W_task)-tol=${_ROW4_TOL} (Δmerge=${_ROW4_MERGE_DELTA},Δtask=${_ROW4_TASK_DELTA},W=${_ROW4_W_MERGE}/${_ROW4_W_TASK},host avg10=${_ROW4_HOST_AVG10})" \
             python3 -c "
 import sys
 sys.path.insert(0, '${SCRIPT_DIR}')

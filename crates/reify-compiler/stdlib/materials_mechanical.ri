@@ -138,8 +138,8 @@ trait Hard {
 // cycles; fatigue_strength_at is the amplitude at fatigue_cycles cycles.
 // NOTE: fatigue_strength_at and fatigue_cycles are only meaningful as a pair
 // (they define a single S-N data point). Supplying one without the other is
-// semantically incomplete. A co-presence constraint will be added once
-// undef-aware constraints are supported (follow-up #4240-co-presence).
+// semantically incomplete, and FatigueRated does not enforce the pairing: it
+// carries no co-presence constraint. Whether to add one is owned by #8511.
 // task β #4240: replaced single required endurance_limit with these three optionals.
 // task #3111: fatigue_limit and fatigue_strength_at tightened from Real to Pressure.
 trait FatigueRated : MaterialSpec {

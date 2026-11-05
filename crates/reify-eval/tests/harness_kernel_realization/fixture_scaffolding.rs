@@ -57,8 +57,6 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::ValueCellId;
-use reify_core::ty::SelectorKind;
-use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
@@ -113,7 +111,7 @@ fn build_compiled_with_occt(
     let checker = SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
     Some(engine.build(compiled, ExportFormat::Step))
 }
 
@@ -257,40 +255,5 @@ pub(crate) fn assert_length_cell(
             "{struct_name}.{cell_name} should be Value::Scalar{{LENGTH, {expected}}}, \
              got: {other:?}"
         ),
-    }
-}
-
-/// Asserts that `cell_value` holds a kernel-free `Value::Selector` whose node is
-/// a single `Leaf` of the expected `kind`, then runs `check_query` against the
-/// leaf's `LeafQuery` (task 4118 γ).
-///
-/// Takes the already-read `Option<&Value>` rather than a `(&BuildResult,
-/// struct_name, cell_name)` triple like its two siblings, because what varies
-/// per call site here is the leaf predicate, not the read: the caller's
-/// `check_query` closure owns every numeric expectation and epsilon, so the
-/// helper pins the SHAPE (kernel-free `Selector` / expected `kind` / single
-/// `Leaf`) and nothing else. That keeps a tolerance out of this file, where it
-/// could only be a shared default that silently retunes a pin.
-///
-/// `#[track_caller]` is load-bearing because the fn lives in a different file
-/// from its callers: without it a failure would report `fixture_scaffolding.rs`
-/// and lose WHICH pin broke.
-#[track_caller]
-pub(crate) fn assert_selector_leaf(
-    cell_value: Option<&Value>,
-    label: &str,
-    kind: SelectorKind,
-    check_query: impl FnOnce(&LeafQuery),
-) {
-    let sv = match cell_value {
-        Some(Value::Selector(sv)) => sv,
-        other => panic!(
-            "{label} must be a kernel-free Value::Selector (task 4118 γ; BT7), got: {other:?}"
-        ),
-    };
-    assert_eq!(sv.kind, kind, "{label}: selector kind");
-    match &sv.node {
-        SelectorNode::Leaf { query, .. } => check_query(query),
-        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
     }
 }

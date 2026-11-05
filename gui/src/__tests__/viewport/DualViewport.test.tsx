@@ -385,6 +385,29 @@ describe('DualViewport', () => {
     expect(Object.keys(capturedViewportPropsByid['design-main'].meshes)).not.toContain('preview/C');
   });
 
+  it('(edges) showEdges reaches both the design-main and the def-preview Viewport', async () => {
+    const { DualViewport } = await importDualViewport();
+    const engineStore = makeEngineStore(['design/A']);
+    const defPreviewStore = makeDefPreviewStore(['preview/B'], 'BoltFlange');
+    const viewportStore = makeViewportStore();
+
+    render(() => (
+      <DualViewport
+        engineStore={engineStore}
+        defPreviewStore={defPreviewStore}
+        viewportStore={viewportStore}
+        defPreviewActive={() => true}
+        designViewportActive={() => true}
+        defName={() => 'BoltFlange'}
+        onForceExpand={vi.fn()}
+        showEdges={true}
+      />
+    ));
+
+    expect(capturedViewportPropsByid['design-main'].showEdges).toBe(true);
+    expect(capturedViewportPropsByid['def-preview'].showEdges).toBe(true);
+  });
+
   // ── Ref forwarding tests ─────────────────────────────────────────────────────
 
   describe('ref forwarding', () => {

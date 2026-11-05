@@ -23,7 +23,7 @@ fn tessellate_no_realizations_no_kernel_returns_empty_meshes() {
         .build();
 
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let result = engine.tessellate_realizations(&module);
 
@@ -50,9 +50,9 @@ fn module_with_box_realization() -> reify_compiler::CompiledModule {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -74,7 +74,7 @@ fn tessellate_single_box_realization() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_realizations(&module);
 
@@ -108,9 +108,9 @@ fn tessellate_multiple_realizations() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -131,7 +131,7 @@ fn tessellate_multiple_realizations() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_realizations(&module);
 
@@ -157,7 +157,7 @@ fn tessellate_no_kernel_with_realizations_returns_empty_meshes() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     // No geometry kernel
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     let result = engine.tessellate_realizations(&module);
 
@@ -189,7 +189,7 @@ fn tessellate_records_geometry_errors_as_diagnostics() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_realizations(&module);
 
@@ -221,7 +221,7 @@ fn tessellate_snapshot_returns_none_without_prior_eval() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     let result = engine.tessellate_snapshot(&module);
     assert!(
@@ -236,7 +236,7 @@ fn tessellate_snapshot_returns_meshes_after_eval() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Initial eval to populate snapshot
     let _eval_result = engine.eval(&module);

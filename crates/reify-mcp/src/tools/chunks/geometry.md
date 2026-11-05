@@ -55,6 +55,8 @@ Transform<N>:
 
 Transform is always rigid (rotation + translation). Sub-structure placement uses Transform from child frame to parent frame.
 
+A transform keeps its input's kind: a translated profile is still a face, so `centroid` and `area` measure the face.
+
 ## Geometry Constructors (Prelude)
 
 ```reify-schematic
@@ -125,7 +127,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 
 | Primitive | Anchor | Notes |
 |---|---|---|
-| `box` | **centred at origin**, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally; already centroid-centred |
+| `box` | **centred at origin**, all 3 axes | corner at `(-width/2, -depth/2, -height/2)` — width/depth/height are the X/Y/Z extents, which diagnostics and completion name `size_x`/`size_y`/`size_z`; already centroid-centred |
 | `box_centered` | **centred at origin**, all 3 axes | op-identical alias of `box` — exists for symmetry with `cylinder_centered` so a designer doesn't have to remember box is the odd one out |
 | `sphere` | **centred at origin** | radius extends equally in all directions from `(0,0,0)` |
 | `torus` | **centred at origin**; axis is **+Z** | major/minor radii both measured from the ring centred on the origin |
@@ -260,20 +262,20 @@ The rejected forms and their migrations are tabulated once, in the `units` chunk
 looks like when you get it wrong" — one row per form, each row executed by
 units_chunk_smoke.rs::documented_rejected_forms_are_actually_rejected. Not repeated here.
 
-**`reify check` is not a gate for all of this.** It prints the rejection either way, but its EXIT
-CODE is reliable only for the constructors the COMPILER checks. Measured 2026-08-30 and re-measured
-2026-09-07: `box`, `translate`, `fillet`, `rotate_around` and the pivot triple of 7-argument
-`mirror` exit 1, while `helix`, `polygon`, `arc`, `line_segment`, `interp`, `bezier` and `nurbs`
-have no compile-time length slot — they print `error:` and still exit **0**, because their
-arguments are checked at build/eval time only. Gate a design on `reify eval` or `reify build`,
-never on `reify check`'s exit status alone. The compile-layer half of that split is PINNED by
+**`reify check` rejects these too, but not always before its verdict.** For the constructors the
+COMPILER checks it exits 1 with no verdict line; for those with no compile-time length slot it
+prints `All constraints satisfied.` beside the `error:` lines and then exits 1. So read its exit
+status and `error:` lines, never the verdict line alone. Which constructor falls on which side, and
+the tests pinning each, is stated once in the `units` chunk under "Which command catches it". The
+compile-layer half of that split is pinned by
 units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer, and the
-`mirror` exit code specifically by
-crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build;
-the REMAINING exit-code claims are UNPINNED prose (nothing else in these harnesses runs the CLI)
-and the residual is tracked in `docs/prds/v0_6/check-diagnostic-truthfulness.md`. Full
-PINNED/UNPINNED inventory: the `units` chunk.
+`mirror` exit by
+crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build.
 
+
+## Fillet & chamfer
+
+`fillet` and `chamfer` need one solid, also after a transform: a disjoint `union`, a pattern whose copies do not touch, or a swept wire is rejected.
 
 ## GD&T Tolerance Zones
 

@@ -62,7 +62,7 @@ main_gate_unmark() {
 }
 
 # main_gate_token — print the sentinel's token: the main tip the mark was bound
-# to. Empty = a legacy unbound mark (transition arm, removed by L10 #8713).
+# to. An empty token matches no tip, so an unbound mark sanctions nothing.
 main_gate_token() {
     cat "$(main_gate_sentinel)" 2>/dev/null
 }

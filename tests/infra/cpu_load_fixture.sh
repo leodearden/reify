@@ -18,9 +18,21 @@
 #                         cpu-governed-exec.sh — mirrors the D1 PROBE pattern)
 #   --print-usage         print "USAGE_USEC=<cpu.stat usage_usec>" to stdout before
 #                         exit (for Row 4 slice-share measurements)
+#   --pin-cpus LIST       pin worker i to CPU LIST[i mod n] with taskset(1). LIST is
+#                         comma-separated CPU ids, digits only ("30,31"); a range,
+#                         an empty entry or a non-digit exits 64, and a missing
+#                         taskset exits 69 — pinning is never silently dropped.
+#                         With the same worker count and LIST for two fixtures,
+#                         every listed CPU hosts equally many workers of each.
+#   --ready-file FILE     once every worker is forked — and, with --pin-cpus, has
+#                         applied its pin — write the worker PIDs, one per line,
+#                         to FILE atomically (tmp + mv). The post-fork
+#                         counterpart of --emit-cgroup, which is written BEFORE
+#                         the fork and so proves only that the fixture STARTED.
 #
 # NOTES:
-#   - Dependency-free: uses only POSIX sh builtins + timeout(1).
+#   - Dependency-free: uses only POSIX sh builtins + timeout(1); --pin-cpus
+#     additionally needs taskset(1) and awk(1), --ready-file needs mv(1).
 #   - Safe under set -euo pipefail.
 #   - Workers are backgrounded and waited on with `wait`; EXIT trap reaps any
 #     survivors via a per-PID `kill` over the recorded worker PIDs (harmless
@@ -39,7 +51,7 @@ set -euo pipefail
 # Argument parsing
 # ---------------------------------------------------------------------------
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $(basename "$0") <nworkers> <duration_s> [--label NAME] [--emit-cgroup FILE] [--print-usage]" >&2
+    echo "Usage: $(basename "$0") <nworkers> <duration_s> [--label NAME] [--emit-cgroup FILE] [--print-usage] [--pin-cpus LIST] [--ready-file FILE]" >&2
     exit 64
 fi
 
@@ -50,6 +62,8 @@ shift 2
 LABEL="fixture"
 EMIT_CGROUP_FILE=""
 PRINT_USAGE=0
+PIN_CPUS=""
+READY_FILE=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -69,6 +83,26 @@ while [ "$#" -gt 0 ]; do
             ;;
         --print-usage)
             PRINT_USAGE=1
+            shift
+            ;;
+        --pin-cpus)
+            shift
+            PIN_CPUS="${1:-}"
+            case "$PIN_CPUS" in
+                ''|*[!0-9,]*|,*|*,|*,,*)
+                    echo "$(basename "$0"): --pin-cpus requires comma-separated CPU ids, digits only (got '$PIN_CPUS')" >&2
+                    exit 64
+                    ;;
+            esac
+            shift
+            ;;
+        --ready-file)
+            shift
+            READY_FILE="${1:-}"
+            if [ -z "$READY_FILE" ]; then
+                echo "$(basename "$0"): --ready-file requires a FILE argument" >&2
+                exit 64
+            fi
             shift
             ;;
         *)
@@ -100,6 +134,17 @@ if [ "$DURATION_S" -lt 1 ]; then
     exit 64
 fi
 
+# --pin-cpus: the list was validated above; refuse to run unpinned if taskset is
+# missing, then split it once for the round-robin below.
+_PIN_LIST=()
+if [ -n "$PIN_CPUS" ]; then
+    if ! command -v taskset >/dev/null 2>&1; then
+        echo "$(basename "$0"): --pin-cpus needs taskset(1), which is not on PATH" >&2
+        exit 69
+    fi
+    IFS=',' read -r -a _PIN_LIST <<< "$PIN_CPUS"
+fi
+
 # ---------------------------------------------------------------------------
 # EXIT trap: reap surviving workers.
 # Per-PID kill over recorded _WORKER_PIDS only (best-effort; ignores errors
@@ -109,6 +154,7 @@ fi
 # group-wide kill would signal the calling shell too.
 # ---------------------------------------------------------------------------
 _WORKER_PIDS=""
+_PINNED_WORKERS=""  # "<pid>:<cpu>" pairs, one per worker, only with --pin-cpus
 
 _cleanup() {
     # Kill all recorded worker PIDs (best-effort; ignore errors if already gone).
@@ -120,6 +166,29 @@ _cleanup() {
     fi
 }
 trap '_cleanup' EXIT
+
+# _await_pins_applied: with --pin-cpus, block until every live pinned worker
+# reports its own CPU as its whole affinity mask.  It is the forked child that
+# runs taskset, so the pin lands AFTER the fork returns here; until then a worker
+# still reports the mask it inherited, and a ready report made in that window
+# would list workers that are not yet pinned.  A worker that is gone (taskset
+# refused the CPU, or the burn ended) is not waited for — its absence is the
+# reader's to report.  The burn length bounds the wait: anti-hang only, never a
+# discriminator.  A no-op without --pin-cpus.
+_await_pins_applied() {
+    local pair pid want got deadline=$(( SECONDS + DURATION_S ))
+    for pair in $_PINNED_WORKERS; do
+        pid="${pair%%:*}"
+        want="${pair##*:}"
+        while :; do
+            got="$(awk '/^Cpus_allowed_list:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null || true)"
+            if [ -z "$got" ] || [ "$got" = "$want" ] || [ "$SECONDS" -ge "$deadline" ]; then
+                break
+            fi
+            sleep 0.01
+        done
+    done
+}
 
 # ---------------------------------------------------------------------------
 # --emit-cgroup: write own cgroup relative path BEFORE forking workers.
@@ -134,15 +203,39 @@ fi
 # Fork <nworkers> busy-spin workers.
 # Each worker runs: timeout <duration_s> sh -c 'while true; do :; done'
 # timeout(1) is used repo-wide (test_portable_timeout.sh); POSIX sh busy-spin.
+# With --pin-cpus, worker i is launched under `taskset -c <LIST[i mod n]>`;
+# taskset execs timeout, so $! is still the worker handle that _cleanup reaps,
+# and the spinner inherits the single-CPU mask from timeout.
 # ---------------------------------------------------------------------------
 _i=0
 while [ "$_i" -lt "$NWORKERS" ]; do
     # The subshell exits automatically when timeout terminates it.
-    timeout "$DURATION_S" sh -c 'while true; do :; done' &
+    if [ -n "$PIN_CPUS" ]; then
+        _cpu="$(( 10#${_PIN_LIST[$(( _i % ${#_PIN_LIST[@]} ))]} ))"
+        taskset -c "$_cpu" timeout "$DURATION_S" sh -c 'while true; do :; done' &
+    else
+        timeout "$DURATION_S" sh -c 'while true; do :; done' &
+    fi
     _pid=$!
     _WORKER_PIDS="${_WORKER_PIDS}${_WORKER_PIDS:+ }${_pid}"
+    if [ -n "$PIN_CPUS" ]; then
+        _PINNED_WORKERS="${_PINNED_WORKERS}${_PINNED_WORKERS:+ }${_pid}:${_cpu}"
+    fi
     _i=$(( _i + 1 ))
 done
+
+# ---------------------------------------------------------------------------
+# --ready-file: report the worker PIDs once every worker is up — and, with
+# --pin-cpus, pinned.  Written to a temp file in the same directory and renamed
+# onto FILE, so a reader polling for FILE never observes a partial list.
+# ---------------------------------------------------------------------------
+if [ -n "$READY_FILE" ]; then
+    _await_pins_applied
+    for _pid in $_WORKER_PIDS; do
+        printf '%s\n' "$_pid"
+    done > "${READY_FILE}.tmp.$$"
+    mv -f "${READY_FILE}.tmp.$$" "$READY_FILE"
+fi
 
 # Wait for all workers to finish (timeout expires → each exits 124 or 143;
 # both are acceptable — the shell busy-spin itself returns 0 on SIGTERM).

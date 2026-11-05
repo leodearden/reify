@@ -31,6 +31,15 @@ const file1: FileData = { path: '/project/src/bracket.ri', content: 'structure B
 const file2: FileData = { path: '/project/src/mount.ri', content: 'structure Mount {}' };
 const file3: FileData = { path: '/project/src/plate.ri', content: 'structure Plate {}' };
 
+// A path with a space reaches the editor under TWO spellings: pathToUri leaves
+// the store path decoded, while every URI the backend mints comes back
+// percent-encoded from the `url` crate. They must resolve to ONE version
+// counter — an ASCII-only fixture cannot tell the two apart.
+const SPACED_PATH = '/project/src/hello world.ri';
+const SPACED_URI = 'file:///project/src/hello world.ri';
+const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
+const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
@@ -837,6 +846,26 @@ describe('Editor diagnostics URI filtering', () => {
     });
 
     // Diagnostics SHOULD have been applied
+    expect(diagnosticCount(view.state)).toBe(1);
+  });
+
+  it('diagnostics published under the percent-encoded spelling of the active file ARE applied', () => {
+    const getHandler = setupListenCapture();
+    const store = setupStore([fileSpaced]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    const handler = getHandler();
+    expect(handler).toBeDefined();
+
+    handler!({
+      payload: {
+        uri: SPACED_URI_ENCODED,
+        diagnostics: [sampleDiagnostic],
+      },
+    });
+
     expect(diagnosticCount(view.state)).toBe(1);
   });
 });
@@ -2275,15 +2304,6 @@ describe('PRIMARY-selection guard integration (task #5361)', () => {
 const FILE1_URI = 'file:///project/src/bracket.ri';
 const FILE2_URI = 'file:///project/src/mount.ri';
 
-// A path with a space reaches the editor under TWO spellings: pathToUri leaves
-// the store path decoded, while every URI the backend mints comes back
-// percent-encoded from the `url` crate. They must resolve to ONE version
-// counter — an ASCII-only fixture cannot tell the two apart.
-const SPACED_PATH = '/project/src/hello world.ri';
-const SPACED_URI = 'file:///project/src/hello world.ri';
-const SPACED_URI_ENCODED = 'file:///project/src/hello%20world.ri';
-const fileSpaced: FileData = { path: SPACED_PATH, content: 'structure Hello {}' };
-
 type LspVersionCall = { method: string; uri?: string; version?: number; text?: string };
 
 /**
@@ -2486,6 +2506,61 @@ describe('Editor LSP per-document versions (task 7118)', () => {
     });
     expect(calls.filter((c) => c.method === 'textDocument/rename')).toHaveLength(2);
     expect(view.state.doc.toString()).not.toContain('Howdy');
+  });
+
+  it('a fresh rename on the active spaced-path file lands on the live buffer, keeping unsaved typing', async () => {
+    const store = setupStore([fileSpaced]);
+    store.setActiveFile(SPACED_PATH);
+    const saveSpy = vi.spyOn(bridge, 'saveFile').mockResolvedValue(undefined);
+    const calls = captureLspVersionCalls({
+      // Line 1: the typed '// edit\n' pushes 'structure Hello {}' down a line.
+      'textDocument/prepareRename': {
+        range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+        placeholder: 'Hello',
+      },
+      // Stamped against version 2 — the didChange the typing sends — so the
+      // version-skew guard judges it fresh. Encoded, as the backend mints it.
+      'textDocument/rename': {
+        documentChanges: [
+          {
+            textDocument: { uri: SPACED_URI_ENCODED, version: 2 },
+            edits: [
+              {
+                range: { start: { line: 1, character: 10 }, end: { line: 1, character: 15 } },
+                newText: 'Howdy',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    render(() => <Editor store={store} />);
+    const view = getEditorView(screen.getByTestId('editor-container'));
+
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didOpen', SPACED_URI)).toBeDefined();
+    });
+
+    view.dispatch({ changes: { from: 0, insert: '// edit\n' } });
+    vi.advanceTimersByTime(EDITOR_DEBOUNCE_MS);
+    await vi.waitFor(() => {
+      expect(lastCallFor(calls, 'textDocument/didChange', SPACED_URI)!.version).toBe(2);
+    });
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'F2', bubbles: true }));
+    await vi.waitFor(() => {
+      expect(document.querySelector('[data-testid="rename-field"]')).not.toBeNull();
+    });
+    const renameField = document.querySelector('[data-testid="rename-field"]') as HTMLInputElement;
+    renameField.value = 'Howdy';
+    renameField.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    await vi.waitFor(() => {
+      expect(view.state.doc.toString()).toBe('// edit\nstructure Howdy {}');
+    });
+    expect(saveSpy).not.toHaveBeenCalled();
+    expect(store.state.dirtyFiles).toContain(SPACED_PATH);
   });
 
   it("a rename into a spaced-path buffer shares that file's own didOpen counter", async () => {

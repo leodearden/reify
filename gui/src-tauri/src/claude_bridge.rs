@@ -44,15 +44,6 @@ pub enum InboundMessage {
     },
     Abort,
     ClearSession,
-    /// Tool result sent back to the sidecar after in-process MCP tool execution.
-    ToolResult {
-        id: String,
-        tool_name: String,
-        result: Value,
-        /// The Claude CLI tool_use_id echoed from the corresponding ToolCall outbound.
-        /// Enables id-based correlation in the sidecar (avoids FIFO-by-tool_name fallback).
-        tool_use_id: String,
-    },
     /// User's decision on a pending permission-prompt request.
     /// Sent in response to an outbound `PermissionRequest` identified by `request_id`.
     PermissionDecision {
@@ -103,9 +94,10 @@ pub enum OutboundMessage {
         id: String,
         tool_name: String,
         tool_input: Value,
-        /// The Claude CLI tool_use_id enabling id-based correlation in the sidecar.
-        /// Defaults to empty string when absent (stale sidecar without this field),
-        /// so a missing field degrades gracefully (FIFO-by-tool_name fallback).
+        /// The claude CLI's tool_use id, forwarded to the frontend in the
+        /// `claude-tool-call` payload. Empty when an older sidecar omits it:
+        /// `#[serde(default)]` keeps such a line delivered rather than dropped as a
+        /// parse failure.
         #[serde(default)]
         tool_use_id: String,
     },
@@ -180,31 +172,6 @@ pub async fn write_to_sidecar<W: AsyncWrite + Unpin>(
         .map_err(|e| format!("write_to_sidecar: {}", e))
 }
 
-/// Emit a WARN when a ToolCall arrives without a `tool_use_id` field.
-///
-/// This is the dev-mode version-skew case: a stale sidecar (pre-dating task #2766)
-/// omits `tool_use_id` from ToolCall events.  The message is still delivered to
-/// `on_message`; id-correlation falls back to FIFO-by-tool_name in the sidecar
-/// TypeScript.  All other `OutboundMessage` variants are silently ignored.
-pub(crate) fn warn_if_stale_tool_call(msg: &OutboundMessage) {
-    if let OutboundMessage::ToolCall {
-        tool_use_id,
-        id,
-        tool_name,
-        ..
-    } = msg
-        && tool_use_id.is_empty()
-    {
-        tracing::warn!(
-            message_id = %id,
-            tool_name = %tool_name,
-            "sidecar tool_call missing tool_use_id; \
-             likely dev-mode version skew between sidecar and Rust binary \
-             — id-correlation will fall back to FIFO-by-tool_name"
-        );
-    }
-}
-
 /// Read lines from sidecar stdout, parse each as OutboundMessage, and call callbacks.
 /// Skips lines that fail to parse (and warns operators). Calls on_exit when the stream ends (EOF).
 pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
@@ -217,10 +184,7 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
         match lines.next_line().await {
             Ok(Some(line)) => {
                 match parse_outbound(&line) {
-                    Ok(msg) => {
-                        warn_if_stale_tool_call(&msg);
-                        on_message(msg);
-                    }
+                    Ok(msg) => on_message(msg),
                     Err(e) => {
                         // Cap the payload snippet to avoid log spam from unexpectedly large lines.
                         // Use chars().take(200) to truncate on character boundaries rather than raw
@@ -247,8 +211,8 @@ pub async fn read_sidecar_output<R: AsyncBufRead + Unpin>(
 ///
 /// This is the extracted body of the `tokio::spawn(async move { ... })` block that
 /// previously lived inline inside `SidecarHandle::new_inner`'s `on_exit` closure.
-/// Extracting it here allows direct unit testing without the EngineSession /
-/// SelectionInfo ballast required by `from_parts_with_mcp`.
+/// Extracting it here allows direct unit testing without spawning a reader task
+/// through [`SidecarHandle::from_parts_with_events`].
 ///
 /// # Lock-release-before-emit invariant
 ///
@@ -288,19 +252,6 @@ pub(crate) async fn on_sidecar_exit<F>(
     }
 }
 
-/// Named configuration for the sidecar reader task's event emission.
-///
-/// Previously also carried `engine` + `selection` fields consumed by an
-/// in-process `reify_`-prefixed tool-call interception; that interception
-/// mutated engine state with zero frontend sync and was deleted (gui-state-sync
-/// PRD L8), so this holder was slimmed to just the emitter it still needs. A
-/// future properly-wired, synced re-introduction of engine-mutating sidecar
-/// tools is owned by docs/prds/v0_6/ai-native-editing.md (registered on the
-/// reify-debug HTTP MCP server, not a claude_bridge interception).
-pub struct McpConfig<F> {
-    pub(crate) event_emitter: Arc<F>,
-}
-
 // --- Sidecar lifecycle management ---
 
 /// State of the sidecar subprocess.
@@ -319,7 +270,7 @@ pub enum SidecarState {
 /// Counter for generating unique message IDs per session.
 static MSG_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Shared stdin writer type — Arc<Mutex<>> so the reader task can write back tool results.
+/// The sidecar's stdin, written by `SidecarHandle`'s inbound-message methods.
 type SharedStdin = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 /// Handle to a running sidecar process.
@@ -339,7 +290,7 @@ pub struct SidecarHandle {
 impl SidecarHandle {
     /// **Test-only** constructor — gated behind `#[cfg(test)]` because it does not
     /// wire up an event emitter (see `# Note: no claude-sidecar-crashed event` below).
-    /// Production code paths should use [`from_parts_with_mcp`] via [`spawn_sidecar_impl`].
+    /// Production code paths should use [`from_parts_with_events`] via [`spawn_sidecar_impl`].
     ///
     /// The reader task handles Ready state transitions and crash detection.
     ///
@@ -347,7 +298,7 @@ impl SidecarHandle {
     ///
     /// This constructor does **not** wire up a Tauri event emitter. If the sidecar
     /// crashes, state transitions to `Crashed` as usual, but no `claude-sidecar-crashed`
-    /// event is emitted to the frontend. Use [`from_parts_with_mcp`] for production
+    /// event is emitted to the frontend. Use [`from_parts_with_events`] for production
     /// code paths where the frontend must be notified of unexpected sidecar exits.
     #[cfg(test)]
     pub fn from_parts<W, R>(writer: W, reader: R, state: Arc<Mutex<SidecarState>>) -> Self
@@ -364,7 +315,7 @@ impl SidecarHandle {
     /// The reader task will:
     /// - Transition state to Ready on ready message
     /// - Emit all outbound messages to `event_emitter` via [`outbound_to_event`]
-    pub fn from_parts_with_mcp<W, R, F>(
+    pub fn from_parts_with_events<W, R, F>(
         writer: W,
         reader: R,
         state: Arc<Mutex<SidecarState>>,
@@ -376,18 +327,17 @@ impl SidecarHandle {
         F: Fn(String, Value) + Send + Sync + 'static,
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
-        let mcp_config = McpConfig {
-            event_emitter: Arc::new(event_emitter),
-        };
-        Self::new_inner(stdin, reader, state, Some(mcp_config))
+        Self::new_inner(stdin, reader, state, Some(Arc::new(event_emitter)))
     }
 
-    /// Internal constructor shared by `from_parts` and `from_parts_with_mcp`.
+    /// Internal constructor shared by `from_parts` and `from_parts_with_events`.
+    /// `event_emitter`, when present, receives every outbound message as a Tauri
+    /// event and `claude-sidecar-crashed` on an unexpected exit.
     fn new_inner<R, F>(
         stdin: SharedStdin,
         reader: R,
         state: Arc<Mutex<SidecarState>>,
-        mcp_config: Option<McpConfig<F>>,
+        event_emitter: Option<Arc<F>>,
     ) -> Self
     where
         R: AsyncBufRead + Unpin + Send + 'static,
@@ -400,8 +350,7 @@ impl SidecarHandle {
         let notify_for_reader = Arc::clone(&ready_notify);
         // Capture event_emitter for the on_exit closure so we can emit
         // claude-sidecar-crashed when an unexpected exit is detected.
-        let event_emitter_for_exit: Option<Arc<F>> =
-            mcp_config.as_ref().map(|m| Arc::clone(&m.event_emitter));
+        let event_emitter_for_exit: Option<Arc<F>> = event_emitter.as_ref().map(Arc::clone);
 
         let reader_handle = tokio::spawn(async move {
             read_sidecar_output(
@@ -417,18 +366,11 @@ impl SidecarHandle {
                         });
                     }
 
-                    // 2. Event emission. All outbound messages — including tool_call —
-                    // are forwarded to the frontend as-is. There is no in-process MCP
-                    // tool interception here: the `reify_`-prefixed interception that
-                    // used to run engine-mutating tools via
-                    // `mcp_context::mcp_tool_call_impl` with zero frontend sync was
-                    // deleted (gui-state-sync PRD L8). A future properly-wired, synced
-                    // re-introduction of engine-mutating sidecar tools is owned by
-                    // docs/prds/v0_6/ai-native-editing.md (registered on the
-                    // reify-debug HTTP MCP server, not a claude_bridge interception).
-                    if let Some(ref mcp) = mcp_config {
+                    // 2. Forward every outbound as an event; no tool interception
+                    // (see docs/prds/v0_6/ai-native-editing.md).
+                    if let Some(ref emit) = event_emitter {
                         let (event_name, payload) = outbound_to_event(&msg);
-                        (mcp.event_emitter)(event_name, payload);
+                        emit(event_name, payload);
                     }
                 },
                 move || {
@@ -790,7 +732,7 @@ pub fn apply_sidecar_env(
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
-/// wires up event emission via [`SidecarHandle::from_parts_with_mcp`].
+/// wires up event emission via [`SidecarHandle::from_parts_with_events`].
 /// The returned handle starts in [`SidecarState::Starting`]; the caller typically uses
 /// [`ensure_sidecar_ready`] to store it in the shared sidecar slot and await readiness,
 /// or can call [`SidecarHandle::wait_ready`] manually.
@@ -839,7 +781,7 @@ where
     let reader = BufReader::new(stdout);
     let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
     let mut handle =
-        SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, event_emitter);
+        SidecarHandle::from_parts_with_events(stdin, reader, sidecar_state, event_emitter);
     handle.set_child(proc);
     Ok(handle)
 }

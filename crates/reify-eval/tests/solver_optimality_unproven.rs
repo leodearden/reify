@@ -196,7 +196,7 @@ fn multi_param_objective_emits_solver_optimality_unproven_warning() {
         compile_errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -277,7 +277,7 @@ fn example_file_solver_optimality_unproven_emits_warning() {
         compile_errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -343,7 +343,7 @@ fn small_mm_objective_does_not_emit_solver_optimality_unproven() {
         compile_errors
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
 
     let result = engine.eval(&compiled);
@@ -412,7 +412,7 @@ structure S {
 #[should_panic(expected = "RankedSolveResult::Ranked must carry >=1 candidate (I2) (engine seam)")]
 fn empty_ranked_candidates_trips_i2_assert_engine_seam() {
     let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(EmptyRankedSolver));
     let _ = engine.eval(&compiled);
 }
@@ -442,7 +442,7 @@ fn empty_ranked_candidates_trips_i2_assert_registry_seam() {
     // Wrap the I2-violating solver in a SolverRegistry so the registry's
     // solve_inner dispatches to EmptyRankedSolver and panics at registry.rs.
     let registry = reify_constraints::SolverRegistry::new(Box::new(EmptyRankedSolver));
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(registry));
     let _ = engine.eval(&compiled);
 }
@@ -519,7 +519,7 @@ fn eval_under_completeness(completeness: reify_ir::Completeness) -> (Option<Valu
     let mut values = HashMap::new();
     values.insert(x_id.clone(), Value::length(0.01));
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(
         Box::new(FixedCompletenessSolver {
             values,
             completeness,
@@ -613,7 +613,7 @@ fn engine_does_not_derive_unique_from_completeness_at_alpha() {
 #[test]
 fn enumeration_budget_objective_emits_solver_optimality_unproven_warning() {
     let compiled = compile_source_with_stdlib(S3_OBJECTIVE_SOURCE);
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(EnumerationBudgetRankedSolver));
 
     let result = engine.eval(&compiled);

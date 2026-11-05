@@ -17,6 +17,8 @@
 mod mechanism_builder_smoke;
 #[path = "harness_mechanism/mechanism_duplicate_solid_diag_e2e.rs"]
 mod mechanism_duplicate_solid_diag_e2e;
+#[path = "harness_mechanism/mechanism_interference_instance_scope_e2e.rs"]
+mod mechanism_interference_instance_scope_e2e;
 #[path = "harness_mechanism/mechanism_interference_smoke.rs"]
 mod mechanism_interference_smoke;
 #[path = "harness_mechanism/mechanism_modal_damping_e2e.rs"]

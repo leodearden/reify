@@ -1,5 +1,12 @@
-import { defineConfig } from 'vitest/config';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type TestProjectInlineConfiguration } from 'vitest/config';
 import solidPlugin from 'vite-plugin-solid';
+import {
+  FRESH_MODULES_PROJECT,
+  listSharedModuleTestFiles,
+  NON_GUI_TEST_DIRECTORIES,
+  SHARED_MODULES_PROJECT,
+} from './vitest-project-partition';
 
 // FM2 mitigation (esc-4853-42 / task 4856): under verify-lane cargo
 // contention the Node main process is starved for 60+ s, causing vitest's
@@ -15,6 +22,31 @@ import solidPlugin from 'vite-plugin-solid';
 // force-kill during teardown compounds the RPC-timeout failures.
 const isVerifyLane =
   process.env.DF_VERIFY_ROLE === 'task' || process.env.DF_VERIFY_ROLE === 'merge';
+
+// Test files that may share a reused fork worker's module graph; every other
+// test file gets a fresh module graph (task 7642, see
+// docs/notes/gui-vitest-shared-workers.md).
+const SHARED_MODULE_TEST_FILES = listSharedModuleTestFiles(
+  fileURLToPath(new URL('.', import.meta.url)),
+);
+
+const sharedModulesProject: TestProjectInlineConfiguration = {
+  extends: true,
+  test: {
+    name: SHARED_MODULES_PROJECT,
+    include: SHARED_MODULE_TEST_FILES,
+    poolOptions: { forks: { isolate: false } },
+  },
+};
+
+const freshModulesProject: TestProjectInlineConfiguration = {
+  extends: true,
+  test: {
+    name: FRESH_MODULES_PROJECT,
+    exclude: SHARED_MODULE_TEST_FILES,
+    poolOptions: { forks: { isolate: true } },
+  },
+};
 
 export default defineConfig({
   plugins: [solidPlugin()],
@@ -49,7 +81,16 @@ export default defineConfig({
     // only when absent. Must be a global setupFile: per-test jsdom isolation
     // means an in-test polyfill can't reach other test files.
     setupFiles: ['./vitest.setup.ts'],
-    exclude: ['sidecar/**', 'node_modules/**'],
+    // Fails the run if the projects below do not run each gui test file in
+    // exactly the project vitest-project-partition.ts assigns it (task 7642).
+    // Only the root project's copy checks; the projects inherit it as a no-op.
+    globalSetup: ['./vitest-partition-guard.ts'],
+    // @solidjs/testing-library registers afterEach(cleanup) when it is
+    // evaluated, which a shared-modules worker does only once. vitest.setup.ts
+    // registers cleanup for every file instead; switching the import-time hook
+    // off leaves that as the only registration (task 7642).
+    env: { STL_SKIP_AUTO_CLEANUP: 'true' },
+    exclude: NON_GUI_TEST_DIRECTORIES.map((directory) => `${directory}/**`),
     transformMode: {
       web: [/\.[jt]sx?$/],
     },
@@ -61,17 +102,21 @@ export default defineConfig({
         conditions: ['development', 'browser'],
       },
     },
-    // Cap concurrent fork workers in the verify lane to relieve main-process
-    // starvation (FM2, esc-4853-42 / task 4856). The forks pool is vitest's
-    // default; without a cap it spawns nCPU-1 workers (≈31 on a 32-core box),
-    // all of which can call snapshotSaved simultaneously while the main process
-    // is starved by cross-worktree cargo builds, exceeding the 60 s birpc timeout.
-    // 4 concurrent workers still gives meaningful parallelism while dramatically
-    // reducing concurrent RPC pressure on the starved main process.
-    // Local dev (DF_VERIFY_ROLE unset) is unaffected and keeps full parallelism.
-    poolOptions: isVerifyLane
-      ? { forks: { maxForks: 4 } }
-      : {},
+    // Fork workers are reused across test files (isolate: false); whether a
+    // file also gets a fresh module graph is decided per project below (task
+    // 7642, see docs/notes/gui-vitest-shared-workers.md). The verify lane also
+    // caps concurrent workers at 4 to relieve main-process starvation (FM2,
+    // esc-4853-42 / task 4856): uncapped, nCPU-1 workers can all call
+    // snapshotSaved while cross-worktree cargo builds starve the host past
+    // the 60 s birpc timeout. Local dev (DF_VERIFY_ROLE unset) keeps full
+    // parallelism.
+    poolOptions: {
+      forks: { isolate: false, ...(isVerifyLane ? { maxForks: 4 } : {}) },
+    },
+    projects:
+      SHARED_MODULE_TEST_FILES.length === 0
+        ? [freshModulesProject]
+        : [sharedModulesProject, freshModulesProject],
   },
   resolve: {
     conditions: ['development', 'browser'],

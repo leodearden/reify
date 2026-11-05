@@ -46,6 +46,9 @@ use reify_test_support::builders::expr::{
 };
 use reify_test_support::sampled_field_fixtures::{extremum_probe_field, x_span_bbox};
 
+#[path = "dual_branch_signature_tests/unplaced.rs"]
+mod unplaced;
+
 const ENT: &str = "part";
 
 fn cell(member: &str) -> ValueCellId {
@@ -1214,8 +1217,7 @@ fn a_kink_builtin_with_an_undef_operand_refuses_before_kink_dispatch_and_records
     // THAT IS THE CONTRACT, not an oversight, and the reason is reachability:
     // reify propagates `Undef` strictly, so an `Undef` operand makes the whole
     // residual `Undef` and `jacobian_row` returns `Err` — nothing ever READS
-    // this record.  The same argument `refuse_or_constant`'s doc makes for its
-    // refusing branch.  An entry here would be an entry for a row that does not
+    // this record.  An entry here would be an entry for a row that does not
     // exist.
     let expr = call("abs", vec![vref("u")]);
     let (v, t, rec) = run(&expr, &[("x", Value::Real(2.0))], &["x"]);

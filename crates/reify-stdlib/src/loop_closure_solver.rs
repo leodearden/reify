@@ -679,7 +679,7 @@ pub fn solve_loop_closure(
     // 1-DOF / 2-DOF / 3-DOF (planar) chain Newton paths are byte-for-byte
     // unchanged (verified by the unchanged-output expectation of the existing
     // `solve_loop_closure_with_diagnostics_emits_singularity_for_rank_one_chain`
-    // test in `crates/reify-constraints/tests/loop_closure_diagnostics_tests.rs`).
+    // test in `crates/reify-stdlib/tests/loop_closure_diagnostics_tests.rs`).
     let mut effective_config = config.clone();
     if effective_config.regularization_per_diag.is_empty() {
         let total_width = crate::loop_closure_value::flat_width(&free_shapes);

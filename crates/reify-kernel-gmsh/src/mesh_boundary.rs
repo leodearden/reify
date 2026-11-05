@@ -38,7 +38,7 @@ use std::borrow::Cow;
 #[cfg(has_gmsh)]
 use crate::{
     auto_size::AutoSizeConfig,
-    kernel_real::{
+    meshable_region::{
         FEATURE_EDGE_CLASSIFY_ANGLES, TetReadback, build_meshable_region, read_back_tet_mesh,
     },
     mesh_size_scope::MeshSizeScope,
@@ -579,7 +579,7 @@ fn surface_needs_weld(surface: &Mesh, repair_cfg: Option<RepairConfig>) -> bool 
 /// (acquiring `GMSH_LOCK`, calling the same FFI sequence) while adding the
 /// entity-membership queries between `mesh_generate(3)` and `ffi::clear()`.
 /// It shares `mesh_to_volume`'s region builder and tet readback,
-/// `kernel_real::build_meshable_region` / `kernel_real::read_back_tet_mesh`,
+/// `meshable_region::build_meshable_region` / `meshable_region::read_back_tet_mesh`,
 /// and arms the same [`crate::log_capture::LogCapture`].
 #[cfg(has_gmsh)]
 fn run_meshing_with_entity_queries(
@@ -687,7 +687,7 @@ fn run_meshing_with_entity_queries(
 /// caller's B-rep handles.
 ///
 /// The [`crate::init::GmshGuard`] is an admission ticket only, as in
-/// `kernel_real::build_meshable_region`. Split out of
+/// `meshable_region::build_meshable_region`. Split out of
 /// [`run_meshing_with_entity_queries`] so this span's failures reach the
 /// caller's `LogCapture` at one seam.
 #[cfg(has_gmsh)]

@@ -24,7 +24,7 @@
 # lane passes --include-infra. Gating the wholesale run_all.sh line on
 # INCLUDE_INFRA (not on role) meant the full 103-test suite ran on every task
 # lane and NEVER at merge — M-way concurrent pool contention that starved the
-# shared 16-slot semaphore (30m timeout -> exit 124 -> BLOCKED).
+# shared 16-slot semaphore (outer-envelope timeout -> exit 124 -> BLOCKED).
 #
 # Oracle: verify.sh --print-plan (hermetic, never runs cargo/npm) inside an
 # isolated mktemp git fixture. make_branch_fixture mirrors
@@ -287,7 +287,7 @@ assert "BACKGROUND (non-vacuous): plan LACKS the selective test_verify_*.sh loop
 # tests/infra/test_verify_semaphore_e2e.sh Section B deliberately drives a real
 # `DF_VERIFY_ROLE=merge verify.sh` to prove the semaphore bypass. Without the
 # guard the merge gate recurses unboundedly (run_all -> semaphore-e2e ->
-# merge-role verify -> run_all -> ...) until the 30m wall SIGKILLs it — the
+# merge-role verify -> run_all -> ...) until the outer-envelope wall SIGKILLs it — the
 # exact fork-bomb that blocked this task's own merge (post-merge verify
 # "Terminated"). The guard: verify.sh exports REIFY_INFRA_SUITE_ACTIVE=1 onto
 # the run_all.sh / selective plan lines (inherited by every descendant), and

@@ -76,7 +76,7 @@ fn empty_mesh() -> VolumeMesh {
 
 #[test]
 fn morph_producer_is_none_without_registration() {
-    let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     assert!(
         engine.morph_producer().is_none(),
         "an engine with no registered producer must return None"
@@ -85,7 +85,7 @@ fn morph_producer_is_none_without_registration() {
 
 #[test]
 fn register_morph_producer_then_dispatch_try_morph() {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.register_morph_producer(Box::new(MockProducer));
 
     let producer = engine
@@ -126,7 +126,7 @@ fn register_morph_producer_then_dispatch_try_morph() {
 #[test]
 #[should_panic(expected = "already registered")]
 fn second_register_morph_producer_panics() {
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     engine.register_morph_producer(Box::new(MockProducer));
     // Single-install discipline: the second registration must panic, mirroring
     // register_compute_fn's duplicate-target guard.

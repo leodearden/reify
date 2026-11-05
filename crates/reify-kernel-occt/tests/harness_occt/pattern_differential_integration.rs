@@ -51,9 +51,9 @@ fn within_rel(actual: f64, expected: f64, tol: f64) -> bool {
 fn unit_box(kernel: &mut OcctKernel) -> GeometryHandleId {
     kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(1.0),
-            height: Value::Real(1.0),
-            depth: Value::Real(1.0),
+            size_x: Value::Real(1.0),
+            size_y: Value::Real(1.0),
+            size_z: Value::Real(1.0),
         })
         .expect("unit box creation should succeed")
         .id

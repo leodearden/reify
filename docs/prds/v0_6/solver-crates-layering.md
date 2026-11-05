@@ -1,6 +1,6 @@
 # PRD — Solver crates: layering, shared element primitives, one predicate home
 
-> **Status:** decomposed 2026-10-12 — α #8614, β #8616, γ #8618, δ #8619, ε #8621, ζ #8626, η #8628, θ #8629, ι #8630, κ #8632, λ #8637, μ #8640, ν #8645, ξ #8653, ο #8656, π #8658, ρ #8660 (PRD close); adopted #8528; gap-fill 2026-10-16: ξ₂ #9267, ξ₃ #9268, η₂ #9271, η₃ #9272, φ-ff #9273, χ-ff #9274, ψ-ff #9275, adopted #7801. Authored 2026-10-12 (pass 1). Stream **S14** of the review-all
+> **Status:** decomposed 2026-10-12 — α #8614, β #8616, γ #8618, δ #8619, ε #8621, ζ #8626, η #8628, θ #8629, ι #8630, κ #8632 (cancelled 2026-10-14, subsumed by S10 β₁ #8935; R2), λ #8637, μ #8640, ν #8645, ξ #8653, ο #8656, π #8658, ρ #8660 (PRD close); adopted #8528; gap-fill 2026-10-16: ξ₂ #9267, ξ₃ #9268, η₂ #9271, η₃ #9272, φ-ff #9273, χ-ff #9274, ψ-ff #9275, adopted #7801. Retro-critic sitting 2026-10-19, ruling R2: see the closing amendments section. Authored 2026-10-12 (pass 1). Stream **S14** of the review-all
 > program `plans/review-all-program-reify-20261012.md` (run `review-all-reify-20261010`), ruled in
 > that doc's "Uncontested block" decision. Authored via `/prd` by a wave-1 seat; the lead commits it.
 >
@@ -121,6 +121,15 @@ the findings:
   - **#6655** (rewrites the per-leaf derivation worker) and **#7492** (adds `TrialModel`) are
     pending edits to `solver.rs`.
   - **#7420** (dedupes `dimension_of`) is pending.
+  - **[Amended 2026-10-20, retro-critic R2]** **Other active PRDs on `solver.rs` / the predicate seam** (§7.1 G4 rows):
+    - solver-legibility-telemetry P4 **#6722** (ε: per-inequality slack keying) and **#6737**
+      (μ: robustness-floor threading). #6722 now waits on ν #8645 and builds on ν's
+      `for_each_inequality_leaf` (its "cross-crate copy is deliberate" premise is refuted by task
+      4386); #6737 targets ν's `robustness_floor_applies` and ο's `solve_core` / `SolveRegime`.
+    - geometry-algebra-solver-unification P2 **#6678** (κ), **#6680** (μ), **#6677** (ι) name
+      `solver.rs`; ρ #8660 re-points them (and every other open task naming `solver.rs`) after π.
+    - **#8799** (adoption-ratchet engine extraction into `reify_test_support::adoption_ratchet`) and
+      **#6655** (HC4, already executing) now land before ν.
   - **#8375 / #8380 / #8381** (solver-performance) edit `membrane_load.rs`, `tensegrity_load.rs`,
     `buckling_kernel.rs`, `qoi.rs`, `tests/determinism.rs`, `tests/solver_gate_smoke.rs` and every
     `AssemblyElement` caller.
@@ -140,15 +149,15 @@ the findings:
 | D9 | **Load kernels:** `tensegrity_load_analysis` becomes a thin call of `membrane_load_analysis(…, &[] /* no patches */, …)`. `TensegrityLoadOptions` and `TensegrityLoadError` become `pub type` aliases of the membrane types; they are field- and variant-identical today. `TensegrityLoadSolve` is mapped from `MembraneLoadSolve`, with `slack ← member_slack` and the surface fields dropped. The copied helpers and the copied `GROUNDING_DIAGONAL` go. The merged kernel has **one** orphan-grounding policy: the leaf reads the validation preamble and either keeps `node < n_nodes &&` with a test, or proves it redundant and pins that. | h11. The fork has already happened once. |
 | D10 | **`MpcRow`:** fields become private with `dofs()`, `coeffs()` and `rhs()` accessors. `MpcRow::new` and `shell_tet_tying` are the only constructors. The struct-literal smoke test and the doctest line are deleted, and the module and struct docs describe the shipped surface. | h10. A zero pivot or a length mismatch becomes unrepresentable. |
 | D11 | **Test harness:** the integration FEA harness lives in `crates/reify-solver-elastic/tests/common/fea_harness.rs`, declared from the existing `tests/common/mod.rs` (ruling: "one tests/common FEA harness"). It has one `dedup_bcs`, which always panics on conflicting duplicate-DOF values. The tensegrity `canonical_prism` / `triplex_topology` redefinitions use `common`. `src/assembly/test_support.rs` and the in-crate `global.rs` fixture copies are out of scope (§8). | h11. The ruling names the home. |
-| D12 | **gmsh absence:** `GeometryError::BackendUnavailable { backend: &'static str }` is added in reify-ir with a Display arm. Both reify-kernel-gmsh stubs (`mesh_plane_2d`, `refine_volume`) return it. Both `map_geometry_error` copies match it structurally, and `msg.contains(STUB_UNAVAILABLE_MARKER)` is deleted. The constant goes once it has no reader. The "not available in this build" diagnostic text is byte-stable. | h12. See §10 Q2 on reify-ir ownership. |
+| D12 | **[Amended 2026-10-20, retro-critic R2]** **Dead text, superseded by S10 R5** (κ #8632 cancelled 2026-10-14, subsumed by S10 β₁ #8935, which removes the gmsh-free build; fk-c497935d4b8a rides on #8935). ~~**gmsh absence:** `GeometryError::BackendUnavailable { backend: &'static str }` is added in reify-ir with a Display arm. Both reify-kernel-gmsh stubs (`mesh_plane_2d`, `refine_volume`) return it. Both `map_geometry_error` copies match it structurally, and `msg.contains(STUB_UNAVAILABLE_MARKER)` is deleted. The constant goes once it has no reader. The "not available in this build" diagnostic text is byte-stable.~~ (superseded by S10 R5) | h12. See §10 Q2 on reify-ir ownership. |
 | D13 | **Spatial index:** `TetSpatialIndex<'a>` borrows `nodes` and `elems` and owns `tol`; `locate(point)` and `locate_counted(point)` take only the point. `volume_refine::TetShape<'a>` carries its `&VolumeMesh`. | h7, h10. The same-mesh and same-tol contracts become unrepresentable to break. |
 | D14 | **QoI tests:** `qoi.rs`'s test module moves verbatim to `crates/reify-solver-elastic/tests/qoi.rs` (every item it uses is re-exported at the crate root). Measured-release-behaviour, rejected-alternative and TDD-step prose leaves the production docs; the PRD section pointers stay. | The file's single move (ruling); h14, comments stance. |
-| D15 | **Predicate home:** reify-constraints exports, over reify-ir types only: `has_inequality_slack(&CompiledExpr)`, `objective_is_money(&ObjectiveSet)`, `centrality_gate(auto_types, constraints)`, `robustness_floor_applies(objective, constraints)` and `signed_term_contribution(&ObjectiveTerm, f64)`. One `for_each_inequality_leaf` decomposition (Ge/Gt/Le/Lt under And → greater side, lesser side, slack type) feeds `collect_slack_terms`, `collect_floor_terms` and `has_inequality_slack`, and `derive_from_expr` reuses its orientation. The solver's own gates (`build_centrality_objective`, the floor gate in the core, the `cost_robustness_lambda` dispatch) call the exports. engine_eval.rs deletes its five mirrors and calls them, and the lockstep prose goes. The finite-bounds caveat stays a documented solver-only check. | h11. The "cannot depend" premise is false (Cargo.toml line 34, task 4386). |
-| D16 | **solver.rs tree:** `crate::trial` (crate level, as #8581 measured; `cpsat`, `registry` and `dual_jacobian` import it) < `solver/residual` < `solver/bounds` (`effective_bounds`, `default_bounds_for`, which need only `dimension_of`) < `solver/derive` (+`extract_initial_point`) < `solver/cost` (`ConstraintCostFunction`, `build_centrality_objective`, `eval_objective_set`, `build_simplex`, `multistart_points`, `SolveRegime`, uniqueness tolerances) < `solver/floor` (`objective_is_money`, `collect_floor_terms`, `robustness_margin_for`, `synthesise_floor_constraints`, `worst_unmet_floor_term`) < `solver/core` (`solve_core` plus **`constraints_witness` and `floor_infeasible_diagnostic`**) < `solver/tradeoff` < `solver/uniqueness` < `solver.rs` (the `ConstraintSolver` impl, `solve_with_meta`, `solve_ranked_impl`). The parent keeps the non-mod-rs layout used by `engine_build.rs` / `geometry_ops.rs`. | The partition measured in the record (10 partitions, `stays_whole: false`). |
+| D15 | **Predicate home:** reify-constraints exports, over reify-ir types only: `has_inequality_slack(&CompiledExpr)`, `objective_is_money(&ObjectiveSet)`, `centrality_gate(auto_types, constraints)`, `robustness_floor_applies(objective, constraints)` and `signed_term_contribution(&ObjectiveTerm, f64)`. One `for_each_inequality_leaf` decomposition (Ge/Gt/Le/Lt under And → greater side, lesser side, slack type) feeds `collect_slack_terms`, `collect_floor_terms` and `has_inequality_slack`. **[Amended 2026-10-20, retro-critic R2]** ~~`derive_from_expr` reuses its orientation.~~ (superseded by R2 M3) HC4 #6655 lands before ν and replaces the linear-only `derive_from_expr` miner; the HC4 worker's comparison handling (in `src/hc4.rs` / `src/interval.rs`) consumes `for_each_inequality_leaf`. ν's Ge/Gt orientation ratchet row covers `crates/reify-constraints/src/**` including `hc4.rs` and `interval.rs`, and the row states its exact needle. The weight × σ fold-site row is scoped to `src/` only, so cpsat's deliberately independent test oracle is not forced onto the helper. The solver's own gates (`build_centrality_objective`, the floor gate in the core, the `cost_robustness_lambda` dispatch) call the exports. engine_eval.rs deletes its five mirrors and calls them, and the lockstep prose goes. The finite-bounds caveat stays a documented solver-only check. | h11. The "cannot depend" premise is false (Cargo.toml line 34, task 4386). |
+| D16 | **solver.rs tree:** `crate::trial` (crate level, as #8581 measured; `cpsat`, `registry` and `dual_jacobian` import it) < `solver/residual` < `solver/bounds` (**[Amended 2026-10-20, retro-critic R2]** ~~`effective_bounds`, `default_bounds_for`, which need only `dimension_of`~~ (superseded by R2 B3): `crate::domain` owns `StrictBound` and the dimension-default box `default_bounds_for` / `effective_bounds` and imports nothing from `crate::solver`; `solver/bounds` imports them from `crate::domain` or is deleted) < `solver/derive` (+`extract_initial_point`) < `solver/cost` (`ConstraintCostFunction`, `build_centrality_objective`, `eval_objective_set`, `build_simplex`, `multistart_points`, `SolveRegime`, uniqueness tolerances) < `solver/floor` (`objective_is_money`, `collect_floor_terms`, `robustness_margin_for`, `synthesise_floor_constraints`, `worst_unmet_floor_term`) < `solver/core` (`solve_core` plus **`constraints_witness` and `floor_infeasible_diagnostic`**) < `solver/tradeoff` < `solver/uniqueness` < `solver.rs` (the `ConstraintSolver` impl, `solve_with_meta`, `solve_ranked_impl`). The parent keeps the non-mod-rs layout used by `engine_build.rs` / `geometry_ops.rs`. | The partition measured in the record (10 partitions, `stays_whole: false`). |
 | D17 | **Closing the floor↔core cycle.** The ruling co-locates `constraints_witness` with the core. Measured at main: `floor_infeasible_diagnostic` *also* calls `constraints_witness`, and the core calls `floor_infeasible_diagnostic`, so co-locating `constraints_witness` alone leaves the cycle intact. Both therefore live in `solver/core`. `floor.rs` keeps the pure synthesis, which the core calls downward. | This is the minimal extension of the ruling that actually breaks the cycle (§10 Q3 asks the lead to confirm it). |
 | D18 | **Core rename:** `solve_core_with_sd_tolerance` loses its tolerance parameter (all 5 production call sites pass `NM_SD_TOLERANCE`) and is renamed `solve_core`. The present thin `solve_core` wrapper is folded into it. | h1. |
 | D19 | **solver.rs tests:** a test whose subject is one layer moves into that layer's child test module and reaches only what that layer exposes `pub(super)`. A test of `ConstraintSolver` behaviour moves to `crates/reify-constraints/tests/solver_integration.rs` (it exists). A test that reached a private helper of *another* layer is rewritten against the owning layer's interface, never by widening visibility. No assertion changes value. `#5721`'s visibility rule holds: `fold_dependent_cells_skipping_collisions` stays private, and its tests live in `trial`. | Tests stance: tests that reach internals signal an interface smell. A behaviour-preserving restructure must not turn 143 tests red. |
-| D20 | **Ratchets:** each extracted primitive ships an adoption ratchet (INV candidate 5). Each crate gets one ratchet test binary — `crates/reify-solver-elastic/tests/adoption_ratchets.rs` (created by α) and `crates/reify-constraints/tests/adoption_ratchets.rs` (created by ν) — in the `version_id_discipline_gate.rs` shape. A row is a named pattern, a production-scope path set and a committed baseline; it goes red when the count rises above the baseline, and each leaf lowers its row to the target. Seeded self-tests prove each row both flags and clears. The binaries are fast, carry no wall-clock bound, and need no nextest partition row. | The 3-of-N abandonment shape cannot recur. Crate-scoped runs trigger exactly when the crate is edited. |
+| D20 | **Ratchets:** each extracted primitive ships an adoption ratchet (INV candidate 5). Each crate gets one ratchet test binary — `crates/reify-solver-elastic/tests/adoption_ratchets.rs` (created by α) and `crates/reify-constraints/tests/adoption_ratchets.rs` (created by ν) — in the `version_id_discipline_gate.rs` shape. **[Amended 2026-10-20, retro-critic R2]** #8799 lands first and extracts the ratchet engine into `reify_test_support::adoption_ratchet`; ν's host consumes it and keeps only its RATCHETS table, the BT14 loop and the real-tree test (no second lexer). A row is a named pattern, a production-scope path set and a committed baseline; it goes red when the count rises above the baseline, and each leaf lowers its row to the target. Seeded self-tests prove each row both flags and clears. The binaries are fast, carry no wall-clock bound, and need no nextest partition row. | The 3-of-N abandonment shape cannot recur. Crate-scoped runs trigger exactly when the crate is edited. |
 
 ## 5. Contract (the H component)
 
@@ -177,8 +186,8 @@ the findings:
   - `ElementStiffness` exposes no public field.
 - **C6 `MpcRow`:** no public field. Every value satisfies `dofs.len() == coeffs.len() > 0`, with
   `coeffs[0]` finite and non-zero and `rhs` finite.
-- **C7 `GeometryError::BackendUnavailable { backend }`:** the only representation of "this
-  build lacks backend X". No consumer reads `GeometryError::OperationFailed`'s string to recover it.
+- **[Amended 2026-10-20, retro-critic R2]** **Dead text, superseded by S10 R5** (κ #8632 cancelled, subsumed by S10 β₁ #8935). ~~**C7 `GeometryError::BackendUnavailable { backend }`:** the only representation of "this
+  build lacks backend X". No consumer reads `GeometryError::OperationFailed`'s string to recover it.~~
 - **C8 reify-constraints predicate exports:**
   - All five are `pub fn` over reify-ir types and are re-exported at the crate root.
   - The solver's own gates call them.
@@ -186,7 +195,10 @@ the findings:
   - Diagnostic and `centrality_synthesized_scopes` outputs are identical before and after.
 - **C9 `solver/` tree:** for every pair of modules in the tree, at most one non-test `use`/call
   edge direction exists (no module SCC larger than 1). The public surface of reify-constraints is
-  unchanged.
+  unchanged. **[Amended 2026-10-20, retro-critic R2]** **Guard:** `scripts/assert-module-scc.py` measures top-level modules only, so
+  it cannot see C9. π adds a row to ν's `crates/reify-constraints/tests/adoption_ratchets.rs` that
+  lexes `super::<child>` / `crate::solver::<child>` edges among `src/solver/*.rs`, asserts the D16
+  layer order, and carries a seeded self-test proving a core↔floor import reds.
 
 ## 6. Boundary tests (both sides)
 
@@ -201,7 +213,7 @@ the findings:
 | BT7 | consumer | CLI shell eval and the shell_solve e2e | — | unchanged values | β, γ |
 | BT8 | solver | `MpcRow::new` with a zero pivot or a length mismatch | — | rejected; no public path builds one otherwise | θ |
 | BT9 | consumer | tensegrity T3b load e2e (solver and eval harness) through the thin call | — | unchanged expectations | ζ |
-| BT10 | consumer | a stub-build `GeometryError::BackendUnavailable` routed by both `map_geometry_error`s | — | `GmshUnavailable` variants; diagnostic text unchanged | κ |
+| BT10 | consumer | **[Amended 2026-10-20, retro-critic R2]** **Dead text, superseded by S10 R5** (κ #8632 cancelled, subsumed by S10 β₁ #8935). ~~a stub-build `GeometryError::BackendUnavailable` routed by both `map_geometry_error`s~~ | — | ~~`GmshUnavailable` variants; diagnostic text unchanged~~ | ~~κ~~ |
 | BT11 | solver | `TetSpatialIndex` locate parity against `locate_element_p1` | — | bit-identical over the existing resample fixtures | λ |
 | BT12 | consumer | `centrality_default.rs`, `robustness_floor_signal.rs`, `cli_explain` (`explain_centrality.ri`) | — | unchanged | ν |
 | BT13 | solver | `ConstraintSolver` integration tests across the partition | — | unchanged values; no assertion edits | ξ, ο, π |
@@ -226,6 +238,9 @@ the findings:
   - #8528 (ShellStress deletion) before γ, since both edit `shell_result.rs`.
   - #6655, #7492 and #7420 before ξ, since all three are pending edits to `solver.rs` /
     `dimension_of`.
+  - **[Amended 2026-10-20, retro-critic R2]** #8799 (ratchet-engine extraction) and #6655 (HC4) before ν; ν before
+    solver-legibility-telemetry #6722.
+  - **[Amended 2026-10-20, retro-critic R2]** η₂ #9271, φ-ff #9273, χ-ff #9274 and #7801 before analysis-stratum S5 ξ #9006.
 
 ### 7.1 Cross-PRD relationship and seam owners (G4)
 
@@ -236,13 +251,15 @@ Seam owners are from the program doc's G4 table. Every seam below that the table
 | `ElementStiffness.data` direct indexing (72 sites, 9 files) | **S14** | ε edits it |
 | `tilted_q_for_shell_tests` fixture (6 modules) | **S14** | β edits it |
 | reify-constraints solver predicate exports consumed by `engine_eval.rs` | **S14** | ν edits it |
-| reify-ir `GeometryError` | *unlisted* (S10 owns the `GeometryKernel` trait and typed replies) | κ adds one variant by default; §10 Q2 |
+| reify-ir `GeometryError` | *unlisted* (S10 owns the `GeometryKernel` trait and typed replies) | **[Amended 2026-10-20, retro-critic R2]** none: κ #8632 is cancelled (subsumed by S10 β₁ #8935, S10 R5). ~~κ adds one variant by default; §10 Q2~~ |
 | `engine_eval.rs` (S4 routes cell-eval sites through `cell_eval_ctx`, wave 2) | S4 for the cell-eval mechanism | ν deletes five mirror fns and swaps one fold. `objective_term_contributions`' `eval_ctx_with_meta` call is left for S4. |
-| reify-eval `compute_targets/{form_find,tensegrity_load,membrane_load,elastic_static}.rs`, `modal_ops.rs` (S5 crate move, wave 2; S15 decoders, wave 1; S16 trampoline factoring, wave 3) | S5 / S15 / S16 by area | S14 makes only error-mapping or constructor-call edits there, in wave 1, before S5 moves the files |
+| reify-eval `compute_targets/{form_find,tensegrity_load,membrane_load,elastic_static}.rs`, `modal_ops.rs` (S5 crate move, wave 2; S15 decoders, wave 1; S16 trampoline factoring, wave 3) | S5 / S15 / S16 by area | S14 makes only error-mapping or constructor-call edits there, in wave 1, before S5 moves the files. **[Amended 2026-10-20, retro-critic R2]** The gap-fill leaves (η₂ #9271, φ-ff #9273, χ-ff #9274, #7801) edit the form-find trampoline before S5 ξ #9006 moves it; edges `#9006 ← #9271, #9273, #9274, #7801` are recorded. |
 | reify-solver-elastic `shell_boundary.rs` (S15 fk-f33ff551c66d `SupportKind`) | S15 | β edits only its `#[cfg(test)]` fixture import |
 | reify-compute-contract `elastic_result.rs` doc pointer to `ShellFrame` | S5 (owns that crate's dependency edge) | β fixes a doc path only |
 | `docs/prds/v0_6/elastic-static-solver-performance.md` leaves #8375, #8380, #8381 | that PRD | δ, ζ, ι depend on #8375; fk-c940cb1edad4 defers to it (§10 Q1) |
-| INV candidate 7 (no intra-crate SCC grows; Tarjan baseline) | S3 / S7 | β removes two reify-solver-elastic SCC edges and π leaves `solver/` acyclic. Whichever lands later records the smaller baseline. |
+| INV candidate 7 (no intra-crate SCC grows; Tarjan baseline) | S3 / S7 | β removes two reify-solver-elastic SCC edges and π leaves `solver/` acyclic. ~~Whichever lands later records the smaller baseline.~~ (superseded by R2 B1) **[Amended 2026-10-20, retro-critic R2]** The INV-ARCH-1 tool measures top-level modules only; C9's guard is π's ratchet row in ν's host (§5 C9). |
+| `reify-constraints/src/solver.rs` and its predicate exports (solver-legibility-telemetry P4 ε #6722, μ #6737) | **S14** | **[Amended 2026-10-20, retro-critic R2]** ν first: `#6722 ← #8645`. #6722 builds slack on ν's `for_each_inequality_leaf`, threads `ConstraintNodeId` through `collect_slack_terms` only and calls the reify-constraints export from eval; #6737 targets ν's `robustness_floor_applies` and ο's `solve_core` / `SolveRegime`. |
+| `reify-constraints/src/solver.rs` (geometry-algebra-solver-unification P2 κ #6678, μ #6680, ι #6677) | **S14** for the split | **[Amended 2026-10-20, retro-critic R2]** S14 splits first; ρ #8660 re-points every open task naming `solver.rs` to its `solver/<layer>.rs` home after π. |
 | INV candidate 5 (extract-with-ratchet) | repo / overlay G-gate | α and ν host the ratchet members; every extract leaf names its row |
 
 ## 8. Out of scope
@@ -272,19 +289,19 @@ ratchet row lowered to target (D20) where it extracts a primitive. Every leaf's 
 | β #8616 | Shell primitives below assembly: `elements/shell_frame.rs` | solver-elastic `elements/`, `shell_assembly`, `geometric_stiffness/membrane`, `shell_kinematics`, `shell_result`, `shell_solve`, `membrane_load`, `shell_boundary` (tests), `lib.rs`; reify-eval test `harness_topology_selector/shell_channels_mapping.rs` (import path); the `ShellFrame::local_to_global` doc pointer in reify-compute-contract `elastic_result.rs` (doc only) | fk-edde1bcefb9f | α | Upward-import row = 0; both cycles gone; BT7 green. Owns the `tilted_q_for_shell_tests` seam. |
 | γ #8618 | `ShellSection`, one guarded condensation, scaled/packing helpers, `DegenerateFormulation` | `shell_assembly`, `shell_result`, `constitutive`, `error_estimator` | fk-bc1e40784fe0 | β, #8528, α | Ratchet rows: `let det_bb =` → 1, `5.0 / 6.0` → 1, inline G → 1 (the `shear_modulus` body), `td[i][j] =` → 0. BT6 new and green; BT7 green. |
 | δ #8619 | `AssemblyElement::new` validating constructor; one release check for both entry points | solver-elastic `assembly/global.rs` and every `AssemblyElement {` site (≈ 95 across solver-elastic src/tests, reify-eval `elastic_static`/`modal_ops`, reify-mesh-morph) | — (prerequisite; fk-188e6a0adc9c is closed by ε) | α, #8375 | BT4 new and green; ratchet row `AssemblyElement {` struct literals outside `global.rs` → 0. |
-| ε #8621 | Private `ElementStiffness` storage; stride doc fixed | `assembly/mod.rs` + the 72 `.data[` sites (`resample`, `p2_tet`, `mass_matrix`, `geometric_stiffness/*`, `tensegrity_load`, `membrane_load`, `shell_assembly`, `membrane_cst`) and tests | fk-188e6a0adc9c | δ, β, γ, ζ | BT5 new and green; ratchet row `.data[` outside `assembly/mod.rs` → 0. Owns the `ElementStiffness.data` seam. |
+| ε #8621 | Private `ElementStiffness` storage; stride doc fixed | `assembly/mod.rs` + the 72 `.data[` sites (`resample`, `p2_tet`, `mass_matrix`, `geometric_stiffness/*`, `tensegrity_load`, `membrane_load`, `shell_assembly`, `membrane_cst`) and tests; **[Amended 2026-10-20, retro-critic R2]** reify-eval `tests/harness_topology_selector/shell_mixed_region_validation.rs` (the one external reader, migrated to `get()`/`n_dofs()`) | fk-188e6a0adc9c | δ, β, γ, ζ | BT5 new and green; ratchet row `.data[` outside `assembly/mod.rs` → 0. Owns the `ElementStiffness.data` seam. |
 | ζ #8626 | `tensegrity_load_analysis` as a thin call of `membrane_load_analysis` | `tensegrity_load.rs`, `membrane_load.rs`, `lib.rs` | fk-8f79315fc7e8 | α, #8375 | BT9 green; ratchet row: definitions of `member_force_delta` / `bar_axial_force_delta` / `GROUNDING_DIAGONAL` → 1 each; one orphan-grounding policy pinned by a test. |
 | η #8628 | `ForceDensityProblem`, `MemberKind::admits`, nested input errors, one stencil-parameterised fixed-point driver | `form_find.rs`, `form_find_free.rs`, `lib.rs`; reify-eval `compute_targets/form_find.rs` (error mapping only) | fk-63218ffb51cd | α | BT1, BT2 new and green; BT3 green. Ratchet rows: `MemberKind::Cable =>` in production → 1 (`admits`); `is_anchor[a] = true` in production → 1. `map_ff_error` gone. |
 | θ #8629 | Private `MpcRow` fields; delete the literal smoke test and doctest; true module docs | `mpc.rs`, `lib.rs`, `buckling_kernel.rs`; reify-eval `engine_build/mixed_region_tests.rs` | fk-20c32882531a | α | BT8 new and green; ratchet row `MpcRow {` literals outside `impl MpcRow` → 0; mixed-region tests green. |
 | ι #8630 | One FEA harness in `tests/common/fea_harness.rs`; one conflict-checking `dedup_bcs` | `crates/reify-solver-elastic/tests/*.rs`, `tests/common/` | fk-95dd3ef3a20a | α, #8375 | Ratchet row "top-level non-`test_` fn name defined in > 1 file under tests/" → 0 (today 38 names / 69 extra copies). A mis-specified duplicate BC panics in every suite. |
-| κ #8632 | `GeometryError::BackendUnavailable`; structural routing in both `map_geometry_error` | reify-ir `geometry.rs`; reify-kernel-gmsh `mesh_profile_2d.rs`, `refine_volume.rs`, `lib.rs`; solver-elastic `mesher.rs`, `volume_refine.rs` | fk-c497935d4b8a | — | BT10 green; `msg.contains(STUB_UNAVAILABLE_MARKER)` gone; the stub arm compiles with an empty `GMSH_LIB_DIR`. |
+| κ #8632 | **[Amended 2026-10-20, retro-critic R2]** **Dead text: cancelled 2026-10-14, subsumed by S10 β₁ #8935 (S10 R5).** ~~`GeometryError::BackendUnavailable`; structural routing in both `map_geometry_error` | reify-ir `geometry.rs`; reify-kernel-gmsh `mesh_profile_2d.rs`, `refine_volume.rs`, `lib.rs`; solver-elastic `mesher.rs`, `volume_refine.rs` | fk-c497935d4b8a | — | BT10 green; `msg.contains(STUB_UNAVAILABLE_MARKER)` gone; the stub arm compiles with an empty `GMSH_LIB_DIR`.~~ |
 | λ #8637 | `TetSpatialIndex<'a>` owns its mesh borrow and tol; `TetShape<'a>` carries its mesh | `interpolation.rs`, `resample.rs`, `volume_refine.rs` | fk-66ffd82ed984 | — | BT11 green; `locate` takes only the point. |
 | μ #8640 | `qoi.rs` tests to `tests/qoi.rs`; reviewer prose out of production docs | `qoi.rs`, `tests/qoi.rs` | fk-473bb6240e81 | — | `tests/qoi.rs` runs the 20 tests unchanged; `qoi.rs` has no `#[cfg(test)]` module. |
-| ν #8645 | One predicate home in reify-constraints; engine_eval mirrors deleted; reify-constraints ratchet host | reify-constraints `solver.rs`, `registry.rs`, `cpsat.rs`, `lib.rs`, `tests/adoption_ratchets.rs`; reify-eval `engine_eval.rs` | fk-813c018bf3cf | — | BT12 green. Ratchet rows: Ge/Gt orientation arms in reify-constraints src → 1; weight × σ fold sites → 1. The five eval-side mirror fns gone. Owns the predicate-exports seam. |
+| ν #8645 | One predicate home in reify-constraints; engine_eval mirrors deleted; reify-constraints ratchet host | reify-constraints `solver.rs`, `registry.rs`, `cpsat.rs`, `lib.rs`, `tests/adoption_ratchets.rs`; reify-eval `engine_eval.rs` | fk-813c018bf3cf | **[Amended 2026-10-20, retro-critic R2]** #8799, #6655 | BT12 green. Ratchet rows: Ge/Gt orientation arms in reify-constraints src → 1; weight × σ fold sites → 1. The five eval-side mirror fns gone. Owns the predicate-exports seam. |
 | ξ #8653 | solver.rs lower layers: `crate::trial`, `solver/residual`, `solver/bounds`, `solver/derive` with their tests | reify-constraints `solver.rs`, `solver/`, `trial.rs`, `lib.rs`, `cpsat.rs`, `registry.rs`, `dual_jacobian.rs` | — (prerequisite of π) | ν, #6655, #7492, #7420 | BT13 green; the derive↔cost cycle is gone. **Subsumes #8581 and #8449** (decompose cancels them with a reason naming this leaf). |
 | ο #8656 | solver.rs middle layers: `solver/cost`, `solver/floor`, `solver/core` (+`constraints_witness`, `floor_infeasible_diagnostic`); core renamed | reify-constraints `solver.rs`, `solver/` | — (prerequisite of π) | ξ | BT13 green; the floor↔core cycle is gone (D17); `solve_core_with_sd_tolerance` gone. |
-| π #8658 | solver.rs upper layers: `solver/tradeoff`, `solver/uniqueness`, api parent; remaining tests to layer interfaces or `tests/solver_integration.rs` | reify-constraints `solver.rs`, `solver/`, `tests/solver_integration.rs` | fk-e719c0dc7f0d | ο | BT13 green; `solver.rs` has no inline `mod tests`; C9 holds (no module SCC > 1 in `solver/`); no test reaches another layer's private item. |
-| ρ #8660 | PRD close | this PRD, its manifest | — | α–π | The terminal Status header, per the overlay's freeze shape. |
+| π #8658 | solver.rs upper layers: `solver/tradeoff`, `solver/uniqueness`, api parent; remaining tests to layer interfaces or `tests/solver_integration.rs` | reify-constraints `solver.rs`, `solver/`, `tests/solver_integration.rs` | fk-e719c0dc7f0d | ο | BT13 green; `solver.rs` has no inline `mod tests` **[Amended 2026-10-20, retro-critic R2]** and no `src/solver/tests.rs` stitch; C9 holds (no module SCC > 1 in `solver/`), guarded by π's layer-order row in ν's ratchet host; no test reaches another layer's private item. |
+| ρ #8660 | PRD close | this PRD, its manifest | — | α–π | The terminal Status header, per the overlay's freeze shape. **[Amended 2026-10-20, retro-critic R2]** After π: one scripted `update_task` pass (fused-memory MCP, never tasks.db) re-points every non-terminal task naming `solver.rs` (`metadata.files` complete list plus a details note mapping each anchor to its `solver/<layer>.rs` home); also reconciles the dead κ text and the stale §9 counts (#8783). |
 | (adopted) | Delete the dead `ShellStress` | `shell_result.rs`, `lib.rs` | fk-824124d1e74e | — | **#8528** (filed by the run). Not re-filed; γ depends on it. |
 
 Ratchet rows α lands at today's baselines (each leaf lowers its own): upward `shell_assembly`
@@ -298,7 +315,7 @@ the review's.
 
 ## 10. Open questions
 
-Lead rulings (2026-10-12, program doc "Resolved decisions — pass 1 open questions"): Q1 → (A), fk-c940cb1edad4 stamped on #8375 and #8381, no leaf; Q2 → (A), κ in wave 1, S10 consumes; Q3 → (A), both into solver/core (D17). #8581 and #8449 cancelled as subsumed by ξ #8653.
+Lead rulings (2026-10-12, program doc "Resolved decisions — pass 1 open questions"): Q1 → (A), fk-c940cb1edad4 stamped on #8375 and #8381, no leaf; ~~Q2 → (A), κ in wave 1, S10 consumes~~ (superseded by S10 R5: κ #8632 cancelled 2026-10-14, subsumed by S10 β₁ #8935); Q3 → (A), both into solver/core (D17). #8581 and #8449 cancelled as subsumed by ξ #8653.
 
 1. **fk-c940cb1edad4 (returned to the lead — ruling contradicts committed plan).** See §3.1.
    Options:
@@ -333,8 +350,13 @@ Manifest blocks: `solver-crates-layering.capability-manifest.yaml` / `.md`, "Gap
   **ξ₂ #9267**, after #6655 and ξ #8653: `reify_constraints::domain::{ParamDomain, Endpoint,
   DomainTable}` with `derive_domains` once per component after decomposition, `lo > hi` a typed
   Refuted, readers as projections (seed_box, clamp_box, int_range, default_bounded_sides),
-  `AutoParam.bounds` and its three `None` writers deleted. It sits at crate level below
-  `solver/derive`; ξ stays behaviour-preserving (the carrier's behaviour change is ξ₂'s, not ξ's).
+  `AutoParam.bounds` and its three `None` writers deleted. ~~It sits at crate level below
+  `solver/derive`;~~ (superseded by R2 B3) **[Amended 2026-10-20, retro-critic R2]** `crate::domain` owns the strictness policy
+  (`StrictBound`, or `Endpoint::Open` as its successor) and the dimension-default box
+  (`default_bounds_for` / `effective_bounds`) and imports nothing from `crate::solver`;
+  `solver/bounds` and `solver/derive` import from it or are deleted; ξ #8653's "move as written"
+  for those items is re-pointed to domain; ξ₂'s signal gains "`scripts/assert-module-scc.py check`
+  green, no {domain, solver} SCC". The carrier decision (A′) stands; ξ stays behaviour-preserving (the carrier's behaviour change is ξ₂'s, not ξ's).
   New medium leaf **ξ₃ #9268** (`leaf_verdicts`, after ξ, in `solver/residual`): acceptance calls
   the checker's comparison semantics (with #6653's equality policy), NaN/Undef are Undecidable,
   StrictBound::Dropped/SteppedInside become search hints; absorbs #9012. #5470 now depends on ξ₂
@@ -360,3 +382,48 @@ Manifest blocks: `solver-crates-layering.capability-manifest.yaml` / `.md`, "Gap
   `reassemble_d` and `equilibrium_residual_scaled` deleted, aniso split only if the heuristic-13
   check passes; after χ-ff and η₃).
 - ρ #8660 (PRD close) now also depends on η₂, η₃, φ-ff, χ-ff and ψ-ff.
+
+## Retro-critic sitting amendments (2026-10-20)
+
+Ruling R2 (Leo, ruled_by: human, 2026-10-19). Pointer for every bullet:
+`plans/review-all-program-reify-20261012.md §Resolved decisions — retro-critic sitting R2`.
+Critique: `~/.claude/review-all/review-all-reify-20261010/retro-critic/S14.json`.
+
+- **B1 (π #8658, ο #8656) → (a).** C9 gets a mechanical guard owned by π: a row in ν's
+  `crates/reify-constraints/tests/adoption_ratchets.rs` lexing `super::<child>` /
+  `crate::solver::<child>` edges among `src/solver/*.rs`, asserting the D16 order, with a seeded
+  core↔floor self-test (§5 C9). The §7.1 INV-candidate-7 sentence and π's "S3 α's Tarjan baseline
+  records the smaller SCC set" are struck: `assert-module-scc.py` measures top-level modules only.
+  π's files gain `tests/adoption_ratchets.rs` and its checks a path-absent twin on
+  `src/solver/tests.rs`; edge `#8658 ← #8645`.
+- **B2 (ν #8645 vs solver-legibility-telemetry P4 ε #6722 / μ #6737) → ν first.** Edge
+  `#6722 ← #8645`. #6722 builds on ν's `for_each_inequality_leaf`, threads `ConstraintNodeId`
+  through `collect_slack_terms` only, calls the reify-constraints export from eval, and drops the
+  refuted "cross-crate copy is deliberate" premise (task 4386). #6737 targets ν's
+  `robustness_floor_applies` and ο's `solve_core` / `SolveRegime`. §7.1 gains the P4 G4 row; §3.1
+  lists #6722 / #6737. ν and #6722 released from the R0 hold.
+- **M2 (D20).** Edge `#8645 ← #8799`: ν's ratchet host consumes
+  `reify_test_support::adoption_ratchet`.
+- **M3 (D15).** Edge `#8645 ← #6655`: D15 restated against the HC4 worker; ν's Ge/Gt row covers
+  `src/**` including `hc4.rs` / `interval.rs`; the fold-site row is scoped to `src/`.
+- **B3 (ξ₂ #9267) → domain owns the policy.** Supersedes gap-fill K3-D3's placement clause ("sits at
+  crate level below `solver/derive`"); the carrier decision A′ stands. `domain.rs` owns `StrictBound`
+  (or `Endpoint::Open`) and `default_bounds_for` / `effective_bounds` and imports nothing from
+  `crate::solver`; ξ #8653's "move as written" for those items is re-pointed to domain (D16
+  amended); ξ₂'s signal gains `assert-module-scc.py check` green with no {domain, solver} SCC.
+- **M1.** ρ #8660 gains the post-π re-point step (§9 ρ row). §7.1 gains the G4 row for P2 (#6678,
+  #6680, #6677) and P4 (#6722, #6737) on `solver.rs`; §3.1 lists them. Declined: M1 without the
+  re-point step.
+- **M4 (ε #8621).** The manifest binding "no external reader" is corrected (FAIL→corrected):
+  `crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs` reads
+  `ke.data` / `ke.n_dofs`; ε migrates it to `get()` / `n_dofs()` and the file joins ε's files (§9 ε
+  row).
+- **M5.** Edges `#9006 ← #9271, #9273, #9274, #7801` (S5 analysis-stratum ξ waits on the gap-fill
+  leaves); §7.1: gap-fill leaves edit the form-find trampoline before S5 ξ moves it. Declined: "existing
+  variants only". η₂ and φ-ff released from the R0 hold.
+- **Polarity.** π: path-absent twin on `crates/reify-constraints/src/solver/tests.rs`; η₂ #9271:
+  `non-finite-input-error` anchored on `NonFinite \{ what`; φ-ff #9273: `eigen-calls-leave-solvers`
+  anchored on `\.self_adjoint_eigen\(`.
+- **κ #8632 (cancelled 2026-10-14, subsumed by S10 β₁ #8935).** D12, C7, BT10, the §7.1
+  `GeometryError` row, the §9 κ row and the §10 Q2 ruling clause are marked dead text superseded by
+  S10 R5; κ's block is removed from both manifest twins.

@@ -1,6 +1,7 @@
 # <path>\t<route>: what affected_crates printed for <path> alone under an identity closure; route = ALL, empty, or sorted space-joined crates.
 # Generated from the pre-theta bash rules at base 1cdd3577c0 over its tracked paths plus boundary probes.
 # Regenerate: source scripts/affected-crates-lib.sh; direct_crates_per_path <paths>
+# Amended (task 9343): examples/*.ri rows gain reify-syntax, which joined RI_CORPUS_CRATES with the tracked-.ri parse guard.
 .cargo/config.toml	ALL
 .cargo/run-with-occt.sh	ALL
 .claude/skills/audit/SKILL.md	
@@ -1982,7 +1983,6 @@ crates/reify-kernel-occt/tests/harness_occt/topology_cache_observability.rs	reif
 crates/reify-kernel-occt/tests/harness_occt/topology_selectors_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/transform_distance_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/vertex_point_integration.rs	reify-kernel-occt
-crates/reify-kernel-occt/tests/harness_occt/warm_start_failures_accessor_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/warm_startable_registration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt/wrap_occt_call_diagnostic_integration.rs	reify-kernel-occt
 crates/reify-kernel-occt/tests/harness_occt_measurement.rs	reify-kernel-occt
@@ -3305,277 +3305,277 @@ docs/skills/review.md
 docs/skills/verify.md	
 docs/stdlib/multi-load-fea.md	
 environment.yml	
-examples/ad_hoc_face_selector.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/affine_tapered_spacer.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/ambient_default_material/ambient_default_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/anisotropic_bar.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/appearance_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/appearance_viewport_egress.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/aspect_massive.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/auto/bearing_computed_default_unevaluated.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/auto/bearing_constraint_select.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/auto/bearing_resolved_value.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/auto/bearing_unsat.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/auto/bounded_fallback_unsound.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/auto_binding_sites.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/bearing_auto_seal.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/ad_hoc_face_selector.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/affine_tapered_spacer.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/ambient_default_material/ambient_default_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/anisotropic_bar.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/appearance_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/appearance_viewport_egress.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/aspect_massive.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/auto/bearing_computed_default_unevaluated.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/auto/bearing_constraint_select.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/auto/bearing_resolved_value.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/auto/bearing_unsat.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/auto/bounded_fallback_unsound.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/auto_binding_sites.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/bearing_auto_seal.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/best_practices/INDEX.md	
-examples/best_practices/angle_crossings.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/bolt_circle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/clearance_oracle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/dimensioned_arguments.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/discrete_choice.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/hollow_primitives.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/negation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/best_practices/symmetry_mirror.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/bom_lifecycle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/buckling_column_p2.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/buckling_column_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/buckling_multi_case_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/complex_abs_arg.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/complex_div.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/complex_literals.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/complex_numbers.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/complex_transcendental.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/best_practices/angle_crossings.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/bolt_circle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/clearance_oracle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/dimensioned_arguments.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/discrete_choice.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/hollow_primitives.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/negation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/best_practices/symmetry_mirror.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/bom_lifecycle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/buckling_column_p2.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/buckling_column_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/buckling_multi_case_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/complex_abs_arg.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/complex_div.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/complex_literals.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/complex_numbers.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/complex_transcendental.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/conditional_compilation/README.md	
-examples/conditional_compilation/main.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/conditional_compilation/platform_linux.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/conditional_compilation/platform_wasm.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/continuous_cost_min.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/cost_aggregation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/cost_robustness_tradeoff.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/cost_subtree_aggregate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/datum_projections.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/determinacy_intrinsics.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/differential_field_ops.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dimensional_chains.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dimensional_consistency.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dimensionless_unification.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/drivebelt_trait_bounds.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dynamics/closed_2prismatic_idyn.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dynamics/closed_4bar_idyn.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dynamics/pendulum_idyn.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/dynamics/toolhead_motor_sizing.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/error_messages.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/extrude_infinite.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fdm_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_bracket_member_access.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_bracket_minimize_mass.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_cantilever_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_multi_case_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_multi_case_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_pressure_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_shell_channels.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_shell_flexure.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_shell_too_thick_annotated.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fea_shell_too_thick_auto.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/compose.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/composed_stiffness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/fn_field.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/from_samples.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/pointwise_field_combinators.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/restrict.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/spatial_ops.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields/std_fields_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/fields_analysis.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/flexures/cantilever_beam_prb.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/flexures/double_parallelogram.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/flexures/notch_hinge_circular_prb.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/flexures/parallelogram_stage.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/flexures/printer_z_compliant_mount.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/flexures/yield_warning.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/gdt_conformance_satisfied.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/gdt_conformance_violated.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/generate_bolt_circle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/conditional_compilation/main.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/conditional_compilation/platform_linux.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/conditional_compilation/platform_wasm.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/continuous_cost_min.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/cost_aggregation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/cost_robustness_tradeoff.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/cost_subtree_aggregate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/datum_projections.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/determinacy_intrinsics.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/differential_field_ops.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dimensional_chains.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dimensional_consistency.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dimensionless_unification.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/drivebelt_trait_bounds.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dynamics/closed_2prismatic_idyn.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dynamics/closed_4bar_idyn.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dynamics/pendulum_idyn.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/dynamics/toolhead_motor_sizing.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/error_messages.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/extrude_infinite.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fdm_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_bracket_member_access.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_bracket_minimize_mass.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_cantilever_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_multi_case_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_multi_case_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_pressure_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_shell_channels.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_shell_flexure.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_shell_too_thick_annotated.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fea_shell_too_thick_auto.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/compose.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/composed_stiffness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/fn_field.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/from_samples.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/pointwise_field_combinators.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/restrict.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/spatial_ops.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields/std_fields_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/fields_analysis.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/flexures/cantilever_beam_prb.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/flexures/double_parallelogram.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/flexures/notch_hinge_circular_prb.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/flexures/parallelogram_stage.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/flexures/printer_z_compliant_mount.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/flexures/yield_warning.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/gdt_conformance_satisfied.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/gdt_conformance_violated.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/generate_bolt_circle.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/generics/.gitkeep	ALL
-examples/generics/container.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/generics/dim_param.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/generics/identity.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/generics/unbound_param.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/geometric_relations/bolt_plate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/geometric_relations/construction_datum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/geometric_relations/feature_datum_axis.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/geometric_relations/global_float.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/geometric_relations/tangent_roller.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/half_space.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/generics/container.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/generics/dim_param.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/generics/identity.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/generics/unbound_param.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/geometric_relations/bolt_plate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/geometric_relations/construction_datum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/geometric_relations/feature_datum_axis.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/geometric_relations/global_float.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/geometric_relations/tangent_roller.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/half_space.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/imported_field/README.md	
-examples/imported_field/openvdb_stress.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/integration_corner_cases.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/integration_full_v01.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/interpolation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/io_export.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/io_formats.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/joint_dof_self_check.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/adjacent_faces.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/all_queries_walk.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/angle_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/box_edges.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/box_faces.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/contains_box.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/curvature_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/directional_selectors.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/distance_box_point.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/filtered_edges.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/geo_equiv_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/intersects_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/length_perimeter.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/moment_of_inertia_box.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kernel_queries/normal_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/keyed_forall.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/keyed_vents.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/counter_mass_balance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/dock_pickup.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/four_bar_singular.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/relate_mounted_fourbar.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/relate_mounted_revolute.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/revolute_pivot_offset.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/screw_follower_pivot.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kinematic/spatial_linkage_oriented.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/kleene_e2e.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/large_assembly.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/linalg.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/list_helpers.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/litter_tray.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/load_case.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m10_combined.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m10_connect_advanced.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m10_geometric_types.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m10_purpose_activation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m11_annotations.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m11_field_calculus.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_collection_ops.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_combined_all.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_connect_chain.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_function_safety_factor.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_geometry.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_geometry_flange.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_guarded_enum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_guarded_head_type.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_occurrence_process.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_purpose.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_trait_rigid.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_trait_structure.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m5_user_function.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m6_data_carrying_enum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m6_data_carrying_enum_undef.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m6_fallback_recovery.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m6_generic_enum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m6_result_fallback.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m6_result_recovery.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m8_materials.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m8_ports.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m8_tolerancing.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m8_units.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m9_combined.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m9_constraint_def.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m9_determinacy.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m9_integration.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/m9_trait_conformance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/material_appearance_library.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/materials_starter_library.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/math_linalg.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/modal/cantilever_beam_modes.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/modal/printer_gantry_modes.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/modal/simply_supported_beam_modes.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/modal/transient_step_response.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/imported_field/openvdb_stress.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/integration_corner_cases.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/integration_full_v01.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/interpolation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/io_export.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/io_formats.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/joint_dof_self_check.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/adjacent_faces.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/all_queries_walk.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/angle_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/box_edges.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/box_faces.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/contains_box.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/curvature_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/directional_selectors.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/distance_box_point.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/filtered_edges.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/geo_equiv_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/intersects_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/length_perimeter.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/moment_of_inertia_box.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kernel_queries/normal_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/keyed_forall.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/keyed_vents.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/counter_mass_balance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/dock_pickup.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/four_bar_singular.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/relate_mounted_fourbar.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/relate_mounted_revolute.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/revolute_pivot_offset.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/screw_follower_pivot.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kinematic/spatial_linkage_oriented.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/kleene_e2e.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/large_assembly.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/linalg.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/list_helpers.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/litter_tray.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/load_case.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m10_combined.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m10_connect_advanced.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m10_geometric_types.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m10_purpose_activation.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m11_annotations.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m11_field_calculus.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_collection_ops.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_combined_all.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_connect_chain.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_function_safety_factor.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_geometry.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_geometry_flange.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_guarded_enum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_guarded_head_type.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_occurrence_process.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_purpose.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_trait_rigid.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_trait_structure.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m5_user_function.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m6_data_carrying_enum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m6_data_carrying_enum_undef.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m6_fallback_recovery.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m6_generic_enum.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m6_result_fallback.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m6_result_recovery.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m8_materials.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m8_ports.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m8_tolerancing.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m8_units.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m9_combined.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m9_constraint_def.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m9_determinacy.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m9_integration.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/m9_trait_conformance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/material_appearance_library.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/materials_starter_library.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/math_linalg.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/modal/cantilever_beam_modes.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/modal/printer_gantry_modes.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/modal/simply_supported_beam_modes.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/modal/transient_step_response.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/module_visibility/README.md	
-examples/module_visibility/consumer.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/module_visibility/mismatch_variant.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/module_visibility/producer.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/modulo_index_wrap.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_aspect_objective.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_aspect_objective_mixed.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_kernel/attribute_selectors.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_kernel/manifold_boolean.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_kernel/pragma_override.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_kernel/voxel_to_mesh.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_kernel/voxel_to_mesh_iso.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_load_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/multi_pane_viewport.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/numeric_and_range_literals.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/numeric_separators.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/objective_inheritance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/option_map_or.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/parametric_rate_cross_module.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/parametric_vec3_cross_module.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/pattern_arbitrary_transforms.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/pattern_composition.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/perforated_plate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/process/std_process_dfm.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/process/std_process_dfm_metrology.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/process/std_process_dfm_thickness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/radix_literals.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/representation_within.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/rigid_mass_props_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/selectors/relational_selectors_v2.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/selectors/selector_vocabulary_v2_leaves.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/selectors/single_face_by_normal.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/selectors/vertices_index_coercion.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/shells/thin_walled_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/single_sided_range.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/solid-param-direct.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/solver_optimality_unproven.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/spec-shape-physical.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/constants.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/fields.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/ports_breadth.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/ports_domains.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/ports_mechanical.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/ports_prelude.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/stdlib/process.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/structural_query_bom.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/structural_query_children_members.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/structural_query_descendants.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/structural_query_filter.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/structural_traits_dimensioned.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/structure-instance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/sub_placement_assembly.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/surface_finish_3mf.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/surface_finish_cost.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/surface_finish_functional.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/surface_finish_viewport.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/sweep_degenerate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tensegrity_cable_net.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tensegrity_membrane_formfind.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tensegrity_membrane_patch.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tensegrity_pavilion.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tensegrity_t_prism.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerance-stackup-3part.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerance-stackup-rss.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_illegal_modifier.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_legality_rfs.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_oracle_inside.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_oracle_outside.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_pass_weave.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_removed_2018.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/gdt_zones.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/std_tolerancing_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/vc_bolt_pattern_clearance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/vc_bolt_pattern_interference.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/tolerancing/vc_boundary_solid.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/topology_selectors/all_topology_selectors_wiring.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/topology_selectors/block_inertia.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/topology_selectors/bottom_deck_selectors.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/topology_selectors/fillet_top_edges.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trait_assoc_fn_cylinder.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trait_assoc_fn_overload.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trait_assoc_fn_static.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trait_assoc_type_material.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trait_assoc_type_qualified.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trait_hierarchy.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trajectory/ei_robustness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trajectory/gcode_import_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trajectory/printer_print_envelope.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/module_visibility/consumer.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/module_visibility/mismatch_variant.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/module_visibility/producer.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/modulo_index_wrap.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_aspect_objective.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_aspect_objective_mixed.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_kernel/attribute_selectors.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_kernel/manifold_boolean.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_kernel/pragma_override.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_kernel/voxel_to_mesh.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_kernel/voxel_to_mesh_iso.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_load_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/multi_pane_viewport.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/numeric_and_range_literals.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/numeric_separators.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/objective_inheritance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/option_map_or.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/parametric_rate_cross_module.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/parametric_vec3_cross_module.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/pattern_arbitrary_transforms.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/pattern_composition.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/perforated_plate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/process/std_process_dfm.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/process/std_process_dfm_metrology.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/process/std_process_dfm_thickness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/radix_literals.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/representation_within.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/rigid_mass_props_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/selectors/relational_selectors_v2.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/selectors/selector_vocabulary_v2_leaves.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/selectors/single_face_by_normal.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/selectors/vertices_index_coercion.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/shells/thin_walled_bracket.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/single_sided_range.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/solid-param-direct.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/solver_optimality_unproven.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/spec-shape-physical.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/constants.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/fields.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/ports_breadth.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/ports_domains.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/ports_mechanical.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/ports_prelude.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/stdlib/process.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/structural_query_bom.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/structural_query_children_members.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/structural_query_descendants.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/structural_query_filter.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/structural_traits_dimensioned.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/structure-instance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/sub_placement_assembly.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/surface_finish_3mf.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/surface_finish_cost.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/surface_finish_functional.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/surface_finish_viewport.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/sweep_degenerate.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tensegrity_cable_net.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tensegrity_membrane_formfind.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tensegrity_membrane_patch.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tensegrity_pavilion.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tensegrity_t_prism.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerance-stackup-3part.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerance-stackup-rss.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_illegal_modifier.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_legality_rfs.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_oracle_inside.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_oracle_outside.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_pass_weave.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_removed_2018.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/gdt_zones.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/std_tolerancing_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/vc_bolt_pattern_clearance.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/vc_bolt_pattern_interference.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/tolerancing/vc_boundary_solid.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/topology_selectors/all_topology_selectors_wiring.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/topology_selectors/block_inertia.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/topology_selectors/bottom_deck_selectors.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/topology_selectors/fillet_top_edges.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trait_assoc_fn_cylinder.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trait_assoc_fn_overload.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trait_assoc_fn_static.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trait_assoc_type_material.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trait_assoc_type_qualified.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trait_hierarchy.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trajectory/ei_robustness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trajectory/gcode_import_smoke.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trajectory/printer_print_envelope.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/trajectory/test_data/printer_print_envelope.gcode	ALL
-examples/trajectory/tots_optimal_ptp.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trajectory/zv_shaped_ramp.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/trajectory/zvd_robustness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/type_hygiene/type_hygiene_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/undef_self_describing.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/unit_expressions.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/whole_model_cost_min.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/whole_model_joint_drive.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/trajectory/tots_optimal_ptp.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trajectory/zv_shaped_ramp.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/trajectory/zvd_robustness.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/type_hygiene/type_hygiene_surface.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/undef_self_describing.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/unit_expressions.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/whole_model_cost_min.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/whole_model_joint_drive.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 fused-memory-config.yaml	
 gui/index.html	ALL
 gui/package-lock.json	ALL
@@ -4243,7 +4243,6 @@ scripts/reap-orphaned-test-binaries.sh	ALL
 scripts/refresh-warm-base.sh	ALL
 scripts/reify-audit-freshness.sh	ALL
 scripts/reify-audit-predone-wrapper.sh	ALL
-scripts/reify-audit-snapshot-filter.jq	ALL
 scripts/reify-bin-freshness.sh	ALL
 scripts/reify_audit_findings.py	ALL
 scripts/reify_overlap_detector.py	ALL
@@ -4941,8 +4940,8 @@ crates/Cargo.toml	ALL
 crates//Cargo.toml	ALL
 crates/a/b/Cargo.toml	a reify-build-utils
 crates/foo/Cargo.toml	foo reify-build-utils
-examples/foo.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
-examples/.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/foo.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
+examples/.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support
 examples/foo.gcode	ALL
 examples/README.md	
 docs/x.md	
@@ -4953,4 +4952,4 @@ gui/src-tauri	ALL
 crates/README.md	
 tests/infra/x.md	
 tests/infrastructure/x	ALL
-examples/x/y.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-test-support
+examples/x/y.ri	reify-cli reify-compiler reify-eval reify-eval-fea-tests reify-gui reify-syntax reify-test-support

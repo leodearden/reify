@@ -46,7 +46,7 @@ fn realization_kernel_provenance_reports_occt_brep_for_box_build() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Confirm geometry was actually produced (same guard as kernel_registry_inventory).
@@ -125,7 +125,7 @@ fn realization_kernel_provenance_survives_cache_hit_rebuild() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
 
     // First build — seeds the realization cache.
     let result1 = engine.build(&compiled, ExportFormat::Step);

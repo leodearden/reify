@@ -18,7 +18,7 @@ use reify_audit::{
     Severity,
 };
 use rusqlite::Connection;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,17 +55,7 @@ impl Harness {
     }
 
     fn ctx(&self, root: &Path) -> AuditContext<'_> {
-        AuditContext {
-            project_root: root.to_path_buf(),
-            conn: &self.conn,
-            git: &self.git,
-            jcodemunch: &self.jc,
-            task_metadata: HashMap::new(),
-            target_task_id: None,
-            window: None,
-            now: None,
-            producer_branch: None,
-        }
+        AuditContext::new(root.to_path_buf(), &self.conn, &self.git, &self.jc)
     }
 }
 
@@ -508,11 +498,62 @@ fn baseline_ledger_refuses_a_tree_with_nothing_in_scope() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Spelled lead-ins — `entity.rs ~2145`, `entity.rs (~2145`, `lib.rs line 444`
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COMPILER_SRC: &str = "crates/reify-compiler/src/connect.rs";
+
+#[test]
+fn a_spelled_line_cite_is_reported_verbatim() {
+    let content = "fn f() {}\n// guard at entity.rs (~2145) and (lib.rs line 444)\n";
+    let findings = check_fixture(&[(COMPILER_SRC, content)], &[COMPILER_SRC]);
+    let cites = ["entity.rs (~2145", "lib.rs line 444"];
+    assert_eq!(names_in(&findings, "line-cite"), cites, "got {findings:#?}");
+    assert_eq!(findings.len(), cites.len(), "got {findings:#?}");
+    for (f, cite) in findings.iter().zip(cites) {
+        assert_eq!(f.task_id, COMPILER_SRC);
+        assert_eq!(f.evidence, vec![file_line(COMPILER_SRC, 2, Some(cite))]);
+    }
+}
+
+#[test]
+fn a_spelled_cite_is_absorbed_by_its_verbatim_row() {
+    let rows = ledger(&[&ledger_row(COMPILER_SRC, "entity.rs (~2145")]);
+    let findings = check_fixture(
+        &[
+            (COMPILER_SRC, "// guard at entity.rs (~2145)\n"),
+            (LEDGER, &rows),
+        ],
+        &[COMPILER_SRC, LEDGER],
+    );
+    assert!(
+        findings.is_empty(),
+        "a row holding a space and a paren round-trips; got {findings:#?}"
+    );
+}
+
+#[test]
+fn re_spelling_a_ledgered_cite_is_new_debt_plus_a_stale_row() {
+    let rows = ledger(&[&ledger_row(COMPILER_SRC, "entity.rs ~2145")]);
+    let findings = check_fixture(
+        &[(COMPILER_SRC, "// see entity.rs:2145\n"), (LEDGER, &rows)],
+        &[COMPILER_SRC, LEDGER],
+    );
+    assert_eq!(names_in(&findings, "line-cite"), vec!["entity.rs:2145"]);
+    assert_eq!(
+        names_in(&findings, "stale-baseline-entry"),
+        vec![ledger_row(COMPILER_SRC, "entity.rs ~2145")],
+        "re-spelling a number is not the fix; got {findings:#?}"
+    );
+    assert_eq!(findings.len(), 2, "got {findings:#?}");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CLI — reachable by `--pattern PLINECITE`, and exit-neutral
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn git_in(root: &Path, args: &[&str]) {
-    let out = reify_audit::git_env::command(root)
+    let out = reify_git_env::command(root)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
@@ -555,7 +596,7 @@ fn pattern_plinecite_reports_a_line_cite_and_exits_zero() {
     .arg(&tasks_file)
     .arg("--runs-db")
     .arg(&runs_db);
-    reify_audit::git_env::sanitize(&mut cmd);
+    reify_git_env::sanitize(&mut cmd);
     let out = cmd
         .output()
         .expect("invoke reify-audit --pattern PLINECITE");
@@ -592,17 +633,7 @@ fn real_repo_plinecite_smoke() {
     let git = RealGitOps::new(root.clone());
     let conn = Connection::open_in_memory().expect("in-memory sqlite");
     let jc = MockJCodemunchOps::new();
-    let ctx = AuditContext {
-        project_root: root,
-        conn: &conn,
-        git: &git,
-        jcodemunch: &jc,
-        task_metadata: HashMap::new(),
-        target_task_id: None,
-        window: None,
-        now: None,
-        producer_branch: None,
-    };
+    let ctx = AuditContext::new(root, &conn, &git, &jc);
     let findings = reify_audit::plinecite::check(&ctx);
     let keys: Vec<(&str, &str, &str)> = findings
         .iter()

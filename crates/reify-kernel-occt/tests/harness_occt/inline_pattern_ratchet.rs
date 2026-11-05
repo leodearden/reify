@@ -7,11 +7,18 @@
 //! edit in the same diff; there is no allow-comment escape hatch. Later leaves
 //! (γ2, ε, θ, δ) add rows here. Equal validation messages across entry points
 //! are a behavioural property, guarded by `op_args_entry_point_parity.rs`, not
-//! a row here.
+//! a row here. γ2's rows (iv)–(vi) share one homed-uses mechanism: named
+//! identifiers used only inside their home fns, every home seen using one.
+//! Row (vii) bans a `map_err` whose closure discards its argument (`|_|`,
+//! `|_e|`) to mint a `QueryError`, `ExportError` or `TessError`
+//! `InvalidHandle`, erasing the cause the store lookup reported. A discard
+//! written without a closure, such as `.or(Err(..))`, is a blind spot.
 //!
 //! The production view comes from a whole-file lexer modelled on
 //! `crates/reify-builtins/tests/common/seed_name_scan.rs` (test-private to that
-//! crate, so ported rather than called). Enclosing-fn scoping follows
+//! crate, so ported rather than called). A file the crate root declares only
+//! behind a test-gated `mod` line is test code, so its production view is
+//! blank. Enclosing-fn scoping follows
 //! `crates/reify-eval/tests/version_id_discipline_gate.rs`. Folding this lexer
 //! and its siblings onto one shared production view in `reify-test-support`,
 //! leaving only the rows here, is task #8796.
@@ -545,6 +552,128 @@ fn crate_sources() -> Vec<(String, String)> {
         .collect()
 }
 
+// ── module reach ────────────────────────────────────────────────────────────
+
+/// The crate root, always in the production view.
+const CRATE_ROOT: &str = "src/lib.rs";
+
+/// `(name, brace depth)` of every out-of-line `mod <name>;` declaration in a
+/// skeleton text.
+fn out_of_line_mods(text: &str) -> Vec<(String, isize)> {
+    let mut decls = Vec::new();
+    for at in ident_offsets(text, "mod") {
+        let rest = text[at + "mod".len()..].trim_start();
+        let name_len = rest.bytes().take_while(|&b| is_ident_byte(b)).count();
+        if name_len == 0 || !rest[name_len..].trim_start().starts_with(';') {
+            continue;
+        }
+        let depth = text[..at]
+            .bytes()
+            .map(|byte| match byte {
+                b'{' => 1,
+                b'}' => -1,
+                _ => 0,
+            })
+            .sum();
+        decls.push((rest[..name_len].to_owned(), depth));
+    }
+    decls
+}
+
+/// The `<stem>` of a flat `src/<stem>.rs` label. Any other layout panics: the
+/// test-only rule maps a declaration to its file by stem alone.
+fn flat_stem(label: &str) -> &str {
+    let path = Path::new(label);
+    match (path.parent(), path.file_stem().and_then(|s| s.to_str())) {
+        (Some(parent), Some(stem)) if parent == Path::new("src") && stem != "mod" => stem,
+        _ => panic!(
+            "{label}: not a flat src/<stem>.rs file. The test-only-module rule maps a `mod` \
+             declaration to src/<stem>.rs only; extend test_only_files before adding this layout"
+        ),
+    }
+}
+
+/// Labels of the src files only test code compiles: those the crate root
+/// declares with no `mod <stem>;` line that survives the cfg(test) mask. The
+/// rule matches stems against the root's top-level declarations, so it panics
+/// on every layout it cannot follow rather than blank a production file: a
+/// `#[path]` module, a nested or `mod.rs` file, a declaration outside the root
+/// or inside an inline module, a declaration with no file, and a file no
+/// declaration names.
+fn test_only_files(sources: &[(String, String)]) -> Vec<String> {
+    let mut declared: Option<Vec<String>> = None;
+    let mut surviving = Vec::new();
+    for (label, src) in sources {
+        let stem = flat_stem(label);
+        let lexed = lexed_view(src).skeleton_lines().join("\n");
+        assert!(
+            !lexed.contains("#[path"),
+            "{label}: a `#[path]` module maps to a file the test-only-module rule cannot follow"
+        );
+        let decls = out_of_line_mods(&lexed);
+        if label != CRATE_ROOT {
+            assert!(
+                decls.is_empty(),
+                "{label}: declares {decls:?}, whose files live under src/{stem}/, a layout the \
+                 test-only-module rule does not follow"
+            );
+            continue;
+        }
+        if let Some((name, _)) = decls.iter().find(|&&(_, depth)| depth != 0) {
+            panic!(
+                "{label}: `mod {name};` sits inside an inline module, so its file is not \
+                 src/{name}.rs; the test-only-module rule does not follow that layout"
+            );
+        }
+        declared = Some(decls.into_iter().map(|(name, _)| name).collect());
+        surviving = out_of_line_mods(&production_view(src).skeleton_lines().join("\n"))
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+    }
+    let declared = declared
+        .unwrap_or_else(|| panic!("{CRATE_ROOT} is missing, so no `mod` declaration is read"));
+    for name in &declared {
+        assert!(
+            sources
+                .iter()
+                .any(|(label, _)| label != CRATE_ROOT && flat_stem(label) == name),
+            "{CRATE_ROOT} declares `mod {name};` but src/{name}.rs is not among the sources"
+        );
+    }
+    let mut test_only = Vec::new();
+    for (label, _) in sources.iter().filter(|(label, _)| label != CRATE_ROOT) {
+        let stem = flat_stem(label);
+        assert!(
+            declared.iter().any(|name| name == stem),
+            "{label}: no `mod {stem};` declaration in {CRATE_ROOT} names it, so the \
+             test-only-module rule cannot tell whether production code compiles it"
+        );
+        if !surviving.iter().any(|name| name == stem) {
+            test_only.push(label.clone());
+        }
+    }
+    test_only
+}
+
+/// `sources` as production code sees them: a file only test code compiles
+/// ([`test_only_files`]) keeps its label but contributes no text, so its
+/// production view is blank.
+fn production_sources(sources: Vec<(String, String)>) -> Vec<(String, String)> {
+    let test_only = test_only_files(&sources);
+    sources
+        .into_iter()
+        .map(|(label, src)| {
+            let src = if test_only.contains(&label) {
+                String::new()
+            } else {
+                src
+            };
+            (label, src)
+        })
+        .collect()
+}
+
 /// The rule every row applies: live never exceeds the committed baseline.
 fn within_baseline(live: usize, baseline: usize) -> bool {
     live <= baseline
@@ -577,10 +706,16 @@ fn is_open_coded_finite_positive(window: &str) -> bool {
 }
 
 fn has_ident(text: &str, ident: &str) -> bool {
+    ident_offsets(text, ident).next().is_some()
+}
+
+/// Byte offsets where `ident` occurs as a whole token.
+fn ident_offsets<'t>(text: &'t str, ident: &'t str) -> impl Iterator<Item = usize> + 't {
     let bytes = text.as_bytes();
-    text.match_indices(ident).any(|(at, _)| {
+    text.match_indices(ident).filter_map(move |(at, _)| {
         let end = at + ident.len();
-        starts_token(bytes, at) && bytes.get(end).is_none_or(|&b| !is_ident_byte(b))
+        let whole = starts_token(bytes, at) && bytes.get(end).is_none_or(|&b| !is_ident_byte(b));
+        whole.then_some(at)
     })
 }
 
@@ -671,7 +806,7 @@ fn row_i_scan(label: &str, src: &str) -> RowI {
 #[test]
 fn row_i_open_coded_finite_positive_checks_within_baseline() {
     let mut row = RowI::default();
-    for (label, src) in crate_sources() {
+    for (label, src) in production_sources(crate_sources()) {
         let file_row = row_i_scan(&label, &src);
         row.live.extend(file_row.live);
         row.exempt.extend(file_row.exempt);
@@ -716,7 +851,8 @@ fn brace_imbalance(view: &ProductionView) -> isize {
 /// The scanner over the real sources, by property rather than by name. A
 /// comment, string or char literal read as code would unbalance the braces
 /// the lexer sees, which moves where a masked item ends; a masked item that
-/// ends early leaks a `#[test]` into the production view.
+/// ends early leaks a `#[test]` into the production view. The lexer is checked
+/// on every file, test-only ones included.
 #[test]
 fn production_views_of_the_crate_sources_are_balanced_and_free_of_unit_tests() {
     let sources = crate_sources();
@@ -735,6 +871,8 @@ fn production_views_of_the_crate_sources_are_balanced_and_free_of_unit_tests() {
             "{label}: the lexer reads unbalanced braces, so it mis-reads a comment, \
              string or char literal"
         );
+    }
+    for (label, src) in &production_sources(sources) {
         let view = production_view(src);
         assert_eq!(
             brace_imbalance(&view),
@@ -778,7 +916,7 @@ fn row_ii_scan(label: &str, src: &str) -> Vec<Finding> {
 
 #[test]
 fn row_ii_handle_as_f64_within_baseline() {
-    let sources = crate_sources();
+    let sources = production_sources(crate_sources());
     assert!(
         sources
             .iter()
@@ -796,6 +934,386 @@ fn row_ii_handle_as_f64_within_baseline() {
          instance needs a visible baseline edit:\n{}",
         live.len(),
         render(&live)
+    );
+}
+
+// ── homed uses: rows (iv)–(vi) ──────────────────────────────────────────────
+
+/// A row whose identifiers may be used only inside their home fns. A use is a
+/// whole-token occurrence in the production view that does not name a `fn`
+/// declaration, so a call and a bare path (a fn-pointer table entry) both
+/// count. Every home must be seen using one: a moved home or a reshaped FFI
+/// reds the row instead of leaving it matching nothing.
+struct HomedRow {
+    id: &'static str,
+    idents: &'static [&'static str],
+    /// When set, only a use immediately preceded by one of these texts counts.
+    receivers: Option<&'static [&'static str]>,
+    /// `(file basename, fn)` pairs where a use is at home.
+    homes: &'static [(&'static str, &'static str)],
+    baseline: usize,
+    remedy: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct HomedScan {
+    live: Vec<Finding>,
+    homes_seen: Vec<(String, String)>,
+}
+
+/// Is the token at `at` the name a `fn` keyword declares?
+fn is_declared_name(text: &str, at: usize) -> bool {
+    let before = text[..at].trim_end();
+    before
+        .strip_suffix("fn")
+        .is_some_and(|rest| starts_token(before.as_bytes(), rest.len()))
+}
+
+fn has_receiver(text: &str, at: usize, receiver: &str) -> bool {
+    text[..at]
+        .strip_suffix(receiver)
+        .is_some_and(|rest| starts_token(text.as_bytes(), rest.len()))
+}
+
+/// Byte offsets of every use of the row's identifiers in `text`, in order.
+fn use_offsets(row: &HomedRow, text: &str) -> Vec<usize> {
+    let mut offsets: Vec<usize> = row
+        .idents
+        .iter()
+        .flat_map(|ident| ident_offsets(text, ident))
+        .filter(|&at| !is_declared_name(text, at))
+        .filter(|&at| {
+            row.receivers
+                .is_none_or(|rs| rs.iter().any(|r| has_receiver(text, at, r)))
+        })
+        .collect();
+    offsets.sort_unstable();
+    offsets
+}
+
+fn homed_scan(row: &HomedRow, label: &str, src: &str) -> HomedScan {
+    let skeleton = production_view(src).skeleton_lines();
+    let scopes = enclosing_fns(&skeleton);
+    let text = skeleton.join("\n");
+    let source_lines: Vec<&str> = src.lines().collect();
+    let base = basename(label);
+    let mut scan = HomedScan::default();
+    for at in use_offsets(row, &text) {
+        let line = text[..at].matches('\n').count() + 1;
+        let home = scopes[line - 1]
+            .as_deref()
+            .filter(|&f| row.homes.contains(&(base, f)));
+        match home {
+            Some(f) => {
+                let seen = (base.to_owned(), f.to_owned());
+                if !scan.homes_seen.contains(&seen) {
+                    scan.homes_seen.push(seen);
+                }
+            }
+            None => scan.live.push(Finding {
+                file: label.to_owned(),
+                line,
+                text: source_lines[line - 1].trim().to_owned(),
+            }),
+        }
+    }
+    scan
+}
+
+/// The row's homes absent from `seen`, as `file::fn`.
+fn unseen_homes(row: &HomedRow, seen: &[(String, String)]) -> Vec<String> {
+    row.homes
+        .iter()
+        .filter(|&&(file, f)| {
+            !seen
+                .iter()
+                .any(|(s_file, s_fn)| s_file == file && s_fn == f)
+        })
+        .map(|(file, f)| format!("{file}::{f}"))
+        .collect()
+}
+
+fn assert_homed_row(row: &HomedRow) {
+    let mut scan = HomedScan::default();
+    for (label, src) in production_sources(crate_sources()) {
+        let file_scan = homed_scan(row, &label, &src);
+        scan.live.extend(file_scan.live);
+        scan.homes_seen.extend(file_scan.homes_seen);
+    }
+    assert!(
+        within_baseline(scan.live.len(), row.baseline),
+        "row ({}): {} use(s) of {:?} outside their home(s) > baseline {}. Instead, {}; a new \
+         instance needs a visible baseline edit:\n{}",
+        row.id,
+        scan.live.len(),
+        row.idents,
+        row.baseline,
+        row.remedy,
+        render(&scan.live)
+    );
+    let unseen = unseen_homes(row, &scan.homes_seen);
+    assert!(
+        unseen.is_empty(),
+        "row ({}): home(s) {} no longer use any of {:?}, so the row may be matching nothing; \
+         move or retire the row in the same diff that moves the home or reshapes the FFI",
+        row.id,
+        unseen.join(", "),
+        row.idents
+    );
+}
+
+// ── row (iv): op-history decode ─────────────────────────────────────────────
+
+// One row per op-history type. A decode reads the record buffers and then
+// takes the result shape, so a re-inlined decode, whole or partial, names the
+// type's first buffer reader or its shape-taker.
+
+const ROW_IV_BOOLEAN: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "boolean_op_history_face_modified",
+        "boolean_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_boolean_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_boolean_history",
+};
+
+const ROW_IV_LOCAL_FEATURE: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "local_feature_op_history_face_modified",
+        "local_feature_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_local_feature_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_local_feature_history",
+};
+
+const ROW_IV_SWEEP: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "sweep_op_history_face_modified",
+        "sweep_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_sweep_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_sweep_history",
+};
+
+const ROW_IV_LOFT: HomedRow = HomedRow {
+    id: "iv",
+    idents: &[
+        "loft_op_history_face_modified",
+        "loft_op_history_take_result_shape",
+    ],
+    receivers: None,
+    homes: &[("history_decode.rs", "decode_loft_history")],
+    baseline: 0,
+    remedy: "decode through history_decode::decode_loft_history",
+};
+
+#[test]
+fn row_iv_op_history_decode_within_baseline() {
+    for row in [
+        &ROW_IV_BOOLEAN,
+        &ROW_IV_LOCAL_FEATURE,
+        &ROW_IV_SWEEP,
+        &ROW_IV_LOFT,
+    ] {
+        assert_homed_row(row);
+    }
+}
+
+// ── row (v): curated-selection membership mapping ───────────────────────────
+
+/// The construct is the in-kernel parent enumeration every membership loop
+/// needs: an `extract_*` call on the kernel itself (`self.`, `Self::` or
+/// `OcctKernel::`), or a `sub_shapes` call on the store (`store.`, which also
+/// matches `self.store.`), outside the extraction facades and the one mapper,
+/// `ShapeStore::indices_of`. A call through another binding, such as the
+/// handle actor's `kernel.extract_faces`, is not counted: that is the row's
+/// known blind spot. The "does not belong to" message is not counted either,
+/// as that would pin wording (γ1, 70628489ca);
+/// `curated_selection_membership.rs` holds the messages equal across entry
+/// points.
+const ROW_V: HomedRow = HomedRow {
+    id: "v",
+    idents: &[
+        "extract_edges",
+        "extract_faces",
+        "extract_vertices",
+        "sub_shapes",
+    ],
+    receivers: Some(&["self.", "Self::", "OcctKernel::", "store."]),
+    homes: &[
+        ("lib.rs", "extract_edges"),
+        ("lib.rs", "extract_faces"),
+        ("lib.rs", "extract_vertices"),
+        ("shape_store.rs", "indices_of"),
+    ],
+    baseline: 0,
+    remedy: "map a curated selection through ShapeStore::indices_of",
+};
+
+#[test]
+fn row_v_selection_membership_mapping_within_baseline() {
+    assert_homed_row(&ROW_V);
+}
+
+// ── row (vi): topology getters ──────────────────────────────────────────────
+
+const ROW_VI: HomedRow = HomedRow {
+    id: "vi",
+    idents: &["get_edges", "get_faces", "get_vertices"],
+    receivers: None,
+    homes: &[("shape_store.rs", "sub_shapes")],
+    baseline: 0,
+    remedy: "enumerate sub-shapes through ShapeStore::sub_shapes",
+};
+
+#[test]
+fn row_vi_topology_getters_only_in_sub_shapes() {
+    assert_homed_row(&ROW_VI);
+}
+
+// ── row (vii): erased-cause InvalidHandle mappings ──────────────────────────
+
+const ROW_VII_BASELINE: usize = 0;
+
+/// The error types whose `InvalidHandle` a discarding `map_err` must not mint.
+const ROW_VII_ERRORS: &[&str] = &["QueryError", "ExportError", "TessError"];
+
+#[derive(Debug, Default)]
+struct RowVii {
+    live: Vec<Finding>,
+    /// Discarding `map_err` heads examined, whatever their body.
+    heads: usize,
+}
+
+fn skip_ws(bytes: &[u8], mut at: usize) -> usize {
+    while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+        at += 1;
+    }
+    at
+}
+
+/// One past the parameter list of a `map_err(` head, whose `map_err` token
+/// starts at `at`, when its closure (`move` optional) discards its argument:
+/// the parameter is `_` or a `_`-led name such as `_e`, typed or not. `None`
+/// when the closure binds its argument.
+fn discarding_closure_body(bytes: &[u8], at: usize) -> Option<usize> {
+    let mut i = skip_ws(bytes, at + "map_err".len());
+    if bytes.get(i) != Some(&b'(') {
+        return None;
+    }
+    i = skip_ws(bytes, i + 1);
+    if bytes[i..].starts_with(b"move") && !bytes.get(i + 4).is_some_and(|&b| is_ident_byte(b)) {
+        i = skip_ws(bytes, i + 4);
+    }
+    if bytes.get(i) != Some(&b'|') {
+        return None;
+    }
+    i = skip_ws(bytes, i + 1);
+    if bytes.get(i) != Some(&b'_') {
+        return None;
+    }
+    i += 1;
+    while bytes.get(i).is_some_and(|&b| is_ident_byte(b)) {
+        i += 1;
+    }
+    i = skip_ws(bytes, i);
+    if bytes.get(i) == Some(&b':') {
+        while bytes.get(i).is_some_and(|&b| b != b'|') {
+            i += 1;
+        }
+    }
+    (bytes.get(i) == Some(&b'|')).then_some(i + 1)
+}
+
+/// The segments of the `::`-separated path starting at `at`.
+fn path_segments(text: &str, at: usize) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut segments = Vec::new();
+    let mut i = at;
+    loop {
+        let start = i;
+        while bytes.get(i).is_some_and(|&b| is_ident_byte(b)) {
+            i += 1;
+        }
+        if i == start {
+            break;
+        }
+        segments.push(&text[start..i]);
+        if !text[i..].starts_with("::") {
+            break;
+        }
+        i += 2;
+    }
+    segments
+}
+
+/// Does the closure body at `body`, braced or not, lead with a path ending in
+/// one of [`ROW_VII_ERRORS`]' `InvalidHandle`?
+fn mints_invalid_handle(text: &str, body: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = skip_ws(bytes, body);
+    if bytes.get(i) == Some(&b'{') {
+        i = skip_ws(bytes, i + 1);
+    }
+    matches!(
+        path_segments(text, i).as_slice(),
+        [.., ty, "InvalidHandle"] if ROW_VII_ERRORS.contains(ty)
+    )
+}
+
+/// Scans the whole production text, not statement windows: a brace-bodied
+/// closure splits across windows, and its body would escape a per-window read.
+fn row_vii_scan(label: &str, src: &str) -> RowVii {
+    let text = production_view(src).skeleton_lines().join("\n");
+    let source_lines: Vec<&str> = src.lines().collect();
+    let mut scan = RowVii::default();
+    for at in ident_offsets(&text, "map_err") {
+        let Some(body) = discarding_closure_body(text.as_bytes(), at) else {
+            continue;
+        };
+        scan.heads += 1;
+        if mints_invalid_handle(&text, body) {
+            let line = text[..at].matches('\n').count() + 1;
+            scan.live.push(Finding {
+                file: label.to_owned(),
+                line,
+                text: source_lines[line - 1].trim().to_owned(),
+            });
+        }
+    }
+    scan
+}
+
+#[test]
+fn row_vii_no_discarding_map_err_mints_invalid_handle() {
+    let mut scan = RowVii::default();
+    for (label, src) in production_sources(crate_sources()) {
+        let file_scan = row_vii_scan(&label, &src);
+        scan.live.extend(file_scan.live);
+        scan.heads += file_scan.heads;
+    }
+    assert!(
+        scan.heads > 0,
+        "row (vii): no discarding `map_err` head found in production code, so the matcher \
+         may be reading nothing"
+    );
+    assert!(
+        within_baseline(scan.live.len(), ROW_VII_BASELINE),
+        "row (vii): {} discarding `map_err(|_…| …Error::InvalidHandle…)` mapping(s) > baseline \
+         {ROW_VII_BASELINE}. Instead, propagate ShapeStore::get's error with `?` (reify-ir's \
+         From<GeometryError> impls keep the cause); a new instance needs a visible baseline \
+         edit:\n{}",
+        scan.live.len(),
+        render(&scan.live)
     );
 }
 
@@ -924,6 +1442,91 @@ fn prod(r: f64) {
         code.contains("fn prod(r: f64) {"),
         "masking `use …;` must stop at its `;`"
     );
+}
+
+fn module_tree(files: &[(&str, &str)]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .map(|&(label, src)| (label.to_owned(), src.to_owned()))
+        .collect()
+}
+
+#[test]
+fn scanner_blanks_a_file_reached_only_through_a_test_gated_mod() {
+    let check = "fn f(r: f64) {\n    if !(r.is_finite() && r > 0.0) {}\n}\n";
+    let root = snippet(
+        r#"
+#[cfg(test)]
+mod x;
+mod y;
+"#,
+    );
+    let sources = module_tree(&[
+        ("src/lib.rs", root),
+        ("src/x.rs", check),
+        ("src/y.rs", check),
+    ]);
+    assert_eq!(test_only_files(&sources), vec!["src/x.rs".to_owned()]);
+    let live: Vec<(String, Vec<usize>)> = production_sources(sources)
+        .iter()
+        .map(|(label, src)| (label.clone(), live_lines(label, src)))
+        .collect();
+    assert_eq!(
+        live,
+        vec![
+            ("src/lib.rs".to_owned(), vec![]),
+            ("src/x.rs".to_owned(), vec![]),
+            ("src/y.rs".to_owned(), vec![2]),
+        ]
+    );
+}
+
+#[test]
+#[should_panic(expected = "src/x.rs is not among the sources")]
+fn scanner_module_reach_panics_on_a_declaration_with_no_file() {
+    test_only_files(&module_tree(&[("src/lib.rs", "mod x;\n")]));
+}
+
+#[test]
+#[should_panic(expected = "no `mod z;` declaration")]
+fn scanner_module_reach_panics_on_a_file_no_declaration_names() {
+    test_only_files(&module_tree(&[("src/lib.rs", ""), ("src/z.rs", "")]));
+}
+
+#[test]
+#[should_panic(expected = "not a flat src/<stem>.rs file")]
+fn scanner_module_reach_panics_on_a_mod_rs_file() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "mod x;\n"),
+        ("src/x/mod.rs", ""),
+    ]));
+}
+
+#[test]
+#[should_panic(expected = "a layout the test-only-module rule does not follow")]
+fn scanner_module_reach_panics_on_a_declaration_outside_the_root() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "mod x;\n"),
+        ("src/x.rs", "mod y;\n"),
+    ]));
+}
+
+#[test]
+#[should_panic(expected = "sits inside an inline module")]
+fn scanner_module_reach_panics_on_a_declaration_inside_an_inline_module() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "mod outer {\n    mod x;\n}\n"),
+        ("src/x.rs", ""),
+    ]));
+}
+
+#[test]
+#[should_panic(expected = "a `#[path]` module")]
+fn scanner_module_reach_panics_on_a_path_attribute() {
+    test_only_files(&module_tree(&[
+        ("src/lib.rs", "#[path = \"x.rs\"]\nmod x;\n"),
+        ("src/x.rs", ""),
+    ]));
 }
 
 #[test]
@@ -1216,4 +1819,518 @@ fn row_ii_is_scoped_to_handle_rs() {
     let src = "fn decode(v: &Value) -> Option<f64> {\n    v.as_f64()\n}\n";
     assert_eq!(row_ii_count("src/handle.rs", src), 1);
     assert_eq!(row_ii_count("src/lib.rs", src), 0);
+}
+
+// ── self-tests: homed uses and row (iv) ─────────────────────────────────────
+
+fn homed_live_lines(row: &HomedRow, label: &str, src: &str) -> Vec<usize> {
+    homed_scan(row, label, src)
+        .live
+        .iter()
+        .map(|f| f.line)
+        .collect()
+}
+
+#[test]
+fn row_iv_flags_a_decode_outside_its_home_and_clears_at_home() {
+    let copied = snippet(
+        r#"
+fn extrude_with_history(&mut self) -> R {
+    let face_modified =
+        decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history));
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/lib.rs", copied);
+    assert_eq!(
+        scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert!(scan.homes_seen.is_empty(), "{scan:?}");
+
+    let homed = snippet(
+        r#"
+pub(crate) fn decode_sweep_history(
+    mut history: cxx::UniquePtr<ffi::SweepOpHistory>,
+) -> (cxx::UniquePtr<ffi::OcctShape>, SweepOpHistoryRecords) {
+    let face_modified = decode_history_records(ffi::sweep_op_history_face_modified(&history));
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/history_decode.rs", homed);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV_SWEEP, &scan.homes_seen),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn row_iv_does_not_count_the_ffi_declaration() {
+    let src = snippet(
+        r#"
+#[cxx::bridge]
+mod ffi {
+    unsafe extern "C++" {
+        fn sweep_op_history_face_modified(history: &SweepOpHistory) -> Vec<u32>;
+        pub(crate) fn
+            sweep_op_history_face_modified(history: &SweepOpHistory) -> Vec<u32>;
+    }
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_SWEEP, "src/ffi.rs", src),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_iv_counts_a_fn_pointer_path_even_in_the_home_file() {
+    let src = snippet(
+        r#"
+const SWEEP_OP_ACCESSORS: Accessors<ffi::SweepOpHistory> = Accessors {
+    face_modified: ffi::sweep_op_history_face_modified,
+};
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_SWEEP, "src/history_decode.rs", src),
+        vec![2]
+    );
+}
+
+#[test]
+fn row_iv_ignores_comments_strings_and_test_code() {
+    let src = snippet(
+        r#"
+/// Reads `sweep_op_history_face_modified` first.
+fn extrude_with_history() {
+    // ffi::ffi::sweep_op_history_face_modified(&history)
+    let _hint = "sweep_op_history_face_modified";
+}
+#[cfg(all(test, has_occt))]
+mod tests {
+    fn t(h: &SweepOpHistory) -> Vec<u32> {
+        ffi::ffi::sweep_op_history_face_modified(h)
+    }
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_SWEEP, "src/lib.rs", src),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_iv_counts_whole_tokens_only() {
+    let src = snippet(
+        r#"
+fn extrude_with_history() {
+    let _n = ffi::ffi::sweep_op_history_face_modified_count(&history);
+    let _m = my_sweep_op_history_face_modified(&history);
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_SWEEP, "src/lib.rs", src),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_iv_home_is_the_fn_in_history_decode_rs_only() {
+    let src = snippet(
+        r#"
+fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
+    decode_history_records(ffi::ffi::sweep_op_history_face_modified(&history))
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/lib.rs", src);
+    assert_eq!(scan.live.len(), 1, "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV_SWEEP, &scan.homes_seen),
+        vec!["history_decode.rs::decode_sweep_history".to_owned()]
+    );
+}
+
+#[test]
+fn row_iv_reports_a_home_that_uses_none_of_its_idents_as_unseen() {
+    let src = snippet(
+        r#"
+pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
+    decode_with(&SWEEP_OP_ACCESSORS, history)
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV_SWEEP, "src/history_decode.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV_SWEEP, &scan.homes_seen),
+        vec!["history_decode.rs::decode_sweep_history".to_owned()]
+    );
+}
+
+#[test]
+fn row_iv_counts_a_readers_table_in_a_closure_of_its_decoder_as_at_home() {
+    let src = snippet(
+        r#"
+pub(crate) fn decode_loft_history(
+    history: cxx::UniquePtr<ffi::LoftOpHistory>,
+) -> (cxx::UniquePtr<ffi::OcctShape>, LoftOpHistoryRecords) {
+    read_then_take(history, ffi::loft_op_history_take_result_shape, |h| {
+        let buffers = RecordBufferReaders {
+            face_modified: ffi::loft_op_history_face_modified,
+        }
+        .read(h);
+    })
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_IV_LOFT, "src/history_decode.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(
+        unseen_homes(&ROW_IV_LOFT, &scan.homes_seen),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn row_iv_flags_a_partial_decode_by_its_shape_taker() {
+    let src = snippet(
+        r#"
+fn run_local_feature_with_history(&mut self) -> R {
+    let edge_deleted = ffi::ffi::local_feature_op_history_edge_deleted(&history);
+    let shape = ffi::ffi::local_feature_op_history_take_result_shape(history.pin_mut());
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_LOCAL_FEATURE, "src/lib.rs", src),
+        vec![3]
+    );
+}
+
+#[test]
+fn row_iv_pairs_each_history_type_with_its_own_decoder() {
+    let src = snippet(
+        r#"
+pub(crate) fn decode_sweep_history(history: UniquePtr<SweepOpHistory>) -> R {
+    let boolean = ffi::boolean_op_history_face_modified(&other);
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_IV_BOOLEAN, "src/history_decode.rs", src),
+        vec![2]
+    );
+}
+
+// ── self-tests: row (vi) ────────────────────────────────────────────────────
+
+/// A store-side enumerator and the lib.rs facades over it, as ε shapes them.
+const STORE_SUB_SHAPES: &str = r#"
+fn sub_shapes(
+    &mut self,
+    parent: GeometryHandleId,
+    kind: SubShapeKind,
+) -> Result<Vec<GeometryHandleId>, QueryError> {
+    let vec = match kind {
+        SubShapeKind::Edge => ffi::ffi::get_edges(shape),
+        SubShapeKind::Face => ffi::ffi::get_faces(shape),
+        SubShapeKind::Vertex => ffi::ffi::get_vertices(shape),
+    }
+    .map_err(q)?;
+}
+"#;
+
+const KERNEL_FACADES: &str = r#"
+pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
+    self.store.sub_shapes(handle, SubShapeKind::Edge)
+}
+pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
+    self.store.sub_shapes(handle, SubShapeKind::Face)
+}
+pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
+    self.store.sub_shapes(handle, SubShapeKind::Vertex)
+}
+"#;
+
+#[test]
+fn row_vi_flags_three_extract_bodies_and_clears_behind_sub_shapes() {
+    let three_bodies = snippet(
+        r#"
+fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
+pub fn extract_edges(&mut self, handle: GeometryHandleId) -> R {
+    let vec = ffi::ffi::get_edges(shape).map_err(q)?;
+}
+pub fn extract_faces(&mut self, handle: GeometryHandleId) -> R {
+    let vec = ffi::ffi::get_faces(shape).map_err(q)?;
+}
+pub fn extract_vertices(&mut self, handle: GeometryHandleId) -> R {
+    let vec = ffi::ffi::get_vertices(shape)
+        .map_err(q)?;
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_VI, "src/lib.rs", three_bodies);
+    assert_eq!(
+        scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
+        vec![3, 6, 9]
+    );
+    assert_eq!(
+        unseen_homes(&ROW_VI, &scan.homes_seen),
+        vec!["shape_store.rs::sub_shapes".to_owned()]
+    );
+
+    let store = homed_scan(&ROW_VI, "src/shape_store.rs", snippet(STORE_SUB_SHAPES));
+    assert!(store.live.is_empty(), "{store:?}");
+    assert_eq!(
+        unseen_homes(&ROW_VI, &store.homes_seen),
+        Vec::<String>::new()
+    );
+    let facades = homed_scan(&ROW_VI, "src/lib.rs", snippet(KERNEL_FACADES));
+    assert!(facades.live.is_empty(), "{facades:?}");
+
+    assert_eq!(
+        homed_live_lines(&ROW_VI, "src/lib.rs", snippet(STORE_SUB_SHAPES)),
+        vec![7, 8, 9],
+        "the home is the fn in shape_store.rs only"
+    );
+}
+
+// ── self-tests: row (v) ─────────────────────────────────────────────────────
+
+#[test]
+fn row_v_counts_kernel_enumerations_only() {
+    let kernel_side = snippet(
+        r#"
+pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let parent_faces = self.extract_faces(target).map_err(fail)?;
+    let parent_edges = Self::extract_edges(self, target).map_err(fail)?;
+    let parent_vertices = crate::OcctKernel::extract_vertices(self, target).map_err(fail)?;
+    let parent_shells = self.store.sub_shapes(target, SubShapeKind::Face).map_err(fail)?;
+}
+fn draft(store: &mut ShapeStore, target: GeometryHandleId) -> R {
+    let parent_faces = store.sub_shapes(target, SubShapeKind::Face).map_err(fail)?;
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_V, "src/lib.rs", kernel_side),
+        vec![2, 3, 4, 5, 8]
+    );
+
+    let handle_forwards = snippet(
+        r#"
+fn spawn() -> OcctKernelHandle {
+    std::thread::spawn(move || {
+        let _ = reply.send(kernel.extract_faces(h));
+    });
+}
+impl GeometryKernel for OcctKernelHandle {
+    fn extract_faces(&mut self, h: GeometryHandleId) -> R {
+        OcctKernelHandle::extract_faces(self, h)
+    }
+}
+"#,
+    );
+    assert_eq!(
+        homed_live_lines(&ROW_V, "src/handle.rs", handle_forwards),
+        Vec::<usize>::new()
+    );
+}
+
+#[test]
+fn row_v_flags_five_membership_copies_and_clears_behind_the_mapper() {
+    let five_copies = snippet(
+        r#"
+pub fn fillet_edges_with_history(&mut self, shape_id: GeometryHandleId) -> R {
+    let parent_edges = self.extract_edges(shape_id).map_err(fail)?;
+}
+pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let parent_faces = self.extract_faces(target).map_err(fail)?;
+}
+pub fn shell_solid_faces(&mut self, target: GeometryHandleId) -> R {
+    let parent_faces = self.extract_faces(target).map_err(fail)?;
+}
+pub fn chamfer_edges_with_history(&mut self, shape_id: GeometryHandleId) -> R {
+    let parent_edges = self.extract_edges(shape_id).map_err(fail)?;
+}
+pub fn chamfer_asymmetric_edges_with_history(&mut self, shape_id: GeometryHandleId) -> R {
+    let parent_edges = self.extract_edges(shape_id).map_err(fail)?;
+}
+"#,
+    );
+    let scan = homed_scan(&ROW_V, "src/lib.rs", five_copies);
+    assert_eq!(
+        scan.live.iter().map(|f| f.line).collect::<Vec<_>>(),
+        vec![2, 5, 8, 11, 14]
+    );
+
+    let mapper = homed_scan(
+        &ROW_V,
+        "src/shape_store.rs",
+        snippet(
+            r#"
+fn indices_of(
+    &mut self,
+    parent: GeometryHandleId,
+    selection: Option<&[GeometryHandleId]>,
+    kind: SubShapeKind,
+    label: &str,
+) -> Result<Vec<u32>, GeometryError> {
+    let parent_subshapes = self.sub_shapes(parent, kind).map_err(fail)?;
+}
+"#,
+        ),
+    );
+    let callers = format!(
+        "{}{}",
+        snippet(KERNEL_FACADES),
+        r#"pub fn draft_faces(&mut self, target: GeometryHandleId) -> R {
+    let face_indices = self.store.indices_of(target, Some(faces), FACE, "draft_faces")?;
+}
+"#
+    );
+    let kernel = homed_scan(&ROW_V, "src/lib.rs", &callers);
+    assert!(mapper.live.is_empty(), "{mapper:?}");
+    assert!(kernel.live.is_empty(), "{kernel:?}");
+    let seen: Vec<(String, String)> = mapper
+        .homes_seen
+        .into_iter()
+        .chain(kernel.homes_seen)
+        .collect();
+    assert_eq!(unseen_homes(&ROW_V, &seen), Vec::<String>::new());
+}
+
+// ── self-tests: row (vii) ───────────────────────────────────────────────────
+
+fn row_vii_live_lines(src: &str) -> Vec<usize> {
+    row_vii_scan("src/lib.rs", src)
+        .live
+        .iter()
+        .map(|f| f.line)
+        .collect()
+}
+
+#[test]
+fn row_vii_flags_each_erased_handle_error_on_one_line() {
+    let src = snippet(
+        r#"
+fn q(&self, id: GeometryHandleId) -> Result<f64, QueryError> {
+    let shape = self.store.get(id).map_err(|_| QueryError::InvalidHandle(id))?;
+}
+fn e(&self, id: GeometryHandleId) -> Result<(), ExportError> {
+    let shape = self.store.get(id).map_err(move |_| ExportError::InvalidHandle(id))?;
+}
+fn t(&self, id: GeometryHandleId) -> Result<Mesh, TessError> {
+    let shape = self.store.get(id).map_err(|_| TessError::InvalidHandle(id))?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![2, 5, 8]);
+}
+
+#[test]
+fn row_vii_flags_the_brace_bodied_form_across_lines() {
+    let src = snippet(
+        r#"
+fn export(&self, h: GeometryHandleId) -> Result<(), ExportError> {
+    let shape = self
+        .store
+        .get(h)
+        .map_err(|_| {
+            ExportError::InvalidHandle(h)
+        })?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![5]);
+}
+
+#[test]
+fn row_vii_flags_a_qualified_error_path() {
+    let src = snippet(
+        r#"
+fn t(&self, h: GeometryHandleId) -> Result<Mesh, reify_ir::TessError> {
+    let shape = self.store.get(h).map_err(|_| reify_ir::TessError::InvalidHandle(h))?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![2]);
+}
+
+#[test]
+fn row_vii_flags_a_discard_under_an_underscore_name_or_a_type() {
+    let src = snippet(
+        r#"
+fn q(&self, id: GeometryHandleId) -> Result<f64, QueryError> {
+    let shape = self.store.get(id).map_err(|_e| QueryError::InvalidHandle(id))?;
+}
+fn e(&self, id: GeometryHandleId) -> Result<(), ExportError> {
+    let shape = self.store.get(id).map_err(move | _err | ExportError::InvalidHandle(id))?;
+}
+fn t(&self, id: GeometryHandleId) -> Result<Mesh, TessError> {
+    let shape = self.store.get(id).map_err(|_: GeometryError| TessError::InvalidHandle(id))?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), vec![2, 5, 8]);
+}
+
+#[test]
+fn row_vii_clears_once_rewritten_to_the_question_mark() {
+    let src = snippet(
+        r#"
+fn q(&self, id: GeometryHandleId) -> Result<f64, QueryError> {
+    let shape = self.store.get(id)?;
+}
+"#,
+    );
+    assert_eq!(row_vii_live_lines(src), Vec::<usize>::new());
+}
+
+#[test]
+fn row_vii_does_not_flag_a_kept_cause_another_variant_or_an_overflow_mapping() {
+    let src = snippet(
+        r#"
+fn q(&self, shape: &OcctShape, face_index: &i64) -> Result<f64, QueryError> {
+    let a = ffi::query_volume(shape).map_err(|e| QueryError::QueryFailed(e.to_string()))?;
+    let c = ffi::query_length(shape).map_err(|e_| QueryError::InvalidHandle(e_.handle()))?;
+    let b = ffi::query_area(shape).map_err(|_| QueryError::QueryFailed(area()))?;
+    let idx: u32 = (*face_index).try_into().map_err(|_| {
+        GeometryError::OperationFailed(format!("face index {face_index} overflows u32"))
+    })?;
+}
+"#,
+    );
+    let scan = row_vii_scan("src/lib.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(scan.heads, 2, "both `|_|` heads are examined");
+}
+
+#[test]
+fn row_vii_ignores_comments_strings_and_test_code() {
+    let src = snippet(
+        r#"
+/// Never `.map_err(|_| QueryError::InvalidHandle(id))`.
+fn q() {
+    // .map_err(|_| QueryError::InvalidHandle(id)) was the old erasure
+    let _hint = ".map_err(|_| TessError::InvalidHandle(id))";
+}
+#[cfg(all(test, has_occt))]
+mod tests {
+    fn t(k: &OcctKernel, id: GeometryHandleId) -> Result<(), QueryError> {
+        k.store.get(id).map_err(|_| QueryError::InvalidHandle(id))?;
+        Ok(())
+    }
+}
+"#,
+    );
+    let scan = row_vii_scan("src/lib.rs", src);
+    assert!(scan.live.is_empty(), "{scan:?}");
+    assert_eq!(scan.heads, 0, "no production `map_err(|_|` head remains");
 }

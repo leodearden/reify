@@ -385,7 +385,7 @@ tasks:
       paths:
       - crates/reify-eval/src/engine_hash_tests.rs
   - name: shims-are-s7
-    binding: 'persistent_cache.rs re-export shims are deleted by S7 #8551 (pending); ρ depends on it.'
+    binding: 'persistent_cache.rs re-export shims deleted by S7 #8551 (landed, merge 514cc0b991, 2026-11-04); ρ depends on it.'
     verdict: PASS
 - label: υ
   task_id: 8877

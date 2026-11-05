@@ -23,9 +23,10 @@
 //! The name `CrossRefs` is deliberately shared with [`crate::model::ModuleCrossRefs`],
 //! but the two types are **semantically distinct**:
 //!
-//! - [`crate::model::ModuleCrossRefs`] holds *per-module outgoing references* (which
-//!   other modules, items, or traits a given module refers to).  It is attached
-//!   to each [`crate::model::ModuleDoc`] and populated by the lowering slice.
+//! - [`crate::model::ModuleCrossRefs`] is the schema for *per-module outgoing
+//!   references* (which other modules, items, or traits a given module refers
+//!   to).  It is attached to each [`crate::model::ModuleDoc`] but nothing
+//!   populates it: `build_doc_model` always leaves it at its default.
 //!
 //! - [`CrossRefs`] (this module) holds *cross-template inverted indices* computed
 //!   over the entire compiled template set.  It is not part of `DocModel`; it is

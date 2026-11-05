@@ -1,49 +1,25 @@
 //! Cross-session persistent cache for `ComputeNode` value types.
 //!
 //! See `docs/prds/v0_3/persistent-fea-cache.md` for the full PRD. This module
-//! defines the opt-in [`PersistentlyCacheable`] trait that value types must
-//! implement to participate in the on-disk persistent cache, and provides the
-//! first concrete impl: [`ElasticResult`], the linear-elastostatic FEA solver
-//! output container.
+//! owns the on-disk entry format — the [`CacheEntryHeader`] and the `.meta`
+//! sidecar layout — the read/write/sweep operations over it
+//! ([`write_entry`], [`read_entry`], [`sweep_on_startup`]), and the
+//! [`PersistentlyCacheable`] impls for [`BucklingResultCache`] and the
+//! [`WithDiagnostics`] envelope.
 //!
-//! # Co-location rationale
-//!
-//! The Rust `ElasticResult` struct is co-located with the trait here rather
-//! than living in `reify-stdlib::fea` (as the task description initially
-//! suggested) because `reify-stdlib` cannot depend on `reify-eval` — the
-//! reverse edge (`reify-eval -> reify-expr -> reify-stdlib`) already exists,
-//! so adding `reify-stdlib -> reify-eval` would form a cycle. The orphan rule
-//! then forces either the trait or the impl into `reify-eval`; co-locating
-//! both here is the smallest blast-radius option. Recorded as escalation
-//! `esc-2969-65` for steward visibility.
-//!
-//! # Encoding strategy
-//!
-//! The trait is intentionally NOT object-safe: `serialize_to_writer` and
-//! `deserialize_from_reader` use `impl Write` / `impl Read` generics so the
-//! cache layer can monomorphise the zstd Encoder/Decoder paths for each
-//! concrete writer/reader. The cache keys on concrete types per entry, so
-//! static dispatch is sufficient.
+//! The [`PersistentlyCacheable`] trait itself lives in
+//! [`reify_core::persistent_cache`] (#3834), and the FEA solver output
+//! [`reify_compute_contract::ElasticResult`] with its impl lives in
+//! `reify_compute_contract` (#4934).
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use reify_compute_contract::StructuredComputeDetail;
+use reify_core::persistent_cache::PersistentlyCacheable;
 use serde::{Deserialize, Serialize};
 
 mod diagnostics_wire;
-
-/// Compute the canonical engine-version hash for a set of contributor byte slices.
-///
-/// Re-exported from [`crate::engine_hash_algo`], which is the single source of
-/// truth shared between the library crate and `build.rs` (included via
-/// `include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine_hash_algo.rs"))`).
-/// Any change to the algorithm in `src/engine_hash_algo.rs` affects both callers
-/// simultaneously — there is no duplicate copy.
-///
-/// See [`crate::engine_hash_algo::compose_engine_version_hash`] for the full
-/// documentation including framing rationale and PRD reference.
-pub use crate::engine_hash_algo::compose_engine_version_hash;
 
 /// Magic byte written as the sole content of every `.meta` sidecar file.
 ///
@@ -316,7 +292,8 @@ impl CacheEntryHeader {
     /// Encode `self` into `w` using bincode 1.3 fixint-LE encoding.
     ///
     /// Same error-mapping discipline as
-    /// [`ElasticResult::serialize_to_writer`]: `bincode::Error` is wrapped via
+    /// [`reify_compute_contract::ElasticResult::serialize_to_writer`]:
+    /// `bincode::Error` is wrapped via
     /// [`io::Error::other`] because `bincode::Error` does not implement
     /// `Into<io::Error>`.
     pub fn write_to<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -326,7 +303,7 @@ impl CacheEntryHeader {
     /// Decode a [`CacheEntryHeader`] from `r`.
     ///
     /// Same error-mapping discipline as
-    /// [`ElasticResult::deserialize_from_reader`].
+    /// [`reify_compute_contract::ElasticResult::deserialize_from_reader`].
     pub fn read_from<R: Read>(r: &mut R) -> io::Result<Self> {
         bincode::deserialize_from(r).map_err(io::Error::other)
     }
@@ -350,8 +327,8 @@ impl CacheEntryHeader {
 /// When any contributor changes, `build.rs` recomputes this hash; all existing
 /// cache entries miss and are recomputed from scratch (invalidate-by-miss per
 /// PRD `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
-/// version"). Cross-reference: [`compose_engine_version_hash`] is the library
-/// function that documents and pins the hashing algorithm.
+/// version"). Cross-reference: `engine_hash_algo::compose_engine_version_hash`
+/// is the library function that documents and pins the hashing algorithm.
 pub const ENGINE_VERSION_HASH: &str = env!("REIFY_ENGINE_VERSION_HASH");
 
 // Compile-time sentinel: `bincode::ErrorKind` is part of the public bincode
@@ -362,33 +339,7 @@ pub const ENGINE_VERSION_HASH: &str = env!("REIFY_ENGINE_VERSION_HASH");
 #[allow(dead_code)]
 type _BincodeV1Sentinel = bincode::ErrorKind;
 
-/// Opt-in trait for `ComputeNode` output value types that may be persisted
-/// across sessions in the on-disk cache.
-///
-/// The trait declaration was moved to `reify-core::persistent_cache` during
-/// task γ (#3834) to break the `reify-shell-extract → reify-eval` dependency
-/// cycle. This re-export shim preserves every existing
-/// `use reify_eval::persistent_cache::PersistentlyCacheable;` import path
-/// without change.
-///
-/// See [`reify_core::persistent_cache::PersistentlyCacheable`] for the full
-/// documentation.
-pub use reify_core::persistent_cache::PersistentlyCacheable;
-
-/// Re-exported from [`reify_compute_contract`], which owns [`ElasticResult`],
-/// [`ShellChannels`], and [`max_deflection_magnitude`] (task A / #4934 — the
-/// orphan rule forces the FEA-result island, including its
-/// `PersistentlyCacheable` impl and drift-guard `From<PartialElasticResult>`
-/// impls, to co-locate in the OCCT-free foundation crate). This shim
-/// preserves every existing `crate::persistent_cache::ElasticResult` /
-/// `reify_eval::persistent_cache::ElasticResult` path without change.
-/// [`AposterioriEstimate`] (task #4942) moved with `ElasticResult` since it
-/// is carried on `ElasticResult::aposteriori`.
-pub use reify_compute_contract::{
-    AposterioriEstimate, ElasticResult, ShellChannels, max_deflection_magnitude,
-};
-
-/// Shared f64-slab codec, also re-exported from [`reify_compute_contract`]
+/// Shared f64-slab codec, imported from [`reify_compute_contract`]
 /// (task A / #4934). [`BucklingResultCache`]'s [`PersistentlyCacheable`] impl
 /// below is the sole remaining reify-eval consumer.
 use reify_compute_contract::{check_f64_vec_len, read_f64_slab, write_f64_slab};
@@ -534,8 +485,9 @@ struct BucklingResultHeader {
 /// 6. `ps_stress` f64 slab (ps_stress_len × 8 bytes).
 ///
 /// All slabs use the same NaN-safe little-endian raw f64 encoding as
-/// [`ElasticResult`] (via [`write_f64_slab`] / [`read_f64_slab`] /
-/// [`check_f64_vec_len`] / [`reify_compute_contract::MAX_F64_ELEMENTS`]).
+/// [`reify_compute_contract::ElasticResult`] (via [`write_f64_slab`] /
+/// [`read_f64_slab`] / [`check_f64_vec_len`] /
+/// [`reify_compute_contract::MAX_F64_ELEMENTS`]).
 ///
 /// # Hash-identity contract
 ///
@@ -1916,25 +1868,17 @@ pub fn sweep_on_startup(cache_root: &Path, current_engine_version: &str) -> Swee
 /// (opened read-only; on Linux `futimens` only requires ownership of the
 /// inode, not write access on the file descriptor).
 ///
-/// Exposed `pub(crate)` so test modules across the crate can share this
-/// helper without duplicating it.
-#[cfg(test)]
-pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
-    use std::fs::FileTimes;
+/// Test support only: compiled for this crate's unit tests (`cfg(test)`) and
+/// for dev-dependents that enable the `test-instrumentation` feature (see
+/// `crates/reify-eval/Cargo.toml` `[features]`); never part of a production
+/// build.
+#[cfg(any(test, feature = "test-instrumentation"))]
+pub fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
     use std::time::{Duration, SystemTime};
     let t = SystemTime::now()
         .checked_sub(Duration::from_secs(age_secs))
         .unwrap_or(SystemTime::UNIX_EPOCH);
-    let times = FileTimes::new().set_modified(t);
-    if path.is_dir() {
-        // Directories can be opened O_RDONLY; futimens checks ownership not
-        // fd write-access on Linux.
-        let f = std::fs::File::open(path).unwrap();
-        f.set_times(times).unwrap();
-    } else {
-        let f = std::fs::File::options().write(true).open(path).unwrap();
-        f.set_times(times).unwrap();
-    }
+    set_mtime(path, t);
 }
 
 /// Forward-date the mtime of `path` to `secs_in_future` seconds in the future.
@@ -1950,21 +1894,27 @@ pub(crate) fn backdate_mtime(path: &std::path::Path, age_secs: u64) {
 /// Exposed `pub(crate)` so test modules across the crate can share this helper.
 #[cfg(test)]
 pub(crate) fn forward_mtime(path: &std::path::Path, secs_in_future: u64) {
-    use std::fs::FileTimes;
     use std::time::{Duration, SystemTime};
     let t = SystemTime::now()
         .checked_add(Duration::from_secs(secs_in_future))
         .unwrap_or_else(SystemTime::now);
-    let times = FileTimes::new().set_modified(t);
-    if path.is_dir() {
+    set_mtime(path, t);
+}
+
+/// Set the mtime of the file or directory at `path` to `mtime`.
+#[cfg(any(test, feature = "test-instrumentation"))]
+fn set_mtime(path: &Path, mtime: std::time::SystemTime) {
+    let times = std::fs::FileTimes::new().set_modified(mtime);
+    let opened = if path.is_dir() {
         // Directories can be opened O_RDONLY; futimens checks ownership not
         // fd write-access on Linux.
-        let f = std::fs::File::open(path).unwrap();
-        f.set_times(times).unwrap();
+        std::fs::File::open(path)
     } else {
-        let f = std::fs::File::options().write(true).open(path).unwrap();
-        f.set_times(times).unwrap();
-    }
+        std::fs::File::options().write(true).open(path)
+    };
+    let f = opened.unwrap_or_else(|e| panic!("set_mtime: open {}: {e}", path.display()));
+    f.set_times(times)
+        .unwrap_or_else(|e| panic!("set_mtime: set_times on {}: {e}", path.display()));
 }
 
 /// One overlay of every `FeaDiagnosticDetail` variant, so a round trip
@@ -1991,6 +1941,8 @@ pub(crate) fn all_fea_structured_detail() -> Vec<StructuredComputeDetail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_hash_algo::compose_engine_version_hash;
+    use reify_compute_contract::{AposterioriEstimate, ElasticResult};
     use reify_solver_elastic::{DofDirection, ElementId, FeaDiagnosticDetail};
 
     // ── ENGINE_VERSION_HASH const tests ──────────────────────────────────────

@@ -15,6 +15,7 @@ export interface KeyboardShortcutCallbacks {
   onCommandPalette?: () => void;
   onSymbolJump?: () => void;
   onToggleDiagnostics?: () => void;
+  onToggleEdges?: () => void;
   /**
    * Called when the user presses a bare digit key 1–9 (no modifiers, not in a
    * text input context). The `index` argument is 0-based: key "1" → 0, "9" → 8.
@@ -48,12 +49,13 @@ export const ID_TO_CALLBACK: Partial<Record<ShortcutId, keyof KeyboardShortcutCa
   commandPalette:    'onCommandPalette',
   symbolJump:        'onSymbolJump',
   toggleDiagnostics: 'onToggleDiagnostics',
+  toggleEdges:       'onToggleEdges',
 };
 
 /**
  * Shortcut ids that are exempt from the typing-context guard (input/textarea/
- * contentEditable). These are global palette-open actions that must fire from
- * any focus state, including while the CodeMirror editor is focused.
+ * select type-ahead/contentEditable). These are global palette-open actions that
+ * must fire from any focus state, including while the CodeMirror editor is focused.
  */
 const PALETTE_GLOBAL_IDS = new Set<ShortcutId>(['commandPalette', 'symbolJump']);
 
@@ -96,10 +98,22 @@ export function runCommand(id: ShortcutId, callbacks: KeyboardShortcutCallbacks)
 }
 
 /**
+ * True for a key a focused native <select> consumes for its type-ahead: a
+ * printable character with no Ctrl/Meta/Alt held. Every other key (Escape,
+ * function keys, modifier chords) is not the select's, so shortcuts still fire.
+ */
+function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
+  return e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
+/**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
- * Skips when the event target is an input, textarea, or contenteditable element,
+ * Skips when the event target is an input, textarea, or contenteditable
+ * element, or a select receiving a type-ahead key (bare letters and digits
+ * reach the select untouched; Ctrl+S, F5, Escape and the like still fire),
  * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
- * exempt from the typing-context guard.
+ * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
+ * auto-repeat keydowns, so holding the key flips the state once.
  */
 export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void {
   function handleKeyDown(e: KeyboardEvent) {
@@ -108,6 +122,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
     const inTypingContext =
       tagName === 'input' ||
       tagName === 'textarea' ||
+      (tagName === 'select' && isSelectTypeAheadKey(e)) ||
       target.isContentEditable;
 
     // Registry-driven matching.
@@ -124,6 +139,7 @@ export function useKeyboardShortcuts(callbacks: KeyboardShortcutCallbacks): void
       if (inTypingContext && !PALETTE_GLOBAL_IDS.has(shortcut.id)) continue;
 
       e.preventDefault();
+      if (e.repeat && shortcut.toggle) return;
       // All entries in ID_TO_CALLBACK map to zero-argument callbacks.
       // Cast to silence TypeScript's union-type inference for the parameterised
       // onSwitchViewByIndex callback (which is handled via its own special-case

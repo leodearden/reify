@@ -1391,9 +1391,9 @@ mod tests {
         let mut kernel = TestRealKernel::new();
         kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("TestRealKernel::execute(Box) must succeed to create a valid handle");
 
@@ -1413,9 +1413,9 @@ mod tests {
         let mut kernel = TestRealKernel::new();
         let handle = kernel
             .execute(&GeometryOp::Box {
-                width: Value::Real(10.0),
-                height: Value::Real(10.0),
-                depth: Value::Real(10.0),
+                size_x: Value::Real(10.0),
+                size_y: Value::Real(10.0),
+                size_z: Value::Real(10.0),
             })
             .expect("TestRealKernel::execute(Box) must succeed to create a valid handle");
 
@@ -1440,8 +1440,8 @@ mod tests {
     // this crate is built with.
     crate::assert_kernel_contract!(stub; TestStubKernel::new, "TestStub");
     crate::assert_kernel_contract!(real; TestRealKernel::new, valid_op = GeometryOp::Box {
-        width: Value::Real(10.0),
-        height: Value::Real(10.0),
-        depth: Value::Real(10.0),
+        size_x: Value::Real(10.0),
+        size_y: Value::Real(10.0),
+        size_z: Value::Real(10.0),
     });
 }

@@ -226,9 +226,9 @@ fn box_op() -> CompiledGeometryOp {
     CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_lit(10.0)),
-            ("height".into(), mm_lit(20.0)),
-            ("depth".into(), mm_lit(5.0)),
+            ("size_x".into(), mm_lit(10.0)),
+            ("size_y".into(), mm_lit(20.0)),
+            ("size_z".into(), mm_lit(5.0)),
         ],
     }
 }
@@ -341,6 +341,7 @@ fn occt_manifold_engine() -> (Engine, KernelCallCounts) {
     );
 
     let engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(MockConstraintChecker::new()),
         kernels,
         registry,

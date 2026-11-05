@@ -29,6 +29,9 @@
 //! `fdm_bracket_e2e::<test>` selectors still resolve.
 mod common;
 
+#[path = "common/failed_diagnostics.rs"]
+mod failed_diagnostics;
+
 #[path = "harness_fea_solver_e2e/as_printed_body_realization_e2e.rs"]
 mod as_printed_body_realization_e2e;
 #[path = "harness_fea_solver_e2e/as_printed_material_e2e.rs"]
@@ -66,6 +69,8 @@ mod fea_loads_stdlib_smoke;
 mod fea_stress_reductions_smoke;
 #[path = "harness_fea_solver_e2e/fea_structured_detail_e2e.rs"]
 mod fea_structured_detail_e2e;
+#[path = "harness_fea_solver_e2e/form_find_input_contract.rs"]
+mod form_find_input_contract;
 #[path = "harness_fea_solver_e2e/jacobian_column_member_access.rs"]
 mod jacobian_column_member_access;
 #[path = "harness_fea_solver_e2e/kinematic_diagnostics_e2e.rs"]

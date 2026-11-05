@@ -1,0 +1,6 @@
+// #8740 (compiler-declaration-passes B12): `tangent` has a known DOF count but
+// no rot/trans split, so the joint DOF verdict is gated off.
+
+module joint_dof_gate_tangent
+
+joint j(a: Axis, b: Axis) with angle: Angle = { concentric(a, b)  tangent(a, b, 5mm, 6mm) }

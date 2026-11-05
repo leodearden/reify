@@ -782,12 +782,11 @@ assert "S8: REIFY_RUN_ALL_SKIP_STATE is a declared ambient-vars key row (task δ
 echo ""
 echo "--- Section 9 (task δ): REIFY_RUN_ALL_SKIP_STATE durable verify_env wiring ---"
 
-# verify_env_exports — parse KEY=VALUE from the yaml verify_env block. Mirrored
-# VERBATIM from test_run_all_ambient_isolation.sh:192-218 (itself a verbatim
-# mirror of test_verify_env_ambient_isolation.sh:59-85, task 4966's drift-guard)
-# as a reuse-note, NOT extracted to a shared lib, to avoid editing those live
-# merge-gate guard files (out of this task's declared scope). Refresh all copies
-# together if the awk logic ever changes.
+# verify_env_exports — parse KEY=VALUE from the yaml verify_env block: the awk
+# form of the parse contract stated in the docstring of
+# test_verify_env_ambient_isolation.py::verify_env_exports. Identical copies
+# live in other members (`git grep -n '^verify_env_exports() {' -- tests/infra`);
+# change every copy and that function together.
 verify_env_exports() {
     local yaml_file="$1"
     awk '

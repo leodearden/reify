@@ -8,6 +8,7 @@ import {
   Group,
   DoubleSide,
   Color,
+  type LineSegments,
   type Scene,
   type TypedArray,
 } from 'three';
@@ -16,6 +17,7 @@ import type { MeshData, MeshAppearance, DisplayStyleData, VisibilityState } from
 import { createGhostMaterial } from './ghostMaterial';
 import type { BarycentricUV, ProbeSample } from '../stores/probeStore';
 import { UNDERLAY_RENDER_ORDER } from './renderOrder';
+import { createEdgesOverlay } from './edgesOverlay';
 
 // Patch BufferGeometry prototype for BVH acceleration
 (BufferGeometry.prototype as any).computeBoundsTree = computeBoundsTree;
@@ -182,6 +184,13 @@ export interface MeshManagerContext {
     faceId: number,
     bary: BarycentricUV,
   ) => ProbeSample | null;
+  /**
+   * Turn the edges-in-black view on or off: one black EdgesGeometry overlay per
+   * shown mesh, maintained across sync, visibility and deformation changes.
+   */
+  setEdges: (on: boolean) => void;
+  /** Returns a copy of the edges overlay map (keyed by entity path); empty while off. */
+  getEdgesOverlays: () => Map<string, LineSegments>;
 }
 
 /**
@@ -201,6 +210,22 @@ function validateMeshData(data: MeshData): boolean {
     }
   }
   return true;
+}
+
+/** The MeshData arrays a mesh's geometry is built from: its index, and its vertices warped by displaced_positions. */
+type GeometrySource = Pick<MeshData, 'vertices' | 'indices' | 'displaced_positions'>;
+
+function geometrySourceOf(data: MeshData): GeometrySource {
+  return { vertices: data.vertices, indices: data.indices, displaced_positions: data.displaced_positions };
+}
+
+function isSameGeometrySource(source: GeometrySource | undefined, data: MeshData): boolean {
+  return (
+    source !== undefined &&
+    source.vertices === data.vertices &&
+    source.indices === data.indices &&
+    source.displaced_positions === data.displaced_positions
+  );
 }
 
 /**
@@ -289,6 +314,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   const meshOriginalVertices = new Map<string, Float32Array>();
   const meshDisplacedPositions = new Map<string, Float32Array>();
 
+  // Side-table: the MeshData arrays each entity's geometry was last built from.
+  // Mesh updates replace typed arrays and never write into them (pinned by
+  // __tests__/engineStore.meshArrays.test.ts), so identical arrays mean a sync
+  // would rebuild the very geometry the mesh already holds.
+  const meshGeometrySources = new Map<string, GeometrySource>();
+
   const meshMap = new Map<string, Mesh>();
   const visibilityMap = new Map<string, VisibilityState>();
   const ghostMeshMap = new Map<string, Mesh>();
@@ -316,6 +347,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
 
   // Map of active undeformed overlay meshes (one per entity with displaced_positions).
   const undeformedMeshMap = new Map<string, Mesh>();
+
+  // Edges-in-black overlay: one black feature-edge LineSegments per shown mesh,
+  // rebuilt by syncEdgesOverlay wherever a mesh's shown state or positions change.
+  const edgesOverlay = createEdgesOverlay(scene);
 
   // Cache for getSceneMeshes() — invalidated on any visibility or sync change.
   // This avoids a new Map allocation on every pointer-move raycast call.
@@ -476,6 +511,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     if (data.displaced_positions) {
       meshDisplacedPositions.set(entityPath, data.displaced_positions.slice());
     }
+    meshGeometrySources.set(entityPath, geometrySourceOf(data));
 
     const mesh = new Mesh(geometry, material);
     mesh.name = entityPath;
@@ -581,6 +617,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     } else {
       meshDisplacedPositions.delete(mesh.name);
     }
+    meshGeometrySources.set(mesh.name, geometrySourceOf(data));
 
     // If colorize is active and this mesh already has a colour attribute, re-bake
     // the colours with the new scalars.  Mirrors the setColorize mutation
@@ -683,6 +720,12 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     return (visibilityMap.get(entityPath) ?? 'show') === 'show';
   }
 
+  /** Rebuild the entity's edges overlay from its current geometry, or drop it when not shown. */
+  function syncEdgesOverlay(entityPath: string, mesh: Mesh): void {
+    if (isShown(entityPath)) edgesOverlay.rebuild(entityPath, mesh);
+    else edgesOverlay.remove(entityPath);
+  }
+
   /**
    * Write the linear-blend deformation into the position attribute of `mesh` for a
    * given `warpFactor`.  Reads from the cached original vertices and displaced_positions
@@ -781,6 +824,8 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       for (const [entityPath, mesh] of meshMap) {
         restoreOriginalToMesh(mesh, entityPath);
         removeUndeformedOverlay(entityPath);
+        // Only a displaced mesh was warped, so only its positions just moved back.
+        if (meshDisplacedPositions.has(entityPath)) syncEdgesOverlay(entityPath, mesh);
       }
       currentDeformation = null;
       return;
@@ -807,6 +852,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
       if (!disp) continue; // no displaced_positions — skip (geometry untouched)
 
       applyWarpToMesh(mesh, entityPath, warpFactor);
+      syncEdgesOverlay(entityPath, mesh);
       // Only 'show' state gets an overlay; hidden/ghost intentionally skipped.
       // See design decision: ghost is already a translucent deformed rendering;
       // hidden means the user wants no visual for this entity at all.
@@ -835,6 +881,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     // (the overlay owns cloned index/normal attributes), but doing it first keeps teardown
     // deterministic and contrasts with the ghost-clone ordering requirement below.
     removeUndeformedOverlay(entityPath);
+    edgesOverlay.remove(entityPath);
 
     // removeGhostClone MUST precede geometry disposal: the ghost clone shares
     // the original mesh's BufferGeometry reference. Disposing the geometry first
@@ -850,6 +897,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     meshVectorChannels.delete(entityPath);
     meshOriginalVertices.delete(entityPath);
     meshDisplacedPositions.delete(entityPath);
+    meshGeometrySources.delete(entityPath);
     visibilityMap.delete(entityPath);
   }
 
@@ -909,6 +957,8 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
         addGhostClone(entityPath, mesh);
       }
     }
+
+    syncEdgesOverlay(entityPath, mesh);
   }
 
   /**
@@ -970,7 +1020,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     for (const [entityPath, data] of Object.entries(meshes)) {
       if (!validateMeshData(data)) continue;
       if (meshMap.has(entityPath)) {
+        const geometryUnchanged = isSameGeometrySource(meshGeometrySources.get(entityPath), data);
         updateMeshGeometry(meshMap.get(entityPath)!, data);
+        // updateMeshGeometry removes the mesh when its BVH rebuild fails.
+        const updated = meshMap.get(entityPath);
+        if (updated && !geometryUnchanged) syncEdgesOverlay(entityPath, updated);
       } else {
         const mesh = createMeshFromData(entityPath, data);
         if (mesh) {
@@ -982,6 +1036,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
             addGhostClone(entityPath, mesh);
           }
           // 'hidden': don't add anywhere
+          syncEdgesOverlay(entityPath, mesh);
         }
       }
     }
@@ -1061,6 +1116,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
     scene.remove(undeformedGroup);
     undeformedMaterial.dispose();
+    edgesOverlay.disable();
     sceneMeshCache = null;
   }
 
@@ -1282,6 +1338,11 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     }
   }
 
+  function setEdges(on: boolean): void {
+    if (on) edgesOverlay.enable(getSceneMeshes());
+    else edgesOverlay.disable();
+  }
+
   return {
     sync,
     dispose,
@@ -1295,5 +1356,7 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
     computeBarycentric,
     sampleProbe,
     setDisplayAppearance,
+    setEdges,
+    getEdgesOverlays: edgesOverlay.overlays,
   };
 }

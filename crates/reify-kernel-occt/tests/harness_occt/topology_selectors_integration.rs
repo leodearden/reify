@@ -18,9 +18,9 @@ fn box_kernel() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box creation should succeed");
     (kernel, box_h.id)
@@ -330,16 +330,16 @@ fn topology_selectors_on_fused_two_box_solid_match_known_geometry() {
     let mut kernel = OcctKernel::new();
     let box_a = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box A creation should succeed");
     let box_b_raw = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
+            size_x: Value::Real(10.0),
+            size_y: Value::Real(10.0),
+            size_z: Value::Real(10.0),
         })
         .expect("Box B creation should succeed");
     let box_b = kernel

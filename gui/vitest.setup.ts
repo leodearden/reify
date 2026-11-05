@@ -1,4 +1,13 @@
-// Global vitest setup: jsdom Range rectangle-measurement polyfills (task #5361).
+// Global vitest setup, re-run once per test file: jsdom polyfills (task #5361)
+// and the per-file baseline for reused fork workers (task 7642, at the bottom).
+// That hook must run in this file's BODY: vitest re-runs a setup file per test
+// file but keeps its imports cached. See docs/notes/gui-vitest-shared-workers.md.
+
+import { afterAll, afterEach } from 'vitest';
+import { cleanup } from '@solidjs/testing-library';
+import { rebindDomCapturesTo, restoreGlobalBaseline } from './vitest-shared-worker';
+
+// jsdom Range rectangle-measurement polyfills (task #5361).
 //
 // jsdom's Range implementation does not provide getClientRects() or
 // getBoundingClientRect() — accessing them throws "TypeError:
@@ -77,3 +86,7 @@ if (typeof document !== 'undefined' && typeof document.elementFromPoint !== 'fun
     value: (): Element | null => null,
   });
 }
+
+rebindDomCapturesTo(document);
+afterEach(cleanup);
+afterAll(restoreGlobalBaseline);

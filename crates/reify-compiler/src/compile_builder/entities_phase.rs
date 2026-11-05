@@ -44,6 +44,7 @@ use crate::entity::{
     check_type_param_bounds, compile_entity,
 };
 use crate::expr::compile_expr;
+use crate::name_env;
 use crate::scope::CompilationScope;
 use crate::type_compat::{
     OverloadResolution, resolve_function_overload, type_carries_trait_object,
@@ -138,11 +139,11 @@ pub(crate) fn phase_entities(
     // `output_driver_*.ri` fixtures). MEASURED: resolving sub targets against
     // the Structure-filtered map below leaves `let res = self.o.resolution`
     // typed `Type::Error` with a bogus `RealizationDecl`.
-    let prelude_sub_target_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .map(|t| (t.name.clone(), t))
-        .collect();
+    let prelude_sub_target_registry: HashMap<String, &TopologyTemplate> =
+        name_env::bind::<TopologyTemplate, _>(&[], prelude.iter().copied())
+            .winners()
+            .map(|t| (t.name.clone(), t))
+            .collect();
 
     // task 3540 (SIR-α): prelude `structure def` templates, keyed by name, so
     // the expression-lowering site can recognise `Foo()` as a structure
@@ -150,20 +151,9 @@ pub(crate) fn phase_entities(
     // already-compiled structure-defs. Occurrences are excluded — only
     // structure-defs are constructible via the ctor path.
     //
-    // DERIVED from the unfiltered map above rather than re-walking `prelude`,
-    // so the subset relationship is structural instead of conventional (and one
-    // pass over the prelude plus one set of name clones is saved). The two
-    // differ only if the prelude ever held a `structure def X` AND an
-    // `occurrence def X`: filter-then-collect would keep the structure, whereas
-    // this derivation inherits the unfiltered map's last-wins dedup. The entity
-    // namespace is unified (spec §4.2.1) only WITHIN a module, so the two can
-    // diverge in principle once `prelude` carries user modules (compile_project
-    // / ModuleDag) as well as the stdlib. MEASURED on the tree: the stdlib
-    // declares no name twice at all, and repo-wide exactly one entity name is
-    // spelled both ways (`Pipe`, structure in examples/m9_constraint_def.ri,
-    // occurrence in examples/m5_connect_chain.ri) — two files with no import
-    // edge between them, so they are never in one prelude. The two maps are
-    // therefore identical today.
+    // DERIVED from the unfiltered map above rather than re-walking `prelude`:
+    // a prelude occurrence that wins a name under NS-P1 (`name_env`) must not
+    // let a lower-precedence `structure def` of that name into the ctor view.
     let prelude_template_registry: HashMap<String, &TopologyTemplate> = prelude_sub_target_registry
         .iter()
         .filter(|(_, t)| t.entity_kind == EntityKind::Structure)
@@ -616,13 +606,9 @@ fn resolve_ambient_default(
 ///      compiled members feed the residual.
 ///   3. Resolve each `JointDofField.type_expr` (`Angle` → `Scalar<ANGLE>`,
 ///      `Length` → `Scalar<LENGTH>`, `Orientation` → `Orientation(n)`).
-///   4. Compare the body's geometric residual against the declared free DOF by
-///      exact-integer COUNT and KIND via [`crate::joint_self_check`]; push any
-///      returned `E_JOINT_DOF_MISMATCH` diagnostic.
-///
-/// An empty body removes no DOF, so its residual is the full nominal (3, 3),
-/// which cannot match any sane declaration — caught here as a mismatch (the α
-/// empty-`{ }`-body lowering case), with no bespoke empty-body code.
+///   4. Push the diagnostics of
+///      [`crate::joint_self_check::joint_dof_diagnostics`], which owns the
+///      COUNT/KIND verdict and both of its gradualism gates.
 fn compile_joint_self_check(
     joint: &reify_ast::JointDef,
     structure_names: &HashSet<String>,
@@ -671,11 +657,11 @@ fn compile_joint_self_check(
     }
 
     // (3) Resolve each declared DOF field type.
-    let declared_types: Vec<Type> = joint
+    let declared_dof: Vec<(&str, Type, SourceSpan)> = joint
         .dof
         .iter()
         .map(|f| {
-            resolve_type_expr_with_aliases(
+            let ty = resolve_type_expr_with_aliases(
                 &f.type_expr,
                 &type_param_names,
                 alias_registry,
@@ -683,7 +669,8 @@ fn compile_joint_self_check(
                 structure_names,
                 trait_names,
             )
-            .unwrap_or(Type::Error)
+            .unwrap_or(Type::Error);
+            (f.name.as_str(), ty, f.span)
         })
         .collect();
 
@@ -692,9 +679,9 @@ fn compile_joint_self_check(
     // DOF (`Angle`/`Length`) carrying an `in <range>` bound, compile the range
     // against the param scope and require its element dimension to equal the
     // declared DOF's. Orientation DOFs (no scalar range) and absent ranges are
-    // skipped. Indexed against `declared_types` so each field is paired with its
+    // skipped. Zipped with `declared_dof` so each field is paired with its
     // already-resolved type.
-    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
+    for (field, (_, declared_ty, _)) in joint.dof.iter().zip(declared_dof.iter()) {
         let Type::Scalar { dimension: dof_dim } = declared_ty else {
             continue; // non-Scalar DOF (Orientation / unresolved Error) — no scalar range
         };
@@ -726,52 +713,13 @@ fn compile_joint_self_check(
         }
     }
 
-    // (4) Definition-time COUNT/KIND verdict (PRD §7.1). Two gradualism gates
-    // stand in front of it; either leaves the residual comparison unable to
-    // substantiate a verdict, so it is skipped rather than emit a spurious
-    // `E_JOINT_DOF_MISMATCH`:
-    //
-    //   (a) a declared DOF field whose resolved type has no geometric kind
-    //       (neither Angle, Length, nor Orientation) — surfaced here, per-field,
-    //       with a targeted `E_ARG_TYPE_MISMATCH` naming the offending field,
-    //       since its `(0, 0)` contribution would otherwise emit a confusing
-    //       `E_JOINT_DOF_MISMATCH` that never names the real problem. A
-    //       `Type::Error` DOF (already diagnosed by the resolver) gates the
-    //       verdict too, but draws no second diagnostic (anti-cascade).
-    //   (b) a body relation whose DOF COUNT is curated but whose rot/trans split
-    //       is not (e.g. `tangent`): `residual_kinds` omits it, INFLATING the
-    //       residual above the true geometry, so the verdict could fire
-    //       spuriously (see `joint_self_check::body_has_undecidable_kind_split`).
-    let mut skip_verdict = false;
-    for (field, declared_ty) in joint.dof.iter().zip(declared_types.iter()) {
-        if *declared_ty == Type::Error {
-            skip_verdict = true; // resolver already diagnosed — no second diagnostic
-        } else if crate::joint_self_check::dof_kind_of(declared_ty).is_none() {
-            skip_verdict = true;
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "joint `{}` DOF `{}`: type `{}` is not a valid joint DOF kind \
-                     (expected Angle, Length, or Orientation)",
-                    joint.name, field.name, declared_ty
-                ))
-                .with_code(DiagnosticCode::ArgTypeMismatch)
-                .with_label(DiagnosticLabel::new(field.span, "not a joint DOF kind")),
-            );
-        }
-    }
-    if crate::joint_self_check::body_has_undecidable_kind_split(&compiled_body) {
-        skip_verdict = true;
-    }
-
-    if !skip_verdict {
-        let residual = crate::joint_self_check::residual_kinds(&compiled_body);
-        let declared = crate::joint_self_check::declared_kinds(&declared_types);
-        if let Some(diag) =
-            crate::joint_self_check::check_joint_dof(&joint.name, declared, residual, joint.span)
-        {
-            diagnostics.push(diag);
-        }
-    }
+    // (4) Definition-time COUNT/KIND verdict, behind its gradualism gates (PRD §7.1).
+    diagnostics.extend(crate::joint_self_check::joint_dof_diagnostics(
+        &joint.name,
+        &declared_dof,
+        &compiled_body,
+        joint.span,
+    ));
 }
 
 /// Compile a single `structure` or `occurrence` declaration, pushing the
@@ -866,13 +814,8 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
     // `emit_leaf_conformance_for_arg_type` early-returns on a registry miss and
     // a non-conforming ctor arg (e.g. `Beam(mat: PointLoad())` where
     // `mat : ElasticMaterial`) is silently admitted.
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     // Rebuild the trait registry (same composition as phase_entities).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
@@ -935,8 +878,8 @@ pub(crate) fn phase_pending_bound_checks(ctx: &mut CompilationCtx, prelude: &[&C
                     &arg_name,
                     &compiled_arg,
                     span,
-                    // task 5465 (family 4): `enum_defs` is `prelude ++
-                    // module-local`, so the walker's general concrete-leaf arm
+                    // task 5465 (family 4): `enum_defs` is the module-local
+                    // plus prelude enum table, so the walker's general concrete-leaf arm
                     // can tolerate D1 / F-Mono enum erasure. All three are
                     // disjoint-field shared borrows alongside the
                     // `&mut ctx.diagnostics` below.
@@ -1003,13 +946,8 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 
     // Build a template registry covering prelude + local compiled templates,
     // identical composition to `phase_pending_bound_checks`.
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     let pending = std::mem::take(&mut ctx.pending_sub_override_autos);
 
@@ -1153,13 +1091,8 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 
     // Build a template registry covering prelude + local compiled templates,
     // identical composition to `phase_sub_override_autos`.
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     let pending = std::mem::take(&mut ctx.pending_connect_auto_params);
 
@@ -1353,13 +1286,8 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 /// profiling that warrants it (esc-4081 amend, reviewer_comprehensive performance).
 pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&CompiledModule]) {
     // Build template registry (same composition as phase_pending_bound_checks).
-    let template_registry: HashMap<String, &TopologyTemplate> = prelude
-        .iter()
-        .flat_map(|m| m.templates.iter())
-        .filter(|t| t.entity_kind == EntityKind::Structure)
-        .map(|t: &TopologyTemplate| (t.name.clone(), t))
-        .chain(ctx.templates.iter().map(|t| (t.name.clone(), t)))
-        .collect();
+    let template_registry: HashMap<String, &TopologyTemplate> =
+        name_env::ctor_template_registry(&ctx.templates, prelude);
 
     // Build trait registry (same composition as phase_pending_bound_checks).
     let trait_registry = build_trait_registry(&ctx.trait_defs, prelude);
@@ -1368,7 +1296,7 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // per call (see doc-comment) requires the full table, not a name-keyed map.
     let resolution_functions: &[CompiledFunction] = &ctx.resolution_functions;
 
-    // task 5465 (family 4): `prelude ++ module-local` enum table, threaded into
+    // task 5465 (family 4): module-local plus prelude enum table, threaded into
     // the conformance walker so its general concrete-leaf arm can tolerate
     // D1/F-Mono enum erasure (see `WalkCtx.enum_defs`). Bound here next to
     // `resolution_functions` because the `walk` closure below borrows `ctx`

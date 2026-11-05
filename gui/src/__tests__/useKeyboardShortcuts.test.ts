@@ -652,6 +652,164 @@ describe('useKeyboardShortcuts — command palette shortcuts', () => {
   });
 });
 
+describe('useKeyboardShortcuts — toggleEdges shortcut', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  function wire() {
+    const onToggleEdges = vi.fn();
+    const onExportDialog = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleEdges, onExportDialog });
+      return d;
+    });
+    return { onToggleEdges, onExportDialog };
+  }
+
+  it('a bare e calls onToggleEdges once', () => {
+    const { onToggleEdges } = wire();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+    expect(onToggleEdges).toHaveBeenCalledTimes(1);
+  });
+
+  it('Ctrl+E stays Export and does not toggle edges', () => {
+    const { onToggleEdges, onExportDialog } = wire();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true }));
+    expect(onExportDialog).toHaveBeenCalledTimes(1);
+    expect(onToggleEdges).not.toHaveBeenCalled();
+  });
+
+  it('an e typed into an <input> does not toggle edges', () => {
+    const { onToggleEdges } = wire();
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    try {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+      expect(onToggleEdges).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeChild(input);
+    }
+  });
+
+  it('an e pressed in a focused <select> neither toggles edges nor is swallowed', () => {
+    const { onToggleEdges } = wire();
+    const select = document.createElement('select');
+    document.body.appendChild(select);
+    try {
+      const event = new KeyboardEvent('keydown', { key: 'e', bubbles: true, cancelable: true });
+      select.dispatchEvent(event);
+      expect(onToggleEdges).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(false);
+    } finally {
+      document.body.removeChild(select);
+    }
+  });
+
+  it('a held E toggles once: its auto-repeat keydowns are swallowed', () => {
+    const { onToggleEdges } = wire();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', bubbles: true }));
+    const repeat = new KeyboardEvent('keydown', { key: 'e', repeat: true, bubbles: true, cancelable: true });
+    document.dispatchEvent(repeat);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', repeat: true, bubbles: true }));
+
+    expect(onToggleEdges).toHaveBeenCalledTimes(1);
+    expect(repeat.defaultPrevented).toBe(true);
+  });
+
+  it('is offered in the command palette', () => {
+    expect(paletteCommands().some((c) => c.id === 'toggleEdges')).toBe(true);
+  });
+});
+
+describe('useKeyboardShortcuts — a focused <select> blocks only its type-ahead keys', () => {
+  let dispose: () => void;
+  let select: HTMLSelectElement;
+
+  afterEach(() => {
+    dispose?.();
+    select?.remove();
+  });
+
+  function focusedSelect(callbacks: Parameters<typeof useKeyboardShortcuts>[0]) {
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts(callbacks);
+      return d;
+    });
+    select = document.createElement('select');
+    document.body.appendChild(select);
+    return select;
+  }
+
+  it('Ctrl+S still saves', () => {
+    const onSave = vi.fn();
+    focusedSelect({ onSave }).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }),
+    );
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('F5 still re-evaluates', () => {
+    const onReEvaluate = vi.fn();
+    focusedSelect({ onReEvaluate }).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'F5', bubbles: true }),
+    );
+    expect(onReEvaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape still clears the selection', () => {
+    const onClearSelection = vi.fn();
+    focusedSelect({ onClearSelection }).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+    );
+    expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('a digit is type-ahead, not a view switch, and is not prevented', () => {
+    const onSwitchViewByIndex = vi.fn();
+    const event = new KeyboardEvent('keydown', { key: '2', bubbles: true, cancelable: true });
+    focusedSelect({ onSwitchViewByIndex }).dispatchEvent(event);
+    expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+describe('useKeyboardShortcuts — toggle shortcuts ignore auto-repeat', () => {
+  let dispose: () => void;
+
+  afterEach(() => {
+    dispose?.();
+  });
+
+  it('a held Ctrl+J toggles the chat panel once', () => {
+    const onToggleChatPanel = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onToggleChatPanel });
+      return d;
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', ctrlKey: true, repeat: true, bubbles: true }));
+
+    expect(onToggleChatPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a held F5 still re-evaluates on every repeat (not a toggle)', () => {
+    const onReEvaluate = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onReEvaluate });
+      return d;
+    });
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'F5', repeat: true, bubbles: true }));
+
+    expect(onReEvaluate).toHaveBeenCalledTimes(2);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // paletteCommands() and runCommand() (task-4208)
 // ---------------------------------------------------------------------------

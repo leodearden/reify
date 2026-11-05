@@ -3,6 +3,8 @@
 //! Builds a bipartite graph of constraints ↔ auto params and uses
 //! union-find to identify independent sub-problems.
 
+#![deny(clippy::iter_over_hash_type)]
+
 use crate::classifier::ConstraintClassifier;
 use crate::dependent_reads::{
     DependentCellReads, collect_value_refs, dependent_cell_auto_reads, reach_of,
@@ -14,8 +16,11 @@ use std::collections::{HashMap, HashSet};
 /// An independent sub-problem extracted from a larger constraint problem.
 #[derive(Debug)]
 pub struct SubProblem {
-    /// The auto parameters in this sub-problem.
-    pub auto_params: HashSet<ValueCellId>,
+    /// The component's autos in the caller's `auto_params` DECLARATION order,
+    /// which is the order the registry hands its solver: CP-SAT search and
+    /// multistart axis assignment both depend on it
+    /// (discrete-cost-minimisation §3 decision 10).
+    pub auto_params: Vec<ValueCellId>,
     /// The constraints in this sub-problem (id + expression).
     pub constraints: Vec<(ConstraintNodeId, CompiledExpr)>,
     /// The domain classification for this sub-problem.
@@ -90,8 +95,8 @@ impl ExpandedObjectiveRefs {
     }
 
     /// Does the objective reach any of `autos`, directly or through a cell?
-    pub(crate) fn reaches_any(&self, autos: &HashSet<ValueCellId>) -> bool {
-        self.refs.iter().any(|r| autos.contains(r))
+    pub(crate) fn reaches_any(&self, autos: &[ValueCellId]) -> bool {
+        autos.iter().any(|a| self.refs.contains(a))
     }
 }
 
@@ -454,6 +459,12 @@ pub fn decompose_into_components(
 /// `objective` is already widened through the same `auto_reads` — an
 /// [`ExpandedObjectiveRefs`] cannot be built any other way — so its autos are
 /// unioned as given.
+///
+/// ORDER CONTRACT (solver-driver-parity I4/T1): the result is a pure function
+/// of the input order, never of hash state. Components come back in
+/// FIRST-CONSTRAINT order, so the component holding the earliest-declared
+/// auto-reading constraint is index 0, and each component keeps its
+/// constraints in declaration order.
 pub(crate) fn decompose_into_components_with_reads(
     auto_params: &[AutoParam],
     constraints: &[(ConstraintNodeId, CompiledExpr)],
@@ -552,11 +563,18 @@ pub(crate) fn decompose_into_components_with_reads(
         return vec![];
     }
 
-    // Group constraints by their component root
-    let mut component_map: HashMap<usize, Vec<usize>> = HashMap::new(); // root → [info_idx]
+    // Group constraints by component, allocating each component's slot the
+    // first time one of its constraints is seen, so slots come out in
+    // first-constraint declaration order.
+    let mut slot_of_root: Vec<Option<usize>> = vec![None; n_params];
+    let mut components: Vec<(usize, Vec<usize>)> = Vec::new(); // (root, [info_idx])
     for (info_idx, info) in constraint_infos.iter().enumerate() {
         let root = uf.find(info.referenced_params[0]);
-        component_map.entry(root).or_default().push(info_idx);
+        let slot = *slot_of_root[root].get_or_insert_with(|| {
+            components.push((root, Vec::new()));
+            components.len() - 1
+        });
+        components[slot].1.push(info_idx);
     }
 
     // MEMOIZED `domain_of_auto` verdict, one slot per auto param: `Some(v)` =
@@ -581,7 +599,7 @@ pub(crate) fn decompose_into_components_with_reads(
 
     // Build SubProblem for each component
     let mut result: Vec<SubProblem> = Vec::new();
-    for (root, info_indices) in component_map {
+    for (root, info_indices) in components {
         let infos: Vec<&ConstraintInfo> =
             info_indices.iter().map(|&i| &constraint_infos[i]).collect();
         let sub_constraints: Vec<(ConstraintNodeId, CompiledExpr)> = infos
@@ -598,11 +616,11 @@ pub(crate) fn decompose_into_components_with_reads(
         // constraint in the component referenced ANY param sharing that param's
         // root. Both are subsumed, and the subsumption is exact rather than
         // approximate: the constraint loop above unions every one of a
-        // constraint's `referenced_params` together, and `component_map` is
-        // keyed on `uf.find(referenced_params[0])`, so `uf.find(rp) == root`
+        // constraint's `referenced_params` together, and each component's
+        // root is `uf.find(referenced_params[0])`, so `uf.find(rp) == root`
         // holds for EVERY `rp` of EVERY constraint in `info_indices` by
         // construction. The old predicate therefore reduced to `root_of(pi) ==
-        // root` — the map key already in hand — and the first loop's inserts
+        // root` — the root already in hand — and the first loop's inserts
         // were a subset of what this one produces.
         //
         // Not merely tidier: the old form cost O(P x I_c x R) `uf.find` calls
@@ -612,11 +630,11 @@ pub(crate) fn decompose_into_components_with_reads(
         // single `let` over the whole model carries `R = |component|` and the
         // scan goes worst-case O(P^2 x C) — on the solve hot path, for exactly
         // the let-indirected models this feature exists to make solvable.
-        let mut params = HashSet::new();
+        let mut params = Vec::new();
         let mut objective_only = Vec::new();
         for (pi, pid) in param_ids.iter().enumerate() {
             if uf.find(pi) == root {
-                params.insert(pid.clone());
+                params.push(pid.clone());
                 if !read_by_a_constraint[pi] {
                     objective_only.push(pi);
                 }

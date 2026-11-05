@@ -27,7 +27,7 @@ use reify_core::{
 };
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
-use reify_eval::journal::{EventKind, EventPayload};
+use reify_eval::journal::EventKind;
 use reify_ir::{
     BestFoundReason, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, DeterminacyState,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
@@ -95,7 +95,7 @@ fn merged_cluster_dispatches_single_solve_with_union_auto_params() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problems = captured.lock().unwrap();
@@ -150,7 +150,7 @@ fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -238,7 +238,7 @@ fn merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.eval(&module);
 
     let snapshot = engine
@@ -322,7 +322,7 @@ fn merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let out_val = result
@@ -443,7 +443,7 @@ fn merged_cluster_objective_passed_through_opaquely() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problem = captured
@@ -517,7 +517,7 @@ fn merged_cluster_objective_provenance_populated_for_every_resolved_cell() {
     let spy = SpyConstraintSolver::new_solved(solved);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     for (id, want_scope) in [
@@ -628,7 +628,7 @@ fn merged_cluster_inherited_objective_folded_once() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured
@@ -718,7 +718,7 @@ fn run_merged_cluster_once(
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(module);
 
     let problems = captured.lock().unwrap();
@@ -801,7 +801,7 @@ fn uncoupled_module_solves_per_template_not_merged() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problems = captured.lock().unwrap();
@@ -902,7 +902,7 @@ fn over_cap_cluster_still_solves_per_template() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problems = captured.lock().unwrap();
@@ -997,7 +997,7 @@ fn merged_cluster_excludes_strict_connector_instance_auto() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     // (a) absent from the captured merged problem's auto_params.
@@ -1101,7 +1101,7 @@ fn merged_cluster_first_found_lambda_wins_with_divergence_warning() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured
@@ -1164,7 +1164,7 @@ fn merged_cluster_infeasible_propagates_diagnostics_and_failed_autos_for_every_m
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
@@ -1217,7 +1217,7 @@ fn merged_cluster_no_progress_propagates_diagnostic_and_failed_autos_for_every_m
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     engine.set_capture_undef_causes(true);
     let result = engine.eval(&module);
 
@@ -1319,7 +1319,7 @@ fn merged_cluster_iteration_limit_emits_solver_optimality_unproven() {
     };
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let warnings: Vec<_> = result
@@ -1360,7 +1360,7 @@ fn merged_cluster_enumeration_budget_emits_solver_optimality_unproven() {
     };
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let warnings: Vec<_> = result
@@ -1453,7 +1453,7 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     assert_eq!(
@@ -1582,7 +1582,7 @@ fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -1664,7 +1664,7 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     // Establish the warm precondition: cold eval() populates eval_state (and
     // demand) so the subsequent eval_cached() wave-2 can re-eval downstream
     // lets. Mirrors warm_eval_cached_with_solver + the LSP consumer's
@@ -1738,7 +1738,7 @@ fn eval_cached_second_consecutive_call_downstream_let_stays_stale_pending_5224()
     ]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Establish the warm precondition (see SCOPE NOTE above): cold eval()
     // populates eval_state so the FIRST eval_cached's wave-2 can re-eval
@@ -1800,7 +1800,7 @@ fn eval_cached_skips_solver_when_every_auto_is_excluded() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -1875,7 +1875,7 @@ fn eval_cached_merged_cluster_infeasible_propagates_diagnostics() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -1922,7 +1922,7 @@ fn eval_cached_merged_cluster_no_progress_propagates_diagnostic() {
     let captured = spy.captured_problems();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
@@ -2010,7 +2010,7 @@ fn eval_vs_eval_cached_merged_cluster_values_equal() {
     // Cold eval() -- baseline.
     let solver_a = SpyConstraintSolver::new_solved(solved.clone());
     let mut engine_a =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
     let result_a = engine_a.eval(&module);
 
     // Warm eval_cached() -- an independent engine with an identically-seeded
@@ -2019,7 +2019,7 @@ fn eval_vs_eval_cached_merged_cluster_values_equal() {
     let solver_b = SpyConstraintSolver::new_solved(solved.clone());
     let captured_b = solver_b.captured_problem();
     let mut engine_b =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
     let result_b1 = engine_b.eval_cached(&module, VersionId(1));
 
     // Direct governance-threading check (see NOTE above): the warm merged
@@ -2163,7 +2163,7 @@ fn eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_ent
         ranked_values: ranked_values.clone(),
     };
     let mut engine_a =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
     let result_a = engine_a.eval(&module);
 
     // Warm eval_cached(): merged dispatch always calls plain `.solve()` -> the
@@ -2173,7 +2173,7 @@ fn eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_ent
         ranked_values: ranked_values.clone(),
     };
     let mut engine_b =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
     let result_b = engine_b.eval_cached(&module, VersionId(1));
 
     for (id, cold_want, warm_want) in [
@@ -2272,7 +2272,7 @@ fn merged_cluster_preserves_lexicographic_combination_from_single_owner() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problem = captured
@@ -2351,7 +2351,7 @@ fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured
@@ -2403,8 +2403,8 @@ fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
 /// SIBLING per-template + wave-2 arms onto `commit_cell_result`). The co-solved
 /// cluster-member autos written by `dispatch_merged_cluster_solve_cached` must
 /// route through `commit_cell_result` -- the primitive that writes the
-/// `self.journal` leg (a `Started` event carrying an `EventPayload::Custom`
-/// trace-source slug) -- NOT the hand-rolled `self.cache.record_evaluation`,
+/// `self.journal` leg (a `Started` event carrying a commit tag) -- NOT the
+/// hand-rolled `self.cache.record_evaluation`,
 /// which writes ONLY the cache leg and emits no journal `Started`. Reuses THIS
 /// file's `two_cycle_cluster_module` + spy solver (no twin harness), mirroring
 /// #5053's own `eval_cached_let_miss_provenance_and_determinacy` pattern.
@@ -2415,9 +2415,9 @@ fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
 /// `eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto`'s doc
 /// for the LSP `is_engine_initialized()` rationale. Cold `eval()`'s OWN merged
 /// dispatch (`dispatch_merged_cluster_solve`) ALSO journals a `Started` event
-/// for A.k/B.m, but with `payload: None`; this test therefore discriminates on
-/// the `EventPayload::Custom` provenance slug that ONLY `commit_cell_result`
-/// emits, so cold's manual `Started` cannot spuriously satisfy assertion (a).
+/// for A.k/B.m, but untagged (`commit: None`); this test therefore
+/// discriminates on the commit tag that ONLY `commit_cell_result` writes, so
+/// cold's manual `Started` cannot spuriously satisfy assertion (a).
 ///
 /// RED on the current branch: the Solved arm of
 /// `dispatch_merged_cluster_solve_cached` still hand-rolls
@@ -2440,13 +2440,13 @@ fn eval_cached_merged_cluster_co_solve_records_commit_provenance() {
     }]);
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
 
     // Establish the warm precondition: a prior cold eval() seeds self.eval_state
     // + the engine snapshot (see the step-5 test's doc for the LSP
     // is_engine_initialized() rationale). This ALSO journals cold `Started`
-    // events for A.k/B.m with `payload: None` -- the assertions below
-    // discriminate on the `Custom` payload so those cannot mask the RED.
+    // events for A.k/B.m with no commit tag -- the assertions below
+    // discriminate on the tag so those cannot mask the RED.
     engine.eval(&module);
     // The warm keystroke path under test: co-solves the {A, B} cluster and
     // writes back A.k/B.m. VersionId(2) mirrors #5053's warm-provenance test.
@@ -2457,17 +2457,18 @@ fn eval_cached_merged_cluster_co_solve_records_commit_provenance() {
         .expect("engine must have a snapshot after eval()/eval_cached()");
 
     for id in [&a_k, &b_m] {
-        // (a) A `Started` event carrying an `EventPayload::Custom` provenance
-        // slug is emitted ONLY by `commit_cell_result` (cell_commit.rs); cold
-        // eval()'s merged dispatch emits `Started { payload: None }`, and the
+        // (a) A `Started` event carrying a commit tag is emitted ONLY by
+        // `commit_cell_result` (cell_commit.rs); cold eval()'s merged
+        // dispatch emits `Started { commit: None }`, and the
         // current warm `record_evaluation` emits no `Started` at all -- so this
         // is exactly the journal leg the INV-EVAL-1/2 migration (step 10) adds.
         let events = engine.journal().events_for_node(&NodeId::Value(id.clone()));
         assert!(
-            events.iter().any(|ev| matches!(ev.kind, EventKind::Started)
-                && matches!(ev.payload, Some(EventPayload::Custom(_)))),
+            events
+                .iter()
+                .any(|ev| matches!(ev.kind, EventKind::Started { commit: Some(_) })),
             "co-solved cluster-member auto {:?} must have a journal `Started` \
-             event with an `EventPayload::Custom` provenance slug -- proving the \
+             event with a commit tag -- proving the \
              warm merged write-back routed through `commit_cell_result` \
              (INV-EVAL-1/2), not the hand-rolled `cache.record_evaluation` \
              (cache leg only, no journal `Started`); got {} event(s): {:?}",
