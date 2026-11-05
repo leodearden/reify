@@ -2163,7 +2163,7 @@ mod test_datums {
         Value::Point(vec![Value::length(x), Value::length(y), Value::length(z)])
     }
 
-    pub(super) fn vec3v(x: f64, y: f64, z: f64) -> Value {
+    fn vec3v(x: f64, y: f64, z: f64) -> Value {
         Value::Vector(vec![Value::Real(x), Value::Real(y), Value::Real(z)])
     }
 
@@ -3134,9 +3134,10 @@ mod tests_driving_set_failure {
 
     use super::test_datums::{axis_v, plane_v, realized};
     use super::{
-        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateTolerance, SolveBudget,
-        build_relation_instances, collect_relate_scope, failure_diagnostic,
-        minimal_infeasible_subset, partition_driving_set, solve_frame_outcome, solve_scaling,
+        FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
+        SolveBudget, build_relation_instances, collect_relate_scope, failure_diagnostic,
+        minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
+        solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3196,11 +3197,7 @@ structure PairSearchScope {
         ])
     }
 
-    /// Run `f` over the `FailureContext` production builds for `PairSearchScope`
-    /// under `budget`: the scope's instances, its single auto Frame unknown at
-    /// the identity seed, one scaling over every instance, and the driving-set
-    /// partition at that seed.
-    fn with_failure_context<R>(budget: SolveBudget, f: impl FnOnce(&FailureContext) -> R) -> R {
+    fn pair_search_scope() -> RelateScope {
         let module = compile_source_with_stdlib(SOURCE);
         let template = module
             .templates
@@ -3212,7 +3209,15 @@ structure PairSearchScope {
                     module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
                 )
             });
-        let scope = collect_relate_scope(template);
+        collect_relate_scope(template)
+    }
+
+    /// Run `f` over the `FailureContext` production builds for `PairSearchScope`
+    /// under `budget`: the scope's instances, its single auto Frame unknown at
+    /// the identity seed, one scaling over every instance, and the driving-set
+    /// partition at that seed.
+    fn with_failure_context<R>(budget: SolveBudget, f: impl FnOnce(&FailureContext) -> R) -> R {
+        let scope = pair_search_scope();
         let datums = pair_search_datums();
         let built = build_relation_instances(&scope, &datums);
         let auto = &scope.auto_unknowns[0];
@@ -3267,6 +3272,9 @@ structure PairSearchScope {
 
     /// A pair that merely ran out of budget proves nothing; only a pair whose own
     /// solve is CERTIFIED infeasible is the minimal conflict.
+    ///
+    /// The stalled-pair half of that rule is unpinned: no smooth relate fixture
+    /// stalls reliably, and a pair's outcome cannot be injected into the search.
     #[test]
     fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
         with_failure_context(SolveBudget { max_iterations: 0 }, |context| {
@@ -3285,10 +3293,32 @@ structure PairSearchScope {
                 context.scaling,
                 context.budget,
             );
-            assert!(
-                matches!(full.result, Err(SolveFailureCause::Infeasible(_))),
-                "the full driving set is certified under this budget, so production \
-                 reaches the conflict search: {full:?}"
+            let Err(cause @ SolveFailureCause::Infeasible(_)) = &full.result else {
+                panic!(
+                    "the full driving set is certified under this budget, so production \
+                     reaches the conflict search: {full:?}"
+                );
+            };
+            let production = solve_relate_scope_within(
+                &pair_search_scope(),
+                &pair_search_datums(),
+                context.budget,
+            );
+            assert_eq!(
+                production.failure.as_ref(),
+                Some(cause),
+                "production's own driving-set solve fails the same way: {production:?}"
+            );
+            let rendered = failure_diagnostic(cause, context);
+            let messages: Vec<&str> = production
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+            assert_eq!(
+                messages,
+                [rendered.message.as_str()],
+                "production renders its failure from this same context"
             );
 
             let pair = [instances[0].clone(), instances[1].clone()];
