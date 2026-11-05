@@ -193,6 +193,9 @@ async function observeOpened() {
   log(`B2: opening ${OPEN_FIXTURE} through the Start view`);
   await enterPath(OPEN_FIXTURE);
   await click('start-open-path');
+  // The Recent entry is recorded only after the load completes, so wait for it
+  // (under its canonical path) before reading, or the read races the write.
+  await waitForStore('document.recent.0.path', fs.realpathSync(OPEN_FIXTURE), 60_000);
   const loaded = await observeLoaded('after opening the fixture');
   return report('opened', { ...loaded, fixtureName: path.basename(OPEN_FIXTURE) });
 }

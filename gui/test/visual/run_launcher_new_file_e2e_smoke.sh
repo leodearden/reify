@@ -23,6 +23,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib_e2e_smoke.sh
 source "$SCRIPT_DIR/lib_e2e_smoke.sh"
 
+# A fresh app-data home per run (Tauri's app_data_dir follows XDG_DATA_HOME):
+# the Recent list starts empty, and a smoke never writes into the developer's
+# own Recent list or WebKit storage.
+XDG_DATA_HOME="$(mktemp -d "${TMPDIR:-/tmp}/reify-launcher-smoke-data.XXXXXX")"
+export XDG_DATA_HOME
 export REIFY_LAUNCHER_SMOKE_SCENARIO=new
 
 e2e_smoke_run \
