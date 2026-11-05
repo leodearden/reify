@@ -230,30 +230,38 @@ fn surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
 
 #[test]
 fn a_surface_stress_that_is_not_tension_is_rejected_including_nan() {
-    let non_tension = ForceDensityInputError::NonTensionSurfaceStress { surface: 1 };
-    for sigma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+    let two_surfaces = || {
         let mut case = FdAnchoredCase::valid();
         case.surfaces.push((1, 2, 3));
-        case.sigma = vec![1.0, sigma];
-        assert_eq!(
-            case.isotropic(),
-            Err(FormFindError::Input(non_tension)),
-            "σ = {sigma}"
-        );
-    }
-    for stress in [
-        fd_aniso_stress(0.0, 1.0),
-        fd_aniso_stress(1.0, f64::NAN),
-        fd_aniso_stress(f64::INFINITY, 1.0),
-        fd_aniso_stress(1.0, f64::INFINITY),
-    ] {
-        let mut case = FdAnchoredCase::valid();
-        case.surfaces.push((1, 2, 3));
-        case.aniso = vec![fd_aniso_stress(1.0, 1.0), stress];
-        assert_eq!(
-            case.anisotropic(),
-            Err(AnisoFormFindError::Input(non_tension))
-        );
+        case.sigma = vec![1.0; 2];
+        case.aniso = vec![fd_aniso_stress(1.0, 1.0); 2];
+        case
+    };
+    for bad_at in [0, 1] {
+        let non_tension = ForceDensityInputError::NonTensionSurfaceStress { surface: bad_at };
+        for sigma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut case = two_surfaces();
+            case.sigma[bad_at] = sigma;
+            assert_eq!(
+                case.isotropic(),
+                Err(FormFindError::Input(non_tension)),
+                "σ = {sigma} at surface {bad_at}"
+            );
+        }
+        for stress in [
+            fd_aniso_stress(0.0, 1.0),
+            fd_aniso_stress(1.0, f64::NAN),
+            fd_aniso_stress(f64::INFINITY, 1.0),
+            fd_aniso_stress(1.0, f64::INFINITY),
+        ] {
+            let mut case = two_surfaces();
+            case.aniso[bad_at] = stress.clone();
+            assert_eq!(
+                case.anisotropic(),
+                Err(AnisoFormFindError::Input(non_tension)),
+                "{stress:?} at surface {bad_at}"
+            );
+        }
     }
 }
 
@@ -514,8 +522,9 @@ fn the_free_fixtures_satisfy_the_input_contract() {
 #[test]
 fn a_free_member_endpoint_past_the_nodes_is_an_indexed_input_error() {
     for valid in [FdFreeCase::explicit, FdFreeCase::group_ratios] {
-        let (j, k) = valid().members[1];
-        let n = valid().node_count();
+        let base = valid();
+        let (j, k) = base.members[1];
+        let n = base.node_count();
         for endpoints in [(n, k), (j, n)] {
             let mut case = valid();
             case.members[1] = endpoints;
@@ -670,17 +679,20 @@ fn free_surfaces_without_one_stress_each_are_a_surface_count_mismatch() {
 
 #[test]
 fn a_free_surface_stress_that_is_not_tension_is_rejected_including_nan() {
-    for sigma in [0.0, f64::NAN, f64::INFINITY] {
-        let mut case = FdFreeCase::explicit();
-        case.surfaces.push((3, 4, 5));
-        case.sigma = vec![0.05, sigma];
-        assert_eq!(
-            case.with_surfaces(),
-            Err(FreeFormError::Input(
-                ForceDensityInputError::NonTensionSurfaceStress { surface: 1 }
-            )),
-            "σ = {sigma}"
-        );
+    for bad_at in [0, 1] {
+        for sigma in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut case = FdFreeCase::explicit();
+            case.surfaces.push((3, 4, 5));
+            case.sigma = vec![0.05; 2];
+            case.sigma[bad_at] = sigma;
+            assert_eq!(
+                case.with_surfaces(),
+                Err(FreeFormError::Input(
+                    ForceDensityInputError::NonTensionSurfaceStress { surface: bad_at }
+                )),
+                "σ = {sigma} at surface {bad_at}"
+            );
+        }
     }
 }
 
