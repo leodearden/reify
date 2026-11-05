@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Single-command dev-mode launcher for reify-gui (task 2228).
 #
-# Usage: scripts/run-gui-dev.sh <file.ri>
+# Usage: scripts/run-gui-dev.sh [file.ri]
+#
+# With no file, reify-gui opens on the launcher Start view (Open/New/Recent).
 #
 # Performs every build step needed to launch reify-gui in dev mode:
 #   1. Validate args, then PREFLIGHT: refuse a launch that is already known to
@@ -16,7 +18,7 @@
 #      no `embedded-frontend`, so the window loads devUrl).
 #   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
 #      renderer default.
-#   8. Run target/debug/reify-gui <file.ri> as a backgrounded child and
+#   8. Run target/debug/reify-gui [file.ri] as a backgrounded child and
 #      `wait`, so SIGTERM/SIGINT to this script reach the trap which reaps
 #      both the vite process GROUP and reify-gui.
 #
@@ -83,10 +85,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib_gui_launch.sh"
 
 # -- 1. Validate args ---------------------------------------------------------
-if [ "$#" -lt 1 ]; then
-    echo "Usage: scripts/run-gui-dev.sh <file>" >&2
+if [ "$#" -gt 1 ]; then
+    echo "Usage: scripts/run-gui-dev.sh [file.ri]" >&2
     echo "" >&2
-    echo "  <file>  path to a .ri source file" >&2
+    echo "  file.ri  path to a .ri source file; omit it to open the launcher Start view" >&2
     echo "" >&2
     echo "Launches reify-gui in dev mode (vite dev server on :\${REIFY_VITE_PORT:-1420}, devtools," >&2
     echo "MCP debug listener on :\${REIFY_DEBUG_PORT:-3939} via REIFY_DEBUG=1)." >&2
@@ -94,17 +96,20 @@ if [ "$#" -lt 1 ]; then
     exit 1
 fi
 
-FILE="$1"
+# FILE is the .ri reify-gui opens, or empty for the Start view.
+FILE="${1:-}"
 
-case "$FILE" in
-    *.ri) ;;
-    *)
-        echo "Error: file must have .ri extension: $FILE" >&2
-        exit 1
-        ;;
-esac
+if [ -n "$FILE" ]; then
+    case "$FILE" in
+        *.ri) ;;
+        *)
+            echo "Error: file must have .ri extension: $FILE" >&2
+            exit 1
+            ;;
+    esac
 
-[ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+    [ -f "$FILE" ] || { echo "Error: file not found: $FILE" >&2; exit 1; }
+fi
 
 # Resolve repo root from this script's path so the script works from any cwd.
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -177,7 +182,7 @@ if [ "${REIFY_GUI_SKIP_PREFLIGHT:-}" != "1" ]; then
         else
             echo "  Free the port before retrying." >&2
         fi
-        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh $FILE" >&2
+        echo "  Or relocate this launch: REIFY_VITE_PORT=<free port> scripts/run-gui-dev.sh${FILE:+ $FILE}" >&2
         exit 1
     fi
 fi
@@ -367,8 +372,8 @@ gui_launch_env_pin
 #     children block bash's signal delivery until they exit).
 #   - The cleanup trap can kill GUI_PID explicitly when the script is
 #     killed externally, instead of orphaning the GUI window.
-echo "==> Launching target/debug/reify-gui $FILE (REIFY_DEBUG=1, port=$REIFY_DEBUG_PORT)"
-target/debug/reify-gui "$FILE" &
+echo "==> Launching target/debug/reify-gui ${FILE:-(no file: Start view)} (REIFY_DEBUG=1, port=$REIFY_DEBUG_PORT)"
+target/debug/reify-gui ${FILE:+"$FILE"} &
 GUI_PID=$!
 RC=0
 wait "$GUI_PID" || RC=$?
