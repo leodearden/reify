@@ -51,10 +51,10 @@ export function debugUrlForPort(port) {
 }
 
 /** How long {@link waitForServer} waits for a first `health` answer by default. */
-export const SERVER_READY_TIMEOUT_MS = 60_000;
+const SERVER_READY_TIMEOUT_MS = 60_000;
 
 /** The pause between {@link waitForServer}'s `health` polls by default. */
-export const SERVER_READY_POLL_MS = 500;
+const SERVER_READY_POLL_MS = 500;
 
 /**
  * Poll `health` until the debug server answers, and FAIL LOUDLY when the budget

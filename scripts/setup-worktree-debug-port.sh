@@ -82,7 +82,6 @@ source "$_LIB_PORTABLE"
 # Mirrors the contract of:
 #   debug_server.rs   parse_debug_port / DEFAULT_DEBUG_PORT
 #   debugServerEndpoint.mjs  resolveDebugPort / debugUrlForPort (gui/test/visual/)
-#   session.ts        resolveReifyDebugUrl
 
 _resolve_port() {
     local env_val="${REIFY_DEBUG_PORT:-}"
