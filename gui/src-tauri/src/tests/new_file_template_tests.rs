@@ -34,7 +34,10 @@ fn declarable_stem_gets_a_matching_module_line() {
         "a declarable stem must open with its own module line, got:\n{src}"
     );
     let (errors, module_diag) = parse_as(&src, "bracket_two");
-    assert!(errors.is_empty(), "template must parse cleanly: {errors:?}\n{src}");
+    assert!(
+        errors.is_empty(),
+        "template must parse cleanly: {errors:?}\n{src}"
+    );
     assert_eq!(
         module_diag, None,
         "the module line must satisfy check_module_path_decl (no missing/mismatch diagnostic)"
@@ -44,7 +47,9 @@ fn declarable_stem_gets_a_matching_module_line() {
 
 #[test]
 fn undeclarable_stems_omit_the_module_line_and_still_parse() {
-    for stem in ["my-part", "structure"] {
+    // Keywords are NOT in this list: `module structure` / `module let` parse and
+    // check clean, so a keyword stem is declarable. A hyphen or a leading digit is not.
+    for stem in ["my-part", "1abc"] {
         let src = new_file_template(stem);
         assert!(
             !src.lines().any(|l| l.trim_start().starts_with("module")),
