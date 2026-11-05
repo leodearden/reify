@@ -1891,10 +1891,13 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
         return prompts
 
     def _assert_alpha_runs_with(self, prompts, prefix):
+        """Every α runner occurrence in every prompt carries the prefix."""
         for phase, phase_prompts in prompts.items():
             for prompt in phase_prompts:
                 with self.subTest(phase=phase):
                     self.assertIn(prefix + _ALPHA_RUNNER, prompt)
+                    self.assertEqual(prompt.count(_ALPHA_RUNNER),
+                                     prompt.count(prefix + _ALPHA_RUNNER), prompt)
 
     def _assert_alpha_runs_bare(self, prompts):
         for phase, phase_prompts in prompts.items():
@@ -1912,6 +1915,21 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
     def test_stringified_envelope_is_the_same_envelope(self):
         prompts = self._alpha_prompts(f"JSON.stringify({self._ENVELOPE_JS})", 2)
         self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_stringified_leaves_inside_an_envelope_fan_out(self):
+        args_js = ('{ leaves: JSON.stringify([{ signal: "str a" }, { signal: "str b" }]), '
+                   f'reify_bin: "{self._REIFY_BIN}" }}')
+        prompts = self._alpha_prompts(f"JSON.stringify({args_js})", 2)
+        self._assert_alpha_runs_with(prompts, f"REIFY_BIN='{self._REIFY_BIN}' ")
+
+    @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
+    def test_an_envelope_with_empty_leaves_is_the_empty_batch(self):
+        verdict, phases = self._run_scenario(
+            f'{{ leaves: [], reify_bin: "{self._REIFY_BIN}" }}', self.VERIFIED_RESPONSES)
+        empty_verdict, _ = self._run_scenario("[]", self.VERIFIED_RESPONSES)
+        self.assertEqual(phases, [])
+        self.assertEqual(verdict, empty_verdict)
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")
     def test_reify_bin_survives_a_real_shell(self):
@@ -1944,6 +1962,12 @@ class TestMjsReifyBinArgs(unittest.TestCase, _MjsScenarioMixin):
         ('{ leaves: [{ signal: "x" }], reify_bin: "" }', ("reify_bin",)),
         ('{ leaves: [{ signal: "x" }], reifyBin: "/opt/reify" }', ("reifyBin",)),
         ('{ reify_bin: "/opt/reify" }', ("leaves",)),
+        ('{ leaves: null, reify_bin: "/opt/reify" }', ("leaves", "null")),
+        ('{ leaves: "", reify_bin: "/opt/reify" }', ("leaves", '""')),
+        ('{ leaves: "  ", reify_bin: "/opt/reify" }', ("leaves", '"  "')),
+        ('{ leaves: false, reify_bin: "/opt/reify" }', ("leaves", "false")),
+        ('{ leaves: 0 }', ("leaves", "0")),
+        ('{ leaves: 7 }', ("leaves", "7")),
     )
 
     @unittest.skipUnless(_NODE_ON_PATH, "node not on PATH; skip .mjs scenario test")

@@ -180,11 +180,8 @@ unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
 the ONE exception: it reports that the probe machinery itself could not run, so
 it blocks the batch whether or not it carries evidence.  Use it — never a bare
 FAIL — when a step of your own procedure died.  That record's stderr is the
-failed step's exit code and then its stderr VERBATIM, never a paraphrase: α
-itself exits 64 with no JSON when it will not choose a reify binary (two are
-built and neither is vouched for), and its stderr names both binaries and the
-REIFY_BIN remedy — this record is the only place the operator reads it.  Keep
-that record's no-probe shape: command [], exit_code -1, fixture_present null.`;
+failed step's exit code and then its stderr VERBATIM, never a paraphrase, and
+it keeps the no-probe shape: command [], exit_code -1, fixture_present null.`;
 
 const RESULTS_SCHEMA = {
     type: "object",
@@ -245,26 +242,35 @@ const VERDICT_SCHEMA = {
 // ---------------------------------------------------------------------------
 
 function normalizeLeaves(rawArgs, warn) {
-    let value = rawArgs;
-    if (typeof rawArgs === "string") {
-        try {
-            const parsed = JSON.parse(rawArgs);
-            if (Array.isArray(parsed)) {
-                value = parsed; // stringified leaf array -> real array: fan-out restored
-            } else {
-                warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
-                    + "non-array value; treating the whole string as ONE mega-leaf — "
-                    + "per-leaf fan-out is DEGRADED.");
-                // keep value = rawArgs (original single-leaf fallback)
-            }
-        } catch (e) {
-            warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
-                + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
-                + "JSON.parse error: " + e.message);
-            // keep value = rawArgs (original single-leaf fallback)
-        }
+    return leavesFrom(rawArgs, destringifyArgs(rawArgs), warn);
+}
+
+// The one place a stringified args is parsed.  A string becomes its JSON value;
+// a non-JSON string stays itself, with parseError set; anything else passes
+// through.
+function destringifyArgs(rawArgs) {
+    if (typeof rawArgs !== "string") return { value: rawArgs, parseError: null };
+    try {
+        return { value: JSON.parse(rawArgs), parseError: null };
+    } catch (e) {
+        return { value: rawArgs, parseError: e };
     }
-    return Array.isArray(value) ? value : (value ? [value] : []);
+}
+
+// rawArgs and its destringifyArgs result -> the leaf array.  A stringified leaf
+// array fans out; any other string is ONE mega-leaf, and says so.
+function leavesFrom(rawArgs, { value, parseError }, warn) {
+    if (Array.isArray(value)) return value;
+    if (parseError !== null) {
+        warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
+            + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
+            + "JSON.parse error: " + parseError.message);
+    } else if (typeof rawArgs === "string") {
+        warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
+            + "non-array value; treating the whole string as ONE mega-leaf — "
+            + "per-leaf fan-out is DEGRADED.");
+    }
+    return rawArgs ? [rawArgs] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -280,18 +286,19 @@ function normalizeLeaves(rawArgs, warn) {
 
 const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
 
-function batchEnvelope(rawArgs) {
-    let value = rawArgs;
-    if (typeof rawArgs === "string") {
-        try {
-            value = JSON.parse(rawArgs);
-        } catch (e) {
-            return null;
-        }
-    }
+function batchEnvelope(value) {
     const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
     return isObject && BATCH_ENVELOPE_KEYS.some(
         key => Object.prototype.hasOwnProperty.call(value, key)) ? value : null;
+}
+
+// leaves as normalizeLeaves takes it: an array (an explicit [] is the empty
+// batch), one leaf object, or a non-blank string.  Anything else, a blank
+// template slot rendered as "" included, would become a vacuous zero-leaf PASS
+// or a leaf made of a bare scalar.
+function isLeafBatch(leaves) {
+    return (leaves !== null && typeof leaves === "object")
+        || (typeof leaves === "string" && leaves.trim() !== "");
 }
 
 // The invariant a malformed envelope breaks, or null.  A malformed envelope is
@@ -305,7 +312,10 @@ function envelopeRefusal(envelope) {
         return `the envelope accepts only ${BATCH_ENVELOPE_KEYS.join(", ")}; `
             + `unknown key(s): ${JSON.stringify(unknown)}`;
     }
-    if (envelope.leaves == null) return "an envelope needs leaves (the leaf array)";
+    if (!isLeafBatch(envelope.leaves)) {
+        return "leaves must be the leaf array, its JSON string, or one leaf object; "
+            + `got ${JSON.stringify(envelope.leaves)}`;
+    }
     const bin = envelope.reify_bin;
     if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
         return "reify_bin must be the absolute path of the reify binary α probes with; "
@@ -315,9 +325,10 @@ function envelopeRefusal(envelope) {
 }
 
 function batchArgs(rawArgs, warn) {
-    const envelope = batchEnvelope(rawArgs);
+    const destringified = destringifyArgs(rawArgs);
+    const envelope = batchEnvelope(destringified.value);
     if (envelope === null) {
-        return { leaves: normalizeLeaves(rawArgs, warn), reifyBin: null };
+        return { leaves: leavesFrom(rawArgs, destringified, warn), reifyBin: null };
     }
     const refusal = envelopeRefusal(envelope);
     if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
@@ -599,7 +610,7 @@ EXEMPT from the evidence rule above and DOES block — it is how "I could not ru
 anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
    command: [], exit_code: -1, fixture_present: null, stdout: "",
-   stderr: "<the failed step's exit code, then its stderr verbatim>"}`,
+   stderr: "<as RECORD SHAPE above says>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
                 ),
 
