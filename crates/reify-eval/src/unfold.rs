@@ -717,18 +717,6 @@ fn elaborate_child_instance_nested<'t, 'f>(
                     &snapshot.values,
                     &arg_runtime_sink,
                 );
-                let v = mint_instance_cell_if_undef(
-                    v,
-                    SymbolicMintOrder::SelectorFirst,
-                    key,
-                    expr,
-                    &SymbolicMintScope {
-                        template: child_template,
-                        values: &overlay,
-                        functions,
-                        meta_map,
-                    },
-                );
                 overlay.insert(key.clone(), v);
             }
             // Pre-evaluate the nested sub's constructor args HERE, in this
@@ -1311,7 +1299,9 @@ fn mint_instance_cell_if_undef(
 /// A scratch value must equal what phase 2 commits, so an `@optimized` let is
 /// resolved through the same [`resolve_optimized_instance_cell`] gate phase 2
 /// uses (task #6662). Body-inlining instead would hand every reader the `.ri`
-/// sentinel while the committed cell held the dispatched value.
+/// sentinel while the committed cell held the dispatched value. For the same
+/// parity reason an `Undef` scratch value is minted exactly as phase 2's let
+/// site mints it (see [`crate::symbolic_cell_mint`]).
 ///
 /// Silent: phase 2 sees the same cell and owns the decline report, so reporting
 /// here would double every warning. Phase 1.5's overlay reaches phase 2's
@@ -1346,14 +1336,25 @@ fn eval_scratch_let(
     ) {
         OptimizedInstanceResolution::Reuse(v) => v,
         OptimizedInstanceResolution::NotOptimized
-        | OptimizedInstanceResolution::Unreusable { .. } => eval_child_expr(
-            scope,
+        | OptimizedInstanceResolution::Unreusable { .. } => mint_instance_cell_if_undef(
+            eval_child_expr(
+                scope,
+                expr,
+                functions,
+                meta_map,
+                determinacy,
+                runtime_sink,
+                &NoContainment,
+            ),
+            SymbolicMintOrder::SelectorFirst,
+            key,
             expr,
-            functions,
-            meta_map,
-            determinacy,
-            runtime_sink,
-            &NoContainment,
+            &SymbolicMintScope {
+                template: child_template,
+                values: scope,
+                functions,
+                meta_map,
+            },
         ),
     }
 }
