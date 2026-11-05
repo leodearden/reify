@@ -81,8 +81,7 @@ source "$_LIB_PORTABLE"
 # 1..65535 (no whitespace, no leading zeros — all rejected by ^[1-9][0-9]*$).
 # Mirrors the contract of:
 #   debug_server.rs   parse_debug_port / DEFAULT_DEBUG_PORT
-#   endpoint.ts       resolveDebugPort / debugUrlForPort
-#   session.ts        resolveReifyDebugUrl
+#   debugServerEndpoint.mjs  resolveDebugPort / debugUrlForPort (gui/test/visual/)
 
 _resolve_port() {
     local env_val="${REIFY_DEBUG_PORT:-}"
