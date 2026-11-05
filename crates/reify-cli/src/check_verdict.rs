@@ -1,7 +1,7 @@
 //! The verdict layer: reconciles the check and build passes' constraint results and
 //! diagnostics into the set a command reports, and decides which of them fail the command.
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, DiagnosticIdentity, Severity};
 
 /// The constraint-indeterminacy message grammar, as one pair of literals:
 /// `constraint {label-or-id} indeterminate: {reason}`.
@@ -556,11 +556,10 @@ pub(crate) enum ConstraintOutcome {
 ///
 /// # Dedup key
 ///
-/// [`DiagKey`], a hand-built tuple rather than a derived `PartialEq`:
-/// [`reify_core::Diagnostic`] is `#[non_exhaustive]` and derives only
-/// `Debug, Clone`, so deriving equality would be a reify-core API change
-/// outside this leaf's scope AND would drag `labels`/`candidates` into
-/// identity, which the PRD excludes.
+/// [`DiagnosticIdentity`]: severity, code and message, with labels and
+/// candidates excluded.  All three helpers — this one, [`dedup_diagnostics`]
+/// and [`strip_diagnostics_reproduced_by`] — share [`DiagnosticIdentity::of`],
+/// so they cannot drift onto different keys.
 ///
 /// Membership is tested against the ACCUMULATING set — seeded from
 /// `check_diags`, then grown as build entries are appended — so duplicates
@@ -569,34 +568,11 @@ pub(crate) enum ConstraintOutcome {
 /// compile geometry operation: mirror: expected a Plane value, got undef` twice
 /// for a single call site (re-measured at task 5746 / units-length ε, which
 /// gated `plane_yz(0)` at the producer; the duplicated line was the `'ox'`
-/// compile error before that, and the duplication itself is unchanged).  Note the corollary in
-/// [`DiagKey`]: a list that can hold two DISTINCT findings with the same text
-/// must be kept out of that collapse (see [`strip_diagnostics_reproduced_by`]).
-pub(crate) fn merge_build_diagnostics(
-    check_diags: &[reify_core::Diagnostic],
-    build_diags: &[reify_core::Diagnostic],
-) -> Vec<reify_core::Diagnostic> {
-    let mut merged = check_diags.to_vec();
-    let mut seen: std::collections::HashSet<DiagKey> =
-        check_diags.iter().map(diagnostic_identity).collect();
-    for diag in build_diags {
-        if seen.insert(diagnostic_identity(diag)) {
-            merged.push(diag.clone());
-        }
-    }
-    merged
-}
-
-/// The identity under which [`merge_build_diagnostics`] and
-/// [`dedup_diagnostics`] consider two diagnostics the same line.
+/// compile error before that, and the duplication itself is unchanged).  Note the corollary
+/// below: a list that can hold two DISTINCT findings with the same text must be
+/// kept out of that collapse (see [`strip_diagnostics_reproduced_by`]).
 ///
-/// Extracted so the merge and the self-dedup cannot drift onto different keys —
-/// the same anti-drift move [`is_falsified_indeterminacy`] makes for the two
-/// falsification legs (esc-5748-4).  See [`merge_build_diagnostics`]' "Dedup
-/// key" section for why this is a hand-built tuple rather than a derived
-/// `PartialEq` on `#[non_exhaustive] reify_core::Diagnostic`.
-///
-/// # Why the span is NOT part of the key
+/// ## Why the span is NOT part of the key
 ///
 /// Tempting, because it would tell two same-text findings apart — but MEASURED
 /// to be wrong: on `tests/fixtures/mirror_bare_origin.ri` the duplicated
@@ -616,19 +592,28 @@ pub(crate) fn merge_build_diagnostics(
 /// its redundant copy withdrawn wholesale before the merge — see
 /// [`strip_diagnostics_reproduced_by`], which is how `cmd_check`'s sub-path (c)
 /// does it.
-type DiagKey = (Severity, Option<reify_core::DiagnosticCode>, String);
-
-fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
-    (d.severity, d.code, d.message.clone())
+pub(crate) fn merge_build_diagnostics(
+    check_diags: &[reify_core::Diagnostic],
+    build_diags: &[reify_core::Diagnostic],
+) -> Vec<reify_core::Diagnostic> {
+    let mut merged = check_diags.to_vec();
+    let mut seen: std::collections::HashSet<DiagnosticIdentity<'_>> =
+        check_diags.iter().map(DiagnosticIdentity::of).collect();
+    for diag in build_diags {
+        if seen.insert(DiagnosticIdentity::of(diag)) {
+            merged.push(diag.clone());
+        }
+    }
+    merged
 }
 
 /// Collapse duplicates WITHIN one diagnostic list, keeping the first occurrence
-/// of each [`DiagKey`] in order — but ONLY among entries carrying no
+/// of each [`DiagnosticIdentity`] in order — but ONLY among entries carrying no
 /// [`reify_core::DiagnosticCode`].
 ///
 /// The self-dedup half of [`merge_build_diagnostics`], named rather than
 /// spelled `merge_build_diagnostics(&[], &diags)`, and sharing its
-/// [`diagnostic_identity`] so the two cannot drift onto different keys.
+/// [`DiagnosticIdentity::of`] so the two cannot drift onto different keys.
 /// `cmd_check`'s sub-path (c) needs it on its own: the realization re-runs the
 /// eval front-end internally and emits some entries twice for a single call
 /// site (measured on the `mirror(...)` bare-origin fixture: `failed to compile
@@ -639,8 +624,8 @@ fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
 /// # Why coded entries are exempt
 ///
 /// No local key can tell "one finding reported twice" from "two findings that
-/// happen to read alike" ([`DiagKey`]) — but the two populations split cleanly
-/// on the code:
+/// happen to read alike" ([`merge_build_diagnostics`]' "Dedup key" section) —
+/// but the two populations split cleanly on the code:
 ///
 /// * The measured re-run duplication this helper exists for is UNCODED —
 ///   `failed to compile geometry operation: …` (engine_build.rs) carries a label
@@ -673,14 +658,15 @@ fn diagnostic_identity(d: &reify_core::Diagnostic) -> DiagKey {
 /// is a property the D2 contract lets callers rely on.  Only the appended
 /// `build_diags` are filtered against it.
 pub(crate) fn dedup_diagnostics(diags: &[reify_core::Diagnostic]) -> Vec<reify_core::Diagnostic> {
-    let mut seen: std::collections::HashSet<DiagKey> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<DiagnosticIdentity<'_>> =
+        std::collections::HashSet::new();
     diags
         .iter()
         .filter(|d| {
             // Short-circuits before `seen`, so a coded entry is neither
             // collapsed nor able to collapse a later uncoded one (their keys
             // differ by construction anyway — the code is part of the key).
-            d.code.is_some() || seen.insert(diagnostic_identity(d))
+            d.code.is_some() || seen.insert(DiagnosticIdentity::of(d))
         })
         .cloned()
         .collect()
@@ -699,12 +685,12 @@ pub(crate) fn dedup_diagnostics(diags: &[reify_core::Diagnostic]) -> Vec<reify_c
 /// can legitimately emit two byte-identical lines for two different callouts
 /// (`engine_constraints::illegal_modifier_error` names the characteristic in
 /// the message and the location in a label), and the dedup key cannot tell
-/// those apart from a re-run — see [`DiagKey`].  Deduping collapsed a
-/// two-callout module to ONE printed line while the non-geometry arm printed
-/// two.  [`dedup_diagnostics`] no longer touches coded entries at all, which is
-/// what makes this withdrawal the ONLY thing standing between a re-run coded
-/// pass and a doubled report — `purpose_order_does_not_double_the_gdt_pass` is
-/// the lock.
+/// those apart from a re-run — see [`merge_build_diagnostics`]' "Dedup key"
+/// section.  Deduping collapsed a two-callout module to ONE printed line while
+/// the non-geometry arm printed two.  [`dedup_diagnostics`] no longer touches
+/// coded entries at all, which is what makes this withdrawal the ONLY thing
+/// standing between a re-run coded pass and a doubled report —
+/// `purpose_order_does_not_double_the_gdt_pass` is the lock.
 ///
 /// Removing the realization's copy WHOLESALE and letting `cmd_check`'s own run
 /// be the single source sidesteps the ambiguity entirely: multiplicity comes
@@ -728,11 +714,11 @@ pub(crate) fn strip_diagnostics_reproduced_by(
     if rerun.is_empty() {
         return diags.to_vec();
     }
-    let reproduced: std::collections::HashSet<DiagKey> =
-        rerun.iter().map(diagnostic_identity).collect();
+    let reproduced: std::collections::HashSet<DiagnosticIdentity<'_>> =
+        rerun.iter().map(DiagnosticIdentity::of).collect();
     diags
         .iter()
-        .filter(|d| !reproduced.contains(&diagnostic_identity(d)))
+        .filter(|d| !reproduced.contains(&DiagnosticIdentity::of(d)))
         .cloned()
         .collect()
 }
