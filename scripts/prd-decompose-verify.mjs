@@ -179,7 +179,12 @@ harness discards any such record with no captured command+exit_code as an
 unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
 the ONE exception: it reports that the probe machinery itself could not run, so
 it blocks the batch whether or not it carries evidence.  Use it — never a bare
-FAIL — when a step of your own procedure died.`;
+FAIL — when a step of your own procedure died.  That record's stderr is the
+failed step's exit code and then its stderr VERBATIM, never a paraphrase: α
+itself exits 64 with no JSON when it will not choose a reify binary (two are
+built and neither is vouched for), and its stderr names both binaries and the
+REIFY_BIN remedy — this record is the only place the operator reads it.  Keep
+that record's no-probe shape: command [], exit_code -1, fixture_present null.`;
 
 const RESULTS_SCHEMA = {
     type: "object",
@@ -593,7 +598,8 @@ If any step fails, return a single HARNESS_ERROR result record (this record is
 EXEMPT from the evidence rule above and DOES block — it is how "I could not run
 anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
-   command: [], exit_code: -1, fixture_present: null, stdout: "", stderr: "<error detail>"}`,
+   command: [], exit_code: -1, fixture_present: null, stdout: "",
+   stderr: "<the failed step's exit code, then its stderr verbatim>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
                 ),
 
