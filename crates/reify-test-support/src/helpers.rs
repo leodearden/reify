@@ -1,9 +1,8 @@
 //! Shared test helpers.
 //!
-//! Most of this module is the `eval-helpers`-gated pipeline for parsing,
-//! compiling, and evaluating Reify source in tests. Alongside it sits one
-//! un-gated helper that needs no engine: [`collect_value_ref_members`], which
-//! inspects an already-compiled expression.
+//! Helpers that need an evaluation engine are gated behind the
+//! `eval-helpers` feature. The rest are un-gated: compiling source, filtering
+//! and asserting on diagnostics, and inspecting compiled output.
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
@@ -373,26 +372,29 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
-/// Every `Underdetermined`-coded diagnostic in the slice, matched on the
-/// STRUCTURED code rather than by substring on the rendered
-/// `W_UNDERDETERMINED` text — which is the property that makes this worth
-/// having over an ad-hoc `.contains()`, since the rendered wording is free to
-/// change.
+/// Every diagnostic in the slice carrying `code`, in input order.
 ///
-/// Deliberately severity-BLIND, UNLIKE its neighbours [`collect_errors`] and
-/// [`error_diags`]: a diagnostic carrying the code is returned whatever its
-/// severity. `W_UNDERDETERMINED` is a warning today, so adding a severity
-/// filter here to match the neighbours would silently change what the call
-/// sites detect without going red at the ones that merely count. Pinned by
-/// `underdetermined_diags_is_severity_blind`.
+/// Matches on the structured CODE, never on message text: a coded
+/// diagnostic's message is explicitly not a stable contract, so a text match
+/// would break on rewording rather than on behaviour.
 ///
-/// Input order is preserved; call sites read the result positionally
-/// (task #6524).
-pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+/// Severity-blind, unlike [`collect_errors`] and [`error_diags`].
+pub fn diags_with_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> Vec<&Diagnostic> {
     diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .filter(|d| d.code == Some(code))
         .collect()
+}
+
+/// [`diags_with_code`] specialised to `Underdetermined`.
+///
+/// `W_UNDERDETERMINED` is a warning today, so a severity filter added here
+/// would silently change what the call sites detect without going red at the
+/// ones that merely count. Pinned by `underdetermined_diags_is_severity_blind`.
+///
+/// Call sites read the result positionally (task #6524).
+pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags_with_code(diagnostics, DiagnosticCode::Underdetermined)
 }
 
 /// Return only the `Severity::Error` diagnostics from a compiled module.
@@ -660,18 +662,20 @@ pub fn named_length_argument(message: &str) -> Option<&str> {
 /// default emits an unavoidable unrelated `unknown variant` error, so no
 /// count-based assertion can be written against it at all.
 ///
-/// Severity is filtered FIRST: a Warning carrying `code` does not satisfy this.
+/// Only Error severity counts: a Warning carrying `code` does not satisfy this.
 ///
 /// # Panics
 /// Panics if no Error-severity diagnostic carries `code`. The panic message
 /// includes `context` and the errors that *were* observed.
 #[track_caller]
 pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
-    let errors = collect_errors(diagnostics);
     assert!(
-        errors.iter().any(|d| d.code == Some(code)),
+        diags_with_code(diagnostics, code)
+            .iter()
+            .any(|d| d.severity == Severity::Error),
         "{context}: expected an Error-severity diagnostic with \
-         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}"
+         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}",
+        errors = collect_errors(diagnostics),
     );
 }
 
@@ -691,8 +695,10 @@ pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCod
 /// includes `context` and the offending diagnostics.
 #[track_caller]
 pub fn assert_error_code_absent(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
-    let errors = collect_errors(diagnostics);
-    let matching: Vec<_> = errors.iter().filter(|d| d.code == Some(code)).collect();
+    let matching: Vec<_> = diags_with_code(diagnostics, code)
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         matching.is_empty(),
         "{context}: expected no Error-severity diagnostic with \
@@ -2467,7 +2473,7 @@ mod tests {
         );
     }
 
-    /// `assert_error_code_present` filters to `Severity::Error` FIRST: a
+    /// Only `Severity::Error` counts for `assert_error_code_present`: a
     /// Warning carrying the code does not satisfy it.
     #[test]
     #[should_panic(expected = "DimensionMismatch")]
@@ -2535,11 +2541,52 @@ mod tests {
         assert!(message.contains("unrelated noise"), "{message}");
     }
 
+    // ── diags_with_code ───────────────────────────────────────────────────
+    //
+    // The generic code-keyed filter `underdetermined_diags` specialises.
+    // These cases use `UnresolvedFunction` so they prove the helper is generic
+    // over `code` rather than restating the `Underdetermined` cases below.
+
+    /// Only diagnostics carrying the requested code come back, in input order.
+    /// Another code is excluded, and so is a CODELESS (`code: None`)
+    /// diagnostic.
+    #[test]
+    fn diags_with_code_selects_only_the_requested_code_in_input_order() {
+        let diags = vec![
+            Diagnostic::warning("first").with_code(DiagnosticCode::UnresolvedFunction),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("codeless noise"),
+            Diagnostic::warning("second").with_code(DiagnosticCode::UnresolvedFunction),
+        ];
+        let messages: Vec<&str> =
+            super::diags_with_code(&diags, DiagnosticCode::UnresolvedFunction)
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+        assert_eq!(messages, vec!["first", "second"]);
+    }
+
+    /// The filter is severity-BLIND: an Error carrying the code is returned
+    /// just as a Warning is.
+    #[test]
+    fn diags_with_code_is_severity_blind() {
+        let diags = vec![
+            Diagnostic::error("escalated").with_code(DiagnosticCode::UnresolvedFunction),
+            Diagnostic::warning("plain").with_code(DiagnosticCode::UnresolvedFunction),
+        ];
+        let selected = super::diags_with_code(&diags, DiagnosticCode::UnresolvedFunction);
+        assert_eq!(
+            selected.len(),
+            2,
+            "both severities must be returned — this filter is code-keyed \
+             only; got {selected:#?}",
+        );
+    }
+
     // ── underdetermined_diags ─────────────────────────────────────────────
     //
-    // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
-    // this one filters on the structured CODE alone and is severity-blind.
-    // The cases below pin that difference, which every call site depends on.
+    // Task #6524. The cases below pin the `Underdetermined` specialisation of
+    // `diags_with_code`, whose call sites depend on its severity-blindness.
 
     /// Only `Underdetermined`-coded diagnostics come back. An unrelated code
     /// is excluded, and so is a CODELESS (`code: None`) diagnostic — the
@@ -2557,14 +2604,7 @@ mod tests {
         assert_eq!(under[0].message, "auto `bore` is not pinned");
     }
 
-    /// The filter is severity-BLIND: an Error carrying the code is returned
-    /// just as a Warning is.
-    ///
-    /// This helper lands directly beside `collect_errors` / `error_diags`,
-    /// which DO filter `Severity::Error`, so a future editor harmonising the
-    /// neighbours could add one here — silently changing what the call sites
-    /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
-    /// not even go red at the sites that merely count it.
+    /// An Error carrying the code is returned just as a Warning is.
     #[test]
     fn underdetermined_diags_is_severity_blind() {
         let diags = vec![

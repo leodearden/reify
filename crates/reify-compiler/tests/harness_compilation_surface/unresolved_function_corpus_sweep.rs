@@ -47,7 +47,7 @@ use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
 use reify_compiler::parse_with_stdlib;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_compiler::cfg::CfgSet;
-use reify_test_support::examples_corpus::discover_ri_files;
+use reify_test_support::{diags_with_code, examples_corpus::discover_ri_files};
 
 /// Workspace root, resolved at compile time from this crate's manifest dir.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -253,10 +253,7 @@ fn sweep() -> Vec<Violation> {
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for d in &diagnostics {
-            if d.code != Some(DiagnosticCode::UnresolvedFunction) {
-                continue;
-            }
+        for d in diags_with_code(&diagnostics, DiagnosticCode::UnresolvedFunction) {
             let offset = d.labels.first().map(|l| l.span.start).unwrap_or(0);
             violations.push(Violation {
                 file: rel.clone(),
