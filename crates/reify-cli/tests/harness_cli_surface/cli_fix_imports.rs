@@ -173,3 +173,20 @@ fn check_fails_the_run_when_any_file_is_missing_imports() {
         clean_source
     );
 }
+
+#[test]
+fn a_failing_file_does_not_stop_the_files_after_it_being_fixed() {
+    let dir = tempdir().expect("tempdir");
+    let broken = write_ri(dir.path(), "broken.ri", BROKEN);
+    let plate = write_ri(dir.path(), "plate.ri", PLATE);
+
+    let output = run_reify(&["fix", "--imports", &broken, &plate]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert_eq!(
+        fs::read_to_string(&plate).expect("read fixed file"),
+        format!("{HEADER}{PLATE}"),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(fs::read_to_string(&broken).expect("read fixture"), BROKEN);
+}
