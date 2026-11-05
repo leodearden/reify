@@ -1,15 +1,16 @@
 //! The public-entry contract of the anchored force-density form-finding
 //! entries — `form_find_anchored`, `form_find_anchored_surfaces` and
 //! `form_find_anchored_surfaces_aniso` — driven from the crate root only: the
-//! analytic FD-identity goldens, the input and sign guards, the empty-free-set
-//! and singular-reduced-stiffness verdicts, the isolated-free-node rejection and
-//! the anisotropic entry's isotropic equivalence. Moved from `form_find.rs`'s
-//! unit tests by #9275; the stencil and principal-stress tests stay there.
+//! analytic FD-identity goldens and the force-density echo, the empty-free-set
+//! and singular-reduced-stiffness verdicts, the isolated-free-node rejections,
+//! the surface entry's line-only equivalence and the anisotropic entry's
+//! isotropic equivalence. The input contract these entries share is
+//! `tests/force_density_input.rs`. Moved from `form_find.rs`'s unit tests by
+//! #9275; the stencil and principal-stress tests stay there.
 
 use reify_solver_elastic::{
-    AnisoFormFindError, AnisotropicSurfaceStress, ForceDensityInputError, FormFindError,
-    IndexedInput, MemberKind, form_find_anchored, form_find_anchored_surfaces,
-    form_find_anchored_surfaces_aniso,
+    AnisoFormFindError, AnisotropicSurfaceStress, FormFindError, MemberKind, form_find_anchored,
+    form_find_anchored_surfaces, form_find_anchored_surfaces_aniso,
 };
 use reify_test_support::tensegrity_fixtures::{TENT_ANCHORS, TENT_NODE_COORDS, TENT_TRIS};
 
@@ -196,46 +197,7 @@ fn member_forces_are_q_times_solved_length_and_q_is_echoed() {
     );
 }
 
-// (a) Sign-convention contract: a cable must carry tension (q > 0). A cable
-// with q ≤ 0 is infeasible input.
-#[test]
-fn cable_with_nonpositive_q_is_sign_violation() {
-    let nodes = vec![
-        [0.0, 0.0, 0.5],  // free node 0
-        [1.0, 0.0, 0.0],  // anchor 1
-        [-1.0, 0.0, 0.0], // anchor 2
-    ];
-    let members = [(0, 1), (0, 2)];
-    let kinds = [MemberKind::Cable, MemberKind::Cable];
-    let q = [1.0, -1.0]; // cable 1 violates the q > 0 tension contract
-    let anchors = [1, 2];
-
-    assert_eq!(
-        form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::SignViolation { member: 1 }),
-    );
-}
-
-// (a) Mirror: a strut must carry compression (q < 0). A strut with q ≥ 0 is
-// infeasible input.
-#[test]
-fn strut_with_nonnegative_q_is_sign_violation() {
-    let nodes = vec![
-        [0.0, 0.0, 0.0], // free node 0
-        [1.0, 0.0, 0.0], // anchor 1
-    ];
-    let members = [(0, 1)];
-    let kinds = [MemberKind::Strut];
-    let q = [1.0]; // strut requires q < 0; +1 violates the compression contract
-    let anchors = [1];
-
-    assert_eq!(
-        form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::SignViolation { member: 0 }),
-    );
-}
-
-// (b) A free node with no member path to any anchor leaves a zero row in the
+// A free node with no member path to any anchor leaves a zero row in the
 // reduced stiffness D_ff → singular. The solve cannot recover that node.
 #[test]
 fn disconnected_free_node_is_singular_reduced_stiffness() {
@@ -255,7 +217,7 @@ fn disconnected_free_node_is_singular_reduced_stiffness() {
     );
 }
 
-// (b2) TASK 7046 — a NUMERICALLY singular D_ff must be reported too,
+// TASK 7046 — a NUMERICALLY singular D_ff must be reported too,
 // identically at every gauge, while the control (half the critical strut
 // density) stays Ok. LU returns finite but huge (~1e13) coordinates, so
 // the residual branch rejects, and structurally rather than by rounding
@@ -307,7 +269,7 @@ fn near_singular_reduced_stiffness_is_rejected_at_every_gauge() {
     }
 }
 
-// (c) Anchoring every node leaves no free DOF to solve for.
+// Anchoring every node leaves no free DOF to solve for.
 #[test]
 fn all_nodes_anchored_is_empty_free_set() {
     let nodes = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
@@ -319,75 +281,6 @@ fn all_nodes_anchored_is_empty_free_set() {
     assert_eq!(
         form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
         FormFindError::EmptyFreeSet,
-    );
-}
-
-// (d) members / kinds / q must agree in length. A short q is a dimension
-// mismatch, caught up front before any solve.
-#[test]
-fn length_mismatch_is_dimension_mismatch() {
-    let nodes = vec![[0.0, 0.0, 0.5], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]];
-    let members = [(0, 1), (0, 2)];
-    let kinds = [MemberKind::Cable, MemberKind::Cable];
-    let q = [1.0]; // one density for two members → mismatch
-    let anchors = [1, 2];
-
-    assert_eq!(
-        form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::DimensionMismatch),
-    );
-}
-
-// (d2) A member endpoint past `nodes` is infeasible input, not a panic in
-// the `D` scatter (PRD §8.1: clean diagnostic). Index 5 is the FIRST invalid
-// one for 5 nodes, in the END (k) position.
-#[test]
-fn out_of_range_member_index_is_index_out_of_range() {
-    let nodes = vec![
-        [0.3, 0.2, 0.4],
-        [1.0, 0.0, 0.0],
-        [-1.0, 0.0, 0.0],
-        [0.0, 1.0, 1.0],
-        [0.0, -1.0, 1.0],
-    ];
-    let members = [(0, 1), (0, 2), (0, 3), (0, 5)];
-    let kinds = [MemberKind::Cable; 4];
-    let q = [1.0; 4];
-    let anchors = [1, 2, 3, 4];
-
-    assert_eq!(
-        form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::MemberEndpoint { member: 3 },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (d3) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). Every
-// valid anchor is present too, so silently dropping index 5 would solve and fail here.
-#[test]
-fn out_of_range_anchor_index_is_index_out_of_range() {
-    let nodes = vec![
-        [0.3, 0.2, 0.4],
-        [1.0, 0.0, 0.0],
-        [-1.0, 0.0, 0.0],
-        [0.0, 1.0, 1.0],
-        [0.0, -1.0, 1.0],
-    ];
-    let members = [(0, 1), (0, 2), (0, 3), (0, 4)];
-    let kinds = [MemberKind::Cable; 4];
-    let q = [1.0; 4];
-    let anchors = [1, 2, 3, 4, 5];
-
-    assert_eq!(
-        form_find_anchored(&nodes, &members, &kinds, &q, &anchors).unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::Anchor { anchor: 4 },
-            index: 5,
-            len: 5,
-        }),
     );
 }
 
@@ -406,116 +299,7 @@ fn tent_membrane() -> MembraneCase {
     (TENT_NODE_COORDS.to_vec(), surfaces, anchors)
 }
 
-// (b) A non-positive surface stress (σ ≤ 0) is a non-tension membrane —
-// infeasible input (the surface analogue of the cable q>0 sign contract).
-#[test]
-fn surfaces_nonpositive_sigma_is_non_tension() {
-    let (nodes, surfaces, anchors) = tent_membrane();
-    let mut sigmas = vec![1.0; surfaces.len()];
-    sigmas[2] = -0.5; // triangle 2 violates the σ>0 tension contract
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-
-    assert_eq!(
-        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-            .unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 2 }),
-    );
-}
-
-// (c) surfaces and surface_stresses must agree in length — a per-triangle σ
-// is required for each triangle.
-#[test]
-fn surfaces_count_mismatch_is_surface_count_mismatch() {
-    let (nodes, surfaces, anchors) = tent_membrane();
-    let sigmas = vec![1.0; surfaces.len() - 1]; // one short
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-
-    assert_eq!(
-        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-            .unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
-    );
-}
-
-// (c2) A surface triangle corner that indexes past `nodes` is infeasible
-// input — `assemble_combined_d` would panic on its `nodes[i]` index. PRD 8.1
-// promises a clean diagnostic, never a panic.
-#[test]
-fn surfaces_out_of_range_index_is_index_out_of_range() {
-    let (nodes, _surfaces, anchors) = tent_membrane();
-    // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
-    // this pins the `≥ n` comparison that a `> n` typo would let pass.
-    // The predicate ANDs three comparisons, so each sibling test puts the
-    // bad index in a different corner — FIRST here, second in the aniso
-    // test below, third in `form_find_free_surfaces`' test in
-    // tests/form_find_free_entries.rs — pinning all three between them.
-    let surfaces = vec![(5usize, 1usize, 2usize)];
-    let sigmas = vec![1.0];
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-
-    assert_eq!(
-        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-            .unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::SurfaceCorner { surface: 0 },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (c3) A member endpoint past `nodes` is infeasible input, not a panic in
-// the `D` scatter (PRD §8.1: clean diagnostic). The bad index is the START
-// (j) endpoint; the line-only test above covers the END (k) one.
-#[test]
-fn surfaces_out_of_range_member_index_is_index_out_of_range() {
-    let (nodes, surfaces, anchors) = tent_membrane();
-    let sigmas = vec![1.0; surfaces.len()];
-    let members = vec![(5usize, 0usize)];
-    let kinds = vec![MemberKind::Cable];
-    let q = vec![1.0];
-
-    assert_eq!(
-        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-            .unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::MemberEndpoint { member: 0 },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (c4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
-// valid anchors stay, so silently dropping index 5 would solve and fail here.
-#[test]
-fn surfaces_out_of_range_anchor_index_is_index_out_of_range() {
-    let (nodes, surfaces, mut anchors) = tent_membrane();
-    let bad_anchor = anchors.len();
-    anchors.push(5);
-    let sigmas = vec![1.0; surfaces.len()];
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-
-    assert_eq!(
-        form_find_anchored_surfaces(&nodes, &members, &kinds, &q, &surfaces, &sigmas, &anchors)
-            .unwrap_err(),
-        FormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::Anchor { anchor: bad_anchor },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (d) The pure-line path (empty surfaces) through the surface-aware entry
+// The pure-line path (empty surfaces) through the surface-aware entry
 // must return exactly the landed form_find_anchored result, with an empty
 // surface_stresses echo — the additive-extension invariant.
 #[test]
@@ -553,7 +337,7 @@ fn surfaces_empty_matches_line_only_form_find_anchored() {
     }
 }
 
-// (e) TASK 6119 — a free node touched by neither a member nor a triangle
+// TASK 6119 — a free node touched by neither a member nor a triangle
 // leaves its entire free-row block of D identically zero, so the net force
 // on it is 0 for the vacuous reason that nothing acts on it at all. That
 // must not be read as "converged": the honest outcome is
@@ -589,7 +373,8 @@ fn surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back() {
     );
 }
 
-// (e2) TASK 6119 REVIEW — the degenerate-row guard exercised by (e) and
+// TASK 6119 REVIEW — the degenerate-row guard exercised by
+// `surfaces_solve_rejects_isolated_free_node_instead_of_echoing_it_back` and
 // `fd_criteria`'s unit tests must fire PER ROW: an aggregate guard on the
 // MAX over free rows fires
 // only when EVERY free row of D is zero, so a free node that IS
@@ -635,7 +420,7 @@ fn surfaces_solve_rejects_isolated_free_node_alongside_a_connected_one() {
     );
 }
 
-// ── ε (task 4416): form_find_anchored_surfaces_aniso guards + iso-equivalence ──
+// ── ε (task 4416): form_find_anchored_surfaces_aniso verdicts + iso-equivalence ──
 
 /// [`tent_membrane`] plus one isotropic-valued anisotropic prestress per
 /// triangle, for the aniso solve tests.
@@ -659,165 +444,7 @@ fn tent_aniso_fixture() -> (
     (nodes, surfaces, prestress, anchors)
 }
 
-// (a) surfaces/surface_prestress length mismatch → SurfaceCountMismatch.
-#[test]
-fn aniso_solve_surface_count_mismatch() {
-    let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-    let short_prestress = prestress[..prestress.len() - 1].to_vec();
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(
-            &nodes,
-            &members,
-            &kinds,
-            &q,
-            &surfaces,
-            &short_prestress,
-            &anchors
-        )
-        .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::SurfaceCountMismatch),
-    );
-}
-
-// (a2) A surface triangle corner that indexes past `nodes` is infeasible
-// input — the stencil scatter would panic on its `nodes[i]` index. Mirrors
-// the isotropic entry's guard.
-#[test]
-fn aniso_solve_out_of_range_surface_index_is_index_out_of_range() {
-    let (nodes, _surfaces, prestress, anchors) = tent_aniso_fixture();
-    // Boundary index: 5 is the FIRST invalid index for the 5-node tent, so
-    // this pins the `≥ n` comparison that a `> n` typo would let pass.
-    // The predicate ANDs three comparisons, so each sibling test puts the
-    // bad index in a different corner — SECOND here, first in the isotropic
-    // test above, third in `form_find_free_surfaces`' test in
-    // tests/form_find_free_entries.rs — pinning all three between them.
-    let surfaces = vec![(0usize, 5usize, 2usize)];
-    let pres = vec![prestress[0].clone()];
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(&nodes, &members, &kinds, &q, &surfaces, &pres, &anchors)
-            .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::SurfaceCorner { surface: 0 },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (a3) A member endpoint past `nodes` is infeasible input, not a panic in
-// the `D` scatter (PRD §8.1: clean diagnostic). Mirrors the isotropic
-// entry's guard; 5 is the first invalid index for the 5-node tent.
-#[test]
-fn aniso_solve_out_of_range_member_index_is_index_out_of_range() {
-    let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-    let members = vec![(0usize, 5usize)];
-    let kinds = vec![MemberKind::Cable];
-    let q = vec![1.0_f64];
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(
-            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-        )
-        .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::MemberEndpoint { member: 0 },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (a4) An anchor past `nodes` is infeasible input, not a panic (PRD §8.1). The tent's
-// valid anchors stay, so silently dropping index 5 would solve and fail here.
-#[test]
-fn aniso_solve_out_of_range_anchor_index_is_index_out_of_range() {
-    let (nodes, surfaces, prestress, mut anchors) = tent_aniso_fixture();
-    let bad_anchor = anchors.len();
-    anchors.push(5);
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(
-            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-        )
-        .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::Anchor { anchor: bad_anchor },
-            index: 5,
-            len: 5,
-        }),
-    );
-}
-
-// (b) members/kinds/q length mismatch → DimensionMismatch.
-#[test]
-fn aniso_solve_dimension_mismatch() {
-    let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-    let members = vec![(0usize, 1usize)];
-    let kinds = vec![MemberKind::Cable];
-    let q: Vec<f64> = vec![]; // length 0 ≠ 1
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(
-            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-        )
-        .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::DimensionMismatch),
-    );
-}
-
-// (c) A cable member with q ≤ 0 → SignViolation.
-#[test]
-fn aniso_solve_sign_violation() {
-    let (nodes, surfaces, prestress, anchors) = tent_aniso_fixture();
-    let members = vec![(0usize, 1usize)];
-    let kinds = vec![MemberKind::Cable];
-    let q = vec![-1.0_f64]; // cable must be > 0
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(
-            &nodes, &members, &kinds, &q, &surfaces, &prestress, &anchors
-        )
-        .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::SignViolation { member: 0 }),
-    );
-}
-
-// (d) σ_w ≤ 0 → NonTensionSurfaceStress.
-#[test]
-fn aniso_solve_non_tension_surface_stress() {
-    let (nodes, surfaces, _prestress, anchors) = tent_aniso_fixture();
-    let bad_prestress = vec![
-        AnisotropicSurfaceStress {
-            warp_dir: [1.0, 0.0, 0.0],
-            sigma_warp: -1.0, // ≤ 0
-            sigma_weft: 1.0,
-        };
-        surfaces.len()
-    ];
-    let members: Vec<(usize, usize)> = vec![];
-    let kinds: Vec<MemberKind> = vec![];
-    let q: Vec<f64> = vec![];
-    assert_eq!(
-        form_find_anchored_surfaces_aniso(
-            &nodes,
-            &members,
-            &kinds,
-            &q,
-            &surfaces,
-            &bad_prestress,
-            &anchors
-        )
-        .unwrap_err(),
-        AnisoFormFindError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 0 }),
-    );
-}
-
-// (e) All nodes anchored → EmptyFreeSet.
+// All nodes anchored → EmptyFreeSet.
 #[test]
 fn aniso_solve_empty_free_set() {
     let (nodes, surfaces, prestress, _) = tent_aniso_fixture();
@@ -840,7 +467,7 @@ fn aniso_solve_empty_free_set() {
     );
 }
 
-// (f) ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
+// ISOTROPIC-EQUIVALENCE: aniso solve with σ_w = σ_f = σ matches the
 // isotropic solve to ≤ 1e-9 on node positions; converged == true.
 #[test]
 fn aniso_solve_isotropic_equivalence() {
