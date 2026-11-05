@@ -26,6 +26,7 @@ import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
 import { makeLayoutStore } from './debugBridgeTestHelpers';
 import { createViewportDisplayStore, VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import type { ViewStateStore } from '../stores/viewStateStore';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
@@ -79,6 +80,7 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
     layout: makeLayoutStore(),
     viewportDisplay: createViewportDisplayStore(),
+    launcher: createLauncherStore(),
   };
 }
 

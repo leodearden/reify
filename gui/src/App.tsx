@@ -1494,6 +1494,7 @@ const App: Component = () => {
       viewState: viewStateStore,
       layout: layoutStore,
       viewportDisplay: viewportDisplayStore,
+      launcher: launcherStore,
     });
   }
 

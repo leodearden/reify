@@ -15,6 +15,7 @@ import { toPng } from 'html-to-image';
 import { createLspClient, extractHoverMarkdown } from '../editor/lspClient';
 import { pathToUri } from '../utils/pathUtils';
 import { LAYOUT_DIMENSIONS } from '../stores/layoutStore';
+import { isDocumentLoaded } from '../stores/launcherStore';
 import { syncOrbitUpAxis } from '../viewport/controls';
 import { driveFormControl, RANGE_INPUT, TEXT_INPUT } from './formControl';
 import { describePlacement } from './elementPlacement';
@@ -177,6 +178,14 @@ export const TYPE_GUARDED_RESOLVER_TOOLS = [
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
 /** Returns true iff v is a 3-element array of finite numbers. */
+/** The launcher's two roots, shared by store_state and wait_for so they cannot disagree. */
+function launcherRoots({ editor, launcher }: DebugStores) {
+  return {
+    document: { loaded: isDocumentLoaded(editor.state), ...launcher.state.document },
+    mode: { ...launcher.state.mode },
+  };
+}
+
 function validVec3(v: unknown): v is [number, number, number] {
   return (
     Array.isArray(v) &&
@@ -774,6 +783,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
         // Singular: the global display state (PRD B6), every field of its store, as
         // wait_for's `viewport` root addresses it; plural above: per-viewport mesh counts.
         viewport: { ...viewportDisplay.state },
+        ...launcherRoots(ctx.stores),
       };
     },
 
@@ -1670,6 +1680,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
           claude: ctx.stores.claude.state,
           layout: ctx.stores.layout.state,
           viewport: ctx.stores.viewportDisplay.state,
+          ...launcherRoots(ctx.stores),
         });
         // Guard against unknown roots so a typo'd path surfaces a clear error
         // instead of silently timing out.
@@ -2074,7 +2085,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
     },
 
     reset_app_state: () => {
-      const { engine, editor, selection, viewState, layout, viewportDisplay } = ctx.stores;
+      const { engine, editor, selection, viewState, layout, viewportDisplay, launcher } = ctx.stores;
 
       // Snapshot open file paths BEFORE closing (closeFile mutates openFiles).
       const paths = editor.state.openFiles.map((f) => f.path);
@@ -2089,6 +2100,7 @@ export function buildHandlers(ctx: ReifyDebugContext): Record<string, CommandHan
 
       layout.reset();
       viewportDisplay.reset();
+      launcher.reset();
 
       return { ok: true };
     },
