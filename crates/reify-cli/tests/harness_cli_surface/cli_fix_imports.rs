@@ -26,6 +26,12 @@ structure def Plate {
 }
 ";
 
+/// The `=` after `param w : Real` has no default expression, so this does not parse.
+const BROKEN: &str = "structure def Broken {
+    param w : Real =
+}
+";
+
 fn run_reify(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reify"))
         .args(args)
@@ -127,4 +133,20 @@ fn fix_refuses_to_write_when_the_derived_imports_leave_a_diagnostic() {
         fs::read_to_string(&file).expect("read fixture"),
         TYPE_PARAM_HIDES_COLOR
     );
+}
+
+#[test]
+fn a_parse_error_fails_the_file_and_leaves_it_alone() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "broken.ri", BROKEN);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Parse error"),
+        "{}",
+        describe(&output)
+    );
+    assert!(output.stdout.is_empty(), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), BROKEN);
 }
