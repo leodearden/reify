@@ -468,9 +468,7 @@ pub fn matrix3x3(
     ])
 }
 
-/// Uniaxial stress magnitude σ, in SI pascals. Its von Mises stress is σ
-/// bit-exactly provided σ² and 2σ² neither overflow nor underflow: the
-/// kernel's `0.5·(σ² + σ²)` is exact scaling, and `√(σ·σ) == |σ|`.
+/// Uniaxial stress magnitude σ, in SI pascals.
 pub const UNIAXIAL_STRESS_PA: f64 = 100e6;
 
 /// Row-major components of the uniaxial stress tensor: [`UNIAXIAL_STRESS_PA`]
