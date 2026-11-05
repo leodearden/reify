@@ -669,13 +669,13 @@ pub fn named_length_argument(message: &str) -> Option<&str> {
 /// includes `context` and the errors that *were* observed.
 #[track_caller]
 pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
-    let errors = collect_errors(diagnostics);
     assert!(
         diags_with_code(diagnostics, code)
             .iter()
             .any(|d| d.severity == Severity::Error),
         "{context}: expected an Error-severity diagnostic with \
-         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}"
+         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}",
+        errors = collect_errors(diagnostics),
     );
 }
 
@@ -2604,14 +2604,7 @@ mod tests {
         assert_eq!(under[0].message, "auto `bore` is not pinned");
     }
 
-    /// The filter is severity-BLIND: an Error carrying the code is returned
-    /// just as a Warning is.
-    ///
-    /// This helper lands directly beside `collect_errors` / `error_diags`,
-    /// which DO filter `Severity::Error`, so a future editor harmonising the
-    /// neighbours could add one here — silently changing what the call sites
-    /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
-    /// not even go red at the sites that merely count it.
+    /// An Error carrying the code is returned just as a Warning is.
     #[test]
     fn underdetermined_diags_is_severity_blind() {
         let diags = vec![
