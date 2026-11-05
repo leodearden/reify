@@ -150,3 +150,26 @@ fn a_parse_error_fails_the_file_and_leaves_it_alone() {
     assert!(output.stdout.is_empty(), "{}", describe(&output));
     assert_eq!(fs::read_to_string(&file).expect("read fixture"), BROKEN);
 }
+
+#[test]
+fn check_fails_the_run_when_any_file_is_missing_imports() {
+    let dir = tempdir().expect("tempdir");
+    let plate = write_ri(dir.path(), "plate.ri", PLATE);
+    let clean_source = format!("{HEADER}{PLATE}");
+    let clean = write_ri(dir.path(), "clean.ri", &clean_source);
+
+    let output = run_reify(&["fix", "--imports", "--check", &plate, &clean]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("std.materials.appearance"),
+        "{}",
+        describe(&output)
+    );
+    assert!(stdout.contains("std.si_units"), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&plate).expect("read fixture"), PLATE);
+    assert_eq!(
+        fs::read_to_string(&clean).expect("read fixture"),
+        clean_source
+    );
+}
