@@ -1138,3 +1138,76 @@ describe('wait_for: validation errors', () => {
     expect(typeof result.error).toBe('string');
   });
 });
+
+describe('wait_for: store kind on the document and mode roots', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function waitForStore(id: number, path: string, equals: unknown, timeoutMs = 5000): Promise<void> {
+    vi.mocked(invoke).mockClear();
+    return capturedHandler!({
+      payload: {
+        id,
+        command: 'wait_for',
+        params: { predicate: { kind: 'store', path, equals }, timeout_ms: timeoutMs },
+      },
+    });
+  }
+
+  function response(): any {
+    const call = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    return call ? JSON.parse((call[1] as any).result) : undefined;
+  }
+
+  it('resolves {ok:true} once a document is loaded', async () => {
+    const pending = waitForStore(31, 'document.loaded', true);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(response()).toBeUndefined();
+
+    stores.editor.state.openFiles.push({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    await vi.advanceTimersByTimeAsync(32);
+    await pending;
+
+    expect(response().ok).toBe(true);
+  });
+
+  it('resolves {ok:true} once debug mode is selected', async () => {
+    const pending = waitForStore(32, 'mode.selected', 'debug');
+    await vi.advanceTimersByTimeAsync(32);
+    expect(response()).toBeUndefined();
+
+    stores.launcher.applyModeState({ mode: 'debug', debug_port: 3939 });
+    await vi.advanceTimersByTimeAsync(32);
+    await pending;
+
+    expect(response().ok).toBe(true);
+  });
+
+  it('lists document and mode among the addressable roots for an unknown root', async () => {
+    await waitForStore(33, 'launcherz.mode', 'debug');
+
+    const error: string = response().error;
+    expect(error).toMatch(/addressable roots: .*\bdocument\b/);
+    expect(error).toMatch(/addressable roots: .*\bmode\b/);
+  });
+});

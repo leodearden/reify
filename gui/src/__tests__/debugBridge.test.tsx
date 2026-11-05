@@ -43,6 +43,7 @@ import { setTestMode } from '../debug/testMode';
 import type { DebugStores } from '../debug/types';
 import { defaultLayout } from '../stores/layoutStore';
 import { VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
+import { LAUNCH_ERROR_CODES } from '../stores/launcherStore';
 import {
   makeCmdDispatcher,
   makeDebugStores,
@@ -4005,6 +4006,78 @@ describe('debug bridge store_state viewport.edges', () => {
     await dispatchCmd(10104, 'reset_app_state', {});
 
     expect(stores.viewportDisplay.state.edges).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// store_state document / mode — the launcher Start view (task 9730 β)
+// ---------------------------------------------------------------------------
+
+describe('debug bridge store_state document and mode', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+  });
+
+  const dispatchCmd = makeCmdDispatcher(() => capturedHandler);
+
+  it('reports no loaded document, no error and no recent entries before anything is opened', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    expect((await dispatchCmd(10201, 'store_state', {})).document).toEqual({
+      loaded: false,
+      error: null,
+      recent: [],
+    });
+  });
+
+  it('reports the document loaded once the editor has an open file', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+
+    stores.editor.state.openFiles.push({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+
+    expect((await dispatchCmd(10202, 'store_state', {})).document.loaded).toBe(true);
+  });
+
+  it('reports the selected mode, the live debug port and the document error', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    stores.launcher.setRecent([{ path: '/designs/bracket.ri', opened_at: 1000 }]);
+    stores.launcher.applyModeState({ mode: 'debug', debug_port: 4321 });
+    stores.launcher.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'No such file' });
+
+    const result = await dispatchCmd(10203, 'store_state', {});
+
+    expect(result.mode).toEqual({ selected: 'debug', debugPort: 4321, error: null });
+    expect(result.document).toEqual({
+      loaded: false,
+      error: { code: 'E_GUI_OPEN_FAILED', message: 'No such file' },
+      recent: [{ path: '/designs/bracket.ri', opened_at: 1000 }],
+    });
+  });
+
+  it('reset_app_state clears the launcher errors', async () => {
+    const stores = makeStores();
+    await initDebugBridge(stores);
+    stores.launcher.failDocument({ code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, message: 'No such file' });
+    stores.launcher.failMode({ code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: 'bind refused' });
+
+    await dispatchCmd(10204, 'reset_app_state', {});
+
+    expect(stores.launcher.state.document.error).toBeNull();
+    expect(stores.launcher.state.mode.error).toBeNull();
   });
 });
 
