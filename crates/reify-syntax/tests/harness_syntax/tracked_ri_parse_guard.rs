@@ -670,6 +670,23 @@ fn sweep_reports_a_parser_panic_against_the_file_and_keeps_going() {
     );
 }
 
+#[test]
+fn sweep_reports_a_non_string_panic_payload_as_the_workspace_formats_it() {
+    let panicking = "examples/zz_guard_panic_probe.ri";
+    let result = sweep(
+        &listing(&[panicking]),
+        |rel| Ok(rel.to_owned()),
+        |_| panic::panic_any(42_i32),
+    );
+    assert_eq!(
+        findings_on(&result, panicking),
+        [&Violation::ParsePanicked(
+            reify_core::panic_payload_to_string(&42_i32)
+        )],
+        "a parser panic is reported with the workspace's shared payload formatting"
+    );
+}
+
 // ── the tracked corpus ──────────────────────────────────────────────────────
 
 #[test]
