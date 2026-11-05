@@ -342,9 +342,21 @@ class TestNextestConfigPath(unittest.TestCase):
         self.assertIsInstance(config, nextest.NextestConfig)
         self.addCleanup(Path(config.path).unlink, missing_ok=True)
         self.assertEqual(config.origin, nextest.ConfigOrigin.GENERATED)
+        self.assertEqual(config.diagnostics, ())
         self.assertFalse(config.path.endswith("\n"), config.path)
         self.assertEqual(self.config_files(), {Path(config.path)})
         self.assertTrue(Path(config.path).is_file())
+
+    def test_a_generated_config_carries_the_generators_success_note(self):
+        env = base_env(TMPDIR=str(self.tmpdir), REIFY_NEXTEST_TEST_THREADS="2")
+        config = self.config_path(True, env, test_threads=1)
+        self.assertIsInstance(config, nextest.NextestConfig)
+        self.addCleanup(Path(config.path).unlink, missing_ok=True)
+        self.assertEqual(config.origin, nextest.ConfigOrigin.GENERATED)
+        self.assertEqual(len(config.diagnostics), 1, config.diagnostics)
+        note = config.diagnostics[0]
+        self.assertTrue(note.startswith("gen-nextest-config.sh: note"), note)
+        self.assertIn("--test-threads=1", note)
 
     def test_a_cli_thread_count_above_the_pool_is_the_generators_refusal(self):
         env = base_env(TMPDIR=str(self.tmpdir), REIFY_NEXTEST_TEST_THREADS="2")

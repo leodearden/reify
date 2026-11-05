@@ -49,8 +49,11 @@ class ConfigOrigin(Enum):
 
 @dataclass(frozen=True)
 class NextestConfig:
+    """The config file, plus the lines its generator printed while succeeding."""
+
     path: str
     origin: ConfigOrigin
+    diagnostics: tuple[str, ...] = ()
 
 
 def nextest_config_path(
@@ -85,7 +88,9 @@ def nextest_config_path(
             ),
             result.returncode,
         )
-    return NextestConfig(result.stdout.rstrip("\n"), ConfigOrigin.GENERATED)
+    return NextestConfig(
+        result.stdout.rstrip("\n"), ConfigOrigin.GENERATED, tuple(result.stderr_lines)
+    )
 
 
 @dataclass(frozen=True)

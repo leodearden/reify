@@ -196,6 +196,7 @@ def resolve(
         config = nextest_config_path(executing, raw_env, planning_env, test_threads, repo_root)
         if isinstance(config, Refused):
             return Refused((*diagnostics, *config.lines), config.exit_code)
+        diagnostics = (*diagnostics, *config.diagnostics)
     applied = NO_NEXTEST_SUBSETS
     if eligible:
         passes, applied, refusals = _narrow(passes, nextest, raw_env, planning_env, repo_root)
