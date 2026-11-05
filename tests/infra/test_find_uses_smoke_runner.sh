@@ -83,7 +83,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 # tests the SAME token and the positive/negative pair can never drift apart.
 DEATH_MARKER="E2E_SMOKE_LAUNCHER_DEATH"
 
-# All six runners that delegate to the shared lifecycle.  Every one is put
+# The runners that delegate to the shared lifecycle.  Every one is put
 # through every arm — that behavioral sweep IS the proof of delegation.
 RUNNERS=(
     run_find_uses_smoke.sh
@@ -92,6 +92,8 @@ RUNNERS=(
     run_multi_pane_e2e_smoke.sh
     run_surface_finish_viewport_e2e_smoke.sh
     run_mesh_count_parity_e2e_smoke.sh
+    run_launcher_e2e_smoke.sh
+    run_launcher_new_file_e2e_smoke.sh
 )
 
 echo "=== test_find_uses_smoke_runner: shared e2e smoke lifecycle contract ==="
