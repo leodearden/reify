@@ -250,7 +250,8 @@
           "engine",
           "frontend",
           "test-support",
-          "tooling"
+          "tooling",
+          "feature-union"
         ]
       },
       "never": {
