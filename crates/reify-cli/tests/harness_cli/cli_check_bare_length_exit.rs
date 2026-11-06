@@ -10,10 +10,6 @@
 //! These rows pin the "Which command catches it" section of
 //! crates/reify-mcp/src/tools/chunks/units.md. A row that changes layer moves
 //! that section and its SYNC ledger with it.
-//!
-//! The 7-argument `mirror` pivot is pinned by
-//! cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build,
-//! not here.
 
 use std::process::ExitStatus;
 
@@ -48,6 +44,7 @@ const ROWS: &[Row] = &[
     Row { bare: "translate(g, 0, 0, 5)", dimensioned: "translate(g, 0mm, 0mm, 5mm)", layer: Layer::Compiler, blamed: &["dx", "dy", "dz"] },
     Row { bare: "fillet(box(10mm, 10mm, 10mm), 1)", dimensioned: "fillet(box(10mm, 10mm, 10mm), 1mm)", layer: Layer::Compiler, blamed: &["radius"] },
     Row { bare: "rotate_around(g, 0, 0, 0, 0, 0, 1, 45deg)", dimensioned: "rotate_around(g, 0mm, 0mm, 0mm, 0, 0, 1, 45deg)", layer: Layer::Compiler, blamed: &["px", "py", "pz"] },
+    Row { bare: "mirror(g, 0, 0, 0, 1, 0, 0)", dimensioned: "mirror(g, 0mm, 0mm, 0mm, 1, 0, 0)", layer: Layer::Compiler, blamed: &["ox", "oy", "oz"] },
     Row { bare: "helix(10, 2, 50)", dimensioned: "helix(10mm, 2mm, 50mm)", layer: Layer::Eval, blamed: &["radius", "pitch", "height"] },
     Row { bare: "polygon(0, 0, 10, 0, 5, 10)", dimensioned: "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)", layer: Layer::Eval, blamed: &["x1", "y1", "x2", "y2", "x3", "y3"] },
     Row { bare: "arc(0, 0, 0, 10, 0deg, 90deg, 0, 0, 1)", dimensioned: "arc(0mm, 0mm, 0mm, 10mm, 0deg, 90deg, 0, 0, 1)", layer: Layer::Eval, blamed: &["cx", "cy", "cz", "radius"] },
