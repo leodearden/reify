@@ -83,15 +83,38 @@ pub fn compile_program(
     cfg: &CfgSet,
     checker: &dyn ConstraintChecker,
 ) -> CompiledProgram {
-    let entry_key = entry_module_name(entry_path);
-    let parsed = crate::parse_with_stdlib(entry_source, ModulePath::single(entry_key));
+    let parsed = crate::parse_with_stdlib(
+        entry_source,
+        ModulePath::single(entry_module_name(entry_path)),
+    );
+    compile_program_with_parsed_entry(entry_path, entry_source, &parsed, resolver, cfg, checker)
+}
+
+/// [`compile_program`] over an entry the caller has already parsed.
+///
+/// Precondition: `parsed` is the parse of `entry_source`. The entry's module
+/// key is `parsed.path`, dotted.
+///
+/// The seam exists for callers that already hold the entry's parse (the CLI's
+/// `reify check` parses it for its own module-path gate first), and for callers
+/// that must seed extra enum names into the parse — an import's enums, which
+/// `parse_with_stdlib` does not know — until task #5522 (θ) moves that fixup
+/// into the resolution phase.
+pub fn compile_program_with_parsed_entry(
+    entry_path: &Path,
+    entry_source: &str,
+    parsed: &reify_ast::ParsedModule,
+    resolver: &ModuleResolver,
+    cfg: &CfgSet,
+    checker: &dyn ConstraintChecker,
+) -> CompiledProgram {
     // Ambient stdlib visibility: every unit is parsed and compiled against the
     // full cached stdlib, and no `std.*` import is walked at any depth.
     let mut dag = ModuleDag::with_ambient_stdlib(cfg.clone());
 
     // Computed once and shared by the compile loop, the prelude, the merge and
     // the returned units, so they cannot drift.
-    let followed = followed_direct_imports(&parsed, &dag);
+    let followed = followed_direct_imports(parsed, &dag);
 
     // Collect, never early-return on, import failures: a broken import still
     // lets the entry compile, with the failure attached below.
@@ -110,9 +133,9 @@ pub fn compile_program(
         .collect();
     let import_refs: Vec<&CompiledModule> =
         compiled_imports.iter().map(|(_, module)| *module).collect();
-    let mut entry = crate::compile_with_stdlib_and_imports_checked(&parsed, &import_refs, checker);
+    let mut entry = crate::compile_with_stdlib_and_imports_checked(parsed, &import_refs, checker);
 
-    attach_module_path_diag(&mut entry, &parsed);
+    attach_module_path_diag(&mut entry, parsed);
     entry.diagnostics.extend(import_error_diags);
     entry.diagnostics.extend(rehomed_unit_diagnostics(&dag));
     let entry_origin = entry.path.0.join(".");
@@ -124,7 +147,7 @@ pub fn compile_program(
         .filter_map(|key| dag.source(key).cloned())
         .collect();
     sources.push(ModuleSource {
-        module_key: entry_key.to_string(),
+        module_key: parsed.path.0.join("."),
         path: entry_path.to_path_buf(),
         source: entry_source.to_string(),
     });

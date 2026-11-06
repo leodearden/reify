@@ -240,7 +240,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 
 /// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
 /// `#cfg(...)`-gated user-import DAG via
-/// [`reify_compiler::program::compile_program`].
+/// [`reify_compiler::program::compile_program_with_parsed_entry`].
 ///
 /// Used only by `reify check`. It preserves single-file behavior — the full
 /// stdlib prelude is still seeded, so every existing `reify check` input keeps
@@ -249,13 +249,9 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 /// modules resolve (task δ's user-observable signal).
 ///
 /// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
-/// *inside* `compile_program` (via `attach_module_path_diag`), so — unlike
+/// *inside* the program compile (via `attach_module_path_diag`), so — unlike
 /// [`parse_and_compile`] — this function must NOT re-run it, else the
 /// diagnostic would be emitted twice.
-///
-/// The parse below is only the INV-SF-7 gate (parse errors rendered as
-/// `line:col: message` before any compile); `compile_program` parses the same
-/// source again for the compile itself.
 fn parse_and_compile_with_cfg(
     path: &str,
     cfg: &CfgSet,
@@ -286,7 +282,7 @@ fn parse_and_compile_with_cfg(
 
     // Resolve sibling user imports relative to the entry file's parent dir.
     //
-    // `stdlib_root` is INERT on this code path: `compile_program` skips every
+    // `stdlib_root` is INERT on this code path: the program compile skips every
     // `std.*` import (the full stdlib is seeded into the prelude via the cached
     // stdlib context instead), so the resolver's stdlib_root is never consulted
     // for a `reify check`. We still pass the GUI/LSP-heuristic path
@@ -301,9 +297,10 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled = reify_compiler::program::compile_program(
+    let compiled = reify_compiler::program::compile_program_with_parsed_entry(
         std::path::Path::new(path),
         &source,
+        &parsed,
         &resolver,
         cfg,
         &SimpleConstraintChecker,
