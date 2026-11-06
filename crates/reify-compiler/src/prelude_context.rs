@@ -119,8 +119,7 @@ impl<'a> PreludeContext<'a> {
     /// module in `extra` outranks a std module in the base. The base modules
     /// are borrowed again, never re-loaded or re-compiled.
     pub fn extended(&self, extra: &[&'a CompiledModule]) -> PreludeContext<'a> {
-        let modules: Vec<&'a CompiledModule> =
-            self.modules.iter().chain(extra).copied().collect();
+        let modules: Vec<&'a CompiledModule> = self.modules.iter().chain(extra).copied().collect();
         PreludeContext::new(&modules)
     }
 

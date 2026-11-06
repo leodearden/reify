@@ -3,8 +3,9 @@
 //!
 //! Resolution order is entry > imports (declaration order) > stdlib, keyed
 //! internally by `(module_key, name)`. In P1 the flat view must agree with
-//! today's eval lookup (`find_template_in_scope`: the entry's merged template
-//! list, then the stdlib modules in load order); (g) pins that parity.
+//! today's eval lookup (`find_template_in_scope`, which binds by
+//! `reify_compiler::name_env::resolve` over the entry's merged template list
+//! and the stdlib); (g) pins that parity.
 
 use std::fs;
 use std::path::Path;
@@ -148,8 +149,9 @@ fn def_env_resolves_with_entry_then_imports_then_stdlib_precedence() {
     assert!(std::ptr::eq(env.declared(), &program.entry));
 }
 
-/// (g) In P1 the flat view equals today's eval rule: the first match in the
-/// entry's (merged) template list, else the first stdlib module in load order.
+/// (g) In P1 the flat view equals today's eval rule: `name_env::resolve` over
+/// the entry's (merged) template list and the stdlib, as eval's
+/// `find_template_in_scope` calls it.
 #[test]
 fn def_env_flat_view_matches_find_template_in_scope_rule() {
     let dir = tempfile::tempdir().unwrap();
@@ -157,16 +159,7 @@ fn def_env_flat_view_matches_find_template_in_scope_rule() {
     let env = DefEnv::from_program(&program);
 
     let reference = |name: &str| -> Option<&TopologyTemplate> {
-        program
-            .entry
-            .templates
-            .iter()
-            .find(|t| t.name == name)
-            .or_else(|| {
-                load_stdlib()
-                    .iter()
-                    .find_map(|m| m.templates.iter().find(|t| t.name == name))
-            })
+        reify_compiler::name_env::resolve(&program.entry.templates, load_stdlib(), name)
     };
 
     let names = program

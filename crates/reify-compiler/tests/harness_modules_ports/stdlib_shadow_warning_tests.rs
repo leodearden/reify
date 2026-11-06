@@ -8,8 +8,11 @@ use std::fs;
 use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::compile_program;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity, SourceSpan};
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 const LOCAL_MODULE: &str = "acme.shop";
 
@@ -212,7 +215,9 @@ fn a_shadowed_name_warns_once_however_often_it_is_referenced() {
 
 /// The only shadowing definition comes from a user import (the import tier):
 /// entry-vs-import and import-vs-import dispositions are resolution-unification
-/// D-6's, not this lint's.
+/// D-6's, not this lint's. The import's own declaration does shadow the stdlib,
+/// and `compile_program` re-homes that Warning onto the entry attributed to the
+/// import; what must not appear is a shadowing raised by the entry itself.
 #[test]
 fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
     let entry =
@@ -225,14 +230,22 @@ fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
         "pub structure def Color {\n    param zz : Real = 3.0\n}\n",
     )
     .expect("write a.ri");
-    let parsed = reify_compiler::parse_with_stdlib(entry, ModulePath::single("main"));
     let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let module = compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default());
+    let module = compile_program(
+        &dir.join("main.ri"),
+        entry,
+        &resolver,
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    )
+    .entry;
     assert_eq!(errors_of(&module), Vec::<&str>::new());
+    let shadows = shadow_warnings(&module);
     assert!(
-        shadow_warnings(&module).is_empty(),
-        "an import-tier winner is not a local shadowing: {:?}",
-        shadow_warnings(&module)
+        shadows.iter().all(|d| {
+            d.message.starts_with("in imported module '") && !d.message.contains("in module 'main'")
+        }),
+        "an import-tier winner is not a local shadowing: {shadows:?}"
     );
 }
 
