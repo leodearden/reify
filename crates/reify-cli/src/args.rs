@@ -345,4 +345,54 @@ mod tests {
         // A malformed `--cfg` value (empty key) propagates parse_cfg_flag's error.
         assert!(build_cfg_set(&["=bad".to_string()]).is_err());
     }
+
+    fn strings(tokens: &[&str]) -> Vec<String> {
+        tokens.iter().map(|t| t.to_string()).collect()
+    }
+
+    #[test]
+    fn split_cfg_args_extracts_repeated_cfg_pairs_and_keeps_the_rest_in_order() {
+        let args = strings(&[
+            "--verbose",
+            "--cfg",
+            "target=wasm",
+            "f.ri",
+            "--cfg",
+            "feat",
+            "-o",
+            "out.step",
+        ]);
+        let (cfg, rest) = split_cfg_args(&args).expect("valid --cfg pairs");
+        assert_eq!(cfg.target.as_deref(), Some("wasm"));
+        assert!(cfg.flags.contains("feat"));
+        assert_eq!(rest, strings(&["--verbose", "f.ri", "-o", "out.step"]));
+    }
+
+    #[test]
+    fn split_cfg_args_without_cfg_is_host_default_and_identity() {
+        let args = strings(&["f.ri", "--strict"]);
+        let (cfg, rest) = split_cfg_args(&args).expect("no --cfg is valid");
+        assert_eq!(cfg, CfgSet::host_default());
+        assert_eq!(rest, args);
+    }
+
+    #[test]
+    fn split_cfg_args_rejects_a_trailing_cfg_without_value() {
+        let err = split_cfg_args(&strings(&["f.ri", "--cfg"])).expect_err("dangling --cfg");
+        assert!(err.contains("--cfg requires a value"), "got: {err}");
+    }
+
+    #[test]
+    fn split_cfg_args_propagates_a_malformed_value() {
+        let err = split_cfg_args(&strings(&["--cfg", "=bad", "f.ri"])).expect_err("empty key");
+        assert!(err.contains("empty key"), "got: {err}");
+    }
+
+    #[test]
+    fn split_cfg_args_takes_the_next_token_as_the_value_even_when_flag_shaped() {
+        let (cfg, rest) =
+            split_cfg_args(&strings(&["--cfg", "--strict", "f.ri"])).expect("flag-shaped value");
+        assert!(cfg.flags.contains("--strict"));
+        assert_eq!(rest, strings(&["f.ri"]));
+    }
 }
