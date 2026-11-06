@@ -241,18 +241,7 @@
     {
       "name": "reify-test-support-is-dev-only",
       "from": {
-        "strata": [
-          "spine",
-          "language",
-          "kernel",
-          "solver",
-          "analysis",
-          "engine",
-          "frontend",
-          "test-support",
-          "tooling",
-          "feature-union"
-        ]
+        "every_stratum": true
       },
       "never": {
         "packages": [
