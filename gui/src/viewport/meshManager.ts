@@ -315,9 +315,10 @@ export function createMeshManager(scene: Scene, options?: MeshManagerOptions): M
   const meshDisplacedPositions = new Map<string, Float32Array>();
 
   // Side-table: the MeshData arrays each entity's geometry was last built from.
-  // Mesh updates replace typed arrays and never write into them (pinned by
-  // __tests__/engineStore.meshArrays.test.ts), so identical arrays mean a sync
-  // would rebuild the very geometry the mesh already holds.
+  // Mesh updates replace typed arrays and never write into them (pinned by the
+  // "applyMeshUpdate typed-array ownership" block in __tests__/engineStore.test.ts),
+  // so identical arrays mean a sync would rebuild the very geometry the mesh
+  // already holds.
   const meshGeometrySources = new Map<string, GeometrySource>();
 
   const meshMap = new Map<string, Mesh>();
