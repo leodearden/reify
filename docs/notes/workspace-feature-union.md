@@ -101,6 +101,33 @@ grep -E '^ +Compiling ' /tmp/<id>.log | grep -c ' (/'    # workspace units
 
 For `cargo clippy`, count `Checking` lines as well as `Compiling` lines.
 
+To take several first builds in one lane, snapshot the seeded `target/` before
+the first probe and restore it before each later one. Without the restore,
+each later probe reuses the workspace units the earlier ones built, so only the
+first is a first build. Keep the snapshot inside `target/`: `/target` is
+gitignored, and `--reflink=always` needs the lane's own filesystem (`/tmp` may
+be another). `cp -a` keeps the nanosecond mtimes that cargo's fingerprints
+compare, and the listing check proves each copy:
+
+```bash
+S=target/.pristine; mkdir "$S"
+for e in target/* target/.[!.]*; do [ "$e" = "$S" ] || cp -a --reflink=always "$e" "$S/"; done
+(cd "$S" && find . ! -type d -printf '%P\t%T@\t%s\n' | LC_ALL=C sort) > /tmp/<id>-seed.lst
+check() { (cd target && find . -path ./.pristine -prune -o ! -type d -printf '%P\t%T@\t%s\n' | LC_ALL=C sort) | cmp - /tmp/<id>-seed.lst; }
+check; echo "snapshot-matches rc=$?"   # must be 0 before the first probe
+
+# before every later probe:
+find target -mindepth 1 -maxdepth 1 ! -name .pristine -exec rm -rf {} +
+cp -a --reflink=always "$S"/. target/
+check; echo "restored-matches rc=$?"   # must be 0 before probing
+rm -rf tree-sitter-reify/src/{parser.c,grammar.json,node-types.json,tree_sitter,.grammar_hash.stamp,.generated_outputs.stamp}
+```
+
+The last line deletes the eight gitignored generated sources that a fresh seed
+lacks and the first probe recreates (see the tree-sitter paragraph under
+Measurements). They live outside `target/`, so restoring `target/` does not
+restore their absence. Remove `target/.pristine` after the last probe.
+
 ## Measurements
 
 The `before` and `after` rows come from lane `_lane-50`, acquired at 07:05.
@@ -137,13 +164,10 @@ seeded at 07:23. Its `target/` carried base `target.gen.623`'s mtime to the
 nanosecond (basecommit `8326547b31`, which contains the union merge
 `33578e66f4`), and nothing had been built since. gen.624 was published at
 07:53, after the seed. Unlike the later `after` rows, each `post-landing` row
-is a first build: it started from a reflink snapshot of that seed, restored at
-the same path with mtimes preserved, and before every probe the restored
-`target/` matched the seed's (path, mtime, size) listing of 90,105
-non-directory entries. The restore also deleted the eight gitignored
-`tree-sitter-reify/src` outputs (`parser.c`, ...), which a fresh seed lacks
-and the first build recreates by running `tree-sitter generate`. HEAD differs
-from the basecommit in `crates/reify-test-support/src/values.rs` and in one
+is a first build: the probes followed the several-probes recipe in Probe
+procedure, and `target/` matched the seed's (path, mtime, size) listing of
+90,105 non-directory entries when each probe started. HEAD differs from the
+basecommit in `crates/reify-test-support/src/values.rs` and in one
 reify-stdlib integration test, which no probe builds.
 
 All four probes built zero external units. The reify-eval first build that
@@ -157,14 +181,47 @@ at 30.
 What remains is workspace units, which the union does not cover. Observed:
 tree-sitter-reify, reify-test-support and seven more units (reify-ast,
 reify-compiler, reify-config, reify-expr, reify-ir, reify-stdlib,
-reify-syntax) are rebuilt in all four probes; 9 of the 23 reify-eval units
-have a build script, and 307 of the seed's 594 `target/debug/build/` entries
-carry the seed's own stamp (07:23:40-07:23:48); reify-core is rebuilt under
+reify-syntax) are rebuilt in all four probes; reify-core is rebuilt under
 `-p reify-expr` and in the clippy probe, not under `-p reify-eval` or
-`-p reify-compiler`. Hypothesis, not isolated by these probes: the counts add
-the contributors the task names, which are the seed's `env!()`/build-dir
-invalidation, the reify-test-support change and workspace-member feature
-splits (#9825, see Limits), plus the downstream rebuild each triggers.
+`-p reify-compiler`.
+
+One contributor is visible in the sources. tree-sitter-reify's generated
+sources are gitignored (root `.gitignore`, "Tree-sitter generated"), so the
+acquire's `git clean -xfd -e target` deletes them: a fresh seed has no
+`parser.c`, `grammar.json` or `node-types.json`, none of the three headers in
+`src/tree_sitter/`, and neither stamp. `build.rs` emits `rerun-if-changed` for
+`src/parser.c` and those headers, and runs `tree-sitter generate` when an
+output is missing, so a fresh lane's first build reruns the script and
+rebuilds tree-sitter-reify. By manifest edges that rebuild reaches
+reify-syntax (tree-sitter-reify's only dependent) and, among the nine,
+reify-syntax's normal dependents reify-compiler and reify-test-support: with
+tree-sitter-reify itself, four of the nine. In these probes it does not reach
+reify-ast, reify-config, reify-ir or reify-stdlib, and it reaches reify-expr
+only under `-p reify-expr`, through that package's dev-dependencies.
+
+Hypothesis, not isolated by these probes: the workspace units are the sum of
+four contributors and the downstream rebuild each triggers: the tree-sitter
+regeneration above, the seed's `env!()`/build-dir invalidation, the
+reify-test-support change, and workspace-member feature splits (#9825, see
+Limits). The tree-sitter share belongs neither to the union nor to #9825, so a
+measurement of the #9825 share has to separate it out.
+
+### Cold build
+
+Every row above is a warm-lane build. The cold cost is
+`cargo build -p reify-core --locked --offline --timings`, run on 2026-11-06
+with sccache off and an empty target directory per tree: on main just before
+the union (`7f0bdbdf3e`), then on `363d090775` plus this note, back to back.
+
+| Tree | Units (external + workspace) | Wall | reify-core start offset | Load avg (start → end) |
+|---|---|---|---|---|
+| `7f0bdbdf3e` (before the union) | 9 + 1 | 1:03.63 | 61.29 s | 153/304/239 → 158/277/234 |
+| `363d090775` (with the union) | 99 + 2 | 2:55.88 | 174.08 s | 158/277/234 → 107/209/216 |
+
+The union started at 174.05 s, when nalgebra's metadata became ready, behind
+serde_derive (a proc-macro, usable only once fully built), serde, num-complex
+and simba. The host was loaded, so walls and offsets are indicative only:
+serde_derive started 63 s after its last dependency finished.
 
 ## Limits
 
@@ -178,26 +235,18 @@ splits (#9825, see Limits), plus the downstream rebuild each triggers.
 - **What the gate proves.** The gate checks `cargo tree` resolution, not
   compiled units. Resolution reproduced the task's observed syn fingerprint
   exactly, and the probes above are the compile-level evidence.
-- **Cold and release builds.** Every figure above is a warm-lane build, where
-  the externals are already compiled. A cold target must compile the union's
-  whole dependency set: tokio, the url/icu stack, nalgebra, regex, futures
-  and serde_json. Every covered member depends on the union, including the
-  DAG root reify-core and, by their manifests, the otherwise dependency-free
-  reify-gcode and reify-spec-conformance, so none of them can start before the
-  union's metadata exists. Measured on 2026-11-06 with sccache off, an empty
-  target and `cargo build -p reify-core --locked --offline --timings`, on main
-  just before the union (`7f0bdbdf3e`) against `363d090775` plus this note:
-  - Units compiled 10 → 101; wall 1:03.63 → 2:55.88, under load averages of
-    153/304/239 → 158/277/234 (before) and 158/277/234 → 107/209/216 (after).
-  - reify-core's start offset 61.29 s → 174.08 s. The union started at
-    174.05 s, when nalgebra's metadata became ready, behind serde_derive (a
-    proc-macro, usable only once fully built), serde, num-complex and simba.
-  - The host was loaded, so walls and offsets are indicative only:
-    serde_derive started 63 s after its last dependency finished.
+- **Cold and release builds.** The Measurements rows are warm-lane builds,
+  where the externals are already compiled. A cold target must compile the
+  union's whole dependency set: tokio, the url/icu stack, nalgebra, regex,
+  futures and serde_json. Every covered member depends on the union, including
+  the DAG root reify-core and, by their manifests, the otherwise
+  dependency-free reify-gcode and reify-spec-conformance, so none of them can
+  start before the union's metadata exists. The Cold build subsection of
+  Measurements gives the cost for reify-core.
 
-  Dev-only features come along. That cold build compiled tokio with
-  `test-util`, and release builds take the same pins. This is deliberate; the
-  reason is the **Normal, not dev, pins** bullet in Mechanism.
+  Dev-only features come along. The union pins tokio with `test-util`, so cold
+  and release builds compile it in too. This is deliberate; the reason is the
+  **Normal, not dev, pins** bullet in Mechanism.
 - **A lower bound only.** `--workspace` includes the union's own pins, so the
   gate cannot see over-pinning. Two pins pass it:
   - a pinned feature no member needs any more;
