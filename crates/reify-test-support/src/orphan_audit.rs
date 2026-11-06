@@ -1091,7 +1091,8 @@ mod tests {
     /// that forbids it from EVERY stratum, and no `exceptions[]` row may excuse
     /// an edge into it (one row excuses every rule its edge breaks). Matched on
     /// the rule's structure, not its name, so renaming the rule cannot silence
-    /// this.
+    /// this. "Every stratum" is stated once, as `"from": {"every_stratum": true}`,
+    /// so a new stratum needs no rule edit.
     #[test]
     fn exclude_crates_are_dev_only_under_a_crate_strata_rule() {
         use std::collections::BTreeSet;
@@ -1129,18 +1130,20 @@ mod tests {
             .as_array()
             .unwrap_or_else(|| panic!("{table_path:?}: `exceptions` must be an array"));
 
+        let every_stratum = serde_json::json!({"every_stratum": true});
+
         for crate_name in EXCLUDE_CRATES {
             let gated = rules.iter().any(|rule| {
                 names(&rule["never"]["packages"]).contains(*crate_name)
-                    && names(&rule["from"]["strata"]) == all_strata
+                    && rule["from"] == every_stratum
             });
             assert!(
                 gated,
                 "an EXCLUDE_CRATES crate's publics are reached only from test code, \
                  so no stratum may take it as a normal/build dependency — but \
-                 {table_path:?} has no crate rule with `from.strata` = every \
-                 stratum {all_strata:?} and `never.packages` naming \
-                 `{crate_name}`. Rules seen: {rules:#?}"
+                 {table_path:?} has no crate rule with `from` = {every_stratum} \
+                 (the declared strata are {all_strata:?}) and `never.packages` \
+                 naming `{crate_name}`. Rules seen: {rules:#?}"
             );
 
             let excused: Vec<&serde_json::Value> = exceptions
