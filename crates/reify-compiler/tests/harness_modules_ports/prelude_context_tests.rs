@@ -662,3 +662,86 @@ fn extended_with_no_modules_preserves_base() {
     assert_eq!(alias_names_of(&extended), alias_names_of(&base));
     assert_eq!(alias_names_of(&extended), vec!["Shared"]);
 }
+
+// ─── task 5516 step-15: NS-P1 tier precedence across `extended` ────────────
+
+fn scalar(dimension: DimensionVector) -> Option<Type> {
+    Some(Type::Scalar { dimension })
+}
+
+fn tier_enum(variant: &str) -> EnumDef {
+    EnumDef {
+        name: "ETier".to_string(),
+        variants: vec![variant.into()],
+        doc: None,
+        type_params: vec![],
+    }
+}
+
+type AliasShape = (String, Option<Type>, bool);
+
+fn alias_shapes(ctx: &PreludeContext<'_>) -> Vec<AliasShape> {
+    ctx.pub_aliases()
+        .iter()
+        .map(|a| (a.name.clone(), a.resolved_type.clone(), a.is_pub))
+        .collect()
+}
+
+/// The production shape `load_stdlib_context().extended(user_imports)` keeps
+/// NS-P1's tier order: a user-import module's alias and enum outrank a
+/// same-named std one, although the std module comes first in the slice.
+/// Across tiers, slice order does not decide.
+#[test]
+fn extended_binds_user_import_tier_before_std_tier() {
+    let std_path = ModulePath::from_dotted("std.ext_tier").expect("valid dotted path");
+    let std_mod = CompiledModuleBuilder::new(std_path)
+        .type_alias(make_alias(
+            "Shared",
+            scalar(DimensionVector::PRESSURE),
+            true,
+        ))
+        .enum_def(tier_enum("StdOnly"))
+        .build();
+    let imp = CompiledModuleBuilder::new(ModulePath::single("ext_import"))
+        .type_alias(make_alias("Shared", scalar(DimensionVector::LENGTH), true))
+        .enum_def(tier_enum("ImportOnly"))
+        .build();
+
+    let base = PreludeContext::new(&[&std_mod]);
+    let ext = base.extended(&[&imp]);
+
+    let modules = ext.modules();
+    assert_eq!(modules.len(), 2, "module order stays base ++ extra");
+    assert!(
+        std::ptr::eq(modules[0], &std_mod),
+        "modules()[0] is the std module"
+    );
+    assert!(std::ptr::eq(modules[1], &imp), "modules()[1] is the import");
+
+    assert_eq!(
+        alias_shapes(&ext),
+        vec![("Shared".to_string(), scalar(DimensionVector::LENGTH), true)],
+        "exactly one `Shared`, the user import's"
+    );
+    assert_eq!(
+        ext.resolution_enums(),
+        [tier_enum("ImportOnly")].as_slice(),
+        "exactly one `ETier`, the user import's"
+    );
+
+    for (label, flat) in [
+        ("new(std ++ import)", PreludeContext::new(&[&std_mod, &imp])),
+        ("new(import ++ std)", PreludeContext::new(&[&imp, &std_mod])),
+    ] {
+        assert_eq!(
+            alias_shapes(&ext),
+            alias_shapes(&flat),
+            "aliases vs {label}"
+        );
+        assert_eq!(
+            ext.resolution_enums(),
+            flat.resolution_enums(),
+            "enums vs {label}"
+        );
+    }
+}
