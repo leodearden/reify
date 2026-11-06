@@ -479,6 +479,7 @@ fn classify_undef_is_vacuous_for_every_declared_type() {
         Type::dimensionless_scalar(),
         Type::List(Box::new(Type::dimensionless_scalar())),
         Type::StructureRef("StressInvariants".to_string()),
+        Type::point3(Type::length()),
     ] {
         assert_eq!(
             classify(&Value::Undef, &declared),
@@ -535,6 +536,32 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 /// the row.
 fn matches_non_vacuously(value: &Value, ty: &Type) -> bool {
     classify(value, ty) == ParityVerdict::Matches
+}
+
+/// The first argument of `probe`, by slot, whose value is not well-formed for
+/// the type the probe pairs it with.
+fn first_ill_formed_argument(probe: &Probe) -> Option<(usize, &(Value, Type))> {
+    probe
+        .args
+        .iter()
+        .enumerate()
+        .find(|(_, (value, ty))| !matches_non_vacuously(value, ty))
+}
+
+/// `probe`'s sample point with the domain it falls short of, when `declared` is
+/// a `Type::Field` and the point is not well-formed for that domain. A
+/// `Type::Error` domain accepts every point and so certifies none: it is
+/// reported too.
+fn ill_formed_sample_point<'a>(
+    probe: &'a Probe,
+    declared: &'a Type,
+) -> Option<(&'a Value, &'a Type)> {
+    match (&probe.sample_at, declared) {
+        (Some(point), Type::Field { domain, .. }) if !matches_non_vacuously(point, domain) => {
+            Some((point, domain))
+        }
+        _ => None,
+    }
 }
 
 /// Every probe must be well-formed for the row it probes, checked five ways —
@@ -594,9 +621,8 @@ fn representative_probes_are_well_formed_for_every_row() {
             // something it is not cannot make a row look like it diverges, and
             // an Undef argument is rejected here instead of being blamed on the
             // row as Vacuous.
-            for (slot, (value, ty)) in probe.args.iter().enumerate() {
-                assert!(
-                    matches_non_vacuously(value, ty),
+            if let Some((slot, (value, ty))) = first_ill_formed_argument(probe) {
+                panic!(
                     "{at}: argument {slot} is mis-paired — its Value does not \
                      satisfy the Type this probe claims for it ({value:?} vs \
                      {ty:?})"
@@ -640,9 +666,16 @@ fn representative_probes_are_well_formed_for_every_row() {
             // report the row Vacuous for a fault in
             // `registry_parity_tests/probes.rs` — so it is caught here, not at
             // the Sample leg.
-            if let (Some(point), Type::Field { domain, .. }) = (&probe.sample_at, &declared) {
+            if let Some((point, domain)) = ill_formed_sample_point(probe, &declared) {
                 assert!(
-                    matches_non_vacuously(point, domain),
+                    !domain.is_error(),
+                    "{at}: the declared Field's domain is Type::Error \
+                     ({declared:?}), which accepts every point, so the probe's \
+                     sample point ({point:?}) cannot be certified against it — \
+                     the fault is in the row's resolver, or in a Field type a \
+                     probe argument hands it, not in the point"
+                );
+                panic!(
                     "{at}: the probe's sample point is mis-built — it does not \
                      satisfy the declared Field's domain ({point:?} vs \
                      {domain:?}), so its Sample leg would read Vacuous and \
@@ -654,56 +687,89 @@ fn representative_probes_are_well_formed_for_every_row() {
     }
 }
 
-/// A probe value that would read `Vacuous` at a leg is rejected AT THE PROBE,
-/// not found by the sweep and blamed on the row.
+/// An argument the verdict would read `Vacuous` — a `Value::Undef`, or a value
+/// typed `Type::Error` — is rejected AT THE PROBE, not found by the sweep and
+/// blamed on the row.
 ///
-/// Driven over synthetic pairs, in the dialect of
+/// Drives [`first_ill_formed_argument`], the helper behind the sweep's check
+/// (c), over synthetic probes, in the dialect of
 /// [`classify_undef_is_vacuous_for_every_declared_type`]: every real probe is
-/// well-formed, so the rule is otherwise unobservable. Each rejected pair is one
-/// `crate::value_type_kind_matches` ACCEPTS — the premise is asserted first — so
-/// a probe check built on the raw matcher would let it through.
+/// well-formed, so the rule is otherwise unobservable. The raw
+/// `crate::value_type_kind_matches` accepts both rejected pairs (the premises of
+/// the two `classify_*` tests above), so a check built on it would let them
+/// through.
 #[test]
-fn a_probe_value_that_would_read_vacuous_is_rejected_at_the_probe() {
-    // The domain every Field probe is defined over.
-    let domain = Type::point3(Type::length());
+fn a_probe_argument_that_would_read_vacuous_is_rejected_at_the_probe() {
+    let rejected_slot = |args: Vec<(Value, Type)>| {
+        let probe = Probe {
+            args,
+            sample_at: None,
+        };
+        first_ill_formed_argument(&probe).map(|(slot, _)| slot)
+    };
+    let text = || Value::String("12mm".to_string());
+
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::String)]),
+        None,
+        "control: a pair the verdict classifies Matches passes, so the \
+         rejections below are the rule's and not a blanket refusal"
+    );
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::String), (Value::Undef, Type::String)]),
+        Some(1),
+        "a Value::Undef argument must be rejected at the probe, at its own \
+         slot: the kernel would answer Undef, so the Call leg would read \
+         Vacuous and blame the row for the probe's fault"
+    );
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::Error)]),
+        Some(0),
+        "a Type::Error slot accepts any value, so it never shows the \
+         argument's Value consistent with the Type the resolver reads: the \
+         pair must be rejected at the probe"
+    );
+}
+
+/// A sample point the verdict would read `Vacuous` against the declared Field's
+/// domain — a `Value::Undef`, or any point against a `Type::Error` domain — is
+/// rejected AT THE PROBE, not found by the sweep and blamed on the row.
+///
+/// Drives [`ill_formed_sample_point`], the helper behind the sweep's
+/// sample-point check, over synthetic probes, as
+/// [`a_probe_argument_that_would_read_vacuous_is_rejected_at_the_probe`] does for
+/// check (c).
+#[test]
+fn a_probe_sample_point_that_would_read_vacuous_is_rejected_at_the_probe() {
+    let ill_formed = |point: Value, domain: Type| {
+        let declared = Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        };
+        let probe = Probe {
+            args: vec![],
+            sample_at: Some(point),
+        };
+        ill_formed_sample_point(&probe, &declared).is_some()
+    };
+    let point = || Value::Point(vec![Value::length(0.5); 3]);
+    let domain = || Type::point3(Type::length());
 
     assert!(
-        crate::value_type_kind_matches(&Value::Undef, &domain, None),
-        "premise of this test: the raw matcher accepts Value::Undef for the \
-         Field domain, which is the hole a probe check built on it leaves"
+        !ill_formed(point(), domain()),
+        "control: a point the verdict classifies Matches passes, so the \
+         rejections below are the rule's and not a blanket refusal"
     );
     assert!(
-        !matches_non_vacuously(&Value::Undef, &domain),
+        ill_formed(Value::Undef, domain()),
         "a Value::Undef sample point must be rejected at the probe: `sample` \
          would yield Undef, so the Sample leg would read Vacuous and blame the \
          row for the probe's fault"
     );
     assert!(
-        !matches_non_vacuously(&Value::Undef, &Type::String),
-        "a Value::Undef argument must be rejected at the probe: the kernel \
-         would answer Undef, so the Call leg would read Vacuous and blame the \
-         row for the probe's fault"
-    );
-
-    let point = representative_probes(EvalBuiltinId::VonMises)
-        .into_iter()
-        .find_map(|probe| probe.sample_at)
-        .expect("VonMises registers a Field probe that names a sample point");
-    assert!(
-        matches_non_vacuously(&point, &domain),
-        "positive control: a real sample point from the registry's own probe \
-         data must satisfy the Field domain it is sampled in"
-    );
-    assert!(
-        crate::value_type_kind_matches(&point, &Type::Error, None),
-        "premise of this test: the raw matcher accepts a REAL value for \
-         Type::Error, so only the verdict's own rule can reject the pair"
-    );
-    assert!(
-        !matches_non_vacuously(&point, &Type::Error),
-        "a Type::Error slot or domain accepts any value and so certifies \
-         nothing: a probe paired with it must be rejected at the probe, or the \
-         leg that judges it would read Vacuous and blame the row"
+        ill_formed(point(), Type::Error),
+        "a Type::Error domain accepts every point and so certifies none: it \
+         must be reported, not passed"
     );
 }
 
