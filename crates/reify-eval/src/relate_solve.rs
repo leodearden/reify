@@ -3129,14 +3129,16 @@ mod tests_driving_set_failure {
     //! so no geometry kernel is involved.
 
     use reify_core::{DiagnosticCode, Severity};
-    use reify_ir::{SolveFailureCause, SolveStall};
+    use reify_ir::{
+        NonFiniteEntry, NonFiniteEvaluation, ResidualSource, SolveFailureCause, SolveStall,
+    };
     use reify_test_support::compile_source_with_stdlib;
 
     use super::test_datums::{axis_v, plane_v, realized};
     use super::{
         FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
-        SolveBudget, build_relation_instances, collect_relate_scope, failure_diagnostic,
-        minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
+        RelationPartition, SolveBudget, build_relation_instances, collect_relate_scope,
+        failure_diagnostic, minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
         solve_relate_scope_within, solve_scaling,
     };
 
@@ -3268,6 +3270,49 @@ structure PairSearchScope {
             "{diagnostic:?}"
         );
         assert!(diagnostic.message.contains("`peg`"), "{diagnostic:?}");
+    }
+
+    /// A non-finite evaluation names the driving relation whose row it was. The
+    /// label indexes the DRIVING slice, not the instance list: with instance 1
+    /// partitioned out, driving position 1 is instance 2.
+    #[test]
+    fn a_non_finite_evaluation_names_its_driving_relation() {
+        let cause = SolveFailureCause::NonFinite(NonFiniteEvaluation {
+            iterations: 0,
+            source: ResidualSource::Relation(1),
+            row: 4,
+            entry: NonFiniteEntry::Residual,
+            value: f64::NAN,
+        });
+        let diagnostic = with_failure_context(SolveBudget::default(), |context| {
+            let skipping = RelationPartition {
+                driving: vec![0, 2],
+                redundant: vec![1],
+                ..context.partition.clone()
+            };
+            let narrowed = FailureContext {
+                partition: &skipping,
+                ..*context
+            };
+            failure_diagnostic(&cause, &narrowed)
+        });
+        assert_eq!(diagnostic.severity, Severity::Error, "{diagnostic:?}");
+        assert_eq!(
+            diagnostic.code,
+            Some(DiagnosticCode::ConstraintUnsatisfiable),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic.message.contains(&cause.to_string()),
+            "{diagnostic:?}"
+        );
+        assert!(
+            diagnostic
+                .message
+                .contains("`concentric` (peg.rod_axis and block.rail_axis)"),
+            "{diagnostic:?}"
+        );
+        assert!(!diagnostic.message.contains("side_plane"), "{diagnostic:?}");
     }
 
     /// A pair that merely ran out of budget proves nothing; only a pair whose own
