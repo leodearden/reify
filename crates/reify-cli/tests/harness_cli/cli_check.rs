@@ -1054,8 +1054,8 @@ structure def UndefBoxWidth {
 /// changed, not the mistake.  The argument for why that route is the durable one
 /// is stated once, on the `mirror` / `circular_pattern` arms of
 /// `builtin_arg_slots` in `crates/reify-compiler/src/builtin_signatures.rs`.
-/// The exit-gate half is pinned by
-/// `check_rejects_bare_scalar_mirror_origin_before_reaching_build` below.
+/// The exit-gate half is pinned by the `mirror` row of `ROWS` in
+/// `cli_check_bare_length_exit.rs`.
 ///
 /// Baseline RE-MEASURED at task 5746 (units-length ε, R11), which moved the
 /// SPEAKER without touching this test's subject.  `plane_yz(0)` is now rejected
@@ -1140,98 +1140,6 @@ fn check_surfaces_geometry_compile_error_from_discarded_build() {
         "the companion units rejection `build()` produces must reach `check`'s \
          stderr too — after ε it is the PRODUCER's, since `mirror` never receives \
          a Plane.\nstderr: {stderr}"
-    );
-}
-
-/// Task 5662 — the CLI-seam LOCK on this task's headline user-visible change:
-/// `reify check` on a bare 7-arg scalar `mirror` origin now EXITS 1, where it
-/// exited 0 before.
-///
-/// This is emergent behaviour, owned by no single layer: task 5662 added the
-/// ox/oy/oz LENGTH slots in `crates/reify-compiler/src/builtin_signatures.rs`,
-/// and `cmd_check` turns any compile `Severity::Error` into `ExitCode::FAILURE`
-/// with a short-circuit BEFORE constraint checking and before `build()`.  The
-/// compiler-side tests pin the DIAGNOSTIC; nothing pinned the EXIT GATE, yet the
-/// short-circuit is precisely why the sibling test's fixture had to move to the
-/// decoded-value route (see the `mirror` arm of `builtin_signatures.rs`).  A
-/// regression in that short-circuit would silently invalidate that retarget
-/// while every compiler-side test stayed green — hence this test.
-///
-/// A temp module rather than a `tests/fixtures/` file on purpose: this source is
-/// deliberately UNCOMPILABLE, and every fixture in that directory is fair game
-/// for the corpus walkers under `crates/**/*.ri`.
-///
-/// Baseline MEASURED at task 5662 against a binary built from this branch, on
-/// the source below:
-///     stdout: EMPTY — no verdict line at all
-///     stderr: error: mirror: ox argument expects Length, got Int; pass a
-///                    dimensioned length such as `5mm`
-///             error: mirror: oy … (same)
-///             error: mirror: oz … (same)
-///     exit 1
-/// Note what is ABSENT: `failed to compile geometry operation: …`.  Compilation
-/// aborts on the slot errors, so realization is never reached on this route —
-/// that diagnostic survives only on the decoded-value route the sibling test
-/// above exercises.
-///
-/// NOT an exit-gate flip: this asserts FAILURE on a COMPILE `Severity::Error`,
-/// which `cmd_check` has always produced.  The sibling decoded-value tests above
-/// assert FAILURE through the INV-SF-2 `Severity::Error` gate, but that exit is
-/// carried by the `plane_yz` rejection, which check()'s own list also holds;
-/// the gate's reading of the MERGED set is pinned by
-/// `check_exits_nonzero_on_a_realization_only_build_volume_error`.
-#[test]
-fn check_rejects_bare_scalar_mirror_origin_before_reaching_build() {
-    let dir = tempfile::tempdir().expect("failed to create temp dir");
-    // The stem must match the `module` declaration, or `check` reports
-    // E_MODULE_PATH_MISMATCH and we would be measuring that instead.
-    let path = dir.path().join("mirror_bare_scalar_origin.ri");
-    std::fs::write(
-        &path,
-        r#"module mirror_bare_scalar_origin
-
-structure def MirrorBareScalarOrigin {
-    param arm_len   : Length = 40mm
-    param arm_width : Length = 8mm
-
-    let arm = box(arm_len, arm_width, arm_width)
-
-    // WRONG on purpose — bare-Int origin triple (should be `0mm, 0mm, 0mm`).
-    // The normal `1, 0, 0` is correctly bare: it is a dimensionless direction.
-    let reflected = mirror(arm, 0, 0, 0, 1, 0, 0)
-
-    param geometry : Solid = union(arm, reflected)
-
-    constraint arm_len > arm_width
-}
-"#,
-    )
-    .expect("failed to write temp module");
-
-    let (status, stdout, stderr) =
-        common::run_with_args(&["check", path.to_str().expect("temp path is UTF-8")]);
-
-    assert_eq!(
-        status.code(), Some(1),
-        "a compile-layer ArgTypeMismatch must make `reify check` exit exactly 1 — \
-         this is the short-circuit that forced the decoded-value retarget of \
-         `mirror_bare_origin.ri`.\nstdout: {stdout}\nstderr: {stderr}"
-    );
-
-    for component in ["ox", "oy", "oz"] {
-        let needle = format!("mirror: {component} argument expects Length, got Int");
-        assert!(
-            stderr.contains(&needle),
-            "every component of the origin triple gets its own diagnostic; \
-             `{needle}` is missing.\nstderr: {stderr}"
-        );
-    }
-
-    assert!(
-        !stdout.contains("All constraints satisfied"),
-        "the short-circuit happens BEFORE constraint checking, so no verdict line \
-         may be printed — a green verdict beside these errors is the exact \
-         falsehood this gate closes.\nstdout: {stdout}"
     );
 }
 
@@ -1760,9 +1668,8 @@ fn check_geometry_module_upgrades_indeterminate_to_violated_and_exits_failure() 
 /// outside `register_production_compute_fns`'s 19-target bundle, and outside
 /// every `test::`-namespaced target registered anywhere else in the workspace,
 /// so `register_compute_fn`'s duplicate-target panic can never collide with it.
-/// An inline temp module rather than a tracked `.ri` fixture, for the same
-/// reason `check_rejects_bare_scalar_mirror_origin_before_reaching_build` above
-/// uses one: nothing else in the corpus needs this source.
+/// An inline temp module rather than a tracked `.ri` fixture: nothing else in
+/// the corpus needs this source.
 ///
 /// CONTROL, measured at task 5311 against a binary built from this branch: the
 /// byte-identical fixture with the `@optimized` fn and its call removed

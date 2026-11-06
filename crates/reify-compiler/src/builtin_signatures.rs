@@ -677,8 +677,8 @@ pub(crate) fn builtin_arg_slots(name: &str, arg_count: usize) -> &'static [Check
         // These two arms make `reify check` a REAL gate for these positions, not
         // merely `reify eval`: `cmd_check` returns `ExitCode::FAILURE` on any
         // compile `Severity::Error` and short-circuits BEFORE constraint checking
-        // and before `build()`. Pinned at the CLI seam by
-        // `check_rejects_bare_scalar_mirror_origin_before_reaching_build`.
+        // and before `build()`. Pinned at the CLI seam, for `mirror`, by its row in
+        // `reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs`'s `ROWS`.
         //
         // STRUCTURAL EXCLUSION OF THE DECODED-VALUE ROUTE — the AUTHORITATIVE
         // statement, kept here beside the code it describes per this module's

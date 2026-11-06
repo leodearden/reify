@@ -635,9 +635,8 @@ fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
 ///
 /// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
 /// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
-/// COMPILE error and `reify check` exits 1 on it (pinned at the CLI seam by
-/// `crates/reify-cli/tests/harness_cli/cli_check.rs`'s
-/// `check_rejects_bare_scalar_mirror_origin_before_reaching_build`). This test
+/// COMPILE error and `reify check` exits 1 on it (pinned at the CLI seam by its row in
+/// `crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs`). This test
 /// went red exactly as its panic message promised, and the row moved to the
 /// ```` ```reify-rejected ```` block in the commit that recorded the move — the
 /// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.
