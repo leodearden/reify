@@ -8,8 +8,11 @@ use std::fs;
 use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::compile_program;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity, SourceSpan};
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 const LOCAL_MODULE: &str = "acme.shop";
 
@@ -212,7 +215,9 @@ fn a_shadowed_name_warns_once_however_often_it_is_referenced() {
 
 /// The only shadowing definition comes from a user import (the import tier):
 /// entry-vs-import and import-vs-import dispositions are resolution-unification
-/// D-6's, not this lint's.
+/// D-6's, not this lint's. The import's own declaration does shadow the stdlib,
+/// and `compile_program` re-homes that Warning onto the entry attributed to the
+/// import; what must not appear is a shadowing raised by the entry itself.
 #[test]
 fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
     let entry =
@@ -225,14 +230,26 @@ fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
         "pub structure def Color {\n    param zz : Real = 3.0\n}\n",
     )
     .expect("write a.ri");
-    let parsed = reify_compiler::parse_with_stdlib(entry, ModulePath::single("main"));
     let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let module = compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default());
-    assert_eq!(errors_of(&module), Vec::<&str>::new());
+    let program = compile_program(
+        &dir.join("main.ri"),
+        entry,
+        &resolver,
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
+    assert_eq!(errors_of(&program.entry), Vec::<&str>::new());
+    let is_shadow = |d: &&Diagnostic| d.code == Some(DiagnosticCode::StdlibNameShadowed);
+    let local: Vec<&Diagnostic> = program.entry_own_diagnostics().filter(is_shadow).collect();
     assert!(
-        shadow_warnings(&module).is_empty(),
-        "an import-tier winner is not a local shadowing: {:?}",
-        shadow_warnings(&module)
+        local.is_empty(),
+        "an import-tier winner is not a local shadowing: {local:?}"
+    );
+    let rehomed: Vec<&Diagnostic> = program.rehomed_from("a").filter(is_shadow).collect();
+    assert!(
+        rehomed.iter().any(|d| d.message.contains("Color")),
+        "a.ri's own shadowing of Color is re-homed onto the entry, got {:?}",
+        program.entry.diagnostics
     );
 }
 

@@ -534,3 +534,214 @@ fn compile_with_prelude_context_parity_two_module_prelude_with_alias() {
 
     assert_compiled_module_parity(&actual, &expected, "two-module-prelude-with-alias");
 }
+
+// ─── task 5516 step-1: PreludeContext::extended parity ─────────────────────
+
+/// Compile one of the two inline prelude modules used by the `extended`
+/// parity tests. Both declare the same `pub type Shared` so the base/extension
+/// boundary carries a first-wins alias collision.
+fn compile_inline_prelude_module(name: &str, source: &str) -> CompiledModule {
+    let parsed = reify_syntax::parse(source, ModulePath::single(name));
+    assert!(
+        parsed.errors.is_empty(),
+        "{name}: parse errors: {:?}",
+        parsed.errors
+    );
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        !compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == reify_core::Severity::Error),
+        "{name}: prelude fixture must compile cleanly, got: {:?}",
+        compiled.diagnostics
+    );
+    compiled
+}
+
+fn extended_fixture_modules() -> (CompiledModule, CompiledModule) {
+    let a = compile_inline_prelude_module(
+        "ext_prelude_a",
+        "pub enum EA { X }\npub type Shared = Real\n",
+    );
+    let b = compile_inline_prelude_module(
+        "ext_prelude_b",
+        "pub enum EB { Y }\npub type Shared = Real\n",
+    );
+    (a, b)
+}
+
+fn enum_names_of<'c>(ctx: &'c PreludeContext<'_>) -> Vec<&'c str> {
+    ctx.resolution_enums()
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect()
+}
+
+fn alias_names_of<'c>(ctx: &'c PreludeContext<'_>) -> Vec<&'c str> {
+    ctx.pub_aliases().iter().map(|a| a.name.as_str()).collect()
+}
+
+type DiagKey = (
+    reify_core::Severity,
+    Option<reify_core::DiagnosticCode>,
+    String,
+);
+
+fn diag_keys(module: &CompiledModule) -> Vec<DiagKey> {
+    module
+        .diagnostics
+        .iter()
+        .map(|d| (d.severity, d.code, d.message.clone()))
+        .collect()
+}
+
+/// `new(&[&A]).extended(&[&B])` is indistinguishable from `new(&[&A, &B])`:
+/// same module refs, same enum and alias caches in the same order, and the
+/// first-wins alias collision across the base/extension boundary still
+/// survives as exactly one Warning when a user module is compiled.
+#[test]
+fn extended_matches_new_over_concatenated_prelude() {
+    let (a, b) = extended_fixture_modules();
+    let base = PreludeContext::new(&[&a]);
+    let extended = base.extended(&[&b]);
+    let flat = PreludeContext::new(&[&a, &b]);
+
+    assert_eq!(extended.modules().len(), flat.modules().len());
+    for (i, (got, want)) in extended.modules().iter().zip(flat.modules()).enumerate() {
+        assert!(
+            std::ptr::eq(*got, *want),
+            "modules()[{i}] must be the same allocation in extended and flat contexts"
+        );
+    }
+
+    assert_eq!(enum_names_of(&extended), enum_names_of(&flat));
+    assert_eq!(enum_names_of(&extended), vec!["EA", "EB"]);
+
+    assert_eq!(alias_names_of(&extended), alias_names_of(&flat));
+    assert_eq!(
+        alias_names_of(&extended),
+        vec!["Shared"],
+        "first-wins: only one `Shared` survives across the base/extension boundary"
+    );
+
+    let user = reify_syntax::parse(
+        "structure def U { param x : Real = 1 }",
+        ModulePath::single("ext_user"),
+    );
+    assert!(user.errors.is_empty(), "parse errors: {:?}", user.errors);
+    let via_extended = diag_keys(&compile_with_prelude_context(&user, &extended));
+    let via_flat = diag_keys(&compile_with_prelude_context(&user, &flat));
+    assert_eq!(via_extended, via_flat);
+
+    let collision_warnings: Vec<&DiagKey> = via_extended
+        .iter()
+        .filter(|(severity, _, message)| {
+            *severity == reify_core::Severity::Warning
+                && message.contains("prelude pub alias 'Shared' declared in both")
+        })
+        .collect();
+    assert_eq!(
+        collision_warnings.len(),
+        1,
+        "exactly one cross-prelude `Shared` collision warning expected, got: {via_extended:?}"
+    );
+}
+
+/// Extending by nothing leaves the base context's modules, enums and aliases
+/// unchanged.
+#[test]
+fn extended_with_no_modules_preserves_base() {
+    let (a, _b) = extended_fixture_modules();
+    let base = PreludeContext::new(&[&a]);
+    let extended = base.extended(&[]);
+
+    assert_eq!(extended.modules().len(), 1);
+    assert!(std::ptr::eq(extended.modules()[0], &a));
+    assert_eq!(enum_names_of(&extended), enum_names_of(&base));
+    assert_eq!(alias_names_of(&extended), alias_names_of(&base));
+    assert_eq!(alias_names_of(&extended), vec!["Shared"]);
+}
+
+// ─── task 5516 step-15: NS-P1 tier precedence across `extended` ────────────
+
+fn scalar(dimension: DimensionVector) -> Option<Type> {
+    Some(Type::Scalar { dimension })
+}
+
+fn tier_enum(variant: &str) -> EnumDef {
+    EnumDef {
+        name: "ETier".to_string(),
+        variants: vec![variant.into()],
+        doc: None,
+        type_params: vec![],
+    }
+}
+
+type AliasShape = (String, Option<Type>, bool);
+
+fn alias_shapes(ctx: &PreludeContext<'_>) -> Vec<AliasShape> {
+    ctx.pub_aliases()
+        .iter()
+        .map(|a| (a.name.clone(), a.resolved_type.clone(), a.is_pub))
+        .collect()
+}
+
+/// The production shape `load_stdlib_context().extended(user_imports)` keeps
+/// NS-P1's tier order: a user-import module's alias and enum outrank a
+/// same-named std one, although the std module comes first in the slice.
+/// Across tiers, slice order does not decide.
+#[test]
+fn extended_binds_user_import_tier_before_std_tier() {
+    let std_path = ModulePath::from_dotted("std.ext_tier").expect("valid dotted path");
+    let std_mod = CompiledModuleBuilder::new(std_path)
+        .type_alias(make_alias(
+            "Shared",
+            scalar(DimensionVector::PRESSURE),
+            true,
+        ))
+        .enum_def(tier_enum("StdOnly"))
+        .build();
+    let imp = CompiledModuleBuilder::new(ModulePath::single("ext_import"))
+        .type_alias(make_alias("Shared", scalar(DimensionVector::LENGTH), true))
+        .enum_def(tier_enum("ImportOnly"))
+        .build();
+
+    let base = PreludeContext::new(&[&std_mod]);
+    let ext = base.extended(&[&imp]);
+
+    let modules = ext.modules();
+    assert_eq!(modules.len(), 2, "module order stays base ++ extra");
+    assert!(
+        std::ptr::eq(modules[0], &std_mod),
+        "modules()[0] is the std module"
+    );
+    assert!(std::ptr::eq(modules[1], &imp), "modules()[1] is the import");
+
+    assert_eq!(
+        alias_shapes(&ext),
+        vec![("Shared".to_string(), scalar(DimensionVector::LENGTH), true)],
+        "exactly one `Shared`, the user import's"
+    );
+    assert_eq!(
+        ext.resolution_enums(),
+        [tier_enum("ImportOnly")].as_slice(),
+        "exactly one `ETier`, the user import's"
+    );
+
+    for (label, flat) in [
+        ("new(std ++ import)", PreludeContext::new(&[&std_mod, &imp])),
+        ("new(import ++ std)", PreludeContext::new(&[&imp, &std_mod])),
+    ] {
+        assert_eq!(
+            alias_shapes(&ext),
+            alias_shapes(&flat),
+            "aliases vs {label}"
+        );
+        assert_eq!(
+            ext.resolution_enums(),
+            flat.resolution_enums(),
+            "enums vs {label}"
+        );
+    }
+}

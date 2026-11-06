@@ -180,7 +180,7 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 
 /// Like [`parse_and_compile`], but seeds the active [`CfgSet`] and walks a
 /// `#cfg(...)`-gated user-import DAG via
-/// [`reify_compiler::module_dag::compile_entry_with_stdlib_cfg`].
+/// [`reify_compiler::program::compile_program_with_parsed_entry`].
 ///
 /// Used only by `reify check`. It preserves single-file behavior — the full
 /// stdlib prelude is still seeded, so every existing `reify check` input keeps
@@ -189,8 +189,8 @@ fn parse_and_compile(path: &str) -> Result<reify_compiler::CompiledModule, ExitC
 /// modules resolve (task δ's user-observable signal).
 ///
 /// The module-path declaration check (spec §7.1/§7.2, task γ) is performed
-/// *inside* `compile_entry_with_stdlib_cfg` (via `attach_module_path_diag`), so
-/// — unlike [`parse_and_compile`] — this function must NOT re-run it, else the
+/// *inside* the program compile (via `attach_module_path_diag`), so — unlike
+/// [`parse_and_compile`] — this function must NOT re-run it, else the
 /// diagnostic would be emitted twice.
 fn parse_and_compile_with_cfg(
     path: &str,
@@ -215,9 +215,9 @@ fn parse_and_compile_with_cfg(
 
     // Resolve sibling user imports relative to the entry file's parent dir.
     //
-    // `stdlib_root` is INERT on this code path: `compile_entry_with_stdlib_cfg`
-    // skips every `std.*` import (the full stdlib is seeded into the prelude via
-    // `load_stdlib()` instead), so the resolver's stdlib_root is never consulted
+    // `stdlib_root` is INERT on this code path: the program compile skips every
+    // `std.*` import (the full stdlib is seeded into the prelude via the cached
+    // stdlib context instead), so the resolver's stdlib_root is never consulted
     // for a `reify check`. We still pass the GUI/LSP-heuristic path
     // (parent/crates/reify-compiler/stdlib) rather than a bogus sentinel so the
     // resolver is constructed identically to that bridge; its value has no
@@ -230,12 +230,15 @@ fn parse_and_compile_with_cfg(
         parent_dir.join("crates/reify-compiler/stdlib"),
     );
 
-    let compiled = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
+    let compiled = reify_compiler::program::compile_program_with_parsed_entry(
+        std::path::Path::new(path),
+        &source,
         &parsed,
         &resolver,
         cfg,
         &SimpleConstraintChecker,
-    );
+    )
+    .entry;
 
     for diag in &compiled.diagnostics {
         eprintln!("{}: {}", diag.severity, diag.message);

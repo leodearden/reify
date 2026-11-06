@@ -43,11 +43,14 @@
 
 use std::path::{Path, PathBuf};
 
-use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
-use reify_compiler::parse_with_stdlib;
-use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_compiler::cfg::CfgSet;
-use reify_test_support::{diags_with_code, examples_corpus::discover_ri_files};
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::parse_with_stdlib;
+use reify_compiler::program::{CompiledProgram, compile_program_with_parsed_entry};
+use reify_core::{DiagnosticCode, ModulePath, Severity};
+use reify_ir::Satisfaction;
+use reify_test_support::examples_corpus::discover_ri_files;
+use reify_test_support::mocks::MockConstraintChecker;
 
 /// Workspace root, resolved at compile time from this crate's manifest dir.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -182,8 +185,8 @@ fn discover_corpus() -> Vec<PathBuf> {
     paths
 }
 
-/// Compile one corpus file exactly the way `reify check` does, and return its
-/// diagnostics — or `None` when the file cannot be parsed at all.
+/// Compile one corpus file exactly the way `reify check` does, and return the
+/// program — or `None` when the file cannot be parsed at all.
 ///
 /// # Why this entry point and not another
 ///
@@ -203,15 +206,16 @@ fn discover_corpus() -> Vec<PathBuf> {
 ///   and the rest of the FEA/dynamics/constants surface, every one of them a
 ///   real `pub fn` or `structure def` in `crates/reify-compiler/stdlib/`.
 ///
-/// [`compile_entry_with_stdlib_cfg`] is the one that does both — it is what
-/// `crates/reify-cli/src/main.rs` calls for `reify check` — so this sweep
-/// answers the same question a user's `reify check` would, which is exactly the
-/// question #5997 needs answered before it can turn these warnings into errors.
+/// The program compile does both. `reify check` enters it through
+/// [`compile_program_with_parsed_entry`], handing over the parse it already
+/// made, and so does this walker — so this sweep answers the same question a
+/// user's `reify check` would, which is exactly the question #5997 needs
+/// answered before it can turn these warnings into errors.
 ///
 /// `parse_with_stdlib` (not bare `parse`) matches: prelude-aware parsing is
 /// what makes `Type.Variant` references against stdlib enums resolve as
 /// `EnumAccess` rather than as errors.
-fn diagnostics_for(path: &Path) -> Option<Vec<reify_core::Diagnostic>> {
+fn program_for(path: &Path) -> Option<CompiledProgram> {
     let source = std::fs::read_to_string(path).ok()?;
     let stem = path.file_stem()?.to_string_lossy().into_owned();
 
@@ -228,8 +232,14 @@ fn diagnostics_for(path: &Path) -> Option<Vec<reify_core::Diagnostic>> {
     // stdlib — but is passed truthfully rather than as a sentinel so the
     // resolver is constructed identically to the CLI's.
     let resolver = ModuleResolver::new(path.parent()?, Path::new(STDLIB_ROOT));
-    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default());
-    Some(compiled.diagnostics)
+    Some(compile_program_with_parsed_entry(
+        path,
+        &source,
+        &parsed,
+        &resolver,
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    ))
 }
 
 /// Walk the corpus and return every `UnresolvedFunction` violation, sorted.
@@ -242,18 +252,29 @@ fn sweep() -> Vec<Violation> {
         if skipped.contains(&rel.as_str()) {
             continue;
         }
-        let Some(diagnostics) = diagnostics_for(&path) else {
+        let Some(program) = program_for(&path) else {
             continue;
         };
         // A file that does not compile cleanly is out of scope — its warnings
         // are downstream of whatever is actually broken.
-        if diagnostics.iter().any(|d| d.severity == Severity::Error) {
+        if program
+            .entry
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
+        {
             continue;
         }
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for d in diags_with_code(&diagnostics, DiagnosticCode::UnresolvedFunction) {
+        // An import's own warnings reach the entry as re-homed copies, whose
+        // spans no longer index this file; each is swept where it was raised,
+        // when the import's own file is swept.
+        for d in program
+            .entry_own_diagnostics()
+            .filter(|d| d.code == Some(DiagnosticCode::UnresolvedFunction))
+        {
             let offset = d.labels.first().map(|l| l.span.start).unwrap_or(0);
             violations.push(Violation {
                 file: rel.clone(),
@@ -347,8 +368,13 @@ fn the_sweep_actually_compiles_most_of_the_corpus() {
     let clean = all
         .iter()
         .filter(|p| {
-            diagnostics_for(p)
-                .is_some_and(|ds| !ds.iter().any(|d| d.severity == Severity::Error))
+            program_for(p).is_some_and(|program| {
+                !program
+                    .entry
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.severity == Severity::Error)
+            })
         })
         .count();
     assert!(
