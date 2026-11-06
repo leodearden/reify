@@ -32,13 +32,23 @@ function replay_to_line_start(   k) {
     _lexer_reset()
     for (k = 1; k <= n_since_balanced; k++) _strip_line(since_balanced[k])
 }
+# The lexer is balanced just before a byte that starts code, and lexing the
+# line split there reads exactly as lexing it whole. A split inside a token
+# hides the lexer's look-ahead (a char literal's closing quote), so it reads
+# differently.
+function starts_code_at(col,   split_code, split_state) {
+    replay_to_line_start()
+    split_code = _strip_line(substr($0, 1, col - 1))
+    if (_lexer_open_state() != "" || comment_tail != "") return 0
+    split_code = split_code _strip_line(substr($0, col))
+    split_state = _lexer_open_state()
+    replay_to_line_start()
+    return split_code == _strip_line($0) && split_state == _lexer_open_state()
+}
 FNR in probe_cols {
     n_cols = split(probe_cols[FNR], line_cols, " ")
-    for (p = 1; p <= n_cols; p++) {
-        replay_to_line_start()
-        _strip_line(substr($0, 1, line_cols[p] - 1))
-        if (_lexer_open_state() == "" && comment_tail == "") print FNR ":" line_cols[p]
-    }
+    for (p = 1; p <= n_cols; p++)
+        if (starts_code_at(line_cols[p])) print FNR ":" line_cols[p]
     replay_to_line_start()
 }
 {

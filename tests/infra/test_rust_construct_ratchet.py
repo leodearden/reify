@@ -77,6 +77,23 @@ class Views(TempRoot):
         self.assertEqual(result.hits,
                          ("src/a.rs:2", "src/a.rs:3", "src/a.rs:13", "src/a.rs:15"))
 
+    def test_starts_in_code_view_counts_char_literal_openers_only(self):
+        self.write("src/a.rs", rust_fn(
+            "    let c = 'x';",
+            "    let q = '\"';",
+            "    let b = b'y';",
+            "    let s: &'static str = \"\";",
+        ))
+        expected_hits = {
+            "x'": (), "\"'": (), "y'": (), "';": (),
+            "'x'": ("src/a.rs:2",), "'static": ("src/a.rs:5",),
+        }
+        for construct, hits in expected_hits.items():
+            with self.subTest(construct):
+                result = self.evaluate_one(
+                    demo_row(construct, "src/a.rs", view=rcr.View.STARTS_IN_CODE))
+                self.assertEqual(result.hits, hits)
+
     def test_starts_in_code_view_counts_each_opener_on_a_line(self):
         self.write("src/a.rs", rust_fn('    f("needle_a", "needle_b"); // "needle_c"'))
         result = self.evaluate_one(
