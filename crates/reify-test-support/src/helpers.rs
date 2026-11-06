@@ -2950,9 +2950,7 @@ mod tests {
     /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
     /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
     /// returned declaration IS that cell, not the scoped one (which is
-    /// defaultless) and not whichever cell comes first. Every value-cell and
-    /// let-expr entry point resolves through this function, so this is the
-    /// single pin of the tie-break.
+    /// defaultless) and not whichever cell comes first.
     ///
     /// The precondition pins the shape of the collision (`sub v` precedes the
     /// parent's own `let area`), so the test cannot pass vacuously or by
