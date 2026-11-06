@@ -618,12 +618,11 @@ impl ElasticResult {
 /// The five shared fields (`displacement`, `stress`, `max_von_mises`, `converged`,
 /// `iterations`) are mapped by name with their exact types.  Every
 /// `ElasticResult`-only field receives a neutral default; the exhaustive struct
-/// literal below is the authoritative list of those fields.  Two defaults carry
-/// rationale that is not obvious from the literal:
+/// literal below is the authoritative list of those fields.  The defaults
+/// below carry rationale that is not obvious from the literal:
 ///
 /// - `solve_time_ms: 0` — a mid-solve partial snapshot has no eviction-cost
-///   metric; the caller fills this in when it promotes a snapshot to a final
-///   cache entry.
+///   metric, so `0` is a placeholder rather than a measured cost.
 /// - `shell_channels: None` — the v0_3 progressive solver is tet-based; shell
 ///   channels are populated only by the v0_4 FEA trampoline (PRD task δ).
 ///
@@ -666,7 +665,7 @@ impl From<&reify_solver_elastic::progressive::PartialElasticResult> for ElasticR
 }
 
 /// By-value variant: moves `displacement` and `stress` instead of cloning them.
-/// Prefer this when the caller consumes the [`PartialElasticResult`] at promotion
+/// Prefer this when the caller consumes the [`PartialElasticResult`] at conversion
 /// time and does not need to retain it afterwards — avoids a potentially large
 /// double-allocation for refined meshes.  The by-ref impl above is appropriate
 /// when the snapshot must remain valid after conversion (e.g. for snapshot reuse).
@@ -2157,6 +2156,29 @@ mod tests {
         assert_eq!(decoded.grid_count_z, header.grid_count_z);
     }
 
+    /// What both `From<PartialElasticResult>` impls must produce: the shared
+    /// fields mirrored, every `ElasticResult`-only field at its neutral default.
+    fn expected_conversion(
+        partial: &reify_solver_elastic::progressive::PartialElasticResult,
+    ) -> ElasticResult {
+        ElasticResult {
+            displacement: partial.displacement.clone(),
+            stress: partial.stress.clone(),
+            max_von_mises: partial.max_von_mises,
+            converged: partial.converged,
+            iterations: partial.iterations,
+            solve_time_ms: 0,
+            shell_channels: None,
+            grid_bounds_min: [0.0; 3],
+            grid_bounds_max: [0.0; 3],
+            grid_counts: [0; 3],
+            divergence: Vec::new(),
+            gradient: Vec::new(),
+            curl: Vec::new(),
+            aposteriori: None,
+        }
+    }
+
     #[test]
     fn partial_elastic_result_converts_to_elastic_result_field_for_field() {
         use reify_solver_elastic::progressive::PartialElasticResult;
@@ -2171,21 +2193,7 @@ mod tests {
 
         let full: ElasticResult = (&partial).into();
 
-        // Shared fields must mirror the partial exactly.
-        assert_eq!(full.displacement, vec![1.0, 2.0, 3.0]);
-        assert_eq!(full.stress, vec![4.0, 5.0]);
-        assert_eq!(full.max_von_mises, 123.5);
-        assert!(full.converged);
-        assert_eq!(full.iterations, 7);
-        // ElasticResult-only fields must use their documented neutral defaults.
-        assert_eq!(
-            full.solve_time_ms, 0,
-            "solve_time_ms must default to 0 for a partial snapshot"
-        );
-        assert!(
-            full.shell_channels.is_none(),
-            "shell_channels must default to None for tet-only solver"
-        );
+        assert_eq!(full, expected_conversion(&partial));
     }
 
     #[test]
@@ -2199,17 +2207,12 @@ mod tests {
             converged: false,
             iterations: 3,
         };
+        let expected = expected_conversion(&partial);
 
         // By-value conversion — moves displacement and stress without cloning.
         let full: ElasticResult = partial.into();
 
-        assert_eq!(full.displacement, vec![10.0, 20.0]);
-        assert_eq!(full.stress, vec![30.0, 40.0, 50.0]);
-        assert_eq!(full.max_von_mises, 99.0);
-        assert!(!full.converged);
-        assert_eq!(full.iterations, 3);
-        assert_eq!(full.solve_time_ms, 0);
-        assert!(full.shell_channels.is_none());
+        assert_eq!(full, expected);
     }
 
     /// step-3 RED (task #3428): `ElasticResult` with the new v3 fields (grid spec,
