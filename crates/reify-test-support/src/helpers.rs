@@ -2643,8 +2643,8 @@ mod tests {
     // try_get_value_cell_in_template's rustdoc. The not-found panic's
     // available-cells list and the defaultless-cell pass-through are pinned
     // once, on get_value_cell_in_template, which owns them. The ambiguity
-    // abort is pinned once too, on try_get_value_cell_in_template, which
-    // raises it.
+    // abort and the own-cell tie-break are pinned once too, on
+    // try_get_value_cell_in_template, which raises and applies them.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
@@ -2736,34 +2736,6 @@ mod tests {
         crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build()
-    }
-
-    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
-    /// `value_cells` and a first-match resolver would pick the wrong one.
-    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
-        structure def Vent { param area : Length = 1mm }
-        structure def Manifold {
-            sub v : Vent { area = auto }
-            let area = 2mm
-        }
-    "#;
-
-    /// The module route to the same resolution as
-    /// `test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell`
-    /// (`get_let_expr_in` and `get_let_expr` reach it through this function): a
-    /// scoped sub cell colliding with the template's own cell resolves to the
-    /// own cell.
-    #[test]
-    fn test_get_value_cell_in_prefers_templates_own_cell_over_scoped_sub_cell() {
-        use reify_core::ValueCellId;
-
-        let module = super::compile_source(MANIFOLD_OWN_AND_SCOPED_AREA);
-        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
-
-        let cell = super::get_value_cell_in(&module, "Manifold", "area");
-
-        assert_eq!(cell.id, ValueCellId::new("Manifold", "area"));
-        assert_eq!(cell.kind, reify_compiler::ValueCellKind::Let);
     }
 
     // ── get_value_cell ────────────────────────────────────────────────────
@@ -2975,6 +2947,58 @@ mod tests {
         let _ = super::try_get_value_cell_in_template(&template, "x");
     }
 
+    /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
+    /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
+    /// returned declaration IS that cell, not the scoped one (which is
+    /// defaultless) and not whichever cell comes first.
+    ///
+    /// The precondition pins the shape of the collision (`sub v` precedes the
+    /// parent's own `let area`), so the test cannot pass vacuously or by
+    /// first-match resolution.
+    #[test]
+    fn test_try_get_value_cell_in_template_prefers_templates_own_cell_over_scoped_sub_cell() {
+        use reify_core::ValueCellId;
+
+        let source = r#"
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
+        "#;
+        let (template, diags) = super::compile_template(source, "Manifold");
+        super::assert_no_diagnostics(&diags, "Vent/Manifold fixture");
+
+        let colliding_ids: Vec<ValueCellId> = template
+            .value_cells
+            .iter()
+            .filter(|vc| vc.id.member == "area")
+            .map(|vc| vc.id.clone())
+            .collect();
+        assert_eq!(
+            colliding_ids,
+            vec![
+                ValueCellId::new("Manifold.v", "area"),
+                ValueCellId::new("Manifold", "area"),
+            ],
+            "precondition: the scoped cell must collide with, and precede, the own cell"
+        );
+        let own_cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id == ValueCellId::new("Manifold", "area"))
+            .expect("Manifold's own 'area' cell");
+
+        let cell = super::try_get_value_cell_in_template(&template, "area")
+            .expect("Manifold declares 'area'");
+
+        assert!(
+            std::ptr::eq(cell, own_cell),
+            "expected Manifold's own 'area' cell, got {:?}",
+            cell.id
+        );
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
     // Not-found is pinned on get_value_cell_in_template and get_let_expr_in,
     // has-no-default on get_let_expr_in; see the get_value_cell_in header.
@@ -2996,51 +3020,6 @@ mod tests {
             reify_core::Type::dimensionless_scalar(),
             "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
             expr.result_type
-        );
-    }
-
-    /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
-    /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
-    /// returned expression IS that cell's `default_expr`, not the scoped cell's
-    /// (which is defaultless) and not whichever cell comes first.
-    ///
-    /// The precondition pins the shape of the collision, so the test cannot
-    /// pass vacuously or by first-match resolution.
-    #[test]
-    fn test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell() {
-        use reify_core::ValueCellId;
-
-        let (template, diags) = super::compile_template(MANIFOLD_OWN_AND_SCOPED_AREA, "Manifold");
-        super::assert_no_diagnostics(&diags, "Vent/Manifold fixture");
-
-        let colliding_ids: Vec<ValueCellId> = template
-            .value_cells
-            .iter()
-            .filter(|vc| vc.id.member == "area")
-            .map(|vc| vc.id.clone())
-            .collect();
-        assert_eq!(
-            colliding_ids,
-            vec![
-                ValueCellId::new("Manifold.v", "area"),
-                ValueCellId::new("Manifold", "area"),
-            ],
-            "precondition: the scoped cell must collide with, and precede, the own cell"
-        );
-        let own_default = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id == ValueCellId::new("Manifold", "area"))
-            .expect("Manifold's own 'area' cell")
-            .default_expr
-            .as_ref()
-            .expect("Manifold's own 'area' is a `let`, so it carries a default expr");
-
-        let expr = super::get_let_expr_in_template(&template, "area");
-
-        assert!(
-            std::ptr::eq(expr, own_default),
-            "expected Manifold's own 'area' default expr, got {expr:?}"
         );
     }
 
