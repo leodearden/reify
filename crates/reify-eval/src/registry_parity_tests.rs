@@ -116,8 +116,10 @@
 //! - **The oracle is kind-level.** [`crate::value_type_kind_matches`] compares
 //!   a value's outer KIND against a type. Dimensions and inner element types
 //!   are not compared, for concrete and Field shapes alike: a kernel answering
-//!   `Scalar<LENGTH>` where `Scalar<PRESSURE>` is declared, or a list of the
-//!   wrong element type, reads `Matches`.
+//!   `Scalar<LENGTH>` where `Scalar<PRESSURE>` is declared, a list of the
+//!   wrong element type, or a `Value::Point` of the wrong length against a
+//!   `Type::Point` domain (a 2-D sample point for a `Point3<Length>` Field,
+//!   say) reads `Matches` — on the probe checks as on the verdict.
 //! - **A Field result is sampled at one point.** The Sample leg (see
 //!   [`probe_legs`]) executes the declared codomain at a single point of the
 //!   domain, so a codomain that held there and changed kind elsewhere would not
@@ -477,6 +479,7 @@ fn classify_undef_is_vacuous_for_every_declared_type() {
         Type::dimensionless_scalar(),
         Type::List(Box::new(Type::dimensionless_scalar())),
         Type::StructureRef("StressInvariants".to_string()),
+        Type::point3(Type::length()),
     ] {
         assert_eq!(
             classify(&Value::Undef, &declared),
@@ -525,6 +528,41 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 }
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
+
+/// Whether a probe's `value` is well-formed for the `ty` it is paired with:
+/// exactly when the verdict would classify the pair [`ParityVerdict::Matches`].
+/// The two sentinels the verdict reads as `Vacuous` — `Value::Undef` and a
+/// `Type::Error` slot — therefore fail at the probe rather than being blamed on
+/// the row.
+fn matches_non_vacuously(value: &Value, ty: &Type) -> bool {
+    classify(value, ty) == ParityVerdict::Matches
+}
+
+/// The first argument of `probe`, by slot, whose value is not well-formed for
+/// the type the probe pairs it with.
+fn first_ill_formed_argument(probe: &Probe) -> Option<(usize, &(Value, Type))> {
+    probe
+        .args
+        .iter()
+        .enumerate()
+        .find(|(_, (value, ty))| !matches_non_vacuously(value, ty))
+}
+
+/// `probe`'s sample point with the domain it falls short of, when `declared` is
+/// a `Type::Field` and the point is not well-formed for that domain. A
+/// `Type::Error` domain accepts every point and so certifies none: it is
+/// reported too.
+fn ill_formed_sample_point<'a>(
+    probe: &'a Probe,
+    declared: &'a Type,
+) -> Option<(&'a Value, &'a Type)> {
+    match (&probe.sample_at, declared) {
+        (Some(point), Type::Field { domain, .. }) if !matches_non_vacuously(point, domain) => {
+            Some((point, domain))
+        }
+        _ => None,
+    }
+}
 
 /// Every probe must be well-formed for the row it probes, checked five ways —
 /// and every row must have at least one.
@@ -578,12 +616,13 @@ fn representative_probes_are_well_formed_for_every_row() {
                 row.arg_slots.len()
             );
 
-            // (c) each pair is internally consistent under the SAME oracle the
-            // verdict uses, so a value typed as something it is not cannot
-            // make a row look like it diverges.
-            for (slot, (value, ty)) in probe.args.iter().enumerate() {
-                assert!(
-                    crate::value_type_kind_matches(value, ty, None),
+            // (c) each pair is internally consistent under the verdict's own
+            // rule (`matches_non_vacuously`, i.e. `classify`): a value typed as
+            // something it is not cannot make a row look like it diverges, and
+            // an Undef argument is rejected here instead of being blamed on the
+            // row as Vacuous.
+            if let Some((slot, (value, ty))) = first_ill_formed_argument(probe) {
+                panic!(
                     "{at}: argument {slot} is mis-paired — its Value does not \
                      satisfy the Type this probe claims for it ({value:?} vs \
                      {ty:?})"
@@ -621,21 +660,117 @@ fn representative_probes_are_well_formed_for_every_row() {
                 }
             );
 
-            // ...and that point lies in the declared Field's domain, under the
-            // same oracle as (c). A point of the wrong kind would make `sample`
-            // yield Value::Undef, and the sweep would report the row Vacuous
-            // for a fault in this file's probe data.
-            if let (Some(point), Type::Field { domain, .. }) = (&probe.sample_at, &declared) {
+            // ...and that point satisfies the declared Field's domain, under the
+            // same rule as (c). A point of the wrong kind, or a Value::Undef
+            // one, would make `sample` yield Value::Undef, and the sweep would
+            // report the row Vacuous for a fault in
+            // `registry_parity_tests/probes.rs` — so it is caught here, not at
+            // the Sample leg.
+            if let Some((point, domain)) = ill_formed_sample_point(probe, &declared) {
                 assert!(
-                    crate::value_type_kind_matches(point, domain, None),
+                    !domain.is_error(),
+                    "{at}: the declared Field's domain is Type::Error \
+                     ({declared:?}), which accepts every point, so the probe's \
+                     sample point ({point:?}) cannot be certified against it — \
+                     the fault is in the row's resolver, or in a Field type a \
+                     probe argument hands it, not in the point"
+                );
+                panic!(
                     "{at}: the probe's sample point is mis-built — it does not \
                      satisfy the declared Field's domain ({point:?} vs \
                      {domain:?}), so its Sample leg would read Vacuous and \
-                     blame the row for this file's probe data"
+                     blame the row for a fault in \
+                     registry_parity_tests/probes.rs"
                 );
             }
         }
     }
+}
+
+/// An argument the verdict would read `Vacuous` — a `Value::Undef`, or a value
+/// typed `Type::Error` — is rejected AT THE PROBE, not found by the sweep and
+/// blamed on the row.
+///
+/// Drives [`first_ill_formed_argument`], the helper behind the sweep's check
+/// (c), over synthetic probes, in the dialect of
+/// [`classify_undef_is_vacuous_for_every_declared_type`]: every real probe is
+/// well-formed, so the rule is otherwise unobservable. The raw
+/// `crate::value_type_kind_matches` accepts both rejected pairs (the premises of
+/// the two `classify_*` tests above), so a check built on it would let them
+/// through.
+#[test]
+fn a_probe_argument_that_would_read_vacuous_is_rejected_at_the_probe() {
+    let rejected_slot = |args: Vec<(Value, Type)>| {
+        let probe = Probe {
+            args,
+            sample_at: None,
+        };
+        first_ill_formed_argument(&probe).map(|(slot, _)| slot)
+    };
+    let text = || Value::String("12mm".to_string());
+
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::String)]),
+        None,
+        "control: a pair the verdict classifies Matches passes, so the \
+         rejections below are the rule's and not a blanket refusal"
+    );
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::String), (Value::Undef, Type::String)]),
+        Some(1),
+        "a Value::Undef argument must be rejected at the probe, at its own \
+         slot: the kernel would answer Undef, so the Call leg would read \
+         Vacuous and blame the row for the probe's fault"
+    );
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::Error)]),
+        Some(0),
+        "a Type::Error slot accepts any value, so it never shows the \
+         argument's Value consistent with the Type the resolver reads: the \
+         pair must be rejected at the probe"
+    );
+}
+
+/// A sample point the verdict would read `Vacuous` against the declared Field's
+/// domain — a `Value::Undef`, or any point against a `Type::Error` domain — is
+/// rejected AT THE PROBE, not found by the sweep and blamed on the row.
+///
+/// Drives [`ill_formed_sample_point`], the helper behind the sweep's
+/// sample-point check, over synthetic probes, as
+/// [`a_probe_argument_that_would_read_vacuous_is_rejected_at_the_probe`] does for
+/// check (c).
+#[test]
+fn a_probe_sample_point_that_would_read_vacuous_is_rejected_at_the_probe() {
+    let ill_formed = |point: Value, domain: Type| {
+        let declared = Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        };
+        let probe = Probe {
+            args: vec![],
+            sample_at: Some(point),
+        };
+        ill_formed_sample_point(&probe, &declared).is_some()
+    };
+    let point = || Value::Point(vec![Value::length(0.5); 3]);
+    let domain = || Type::point3(Type::length());
+
+    assert!(
+        !ill_formed(point(), domain()),
+        "control: a point the verdict classifies Matches passes, so the \
+         rejections below are the rule's and not a blanket refusal"
+    );
+    assert!(
+        ill_formed(Value::Undef, domain()),
+        "a Value::Undef sample point must be rejected at the probe: `sample` \
+         would yield Undef, so the Sample leg would read Vacuous and blame the \
+         row for the probe's fault"
+    );
+    assert!(
+        ill_formed(point(), Type::Error),
+        "a Type::Error domain accepts every point and so certifies none: it \
+         must be reported, not passed"
+    );
 }
 
 /// A row is reported at the MOST SEVERE leg of any of its probes, located at
