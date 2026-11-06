@@ -13,7 +13,7 @@ use reify_core::{Diagnostic, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledFunction, Value, ValueMap};
 
 use crate::deps::{extract_dependency_trace, extract_realization_dependencies};
-use crate::geometry_ops::is_symbolic_eval_wired_selector_ctor;
+use super::is_symbolic_eval_wired_selector_ctor;
 use crate::graph::{EvaluationGraph, RealizationNodeData};
 
 /// Which mint a cell tries first; the first `Some` wins.
@@ -159,7 +159,7 @@ fn mint_symbolic(
     };
     let mut selector = || {
         default_expr.and_then(|expr| {
-            crate::geometry_ops::try_eval_symbolic_topology_selector(
+            super::try_eval_symbolic_topology_selector(
                 expr,
                 scope.values,
                 diagnostics,

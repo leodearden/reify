@@ -164,7 +164,7 @@ use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
     stale_realizations,
 };
-use crate::symbolic_cell_mint::InstanceMintScope;
+use crate::geometry_ops::symbolic_cell_mint::InstanceMintScope;
 use crate::warm_pool::WarmStatePool;
 use crate::{
     CheckResult, Engine, EngineError, EvalResult, EvaluationState, GuardLookup,

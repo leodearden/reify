@@ -34,7 +34,7 @@ use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::journal::{EvalEvent, EventKind, EventPayload, TraceSource};
 use crate::snapshot::Snapshot;
-use crate::symbolic_cell_mint::{
+use crate::geometry_ops::symbolic_cell_mint::{
     RealizationSource, SymbolicMintOutcome, SymbolicMintScope, mint_symbolic_if_undef,
 };
 use crate::unfold::{elaborate_child_instance, unfold_recursive_sub};

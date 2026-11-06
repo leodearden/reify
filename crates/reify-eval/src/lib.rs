@@ -113,7 +113,6 @@ mod engine_tolerance;
 mod engine_viewport_attribution;
 mod unmeasured_attribution;
 mod geometry_ops;
-mod symbolic_cell_mint;
 mod sub_instance_scope;
 pub(crate) mod kernel_owner;
 pub(crate) mod volume_mesh_sources;

@@ -16,7 +16,7 @@ use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::{EventJournal, TraceSource};
 use crate::snapshot::Snapshot;
-use crate::symbolic_cell_mint::{
+use crate::geometry_ops::symbolic_cell_mint::{
     RealizationSource, SymbolicMintScope, mint_template_keyed_instance_cell,
 };
 
@@ -1287,7 +1287,7 @@ fn eval_child_expr(
 /// uses (task #6662). Body-inlining instead would hand every reader the `.ri`
 /// sentinel while the committed cell held the dispatched value. For the same
 /// parity reason an `Undef` scratch value is minted exactly as phase 2's let
-/// site mints it (see [`crate::symbolic_cell_mint`]).
+/// site mints it (see [`crate::geometry_ops::symbolic_cell_mint`]).
 ///
 /// Silent: phase 2 sees the same cell and owns the decline report, so reporting
 /// here would double every warning. Phase 1.5's overlay reaches phase 2's
