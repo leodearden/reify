@@ -189,6 +189,12 @@ const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
         reason: "chartered must-reject residents of the spec-conformance corpus (that tree's \
                  README.md); declared members are still checked",
     },
+    UnsweptTree {
+        prefix: "docs/",
+        reason: "verify routes every docs/ path to no heavy checks and docs land on main by a \
+                 hook-gated commit, so a docs .ri read here could red every later merge gate \
+                 (docs/prds/v0_6/syntax-lowering-contract.md §7)",
+    },
 ];
 
 /// What the guard demands of one tracked path.
