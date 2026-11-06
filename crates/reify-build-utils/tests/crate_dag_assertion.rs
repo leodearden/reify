@@ -353,18 +353,48 @@ const FIXTURE_TABLE: &str = r#"{
 }
 "#;
 
+/// `table` with the one occurrence of `from` replaced by `to`.
+fn table_with(table: &str, from: &str, to: &str) -> String {
+    assert_eq!(
+        table.matches(from).count(),
+        1,
+        "the table must hold {from:?} exactly once"
+    );
+    table.replacen(from, to, 1)
+}
+
 /// FIXTURE_TABLE with the one occurrence of `from` replaced by `to`.
 fn fixture_table_with(from: &str, to: &str) -> String {
-    assert_eq!(
-        FIXTURE_TABLE.matches(from).count(),
-        1,
-        "FIXTURE_TABLE must hold {from:?} exactly once"
-    );
-    FIXTURE_TABLE.replacen(from, to, 1)
+    table_with(FIXTURE_TABLE, from, to)
 }
 
 /// FIXTURE_TABLE's one exception row.
 const EXCEPTED_ROW: &str = r#"{"from": "reify-solver-elastic", "to": "reify-kernel-gmsh", "task": 8289, "note": "fixture: excepted solver -> kernel edge"}"#;
+
+/// A crate rule forbidding reify-test-support from every stratum, stated once.
+const DEV_ONLY_RULE: &str = r#"{"name": "test-support-is-dev-only", "from": {"every_stratum": true}, "never": {"packages": ["reify-test-support"]}}"#;
+
+/// `table` with DEV_ONLY_RULE after its production-not-on-test-support rule.
+fn with_dev_only_rule(table: &str) -> String {
+    const PRODUCTION_RULE_END: &str = r#""never": {"strata": ["test-support"]}}"#;
+    table_with(
+        table,
+        PRODUCTION_RULE_END,
+        &format!("{PRODUCTION_RULE_END},\n    {DEV_ONLY_RULE}"),
+    )
+}
+
+/// `table` with a "tooling" stratum, which may depend on test-support,
+/// after its test-support stratum.
+fn with_tooling_stratum(table: &str) -> String {
+    const TEST_SUPPORT_STRATUM_END: &str = r#""engine"], "packages": ["reify-test-support"]}"#;
+    const TOOLING_STRATUM: &str = r#"{"name": "tooling", "may_depend_on": ["spine", "language", "kernel", "solver", "analysis", "engine", "test-support"], "packages": ["reify-audit"]}"#;
+    table_with(
+        table,
+        TEST_SUPPORT_STRATUM_END,
+        &format!("{TEST_SUPPORT_STRATUM_END},\n    {TOOLING_STRATUM}"),
+    )
+}
 
 /// A graph FIXTURE_TABLE accepts, with dev back-edges and the excepted edge.
 fn clean_workspace() -> Vec<Pkg> {
@@ -629,6 +659,67 @@ fn strata_one_exception_row_covers_every_rule_its_edge_breaks() {
 }
 
 #[test]
+fn strata_every_stratum_rule_covers_a_stratum_added_after_it() {
+    let table = with_tooling_stratum(&with_dev_only_rule(FIXTURE_TABLE));
+    let mut dev_edge = clean_workspace();
+    dev_edge.push(
+        pkg("reify-audit", &["reify-core"]).dep(Dep::new("reify-test-support", DepKind::Dev)),
+    );
+    assert_green(
+        &check(&table, &dev_edge),
+        "a stratum added with no edit to the rule, holding a dev edge into test-support",
+    );
+
+    let mut normal_edge = clean_workspace();
+    normal_edge.push(pkg("reify-audit", &["reify-core", "reify-test-support"]));
+    assert_findings(
+        &check(&table, &normal_edge),
+        &[&[
+            "VIOLATION reify-audit -> reify-test-support",
+            "crate rule test-support-is-dev-only",
+            "must not depend on reify-test-support",
+        ]],
+        "a normal edge into test-support from a stratum the rule never names",
+    );
+}
+
+#[test]
+fn strata_every_stratum_rule_fires_from_every_stratum() {
+    let sources: Vec<&str> = clean_workspace()
+        .iter()
+        .map(|p| p.name)
+        .filter(|name| *name != "reify-test-support")
+        .collect();
+    let graph = sources.iter().fold(clean_workspace(), |graph, source| {
+        with_dep(
+            graph,
+            source,
+            Dep::new("reify-test-support", DepKind::Normal),
+        )
+    });
+    let out = check(&with_dev_only_rule(FIXTURE_TABLE), &graph);
+    assert_exit(
+        &out,
+        1,
+        "a normal edge into test-support from every package",
+    );
+    let stdout = stdout_of(&out);
+    for source in &sources {
+        assert!(
+            has_line_with_all(
+                &stdout,
+                &[
+                    &format!("VIOLATION {source} -> reify-test-support"),
+                    "crate rule test-support-is-dev-only",
+                ]
+            ),
+            "expected the every_stratum rule to fire from {source}\n{}",
+            describe(&out)
+        );
+    }
+}
+
+#[test]
 fn strata_fails_closed_on_an_untrustworthy_table() {
     let swap = fixture_table_with;
     const SPINE_ROW: &str =
@@ -841,6 +932,60 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
             ),
             &["reify-solver-elastic -> reify-kernel-gmsh"][..],
             "a duplicate exception edge",
+        ),
+        (
+            format!(
+                r#"{{"schema": 1, "strata": [], "crate_rules": [{DEV_ONLY_RULE}], "exceptions": []}}"#
+            ),
+            &["test-support-is-dev-only", "from: resolves to no packages"][..],
+            "an every_stratum rule over a table with no strata",
+        ),
+        (
+            format!(
+                r#"{{"schema": 1, "strata": [{{"name": "analysis", "may_depend_on": [], "packages": []}}], "crate_rules": [{DEV_ONLY_RULE}], "exceptions": []}}"#
+            ),
+            &["test-support-is-dev-only", "from: resolves to no packages"][..],
+            "an every_stratum rule over a table whose every stratum is empty",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"every_stratum": false}"#,
+            ),
+            &["compute-contract-spine-only", "every_stratum"][..],
+            "an every_stratum that is false",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"every_stratum": "true"}"#,
+            ),
+            &["compute-contract-spine-only", "every_stratum"][..],
+            "an every_stratum that is a string",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"every_stratum": true, "packages": ["reify-compute-contract"]}"#,
+            ),
+            &["compute-contract-spine-only", "every_stratum", "packages"][..],
+            "an every_stratum beside a package list",
+        ),
+        (
+            swap(
+                r#""only": {"strata": ["spine"]}"#,
+                r#""only": {"every_stratum": true}"#,
+            ),
+            &["compute-contract-spine-only", "only", "every_stratum"][..],
+            "an only over every stratum, which could never fire",
+        ),
+        (
+            swap(
+                r#""never": {"strata": ["test-support"]}"#,
+                r#""never": {"every_stratum": true}"#,
+            ),
+            &["production-not-on-test-support", "never", "every_stratum"][..],
+            "a never over every stratum, which would forbid every edge",
         ),
     ];
     for (table, culprits, context) in &cases {
