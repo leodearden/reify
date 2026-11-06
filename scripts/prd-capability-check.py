@@ -69,11 +69,14 @@ Verdicts:
                     {0, 1}.  Emitted verbatim in both text and --json output;
                     always triggers exit 70.
 
-Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise one
-executable target/release/reify or target/debug/reify is used; with both built,
-target/release/reify is used only when target/.reify-bin-sha (written after a
-release build) names the checkout's HEAD, and otherwise every probe set needing
-reify is refused with exit 64 until REIFY_BIN picks one — an mtime never does.
+Binaries: REIFY_BIN, when set, is the reify binary, verbatim.  Otherwise an
+auto-discovered executable target/release/reify or target/debug/reify, lone or
+not, is used only when scripts/reify-bin-freshness.sh, the one home of the
+SHA-identity rule, vouches for it: target/.reify-bin-sha names the checkout's
+HEAD (outside a git checkout it fails open).  An unvouched binary is REFUSED,
+not warned about: every probe set needing reify exits 64 naming REIFY_BIN,
+because an agent reading --json never sees a stderr warning.  With nothing
+built, "reify" on PATH.  An mtime never decides.
 TREE_SITTER_BIN, when set, is the tree-sitter CLI; otherwise "tree-sitter" on
 PATH.  ProbeContext.from_environment() is the one place all of this is read.
 
@@ -96,7 +99,6 @@ Harness exit codes:
 from __future__ import annotations
 
 import argparse
-import datetime
 import errno
 import hashlib
 import json
@@ -109,7 +111,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any, Dict, FrozenSet, List, Mapping, Optional, Protocol, Tuple
 
 
@@ -238,12 +240,17 @@ def _find_repo_root() -> str:
     return candidate  # best-effort fallback
 
 
-_RELEASE_REIFY = os.path.join("target", "release", "reify")
-_DEBUG_REIFY = os.path.join("target", "debug", "reify")
-# Written by the verify pipeline after `cargo build --release -p reify-cli`, so
-# it vouches for the RELEASE binary, and only while it names HEAD.  Same reading
-# as scripts/reify-bin-freshness.sh: stripped, compared with HEAD.
-_REIFY_BIN_SIDECAR = os.path.join("target", ".reify-bin-sha")
+# The one home of the binary-trust rule (R14 M6).  Resolved next to this file,
+# not under repo_root: a fixture repo_root has no scripts/.
+_TRUST_HOME = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "reify-bin-freshness.sh")
+
+
+class _TrustVerdict(IntEnum):
+    """The exit codes of `reify-bin-freshness.sh resolve`."""
+    TRUSTED = 0
+    UNVOUCHED = 1
+    NOT_BUILT = 2
 
 
 def _resolve_reify_bin(
@@ -251,88 +258,43 @@ def _resolve_reify_bin(
 ) -> Tuple[Optional[str], Optional[str]]:
     """Return (reify binary, None), or (None, refusal) when no binary can be trusted.
 
-    REIFY_BIN (non-empty) is taken verbatim.  Otherwise the executable profile
-    binaries under repo_root decide: none → "reify" on PATH; one → it; both →
-    target/release/reify only when the sidecar names HEAD, else a refusal.  An
-    mtime is never the tie-break: it says nothing about which build matches this
-    checkout (#5133, R14 M6).
+    REIFY_BIN (non-empty) is taken verbatim: whether it exists is a launch
+    error for the probe to report.  Otherwise scripts/reify-bin-freshness.sh
+    decides: a vouched-for profile binary is used, nothing built means "reify"
+    on PATH, and a built but unvouched binary is refused.  A home that cannot
+    be consulted refuses too: an unprovable trust answer is never "trusted".
     """
     env_bin = environ.get("REIFY_BIN")
     if env_bin:
         return env_bin, None
 
-    release = os.path.join(repo_root, _RELEASE_REIFY)
-    debug = os.path.join(repo_root, _DEBUG_REIFY)
-    present = [p for p in (release, debug) if os.path.isfile(p) and os.access(p, os.X_OK)]
-    if not present:
-        return "reify", None  # expect it on PATH
-    if len(present) == 1:
-        return present[0], None
-
-    why_unvouched = _why_sidecar_does_not_vouch(repo_root, environ)
-    if why_unvouched is None:
-        return release, None
-    return None, _two_binaries_refusal(release, debug, why_unvouched)
-
-
-def _why_sidecar_does_not_vouch(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
-    """None when the sidecar names repo_root's HEAD; otherwise why it does not."""
-    sidecar = os.path.join(repo_root, _REIFY_BIN_SIDECAR)
-    try:
-        with open(sidecar) as fh:
-            recorded = fh.read().strip()
-    except OSError:
-        return f"{sidecar} is absent"
-    head = _git_head_sha(repo_root, environ)
-    if head is None:
-        return f"{sidecar} records {recorded!r} but the HEAD of {repo_root} is unknown"
-    if recorded != head:
-        return f"{sidecar} records {recorded!r} but HEAD is {head!r}"
-    return None
-
-
-def _git_head_sha(repo_root: str, environ: Mapping[str, str]) -> Optional[str]:
-    """repo_root's HEAD commit, or None when git cannot say.
-
-    Every GIT_* variable is dropped so `-C repo_root` alone decides the
-    repository: under a hook GIT_DIR is exported and would answer for another.
-    """
-    env = {k: v for k, v in environ.items() if not k.startswith("GIT_")}
     try:
         proc = subprocess.run(
-            ["git", "-C", repo_root, "rev-parse", "--verify", "HEAD"],
+            ["bash", _TRUST_HOME, "resolve", repo_root],
             capture_output=True,
             text=True,
-            env=env,
+            env=dict(environ),
             check=False,
         )
-    except OSError:
-        return None
-    head = proc.stdout.strip()
-    return head if proc.returncode == 0 and head else None
+    except OSError as exc:
+        return None, _reify_bin_refusal(f"{_TRUST_HOME} could not be run ({exc})")
+    answer = proc.stdout.strip()
+    if proc.returncode == _TrustVerdict.TRUSTED and answer:
+        return answer, None
+    if proc.returncode == _TrustVerdict.NOT_BUILT:
+        return "reify", None  # expect it on PATH
+    if proc.returncode == _TrustVerdict.UNVOUCHED:
+        return None, _reify_bin_refusal(answer)
+    return None, _reify_bin_refusal(
+        f"`{_TRUST_HOME} resolve` gave no verdict (exit {proc.returncode}, "
+        f"stdout {answer!r}, stderr {proc.stderr.strip()!r})"
+    )
 
 
-def _mtime_utc(path: str) -> str:
-    """path's mtime in UTC, or "unknown" once a concurrent relink has removed it.
-
-    Diagnostic text only: it never decides whether a binary is trusted.
-    """
-    try:
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        return "unknown"
-    stamp = datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc)
-    return stamp.isoformat(timespec="seconds")
-
-
-def _two_binaries_refusal(release: str, debug: str, why_unvouched: str) -> str:
+def _reify_bin_refusal(reason: str) -> str:
     return (
-        f"two reify binaries are built and neither is vouched for: {release} "
-        f"(mtime {_mtime_utc(release)}) and {debug} (mtime {_mtime_utc(debug)}); "
-        f"{why_unvouched}.  Release-first precedence would have chosen {release} "
-        f"and skipped {debug}, but neither an mtime nor the profile says which "
-        "build matches this checkout.  Set REIFY_BIN to the binary to probe with "
-        "(scripts/reify-bin-freshness.sh holds the SHA-identity rule)."
+        f"will not choose a reify binary: {reason}.  Set REIFY_BIN to the binary "
+        "to probe with (scripts/reify-bin-freshness.sh holds the SHA-identity rule)."
     )
 
 
@@ -415,8 +377,9 @@ class ProbeContext:
 
         The only reader of REIFY_BIN, TREE_SITTER_BIN and REIFY_TS_CACHE_HOME;
         an empty value counts as unset for all three.  repo_root defaults to
-        _find_repo_root().  Prints nothing: an untrusted reify binary is
-        recorded as reify_bin_refusal (see _resolve_reify_bin).
+        _find_repo_root().  Prints nothing: a reify binary that
+        scripts/reify-bin-freshness.sh does not vouch for is recorded as
+        reify_bin_refusal (see _resolve_reify_bin).
         """
         env = os.environ if environ is None else environ
         root = os.path.abspath(repo_root if repo_root is not None else _find_repo_root())
