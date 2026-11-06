@@ -21,6 +21,20 @@
 # node_modules state. The npm cache (~/.npm) is shared across worktrees and
 # warm, so `npm ci --prefer-offline` completes in ~1s offline.
 #
+# SCRATCH COPIES OF gui/: this script always provisions and tests the gui/
+# beside its own scripts/ directory (REPO_ROOT comes from BASH_SOURCE, not the
+# cwd), so it cannot be pointed at a copy of gui/ elsewhere (a `cp -r` or
+# `git archive` copy). For a full checkout or worktree, run THAT checkout's
+# scripts/gui-test.sh, from any cwd. For a bare gui/ copy, run the same
+# `npm ci --prefer-offline --no-audit --no-fund` (step 1 below) inside the
+# copy: it rebuilds node_modules from package-lock.json, workspace links such
+# as @reify/shared-utils included. Then run `npm test` (its pretest hook needs
+# the lezer-generator that npm ci installed) or `npx vitest run <file>`.
+# Do not recover a copy by hand-deleting node_modules (root or
+# packages/*/node_modules) and running `npm install`: that path has crashed
+# npm's arborist ("Cannot read properties of null (reading 'edgesOut')") and
+# left no node_modules/.bin/vitest. If a copy looks broken, re-run `npm ci`.
+#
 # This remains a STANDALONE checkpoint helper — the merge gate does not call it,
 # and it is not itself a verify-pipeline artifact. But the two no longer stay
 # equivalent by convention alone: since task 7630 both this script and the gate's
