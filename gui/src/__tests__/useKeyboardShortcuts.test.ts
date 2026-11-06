@@ -106,6 +106,19 @@ describe('useKeyboardShortcuts', () => {
     expect(onHelp).toHaveBeenCalledTimes(1);
   });
 
+  it('dispatching ? with Shift held (the Shift+/ keystroke) calls onHelp callback', () => {
+    const onHelp = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onHelp });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }),
+    );
+    expect(onHelp).toHaveBeenCalledTimes(1);
+  });
+
   it('dispatching ? when target is an <input> does NOT call onHelp', () => {
     const onHelp = vi.fn();
     dispose = createRoot((d) => {
