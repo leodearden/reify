@@ -15,7 +15,6 @@ import dataclasses
 import os
 import tempfile
 import unittest
-import unittest.mock
 
 from _pcc_test_support import (
     pcc,
@@ -119,15 +118,19 @@ class TestProbeContextInvariants(unittest.TestCase):
 
 
 class TestReifyBinaryTrust(unittest.TestCase):
-    """R14 M6: with both profiles built, only a SHA identity picks one; mtime never does.
+    """R14 M6: an auto-discovered binary is used only on a SHA identity; mtime never decides.
 
     target/.reify-bin-sha is written after `cargo build --release -p reify-cli`,
-    so it vouches for target/release/reify alone, and only while it names HEAD.
+    and vouches only while it names HEAD.  scripts/reify-bin-freshness.sh is the
+    one home of that rule, so every case here drives the REAL script through
+    from_environment().  The root is a git repository, so the home's documented
+    fail-open for a non-git root never answers a trust case by accident.
     """
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="pcc_trust_")
         self.root = self._tmp.name
+        self.head = make_git_fixture_repo(self.root)
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -148,7 +151,7 @@ class TestReifyBinaryTrust(unittest.TestCase):
         write_bin_sidecar(self.root, text)
 
     def _head(self):
-        return make_git_fixture_repo(self.root)
+        return self.head
 
     def test_two_unvouched_binaries_are_refused_whichever_is_newer(self):
         for newer in ("debug", "release"):
@@ -184,27 +187,6 @@ class TestReifyBinaryTrust(unittest.TestCase):
                     ctx = self._ctx(GIT_DIR=git_dir)
                     self.assertEqual(ctx.reify_bin, release, ctx.reify_bin_refusal)
 
-    def test_a_binary_removed_mid_resolution_is_still_refused(self):
-        """A concurrent relink removes target/debug/reify after the presence check.
-
-        Its mtime is diagnostic text, so losing it leaves the refusal standing
-        rather than escaping from_environment(), which every mode calls first.
-        """
-        _, debug = self._both_binaries(newer="debug")
-        real_access = os.access
-
-        def access_then_relink_away(path, mode, *args, **kwargs):
-            answer = real_access(path, mode, *args, **kwargs)
-            if path == debug and os.path.exists(debug):
-                os.remove(debug)
-            return answer
-
-        with unittest.mock.patch.object(os, "access", side_effect=access_then_relink_away):
-            ctx = self._ctx()
-        self.assertFalse(os.path.exists(debug), "precondition: the relink happened")
-        self.assertIsNone(ctx.reify_bin)
-        self.assertIn(f"{debug} (mtime unknown)", ctx.reify_bin_refusal)
-
     def test_a_stale_sidecar_is_refused_naming_both_shas(self):
         self._both_binaries(newer="release")
         head = self._head()
@@ -215,11 +197,23 @@ class TestReifyBinaryTrust(unittest.TestCase):
         self.assertIn(stale, ctx.reify_bin_refusal)
         self.assertIn(head, ctx.reify_bin_refusal)
 
-    def test_a_sidecar_outside_a_git_repo_vouches_for_nothing(self):
-        self._both_binaries(newer="release")
-        self._sidecar("0" * 40 + "\n")
-        ctx = self._ctx()
+    def test_outside_a_git_checkout_the_trust_home_fails_open(self):
+        """The home's documented fail-open: with no HEAD there is no tree to compare."""
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_nongit_") as root:
+            release = write_profile_binary(root, "target/release/reify")
+            write_profile_binary(root, "target/debug/reify")
+            write_bin_sidecar(root, "0" * 40 + "\n")
+            ctx = pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
+            self.assertEqual(ctx.reify_bin, release, ctx.reify_bin_refusal)
+            self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_an_unconsultable_trust_home_refuses(self):
+        """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
+        write_profile_binary(self.root, "target/release/reify")
+        self._sidecar(self.head + "\n")
+        ctx = self._ctx(PATH="/nonexistent-9870")
         self.assertIsNone(ctx.reify_bin)
+        self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
         self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
 
     def test_reify_bin_wins_over_two_unvouched_binaries(self):
@@ -228,18 +222,37 @@ class TestReifyBinaryTrust(unittest.TestCase):
         self.assertEqual(ctx.reify_bin, "/x/reify")
         self.assertIsNone(ctx.reify_bin_refusal)
 
-    def test_a_lone_binary_is_used_whatever_the_sidecar_says(self):
-        for relpath in ("target/release/reify", "target/debug/reify"):
+    _PROFILE_BINARIES = ("target/release/reify", "target/debug/reify")
+
+    def _lone_binary_ctx(self, relpath, sidecar_for_head):
+        """(binary path, ctx) over a fresh git repo holding only `relpath`.
+
+        `sidecar_for_head(head)` is the sidecar text to write, or None for none.
+        """
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_lone_") as root:
+            head = make_git_fixture_repo(root)
+            path = write_profile_binary(root, relpath)
+            sidecar = sidecar_for_head(head)
+            if sidecar is not None:
+                write_bin_sidecar(root, sidecar)
+            return path, pcc.ProbeContext.from_environment(environ=trust_environ(),
+                                                           repo_root=root)
+
+    def test_a_lone_binary_the_sidecar_does_not_vouch_for_is_refused(self):
+        for relpath in self._PROFILE_BINARIES:
             for sidecar in (None, "0" * 40):
-                with self.subTest(binary=relpath, sidecar=sidecar), \
-                     tempfile.TemporaryDirectory() as root:
-                    path = write_profile_binary(root, relpath)
-                    if sidecar is not None:
-                        write_bin_sidecar(root, sidecar)
-                    ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
-                                                            repo_root=root)
-                    self.assertEqual(ctx.reify_bin, path)
-                    self.assertIsNone(ctx.reify_bin_refusal)
+                with self.subTest(binary=relpath, sidecar=sidecar):
+                    path, ctx = self._lone_binary_ctx(relpath, lambda _head: sidecar)
+                    self.assertIsNone(ctx.reify_bin)
+                    self.assertIn(path, ctx.reify_bin_refusal)
+                    self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
+    def test_a_lone_binary_the_sidecar_vouches_for_is_used(self):
+        for relpath in self._PROFILE_BINARIES:
+            with self.subTest(binary=relpath):
+                path, ctx = self._lone_binary_ctx(relpath, lambda head: head + "\n")
+                self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
+                self.assertIsNone(ctx.reify_bin_refusal)
 
     def test_no_binary_falls_back_to_path(self):
         self.assertEqual(self._ctx().reify_bin, "reify")

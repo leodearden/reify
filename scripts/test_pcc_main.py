@@ -35,8 +35,12 @@ from _pcc_test_support import (
     _ts_stub_hangs,
     _ts_stub_not_executable,
     make_fixture_repo,
+    make_git_fixture_repo,
     probe_context,
     recording_runner,
+    trust_environ,
+    write_bin_sidecar,
+    write_profile_binary,
 )
 from _schema_test_support import schema_errors
 
@@ -1427,6 +1431,52 @@ class TestReifyBinaryRefusal(_MainHarness, unittest.TestCase):
         )
         self.assertEqual(rc, 0, out + err)
         self.assertEqual(len(calls), 1)
+
+
+class TestLoneBinaryTrustOnMain(_MainHarness, unittest.TestCase):
+    """main() over a ctx the REAL trust home built: a lone unvouched binary stops it.
+
+    The ctx comes from the public ProbeContext.from_environment() over a fixture
+    git repository, so scripts/reify-bin-freshness.sh decides, exactly as on a
+    real invocation, and this pins the two languages' verdict protocol together.
+    """
+
+    def _lone_release_ctx(self, sidecar_for_head):
+        """(release path, ctx) over a fixture git repo holding only target/release/reify.
+
+        `sidecar_for_head(head)` is the sidecar text to write, or None for none.
+        """
+        tmp = tempfile.TemporaryDirectory(prefix="pcc_lone_main_")
+        self.addCleanup(tmp.cleanup)
+        root = make_fixture_repo(tmp.name)
+        head = make_git_fixture_repo(root)
+        release = write_profile_binary(root, "target/release/reify")
+        sidecar = sidecar_for_head(head)
+        if sidecar is not None:
+            write_bin_sidecar(root, sidecar)
+        ctx = pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
+        return release, ctx
+
+    def test_an_unvouched_lone_binary_is_refused_before_any_probe_runs(self):
+        for sidecar in (None, "0" * 40):
+            with self.subTest(sidecar=sidecar):
+                release, ctx = self._lone_release_ctx(lambda _head: sidecar)
+                runner, calls = recording_runner()
+                rc, _, err = self._run_main_capturing([_EXAMPLE_PROBE_SET],
+                                                      runner=runner, ctx=ctx)
+                self.assertEqual(rc, 64, err)
+                self.assertIn(release, err)
+                self.assertIn("REIFY_BIN", err)
+                self.assertEqual(calls, [])
+
+    def test_a_vouched_lone_binary_runs_the_probes(self):
+        release, ctx = self._lone_release_ctx(lambda head: head + "\n")
+        runner, calls = recording_runner()
+        rc, out, err = self._run_main_capturing([_EXAMPLE_PROBE_SET], runner=runner, ctx=ctx)
+        self.assertNotEqual(rc, 64, out + err)
+        self.assertTrue(calls)
+        for _probe, probe_ctx, _timeout in calls:
+            self.assertEqual(probe_ctx.reify_bin, release)
 
 
 if __name__ == "__main__":
