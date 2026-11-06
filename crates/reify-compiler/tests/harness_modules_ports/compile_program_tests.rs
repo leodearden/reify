@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::{ModuleResolver, ModuleSource};
-use reify_compiler::program::{CompiledProgram, compile_program};
+use reify_compiler::program::{
+    CompiledProgram, compile_program, compile_program_with_parsed_entry,
+};
 use reify_compiler::{CompiledModule, check_module_path_decl, compile_with_stdlib_checked};
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, Type};
 use reify_ir::{
@@ -795,6 +797,86 @@ fn compile_program_healthy_import_contributes_no_diagnostics() {
     assert!(
         rehomed_from(&program.entry, "healthy").is_empty(),
         "a clean import must contribute nothing, got {:?}",
+        program.entry.diagnostics
+    );
+}
+
+// ─── task 5516 step-13: the caller-owned-parse seam ────────────────────────
+
+fn compile_parsed_entry(
+    dir: &Path,
+    stem: &str,
+    source: &str,
+    parsed: &reify_ast::ParsedModule,
+) -> CompiledProgram {
+    compile_program_with_parsed_entry(
+        &dir.join(format!("{stem}.ri")),
+        source,
+        parsed,
+        &resolver_for(dir),
+        &CfgSet::default(),
+        &Indeterminate,
+    )
+}
+
+/// Handed the same stdlib-aware parse `compile_program` makes itself, the seam
+/// compiles the same program.
+#[test]
+fn compile_program_with_parsed_entry_matches_compile_program() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "healthy.ri",
+        "module healthy\npub structure def Healthy {\n    param k : Real = 1\n}\n",
+    );
+    let cases = [
+        (
+            "solo",
+            "module solo\nstructure def Plate {\n    param w : Length = 10mm\n}\n",
+        ),
+        (
+            "main",
+            "module main\nimport healthy\nstructure def Rig {\n    sub h = Healthy()\n}\n",
+        ),
+    ];
+    for (stem, source) in cases {
+        let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(stem));
+        let seam = compile_parsed_entry(dir.path(), stem, source, &parsed);
+        let whole = compile_entry(dir.path(), stem, source, &CfgSet::default());
+
+        assert_eq!(
+            diag_shapes(&seam.entry),
+            diag_shapes(&whole.entry),
+            "{stem}: entry diagnostics"
+        );
+        assert_eq!(
+            template_names(&seam.entry),
+            template_names(&whole.entry),
+            "{stem}: entry templates"
+        );
+        assert_eq!(import_keys(&seam), import_keys(&whole), "{stem}: imports");
+        assert_eq!(source_keys(&seam), source_keys(&whole), "{stem}: sources");
+    }
+}
+
+/// The seam compiles the caller's parse, not a re-parse: an entry parsed with
+/// an import's enum name seeded resolves that enum's variant cleanly.
+#[test]
+fn compile_program_with_parsed_entry_compiles_the_callers_parse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(dir.path(), "a.ri", "pub enum Pick { Left }\n");
+    let source = "import a\n\nstructure def Main {\n    let p = Pick.Left\n}\n";
+    let names: Vec<&str> = reify_compiler::stdlib_loader::load_stdlib_context()
+        .enum_names()
+        .chain(std::iter::once("Pick"))
+        .collect();
+    let parsed = reify_syntax::parse_with_prelude_enums(source, ModulePath::single("main"), &names);
+
+    let program = compile_parsed_entry(dir.path(), "main", source, &parsed);
+
+    assert!(
+        errors(&program.entry).is_empty(),
+        "the caller's parse must compile cleanly, got {:?}",
         program.entry.diagnostics
     );
 }
