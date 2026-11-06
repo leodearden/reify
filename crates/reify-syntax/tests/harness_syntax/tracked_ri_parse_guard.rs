@@ -448,6 +448,10 @@ const DECLARED_IN_UNSWEPT_TREE: &str =
 const UNDECLARED_IN_UNSWEPT_TREE: &str =
     "crates/reify-spec-conformance/fixtures/zz_section/zz_synthetic.ri";
 
+/// An undeclared member of the `docs/` tree, outside the deprecated fixtures
+/// tier, so the test pins the whole tree and not one directory of it.
+const UNDECLARED_IN_DOCS_TREE: &str = "docs/zz_section/zz_synthetic.ri";
+
 fn faulty_site() -> CstFaultSite {
     observe(FAULTY)
         .cst_fault
@@ -619,6 +623,24 @@ fn sweep_skips_an_undeclared_member_of_an_unswept_tree_unread() {
     );
     assert_eq!(
         findings_on(&result, UNDECLARED_IN_UNSWEPT_TREE),
+        Vec::<&Violation>::new()
+    );
+    assert_eq!(result.swept, 0);
+}
+
+#[test]
+fn sweep_skips_an_undeclared_member_of_the_docs_tree_unread() {
+    let result = sweep(
+        &listing(&[UNDECLARED_IN_DOCS_TREE]),
+        |rel| {
+            panic!(
+                "{rel} is in docs/, which verify routes to no heavy checks, and must not be read"
+            )
+        },
+        observe,
+    );
+    assert_eq!(
+        findings_on(&result, UNDECLARED_IN_DOCS_TREE),
         Vec::<&Violation>::new()
     );
     assert_eq!(result.swept, 0);
