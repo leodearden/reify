@@ -726,6 +726,32 @@ mod tests {
         );
     }
 
+    // ── ModulePath::to_dotted ─────────────────────────────────────────
+
+    #[test]
+    fn to_dotted_round_trips_from_dotted() {
+        for s in ["foo", "std.units", "a.b.c"] {
+            assert_eq!(
+                ModulePath::from_dotted(s).unwrap().to_dotted(),
+                s,
+                "round-trip of {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn to_dotted_joins_segments_with_dots_not_slashes() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(path.to_dotted(), "std.units");
+        assert_eq!(path.to_string(), "std/units");
+    }
+
+    #[test]
+    fn to_dotted_output_parses_back_to_the_same_path() {
+        let path = ModulePath::new(vec!["std".to_string(), "units".to_string()]);
+        assert_eq!(ModulePath::from_dotted(&path.to_dotted()), Ok(path));
+    }
+
     #[test]
     fn resolution_node_id_as_hashmap_key() {
         let mut map = HashMap::new();
