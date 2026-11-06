@@ -526,6 +526,13 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
 
+/// Whether a probe's `value` is well-formed for the `ty` it is paired with: the
+/// pair would classify [`ParityVerdict::Matches`], so a probe can never pass
+/// this check yet read `Vacuous` at a leg.
+fn matches_non_vacuously(value: &Value, ty: &Type) -> bool {
+    crate::value_type_kind_matches(value, ty, None)
+}
+
 /// Every probe must be well-formed for the row it probes, checked five ways —
 /// and every row must have at least one.
 ///
@@ -583,7 +590,7 @@ fn representative_probes_are_well_formed_for_every_row() {
             // make a row look like it diverges.
             for (slot, (value, ty)) in probe.args.iter().enumerate() {
                 assert!(
-                    crate::value_type_kind_matches(value, ty, None),
+                    matches_non_vacuously(value, ty),
                     "{at}: argument {slot} is mis-paired — its Value does not \
                      satisfy the Type this probe claims for it ({value:?} vs \
                      {ty:?})"
@@ -627,7 +634,7 @@ fn representative_probes_are_well_formed_for_every_row() {
             // for a fault in this file's probe data.
             if let (Some(point), Type::Field { domain, .. }) = (&probe.sample_at, &declared) {
                 assert!(
-                    crate::value_type_kind_matches(point, domain, None),
+                    matches_non_vacuously(point, domain),
                     "{at}: the probe's sample point is mis-built — it does not \
                      satisfy the declared Field's domain ({point:?} vs \
                      {domain:?}), so its Sample leg would read Vacuous and \
@@ -636,6 +643,59 @@ fn representative_probes_are_well_formed_for_every_row() {
             }
         }
     }
+}
+
+/// A probe value that would read `Vacuous` at a leg is rejected AT THE PROBE,
+/// not found by the sweep and blamed on the row.
+///
+/// Driven over synthetic pairs, in the dialect of
+/// [`classify_undef_is_vacuous_for_every_declared_type`]: every real probe is
+/// well-formed, so the rule is otherwise unobservable. Each rejected pair is one
+/// `crate::value_type_kind_matches` ACCEPTS — the premise is asserted first — so
+/// a probe check built on the raw matcher would let it through.
+#[test]
+fn a_probe_value_that_would_read_vacuous_is_rejected_at_the_probe() {
+    // The domain every Field probe is defined over.
+    let domain = Type::point3(Type::length());
+
+    assert!(
+        crate::value_type_kind_matches(&Value::Undef, &domain, None),
+        "premise of this test: the raw matcher accepts Value::Undef for the \
+         Field domain, which is the hole a probe check built on it leaves"
+    );
+    assert!(
+        !matches_non_vacuously(&Value::Undef, &domain),
+        "a Value::Undef sample point must be rejected at the probe: `sample` \
+         would yield Undef, so the Sample leg would read Vacuous and blame the \
+         row for the probe's fault"
+    );
+    assert!(
+        !matches_non_vacuously(&Value::Undef, &Type::String),
+        "a Value::Undef argument must be rejected at the probe: the kernel \
+         would answer Undef, so the Call leg would read Vacuous and blame the \
+         row for the probe's fault"
+    );
+
+    let point = representative_probes(EvalBuiltinId::VonMises)
+        .into_iter()
+        .find_map(|probe| probe.sample_at)
+        .expect("VonMises registers a Field probe that names a sample point");
+    assert!(
+        matches_non_vacuously(&point, &domain),
+        "positive control: a real sample point from the registry's own probe \
+         data must satisfy the Field domain it is sampled in"
+    );
+    assert!(
+        crate::value_type_kind_matches(&point, &Type::Error, None),
+        "premise of this test: the raw matcher accepts a REAL value for \
+         Type::Error, so only the verdict's own rule can reject the pair"
+    );
+    assert!(
+        !matches_non_vacuously(&point, &Type::Error),
+        "a Type::Error slot or domain accepts any value and so certifies \
+         nothing: a probe paired with it must be rejected at the probe, or the \
+         leg that judges it would read Vacuous and blame the row"
+    );
 }
 
 /// A row is reported at the MOST SEVERE leg of any of its probes, located at
