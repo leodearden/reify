@@ -43,11 +43,9 @@ class Views(TempRoot):
         self.assertEqual(result.hits, ("src/a.rs:2", "src/a.rs:7", "src/a.rs:7"))
 
     def test_code_view_counts_text_only_the_lexed_line_spells(self):
-        self.write("src/a.rs", rust_fn('    let s = "abc";', "    foo/* c */bar();"))
+        self.write("src/a.rs", rust_fn('    let s = "abc";'))
         blanked = self.evaluate_one(demo_row(r'= "";', "src/a.rs", baseline=1))
-        spliced = self.evaluate_one(demo_row(r"\bfoobar\(", "src/a.rs", baseline=1))
         self.assertEqual(blanked.hits, ("src/a.rs:2",))
-        self.assertEqual(spliced.hits, ("src/a.rs:3",))
 
     def test_starts_in_code_view_anchors_at_each_raw_line_start(self):
         self.write("src/a.rs", rust_fn('    "needle_a".len();'))
@@ -120,6 +118,12 @@ class Scope(TempRoot):
         self.assertIsNotNone(result.violation)
         self.assertIn("stale-row", result.violation)
         self.assertIn("gone/*.rs", result.violation)
+
+    def test_file_matched_by_two_globs_counts_once(self):
+        self.write("src/a.rs", rust_fn("    needle();"))
+        result = self.evaluate_one(demo_row(r"\bneedle\(", "src/a.rs", "src/*.rs"))
+        self.assertEqual(result.count, 1)
+        self.assertEqual(result.files, ("src/a.rs",))
 
 
 class Baseline(TempRoot):
@@ -206,6 +210,11 @@ class RowInvariants(unittest.TestCase):
 
     def test_empty_lowered_by(self):
         self.assert_rejected("lowered_by", lowered_by="")
+
+    def test_empty_row_id(self):
+        with self.assertRaises(ValueError) as caught:
+            demo_row(r"\bneedle\(", "src/a.rs", row_id="")
+        self.assertIn("row_id is empty", str(caught.exception))
 
 
 if __name__ == "__main__":

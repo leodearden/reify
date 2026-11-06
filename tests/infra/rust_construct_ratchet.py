@@ -193,8 +193,7 @@ def _scope(row: Row, root: Path) -> tuple[list[Path], tuple[str, ...]]:
 def _needs_lexing(row: Row, text: str) -> bool:
     """A STARTS_IN_CODE hit is a raw-line match, so a file with no matching raw
     line has none. A CODE line can spell text the raw file does not (a blanked
-    literal reads "", a dropped comment splices its neighbours), so CODE always
-    lexes."""
+    literal reads ""), so CODE always lexes."""
     if row.view is View.CODE:
         return True
     return any(row.construct.search(line) for line in text.split("\n"))
