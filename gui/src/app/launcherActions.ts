@@ -28,7 +28,11 @@ export class LaunchFailure extends Error {
 }
 
 export interface LauncherDeps {
-  /** Read `path` into the editor and engine stores (App's one open funnel). */
+  /**
+   * Read `path` into the editor and engine stores (App's one open funnel).
+   * Rejects only before writing any store, so a failure reaches a caller that
+   * can still present it.
+   */
   loadDocument(path: string): Promise<void>;
   createNewFile(path: string): Promise<FileData>;
   recordRecent(path: string): Promise<RecentEntry[]>;

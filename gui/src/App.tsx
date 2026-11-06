@@ -475,6 +475,16 @@ const App: Component = () => {
     return loadViewPersistence(path);
   }
 
+  /**
+   * An unreadable view sidecar opens the document with default views, as a
+   * wrong-version one does. By then open_file_engine has already moved the
+   * backend session to the new document, so the frontend must follow it.
+   */
+  function reportUnrestoredViews(err: unknown): null {
+    showToast(`Saved views not restored: ${errorMessage(err)}`, 'error');
+    return null;
+  }
+
   // Debounced persistence of view state to localStorage.
   //
   // A single `DebouncedSaver` is retained across view-state mutations for the
@@ -1164,22 +1174,25 @@ const App: Component = () => {
    * Shared post-open load sequence: reads file content + engine state into
    * their stores and restores persisted view state atomically.
    *
-   * Called from both handleOpen (after picking a path) and handleNew (after
-   * writing the starter template).  Keeping this in one place ensures the
-   * batch() ordering invariant is never accidentally diverged between the two
-   * callers — the subtle race it prevents is documented in the batch() block
-   * below.
+   * This is the one open funnel behind `launcherActions.loadDocument`: the
+   * Start view, File→Open, File→New. It rejects only before its first store
+   * write, so a failure leaves the editor, the engine store and the current
+   * path on the previous document and reaches a caller that can still present
+   * it (the Start view stays up until the editor write dismisses it). Keeping
+   * this in one place also ensures the batch() ordering invariant is never
+   * accidentally diverged between callers — the subtle race it prevents is
+   * documented in the batch() block below.
    */
   async function loadPathIntoStores(path: string): Promise<void> {
     const fileData = await bridgeOpenFile(path);
+    const published = await bridgeOpenFileEngine(path);
     editorStore.openFile(fileData);
-    // Load into engine for evaluation (meshes, values, constraints)
-    engineStore.applyPublishedState(await bridgeOpenFileEngine(path));
+    engineStore.applyPublishedState(published);
 
     // Load persisted view state (sidecar > localStorage > null).
     // Apply BEFORE the entity tree triggers regenerateAutoViews so persisted
     // user views are in place when auto views are generated.
-    const persisted = await loadPersistedViews(path);
+    const persisted = await loadPersistedViews(path).catch(reportUnrestoredViews);
     // Wrap the three store writes in a single batch so the debounced-save
     // effect observes the path transition AND the new view/camera state
     // atomically.  Without batch(), a future refactor that reorders or
