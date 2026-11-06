@@ -3538,6 +3538,65 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(bridge.recordRecent).not.toHaveBeenCalled();
   });
 
+  function toastTexts(): string[] {
+    return screen.queryAllByTestId('toast').map((t) => t.textContent ?? '');
+  }
+
+  function openPaths(): string[] {
+    return capturedEditorStore.state.openFiles.map((f: { path: string }) => f.path);
+  }
+
+  it('an open the engine rejects keeps the start view with E_GUI_OPEN_FAILED', async () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/broken.ri', content: 'structure {' });
+    vi.mocked(bridge.openFileEngine).mockRejectedValue('Parse error: 1:15: syntax error');
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/broken.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+
+    const error = await screen.findByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_OPEN_FAILED');
+    expect(error.textContent).toContain('Parse error: 1:15');
+    expect(screen.getByTestId('start-view')).toBeTruthy();
+    expect(openPaths()).toEqual([]);
+    expect(bridge.recordRecent).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable view sidecar still opens the document and says saved views were not restored', async () => {
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/bracket.ri', content: 'structure Bracket {}' });
+    vi.mocked(sidecarPersistence.loadSidecar).mockRejectedValue(
+      'Error parsing /designs/bracket.ri.views.json: expected value',
+    );
+    await renderAndWaitForReady();
+
+    typeStartPath('/designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+
+    await waitFor(() => expect(screen.queryByTestId('start-view')).toBeNull());
+    await waitFor(() =>
+      expect(
+        toastTexts().some((t) => t.includes('Saved views not restored') && t.includes('Error parsing')),
+      ).toBe(true),
+    );
+    await waitFor(() => expect(bridge.recordRecent).toHaveBeenCalledWith('/designs/bracket.ri'));
+  });
+
+  it('a File→Open the engine rejects leaves the open document untouched and toasts the code', async () => {
+    vi.mocked(bridge.getInitialState).mockResolvedValue(published(oneFileState()));
+    vi.mocked(bridge.pickOpenPath).mockResolvedValue('/project/broken.ri');
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: '/project/broken.ri', content: 'structure {' });
+    vi.mocked(bridge.openFileEngine).mockRejectedValue('Parse error: 1:15: syntax error');
+    await renderAndWaitForReady();
+
+    fireEvent.keyDown(document, { key: 'o', ctrlKey: true });
+
+    await waitFor(() =>
+      expect(toastTexts().some((t) => t.includes('Open file failed: E_GUI_OPEN_FAILED'))).toBe(true),
+    );
+    expect(openPaths()).toEqual(['/project/bracket.ri']);
+    expect(capturedEditorStore.state.activeFile).toBe('/project/bracket.ri');
+  });
+
   it('creating a typed path writes the template, then opens the path the backend returned', async () => {
     vi.mocked(bridge.createNewFile).mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' });
     vi.mocked(bridge.openFile).mockResolvedValue({ path: '/designs/created.ri', content: '// New design\n' });
