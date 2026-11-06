@@ -58,6 +58,15 @@ tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/compiler-namespace-ratchet-baseline.txt    tests/infra/test_compiler_namespace_ratchet.sh
 tests/infra/source_count_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
 tests/infra/test_compiler_namespace_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
+# Task 8730: the construct-ratchet engine, its shared fixtures and its contract
+# suite select the engine's wrapper. The engine and fixtures also select every
+# member suite built on them, since an engine edit can move a member's live counts.
+tests/infra/rust_construct_ratchet.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/rust_construct_ratchet_fixtures.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/test_rust_construct_ratchet.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/rust_construct_ratchet.py    tests/infra/test_compiler_decl_pass_ratchets.sh
+tests/infra/rust_construct_ratchet_fixtures.py    tests/infra/test_compiler_decl_pass_ratchets.sh
+tests/infra/test_compiler_decl_pass_ratchets.py    tests/infra/test_compiler_decl_pass_ratchets.sh
 # Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
 docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
 docs/prds/v0_6/e3-granularity/analysis/e3_stats.py    tests/infra/test_e3_analysis.sh
@@ -365,7 +374,7 @@ scripts/check-nan-safe-ordering.sh    tests/infra/test_nan_safe_ordering_guard_w
 # Task 6202: scripts/lib_rust_production_view.sh is the SINGLE copy of the Rust
 # literal/comment lexer, so it needs a row per CONSUMER — the
 # one-artifact-multiple-rows pattern scripts/lib_task_citation.sh uses below.
-# Its own unit suite plus all three consumers' suites, each of which
+# Its own unit suite plus every consumer's suite, each of which
 # load-bears the lib: a lib-only diff that selected only the unit suite would
 # leave both gates' verdicts and the orphan audit's cfg(test) masking unrun on
 # the very edit that can break them. The .py row is the task 7044 pair shape.
@@ -373,6 +382,8 @@ scripts/lib_rust_production_view.sh    tests/infra/test_rust_production_view_lib
 scripts/lib_rust_production_view.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_compute_trampoline_registration_wired.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_audit_orphan_producers.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_rust_construct_ratchet.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_compiler_decl_pass_ratchets.sh
 tests/infra/test_rust_production_view_lib.py    tests/infra/test_rust_production_view_lib.sh
 
 # Task 6107 (β): the single `watch --once` index primitive. Its guard is
