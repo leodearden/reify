@@ -1,8 +1,8 @@
 //! The FEA harness shared by this crate's FEA integration-test binaries: a
 //! structured box mesh generator and its Kuhn hex-to-tet split, Dirichlet-BC
-//! and point-load builders, P1 stiffness assembly and the retaining
-//! assemble → eliminate → CG pipeline built on it, the displacement-only solve
-//! built on that pipeline, and the element-level post-processing
+//! and point-load builders, the element-agnostic retaining eliminate → CG tail
+//! and its displacement-only projection, P1 stiffness assembly and the two P1
+//! compositions built from them, and the element-level post-processing
 //! (`gather_u_p1`, `von_mises_of_tensor`) that consumes a solve's output.
 //!
 //! Not a test binary. A consumer includes it with
@@ -228,7 +228,7 @@ pub fn assemble_p1_stiffness(
 /// Scatter nodal point loads into a freshly zeroed global RHS of length
 /// `3 * n_nodes`.
 ///
-/// [`assemble_eliminate_and_solve`] takes a whole RHS rather than a
+/// [`eliminate_and_solve`] takes a whole RHS rather than a
 /// `(dof, value)` list so that a caller can equally pass it a load assembled
 /// another way, such as a quantity of interest's `dual_load`.
 pub fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec<f64> {
@@ -239,7 +239,7 @@ pub fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec
     f
 }
 
-/// What [`assemble_eliminate_and_solve`] retains of a solve: everything a dual
+/// What [`eliminate_and_solve`] retains of a solve: everything a dual
 /// (adjoint) solve over the same system needs, so that it repeats neither the
 /// assembly nor the elimination.
 pub struct RetainedSolve {
@@ -257,39 +257,33 @@ pub struct RetainedSolve {
     pub primal: CgResult,
 }
 
-/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, retaining
+/// Eliminate Dirichlet BCs from an assembled system and CG-solve it, retaining
 /// everything a dual (adjoint) solve over the same system needs (see
-/// [`RetainedSolve`]).
+/// [`RetainedSolve`]). Element-agnostic: `k` may come from any assembly.
 ///
-/// Runs [`assemble_p1_stiffness`] → [`dedup_bcs`] →
-/// `apply_dirichlet_row_elimination` → `solve_cg`. `SolverMode::Deterministic`
-/// is fixed (not a parameter) for bit-stable, CI-safe results; `opts` IS a
-/// parameter so a caller can tighten the tolerance below the crate default.
+/// Runs [`dedup_bcs`] → `apply_dirichlet_row_elimination` → `solve_cg`.
+/// `SolverMode::Deterministic` is fixed (not a parameter) for bit-stable,
+/// CI-safe results; `opts` IS a parameter so a caller can tighten the tolerance
+/// below the crate default or raise the iteration cap.
 ///
 /// # Panics
 ///
-/// If `raw_f.len() != 3 * nodes.len()`.
-pub fn assemble_eliminate_and_solve(
-    nodes: &[[f64; 3]],
-    conns: &[[usize; 4]],
-    mat: &IsotropicElastic,
-    bcs: Vec<DirichletBc>,
+/// If `raw_f.len() != k.nrows()`.
+pub fn eliminate_and_solve(
+    mut k: SparseRowMat<usize, f64>,
     raw_f: &[f64],
+    mut bcs: Vec<DirichletBc>,
     opts: CgSolverOptions,
 ) -> RetainedSolve {
-    let n_nodes = nodes.len();
     assert_eq!(
         raw_f.len(),
-        3 * n_nodes,
-        "raw_f.len() = {} but the system has 3 * {n_nodes} = {} DOFs",
+        k.nrows(),
+        "raw_f.len() = {} but the system has {} DOFs",
         raw_f.len(),
-        3 * n_nodes,
+        k.nrows(),
     );
 
-    let mut k = assemble_p1_stiffness(nodes, conns, mat);
-
     let mut f = raw_f.to_vec();
-    let mut bcs = bcs;
     dedup_bcs(&mut bcs);
     apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
 
@@ -303,13 +297,60 @@ pub fn assemble_eliminate_and_solve(
     }
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system, keeping only
-/// the displacement.
+/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, retaining
+/// everything a dual (adjoint) solve over the same system needs:
+/// [`assemble_p1_stiffness`] + [`eliminate_and_solve`].
 ///
-/// This is [`assemble_eliminate_and_solve`] with the crate-default
-/// `CgSolverOptions`, an assert that the CG solve converged, and everything but
-/// `u` dropped. `bcs` is deduplicated in place: afterwards the caller's `Vec`
-/// holds the sorted, deduplicated list.
+/// # Panics
+///
+/// As [`eliminate_and_solve`]; for P1, `K`'s dimension is `3 * nodes.len()`.
+pub fn assemble_eliminate_and_solve(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    mat: &IsotropicElastic,
+    bcs: Vec<DirichletBc>,
+    raw_f: &[f64],
+    opts: CgSolverOptions,
+) -> RetainedSolve {
+    eliminate_and_solve(assemble_p1_stiffness(nodes, conns, mat), raw_f, bcs, opts)
+}
+
+/// [`eliminate_and_solve`] with an asserted convergence, keeping only the
+/// displacement `u`.
+///
+/// `bcs` is deduplicated in place: afterwards the caller's `Vec` holds the
+/// sorted, deduplicated list.
+///
+/// # Returns
+///
+/// Displacement vector `u` of length `k.nrows()`.
+///
+/// # Panics
+///
+/// As [`eliminate_and_solve`], and if the CG solve does not converge within
+/// `opts.max_iter` iterations.
+pub fn solve_displacement(
+    k: SparseRowMat<usize, f64>,
+    raw_f: &[f64],
+    bcs: &mut Vec<DirichletBc>,
+    opts: CgSolverOptions,
+) -> Vec<f64> {
+    let max_iter = opts.max_iter;
+    let solved = eliminate_and_solve(k, raw_f, std::mem::take(bcs), opts);
+    *bcs = solved.bcs_deduped;
+    assert!(
+        solved.primal.converged,
+        "solve_displacement: CG did not converge after {} iterations (cap={max_iter})",
+        solved.primal.iterations,
+    );
+    solved.primal.u().to_vec()
+}
+
+/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system, keeping only
+/// the displacement: [`rhs_from_point_loads`] and [`assemble_p1_stiffness`]
+/// fed to [`solve_displacement`] with the crate-default `CgSolverOptions`.
+/// `bcs` is deduplicated in place: afterwards the caller's `Vec` holds the
+/// sorted, deduplicated list.
 ///
 /// # Returns
 ///
@@ -323,21 +364,12 @@ pub fn solve_p1_pipeline(
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
     let f = rhs_from_point_loads(nodes.len(), point_loads);
-    let solved = assemble_eliminate_and_solve(
-        nodes,
-        conns,
-        mat,
-        std::mem::take(bcs),
+    solve_displacement(
+        assemble_p1_stiffness(nodes, conns, mat),
         &f,
+        bcs,
         CgSolverOptions::default(),
-    );
-    *bcs = solved.bcs_deduped;
-    assert!(
-        solved.primal.converged,
-        "solve_p1_pipeline: CG did not converge (iterations={})",
-        solved.primal.iterations,
-    );
-    solved.primal.u().to_vec()
+    )
 }
 
 /// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet from the
