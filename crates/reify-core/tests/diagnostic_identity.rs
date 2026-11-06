@@ -1,5 +1,5 @@
-//! Behavioural pin of `DiagnosticIdentity`: two diagnostics are the same
-//! finding exactly when they agree on severity, code and message.
+//! Behavioural pin of `DiagnosticIdentity`: two diagnostics have equal
+//! identities exactly when they agree on severity, code and message.
 
 use std::collections::HashSet;
 

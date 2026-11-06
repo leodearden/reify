@@ -1,9 +1,12 @@
-//! The identity under which two diagnostics count as the same finding.
+//! The identity under which two diagnostics read as the same reported line.
 
 use crate::diagnostics::{Diagnostic, DiagnosticCode, Severity};
 
-/// Two diagnostics are the same finding exactly when they agree on severity,
-/// code and message. Labels (and so spans) and candidates do not participate.
+/// Equal exactly when two diagnostics agree on severity, code and message.
+/// Labels (and so spans) and candidates do not participate, so equal
+/// identities do NOT prove one finding: two distinct findings can read
+/// alike, and a consumer that must keep multiplicity must not collapse
+/// diagnostics on this key alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DiagnosticIdentity<'d> {
     severity: Severity,
