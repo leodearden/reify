@@ -6,7 +6,13 @@
 import { createSignal, For, onMount, Show, type Component } from 'solid-js';
 import { pickOpenPath, pickSavePath } from '../bridge';
 import { LaunchFailure, type LauncherActions } from '../app/launcherActions';
-import type { LaunchErrorInfo, LauncherStore } from '../stores/launcherStore';
+import {
+  LAUNCH_ERROR_CODES,
+  type LaunchErrorCode,
+  type LaunchErrorInfo,
+  type LauncherStore,
+} from '../stores/launcherStore';
+import { errorMessage } from '../utils/errorClassifier';
 import type { LaunchMode } from '../types';
 import styles from './StartView.module.css';
 
@@ -36,13 +42,18 @@ export const StartView: Component<StartViewProps> = (props) => {
     });
   });
 
-  async function attemptDocument(run: () => Promise<void>): Promise<void> {
+  /**
+   * Run a document attempt and present any failure in the store. A rejection
+   * that is not already a LaunchFailure (a native dialog that cannot open, an
+   * unexpected throw) is presented under `code`, so no attempt fails silently.
+   */
+  async function attemptDocument(code: LaunchErrorCode, run: () => Promise<void>): Promise<void> {
     props.launcher.clearDocumentError();
     try {
       await run();
     } catch (err) {
-      if (!(err instanceof LaunchFailure)) throw err;
-      props.launcher.failDocument(err.toInfo());
+      const failure = err instanceof LaunchFailure ? err.toInfo() : { code, message: errorMessage(err) };
+      props.launcher.failDocument(failure);
     }
   }
 
@@ -55,19 +66,28 @@ export const StartView: Component<StartViewProps> = (props) => {
     }
   }
 
-  async function openFromDialog(): Promise<void> {
-    const path = await pickOpenPath();
-    if (path) await attemptDocument(() => props.actions.openDocument(path));
+  const openPath = (path: string) =>
+    attemptDocument(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, () => props.actions.openDocument(path));
+  const createPath = (path: string) =>
+    attemptDocument(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, () => props.actions.createDocument(path));
+
+  function openFromDialog(): Promise<void> {
+    return attemptDocument(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, async () => {
+      const path = await pickOpenPath();
+      if (path) await props.actions.openDocument(path);
+    });
   }
 
-  async function createFromDialog(): Promise<void> {
-    const path = await pickSavePath('untitled.ri', 'ri');
-    if (path) await attemptDocument(() => props.actions.createDocument(path));
+  function createFromDialog(): Promise<void> {
+    return attemptDocument(LAUNCH_ERROR_CODES.E_GUI_TEMPLATE_WRITE_FAILED, async () => {
+      const path = await pickSavePath('untitled.ri', 'ri');
+      if (path) await props.actions.createDocument(path);
+    });
   }
 
   function withTypedPath(run: (path: string) => Promise<void>): void {
     const path = typedPath().trim();
-    if (path) void attemptDocument(() => run(path));
+    if (path) void run(path);
   }
 
   const state = () => props.launcher.state;
@@ -134,7 +154,7 @@ export const StartView: Component<StartViewProps> = (props) => {
               type="button"
               class={styles.button}
               data-testid="start-open-path"
-              onClick={() => withTypedPath((path) => props.actions.openDocument(path))}
+              onClick={() => withTypedPath(openPath)}
             >
               Open
             </button>
@@ -142,7 +162,7 @@ export const StartView: Component<StartViewProps> = (props) => {
               type="button"
               class={styles.button}
               data-testid="start-create-path"
-              onClick={() => withTypedPath((path) => props.actions.createDocument(path))}
+              onClick={() => withTypedPath(createPath)}
             >
               Create
             </button>
@@ -163,7 +183,7 @@ export const StartView: Component<StartViewProps> = (props) => {
                       type="button"
                       class={styles.recentItem}
                       data-testid="start-recent-item"
-                      onClick={() => void attemptDocument(() => props.actions.openDocument(entry.path))}
+                      onClick={() => void openPath(entry.path)}
                     >
                       {entry.path}
                     </button>

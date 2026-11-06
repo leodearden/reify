@@ -207,6 +207,45 @@ describe('StartView document actions', () => {
     expect(error.textContent).toContain('E_GUI_TEMPLATE_WRITE_FAILED');
   });
 
+  it('an Open… dialog that fails to open shows E_GUI_OPEN_FAILED', async () => {
+    mockPickOpenPath.mockRejectedValue(new Error('No dialog backend'));
+    renderStartView();
+
+    fireEvent.click(screen.getByTestId('start-open-dialog'));
+
+    const error = await screen.findByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_OPEN_FAILED');
+    expect(error.textContent).toContain('No dialog backend');
+    expect(actions.openDocument).not.toHaveBeenCalled();
+  });
+
+  it('a New… dialog that fails to open shows E_GUI_TEMPLATE_WRITE_FAILED', async () => {
+    mockPickSavePath.mockRejectedValue(new Error('No dialog backend'));
+    renderStartView();
+
+    fireEvent.click(screen.getByTestId('start-new-dialog'));
+
+    const error = await screen.findByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_TEMPLATE_WRITE_FAILED');
+    expect(error.textContent).toContain('No dialog backend');
+    expect(actions.createDocument).not.toHaveBeenCalled();
+  });
+
+  it('an action rejection that is not a LaunchFailure is presented under the attempt\'s code', async () => {
+    actions.openDocument.mockRejectedValue(new Error('unexpected'));
+    store.setRecent([{ path: '/designs/bracket.ri', opened_at: 1000 }]);
+    renderStartView();
+
+    fireEvent.click(screen.getByTestId('start-recent-item'));
+
+    const error = await screen.findByTestId('start-document-error');
+    expect(error.textContent).toContain('E_GUI_OPEN_FAILED');
+    expect(store.state.document.error).toEqual({
+      code: LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED,
+      message: 'unexpected',
+    });
+  });
+
   it('a new attempt clears the previous document error', async () => {
     actions.openDocument.mockRejectedValueOnce(
       new LaunchFailure(LAUNCH_ERROR_CODES.E_GUI_OPEN_FAILED, 'No such file'),
