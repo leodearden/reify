@@ -7,10 +7,12 @@ Suites that pin real rows (e.g. tests/infra/test_compiler_decl_pass_ratchets.py)
 build on this engine; its contract lives here so it outlives any one of them.
 """
 
+import os
 import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 INFRA_DIR = Path(__file__).resolve().parent
 
@@ -125,6 +127,13 @@ class Scope(TempRoot):
         self.assertEqual(result.count, 1)
         self.assertEqual(result.files, ("src/a.rs",))
 
+    def test_relative_root_reads_a_file_named_like_an_awk_assignment(self):
+        self.write("k=v.rs", rust_fn("    needle();"))
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.root)
+        (result,) = rcr.evaluate((demo_row(r"\bneedle\(", "k=v.rs", baseline=1),), Path("."))
+        self.assertEqual(result.hits, ("k=v.rs:2",))
+
 
 class Baseline(TempRoot):
 
@@ -170,6 +179,13 @@ class LexFailure(TempRoot):
         with self.assertRaises(rcr.LexError) as caught:
             rcr.evaluate((demo_row(r"\bneedle\(", "src/broken.rs"),), self.root)
         self.assertIn("src/broken.rs", str(caught.exception))
+
+    def test_unlaunchable_lexer_raises_lex_error_naming_the_file(self):
+        self.write("src/a.rs", rust_fn("    needle();"))
+        with mock.patch.dict(os.environ, {"PATH": str(self.fresh_root())}):
+            with self.assertRaises(rcr.LexError) as caught:
+                rcr.evaluate((demo_row(r"\bneedle\(", "src/a.rs"),), self.root)
+        self.assertIn("src/a.rs", str(caught.exception))
 
 
 class RowIdentity(TempRoot):

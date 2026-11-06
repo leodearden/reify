@@ -12,11 +12,12 @@ import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from enum import Enum
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 
 LEXER_LIB = Path(__file__).resolve().parents[2] / "scripts" / "lib_rust_production_view.sh"
 
-_SPAWN = 'source "$1" && prog="${!2}\n$3" && awk -v probes="$5" "$prog" "$4"'
+_SPAWN = 'source "$1" && prog="${!2}\n$3" && awk -v probes="$5" "$prog" < "$4"'
 
 _PRODUCTION_DRIVER = '{ printf "%d\\t%s\\n", FNR, code }'
 
@@ -137,9 +138,12 @@ class RowResult:
 
 
 def _run_lexer(path: Path, export: str, driver: str, probes: str = "") -> list[str]:
-    proc = subprocess.run(
-        ["bash", "-c", _SPAWN, "bash", str(LEXER_LIB), export, driver, str(path), probes],
-        capture_output=True, env={**os.environ, "LC_ALL": "C"})
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", _SPAWN, "bash", str(LEXER_LIB), export, driver, str(path), probes],
+            stdin=subprocess.DEVNULL, capture_output=True, env={**os.environ, "LC_ALL": "C"})
+    except OSError as error:
+        raise LexError(f"{path}: could not launch the shared lexer: {error}") from error
     if proc.returncode != 0 or proc.stderr:
         raise LexError(f"{path}: shared lexer exited {proc.returncode}: "
                        f"{proc.stderr.decode('utf-8', 'replace').strip()}")
@@ -150,14 +154,16 @@ def _run_lexer(path: Path, export: str, driver: str, probes: str = "") -> list[s
 class _SourceFile:
     path: Path
     lines: tuple[str, ...]
-    production_code: tuple[tuple[int, str], ...]
 
     @classmethod
-    def lex(cls, path: Path, text: str) -> _SourceFile:
-        records = (record.split("\t", 1)
-                   for record in _run_lexer(path, "RUST_PRODUCTION_VIEW_AWK", _PRODUCTION_DRIVER))
-        return cls(path, tuple(text.split("\n")),
-                   tuple((int(number), code) for number, code in records))
+    def read(cls, path: Path) -> _SourceFile:
+        return cls(path, tuple(path.read_bytes().decode("utf-8", "surrogateescape").split("\n")))
+
+    @cached_property
+    def production_code(self) -> tuple[tuple[int, str], ...]:
+        records = (record.split("\t", 1) for record in
+                   _run_lexer(self.path, "RUST_PRODUCTION_VIEW_AWK", _PRODUCTION_DRIVER))
+        return tuple((int(number), code) for number, code in records)
 
     def code_hits(self, construct: re.Pattern) -> list[int]:
         return [number for number, code in self.production_code
@@ -190,26 +196,29 @@ def _scope(row: Row, root: Path) -> tuple[list[Path], tuple[str, ...]]:
     return list(files), tuple(missing)
 
 
-def _needs_lexing(row: Row, text: str) -> bool:
+def _needs_lexing(row: Row, source: _SourceFile) -> bool:
     """A STARTS_IN_CODE hit is a raw-line match, so a file with no matching raw
     line has none. A CODE line can spell text the raw file does not (a blanked
     literal reads ""), so CODE always lexes."""
     if row.view is View.CODE:
         return True
-    return any(row.construct.search(line) for line in text.split("\n"))
+    return any(row.construct.search(line) for line in source.lines)
 
 
-def _file_hits(row: Row, root: Path, path: Path,
-               lexed: dict[Path, _SourceFile]) -> tuple[str, ...]:
-    text = path.read_bytes().decode("utf-8", "surrogateescape")
-    if not _needs_lexing(row, text):
+class _SourceCache(dict):
+    """Each scoped file read once, and lexed at most once, per evaluate()."""
+
+    def __missing__(self, path: Path) -> _SourceFile:
+        source = self[path] = _SourceFile.read(path)
+        return source
+
+
+def _file_hits(row: Row, root: Path, source: _SourceFile) -> tuple[str, ...]:
+    if not _needs_lexing(row, source):
         return ()
-    if path not in lexed:
-        lexed[path] = _SourceFile.lex(path, text)
-    source = lexed[path]
     numbers = (source.code_hits(row.construct) if row.view is View.CODE
                else source.starts_in_code_hits(row.construct))
-    rel = path.relative_to(root).as_posix()
+    rel = source.path.relative_to(root).as_posix()
     return tuple(f"{rel}:{number}" for number in numbers)
 
 
@@ -224,11 +233,11 @@ def evaluate(rows, root: Path) -> tuple[RowResult, ...]:
     rows = tuple(rows)
     _reject_duplicate_ids(rows)
     root = Path(root)
-    lexed: dict[Path, _SourceFile] = {}
+    sources = _SourceCache()
     results = []
     for row in rows:
         paths, missing = _scope(row, root)
-        hits = tuple(hit for path in paths for hit in _file_hits(row, root, path, lexed))
+        hits = tuple(hit for path in paths for hit in _file_hits(row, root, sources[path]))
         files = tuple(p.relative_to(root).as_posix() for p in paths)
         results.append(RowResult(row, files, missing, hits))
     return tuple(results)
