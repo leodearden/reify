@@ -442,11 +442,12 @@ resolve #5387 relationship per its live status (§6 row 2).
    **Suggested:** delete in β if callers are few (they are: CLI + tests); decide in β.
    *Resolved 2026-10-12 (β, task 5516):* **deleted in β.** Both
    `compile_entry_with_stdlib_cfg` and `compile_entry_with_stdlib_cfg_checked` are
-   gone; their callers — the CLI's `reify check` path plus three test files — call
-   `program::compile_program` directly. No deprecated wrapper was kept. `reify check`
-   enters through the sibling seam `program::compile_program_with_parsed_entry`,
-   handing over the parse it already made for its INV-SF-7 gate, so the entry is
-   parsed once; `compile_program` is the parse-it-yourself wrapper over that seam.
+   gone, and no deprecated wrapper was kept; their callers — the CLI's `reify check`
+   path and the tests — moved onto the program compile. `reify check` enters through
+   the seam `program::compile_program_with_parsed_entry`, handing over the parse it
+   already made for its INV-SF-7 gate, so the entry is parsed once; tests that
+   already hold the entry's parse use the seam too, and the rest call
+   `program::compile_program`, the parse-it-yourself wrapper over it.
 2. **`reify doc` on a multi-file project** — should it eventually emit per-module
    sections from `CompiledProgram.imports`? **Suggested:** follow-up task filed when a
    consumer asks; `declared()`-only for now (D-12). Decide post-P1.

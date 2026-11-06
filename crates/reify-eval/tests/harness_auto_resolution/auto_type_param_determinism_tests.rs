@@ -188,7 +188,7 @@ const SKIP_SET: &[(&str, SkipKind, &str)] = &[
         SkipKind::CompileError,
         "Multi-file cfg-gated entry: `param p : Platform` in type position resolves only \
          through the #cfg(target)-gated import (platform_linux or platform_wasm), using the \
-         reify check cfg DAG (program::compile_program). The single-file \
+         reify check cfg DAG (program::compile_program_with_parsed_entry). The single-file \
          check_source_with_stdlib path cannot follow gated imports, so `Platform` is an \
          unresolved-type Error — check_source_with_stdlib panics on compile errors. \
          The two-way symmetric behaviour (both --cfg target=linux and --cfg target=wasm \

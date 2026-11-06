@@ -125,7 +125,7 @@ pub struct DiagnosticsResult {
 /// The compile stage below calls
 /// `reify_compiler::compile_with_stdlib_checked(&parsed, &SimpleConstraintChecker)`,
 /// matching `reify check`'s compile path (`parse_and_compile` /
-/// `program::compile_program` in
+/// `program::compile_program_with_parsed_entry` in
 /// `crates/reify-cli/src/main.rs`) and the GUI
 /// (`compile_single_file_with_stdlib` in `gui/src-tauri/src/engine.rs`)
 /// instead of the compile-time `CompileTimeIndeterminateChecker` stub. So
