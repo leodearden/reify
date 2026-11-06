@@ -573,7 +573,7 @@ fn ill_formed_sample_point<'a>(
 /// the kernel, the kernel's own guard yields `Value::Undef`, and the sweep
 /// reports the row `Vacuous` for a reason that has nothing to do with the row's
 /// signature. The harness would then be accusing the registry of a fault in
-/// this file.
+/// `registry_parity_tests/probes.rs`.
 ///
 /// The "same number of values as types" check this test used to open with is
 /// gone, deliberately: [`Probe::args`] is a list of PAIRS, so that invariant
@@ -602,7 +602,8 @@ fn representative_probes_are_well_formed_for_every_row() {
                 row.arity.matches(probe.args.len()),
                 "{at}: {} argument(s) do not match the row's declared arity \
                  {:?} — the kernel would short-circuit to Value::Undef and \
-                 the sweep would blame the row for this file's mistake",
+                 the sweep would blame the row for a mistake in \
+                 registry_parity_tests/probes.rs",
                 probe.args.len(),
                 row.arity
             );
