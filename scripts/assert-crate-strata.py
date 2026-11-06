@@ -52,7 +52,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import NoReturn
 from dataclasses import dataclass
 from enum import Enum, IntEnum
@@ -261,11 +261,20 @@ def classify(path: Path, strata: Mapping[str, Stratum]) -> dict[str, str]:
     return stratum_of
 
 
+def members(where: str, packages: Iterable[str], names: Iterable[str],
+            strata: Mapping[str, Stratum], remedy: str) -> frozenset[str]:
+    """`packages` plus every member of the strata `names`, never empty: an empty
+    `from` or `never` could never fire, and an empty `only` would forbid every
+    edge."""
+    union = frozenset(packages).union(*(strata[name].packages for name in names))
+    if not union:
+        fail(where, f"resolves to no packages; {remedy}")
+    return union
+
+
 def resolve_package_set(obj: object, where: str, strata: Mapping[str, Stratum],
                         stratum_of: Mapping[str, str]) -> frozenset[str]:
-    """The named packages plus every member of the named strata, never empty:
-    an empty `from` or `never` could never fire, and an empty `only` would
-    forbid every edge."""
+    """The named packages plus every member of the named strata."""
     entry = fields(obj, where, required=(), optional=("packages", "strata"))
     packages = str_list(entry.get("packages", []), f"{where}: packages")
     names = str_list(entry.get("strata", []), f"{where}: strata")
@@ -275,11 +284,9 @@ def resolve_package_set(obj: object, where: str, strata: Mapping[str, Stratum],
     for name in names:
         if name not in strata:
             fail(where, f"names stratum {name}, which the table does not define")
-    members = frozenset(packages).union(*(strata[name].packages for name in names))
-    if not members:
-        fail(where, "resolves to no packages; name at least one package, directly "
-                    "or through a non-empty stratum")
-    return members
+    return members(where, packages, names, strata,
+                   remedy="name at least one package, directly or through a "
+                          "non-empty stratum")
 
 
 def resolve_sources(obj: object, where: str, strata: Mapping[str, Stratum],
@@ -298,7 +305,8 @@ def resolve_sources(obj: object, where: str, strata: Mapping[str, Stratum],
     if value is not True:
         fail(f"{where}: {EVERY_STRATUM}",
              f"expected true, found {value!r}; omit the key to name packages or strata")
-    return resolve_package_set({"strata": list(strata)}, where, strata, stratum_of)
+    return members(where, (), strata.keys(), strata,
+                   remedy="the table declares no stratum with a package")
 
 
 def load_rule(path: Path, index: int, obj: object, strata: Mapping[str, Stratum],

@@ -363,6 +363,11 @@ fn table_with(table: &str, from: &str, to: &str) -> String {
     table.replacen(from, to, 1)
 }
 
+/// `table` with `row` inserted after the one occurrence of `anchor`.
+fn table_with_row_after(table: &str, anchor: &str, row: &str) -> String {
+    table_with(table, anchor, &format!("{anchor},\n    {row}"))
+}
+
 /// FIXTURE_TABLE with the one occurrence of `from` replaced by `to`.
 fn fixture_table_with(from: &str, to: &str) -> String {
     table_with(FIXTURE_TABLE, from, to)
@@ -377,11 +382,7 @@ const DEV_ONLY_RULE: &str = r#"{"name": "test-support-is-dev-only", "from": {"ev
 /// `table` with DEV_ONLY_RULE after its production-not-on-test-support rule.
 fn with_dev_only_rule(table: &str) -> String {
     const PRODUCTION_RULE_END: &str = r#""never": {"strata": ["test-support"]}}"#;
-    table_with(
-        table,
-        PRODUCTION_RULE_END,
-        &format!("{PRODUCTION_RULE_END},\n    {DEV_ONLY_RULE}"),
-    )
+    table_with_row_after(table, PRODUCTION_RULE_END, DEV_ONLY_RULE)
 }
 
 /// `table` with a "tooling" stratum, which may depend on test-support,
@@ -389,11 +390,7 @@ fn with_dev_only_rule(table: &str) -> String {
 fn with_tooling_stratum(table: &str) -> String {
     const TEST_SUPPORT_STRATUM_END: &str = r#""engine"], "packages": ["reify-test-support"]}"#;
     const TOOLING_STRATUM: &str = r#"{"name": "tooling", "may_depend_on": ["spine", "language", "kernel", "solver", "analysis", "engine", "test-support"], "packages": ["reify-audit"]}"#;
-    table_with(
-        table,
-        TEST_SUPPORT_STRATUM_END,
-        &format!("{TEST_SUPPORT_STRATUM_END},\n    {TOOLING_STRATUM}"),
-    )
+    table_with_row_after(table, TEST_SUPPORT_STRATUM_END, TOOLING_STRATUM)
 }
 
 /// A graph FIXTURE_TABLE accepts, with dev back-edges and the excepted edge.
@@ -640,12 +637,10 @@ fn strata_production_strata_must_not_depend_on_test_support() {
 
 #[test]
 fn strata_one_exception_row_covers_every_rule_its_edge_breaks() {
-    let table = fixture_table_with(
+    let table = table_with_row_after(
+        FIXTURE_TABLE,
         EXCEPTED_ROW,
-        &format!(
-            "{EXCEPTED_ROW},\n    {}",
-            r#"{"from": "reify-kernel-x", "to": "reify-eval", "task": 8561, "note": "fixture"}"#
-        ),
+        r#"{"from": "reify-kernel-x", "to": "reify-eval", "task": 8561, "note": "fixture"}"#,
     );
     let graph = with_dep(
         clean_workspace(),
@@ -685,23 +680,37 @@ fn strata_every_stratum_rule_covers_a_stratum_added_after_it() {
 
 #[test]
 fn strata_every_stratum_rule_fires_from_every_stratum() {
-    let sources: Vec<&str> = clean_workspace()
+    // A package in each stratum, the empty analysis one and test-support's own
+    // (which production-not-on-test-support leaves out) included.
+    let table = table_with(
+        &table_with(
+            &with_dev_only_rule(FIXTURE_TABLE),
+            r#""packages": []}"#,
+            r#""packages": ["reify-analysis-x"]}"#,
+        ),
+        r#""engine"], "packages": ["reify-test-support"]}"#,
+        r#""engine"], "packages": ["reify-kernel-conformance", "reify-test-support"]}"#,
+    );
+    let mut workspace = clean_workspace();
+    workspace.push(pkg("reify-analysis-x", &["reify-core"]));
+    workspace.push(pkg("reify-kernel-conformance", &["reify-eval"]));
+    let sources: Vec<&str> = workspace
         .iter()
         .map(|p| p.name)
         .filter(|name| *name != "reify-test-support")
         .collect();
-    let graph = sources.iter().fold(clean_workspace(), |graph, source| {
+    let graph = sources.iter().fold(workspace, |graph, source| {
         with_dep(
             graph,
             source,
             Dep::new("reify-test-support", DepKind::Normal),
         )
     });
-    let out = check(&with_dev_only_rule(FIXTURE_TABLE), &graph);
+    let out = check(&table, &graph);
     assert_exit(
         &out,
         1,
-        "a normal edge into test-support from every package",
+        "a normal edge into test-support from a package in every stratum",
     );
     let stdout = stdout_of(&out);
     for source in &sources {
@@ -723,7 +732,7 @@ fn strata_every_stratum_rule_fires_from_every_stratum() {
 fn strata_fails_closed_on_an_untrustworthy_table() {
     let swap = fixture_table_with;
     const SPINE_ROW: &str =
-        r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-core", "reify-ir"]},"#;
+        r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-core", "reify-ir"]}"#;
     let cases: Vec<(String, &[&str], &str)> = vec![
         (
             swap(r#""schema": 1"#, r#""schema": 2"#),
@@ -770,12 +779,10 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
             "a stratum listing itself",
         ),
         (
-            swap(
+            table_with_row_after(
+                FIXTURE_TABLE,
                 SPINE_ROW,
-                &format!(
-                    "{SPINE_ROW}\n    {}",
-                    r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-other"]},"#
-                ),
+                r#"{"name": "spine", "may_depend_on": [], "packages": ["reify-other"]}"#,
             ),
             &["spine"][..],
             "two strata named spine",
@@ -926,10 +933,7 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
             "an exception with an empty note",
         ),
         (
-            swap(
-                EXCEPTED_ROW,
-                &format!("{EXCEPTED_ROW},\n    {EXCEPTED_ROW}"),
-            ),
+            table_with_row_after(FIXTURE_TABLE, EXCEPTED_ROW, EXCEPTED_ROW),
             &["reify-solver-elastic -> reify-kernel-gmsh"][..],
             "a duplicate exception edge",
         ),
@@ -937,14 +941,20 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
             format!(
                 r#"{{"schema": 1, "strata": [], "crate_rules": [{DEV_ONLY_RULE}], "exceptions": []}}"#
             ),
-            &["test-support-is-dev-only", "from: resolves to no packages"][..],
+            &[
+                "test-support-is-dev-only",
+                "from: resolves to no packages; the table declares no stratum with a package",
+            ][..],
             "an every_stratum rule over a table with no strata",
         ),
         (
             format!(
                 r#"{{"schema": 1, "strata": [{{"name": "analysis", "may_depend_on": [], "packages": []}}], "crate_rules": [{DEV_ONLY_RULE}], "exceptions": []}}"#
             ),
-            &["test-support-is-dev-only", "from: resolves to no packages"][..],
+            &[
+                "test-support-is-dev-only",
+                "from: resolves to no packages; the table declares no stratum with a package",
+            ][..],
             "an every_stratum rule over a table whose every stratum is empty",
         ),
         (
@@ -952,7 +962,10 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
                 r#""from": {"packages": ["reify-compute-contract"]}"#,
                 r#""from": {"every_stratum": false}"#,
             ),
-            &["compute-contract-spine-only", "every_stratum"][..],
+            &[
+                "compute-contract-spine-only",
+                "every_stratum: expected true, found False",
+            ][..],
             "an every_stratum that is false",
         ),
         (
@@ -960,8 +973,22 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
                 r#""from": {"packages": ["reify-compute-contract"]}"#,
                 r#""from": {"every_stratum": "true"}"#,
             ),
-            &["compute-contract-spine-only", "every_stratum"][..],
+            &[
+                "compute-contract-spine-only",
+                "every_stratum: expected true, found 'true'",
+            ][..],
             "an every_stratum that is a string",
+        ),
+        (
+            swap(
+                r#""from": {"packages": ["reify-compute-contract"]}"#,
+                r#""from": {"every_stratum": 1}"#,
+            ),
+            &[
+                "compute-contract-spine-only",
+                "every_stratum: expected true, found 1",
+            ][..],
+            "an every_stratum that is 1, which Python compares equal to true",
         ),
         (
             swap(
@@ -976,7 +1003,10 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
                 r#""only": {"strata": ["spine"]}"#,
                 r#""only": {"every_stratum": true}"#,
             ),
-            &["compute-contract-spine-only", "only", "every_stratum"][..],
+            &[
+                "compute-contract-spine-only",
+                "only: unknown key 'every_stratum'",
+            ][..],
             "an only over every stratum, which could never fire",
         ),
         (
@@ -984,7 +1014,10 @@ fn strata_fails_closed_on_an_untrustworthy_table() {
                 r#""never": {"strata": ["test-support"]}"#,
                 r#""never": {"every_stratum": true}"#,
             ),
-            &["production-not-on-test-support", "never", "every_stratum"][..],
+            &[
+                "production-not-on-test-support",
+                "never: unknown key 'every_stratum'",
+            ][..],
             "a never over every stratum, which would forbid every edge",
         ),
     ];
