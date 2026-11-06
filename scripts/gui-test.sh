@@ -28,8 +28,10 @@
 # scripts/gui-test.sh, from any cwd. For a bare gui/ copy, run the same
 # `npm ci --prefer-offline --no-audit --no-fund` (step 1 below) inside the
 # copy: it rebuilds node_modules from package-lock.json, workspace links such
-# as @reify/shared-utils included. Then run `npm test` (its pretest hook needs
-# the lezer-generator that npm ci installed) or `npx vitest run <file>`.
+# as @reify/shared-utils included. Then run `npm test` (its pretest hook, which
+# regenerates src/editor/reifyParser.js, needs the lezer-generator that npm ci
+# installed) or `npx vitest run <file>`, which skips that hook and so can test
+# a stale parser: after editing reify.grammar in the copy, use `npm test`.
 # Do not recover a copy by hand-deleting node_modules (root or
 # packages/*/node_modules) and running `npm install`: that path has crashed
 # npm's arborist ("Cannot read properties of null (reading 'edgesOut')") and
