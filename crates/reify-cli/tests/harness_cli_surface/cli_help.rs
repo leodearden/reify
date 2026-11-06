@@ -106,6 +106,23 @@ fn check_help_documents_every_flag_check_accepts() {
 }
 
 #[test]
+fn eval_and_build_help_document_the_cfg_flag() {
+    for cmd in ["eval", "build"] {
+        let output = run_reify(&[cmd, "--help"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "`reify {cmd} --help` must exit 0, got {:?}",
+            output.status.code()
+        );
+        assert!(
+            flag_row(&stdout, "--cfg").is_some(),
+            "`reify {cmd} --help` must give `--cfg` a row of its own, got: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn top_level_help_lists_every_dispatched_subcommand() {
     let output = run_reify(&["--help"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
