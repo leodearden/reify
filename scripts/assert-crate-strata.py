@@ -13,6 +13,11 @@ every rule its edge breaks.
 Edges are the DECLARED dependencies of `cargo metadata --no-deps`, so an
 optional dependency counts whether or not any feature activates it.
 
+A crate rule's from/only/never names `packages` and/or `strata`. A `from`
+may instead be {"every_stratum": true}: every stratum the table declares,
+resolved when the table loads, so a stratum added later is covered with no
+edit to the rule.
+
 Reading a failure:
     UNCLASSIFIED <pkg>          a workspace package no stratum lists. Classify
                                 it in the same diff that adds it; its edges are
@@ -131,6 +136,7 @@ class Workspace:
 
 
 TABLE_SCHEMA = 1
+EVERY_STRATUM = "every_stratum"
 COUNTED_DEP_KINDS = frozenset({None, "build"})
 SKIPPED_DEP_KINDS = frozenset({"dev"})
 
@@ -276,6 +282,25 @@ def resolve_package_set(obj: object, where: str, strata: Mapping[str, Stratum],
     return members
 
 
+def resolve_sources(obj: object, where: str, strata: Mapping[str, Stratum],
+                    stratum_of: Mapping[str, str]) -> frozenset[str]:
+    """A rule's `from`: a package set, or `{"every_stratum": true}` for every
+    stratum the table declares. Only `from` takes the wildcard: an `only` over
+    every package could never fire, and a `never` over every package forbids
+    every edge."""
+    if not isinstance(obj, dict) or EVERY_STRATUM not in obj:
+        return resolve_package_set(obj, where, strata, stratum_of)
+    extra = sorted(set(obj) - {EVERY_STRATUM})
+    if extra:
+        fail(where, f"{EVERY_STRATUM} already covers every stratum; drop "
+                    f"{', '.join(repr(key) for key in extra)}")
+    value = obj[EVERY_STRATUM]
+    if value is not True:
+        fail(f"{where}: {EVERY_STRATUM}",
+             f"expected true, found {value!r}; omit the key to name packages or strata")
+    return resolve_package_set({"strata": list(strata)}, where, strata, stratum_of)
+
+
 def load_rule(path: Path, index: int, obj: object, strata: Mapping[str, Stratum],
               stratum_of: Mapping[str, str]) -> CrateRule:
     where = named_where(path, "crate rule", "crate_rules", index, obj)
@@ -289,7 +314,7 @@ def load_rule(path: Path, index: int, obj: object, strata: Mapping[str, Stratum]
     (kind,) = kinds
     return CrateRule(
         name=name,
-        sources=resolve_package_set(entry["from"], f"{where}: from", strata, stratum_of),
+        sources=resolve_sources(entry["from"], f"{where}: from", strata, stratum_of),
         kind=kind,
         targets=resolve_package_set(entry[kind.value], f"{where}: {kind.value}",
                                     strata, stratum_of))
