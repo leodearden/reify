@@ -30,8 +30,10 @@ structure def Plate {
 }
 ";
 
-/// The `=` after `param w : Real` has no default expression, so this does not parse.
+/// The `=` after `param w : Real` has no default expression, so this does not parse. The `MPa`
+/// before it still needs std.si_units: a header for a fix that wrote despite the error to add.
 const BROKEN: &str = "structure def Broken {
+    let stress = 2MPa
     param w : Real =
 }
 ";
@@ -171,6 +173,7 @@ fn check_fails_the_run_when_any_file_is_missing_imports() {
         describe(&output)
     );
     assert!(stdout.contains("std.si_units"), "{}", describe(&output));
+    assert!(!stdout.contains(&clean), "{}", describe(&output));
     assert_eq!(fs::read_to_string(&plate).expect("read fixture"), PLATE);
     assert_eq!(
         fs::read_to_string(&clean).expect("read fixture"),
