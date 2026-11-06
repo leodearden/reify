@@ -109,8 +109,8 @@ function isSelectTypeAheadKey(e: KeyboardEvent): boolean {
 /**
  * Registers global keyboard shortcuts on mount and removes them on cleanup.
  * Skips when the event target is an input, textarea, or contenteditable
- * element, or a select receiving a type-ahead key (bare letters and digits
- * reach the select untouched; Ctrl+S, F5, Escape and the like still fire),
+ * element, or a select receiving one of its own type-ahead keys (see
+ * isSelectTypeAheadKey; Ctrl+S, F5, Escape and the like still fire),
  * EXCEPT for palette-global shortcuts (commandPalette, symbolJump) which are
  * exempt from the typing-context guard. A `toggle` shortcut swallows its key's
  * auto-repeat keydowns, so holding the key flips the state once.

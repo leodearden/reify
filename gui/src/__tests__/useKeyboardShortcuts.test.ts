@@ -106,6 +106,19 @@ describe('useKeyboardShortcuts', () => {
     expect(onHelp).toHaveBeenCalledTimes(1);
   });
 
+  it('dispatching ? with Shift held (the Shift+/ keystroke) calls onHelp callback', () => {
+    const onHelp = vi.fn();
+    dispose = createRoot((d) => {
+      useKeyboardShortcuts({ onHelp });
+      return d;
+    });
+
+    document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true }),
+    );
+    expect(onHelp).toHaveBeenCalledTimes(1);
+  });
+
   it('dispatching ? when target is an <input> does NOT call onHelp', () => {
     const onHelp = vi.fn();
     dispose = createRoot((d) => {
@@ -772,6 +785,14 @@ describe('useKeyboardShortcuts — a focused <select> blocks only its type-ahead
     const event = new KeyboardEvent('keydown', { key: '2', bubbles: true, cancelable: true });
     focusedSelect({ onSwitchViewByIndex }).dispatchEvent(event);
     expect(onSwitchViewByIndex).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('a ? is type-ahead, not the help toggle, and is not prevented', () => {
+    const onHelp = vi.fn();
+    const event = new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true, cancelable: true });
+    focusedSelect({ onHelp }).dispatchEvent(event);
+    expect(onHelp).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
 });
