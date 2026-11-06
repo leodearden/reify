@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
-use crate::args::{PurposeActivation, build_cfg_set, parse_purpose_flag};
+use crate::args::{PurposeActivation, parse_purpose_flag, split_cfg_args};
 use crate::check_verdict::{
     check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
@@ -36,11 +36,19 @@ use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
 /// measures them), which owns triaging them — never by adding allowlist
 /// entries.
 pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
+    let (cfg, rest) = match split_cfg_args(args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            eprintln!("{}", CHECK_USAGE);
+            return ExitCode::FAILURE;
+        }
+    };
+    let args = rest.as_slice();
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags
     // and explicit rejection of unknown `--`-prefixed tokens so a typo like
     // `--purpouse` fails loud instead of being silently treated as a file path.
     let mut purpose_values: Vec<String> = Vec::new();
-    let mut cfg_values: Vec<String> = Vec::new();
     let mut strict = false;
     let mut verbose = false;
     let mut file: Option<&str> = None;
@@ -63,15 +71,6 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 purpose_values.push(args[i + 1].clone());
-                i += 2;
-            }
-            "--cfg" => {
-                if i + 1 >= args.len() {
-                    eprintln!("Error: --cfg requires a value");
-                    eprintln!("{}", CHECK_USAGE);
-                    return ExitCode::FAILURE;
-                }
-                cfg_values.push(args[i + 1].clone());
                 i += 2;
             }
             flag if flag.starts_with("--") => {
@@ -100,16 +99,6 @@ pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
         Some(f) => f,
         None => {
             eprintln!("{}", CHECK_USAGE);
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // Build the active cfg from the repeated `--cfg` values: target is
-    // host-defaulted and overridable only by `--cfg target=<v>` (PRD §4 D-2).
-    let cfg = match build_cfg_set(&cfg_values) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: {e}");
             return ExitCode::FAILURE;
         }
     };

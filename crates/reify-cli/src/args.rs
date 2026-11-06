@@ -161,6 +161,26 @@ pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
     Ok(cfg)
 }
 
+/// The single home of the `--cfg` argv grammar for every program-compiling
+/// subcommand: `--cfg` is repeatable, position-free, and always consumes the
+/// next token as its value; returns the active [`CfgSet`] and the remaining
+/// args in order.
+pub(crate) fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), String> {
+    let mut values: Vec<String> = Vec::new();
+    let mut rest: Vec<String> = Vec::new();
+    let mut tokens = args.iter();
+    while let Some(token) = tokens.next() {
+        if token == "--cfg" {
+            let value = tokens.next().ok_or("--cfg requires a value")?;
+            values.push(value.clone());
+        } else {
+            rest.push(token.clone());
+        }
+    }
+    let cfg = build_cfg_set(&values)?;
+    Ok((cfg, rest))
+}
+
 /// Parse a single required file-path positional, rejecting unknown `--`-prefixed flags
 /// and extra positionals.  Every error prints `usage` to stderr before returning
 /// `Err(ExitCode::FAILURE)` — callers can `return` the `Err` value directly.
