@@ -20,27 +20,8 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program::compile_program;
 use reify_core::Severity;
-use reify_ir::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
-};
-
-/// A local always-indeterminate checker (same contract as the compiler's stub).
-struct Indeterminate;
-
-impl ConstraintChecker for Indeterminate {
-    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
-        input
-            .constraints
-            .iter()
-            .map(|(id, _)| ConstraintResult {
-                id: id.clone(),
-                satisfaction: Satisfaction::Indeterminate,
-                diagnostics: ConstraintDiagnostics::default(),
-                indeterminate_reason: None,
-            })
-            .collect()
-    }
-}
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 /// A `CfgSet` with only `target` set (no flags / kv).
 fn target_cfg(target: &str) -> CfgSet {
@@ -119,7 +100,14 @@ fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
         parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
     let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    compile_program(&entry_path, &entry_src, &resolver, cfg, &Indeterminate).entry
+    compile_program(
+        &entry_path,
+        &entry_src,
+        &resolver,
+        cfg,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    )
+    .entry
 }
 
 /// Under `target = "linux"`, the gated linux import is followed: `LinuxOnly`

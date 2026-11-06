@@ -48,28 +48,9 @@ use reify_compiler::parse_with_stdlib;
 use reify_compiler::program::compile_program;
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 use reify_compiler::cfg::CfgSet;
-use reify_ir::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
-};
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 use reify_test_support::{diags_with_code, examples_corpus::discover_ri_files};
-
-/// A local always-indeterminate checker (same contract as the compiler's stub).
-struct Indeterminate;
-
-impl ConstraintChecker for Indeterminate {
-    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
-        input
-            .constraints
-            .iter()
-            .map(|(id, _)| ConstraintResult {
-                id: id.clone(),
-                satisfaction: Satisfaction::Indeterminate,
-                diagnostics: ConstraintDiagnostics::default(),
-                indeterminate_reason: None,
-            })
-            .collect()
-    }
-}
 
 /// Workspace root, resolved at compile time from this crate's manifest dir.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
@@ -250,7 +231,13 @@ fn diagnostics_for(path: &Path) -> Option<Vec<reify_core::Diagnostic>> {
     // stdlib — but is passed truthfully rather than as a sentinel so the
     // resolver is constructed identically to the CLI's.
     let resolver = ModuleResolver::new(path.parent()?, Path::new(STDLIB_ROOT));
-    let program = compile_program(path, &source, &resolver, &CfgSet::default(), &Indeterminate);
+    let program = compile_program(
+        path,
+        &source,
+        &resolver,
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
     Some(program.entry.diagnostics)
 }
 

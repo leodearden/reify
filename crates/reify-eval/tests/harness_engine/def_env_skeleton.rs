@@ -16,27 +16,8 @@ use reify_compiler::program::{CompiledProgram, compile_program};
 use reify_compiler::stdlib_loader::load_stdlib;
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_eval::DefEnv;
-use reify_ir::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
-};
-
-/// A local always-indeterminate checker (same contract as the compiler's stub).
-struct Indeterminate;
-
-impl ConstraintChecker for Indeterminate {
-    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
-        input
-            .constraints
-            .iter()
-            .map(|(id, _)| ConstraintResult {
-                id: id.clone(),
-                satisfaction: Satisfaction::Indeterminate,
-                diagnostics: ConstraintDiagnostics::default(),
-                indeterminate_reason: None,
-            })
-            .collect()
-    }
-}
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 /// A stdlib-only template name (std.io), resolved through the stdlib scope.
 const STDLIB_ONLY: &str = "STLOutput";
@@ -78,7 +59,7 @@ fn compile_fixture(dir: &Path) -> CompiledProgram {
         &main_src,
         &ModuleResolver::new(dir, dir.join("stdlib")),
         &CfgSet::default(),
-        &Indeterminate,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
 }
 

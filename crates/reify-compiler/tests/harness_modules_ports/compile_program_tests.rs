@@ -15,27 +15,8 @@ use reify_compiler::program::{
 };
 use reify_compiler::{CompiledModule, check_module_path_decl, compile_with_stdlib_checked};
 use reify_core::{DiagnosticCode, DimensionVector, ModulePath, Severity, SourceSpan, Type};
-use reify_ir::{
-    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
-};
-
-/// A local always-indeterminate checker (same contract as the compiler's stub).
-struct Indeterminate;
-
-impl ConstraintChecker for Indeterminate {
-    fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
-        input
-            .constraints
-            .iter()
-            .map(|(id, _)| ConstraintResult {
-                id: id.clone(),
-                satisfaction: Satisfaction::Indeterminate,
-                diagnostics: ConstraintDiagnostics::default(),
-                indeterminate_reason: None,
-            })
-            .collect()
-    }
-}
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 fn write(dir: &Path, name: &str, source: &str) -> PathBuf {
     let path = dir.join(name);
@@ -53,7 +34,7 @@ fn compile_entry(dir: &Path, stem: &str, source: &str, cfg: &CfgSet) -> Compiled
         source,
         &resolver_for(dir),
         cfg,
-        &Indeterminate,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
 }
 
@@ -103,7 +84,10 @@ fn diag_shapes(module: &CompiledModule) -> Vec<DiagShape> {
 /// the module-path declaration diagnostic pushed afterwards.
 fn legacy_single_file(stem: &str, source: &str) -> CompiledModule {
     let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single(stem));
-    let mut compiled = compile_with_stdlib_checked(&parsed, &Indeterminate);
+    let mut compiled = compile_with_stdlib_checked(
+        &parsed,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    );
     if let Some(diag) = check_module_path_decl(parsed.declared_module_path.as_ref(), &parsed.path) {
         compiled.diagnostics.push(diag);
     }
@@ -815,7 +799,7 @@ fn compile_parsed_entry(
         parsed,
         &resolver_for(dir),
         &CfgSet::default(),
-        &Indeterminate,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
     )
 }
 
