@@ -706,6 +706,62 @@ fn sweep_reports_a_non_string_panic_payload_as_the_workspace_formats_it() {
     );
 }
 
+// ── table-rule unit tests, over synthetic tables ────────────────────────────
+
+const SYNTHETIC_DECLARED: &[MustErrorFixture] = &[
+    MustErrorFixture {
+        path: "chartered/b.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "synthetic",
+    },
+    MustErrorFixture {
+        path: "inert/a.ri",
+        kind: MustErrorKind::CstFault,
+        reason: "synthetic",
+    },
+];
+
+const SYNTHETIC_UNSWEPT: &[UnsweptTree] = &[
+    UnsweptTree {
+        prefix: "inert/",
+        reason: "synthetic",
+        basis: UnsweptBasis::InertToVerify,
+    },
+    UnsweptTree {
+        prefix: "chartered/",
+        reason: "synthetic",
+        basis: UnsweptBasis::Charter,
+    },
+];
+
+#[test]
+fn declared_entries_in_inert_trees_names_each_offender() {
+    assert_eq!(
+        declared_entries_in_inert_trees(SYNTHETIC_DECLARED, SYNTHETIC_UNSWEPT),
+        ["inert/a.ri"],
+        "a declared entry in a Charter tree is checked on purpose; only one in an \
+         InertToVerify tree is an offender"
+    );
+}
+
+#[test]
+fn dead_unswept_rows_spares_an_inert_to_verify_row() {
+    assert_eq!(
+        dead_unswept_rows(SYNTHETIC_UNSWEPT, &[]),
+        ["chartered/"],
+        "a Charter row covering no tracked .ri is dead; an InertToVerify row is a routing \
+         fact and stands while its tree is empty"
+    );
+}
+
+#[test]
+fn dead_unswept_rows_keeps_a_charter_row_that_covers_a_tracked_ri() {
+    assert_eq!(
+        dead_unswept_rows(SYNTHETIC_UNSWEPT, &listing(&["chartered/zz_synthetic.ri"])),
+        Vec::<&str>::new()
+    );
+}
+
 // ── the tracked corpus ──────────────────────────────────────────────────────
 
 #[test]
@@ -801,6 +857,15 @@ fn must_error_and_unswept_tables_are_well_formed() {
         unterminated.is_empty(),
         "UNSWEPT_RI_TREES prefixes must end with '/' so they cannot match a sibling \
          tree: {unterminated:?}"
+    );
+
+    let declared_in_inert_trees =
+        declared_entries_in_inert_trees(MUST_ERROR_RI_FIXTURES, UNSWEPT_RI_TREES);
+    assert!(
+        declared_in_inert_trees.is_empty(),
+        "verify routes these files' trees to no heavy checks, so a declared entry would have \
+         the guard read them and a hook-gated commit could red a merge gate; the file must \
+         live elsewhere to be declared: {declared_in_inert_trees:?}"
     );
 
     let tracked = tracked_ri_paths(&workspace_root());
