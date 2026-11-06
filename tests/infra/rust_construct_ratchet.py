@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Count regex occurrences in the production code of Rust files against
 per-row baselines, read through the one lexer scripts/lib_rust_production_view.sh
-exports; tested by tests/infra/test_compiler_decl_pass_ratchets.py.
+exports; tested by tests/infra/test_rust_construct_ratchet.py.
 """
 
 from __future__ import annotations

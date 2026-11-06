@@ -58,8 +58,14 @@ tests/infra/adoption_ratchet.py    tests/infra/test_infra_adoption_ratchet.sh
 tests/infra/compiler-namespace-ratchet-baseline.txt    tests/infra/test_compiler_namespace_ratchet.sh
 tests/infra/source_count_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
 tests/infra/test_compiler_namespace_ratchet.py    tests/infra/test_compiler_namespace_ratchet.sh
-# Task 8730: the construct-ratchet engine and its member suite select its wrapper.
+# Task 8730: the construct-ratchet engine, its shared fixtures and its contract
+# suite select the engine's wrapper. The engine and fixtures also select every
+# member suite built on them, since an engine edit can move a member's live counts.
+tests/infra/rust_construct_ratchet.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/rust_construct_ratchet_fixtures.py    tests/infra/test_rust_construct_ratchet.sh
+tests/infra/test_rust_construct_ratchet.py    tests/infra/test_rust_construct_ratchet.sh
 tests/infra/rust_construct_ratchet.py    tests/infra/test_compiler_decl_pass_ratchets.sh
+tests/infra/rust_construct_ratchet_fixtures.py    tests/infra/test_compiler_decl_pass_ratchets.sh
 tests/infra/test_compiler_decl_pass_ratchets.py    tests/infra/test_compiler_decl_pass_ratchets.sh
 # Task 8455: the E3 §7 analysis modules and their suite select its wrapper.
 docs/prds/v0_6/e3-granularity/analysis/e3_protocol.py    tests/infra/test_e3_analysis.sh
@@ -376,6 +382,7 @@ scripts/lib_rust_production_view.sh    tests/infra/test_rust_production_view_lib
 scripts/lib_rust_production_view.sh    tests/infra/test_nan_safe_ordering_guard_wired.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_compute_trampoline_registration_wired.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_audit_orphan_producers.sh
+scripts/lib_rust_production_view.sh    tests/infra/test_rust_construct_ratchet.sh
 scripts/lib_rust_production_view.sh    tests/infra/test_compiler_decl_pass_ratchets.sh
 tests/infra/test_rust_production_view_lib.py    tests/infra/test_rust_production_view_lib.sh
 
