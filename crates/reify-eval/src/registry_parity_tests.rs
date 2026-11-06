@@ -116,8 +116,10 @@
 //! - **The oracle is kind-level.** [`crate::value_type_kind_matches`] compares
 //!   a value's outer KIND against a type. Dimensions and inner element types
 //!   are not compared, for concrete and Field shapes alike: a kernel answering
-//!   `Scalar<LENGTH>` where `Scalar<PRESSURE>` is declared, or a list of the
-//!   wrong element type, reads `Matches`.
+//!   `Scalar<LENGTH>` where `Scalar<PRESSURE>` is declared, a list of the
+//!   wrong element type, or a `Value::Point` of the wrong length against a
+//!   `Type::Point` domain (a 2-D sample point for a `Point3<Length>` Field,
+//!   say) reads `Matches` — on the probe checks as on the verdict.
 //! - **A Field result is sampled at one point.** The Sample leg (see
 //!   [`probe_legs`]) executes the declared codomain at a single point of the
 //!   domain, so a codomain that held there and changed kind elsewhere would not
@@ -526,11 +528,13 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
 
-/// Whether a probe's `value` is well-formed for the `ty` it is paired with: the
-/// pair would classify [`ParityVerdict::Matches`], so a probe can never pass
-/// this check yet read `Vacuous` at a leg.
+/// Whether a probe's `value` is well-formed for the `ty` it is paired with:
+/// exactly when the verdict would classify the pair [`ParityVerdict::Matches`].
+/// The two sentinels the verdict reads as `Vacuous` — `Value::Undef` and a
+/// `Type::Error` slot — therefore fail at the probe rather than being blamed on
+/// the row.
 fn matches_non_vacuously(value: &Value, ty: &Type) -> bool {
-    crate::value_type_kind_matches(value, ty, None)
+    classify(value, ty) == ParityVerdict::Matches
 }
 
 /// Every probe must be well-formed for the row it probes, checked five ways —
@@ -585,9 +589,11 @@ fn representative_probes_are_well_formed_for_every_row() {
                 row.arg_slots.len()
             );
 
-            // (c) each pair is internally consistent under the SAME oracle the
-            // verdict uses, so a value typed as something it is not cannot
-            // make a row look like it diverges.
+            // (c) each pair is internally consistent under the verdict's own
+            // rule (`matches_non_vacuously`, i.e. `classify`): a value typed as
+            // something it is not cannot make a row look like it diverges, and
+            // an Undef argument is rejected here instead of being blamed on the
+            // row as Vacuous.
             for (slot, (value, ty)) in probe.args.iter().enumerate() {
                 assert!(
                     matches_non_vacuously(value, ty),
@@ -628,17 +634,20 @@ fn representative_probes_are_well_formed_for_every_row() {
                 }
             );
 
-            // ...and that point lies in the declared Field's domain, under the
-            // same oracle as (c). A point of the wrong kind would make `sample`
-            // yield Value::Undef, and the sweep would report the row Vacuous
-            // for a fault in this file's probe data.
+            // ...and that point satisfies the declared Field's domain, under the
+            // same rule as (c). A point of the wrong kind, or a Value::Undef
+            // one, would make `sample` yield Value::Undef, and the sweep would
+            // report the row Vacuous for a fault in
+            // `registry_parity_tests/probes.rs` — so it is caught here, not at
+            // the Sample leg.
             if let (Some(point), Type::Field { domain, .. }) = (&probe.sample_at, &declared) {
                 assert!(
                     matches_non_vacuously(point, domain),
                     "{at}: the probe's sample point is mis-built — it does not \
                      satisfy the declared Field's domain ({point:?} vs \
                      {domain:?}), so its Sample leg would read Vacuous and \
-                     blame the row for this file's probe data"
+                     blame the row for a fault in \
+                     registry_parity_tests/probes.rs"
                 );
             }
         }
