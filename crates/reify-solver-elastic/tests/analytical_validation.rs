@@ -90,32 +90,32 @@
 //! - Structured tet meshes are generated procedurally (no Gmsh) for
 //!   controlled, repeatable mesh resolution within narrow tolerance bands.
 //!   Established pattern: `tests/shell_benchmarks.rs`.
-//! - Solve pipeline: `element_stiffness` → `assemble_global_stiffness` →
-//!   `apply_dirichlet_row_elimination` → loads → `solve_cg(Deterministic)`.
+//! - Solve pipeline: each element kind's own assembly fn feeds fea_harness's
+//!   shared `rhs_from_point_loads` + `solve_displacement` tail.
 //! - Stress validation reuses the kernel's `element_stress_p1` /
 //!   `element_stress_p2` (per-element constant Cauchy tensor) and
 //!   `recover_nodal_stress_p1` (volume-weighted nodal averaging, documented as
 //!   connectivity-shape agnostic).
 
+use faer::sparse::SparseRowMat;
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness,
     assemble_global_stiffness,
-    apply_dirichlet_row_elimination,
     DirichletBc, FaceOrder, IsotropicElastic,
     StressElement, element_stress_p1, element_stress_p2,
     recover_nodal_stress_p1, tet_volume_p1,
     element_stiffness_hex_p1, element_stiffness_wedge_p1,
     HexP1, ReferenceCoord, ReferenceElement,
     apply_traction_load,
-    solve_cg, CgSolverOptions, SolverMode, CgResult,
+    CgSolverOptions,
 };
 
 #[path = "common/fea_harness.rs"]
 mod fea_harness;
 use fea_harness::{
-    box_p1_mesh, dedup_bcs, dirichlet_fix_face, dirichlet_prescribe_boundary_field,
+    box_p1_mesh, dirichlet_fix_face, dirichlet_prescribe_boundary_field,
     distributed_tip_load, end_face_nodes, gather_u_p1, kuhn_split_hex_to_six_tets,
-    solve_p1_pipeline, von_mises_of_tensor,
+    rhs_from_point_loads, solve_displacement, solve_p1_pipeline, von_mises_of_tensor,
 };
 
 // ─── cantilever fixtures and local helpers ──────────────────────────────────
@@ -283,21 +283,14 @@ fn add_edge_midpoint_nodes(
     (p2_nodes, p2_conns)
 }
 
-/// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system.
-///
-/// `opts` controls the CG solver's convergence criterion and iteration cap.
-/// For slender or otherwise ill-conditioned problems, pass a raised `max_iter`.
-fn solve_p2_pipeline_with_opts(
+/// Assemble the global stiffness matrix of a P2 tetrahedral mesh, in
+/// `AssemblyMode::Deterministic`; the P2 counterpart of
+/// [`fea_harness::assemble_p1_stiffness`].
+fn assemble_p2_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-    opts: CgSolverOptions,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -317,25 +310,26 @@ fn solve_p2_pipeline_with_opts(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads {
-        f[dof] += val;
-    }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let max_iter = opts.max_iter;
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_p2_pipeline_with_opts: CG did not converge after {} iterations (cap={})",
-        result.iterations,
-        max_iter,
-    );
-    result.u().to_vec()
+/// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system:
+/// [`rhs_from_point_loads`] and [`assemble_p2_stiffness`] fed to
+/// [`solve_displacement`]. `bcs` is deduplicated in place.
+///
+/// `opts` controls the CG solver's convergence criterion and iteration cap.
+/// For slender or otherwise ill-conditioned problems, pass a raised `max_iter`.
+#[track_caller]
+fn solve_p2_pipeline_with_opts(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 10]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+    opts: CgSolverOptions,
+) -> Vec<f64> {
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(assemble_p2_stiffness(nodes, conns, mat), &f, bcs, opts)
 }
 
 /// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system using the
@@ -343,6 +337,7 @@ fn solve_p2_pipeline_with_opts(
 ///
 /// For slender or otherwise ill-conditioned problems use
 /// [`solve_p2_pipeline_with_opts`] with a raised `max_iter`.
+#[track_caller]
 fn solve_p2_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
@@ -1431,20 +1426,13 @@ fn gather_u_hex(u: &[f64], conn: &[usize; 8]) -> [f64; 24] {
     ue
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 hexahedral FEA system.
-///
-/// Mirrors [`solve_p1_pipeline`] exactly but uses `element_stiffness_hex_p1`
-/// (24×24) and 8-node connectivity stride.
-fn solve_hex_p1_pipeline(
+/// Assemble the global stiffness matrix of a P1 hexahedral mesh
+/// (`element_stiffness_hex_p1`, 24×24) in `AssemblyMode::Deterministic`.
+fn assemble_hex_p1_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 8]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -1465,22 +1453,28 @@ fn solve_hex_p1_pipeline(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads { f[dof] += val; }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_hex_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
-    );
-    result.u().to_vec()
+/// Assemble, apply BCs, and CG-solve a P1 hexahedral FEA system:
+/// [`rhs_from_point_loads`] and [`assemble_hex_p1_stiffness`] fed to
+/// [`solve_displacement`] with the crate-default `CgSolverOptions`. `bcs` is
+/// deduplicated in place.
+#[track_caller]
+fn solve_hex_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 8]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(
+        assemble_hex_p1_stiffness(nodes, conns, mat),
+        &f,
+        bcs,
+        CgSolverOptions::default(),
+    )
 }
 
 // ─── wedge P1 mesh builder and solve pipeline ────────────────────────────────
@@ -1529,20 +1523,13 @@ fn box_wedge_mesh(
     (nodes, connectivity)
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 wedge (triangular prism) FEA system.
-///
-/// Mirrors [`solve_hex_p1_pipeline`] exactly but uses `element_stiffness_wedge_p1`
-/// (18×18) and 6-node connectivity stride.
-fn solve_wedge_p1_pipeline(
+/// Assemble the global stiffness matrix of a P1 wedge (triangular prism) mesh
+/// (`element_stiffness_wedge_p1`, 18×18) in `AssemblyMode::Deterministic`.
+fn assemble_wedge_p1_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 6]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -1563,22 +1550,28 @@ fn solve_wedge_p1_pipeline(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads { f[dof] += val; }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_wedge_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
-    );
-    result.u().to_vec()
+/// Assemble, apply BCs, and CG-solve a P1 wedge (triangular prism) FEA system:
+/// [`rhs_from_point_loads`] and [`assemble_wedge_p1_stiffness`] fed to
+/// [`solve_displacement`] with the crate-default `CgSolverOptions`. `bcs` is
+/// deduplicated in place.
+#[track_caller]
+fn solve_wedge_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 6]],
+    bcs: &mut Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(
+        assemble_wedge_p1_stiffness(nodes, conns, mat),
+        &f,
+        bcs,
+        CgSolverOptions::default(),
+    )
 }
 
 // ─── convergence comparison: hex vs tet at equal DOF ─────────────────────────
