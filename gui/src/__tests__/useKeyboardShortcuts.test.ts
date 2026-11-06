@@ -774,6 +774,14 @@ describe('useKeyboardShortcuts — a focused <select> blocks only its type-ahead
     expect(onSwitchViewByIndex).not.toHaveBeenCalled();
     expect(event.defaultPrevented).toBe(false);
   });
+
+  it('a ? is type-ahead, not the help toggle, and is not prevented', () => {
+    const onHelp = vi.fn();
+    const event = new KeyboardEvent('keydown', { key: '?', shiftKey: true, bubbles: true, cancelable: true });
+    focusedSelect({ onHelp }).dispatchEvent(event);
+    expect(onHelp).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
 });
 
 describe('useKeyboardShortcuts — toggle shortcuts ignore auto-repeat', () => {
