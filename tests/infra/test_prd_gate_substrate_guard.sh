@@ -262,7 +262,9 @@ echo "-- prd_gate_probe_set_drop_grammar (hermetic, synthetic probe-sets) --"
 # probe carries a distinct capability/fixture and a non-trivial `expected`
 # (including a nested `match`), so a filter that rebuilt probes field-by-field
 # instead of passing them through whole would be caught by the deep-equality
-# check below rather than passing on a lucky subset of fields.
+# check below rather than passing on a lucky subset of fields. Each `match` is
+# one the real load_probe_set accepts for its kind, because that check loads the
+# kept probes through it; a kind with no entry below fails loudly (KeyError).
 _mk_probe_set() {
     local name="$1"
     shift
@@ -272,11 +274,15 @@ import json, sys
 kinds = [ln.strip() for ln in sys.stdin if ln.strip()]
 probes = []
 for i, kind in enumerate(kinds):
+    match = {
+        "check": {"exit_code": 1, "stderr_contains": f"E_SYNTH_{i}"},
+        "grammar": {},
+    }[kind]
     probes.append({
         "capability": f"{5897 + i} synthetic {kind} capability",
         "probe_kind": kind,
         "fixture": f"tests/prd-gate/fixtures/synthetic_{kind}_{i}.ri",
-        "expected": {"observation": "present", "match": {"stderr": f"E_SYNTH_{i}"}},
+        "expected": {"observation": "present", "match": match},
         "notes": f"row {i}",
     })
 json.dump({"probes": probes}, open(sys.argv[1], "w"), indent=2)
@@ -325,7 +331,7 @@ spec = importlib.util.spec_from_file_location(
     "prd_capability_check", f"{repo_root}/scripts/prd-capability-check.py")
 pcc = importlib.util.module_from_spec(spec)
 # Register in sys.modules BEFORE exec_module — the same idiom, for the same
-# reason, as scripts/test_prd_capability_check.py:34-39: @dataclass resolves
+# reason, as the loader in scripts/_pcc_test_support.py: @dataclass resolves
 # cls.__module__ through sys.modules at decoration time, so an unregistered
 # module raises AttributeError on the checker's first dataclass.
 sys.modules["prd_capability_check"] = pcc
@@ -621,10 +627,10 @@ _resolve_e2e_bin() {
 }
 
 # A tree-sitter that reproduces the MEASURED sandboxed-role cache denial:
-# grammar_cache_denied() requires BOTH a load-failure marker ("Failed to load
-# language") AND a permission marker ("Permission denied" / "os error 13"), so
-# a stub carrying only one half would be classified as an ordinary parse
-# failure and would test nothing. The signature text is written to a sibling
+# α's grammar_load_failure() boundary parser marks a cache denial only with BOTH
+# a load-failure marker ("Failed to load language") AND a permission marker
+# ("Permission denied" / "os error 13") after it, so a stub carrying only one
+# half would not read as a denial and would test nothing. The signature text is written to a sibling
 # file and cat'd rather than embedded in the stub body — it is unindented and
 # quote-heavy, exactly the shape that a heredoc inside a heredoc mangles.
 _mk_cache_denial_stub() {

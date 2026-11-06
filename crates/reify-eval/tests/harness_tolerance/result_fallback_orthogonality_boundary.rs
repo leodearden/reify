@@ -42,7 +42,7 @@ structure S {
 }
 "#;
     let compiled = parse_and_compile_with_stdlib(src);
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
     let result = engine.eval(&compiled);
 
     // (1) Determined none recovers to the default 6mm.
@@ -104,7 +104,7 @@ structure S {
     let upstream_node = NodeId::Value(upstream_id.clone());
     let consumer_node = NodeId::Value(consumer_id.clone());
 
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
 
     // === Pass 1: cold-start, all-Final baseline ===
     // or_else(some(5mm), some(5mm)) = some(5mm); unwrap_or(some(5mm), 6mm) = 5mm.

@@ -12,7 +12,8 @@
 #   4. Install gui/ npm deps (vite needs them).
 #   5. Start the vite dev server in its own PROCESS GROUP, with stdin detached
 #      from the terminal, and wait for :${REIFY_VITE_PORT:-1420}.
-#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`).
+#   6. Build the reify-gui cargo binary in DEBUG profile (with feature `gui`;
+#      no `embedded-frontend`, so the window loads devUrl).
 #   7. Export REIFY_DEBUG=1, the OCCT/tbb LD_LIBRARY_PATH and the WebKit
 #      renderer default.
 #   8. Run target/debug/reify-gui <file.ri> as a backgrounded child and
@@ -342,31 +343,19 @@ if [ "$VITE_READY" -ne 1 ]; then
 fi
 
 # -- 6. Build reify-gui in DEBUG profile -------------------------------------
-# Debug profile is required so Tauri's runtime selects `devUrl` (vite) instead
-# of `frontendDist` — see tauri.conf.json. cfg!(debug_assertions) drives this.
+# Only `gui`, not `embedded-frontend` (see gui/src-tauri/Cargo.toml), so the
+# window loads devUrl, retargeted by gui/src-tauri/src/dev_url.rs; the debug
+# profile is for build time.
 echo "==> Building reify-gui (debug)..."
 cargo build -p reify-gui --bin reify-gui --features gui
 
-# -- 7. Set debug-mode env vars ----------------------------------------------
+# -- 7. Debug mode + launch environment --------------------------------------
 # REIFY_DEBUG=1 enables the MCP debug listener on 127.0.0.1:$REIFY_DEBUG_PORT
-# (see gui/src-tauri/src/main.rs). LD_LIBRARY_PATH is required for direct
-# binary invocation since the cargo runner only fires for `cargo run`.
+# (see gui/src-tauri/src/main.rs).
 export REIFY_DEBUG=1
-# Only prepend the snap path if it exists — the PPA install (default in
-# scripts/setup-dev.sh) puts OCCT in /usr/lib where the loader finds it
-# without help.
-SNAP_OCCT_LIB="/snap/freecad/current/usr/lib"
-if [ -d "$SNAP_OCCT_LIB" ]; then
-    export LD_LIBRARY_PATH="$SNAP_OCCT_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
 
-# The oneTBB LD_LIBRARY_PATH pin + the WebKit renderer default, shared with
-# scripts/run-gui.sh — see scripts/lib_gui_launch.sh for both rationales.
-#
-# MUST come after the snap prepend above: gui_launch_env_pin PREPENDS the pin
-# dir, so anything that edits LD_LIBRARY_PATH afterwards would land ahead of it
-# and defeat #5192's pin. It is deliberately not nested in the snap conditional
-# either — the snap dir does not exist on a PPA host.
+# The whole launch loader path and the WebKit renderer default, shared with
+# scripts/run-gui.sh: scripts/lib_gui_launch.sh.
 gui_launch_env_pin
 
 # -- 8. Run reify-gui as a backgrounded CHILD (not exec) ---------------------

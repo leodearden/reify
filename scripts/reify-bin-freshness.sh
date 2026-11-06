@@ -155,9 +155,15 @@ reify_bin_stamp() {
 #      this is a deliberate operator/verify.sh handoff, not the auto-discovery
 #      path where cross-candidate leftovers are the risk. A REIFY_BIN pointing
 #      at a missing file is a clean SKIP rather than a spurious HARNESS_ERROR.
-#   2. Otherwise, auto-discover target/release/reify, then target/debug/reify
-#      (matching prd-capability-check.py's _resolve_reify_bin precedence), and
-#      require it to pass reify_bin_is_stale's SHA-identity check.
+#   2. Otherwise, auto-discover target/release/reify, then target/debug/reify,
+#      and require it to pass reify_bin_is_stale's SHA-identity check.
+#
+# Relation to prd-capability-check.py's _resolve_reify_bin: both read the same
+# target/.reify-bin-sha sidecar, which stamps target/release/reify (verify.sh
+# writes it after `cargo build --release -p reify-cli`). The checker trusts a
+# lone profile binary and, with both profiles present, takes target/release/reify
+# only on a sidecar==HEAD match and otherwise refuses and requires REIFY_BIN;
+# this function SKIPs any unstamped auto-discovered binary.
 #
 # Returns 0 (trusted) or 1 (SKIP — never a verdict).
 resolve_trusted_reify_bin() {

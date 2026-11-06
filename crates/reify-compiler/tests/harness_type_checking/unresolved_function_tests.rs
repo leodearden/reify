@@ -28,29 +28,18 @@
 //! the fallback in `expr.rs` emits it.
 
 use reify_core::{DimensionVector, Severity, Type};
-use reify_test_support::{compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only};
-
-/// Every diagnostic in `module` carrying `code`, in source order.
-///
-/// Matches on the CODE, never on message text: the message is explicitly not a
-/// stable contract (`diagnostics.rs` says so for every coded diagnostic), and a
-/// text match would make this file break on rewording rather than on behaviour.
-fn diags_with_code(
-    module: &reify_compiler::CompiledModule,
-    code: reify_core::DiagnosticCode,
-) -> Vec<&reify_core::Diagnostic> {
-    module
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(code))
-        .collect()
-}
+use reify_test_support::{
+    compile_source_with_stdlib, diags_with_code, errors_only, get_let_expr_in, warnings_only,
+};
 
 /// Every `UnresolvedFunction`-coded diagnostic in `module`, in source order.
 fn unresolved_function_diags(
     module: &reify_compiler::CompiledModule,
 ) -> Vec<&reify_core::Diagnostic> {
-    diags_with_code(module, reify_core::DiagnosticCode::UnresolvedFunction)
+    diags_with_code(
+        &module.diagnostics,
+        reify_core::DiagnosticCode::UnresolvedFunction,
+    )
 }
 
 /// Every Error-severity diagnostic MESSAGE in `module`, in source order.
@@ -403,7 +392,7 @@ fn zero_arg_known_but_unregistered_callee_keeps_only_the_legacy_warning() {
 /// order.
 fn arg_shape_diags(module: &reify_compiler::CompiledModule) -> Vec<&reify_core::Diagnostic> {
     diags_with_code(
-        module,
+        &module.diagnostics,
         reify_core::DiagnosticCode::BuiltinArgShapeUnrecognized,
     )
 }
@@ -694,9 +683,9 @@ fn zero_arg_mis_shaped_known_builtin_is_not_double_diagnosed() {
 // a user `fn` is not a builtin. The fallback's defect is that it read that
 // `false` as "exists nowhere", which only holds when the caller's function
 // table was COMPLETE. It is not complete inside a `fn` body:
-// `compile_builder/functions_phase.rs` compiles each body against
-// `&ctx.functions`, the user-only table that GROWS as the loop walks source
-// order, and only builds the merged `ctx.resolution_functions` afterwards.
+// `compile_builder/functions_phase.rs` compiles each body against the user
+// fns compiled so far plus the prelude, a table that GROWS in source order,
+// and only builds the merged `ctx.resolution_functions` afterwards.
 // So a call to a later-declared sibling yields `OverloadResolution::
 // NoUserFunctions` and lands on the terminal fallback with a name that is
 // perfectly real. Entity bodies, compiled after that merge, never see this.

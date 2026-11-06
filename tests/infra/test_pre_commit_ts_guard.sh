@@ -2,10 +2,10 @@
 # Infrastructure test for task #7538 (amendment pass): behavioural coverage
 # for hooks/pre-commit's tree-sitter generated-file guard.
 #
-# The guard's alternation now has ten branches (eight literal targets under
-# tree-sitter-reify/src/ from the root .gitignore's "Tree-sitter generated"
-# block, plus the CLI binary and ad-hoc *.o files from the nested
-# tree-sitter-reify/.gitignore) with hand-escaped metacharacters. Before this
+# The guard's alternation has one branch per entry of the root .gitignore's
+# "Tree-sitter generated" block (targets under tree-sitter-reify/src/), plus
+# the CLI binary and ad-hoc *.o files from the nested
+# tree-sitter-reify/.gitignore, with hand-escaped metacharacters. Before this
 # test, nothing ever staged a tree-sitter artifact and ran the hook — a typo
 # in any branch (a missing backslash, a `$` anchor silently excluding a case)
 # would leave the guard green while the regression it exists to prevent (a
@@ -47,8 +47,8 @@ assert "hooks/pre-commit exists" test -f "$PRE_COMMIT"
 mapfile -t ROOT_BLOCK_PATHS < <(
     sed -n '/^# Tree-sitter generated/,/^$/p' "$ROOT_GITIGNORE" | grep '^tree-sitter-reify/'
 )
-assert "root .gitignore Tree-sitter generated block has 8 path lines" \
-    test "${#ROOT_BLOCK_PATHS[@]}" -eq 8
+assert "root .gitignore Tree-sitter generated block has 9 path lines" \
+    test "${#ROOT_BLOCK_PATHS[@]}" -eq 9
 
 # Nested tree-sitter-reify/.gitignore additionally ignores the CLI binary and
 # ad-hoc *.o files — neither pattern exists in the root .gitignore.
@@ -58,20 +58,22 @@ assert "nested tree-sitter-reify/.gitignore still ignores *.o" \
     bash -c "grep -qxF '*.o' '$NESTED_GITIGNORE'"
 
 # Turn each root-block entry into a concrete stageable file path: a glob
-# (.tmp-*) becomes a literal example, and a directory (.generate.lock.d) gets
-# a file underneath it (git never stages a bare directory). Everything else
+# (.tmp-*) becomes a literal example, and a directory (.generate.lock.d, or
+# any entry written with a trailing slash such as src/tree_sitter/) gets a
+# file underneath it (git never stages a bare directory). Everything else
 # passes through unchanged.
 GUARDED_PATHS=()
 for p in "${ROOT_BLOCK_PATHS[@]}"; do
     case "$p" in
         */.tmp-\*)          GUARDED_PATHS+=("${p%\*}foo") ;;
         */.generate.lock.d) GUARDED_PATHS+=("$p/held-by-pid-123") ;;
+        */)                 GUARDED_PATHS+=("${p}parser.h") ;;
         *)                  GUARDED_PATHS+=("$p") ;;
     esac
 done
 GUARDED_PATHS+=("tree-sitter-reify/tree-sitter" "tree-sitter-reify/src/scanner.o")
-assert "derived fixture list has 10 concrete guarded paths" \
-    test "${#GUARDED_PATHS[@]}" -eq 10
+assert "derived fixture list has 11 concrete guarded paths" \
+    test "${#GUARDED_PATHS[@]}" -eq 11
 
 # -- throwaway git repo with just the (tracked) hook ---------------------------
 FIX="$(mktemp -d)"; _TMPDIRS+=("$FIX")

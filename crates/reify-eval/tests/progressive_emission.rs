@@ -86,7 +86,7 @@ fn two_cell_module() -> reify_compiler::CompiledModule {
 fn progressive_node_emits_one_intermediate_then_final_propagates_to_downstream() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval: a and b are both Final after eval.
     engine.eval(&module);
@@ -204,7 +204,7 @@ fn progressive_node_emits_one_intermediate_then_final_propagates_to_downstream()
 fn progressive_node_emits_three_intermediates_then_final_transitions_downstream() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval: a and b are both Final after eval.
     engine.eval(&module);
@@ -330,7 +330,7 @@ fn progressive_node_emits_three_intermediates_then_final_transitions_downstream(
 fn progressive_emission_does_not_recompute_downstream_value() {
     let module = two_cell_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = Engine::new(Box::new(checker), None);
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // Cold-start eval: a and b are both Final after eval.
     engine.eval(&module);

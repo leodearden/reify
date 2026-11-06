@@ -26,8 +26,11 @@ decision D6). A third family, the **declared-surface family**
 (INV-PD-1..2), plus the umbrella principle below, was appended
 2026-08-31 from the trampoline param-drop and result-field vacancy
 censuses (PRDs `docs/prds/v0_6/trampoline-param-drop-closure.md` and
-`docs/prds/v0_6/result-field-vacuity-closure.md`). Other invariant
-families may be appended later; keep slugs stable.
+`docs/prds/v0_6/result-field-vacuity-closure.md`). A fourth family, the
+**architecture family** (INV-ARCH-1), was appended 2026-10-12 from
+review-all program `review-all-reify-20261010`, stream S3 (PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md`, D11). Other
+invariant families may be appended later; keep slugs stable.
 
 ## The umbrella principle — `nothing-vacuous-and-unowned`
 
@@ -73,9 +76,12 @@ requires a census row in the same change.**
 | doc-chunk ↔ registry truth | PDOCCOVER | shipped |
 | `dimensionless_scalar()` reintroduction | PDSSENTINEL | shipped |
 | layer-rule imports | PLAYER | shipped |
+| intra-crate module import cycles | module_scc_ratchet (INV-ARCH-1; reify-compiler excluded until S7 κ) | shipped |
 | code-less `Diagnostic::error`/`warning` sites | PDIAG | shipped |
 | PRD terminal-status markers | PPRDSTATUS (#6346) | chartered |
-| prose task-promises in doc comments | convention-only — PTODO-grammar-extension bookmark #7098 (filed by `result-field-vacuity-closure.md` ζ) | unenforced |
+| verify knob registry and role/profile policy fields | `tests/infra/test_verify_policy.py` — every RolePolicy/ProfilePolicy field appears in `--print-role-policy`; every knob is documented in `docs/notes/verify-pipeline-knobs.md`; consumption itself is convention-only (`verify-structured-plan-and-role-table.md` D14) | shipped |
+| prose task-promises naming an owner (`owned by #N`, `deferred to task N`, `#N will …`, `until #N lands`) | PTODO lane δ-C → `orphaned` via the §19(b) cadenced liveness sweep (`reify-audit-ptodo-detector.md` §8.1, §21) | shipped |
+| prose task-promises outside δ-C's grammar (uncited "in a later task"; trailing `(task N)` on a future clause; promise split across lines) | convention-only — measured and declined (`reify-audit-ptodo-detector.md` §21) | unenforced |
 | whether a declared knob should exist at all | convention-only — deliberately unaudited (`trampoline-param-drop-closure.md` §11) | unenforced |
 
 ## INV-SF-1 `undef-has-provenance`
@@ -331,8 +337,9 @@ the arc measure? Is there any path to an Angle-typed value in this
 feature that does not pass through a named primitive/channel/helper?
 
 **Evidence**: inverse trig and `phase`/`arg` return `Type::angle()` at
-the static layer (`crates/reify-compiler/src/math_signatures.rs:357,
-:375`) and tag `DimensionVector::ANGLE` at eval
+the static layer (their arms of `math_fn_result_type` in
+`crates/reify-compiler/src/math_signatures.rs`) and tag
+`DimensionVector::ANGLE` at eval
 (`crates/reify-stdlib/src/trig.rs:20-35`); the geometry queries `angle`
 and `angle_between_surfaces` are the same shape — `Type::angle()` at
 `crates/reify-compiler/src/units.rs:349` (`angle_between_surfaces`) and
@@ -440,7 +447,7 @@ status:
 | inverse trig / `phase` / `arg` | return type | `math_signatures.rs` + eval Angle tag | shipped |
 | `orient_log` / rotation vectors | return type (2·atan2 primitive) | #6080 | ruled, pending |
 | geometry `angle`, `angle_between_surfaces` queries | return type | query typing | shipped |
-| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | chartered |
+| geometry `curvature` query | return type (dθ/ds primitive) | angle-dimension-completion leaf α | shipped (α, #6179) |
 | `ElasticResult.rotation` = curl/2 | named channel | #6164 | shipped |
 | `ElasticResult.shear_angles` | named channel | angle-dimension-completion leaf σ | shipped (σ, #6183) |
 | MOI kernel seam (∫ρr²dV → rotational inertia) | deliberate rad⁻² tag at `dispatch_inertia_tensor` | #5825 ruling, #5844 implementation | ruled, pending |
@@ -520,15 +527,42 @@ unrelated reasons — nothing in this family changes that:
   (`fn_param_default_compatible`), so even
   `fn f(a : Angle = 2.5)` errors `FnParamDefaultTypeMismatch`
   (`crates/reify-compiler/src/functions.rs:187-215`).
-- **`sin(2.5)` isn't a widening — trig arguments are unchecked**:
-  no argument-dimension check exists for the transcendental family.
-  `MATH_TRANSCENDENTAL_NAMES` is a name list only
-  (`crates/reify-compiler/src/math_signatures.rs:95-97`); its
-  "accept ANGLE-or-Real" comment is intent only, not enforced.
-  `math_fn_result_type` fixes just the RESULT type
-  (`crates/reify-compiler/src/math_signatures.rs:374`) and never
-  inspects the argument, so every argument passes: `sin(2.5)`,
-  `sin(ratio * 2.0)`, and `sin(5.0mm)` (LENGTH) all compile clean.
+- **`sin(2.5)` isn't a widening — forward-trig arguments are
+  dimension-checked, and dimensionless passes that check**: since
+  task 6249, `sin`/`cos`/`tan` reject a dimensioned non-ANGLE
+  argument at compile time with a coded `ArgTypeMismatch`
+  (`check_forward_trig_arg_dimensions` in
+  `crates/reify-compiler/src/math_signatures.rs`, called from
+  `resolve_function_overload`'s `NoUserFunctions` arm in
+  `crates/reify-compiler/src/expr.rs`). `sin(5.0mm)` (LENGTH)
+  therefore no longer compiles clean. But `sin(2.5)` and
+  `sin(ratio * 2.0)` still do, and for the same reason as each
+  other: the check accepts `Angle`, dimensionless, and `Int` alike
+  — mirroring the eval contract in
+  `reify_stdlib::helpers::trig_input`
+  (`crates/reify-stdlib/src/helpers.rs`), which reads a bare
+  dimensionless value as radians. So the bullet's point survives:
+  the literal/expression distinction is still not what decides
+  `sin(2.5)`, and nothing here is a dimensionless→dimensioned
+  widening. The check is DIMENSION-only — a `Bool` or `Geometry`
+  argument still passes — and it lives inside the
+  `NoUserFunctions` arm, so a user-defined `fn sin(...)` shadows
+  both the builtin and its check.
+
+  The rest of the transcendental family remains unchecked, each
+  with a named owner: `exp`/`log` under task #6943
+  (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision
+  6(b)), and the inverse-trig names `asin`/`acos`/`atan`/`atan2`
+  under task #5809 (`docs/prds/v0_6/dimension-checked-readers.md`
+  leaf κ). In `crates/reify-compiler/src/math_signatures.rs`,
+  `MATH_TRANSCENDENTAL_NAMES` is still a bare name list for those
+  six, and its "accept ANGLE-or-Real" comment is still intent only;
+  `math_fn_result_type` still fixes only the RESULT type and never
+  inspects an argument. Both
+  non-enforcements are pinned by scope-fence tests in
+  `crates/reify-compiler/tests/harness_constructor_typing/math_transcendental_signatures.rs`
+  that name their owning task and are to be FLIPPED, not deleted,
+  when that task lands.
 
 Mandatoriness is owned elsewhere: the
 real-dimensionless-unification decision D5 (current ruling:
@@ -611,6 +645,48 @@ restated here).
 **House pattern**: the tet-result `Undef`-for-unpopulated convention —
 buckling `pre_stress`, `degenerate_modal_result`'s `damping` — is C2′
 promoted to contract.
+
+## Architecture family (INV-ARCH-1)
+
+Layering inside a crate, the intra-crate twin of the crate-DAG gate
+(`scripts/assert-crate-dag.sh`): a crate's top-level modules may depend
+on one another, but no import cycle among them may appear or grow
+silently.
+
+## INV-ARCH-1 `module-sccs-only-shrink`
+
+**Rule**: Within a workspace crate, no strongly connected component of
+the top-level-module import graph (`crate::` paths, and `super::` chains
+that reach the crate root) appears or grows. A shrink
+or dissolution lowers the committed baseline in the same diff, so it is
+recorded, not silent. Universe, edges and production text: PRD
+`docs/prds/v0_6/dependency-invalidation-stratum.md` §5.1 (not restated
+here). reify-compiler is excluded until S7 κ: its glob imports hide
+edges from the rule.
+
+**Checkable design question(s)**: Does this change add a `crate::<m>`
+reference to `<m>` from a module that `<m>` already reaches, so that an
+SCC appears, grows or merges? Does
+`python3 scripts/assert-module-scc.py check` print `GREW`? The ratchet
+tracks SCC membership, not edges. An import between two modules already
+in one baselined SCC is not flagged: `use crate::engine_eval::…` in
+`deps.rs` stays green, because both modules are in reify-eval's
+24-module SCC. To see the gate fire, add the edge from outside the SCC:
+the same line in `structural_query.rs`, a module the SCC reaches, reds
+as `GREW` naming `structural_query -> engine_eval`. If a change breaks
+a cycle, does the same diff lower the row with `print`? Does a
+predicate or type that a lower module needs live in an engine-phase
+module, forcing an upward import?
+
+**Evidence**: the 2026-10-12 landing measurement, which reproduces the
+PRD's dated workspace measurement — reify-eval holds a 24-module SCC
+and a 5-module one. The other crates' rows live in
+`scripts/module-scc-baseline.json`, not here.
+
+**Enforcement**: `crates/reify-build-utils/tests/module_scc_ratchet.rs`
+over `scripts/module-scc-baseline.json`. The merge gate always runs it;
+a per-task lane runs it only when reify-build-utils is affected (PRD
+D11).
 
 ## Census seam
 

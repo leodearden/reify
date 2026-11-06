@@ -91,6 +91,7 @@ v1 scopes catalogs to the stdlib surface (PRD §2.3/§3.7/§9).
 | ~~Stdlib catalog surface validates today~~ *Struck 2026-10-08: misdiagnosed parse defect (#8300); catalogs moved to `docs/prds/v0_6/catalog-membership-constraint.md`* | probe: `structure def` + `standard_bolt_lengths` → `reify check` exit 0; local-let catalog → exit 1 (out of scope, PRD §9); stdlib source `crates/reify-compiler/stdlib/standard_stock.ri` | **PASS** |
 | `Int`-auto baseline failure (signal premise) | probe `discrete_int_auto.ri` → exit 1, "not uniquely determined", `undef` (captured 2026-07-24) | **PASS** (bug confirmed) |
 | Typed no-finite-domain ~~/ unresolvable-catalog~~ diagnostics (*catalog half moved 2026-10-08*) | δ's **own deliverable** (G6 branch-4 producer = this leaf); asserted by δ's RED tests, not a substrate probe | **PASS** (in-set) |
+| `autoparam-is-discrete-in-ir` *re-pointed 2026-10-16 (Leo, `plans/gap-fill-deliberation-reify-20261016.md` §K3-D3)*: ~~grep `fn is_discrete` present in `crates/reify-ir/src`~~ → grep `fn is_discrete` present in `crates/reify-constraints/src` — the discrete domain is `ParamDomain.finite` in the reify-constraints `DomainTable` (carrier ξ₂ #9267 of `docs/prds/v0_6/solver-crates-layering.md`), not `AutoParam.domain` | `grep`: `fn is_discrete` has **zero** matches in `crates/` at main `c7bbfe2519` | **PASS** |
 
 ### ε — integration gate (CI examples + harness e2e)
 

@@ -1,0 +1,531 @@
+prd: docs/prds/v0_6/realization-pipeline-one-walk-typed-executor.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 4727
+  title: 'realization-pipeline α (#4727 adopted): retire LegacyMultiPass; the schedule is non-optional'
+  capabilities:
+  - name: legacy-arm-is-absence
+    binding: 'No code path exists only for legacy: the planners in engine_fixpoint.rs never branch on BuildScheduler; the two production reads are engine_build demand_scoped_unified_pass and the post-geometry
+      re-check compare (read at d4cd598fee; PRD §2.4, §10.4).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: LegacyMultiPass
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: schedule-non-optional
+    binding: demand_scoped_unified_pass returns Option<crate::engine_fixpoint::UnifiedPassResult> and tessellate_from_values takes Option<&crate::engine_fixpoint::UnifiedPassResult> (2 hits, read at d4cd598fee).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: Option<&?(crate::engine_fixpoint::)?UnifiedPassResult>
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: kill-switch-inert
+    binding: 'B-α2: REIFY_BUILD_SCHEDULER=legacy changes no CLI output; no script, CI file or gui code sets it (PRD §10.4).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A CLI behaviour comparison (with and without the env var) is asserted by B-α2, not a grep.
+  - name: adopted-record-deps-landed
+    binding: '#4727''s dependencies #4362, #4734, #5125 have landed (get_statuses at authoring); its scope is re-written to PRD §9 α at pass 2.'
+    verdict: PASS
+- label: β₁
+  task_id: 9154
+  title: 'realization-pipeline β₁: executor prerequisites below engine_build — op lowering, selector presence, one tessellation default'
+  capabilities:
+  - name: op-lowering-module
+    binding: geometry_op_to_operation, compiled_geometry_op_to_operation, classify_op_input_reprs, op_accepts_repr, op_is_voxel_only_input, plan_output_repr are free fns in engine_build.rs with no Engine
+      reference (read at d4cd598fee; scout E).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/geometry_op_lowering.rs
+  - name: selector-presence-module
+    binding: module_binds_selector, expr_contains_selector_ctor, geometry_op_arg_exprs, value(s)_contain_selector are free fns; values_contain_selector is called by the executor's tie-scan gate (read at
+      d4cd598fee).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/selector_presence.rs
+  - name: one-tessellation-default
+    binding: 'Four 0.0001 consts mirror each other: Engine::DEFAULT_TESSELLATION_TOLERANCE, MESH_PROJECTION_SENTINEL_TOL, MAX_DEVIATION_TESSELLATION_TOLERANCE_M, GDT_CONFORMANCE_TESSELLATION_TOLERANCE_M
+      (read at d4cd598fee); ratchet row tessellation-default-copy 4 -> 0. Subsumes #4691.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: const MESH_PROJECTION_SENTINEL_TOL
+      expect: absent
+      paths:
+      - crates/reify-eval/src/realization_content.rs
+  - name: s3-moves-first
+    binding: producer:task-8687 (S3 β) moves sub_refs_in_op and compute_realization_upstream_values_hash_from_ops to realization_inputs.rs; β₁ depends on it and moves neither.
+    verdict: PASS
+- label: β₂
+  task_id: 9155
+  title: 'realization-pipeline β₂: volume_mesh_assembly.rs'
+  capabilities:
+  - name: p6-is-free
+    binding: VolumeMeshOutcome, dispatch_volume_mesh, the mixed-region mesh types and fns and p2_substitution_diagnostic have zero Engine/Self references; three child test files reach them via use super::*
+      (read at d4cd598fee; scout E).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/volume_mesh_assembly.rs
+  - name: p6-leaves-engine-build
+    binding: build_mixed_region_mesh is defined in engine_build.rs today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn build_mixed_region_mesh
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+- label: γ
+  task_id: 9156
+  title: 'realization-pipeline γ: placed_walk.rs; the override realizer is a parameter; geometry_ops leaves the SCC'
+  capabilities:
+  - name: single-cycle-edge
+    binding: The only production geometry_ops -> engine_build edge is crate::engine_build::realize_sub_override_handles( in walk_placed_realizations; the tool, run on a scratch copy without it, reports
+      STALE reify-eval with geometry_ops and realization_content in no SCC (critic verified; read at d4cd598fee).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: crate::engine_build::realize_sub_override_handles\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: placed-walk-module
+    binding: 'S13 §7: after ε #8751, geometry_ops.rs is mod declarations plus the nine-symbol placed-walk partition, with zero test references; S2 moves it.'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/placed_walk.rs
+  - name: upstream-boundary
+    binding: producer:task-8751 (S13 ε) and producer:task-9020 (S12 ε2, typed surface_subtree key); γ depends on both.
+    verdict: PASS
+  - name: scc-row-lowered
+    binding: module_scc_ratchet green with the lowered reify-eval row (B-γ1).
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: The lowered baseline row is the tool's own print output, asserted by module_scc_ratchet; a grep cannot express it.
+- label: δ
+  task_id: 9158
+  title: 'realization-pipeline δ: realization_executor/ — typed per-op outcome, terminal functions, one commit/rollback owner'
+  capabilities:
+  - name: executor-is-free
+    binding: Engine::execute_realization_ops has no receiver; its Engine coupling is DEFAULT_TESSELLATION_TOLERANCE, DEFAULT_KERNEL_NAME, probe_realization_cache and bump_dispatch (read at d4cd598fee; critic
+      F9).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn execute_realization_ops\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: executor-module
+    binding: No realization_executor/ at d4cd598fee; δ creates it per PRD §5.4.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/realization_executor/mod.rs
+  - name: typed-outcome
+    binding: Per-op results are folded into loop state and out-params today; δ adds OpOutcome.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum OpOutcome
+      expect: present
+      paths:
+      - crates/reify-eval/src/realization_executor
+  - name: commit-owner
+    binding: intermediate_cache_inserts has one push and one consumer; rollback is count-based ({A}; scout B). δ adds IntermediateInserts.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct IntermediateInserts
+      expect: present
+      paths:
+      - crates/reify-eval/src/realization_executor
+  - name: imports-outside-scc
+    binding: 'Every executor import (dispatcher, morph_producer, kernel_attribute_hook, sweep_classifier, realization_cache, volume_mesh_sources, primitive_attribute_seed, topology_attribute_propagation,
+      geometry_ops compile children, compute_targets::bc_resolve) is outside every baseline SCC once #8747, #8750, γ and #8995 land (critic verified).'
+    verdict: PASS
+  - name: kernel-lookups-upstream
+    binding: 'producer:task-8992, task-8993, task-8995 (S10 ι₃/ι₄/ι₅): KernelSet, select(Op) with the BRep fallback inside, owner routing; δ depends on all three.'
+    verdict: PASS
+- label: ε
+  task_id: 9157
+  title: 'realization-pipeline ε: the realized-terminal oracle (R3)'
+  capabilities:
+  - name: oracle-entry-type
+    binding: 'realization_handles: HashMap<reify_core::RealizationNodeId, reify_ir::GeometryHandleId> (lib.rs, read at d4cd598fee); implicit-solids γ #8391 widens it to keep the owner (fold-verifier N4),
+      so ε''s check is a present-check on its own type, which no upstream leaf produces.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'realization_handles: HashMap<[^>]*RealizedTerminal>'
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: realized-terminal-type
+    binding: No RealizedTerminal at d4cd598fee; ε adds it per PRD §5.6.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct RealizedTerminal
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: upstream-homes
+    binding: 'producer:task-8391 (implicit-solids γ: owner-bearing handles), task-9043 (S1 ε: PerBuildState owns realization_handles), task-9017 and task-9021 (S12 ε1/ε3: MeasurementContext, row C6 retires
+      engine_constraints'' direct reads), task-8995 and task-8998 (S10 ι₅/ι₆ owner source); ε depends on all six.'
+    verdict: PASS
+  - name: coherence-behaviour
+    binding: 'B-ε1: realize_for_check -> tessellate_realizations -> check keeps an FEA input''s VolumeMesh content.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A CLI end-to-end behaviour, asserted by B-ε1 (re-run by θ).
+- label: ζ
+  task_id: 8534
+  title: 'realization-pipeline ζ (#8534 adopted): project_realization_read_handle has one home'
+  capabilities:
+  - name: stale-allows
+    binding: 'Three #[allow(dead_code)] on RealizationProjectionStore, get and insert, all with production callers (read at d4cd598fee).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^\s*#\[allow\(dead_code\)\]
+      expect: absent
+      paths:
+      - crates/reify-eval/src/realization_content.rs
+  - name: inline-densify-tail
+    binding: The Sdf/Voxel arm's inline 'densify failed:' warning bypasses degrade_projection (read at d4cd598fee).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'densify failed:'
+      expect: absent
+      paths:
+      - crates/reify-eval/src/realization_content.rs
+  - name: second-store-writer
+    binding: 'engine_build''s redispatch pre-tessellation reads (.get(..).is_some()) and inserts realization_projection_store directly; S1 ε #9043 removes the third code reference (the reset destructure).
+      Row projection-store-reach 3 -> 0.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: ^[^/]*realization_projection_store
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+  - name: owner-keyed-upstream
+    binding: producer:task-8998 (S10 ι₆) deletes openvdb_kernel_name and keys densify on the owner; ζ depends on it and on ε.
+    verdict: PASS
+- label: η
+  task_id: 9159
+  title: 'realization-pipeline η: SurfacePolicy and the one walk; four drivers become table rows'
+  capabilities:
+  - name: tessellate-driver
+    binding: tessellate_from_values is a static fn with 23 params (read at d4cd598fee).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn tessellate_from_values\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: knob-chain
+    binding: 68 .with_* knob calls on RealizationOpsInput, including tests (read at d4cd598fee; ratchet engine).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: with_module_binds_selector
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: policy-table
+    binding: No surface_policy.rs at d4cd598fee; η creates it per PRD §5.1.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/surface_policy.rs
+  - name: rename-subsumed
+    binding: realize_for_check is pub at engine_build.rs (#8333's subject); other sidecars mention it in binding prose only (read at d4cd598fee).
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: pub fn realize_for_check\(
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: graph-view-gone
+    binding: realized_reprs_snapshot feeds the in-loop gate a template-start graph view (eval resets same-template nodes to BRep) and the post-loop gate a re-snapshot (read at d4cd598fee; re-verify V1);
+      η replaces both with the walk-local map.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn realized_reprs_snapshot
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: one-sink
+    binding: 'No record_outcome at d4cd598fee; η adds the sink per PRD §5.5 (R4: it owns the NodeId::Realization entry write).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn record_outcome\(
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: upstream-engine-state
+    binding: 'producer:task-9043, 9036, 9038, 9046 (S1 ε, α, γ₁, θ), task-8872 and task-8861 (S4 τ, γ: record_node), task-9017 (S12 ε1), task-7270, task-8995; η depends on all.'
+    verdict: PASS
+- label: θ
+  task_id: 9160
+  title: 'realization-pipeline θ: one sink on every surface — tessellate records the node outcome'
+  capabilities:
+  - name: tessellate-discards-outcome
+    binding: tessellate_from_values collects produced_repr_out and kernel_error per realization and never reads them; the GUI load/edit path runs tessellate_snapshot only (read at d4cd598fee; scout D).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/tests/harness_engine/tessellate_records_realization_outcome.rs
+  - name: no-tessellate-entry
+    binding: 'R6: tessellate surfaces write no NodeId::Realization entry (geometry-handle cells derive freshness from it at eval, before tessellation); B-θ2 and B-θ3 assert none is created.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A cache-state assertion over a GUI session (B-θ3), not a grep.
+  - name: upstream-sink
+    binding: θ depends on η (the sink and records_outcome) and ε (the oracle owns kernel and repr, so a tessellate node write cannot mislead a handle reader).
+    verdict: PASS
+- label: ι₁
+  task_id: 9161
+  title: 'realization-pipeline ι₁: realization_seeding.rs'
+  capabilities:
+  - name: p2-is-free
+    binding: seed_cross_sub_named_steps, realize_overridden_instance_into, seed_cross_let_named_steps, realize_sub_override_handles, snapshot_named_steps have zero Engine/self references (read at d4cd598fee;
+      scout E).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/realization_seeding.rs
+  - name: p2-leaves-engine-build
+    binding: seed_cross_sub_named_steps is defined in engine_build.rs today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn seed_cross_sub_named_steps
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+- label: ι₂
+  task_id: 9162
+  title: 'realization-pipeline ι₂: realization_demand.rs'
+  capabilities:
+  - name: p3-reads-functions-only
+    binding: The P3 &self items read only Engine.functions (read at d4cd598fee; scout E), so they become free fns.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/realization_demand.rs
+  - name: p3-leaves-engine-build
+    binding: voxel_pipeline_demand_overrides is defined in engine_build.rs today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn voxel_pipeline_demand_overrides
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+- label: ι₃
+  task_id: 9163
+  title: 'realization-pipeline ι₃: geometry_post_process.rs and build_export.rs'
+  capabilities:
+  - name: p4-explicit-args
+    binding: 20 of P4's 25 items are associated fns with explicit arguments; the five receiver methods stay in engine_build (read at d4cd598fee; critic verified).
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/geometry_post_process.rs
+  - name: export-module
+    binding: build_outputs_with_result, export_product_bodies and the colour resolvers are assoc/free fns.
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: present
+      paths:
+      - crates/reify-eval/src/build_export.rs
+  - name: export-leaves-engine-build
+    binding: export_product_bodies is defined in engine_build.rs today.
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn export_product_bodies
+      expect: absent
+      paths:
+      - crates/reify-eval/src/engine_build.rs
+- label: κ
+  task_id: 9263
+  title: 'realization-pipeline κ: one realized-step value — RealizedStep, CachedRealization with one apply_realized, KernelHandle-keyed SweptKindTable'
+  capabilities:
+  - name: named-step-pair-split
+    binding: 'RealizationOutputs carries named_steps plus a sibling named_step_reprs and seed_cross_sub_named_steps writes only handles (read at 04be9302ea; survey fk-9d5be5dd1b72); κ makes RealizedStep the one element (gap-fill §K4-D1).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: named_step_reprs
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: side-map-deleted
+    binding: 'Engine.volume_mesh_sources patches the cache-hit egress body and is never evicted by RealizationCache::evict_family (lib.rs, engine_build.rs; read at 04be9302ea; fk-a1dbdb4e699e). S1 λ #9050 moves it into EngineCaches as filed; κ deletes it (contradiction 5).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: volume_mesh_sources
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: one-cache-value
+    binding: 'Engine.realization_cache is RealizationCache<KernelHandle>; probe_realization_cache hand-rebuilds the repr and drops egress body, swept kind and topology attributes (read at 04be9302ea). κ adds CachedRealization written by one apply_realized on hit and miss.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct CachedRealization
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: swept-kind-keyed-by-kernel-handle
+    binding: 'SweptKindTable is HashMap<GeometryHandleId, SweptKind> (sweep_classifier.rs; read at 04be9302ea; fk-da0908f1437e), breaching INV-GEO-2; κ re-keys it by KernelHandle.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: HashMap<[^,>]*KernelHandle, *SweptKind>
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: hit-miss-parity-behaviour
+    binding: 'B-κ1: the same module built twice, the cache-served terminal reads its swept kind (no FeatureDatumAmbiguous); B-κ2: two kernels with the same GeometryHandleId keep distinct swept kinds; INV-BUILD-3 re-registered type-enforced.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Engine-level behaviour tests (B-κ1, B-κ2) and a registry status cell whose wording S1 ε also edits; not a sound grep.
+  - name: upstream-homes
+    binding: 'producer:task-9158 (δ: realization_executor/ and probe.rs), task-9157 (ε: RealizedTerminal), task-9159 (η: the one walk and seeding), task-9043 (S1 ε: swept_kind_table in PerBuildState); κ depends on all four.'
+    verdict: PASS
+- label: λ
+  task_id: 9264
+  title: 'realization-pipeline λ: geometry-consuming compute dispatch is a scheduled BuildStep::DispatchCompute with a walk-owned RedispatchStatus'
+  capabilities:
+  - name: dispatch-step
+    binding: 'BuildStep has only Realize and HydrateCell (engine_build.rs; read at 04be9302ea; fk-67a469b5e339), so no schedule step orders a compute dispatch after its realizations; λ adds DispatchCompute (gap-fill §K4-D2).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: DispatchCompute\(
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: typed-status
+    binding: 'Redispatch state is the emptiness of realization_inputs plus RedispatchPassState sets (read at 04be9302ea); λ adds the walk-owned RedispatchStatus.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: enum RedispatchStatus
+      expect: present
+      paths:
+      - crates/reify-eval/src
+  - name: per-template-scan-gone
+    binding: 'redispatch_geometry_consuming_compute_nodes runs inside each per-template loop, cloning the graph and scanning every compute node (read at 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn redispatch_geometry_consuming_compute_nodes
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: latch-sets-gone
+    binding: 'RedispatchPassState.failed_pretessellations is one of the latch guards the status map replaces (read at 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: failed_pretessellations
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: dispatch-behaviour
+    binding: 'B-λ1: a dispatch failure after its inputs realize is a coded Error and a failed cell; B-λ2: a successful as-printed cascade dispatches its consumer once for 0 and 2 trailing templates (#8329 absorbed); B-λ3: regression floor byte-identical.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: Engine behaviour tests (counting trampoline) and a byte-identity floor, not a grep.
+  - name: upstream-walk-and-diagnostics
+    binding: 'producer:task-9159 (η: the one walk, PostProcessSet), task-7781 (the redispatch Failed diagnostic path λ reuses); λ depends on both.'
+    verdict: PASS
+- label: μ
+  task_id: 9265
+  title: 'realization-pipeline μ: GeometryOp::parents() / parents_mut() — one exhaustive accessor pair'
+  capabilities:
+  - name: accessor-pair
+    binding: 'Parent fields are encoded as a descriptor parent_role column plus duplicated OR-matches in parent_handles_for_op and substitute_op_parents, each ending in unreachable! (engine_build.rs; read at 04be9302ea; fk-abfd068e9631, weakened); μ adds the exhaustive pair in reify-ir (gap-fill §K4-D3).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn parents_mut\(
+      expect: present
+      paths:
+      - crates/reify-ir/src
+  - name: false-drift-claims
+    binding: 'Two doc claims say the compiler flags/enforces drift although drift is caught only by test-time coverage tests (engine_build.rs, 2 hits at 04be9302ea).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: compiler (flags|enforces) drift
+      expect: absent
+      paths:
+      - crates/reify-eval/src
+  - name: behaviour-tests
+    binding: 'The three private-fn coverage tests (parent_handles_for_op_…, substitute_op_parents_…, geometry_op_to_operation_maps_every_variant_family) become per-role behaviour tests through execute_realization.'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: A test-shape change asserted by the leaf's review, not a grep.
+  - name: upstream-op-home
+    binding: 'producer:task-9158 (δ moves the parent fns), task-8932 (S10 α₃ creates crates/reify-ir/src/geometry/op.rs); μ depends on both. θ₂ #8981 edits op.rs too (seam note, §8).'
+    verdict: PASS
+- label: ω
+  task_id: 9164
+  title: 'realization-pipeline ω: PRD close'
+  capabilities:
+  - name: terminal-stamp
+    binding: The close leaf stamps Status SHIPPED with the landed ids, the AS-AUTHORED paragraph and the LIVE map, and measures engine_build.rs against heuristic 14.
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: The committed header and the heuristic-14 measurement in the commit are the signal.

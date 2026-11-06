@@ -7,6 +7,10 @@ seam (PRD dark-factory/plans/two-layer-merge-queue-prd.md §5.1, task κ #4750).
 
 Run directly:  python3 scripts/test_reify_overlap_detector.py
 Run via infra:  tests/infra/test_reify_overlap_detector.sh
+
+Runs only where orchestrator.overlap_footprint imports (SKIPs otherwise), so
+rule parity with affected-crates-lib.sh is guarded in
+tests/infra/test_affected_crates_lib.sh instead.
 """
 
 import sys
@@ -32,6 +36,7 @@ except ImportError:
 # The module under test. ImportError here is the RED state for step-1:
 # the module doesn't exist yet until step-2 creates it.
 import reify_overlap_detector as rod
+import reify_path_attribution as rpa
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -628,70 +633,111 @@ class TestMixedChangesets(unittest.TestCase):
         )
 
 
-# ─── Amendment: Rule-parity guard for affected-crates-lib.sh ─────────────────
+# ─── Task 7491: attribution parity with affected-crates-lib.sh ───────────────
 
-class TestRuleParityWithAffectedCratesLib(unittest.TestCase):
-    """Pins the Python _is_global/_file_to_crate rules against known concrete cases.
+def _metadata_fixture(names, edges=()):
+    """A cargo-metadata dict whose workspace members are *names*; each
+    (dependent, dependency) pair in *edges* is a normal dependency."""
+    ids = {n: f"{n} 0.1.0 (path+file:///workspace/crates/{n})" for n in sorted(names)}
+    deps = {n: [] for n in ids}
+    for dependent, dependency in edges:
+        deps[dependent].append({"pkg": ids[dependency], "dep_kinds": [{"kind": None}]})
+    return {
+        "packages": [{"id": i, "name": n} for n, i in ids.items()],
+        "workspace_members": list(ids.values()),
+        "resolve": {"nodes": [{"id": ids[n], "deps": deps[n]} for n in ids]},
+    }
 
-    This test class asserts the Python rules handle every concrete path case
-    documented in ``scripts/affected-crates-lib.sh`` (_is_global, _is_noncrate,
-    _file_to_crate).  It pins the PYTHON implementation only — it does not parse
-    or source ``affected-crates-lib.sh``, so parity with the bash side is maintained
-    manually: if you add a new global path or crate location to one file, remember
-    to update the other.
 
-    Deliberate divergence — _is_noncrate:
-        Bash: docs/**, gui/src/** → _is_noncrate → path SKIPPED (no member emitted).
-        Python: same paths → neither crate-mapped NOR global → ``path:<p>`` member
-                emitted (required by the textual-conflict⇒overlap invariant, PRD §5.1).
-    """
+# Derived from the mirror's own constants, so a new corpus reader cannot leave
+# this fixture stale (an unresolvable seed would fail wide and mask the test).
+_GATE_DEPENDENT = "crate-gate-dependent"
+_ATTRIBUTION_FIXTURE = _metadata_fixture(
+    rpa.RI_CORPUS_CRATES | {rpa.DAG_GATE_CRATE, "crate-a", "crate-c", _GATE_DEPENDENT},
+    edges=[(_GATE_DEPENDENT, rpa.DAG_GATE_CRATE)],
+)
+_DAG_GATE_EDIT = f"crates/{rpa.DAG_GATE_CRATE}/tests/crate_dag_assertion.rs"
 
-    def test_is_global_true_cases(self):
-        """Every case that bash _is_global() matches must also be True in Python."""
-        # Root manifests.
-        self.assertTrue(rod._is_global("Cargo.toml"))
-        self.assertTrue(rod._is_global("Cargo.lock"))
-        # .cargo/ prefix (any depth).
-        self.assertTrue(rod._is_global(".cargo/config.toml"))
-        self.assertTrue(rod._is_global(".cargo/credentials"))
-        self.assertTrue(rod._is_global(".cargo/registry/"))
-        # tree-sitter-reify/ prefix (any depth).
-        self.assertTrue(rod._is_global("tree-sitter-reify/grammar.js"))
-        self.assertTrue(rod._is_global("tree-sitter-reify/src/parser.c"))
-        # rust-toolchain variants (bash glob rust-toolchain* covers both).
-        self.assertTrue(rod._is_global("rust-toolchain"))
-        self.assertTrue(rod._is_global("rust-toolchain.toml"))
 
-    def test_is_global_false_cases(self):
-        """Crate-scoped Cargo.toml files and non-global paths must return False."""
-        # Crate-scoped manifests are NOT global (only the root manifest is).
-        self.assertFalse(rod._is_global("crates/crate-a/Cargo.toml"))
-        self.assertFalse(rod._is_global("gui/src-tauri/Cargo.toml"))
-        # Documentation and source files are non-global.
-        self.assertFalse(rod._is_global("docs/guide.md"))
-        self.assertFalse(rod._is_global("crates/crate-a/src/lib.rs"))
-        self.assertFalse(rod._is_global("gui/src/App.tsx"))
+class _AttributionFixtureCase(unittest.TestCase):
+    def setUp(self):
+        self.det = rod.CrateGraphOverlapDetector(
+            metadata_loader=lambda: _ATTRIBUTION_FIXTURE
+        )
 
-    def test_file_to_crate_crates_prefix(self):
-        """crates/<name>/** maps to <name> (§5, affected-crates-lib.sh rule)."""
-        self.assertEqual(rod._file_to_crate("crates/crate-a/src/lib.rs"), "crate-a")
-        self.assertEqual(rod._file_to_crate("crates/crate-a/Cargo.toml"), "crate-a")
-        self.assertEqual(rod._file_to_crate("crates/reify-compiler/src/main.rs"),
-                         "reify-compiler")
+    def overlap(self, paths_a, paths_b):
+        return self.det.overlaps(self.det.footprint(paths_a), self.det.footprint(paths_b))
 
-    def test_file_to_crate_gui_src_tauri(self):
-        """gui/src-tauri/** maps to reify-gui (§5, affected-crates-lib.sh rule)."""
-        self.assertEqual(rod._file_to_crate("gui/src-tauri/src/main.rs"), "reify-gui")
-        self.assertEqual(rod._file_to_crate("gui/src-tauri/Cargo.toml"), "reify-gui")
 
-    def test_file_to_crate_none_cases(self):
-        """Non-crate paths return None from _file_to_crate."""
-        # docs/** — handled by _is_noncrate in bash, returns None in Python.
-        self.assertIsNone(rod._file_to_crate("docs/guide.md"))
-        # gui/src/** (NOT src-tauri) — _is_noncrate in bash, None in Python.
-        self.assertIsNone(rod._file_to_crate("gui/src/App.tsx"))
-        # Global files return None from _file_to_crate (handled separately).
-        self.assertIsNone(rod._file_to_crate("Cargo.toml"))
+class TestCorpusReaderEdge(_AttributionFixtureCase):
+    """An examples/**/*.ri leaf is a semantic input to every crate whose tests
+    read the corpus (task 7491 decision (b))."""
+
+    def test_corpus_leaf_overlaps_every_reader_crate(self):
+        for reader in sorted(rpa.RI_CORPUS_CRATES):
+            with self.subTest(reader=reader):
+                self.assertTrue(self.overlap(["examples/foo.ri"], [f"crates/{reader}/src/lib.rs"]))
+
+    def test_corpus_leaf_overlaps_gui_src_tauri(self):
+        if "reify-gui" not in rpa.RI_CORPUS_CRATES:
+            self.skipTest("reify-gui does not read the corpus")
+        self.assertTrue(self.overlap(["examples/foo.ri"], ["gui/src-tauri/src/main.rs"]))
+
+    def test_nested_corpus_leaf_overlaps_every_reader_crate(self):
+        for reader in sorted(rpa.RI_CORPUS_CRATES):
+            with self.subTest(reader=reader):
+                self.assertTrue(
+                    self.overlap(["examples/auto/bearing_unsat.ri"], [f"crates/{reader}/src/lib.rs"])
+                )
+
+    def test_corpus_leaf_does_not_overlap_unrelated_crate(self):
+        self.assertFalse(self.overlap(["examples/foo.ri"], ["crates/crate-c/src/lib.rs"]))
+
+    def test_non_ri_corpus_datum_stays_unattributed(self):
+        reader = sorted(rpa.RI_CORPUS_CRATES)[0]
+        self.assertFalse(self.overlap(["examples/foo.gcode"], [f"crates/{reader}/src/lib.rs"]))
+        self.assertTrue(self.overlap(["examples/foo.gcode"], ["examples/foo.gcode"]))
+
+
+class TestDagGateUnion(_AttributionFixtureCase):
+    """A per-crate manifest edit unions the crate-DAG gate's host crate into
+    the footprint, without seeding it into the closure (task 7096's rule)."""
+
+    def test_crate_manifest_overlaps_dag_gate_edit(self):
+        self.assertTrue(self.overlap(["crates/crate-a/Cargo.toml"], [_DAG_GATE_EDIT]))
+
+    def test_gui_manifest_overlaps_dag_gate_edit(self):
+        self.assertTrue(self.overlap(["gui/src-tauri/Cargo.toml"], [_DAG_GATE_EDIT]))
+
+    def test_crate_source_does_not_overlap_dag_gate_edit(self):
+        self.assertFalse(self.overlap(["crates/crate-a/src/lib.rs"], [_DAG_GATE_EDIT]))
+
+    def test_gate_crate_is_unioned_not_seeded(self):
+        gate_dependent_edit = [f"crates/{_GATE_DEPENDENT}/src/lib.rs"]
+        # Premise: seeding the gate crate would reach its reverse dependent.
+        self.assertTrue(self.overlap([_DAG_GATE_EDIT], gate_dependent_edit))
+        self.assertFalse(self.overlap(["crates/crate-a/Cargo.toml"], gate_dependent_edit))
+
+
+class TestRustToolchainGlob(_AttributionFixtureCase):
+    """C4 matches bash's `rust-toolchain*` glob, whose `*` spans `/`."""
+
+    def test_rust_toolchain_glob_is_global(self):
+        self.assertTrue(self.overlap(["rust-toolchain-nightly/x"], ["crates/crate-c/src/lib.rs"]))
+
+
+class TestDeliberateDivergences(unittest.TestCase):
+    """Where the detector deliberately differs from affected-crates-lib.sh:
+    every path no rule attributes becomes a ``path:<p>`` member, including
+    the inert class bash skips (task 7427, declined by task 7491).
+    Rationale: reify_overlap_detector.py's module docstring. Attribution
+    parity itself is guarded by tests/infra/test_affected_crates_lib.sh's
+    OVERLAP-MIRROR-PARITY."""
+
+    def setUp(self):
+        self.det = rod.CrateGraphOverlapDetector(
+            metadata_loader=lambda: _MINIMAL_FIXTURE
+        )
 
     def test_noncrate_divergence_emits_path_member(self):
         """Deliberate divergence: Python emits path:<p> where bash emits nothing.
@@ -701,16 +747,28 @@ class TestRuleParityWithAffectedCratesLib(unittest.TestCase):
         ``path:<p>`` members, making the reify footprint a superset of the
         DefaultPathOverlapDetector footprint (PRD §5.1 textual-conflict⇒overlap).
         """
-        det = rod.CrateGraphOverlapDetector(
-            metadata_loader=lambda: _MINIMAL_FIXTURE
-        )
-        fp_docs = det.footprint(["docs/guide.md"])
+        fp_docs = self.det.footprint(["docs/guide.md"])
         self.assertIn("path:docs/guide.md", fp_docs.members,
                       "docs/ path must produce a path: member (superset invariant)")
 
-        fp_gui_src = det.footprint(["gui/src/App.tsx"])
+        fp_gui_src = self.det.footprint(["gui/src/App.tsx"])
         self.assertIn("path:gui/src/App.tsx", fp_gui_src.members,
                       "gui/src/ path must produce a path: member (superset invariant)")
+
+    def test_inert_paths_keep_textual_conflict_overlap(self):
+        for path in ("README.md", "dark-factory-orchestrator.yaml", "docs/notes/x.md"):
+            with self.subTest(path=path):
+                fp = self.det.footprint([path])
+                self.assertIn(f"path:{path}", fp.members)
+                self.assertTrue(self.det.overlaps(fp, self.det.footprint([path])))
+
+    def test_inert_path_does_not_overlap_unrelated_crate(self):
+        self.assertFalse(
+            self.det.overlaps(
+                self.det.footprint(["README.md"]),
+                self.det.footprint(["crates/crate-a/src/lib.rs"]),
+            )
+        )
 
 
 # ─── Amendment: Memoization ──────────────────────────────────────────────────

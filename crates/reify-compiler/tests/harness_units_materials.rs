@@ -63,6 +63,8 @@ mod money_arithmetic_tests;
 mod money_force_diagnostic_tests;
 #[path = "harness_units_materials/money_units_tests.rs"]
 mod money_units_tests;
+#[path = "harness_units_materials/prelude_unit_seeding_tests.rs"]
+mod prelude_unit_seeding_tests;
 #[path = "harness_units_materials/unit_declaration_tests.rs"]
 mod unit_declaration_tests;
 #[path = "harness_units_materials/unit_registry_tests.rs"]

@@ -32,7 +32,7 @@ fn compile_inline(source: &str) -> reify_compiler::CompiledModule {
 /// Eval + check the compiled module, asserting all constraint results are Satisfied.
 fn assert_all_satisfied(compiled: &reify_compiler::CompiledModule, min_constraints: usize) {
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(compiled);
 
     let eval_errors: Vec<_> = result

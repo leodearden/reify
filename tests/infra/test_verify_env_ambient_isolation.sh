@@ -3,12 +3,11 @@
 # Python by task 7430 and landed by task 7626.
 #
 # This wrapper is the member run_all.sh actually discovers: it globs
-# `test_*.sh` only (header :22-24, repeated at :1347/:1456/:2013), mirrored by
-# classification_discovered_set at run-all-classification-lib.sh:174-183. The
-# real assertions live in the sibling .py; without this file they would be
-# silently never run, reading as coverage while asserting nothing. Keeping the
-# BASENAME is what keeps run-all-classification.manifest:229 and every doc
-# reference valid.
+# `test_*.sh` only; discovery is classification_discovered_set in
+# run-all-classification-lib.sh. The real assertions live in the sibling
+# .py; without this file they would be silently never run, reading as
+# coverage while asserting nothing. Keeping the BASENAME is what keeps
+# run-all-classification.manifest:229 and every doc reference valid.
 #
 # This wrapper is also what test_slot_timeout_marker.sh Section F reads through:
 # its derivation follows an anchored python3 invocation of a same-stem sibling

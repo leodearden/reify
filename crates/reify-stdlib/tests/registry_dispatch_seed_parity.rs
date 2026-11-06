@@ -46,10 +46,11 @@
 //! `eval_builtin(name, args)` and nothing else is vacuous once both route
 //! through the same code. So each probe carries a HAND-WRITTEN expected
 //! `Value` reproducing what the pre-registry string path returned. Where the
-//! arithmetic is exactly representable in `f64` the expectation is a literal
-//! (`parse_length("12mm")` → `12.0 * 0.001`; von Mises of a uniaxial 100 MPa
-//! window → `√(0.5·2·(10⁸)²)` = exactly `1e8`, since `1e16` and `1e8` are both
-//! exact doubles; `safety_factor` → `250e6 / 1e8` = exactly `2.5`). Where it is
+//! arithmetic is exactly representable in `f64` the expectation is spelled as
+//! that arithmetic (`parse_length("12mm")` → `12.0 * 0.001`; von Mises of the
+//! shared uniaxial window → `√(σ²)` = exactly σ, which `reify-test-support`
+//! pins for its `UNIAXIAL_STRESS_PA`; `safety_factor` → `YIELD_PA / σ`, the
+//! kernel's own single division of yield by that exact von Mises). Where it is
 //! NOT — `max_shear` and `principal_stresses` both run the iterative
 //! `compute_eigenvalues_3x3` — the expectation is built from the crate's own
 //! PUBLIC kernel (`reify_stdlib::compute_max_shear_3x3` /
@@ -59,51 +60,25 @@
 //! wraps its result identically". No tolerance is used anywhere — every
 //! comparison is `Value`'s bit-exact `PartialEq`.
 
-use reify_builtins::{BindingKind, BuiltinId, EvalBuiltinId, lookup, rows};
+use reify_builtins::{BindingKind, BuiltinId, EvalBuiltinId, lookup, rows, rows_bound_by};
 use reify_core::DimensionVector;
 use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId, Value};
 use reify_stdlib::__registry_dispatch_for_test as dispatch;
 use reify_stdlib::__try_dispatch_for_test as try_dispatch;
 use reify_stdlib::{compute_eigenvalues_3x3, compute_max_shear_3x3, eval_builtin};
+use reify_test_support::values::{
+    UNIAXIAL_STRESS_PA, UNIAXIAL_STRESS_ROWS, uniaxial_stress_tensor,
+};
 
 /// The `StructureTypeId` sentinel `analysis::stress_invariants` mints for
 /// registry-free instances (`crates/reify-stdlib/src/analysis.rs:20`).
 const REGISTRY_FREE_TYPE_ID: StructureTypeId = StructureTypeId(u32::MAX);
 
-/// Uniaxial 100 MPa stress magnitude. Chosen because `1e8` and `(1e8)² = 1e16`
-/// are both exact doubles, so the von Mises and safety-factor expectations
-/// below need no tolerance.
-const SIGMA: f64 = 100e6;
+/// Row-major 3×3 window of [`uniaxial_stress_tensor`], as the kernels see it.
+const UNIAXIAL_WINDOW: &[f64] = UNIAXIAL_STRESS_ROWS.as_flattened();
 
-/// Row-major 3×3 window of the uniaxial tensor, as the kernels see it.
-const UNIAXIAL_WINDOW: [f64; 9] = [SIGMA, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-
-/// Build a 3×3 `Value::Tensor` whose elements all carry `dim`.
-fn dimensioned_matrix(rows_f64: &[[f64; 3]; 3], dim: DimensionVector) -> Value {
-    Value::Tensor(
-        rows_f64
-            .iter()
-            .map(|row| {
-                Value::Tensor(
-                    row.iter()
-                        .map(|&v| Value::Scalar {
-                            si_value: v,
-                            dimension: dim,
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    )
-}
-
-/// The uniaxial 100 MPa stress tensor every analysis probe is fed.
-fn uniaxial_stress() -> Value {
-    dimensioned_matrix(
-        &[[SIGMA, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
-        DimensionVector::PRESSURE,
-    )
-}
+/// Yield strength the `safety_factor` probe divides by von Mises.
+const YIELD_PA: f64 = 250e6;
 
 fn pressure(si_value: f64) -> Value {
     Value::Scalar {
@@ -129,7 +104,7 @@ struct Probe {
 
 /// Every seed probe: both `parse_*` dispositions, all five analysis kernels.
 fn probes() -> Vec<Probe> {
-    let stress = uniaxial_stress();
+    let stress = uniaxial_stress_tensor();
 
     // `unit_symbol_to_si("mm")` is the exact literal 0.001, and
     // `parse_length_value` computes `num * factor` — so `12.0 * 0.001`
@@ -139,8 +114,8 @@ fn probes() -> Vec<Probe> {
         dimension: DimensionVector::LENGTH,
     };
 
-    let eigs = compute_eigenvalues_3x3(&UNIAXIAL_WINDOW)
-        .expect("uniaxial 3×3 window has real eigenvalues");
+    let eigs =
+        compute_eigenvalues_3x3(UNIAXIAL_WINDOW).expect("uniaxial 3×3 window has real eigenvalues");
 
     // I1 = trace = σ; I2 = I3 = 0 for a rank-1 diagonal tensor.
     let dim = DimensionVector::PRESSURE;
@@ -150,7 +125,7 @@ fn probes() -> Vec<Probe> {
         (
             "i1".to_string(),
             Value::Scalar {
-                si_value: SIGMA,
+                si_value: UNIAXIAL_STRESS_PA,
                 dimension: dim,
             },
         ),
@@ -217,14 +192,14 @@ fn probes() -> Vec<Probe> {
             name: "von_mises",
             args: vec![stress.clone()],
             // √(0.5·((σ−0)² + 0 + (0−σ)²)) = √(σ²) = σ, exactly.
-            expected: pressure(SIGMA),
+            expected: pressure(UNIAXIAL_STRESS_PA),
             what: "von_mises of a uniaxial window",
         },
         Probe {
             id: EvalBuiltinId::MaxShear,
             name: "max_shear",
             args: vec![stress.clone()],
-            expected: pressure(compute_max_shear_3x3(&UNIAXIAL_WINDOW)),
+            expected: pressure(compute_max_shear_3x3(UNIAXIAL_WINDOW)),
             what: "max_shear of a uniaxial window",
         },
         Probe {
@@ -237,10 +212,10 @@ fn probes() -> Vec<Probe> {
         Probe {
             id: EvalBuiltinId::SafetyFactor,
             name: "safety_factor",
-            args: vec![stress.clone(), pressure(250e6)],
-            // yield / von_mises = 250e6 / 1e8 = 2.5, exactly; dimensionless,
-            // so `from_real_scalar` yields a bare `Value::Real`.
-            expected: Value::Real(2.5),
+            args: vec![stress.clone(), pressure(YIELD_PA)],
+            // The kernel returns a bare `Value::Real` of yield / von_mises,
+            // and von_mises is exactly σ (see the von_mises probe).
+            expected: Value::Real(YIELD_PA / UNIAXIAL_STRESS_PA),
             what: "safety_factor of a uniaxial window",
         },
         Probe {
@@ -256,16 +231,6 @@ fn probes() -> Vec<Probe> {
             what: "stress_invariants of a uniaxial window",
         },
     ]
-}
-
-/// Every `BindingKind::EvalBuiltin` row, derived from the registry rather than
-/// restated — mirroring `units.rs`'s disjointness list, so a τ row added later
-/// is covered here automatically instead of silently escaping the sweep.
-fn eval_rows() -> Vec<&'static reify_builtins::BuiltinRow<BuiltinId>> {
-    rows()
-        .iter()
-        .filter(|r| r.binding == BindingKind::EvalBuiltin)
-        .collect()
 }
 
 // ── (a) value-for-value parity through the EvalBuiltinId path ───────────────
@@ -286,7 +251,7 @@ fn registry_dispatch_reproduces_the_legacy_string_path_values() {
 
 #[test]
 fn every_eval_row_resolves_exactly_at_its_declared_arity() {
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         for argc in 0..=3usize {
             let resolved = lookup(row.name, argc).and_then(BuiltinId::as_eval_builtin);
             if row.arity.matches(argc) {
@@ -315,7 +280,7 @@ fn every_eval_row_is_reachable_from_a_probe() {
     // Guards the probe table against silently going stale: a seed row with no
     // probe would let a dispatch regression through unobserved.
     let probed: Vec<EvalBuiltinId> = probes().into_iter().map(|p| p.id).collect();
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         let id = row
             .id
             .as_eval_builtin()
@@ -360,7 +325,7 @@ fn eval_builtin_yields_undef_at_a_non_declared_arity() {
     // also pins that no OTHER member of the 26-arm chain claims a seed name —
     // if one did, it would answer here with something other than `Undef`.
     let filler = Value::Real(1.0);
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         for argc in 0..=3usize {
             if row.arity.matches(argc) {
                 continue;
@@ -404,7 +369,7 @@ fn eval_builtin_yields_undef_at_a_non_declared_arity() {
 #[test]
 fn try_dispatch_answers_for_exactly_the_eval_rows_at_their_declared_arities() {
     let filler = Value::Real(1.0);
-    for row in eval_rows() {
+    for row in rows_bound_by(BindingKind::EvalBuiltin) {
         for argc in 0..=3usize {
             let args = vec![filler.clone(); argc];
             // Arg TYPES are irrelevant here — a kernel handed a filler may
@@ -474,6 +439,34 @@ fn try_dispatch_declines_every_name_the_registry_does_not_own() {
                 public.is_undef(),
                 "an unregistered, unowned name must reach eval_builtin's \
                  terminal Undef, got {public:?}"
+            );
+        }
+    }
+}
+
+/// (b′) A row bound by ANOTHER kind is declined at every arity it accepts:
+/// `lookup` resolves it, and the `as_eval_builtin` narrowing in
+/// `try_dispatch` is what declines it, so the call falls through to the
+/// dispatcher that owns the name instead of panicking or being routed here.
+#[test]
+fn try_dispatch_declines_every_row_it_does_not_bind() {
+    let foreign: Vec<_> = rows()
+        .iter()
+        .filter(|r| r.binding != BindingKind::EvalBuiltin)
+        .collect();
+    assert!(
+        !foreign.is_empty(),
+        "premise guard: every row is an EvalBuiltin, so the sweep asserts nothing"
+    );
+    for row in foreign {
+        for argc in (0..=4usize).filter(|argc| row.arity.matches(*argc)) {
+            assert_eq!(
+                try_dispatch(row.name, &vec![Value::Undef; argc]),
+                None,
+                "row '{}' is bound by {:?}, so try_dispatch(name, {argc} arg(s)) \
+                 must decline it",
+                row.name,
+                row.binding
             );
         }
     }

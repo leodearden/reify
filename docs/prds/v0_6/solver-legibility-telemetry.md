@@ -343,7 +343,7 @@ renderers without obligating any P4 leaf):
   `fully_populated_gui_state()` fixture whose key-order test pins the wire format.
 - **INV-GUI-2.** `solve_report` is **read-only**. It mutates no engine state and so
   does not trip the delta choke-point requirement. This PRD states that explicitly
-  because #5100 (pending) is the architecture test that will enumerate write tools.
+  because #5100 is the architecture test that will enumerate write tools.
 
 ### §4.4 — C4: the debug-MCP tool obeys the four-edit rule
 

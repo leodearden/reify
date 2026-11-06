@@ -99,6 +99,7 @@
 use reify_core::{ConstraintNodeId, DimensionVector, ModulePath, Severity, ValueCellId};
 use reify_eval::{CheckResult, ConstraintCheckEntry};
 use reify_ir::{Value, ValueMap};
+use reify_test_support::design_files::{DEV_CAPSTAN, PRINTER_RI, read_design_file};
 use std::collections::{BTreeSet, HashSet};
 use std::sync::OnceLock;
 
@@ -109,15 +110,8 @@ use std::sync::OnceLock;
 // this module wanted it verbatim against printer.ri: the two copies differed
 // only in which file a failure message named.
 use super::design_fixture::{
-    assert_constraints_ok, entity_cell, entity_real, CellSpans, Strictness,
+    assert_constraints_ok, entity_cell, entity_real, entity_template, CellSpans, Strictness,
 };
-
-/// The design file that OWNS the idler seat contract, reached from this crate's
-/// manifest dir. Mirrors [`super::capstan_groove_e2e`]'s `DEV_CAPSTAN`.
-const PRINTER_RI: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../prj/printer_v01/printer.ri"
-);
 
 /// The design entity whose cells and constraints this module gates.
 const IDLER_ENTITY: &str = "IdlerPulley";
@@ -204,8 +198,7 @@ const PRINTER_ENUM_PATH_UNRESOLVED: &[&str] = &[
 /// [`super::capstan_groove_e2e`]'s and is imported at the head of the lockstep
 /// section.
 fn compile_printer() -> reify_compiler::CompiledModule {
-    let source = std::fs::read_to_string(PRINTER_RI)
-        .unwrap_or_else(|e| panic!("failed to read {PRINTER_RI}: {e}"));
+    let source = read_design_file(PRINTER_RI);
 
     let parsed = reify_syntax::parse(&source, ModulePath::single("printer"));
     assert!(
@@ -269,7 +262,7 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
     let cells = CellSpans::of(compiled);
 
     let mut engine =
-        reify_eval::Engine::new(Box::new(reify_constraints::SimpleConstraintChecker), None);
+        reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(reify_constraints::SimpleConstraintChecker), None);
     let result = engine.check(compiled);
 
     let (volume_errors, rest): (Vec<_>, Vec<_>) = result
@@ -335,7 +328,10 @@ fn check_printer(compiled: &reify_compiler::CompiledModule) -> CheckResult {
 /// assuming the compiler is deterministic — an assumption none of them states.
 /// The cost side is the ordinary saving: printer.ri is ~3.7 k lines and is read,
 /// parsed and stdlib-compiled once.
-fn printer_checked() -> &'static CheckResult {
+///
+/// `pub(super)`: shared by every gate in the compile unit that reads
+/// printer.ri's check surface, so none checks the file a second time.
+pub(super) fn printer_checked() -> &'static CheckResult {
     static M: OnceLock<CheckResult> = OnceLock::new();
     M.get_or_init(|| check_printer(printer_compiled()))
 }
@@ -347,7 +343,9 @@ fn printer_checked() -> &'static CheckResult {
 /// One `OnceLock` so the constraint expressions a gate inspects and the cell
 /// values it compares them against come from the SAME module. Compiling twice
 /// would make them agree only by assuming the compiler is deterministic.
-fn printer_compiled() -> &'static reify_compiler::CompiledModule {
+/// `pub(super)` extends that across the compile unit: every gate that reads
+/// printer.ri's compiled templates reads this same compilation.
+pub(super) fn printer_compiled() -> &'static reify_compiler::CompiledModule {
     static M: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
     M.get_or_init(compile_printer)
 }
@@ -398,17 +396,7 @@ fn idler_template<'m>(
     module: &'m reify_compiler::CompiledModule,
     file: &str,
 ) -> &'m reify_compiler::TopologyTemplate {
-    module
-        .templates
-        .iter()
-        .find(|t| t.name == IDLER_ENTITY)
-        .unwrap_or_else(|| {
-            panic!(
-                "{file} must declare the `{IDLER_ENTITY}` structure; templates \
-                 compiled: {:?}",
-                module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
-            )
-        })
+    entity_template(module, file, IDLER_ENTITY)
 }
 
 /// Relative error of `actual` against a non-zero `expected`.
@@ -1007,11 +995,9 @@ fn idler_seat_clears_the_tendon() {
 // single-compilation argument across the boundary: the `IdlerPulley` template
 // this module hashes and the cells it reads provably come from ONE compilation
 // of the file, rather than from two that agree only if the compiler is
-// deterministic. The printer.ri fixtures below stay local — nothing else reads
-// that file's kernel-free surface.
-use super::capstan_groove_e2e::{
-    dev_capstan, dev_capstan_checked, dev_capstan_compiled, DEV_CAPSTAN,
-};
+// deterministic. The printer.ri fixtures above are shared across the compile
+// unit the same way.
+use super::capstan_groove_e2e::{dev_capstan, dev_capstan_checked, dev_capstan_compiled};
 
 /// Every scalar cell the `IdlerPulley` structure computes, as
 /// `(name, Some(dimension))` — or `None` for the one `: Real` cell.

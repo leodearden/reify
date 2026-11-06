@@ -1,0 +1,10 @@
+// /prd generic-instantiation-and-call-binding α₂ evidence: too many type
+// arguments at an instantiation site gets the one coded arity diagnostic with
+// the accepted range. Today: code-less "too many type arguments ... expected 2".
+module gicb_alpha2_sub_arity_excess
+
+trait Rigid {}
+structure def Bolt : Rigid { param d : Real = 5.0 }
+structure def Steel : Rigid { param e : Real = 200.0 }
+structure def Holder<U: Rigid, T: Rigid = Steel> { param u : Real = 1.0 }
+structure def UseSub { sub part = Holder<Bolt, Steel, Steel>() }

@@ -1,4 +1,10 @@
-use super::*;
+use reify_core::{Diagnostic, SourceSpan};
+use reify_ir::CompiledExpr;
+
+use crate::arg_check::{
+    check_arg_count_at_least, check_arg_count_exact, push_labeled_arg_count_error,
+};
+use crate::types::{CompiledGeometryOp, CurveKind};
 
 /// Compile a curve constructor call into CompiledGeometryOps.
 ///
@@ -152,6 +158,10 @@ pub(crate) fn compile_curve_op(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reify_core::Type;
+    use reify_ir::Value;
+
+    use crate::types::PrimitiveKind;
 
     fn scalar_literal(v: f64) -> CompiledExpr {
         CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar())

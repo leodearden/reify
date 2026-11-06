@@ -24,6 +24,8 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge, RESOLVE_BY_TESTID_ERRORS } from '../debug/bridge';
 import type { DebugStores } from '../debug/types';
+import { makeLayoutStore } from './debugBridgeTestHelpers';
+import { createViewportDisplayStore, VIEWPORT_DISPLAY_STORAGE_KEY } from '../stores/viewportDisplayStore';
 import type { ViewStateStore } from '../stores/viewStateStore';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
@@ -75,20 +77,8 @@ function makeStores(phase: 'idle' | 'evaluating' | 'error' = 'idle'): DebugStore
       },
     },
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout: makeLayoutStore(),
+    viewportDisplay: createViewportDisplayStore(),
   };
 }
 
@@ -1011,6 +1001,71 @@ describe('wait_for: store kind', () => {
     expect(responseCall).toBeDefined();
     const result = JSON.parse((responseCall![1] as any).result);
     expect(result.error).toBe('timeout');
+  });
+});
+
+describe('wait_for: store kind on viewport.edges', () => {
+  let capturedHandler: DebugRequestHandler | undefined;
+  let stores: DebugStores;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    localStorage.removeItem(VIEWPORT_DISPLAY_STORAGE_KEY);
+    capturedHandler = undefined;
+    vi.mocked(listen).mockImplementation(async (_event, handler) => {
+      capturedHandler = handler as DebugRequestHandler;
+      return () => {};
+    });
+
+    stores = makeStores('idle');
+    await initDebugBridge(stores);
+    expect(capturedHandler).toBeDefined();
+  });
+
+  afterEach(() => {
+    delete window.__REIFY_DEBUG__;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function waitForEdges(id: number, timeoutMs: number): Promise<void> {
+    vi.mocked(invoke).mockClear();
+    return capturedHandler!({
+      payload: {
+        id,
+        command: 'wait_for',
+        params: {
+          predicate: { kind: 'store', path: 'viewport.edges', equals: true },
+          timeout_ms: timeoutMs,
+        },
+      },
+    });
+  }
+
+  function response(): any {
+    const call = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'debug_response');
+    return call ? JSON.parse((call[1] as any).result) : undefined;
+  }
+
+  it('resolves {ok:true} once the edges toggle turns on', async () => {
+    const pending = waitForEdges(21, 5000);
+    await vi.advanceTimersByTimeAsync(32);
+    expect(response()).toBeUndefined();
+
+    stores.viewportDisplay.setEdges(true);
+    await vi.advanceTimersByTimeAsync(32);
+    await pending;
+
+    expect(response().ok).toBe(true);
+  });
+
+  it('times out while edges stay off', async () => {
+    const pending = waitForEdges(22, 100);
+    await vi.advanceTimersByTimeAsync(200);
+    await pending;
+
+    expect(response().error).toBe('timeout');
   });
 });
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Reify leo-laptop _merge-verify cargo-target trim timer: hourly
+
+[Timer]
+OnCalendar=hourly
+# Catch up a tick missed while the host was down (applies to OnCalendar= only).
+Persistent=true
+Unit=reify-merge-verify-trim.service
+
+[Install]
+WantedBy=timers.target

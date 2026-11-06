@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  loadPanelLayout,
+  readStoredPanelLayout,
   savePanelLayout,
   STORAGE_KEY,
   clampPanelHeightsToFit,
@@ -15,25 +15,22 @@ describe('useLayoutPersistence', () => {
     localStorage.clear();
   });
 
-  it('loadPanelLayout returns null when no data in localStorage', () => {
-    const result = loadPanelLayout();
-    expect(result).toBeNull();
+  it('readStoredPanelLayout returns null when the key is absent', () => {
+    expect(readStoredPanelLayout()).toBeNull();
   });
 
-  it('loadPanelLayout returns parsed PanelLayout when valid JSON exists', () => {
-    const layout = {
-      editorWidth: 400,
-      sideWidth: 350,
-      designTreeHeight: 180,
-      propertyHeight: 250,
-      constraintHeight: 150,
-      problemsHeight: 160,
-      problemsCollapsed: true,
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
+  it('readStoredPanelLayout returns null when the stored JSON is corrupt', () => {
+    localStorage.setItem(STORAGE_KEY, '{not valid json!!!');
+    expect(readStoredPanelLayout()).toBeNull();
+  });
 
-    const result = loadPanelLayout();
-    expect(result).toEqual(layout);
+  it('readStoredPanelLayout returns the parsed value without validating it', () => {
+    const layout = { editorWidth: 400, sideWidth: 350, problemsCollapsed: true };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
+    expect(readStoredPanelLayout()).toEqual(layout);
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ foo: 1 }));
+    expect(readStoredPanelLayout()).toEqual({ foo: 1 });
   });
 
   it('savePanelLayout writes serialized layout to localStorage', () => {
@@ -51,63 +48,6 @@ describe('useLayoutPersistence', () => {
     const stored = localStorage.getItem(STORAGE_KEY);
     expect(stored).not.toBeNull();
     expect(JSON.parse(stored!)).toEqual(layout);
-  });
-
-  it('loadPanelLayout returns null when localStorage contains corrupted JSON', () => {
-    localStorage.setItem(STORAGE_KEY, '{not valid json!!!');
-
-    const result = loadPanelLayout();
-    expect(result).toBeNull();
-  });
-
-  it('loadPanelLayout returns null when editorWidth or sideWidth is missing', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ editorWidth: 400 }));
-
-    const result = loadPanelLayout();
-    expect(result).toBeNull();
-  });
-
-  it('loadPanelLayout omits sub-panel heights that are missing in stored data (forward-compat)', () => {
-    // Older saved layouts won't have the three-splitter fields — the loader should
-    // return them as undefined so callers apply defaults rather than returning null.
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ editorWidth: 400, sideWidth: 350 }));
-
-    const result = loadPanelLayout();
-    expect(result).toEqual({ editorWidth: 400, sideWidth: 350 });
-  });
-
-  it('(a) loadPanelLayout omits problemsHeight/problemsCollapsed when absent in stored JSON (forward-compat)', () => {
-    // A layout saved before the docked panel existed should load without the new fields.
-    const oldLayout = {
-      editorWidth: 400,
-      sideWidth: 350,
-      designTreeHeight: 180,
-      propertyHeight: 250,
-      constraintHeight: 150,
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(oldLayout));
-
-    const result = loadPanelLayout();
-    expect(result).toEqual(oldLayout);
-    expect((result as Record<string, unknown>).problemsHeight).toBeUndefined();
-    expect((result as Record<string, unknown>).problemsCollapsed).toBeUndefined();
-  });
-
-  it('(b) loadPanelLayout includes problemsHeight when it is a number and problemsCollapsed when it is a boolean', () => {
-    const layout = {
-      editorWidth: 400,
-      sideWidth: 350,
-      designTreeHeight: 180,
-      propertyHeight: 250,
-      constraintHeight: 150,
-      problemsHeight: 200,
-      problemsCollapsed: false,
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
-
-    const result = loadPanelLayout();
-    expect((result as Record<string, unknown>).problemsHeight).toBe(200);
-    expect((result as Record<string, unknown>).problemsCollapsed).toBe(false);
   });
 });
 

@@ -31,7 +31,8 @@ pub(crate) mod trampoline;
 ///
 /// `gcode_import` (task ο) is fully wired: it marshals its arguments through the
 /// pure [`gcode_import::lower_gcode`] layer and returns a real `Value::List` of
-/// profile records (or `Value::Undef` on bad args / a hard parse error). See
+/// `GcodeMotionSegment` instances (or `Value::Undef` on bad args / a hard parse
+/// error). See
 /// [`gcode_import::eval_gcode_import`] for the argument contract.
 ///
 /// `gcode_import_lower` is an internal delegate intrinsic: the stdlib `.ri`

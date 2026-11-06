@@ -11,8 +11,7 @@ use reify_core::identity::ValueCellId;
 use crate::persistent::PersistentMap;
 use crate::structure_registry::StructureTypeId;
 use reify_core::ty::SelectorKind;
-use crate::geometry::Role;
-use crate::geometry::FeatureId; // task 4808 / P1 γ: Value::Feature wraps FeatureId
+use crate::geometry_id::{FeatureId, Role};
 
 // ── Float ordering strategy ───────────────────────────────────────────────────
 //
@@ -422,7 +421,7 @@ pub struct GeometryHandleRef {
     pub upstream_values_hash: [u8; 32],
     /// `None` = symbolic/unrealized (eval-path mint, task #4652).
     /// `Some(id)` = live session-scoped kernel handle (build/realize path).
-    pub kernel_handle: Option<crate::geometry::GeometryHandleId>,
+    pub kernel_handle: Option<crate::geometry_id::GeometryHandleId>,
 }
 
 impl PartialEq for GeometryHandleRef {
@@ -493,10 +492,10 @@ pub enum LeafQuery {
     ByPerpendicular { axis: [f64; 3], tol_rad: f64 },
     /// Select faces whose underlying surface is of the given kind (Plane,
     /// Cylinder, …).  Requires [`SelectorKind::Face`].
-    BySurfaceKind(crate::geometry::FaceSurfaceKind),
+    BySurfaceKind(crate::geometry_id::FaceSurfaceKind),
     /// Select edges whose underlying curve is of the given kind (Line,
     /// Circle, …).  Requires [`SelectorKind::Edge`].
-    ByCurveKind(crate::geometry::EdgeCurveKind),
+    ByCurveKind(crate::geometry_id::EdgeCurveKind),
     /// Select the element(s) extreme along an axis by AABB bound.  Kind-agnostic
     /// (`required_kind() == None`) so a future `edges_extremal_by_*` reuses the
     /// variant: resolution extracts sub-shapes of the selector's kind, then
@@ -525,7 +524,7 @@ pub enum LeafQuery {
     CreatedByFeature(FeatureId),
     /// Select the **faces split by** the feature identified by `FeatureId`
     /// — i.e. `TopologyAttributeTable` entries whose `mod_history` contains a
-    /// [`crate::geometry::ModEntry`] with `splitting_feature_id` equal to the
+    /// [`crate::geometry_id::ModEntry`] with `splitting_feature_id` equal to the
     /// given id (`split_by_feature(solid, f)`, PRD §β/D2). Requires
     /// [`SelectorKind::Face`] — same D2 Face-only discipline and deferred
     /// kind-parametric extension as [`Self::CreatedByFeature`].
@@ -780,8 +779,8 @@ impl SelectorValue {
         // on task 4536), the byte is an explicit frozen mapping — NOT the derived
         // `Debug`/`as`-cast discriminant — so reordering or renaming an enum
         // variant cannot silently change a cached selector's content hash.
-        fn surface_kind_byte(k: crate::geometry::FaceSurfaceKind) -> u8 {
-            use crate::geometry::FaceSurfaceKind as K;
+        fn surface_kind_byte(k: crate::geometry_id::FaceSurfaceKind) -> u8 {
+            use crate::geometry_id::FaceSurfaceKind as K;
             match k {
                 K::Plane => 0,
                 K::Cylinder => 1,
@@ -794,8 +793,8 @@ impl SelectorValue {
                 K::Other => 8,
             }
         }
-        fn curve_kind_byte(k: crate::geometry::EdgeCurveKind) -> u8 {
-            use crate::geometry::EdgeCurveKind as K;
+        fn curve_kind_byte(k: crate::geometry_id::EdgeCurveKind) -> u8 {
+            use crate::geometry_id::EdgeCurveKind as K;
             match k {
                 K::Line => 0,
                 K::Circle => 1,
@@ -1143,7 +1142,7 @@ pub enum Value {
         body: Box<CompiledExpr>,
         captures: ValueMap,
     },
-    /// Rank-r tensor: recursive nesting of Vec<Value> (innermost elements are scalars).
+    /// Rank-r tensor: recursive nesting of `Vec<Value>` (innermost elements are scalars).
     Tensor(Vec<Value>),
     /// Geometric point with n components (all sharing the same dimension).
     Point(Vec<Value>),
@@ -1184,7 +1183,7 @@ pub enum Value {
         origin: Box<Value>,
         direction: Box<Value>,
     },
-    /// Dimensionless 3D unit vector; distinct from Vector3<Length> and Orientation.
+    /// Dimensionless 3D unit vector; distinct from `Vector3<Length>` and Orientation.
     ///
     /// Stores three inline dimensionless components (assumed unit-normalized),
     /// mirroring [`Value::Orientation`]'s inline-float layout. Produced by datum
@@ -1240,7 +1239,7 @@ pub enum Value {
     GeometryHandle {
         realization_ref: reify_core::identity::RealizationNodeId,
         upstream_values_hash: [u8; 32],
-        kernel_handle: Option<crate::geometry::GeometryHandleId>,
+        kernel_handle: Option<crate::geometry_id::GeometryHandleId>,
     },
     /// General 3D affine map x ↦ linear·x + translation.
     ///
@@ -1500,6 +1499,20 @@ fn user_fields(data: &StructureInstanceData) -> impl Iterator<Item = (&String, &
     data.fields.iter().filter(|(k, _)| {
         k.as_str() != MATERIALIZED_ANNOTATIONS_KEY && k.as_str() != SOURCE_SPAN_KEY
     })
+}
+
+/// ` { name: value, … }` for an enum payload in stored order, or "" for a unit variant.
+/// Stored order is the variant's declaration order, kept on purpose: structure
+/// instances display their fields sorted by name instead.
+fn enum_payload_suffix(payload: &[(String, Value)], render: impl Fn(&Value) -> String) -> String {
+    if payload.is_empty() {
+        return String::new();
+    }
+    let fields: Vec<String> = payload
+        .iter()
+        .map(|(name, value)| format!("{name}: {}", render(value)))
+        .collect();
+    format!(" {{ {} }}", fields.join(", "))
 }
 
 /// Normalize range inclusivity flags: force `inclusive=false` when the
@@ -2427,7 +2440,14 @@ impl Value {
                     format!("{si_value} {unit}")
                 }
             }
-            Value::Enum { type_name, variant, .. } => format!("{type_name}::{variant}"),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => format!(
+                "{type_name}::{variant}{}",
+                enum_payload_suffix(payload, Value::format_hover)
+            ),
             Value::List(items) => {
                 let inner: Vec<String> = items.iter().map(Value::format_hover).collect();
                 format!("[{}]", inner.join(", "))
@@ -2605,7 +2625,12 @@ impl Value {
             Value::Real(r) => format_display_number(*r),
             Value::Bool(b) => b.to_string(),
             Value::String(s) => s.clone(),
-            Value::Enum { variant, .. } => variant.clone(),
+            Value::Enum {
+                variant, payload, ..
+            } => format!(
+                "{variant}{}",
+                enum_payload_suffix(payload, Value::format_display)
+            ),
             Value::List(items) => {
                 let strs: Vec<String> = items.iter().map(|v| v.format_display()).collect();
                 format!("[{}]", strs.join(", "))
@@ -4031,7 +4056,15 @@ impl std::fmt::Display for Value {
                     write!(f, "{} {}", si_value, unit)
                 }
             }
-            Value::Enum { type_name, variant, .. } => write!(f, "{}::{}", type_name, variant),
+            Value::Enum {
+                type_name,
+                variant,
+                payload,
+            } => write!(
+                f,
+                "{type_name}::{variant}{}",
+                enum_payload_suffix(payload, |v| v.to_string())
+            ),
             Value::List(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -4971,7 +5004,7 @@ mod tests {
     mod geometry_handle {
         use super::*;
         use reify_core::identity::RealizationNodeId;
-        use crate::geometry::GeometryHandleId;
+        use crate::geometry_id::GeometryHandleId;
 
         /// Build a `Value::GeometryHandle` with the given realization_ref,
         /// upstream_values_hash, and kernel_handle (realized, Some-wrapped).
@@ -9672,7 +9705,7 @@ mod tests {
         let ghandle = Value::GeometryHandle {
             realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
             upstream_values_hash: [0u8; 32],
-            kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
+            kernel_handle: Some(crate::geometry_id::GeometryHandleId(0)),
         };
         assert!(affine > ghandle);
     }
@@ -10486,7 +10519,7 @@ mod tests {
                 Value::GeometryHandle {
                     realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
                     upstream_values_hash: [0u8; 32],
-                    kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
+                    kernel_handle: Some(crate::geometry_id::GeometryHandleId(0)),
                 },
             ),
             // task 3958 / α: AffineMap tag=29
@@ -10658,7 +10691,7 @@ mod tests {
             Value::GeometryHandle {
                 realization_ref: reify_core::identity::RealizationNodeId::new("T", 0),
                 upstream_values_hash: [0u8; 32],
-                kernel_handle: Some(crate::geometry::GeometryHandleId(0)),
+                kernel_handle: Some(crate::geometry_id::GeometryHandleId(0)),
             },
             make_affine_identity(),
             Value::Selector(
@@ -12999,7 +13032,7 @@ mod tests {
         use super::*;
         use reify_core::ty::{SelectorKind, Type};
         use reify_core::identity::RealizationNodeId;
-        use crate::geometry::GeometryHandleId;
+        use crate::geometry_id::GeometryHandleId;
         use crate::value::{GeometryHandleRef, RegionRef, SelectorValue, LeafQuery};
 
         /// Build a GeometryHandleRef with the given fields (realized, Some-wrapped).
@@ -13363,7 +13396,7 @@ mod tests {
         // required_kind: ByRole(MidSurfaceFace) -> Face, ByRole(MidSurfaceEdge) -> Edge.
         #[test]
         fn byrole_required_kind_maps_role_to_kind() {
-            use crate::geometry::Role;
+            use crate::geometry_id::Role;
             assert_eq!(
                 LeafQuery::ByRole(Role::MidSurfaceFace).required_kind(),
                 Some(SelectorKind::Face),
@@ -13379,7 +13412,7 @@ mod tests {
         // K1 leaf↔query: ByRole(MidSurfaceFace) accepts Face, rejects Edge.
         #[test]
         fn k1_leaf_byrole_mid_surface_face_kind_closure() {
-            use crate::geometry::Role;
+            use crate::geometry_id::Role;
             let t_ok = ghr("B", 0, [0u8; 32], 1);
             assert!(
                 SelectorValue::leaf(
@@ -13410,7 +13443,7 @@ mod tests {
         // (vs an All leaf of the same kind) and across role (Face vs Edge leaf).
         #[test]
         fn byrole_content_hash_is_stable_and_distinct() {
-            use crate::geometry::Role;
+            use crate::geometry_id::Role;
             let face_role_a = SelectorValue::leaf(
                 SelectorKind::Face,
                 ghr("B", 0, [0u8; 32], 1),
@@ -13536,7 +13569,7 @@ mod tests {
         // content_hash: determinism + distinctness — never a hardcoded tag byte.
         #[test]
         fn provenance_leaf_content_hash_is_stable_and_distinct() {
-            use crate::geometry::Role;
+            use crate::geometry_id::Role;
 
             let fid_a = FeatureId::realization("Foo", 0);
             let fid_b = FeatureId::realization("Bar", 0);
@@ -13822,7 +13855,7 @@ mod tests {
         // sub-shapes of the selector's kind).
         #[test]
         fn v2_leaf_required_kind_maps_variant_to_kind() {
-            use crate::geometry::{EdgeCurveKind, FaceSurfaceKind};
+            use crate::geometry_id::{EdgeCurveKind, FaceSurfaceKind};
             assert_eq!(
                 LeafQuery::ByPerpendicular { axis: [0., 0., 1.], tol_rad: 0.01 }.required_kind(),
                 None,
@@ -13856,7 +13889,7 @@ mod tests {
         // kind. ByPerpendicular accepts BOTH Face and Edge (kind-agnostic).
         #[test]
         fn v2_leaf_legal_kind_pairings_construct_ok() {
-            use crate::geometry::{EdgeCurveKind, FaceSurfaceKind};
+            use crate::geometry_id::{EdgeCurveKind, FaceSurfaceKind};
             // BySurfaceKind over Face.
             assert!(
                 SelectorValue::leaf(
@@ -13920,7 +13953,7 @@ mod tests {
         // K1 kind-closure: BySurfaceKind on an Edge selector must be rejected.
         #[test]
         fn v2_leaf_by_surface_kind_rejects_edge() {
-            use crate::geometry::FaceSurfaceKind;
+            use crate::geometry_id::FaceSurfaceKind;
             let result = SelectorValue::leaf(
                 SelectorKind::Edge,
                 ghr("B", 0, [0u8; 32], 1),
@@ -13941,7 +13974,7 @@ mod tests {
         // hash unequal.
         #[test]
         fn v2_leaf_content_hash_deterministic_and_field_sensitive() {
-            use crate::geometry::FaceSurfaceKind;
+            use crate::geometry_id::FaceSurfaceKind;
             // Identical extremal leaves hash equal.
             let ext_a = SelectorValue::leaf(
                 SelectorKind::Face,
@@ -14280,7 +14313,7 @@ mod feature {
     use super::*;
     use std::cmp::Ordering;
     use reify_core::ty::Type;
-    use crate::geometry::FeatureId;
+    use crate::geometry_id::FeatureId;
 
     #[test]
     fn value_feature_golden_eq_ord_content_hash() {
@@ -14375,3 +14408,6 @@ mod feature {
         }
     }
 }
+
+#[cfg(test)]
+mod enum_display_tests;

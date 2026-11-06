@@ -1,0 +1,407 @@
+#!/usr/bin/env bash
+# scripts/prune-unconsulted-target.sh — Delete the deps/ artefacts of cargo
+# units that no build has consulted lately, judged by when cargo last read each
+# unit's .fingerprint dir. The one home of the fingerprint-consult liveness rule
+# (#8352; shared since task 9246).
+#
+# Usage:
+#   scripts/prune-unconsulted-target.sh --window-days N [--atime-probe PATH]
+#                                       [--lock FILE]...
+#                                       [--free-floor-gib G --min-window-days M]
+#                                       [--prune-dead-unit-records]
+#                                       PROFILE_DIR...
+#
+# Callers:
+#   - scripts/refresh-warm-base.sh Step 3b: the warm-lane base's staging copy,
+#     with --prune-dead-unit-records.
+#   - deploy/systemd/reify-merge-verify-trim.service: leo-laptop's persistent
+#     _merge-verify target, without --prune-dead-unit-records.
+#     dark_factory's install_laptop_merge_verify_trim.sh installs THIS FILE
+#     ALONE into ~/.local/lib/reify-verify-host/, so it must never source a
+#     sibling.
+#
+# The rule, applied to each PROFILE_DIR (e.g. target/debug) on its own:
+#   A depth-1 file of <profile>/deps whose name, final dot-suffix stripped, ends
+#   in `-<16 lowercase hex>` belongs to that cargo unit hash. It is deleted iff
+#   the hash has a <profile>/.fingerprint/<pkg>-<hash> dir AND
+#   last_use < anchor - window, where
+#     last_use = max(atime, mtime) over that dir's files: cargo reads them on
+#                every build whose graph holds the unit, and a rebuild rewrites
+#                them, so a unit still being built is consulted continuously
+#                whatever its artefact mtime;
+#     anchor   = the newest last_use in THIS profile that is not in the future.
+#                Anchoring on the tree, not on wall clock, means an idle target
+#                ages nothing; anchoring per profile keeps a rarely built
+#                profile from being wiped whenever another one is busy.
+#   Never deleted: a hashed file with no fingerprint dir, a name outside the
+#   grammar, anything below deps/ depth 1, build/, and (unless
+#   --prune-dead-unit-records) .fingerprint itself.
+#
+# Record victims, under --prune-dead-unit-records only: for each hash that had
+# a deps file deleted in THIS pass and has no <profile>/build/<pkg>-<hash> dir,
+# also delete .fingerprint/<pkg>-<hash>/ and each depth-1 deps/*.dwo whose
+# name, cut at its FIRST dot, ends in that -<hash> (the later 16-hex cgu token
+# is not a unit hash). Order: deps files, then shards, then records, each stage
+# only after the previous one succeeded, so a failed unlink leaves the record.
+#   Safe: a unit whose deps are gone is rebuilt whether or not its record
+#   survives. Build-script units own no deps files, so they keep their records
+#   and build/ outputs, which a later build can still reuse as Fresh.
+#   Opt-in: only a staging copy re-imports the records on every refresh. On a
+#   persistent target the deletion is permanent and erases the evidence the
+#   next run reads.
+#
+# Skips — a line containing "skip", nothing deleted in that profile, the other
+# profiles still pruned:
+#   - PROFILE_DIR is absent, or has no deps/ or no .fingerprint/;
+#   - the atime probe's mount does not maintain atime (findmnt reports noatime,
+#     fails, or prints nothing). Without atime last_use degrades to mtime, and
+#     every unchanged registry unit would read as stale.
+#
+# Options:
+#   --window-days N     Required. Integer >= 1.
+#   --atime-probe PATH  The path whose mount must maintain atime: the tree
+#                       cargo's fingerprint reads went through (default: the
+#                       profile dir being pruned).
+#   --lock FILE         Repeatable. Taken exclusively and non-blocking, in the
+#                       order given, before any profile is read, and held until
+#                       the script exits, so the trim never overlaps a build in
+#                       the same target. These are dark_factory's flock(2) lane
+#                       locks, created on first use and never unlinked, so an
+#                       absent lock file is created here too. A lock another
+#                       process holds is normal contention: the trim is skipped
+#                       and the script exits 0, because the laptop service must
+#                       end in Result=success. A lock that cannot be opened, or a
+#                       flock fault, means the paths are misconfigured: exit 1,
+#                       nothing read. flock's -E code tells contention apart
+#                       from a fault, which a bare `flock -n` rc 1 cannot.
+#   --free-floor-gib G  Both or neither; integers, 1 <= M <= N. After the pass
+#   --min-window-days M at N days, while the filesystem of the FIRST
+#                       PROFILE_DIR has less than G GiB available (df), tighten
+#                       the window one day and prune again, stopping at M days.
+#                       Never below M: relatime updates atime at most once a
+#                       day, so a live unit's recorded consult can lag its real
+#                       one by up to 24h, and M must clear that lag plus one
+#                       build. A df failure stops the tightening, so a failed
+#                       measurement never deletes more.
+#   --prune-dead-unit-records
+#                       Also delete record victims (above).
+#   -h, --help          Print usage and exit 0.
+#
+# Output: nothing on stdout. stderr, per pruned profile:
+#   prune deps=<deps dir> files=N victim_bytes=N records=N dwo=N window_days=N
+# files and victim_bytes (summed apparent size) count the deps/ victims only;
+# records and dwo count the deleted fingerprint dirs and shards, and are 0
+# without --prune-dead-unit-records.
+#
+# Exit: 0 pruned, skipped, or a --lock held elsewhere; 1 failure (a --lock
+# that cannot be taken, victim selection failed, or a deps, shard or record
+# removal stage failed); 2 usage error, before anything is read or deleted.
+#
+# Executable spec: tests/infra/test_prune_unconsulted_target.py, and through
+# refresh-warm-base.sh, tests/infra/test_refresh_warm_base.sh Block LIVE.
+
+set -euo pipefail
+
+info() { printf '[info]  %s\n' "$*" >&2; }
+err()  { printf '[error] %s\n' "$*" >&2; }
+
+_usage() {
+    cat >&2 <<EOF
+Usage: $(basename "$0") --window-days N [--atime-probe PATH] [--lock FILE]...
+           [--free-floor-gib G --min-window-days M] [--prune-dead-unit-records]
+           PROFILE_DIR...
+
+  Delete the deps/ files of cargo units whose .fingerprint was last consulted
+  more than N days before the profile's newest consult. Rule, skips and exit
+  codes: this script's header.
+EOF
+}
+
+_usage_error() {
+    err "$*"
+    err "Run '$(basename "$0") --help' for usage."
+    exit 2
+}
+
+_is_positive_int() {
+    case "$1" in ''|*[!0-9]*|0*) return 1 ;; esac
+}
+
+# ── arg parsing ───────────────────────────────────────────────────────────────
+WINDOW_DAYS=""
+ATIME_PROBE=""
+LOCKS=()
+FREE_FLOOR_GIB=""
+MIN_WINDOW_DAYS=""
+PRUNE_RECORDS=0
+PROFILE_DIRS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help)
+            _usage; exit 0 ;;
+        --window-days)
+            [ $# -ge 2 ] || _usage_error "--window-days requires a value"
+            WINDOW_DAYS="$2"; shift 2 ;;
+        --atime-probe)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--atime-probe requires a path"
+            ATIME_PROBE="$2"; shift 2 ;;
+        --lock)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--lock requires a path"
+            LOCKS+=("$2"); shift 2 ;;
+        --free-floor-gib)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--free-floor-gib requires a value"
+            FREE_FLOOR_GIB="$2"; shift 2 ;;
+        --min-window-days)
+            [ $# -ge 2 ] && [ -n "$2" ] || _usage_error "--min-window-days requires a value"
+            MIN_WINDOW_DAYS="$2"; shift 2 ;;
+        --prune-dead-unit-records)
+            PRUNE_RECORDS=1; shift ;;
+        --)
+            shift; PROFILE_DIRS+=("$@"); break ;;
+        -*)
+            _usage_error "Unknown flag: $1" ;;
+        *)
+            PROFILE_DIRS+=("$1"); shift ;;
+    esac
+done
+
+_is_positive_int "$WINDOW_DAYS" \
+    || _usage_error "--window-days must be an integer >= 1 (got '${WINDOW_DAYS}')"
+[ "${#PROFILE_DIRS[@]}" -ge 1 ] || _usage_error "at least one PROFILE_DIR is required"
+if [ -n "$FREE_FLOOR_GIB" ] || [ -n "$MIN_WINDOW_DAYS" ]; then
+    [ -n "$FREE_FLOOR_GIB" ] && [ -n "$MIN_WINDOW_DAYS" ] \
+        || _usage_error "--free-floor-gib and --min-window-days must be given together"
+    _is_positive_int "$FREE_FLOOR_GIB" \
+        || _usage_error "--free-floor-gib must be an integer >= 1 (got '${FREE_FLOOR_GIB}')"
+    _is_positive_int "$MIN_WINDOW_DAYS" && [ "$MIN_WINDOW_DAYS" -le "$WINDOW_DAYS" ] \
+        || _usage_error "--min-window-days must be an integer from 1 to --window-days (got '${MIN_WINDOW_DAYS}')"
+fi
+
+# ── lane locks: every one taken before the tree is read, held to exit ─────────
+readonly _LOCK_HELD_RC=75
+for _lock in "${LOCKS[@]}"; do
+    if ! exec {_lock_fd}>>"$_lock"; then
+        err "cannot open lock file $_lock — refusing to trim (nothing deleted)."
+        exit 1
+    fi
+    _flock_rc=0
+    flock -n -x -E "$_LOCK_HELD_RC" "$_lock_fd" || _flock_rc=$?
+    case "$_flock_rc" in
+        0) ;;
+        "$_LOCK_HELD_RC")
+            info "lane lock held: $_lock — skipping trim (files=0)."
+            exit 0 ;;
+        *)
+            err "flock on $_lock failed (rc=$_flock_rc) — refusing to trim (nothing deleted)."
+            exit 1 ;;
+    esac
+done
+
+# ── the liveness rule ─────────────────────────────────────────────────────────
+
+# _mount_tracks_atime <path>: does the mount holding <path> maintain atime? The
+# option list is parsed once, here, on the exact token: nodiratime is not noatime,
+# and findmnt failing or printing nothing is "unknown", which counts as no.
+_mount_tracks_atime() {
+    local opts
+    opts="$(findmnt -n -o OPTIONS -T "$1" 2>/dev/null)" || return 1
+    [ -n "$opts" ] || return 1
+    case ",$opts," in *,noatime,*) return 1 ;; esac
+    return 0
+}
+
+# _select_unconsulted_victims <profile_dir> <window_secs> <prune_records> <work_dir>
+# Writes three NUL-delimited name lists into <work_dir>: deps (files of
+# <profile_dir>/deps), dwo (shards of <profile_dir>/deps) and records (dirs of
+# <profile_dir>/.fingerprint), plus summary: "files=N victim_bytes=N records=N
+# dwo=N", where files and victim_bytes count the deps list only. With
+# <prune_records> 0 the dwo and records lists stay empty and build/ is not read.
+_select_unconsulted_victims() {
+    local profile="$1" window="$2" prune_records="$3" work="$4"
+    { find "$profile/.fingerprint" -mindepth 2 -maxdepth 2 -type f -printf 'F\t%A@\t%T@\t%P\n'
+      find "$profile/deps" -maxdepth 1 -type f -printf 'D\t%s\t%f\n'
+      if [ "$prune_records" = 1 ] && [ -d "$profile/build" ]; then
+          find "$profile/build" -mindepth 1 -maxdepth 1 -type d -printf 'B\t%f\n'
+      fi
+    } | awk -F'\t' -v window="$window" -v now="$(date +%s)" \
+            -v prune_records="$prune_records" -v work="$work" '
+        BEGIN {
+            # The ONE copy of the unit-hash grammar: <stem>-<16 lowercase hex>.
+            # Spelled out as repeated [0-9a-f] classes, not {16}: mawk < 1.3.4 and
+            # busybox awk lack interval expressions, under which {16} matches
+            # nothing and this whole stage would silently become a no-op.
+            hash_len = 16
+            hash_re = "^.+-"
+            for (i = 0; i < hash_len; i++) hash_re = hash_re "[0-9a-f]"
+            hash_re = hash_re "$"
+            anchor = 0; n = 0; m = 0; files = 0; bytes = 0; records = 0; dwo = 0
+        }
+        function unit_hash(stem) {
+            return (stem ~ hash_re) ? substr(stem, length(stem) - hash_len + 1) : ""
+        }
+        # F: one file of a unit dir. last_use[hash] is the newest atime-or-mtime seen.
+        $1 == "F" {
+            split($4, parts, "/")
+            h = unit_hash(parts[1])
+            if (h == "") next
+            fp_dir[parts[1]] = h
+            atime = $2 + 0; mtime = $3 + 0
+            t = (atime > mtime) ? atime : mtime
+            if (!(h in last_use) || t > last_use[h]) last_use[h] = t
+            # A future-dated consult still counts for its own unit but must not
+            # become the anchor, or every live unit would age out against it.
+            if (t <= now && t > anchor) anchor = t
+            next
+        }
+        # D: one depth-1 deps file. Strip only the FINAL dot-suffix, so
+        # reify_ast-<h> and reify_ast-<h>.d resolve to the same hash.
+        $1 == "D" {
+            stem = $3
+            sub(/\.[^.]*$/, "", stem)
+            h = unit_hash(stem)
+            if (h != "") {
+                n++
+                cand_name[n] = $3; cand_size[n] = $2; cand_hash[n] = h
+                next
+            }
+            # A split-debuginfo shard, <stem>-<h>.<crate>.<cgu>-cgu.N.rcgu.dwo, is
+            # keyed on its name cut at the FIRST dot: its later 16-hex cgu token
+            # is not a unit hash. Only prune_records ever reads a shard.
+            if (prune_records != 1 || $3 !~ /\.dwo$/) next
+            stem = $3
+            sub(/\..*$/, "", stem)
+            h = unit_hash(stem)
+            if (h == "") next
+            m++
+            shard_name[m] = $3; shard_hash[m] = h
+            next
+        }
+        # B: one build/ dir, present only under prune_records.
+        $1 == "B" {
+            h = unit_hash($2)
+            if (h != "") has_build[h] = 1
+            next
+        }
+        END {
+            cutoff = anchor - window
+            for (i = 1; i <= n; i++) {
+                h = cand_hash[i]
+                if (!(h in last_use) || last_use[h] >= cutoff) continue
+                # NUL via %c: ORS="\0" is dropped by busybox awk, %c 0 is not.
+                printf "%s%c", cand_name[i], 0 > (work "/deps")
+                files++
+                bytes += cand_size[i]
+                selected[h] = 1
+            }
+            # A record victim is a unit this pass pruned deps for, so the dead
+            # verdict above is its only test.
+            if (prune_records == 1) {
+                for (h in selected) if (!(h in has_build)) record_victim[h] = 1
+                for (i = 1; i <= m; i++) {
+                    if (!(shard_hash[i] in record_victim)) continue
+                    printf "%s%c", shard_name[i], 0 > (work "/dwo")
+                    dwo++
+                }
+                for (d in fp_dir) {
+                    if (!(fp_dir[d] in record_victim)) continue
+                    printf "%s%c", d, 0 > (work "/records")
+                    records++
+                }
+            }
+            printf "files=%d victim_bytes=%.0f records=%d dwo=%d\n", files, bytes, records, dwo \
+                > (work "/summary")
+        }
+    '
+}
+
+# The work dir of the profile being pruned; the EXIT trap reclaims it when a
+# prune fails midway.
+_WORK_DIR=""
+_reclaim_work_dir() {
+    [ -z "$_WORK_DIR" ] || rm -rf "$_WORK_DIR"
+}
+trap _reclaim_work_dir EXIT
+
+# _unlink_listed <dir> <list> <what> <rm_opt>: rm <rm_opt> every name in the
+# NUL-delimited <list>, from inside <dir>. Any failure exits 1, so no later
+# stage runs.
+_unlink_listed() {
+    local dir="$1" list="$2" what="$3" rm_opt="$4"
+    if ! (cd "$dir" && xargs -r -0 rm "$rm_opt" -- < "$list"); then
+        err "removing the $what in $dir failed; they may be partly removed, and no later stage ran."
+        exit 1
+    fi
+}
+
+# _prune_profile <profile_dir> <window_days>
+_prune_profile() {
+    local profile="$1" window_days="$2"
+    local deps="$1/deps" fp="$1/.fingerprint" probe="${ATIME_PROBE:-$1}"
+    if [ ! -d "$profile" ]; then
+        info "No profile dir $profile — skipping liveness prune (files=0)."
+        return 0
+    fi
+    if [ ! -d "$deps" ]; then
+        info "No deps dir under $profile — skipping liveness prune (files=0)."
+        return 0
+    fi
+    if [ ! -d "$fp" ]; then
+        info "No .fingerprint under $profile — no liveness evidence; skipping liveness prune (files=0)."
+        return 0
+    fi
+    if ! _mount_tracks_atime "$probe"; then
+        info "Mount of $probe does not maintain atime (noatime, or findmnt unavailable or empty) — no liveness evidence; skipping liveness prune of $profile (files=0)."
+        return 0
+    fi
+    _WORK_DIR="$(mktemp -d)"
+    : > "$_WORK_DIR/deps"; : > "$_WORK_DIR/dwo"; : > "$_WORK_DIR/records"
+    if ! _select_unconsulted_victims "$profile" "$(( window_days * 86400 ))" \
+            "$PRUNE_RECORDS" "$_WORK_DIR"; then
+        err "victim selection for $profile failed; nothing deleted."
+        exit 1
+    fi
+    _unlink_listed "$deps" "$_WORK_DIR/deps" "deps files" -f
+    _unlink_listed "$deps" "$_WORK_DIR/dwo" ".dwo shards" -f
+    _unlink_listed "$fp" "$_WORK_DIR/records" "fingerprint records" -rf
+    info "prune deps=$deps $(cat "$_WORK_DIR/summary") window_days=$window_days"
+    rm -rf "$_WORK_DIR"
+    _WORK_DIR=""
+}
+
+# _prune_pass <window_days>: one prune of every profile at that window. Each
+# pass re-reads the .fingerprint trees. The records a pass deletes were all
+# below its cutoff, so never the anchor: a later pass's anchor is unchanged.
+_prune_pass() {
+    local profile
+    for profile in "${PROFILE_DIRS[@]}"; do
+        _prune_profile "$profile" "$1"
+    done
+}
+
+# _free_bytes <path>: stdout the bytes available on <path>'s filesystem; fails
+# when df fails or prints anything but a byte count on its last line.
+_free_bytes() {
+    local out
+    out="$(df -B1 --output=avail -- "$1" 2>/dev/null)" || return 1
+    out="${out##*$'\n'}"
+    out="${out//[[:space:]]/}"
+    case "$out" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$out"
+}
+
+_window_days="$WINDOW_DAYS"
+_prune_pass "$_window_days"
+if [ -n "$FREE_FLOOR_GIB" ]; then
+    _floor_bytes=$(( FREE_FLOOR_GIB * 1024 * 1024 * 1024 ))
+    while [ "$_window_days" -gt "$MIN_WINDOW_DAYS" ]; do
+        if ! _free="$(_free_bytes "${PROFILE_DIRS[0]}")"; then
+            info "cannot measure free space on ${PROFILE_DIRS[0]} — not tightening the window."
+            break
+        fi
+        [ "$_free" -lt "$_floor_bytes" ] || break
+        _window_days=$(( _window_days - 1 ))
+        info "free ${_free} bytes below the ${FREE_FLOOR_GIB} GiB floor; tightening window to ${_window_days} days."
+        _prune_pass "$_window_days"
+    done
+fi

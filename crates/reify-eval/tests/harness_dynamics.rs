@@ -13,7 +13,7 @@
 //! `mod` or `#[path]` declaration, a `#[global_allocator]`, or a file-level inner
 //! attribute, so no content fixup was needed.
 //!
-//! This unit is deliberately SMALL — two modules — and that is not an oversight.
+//! This unit is deliberately SMALL — three modules — and that is not an oversight.
 //! `dynamics_` and `trajectory_` are two of the prefix clusters EVAL-3 was asked to home,
 //! so they get a named root of their own. Padding it toward the band with the obvious
 //! semantic neighbours (`rigid_mass_props_autoderive_gui_path`,
@@ -40,7 +40,7 @@
 //! this far below the PRD §7 10-20 kLOC band, and nothing in CI will notice if it dies:
 //! `test_harness_kloc_cap.sh` rule (a) only fails units that are too LARGE, so an
 //! orphaned small root is not self-correcting. If #4935 is cancelled or reshaped so that
-//! no `reify-eval-fea` landing zone is coming — or lands without one — fold these two
+//! no `reify-eval-fea` landing zone is coming — or lands without one — fold these
 //! modules into `harness_mechanism` and delete this root rather than leaving it stranded.
 //! EVAL-3 could not perform that fold itself: `harness_mechanism.rs` is outside this
 //! task's module locks, so it is left as a follow-up rather than done here.
@@ -49,5 +49,7 @@
 //! measured and capped by `tests/infra/test_harness_kloc_cap.sh` rule (a).
 #[path = "harness_dynamics/dynamics_body_mass_props.rs"]
 mod dynamics_body_mass_props;
+#[path = "harness_dynamics/dynamics_reader_dimensions.rs"]
+mod dynamics_reader_dimensions;
 #[path = "harness_dynamics/trajectory_gcode_dialect_eval.rs"]
 mod trajectory_gcode_dialect_eval;

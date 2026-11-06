@@ -373,6 +373,7 @@ fn engine_convert_loop_forwards_solid_attribute_to_manifold_ingested_handle() {
 
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry,
@@ -538,6 +539,7 @@ fn forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan
 
     let checker = MockConstraintChecker::new();
     let mut engine = Engine::with_test_kernels_and_registry(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(checker),
         kernels,
         registry,

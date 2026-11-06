@@ -1,6 +1,6 @@
 # Capability manifest — reify-audit-p1-jcodemunch-substrate
 
-Mechanizes G3 + G6 per leaf for `docs/prds/reify-audit-p1-jcodemunch-substrate.md`. Every binding below is **PASS** (no FAIL → batch may queue). Reify evidence forms per `.claude/skills/prd/project.md` → *Capability Manifest*.
+**AS-AUTHORED GATE ARTIFACT (2026-05-30) — do not refresh.** This manifest records the pre-decomposition evidence check that cleared this PRD's leaves to queue; its verdicts are statements about binding quality at author time, not about landed state. All leaves have since landed (L-SERVE #4102, L-TRAIT #4095 … L-SMOKE #4101) — see the parent PRD's SHIPPED header (`docs/prds/reify-audit-p1-jcodemunch-substrate.md`). Its forward-looking phrasings and hard `file:line` anchors are 2026-05-30 provenance and may have drifted; rewriting them would destroy the record of what was actually gated. Mechanizes G3 + G6 per leaf for `docs/prds/reify-audit-p1-jcodemunch-substrate.md`. Every binding below is **PASS** (no FAIL → batch may queue). Reify evidence forms per `.claude/skills/prd/project.md` → *Capability Manifest*.
 
 **No grammar-fixture bindings:** this slice introduces **no novel `.ri` syntax** — it is pure Rust + an external MCP server. The G3 grammar gate does not fire. The relevant substrate is the jcodemunch v1.108.27 API, verified live this session (see below).
 

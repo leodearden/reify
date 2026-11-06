@@ -13,7 +13,7 @@ use reify_test_support::*;
 fn accept_well_formed_compiled_module() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
     assert!(!result.values.is_empty());
 }
@@ -24,7 +24,7 @@ fn accept_well_formed_compiled_module() {
 fn handle_empty_realizations() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
     // Should succeed even without geometry kernel
     assert!(result.diagnostics.is_empty());
@@ -36,7 +36,7 @@ fn handle_empty_realizations() {
 fn bracket_defaults_evaluated() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     // All 5 params should have values
@@ -60,7 +60,7 @@ fn bracket_defaults_evaluated() {
 fn bracket_volume_computed() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&module);
 
     let volume = result
@@ -83,7 +83,7 @@ fn bracket_volume_computed() {
 fn bracket_constraints_satisfied() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new(); // Real checker tested in boundary3
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.check(&module);
 
     for entry in &result.constraint_results {

@@ -1080,24 +1080,6 @@ export interface AutoResolveIteration {
 }
 
 /**
- * Mesh-morph runtime statistics — response shape for the
- * `morph_stats` debug-MCP RPC (GR-016 / docs/prds/v0_3/gui-event-channel-inventory.md §2.3).
- *
- * The fields mirror `reify_mesh_morph::stats::MorphStats` (Rust). Per PRD §3.2
- * the field names match exactly (no `#[serde(rename_all)]`). `last_rejection_reason`
- * is `Option<String>` on Rust and serialized `skip_serializing_if = "Option::is_none"`,
- * so it arrives as `undefined` (absent key) when no rejection has been recorded.
- *
- * Consumer: MCP debug session (claude-debug). No frontend listener — this is
- * an RPC response shape, not a Tauri event payload.
- */
-export interface MorphStats {
-  morph_count: number;
-  remesh_count: number;
-  last_rejection_reason?: string;
-}
-
-/**
  * Payload for the `warm-pool-event` Tauri channel (GR-016 ε).
  *
  * Wire format per PRD §2.2: field names match the Rust IPC struct in

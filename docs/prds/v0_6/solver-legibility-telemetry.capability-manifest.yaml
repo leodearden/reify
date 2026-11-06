@@ -43,27 +43,17 @@ tasks:
   task_id: 6722
   title: 'P4-epsilon: key per-inequality slack by ConstraintNodeId and carry margin on ConstraintCheckEntry'
   capabilities:
-  - name: slack-decomposition-exists
-    binding: capability→producer (anti-orphan) — collect_slack_terms builds signed-slack CompiledExprs
-      for Ge/Gt/Le/Lt with And-recursion, on the production centrality-objective path in reify-constraints.
+  - name: margin-carried-on-constraint-check-entry
+    binding: 'producer-self (rewritten 2026-10-20, retro-critic sitting follow-up after R2 B2) — replaces the substrate
+      checks slack-decomposition-exists and op-rule-pact-members-exist, which were green at main and anchored on code
+      S14 ν #8645 (now a prerequisite) rewrites or deletes. The sibling margin field on ConstraintCheckEntry is this
+      leaf''s product; red at main whatever carrier type the 2026-09-01 reconciliation picks.'
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn collect_slack_terms
+      pattern: 'pub margin:'
       paths:
-      - crates/reify-constraints/src/solver.rs
-      expect: present
-  - name: op-rule-pact-members-exist
-    binding: G7 no-lockstep-duplication — the same decomposition lives in collect_floor_terms
-      and derive_from_expr in-crate plus the cross-crate mirror has_inequality_slack. epsilon
-      must edit all members in lockstep, not add a fifth copy.
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: fn collect_floor_terms|fn has_inequality_slack
-      paths:
-      - crates/reify-constraints/src/solver.rs
-      - crates/reify-eval/src/engine_eval.rs
+      - crates/reify-ir/src/constraint.rs
       expect: present
   - name: equality-has-no-signed-slack
     binding: G6 branch 4 (honest absence) — Eq/Ne/Or are explicitly skipped by the decomposition,
@@ -103,6 +93,7 @@ tasks:
       pattern: '"satisfied"'
       paths:
       - gui/src-tauri/src/engine.rs
+      - gui/src-tauri/src/types.rs
       expect: present
   - name: frontend-compares-lowercase
     binding: signal premise (the other half) — StatusBar and ConstraintPanel both switch on
@@ -369,9 +360,11 @@ tasks:
     verdict: PASS
     delivered_check:
       kind: grep
-      pattern: fn tool_defs
+      pattern: fn (tool_defs|debug_tools)
       paths:
       - gui/src-tauri/src/debug_server.rs
+      - gui/src-tauri/src/debug_protocol.rs
+      - gui/src-tauri/src/debug_tools.rs
       expect: present
   - name: both-allowlists-must-be-updated
     binding: anti-mismatch — a new tool must be added to PURE_ENGINE_SIDE and to KNOWN_DEBUG_TOOL_NAMES
@@ -414,6 +407,7 @@ tasks:
       pattern: test:e2e|test:visual|REIFY_DEBUG
       paths:
       - scripts/verify.sh
+      - scripts/reify_verify/
       expect: absent
 - label: ξ
   task_id: 6733
@@ -427,7 +421,7 @@ tasks:
       kind: grep
       pattern: fn cmd_explain
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: term-contributions-already-computed
     binding: capability→producer — TermContribution carries sense, weight, realized_value
@@ -448,7 +442,7 @@ tasks:
       kind: grep
       pattern: No objective provenance recorded
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: present
   - name: stale-anchor-is-repaired-here
     binding: code-anchor hygiene — cmd_explain's own rustdoc cites engine_eval.rs:3884 for
@@ -459,7 +453,7 @@ tasks:
       kind: grep
       pattern: engine_eval.rs:3884
       paths:
-      - crates/reify-cli/src/main.rs
+      - crates/reify-cli/src
       expect: absent
   - name: completeness-field-owner-is-p3-zeta
     binding: 'G7 co-tenancy ruling — canonical text is PRD section 8.2 items 1-3 (written by
@@ -551,29 +545,6 @@ tasks:
       pattern: 'pragma:'
       paths:
       - tree-sitter-reify/grammar.js
-      expect: present
-  - name: floor-flag-exists-but-is-hardwired
-    binding: signal premise — apply_robustness_floor already exists as a parameter of the
-      solve core but is hard-wired by its caller, and ResolutionProblem carries no field for
-      it. mu threads it from the DSL.
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: apply_robustness_floor
-      paths:
-      - crates/reify-constraints/src/solver.rs
-      expect: present
-  - name: eval-side-twin-must-move-in-lockstep
-    binding: G7 no-lockstep-duplication — objective_is_money is duplicated in reify-eval to
-      gate the Info diagnostic, deliberately, to preserve dependency inversion. mu must edit
-      both.
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: objective_is_money
-      paths:
-      - crates/reify-eval/src/engine_eval.rs
-      - crates/reify-constraints/src/solver.rs
       expect: present
   - name: clamp-box-coupling-is-upstream
     binding: G6 branch 3 — un-gating the floor also un-gates the constraint-derived clamp

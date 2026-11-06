@@ -50,7 +50,7 @@ use reify_ir::Value;
 /// A zero row says "this residual does not move when you move this variable",
 /// which is a *claim*, and a false one; a solver that believes it will step in
 /// a direction the residual does not actually reward.  Callers convert `None`
-/// into a typed refusal (`dual_eval::NonDifferentiable`) instead — see
+/// into a typed refusal (`crate::NonDifferentiable`) instead — see
 /// PRD §7.7 ("Non-numeric operands stop contributing phantom gradients") and
 /// INV-SF-7 ("a well-typed wrong value is the worst shape").
 #[derive(Debug, Clone, PartialEq)]

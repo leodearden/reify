@@ -1,0 +1,16 @@
+module p4_dce
+enum PressureDirection {
+    Normal,
+    Fixed { dir: Direction },
+}
+structure def P {
+    param direction : PressureDirection = Normal
+}
+structure def Main {
+    let a = P()
+    let b = P(direction: Fixed { dir: axis_y(point3(0mm, 0mm, 0mm)).dir })
+    let c = match b.direction {
+        Normal => 0,
+        Fixed { dir: d } => 1
+    }
+}

@@ -82,7 +82,7 @@ fn eval_uses_named_solver_from_registry_when_solver_pragma_matches() {
     let default_spy = SpyConstraintSolver::new_solved(HashMap::new());
     let default_captured = default_spy.captured_problem();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(default_spy));
     engine.register_solver("libslvs", Box::new(named_spy));
 
@@ -118,7 +118,7 @@ fn eval_cached_uses_named_solver_from_registry_when_solver_pragma_matches() {
     let default_spy = SpyConstraintSolver::new_solved(HashMap::new());
     let default_captured = default_spy.captured_problem();
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(default_spy));
     engine.register_solver("libslvs", Box::new(named_spy));
 
@@ -158,7 +158,7 @@ fn eval_falls_back_to_default_solver_with_warning_when_named_solver_not_register
 
     // NB: no `register_solver("libslvs", …)` call — the named back-end is
     // intentionally absent so the resolver must fall back to the default.
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(default_spy));
 
     let result = engine.eval(&module);
@@ -216,7 +216,7 @@ fn eval_cached_falls_back_to_default_solver_with_warning_when_named_solver_not_r
 
     // NB: no `register_solver("libslvs", …)` call — the named back-end is
     // intentionally absent so the resolver must fall back to the default.
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(default_spy));
 
     // Prime the cache via a regular eval so eval_cached has state to consult.

@@ -1,6 +1,6 @@
 # PRD: Merge-gate health — collateral elimination, honest categorization, guard precision
 
-**Status: committed 2026-07-19. Evidence base: `docs/notes/merge-verify-cpu-survey-2026-07.md`. Program milestone: task 5254.**
+**Status: SHIPPED.** Every leaf has landed — reify #5256 (W3a), #5257 (W4a), #5258 (W4b), #5259 (W4c), #5260 (W4d), #5261 (W4e+W5b) and the manifest-row gate #5252; dark-factory 2828 (W1a+W1c), 2829 (W1b-DF), 2830 (W1d), 2831 (W2b), plus the folded-in DF 2821 (W2a/W2c), 2822 (W3b) and 2823 (trivial-pass red-main precheck). Committed 2026-07-19; shipped-status recorded 2026-10-18. Evidence base: `docs/notes/merge-verify-cpu-survey-2026-07.md`. Program milestone: task 5254 (the program-level release gate, outside this PRD). **The body below is the AS-AUTHORED design record** — its measurements, failure-category figures, anchors and decompose-time remarks are dated 2026-07-19 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** no section is maintained as LIVE — code and tests cite the §8 leaf labels (W3a, W4b–W4e, W5b) as provenance only, so all of §§1–10 is AS-AUTHORED.
 
 ## 1. Consumer + user-observable surface (G1)
 

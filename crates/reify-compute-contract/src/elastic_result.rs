@@ -13,9 +13,8 @@
 //! also uses it — see `.task/plan.json` design_decisions for the full
 //! rationale.
 //!
-//! `reify-eval`'s `persistent_cache.rs` re-exports `ElasticResult`,
-//! `ShellChannels`, and `max_deflection_magnitude` at their original
-//! `crate::persistent_cache::` / `reify_eval::persistent_cache::` paths.
+//! Consumers import `ElasticResult`, `ShellChannels`, `AposterioriEstimate`
+//! and `max_deflection_magnitude` from `reify_compute_contract` directly.
 
 use std::io::{self, Read, Write};
 
@@ -266,12 +265,12 @@ fn read_shell_channels_tail<R: Read>(r: &mut R) -> io::Result<Option<ShellChanne
 /// with the existing `ElasticResult.stress` (which aliases the mid layer);
 /// `frame` is the per-element row-major 3×3 local→global rotation matrix,
 /// matching the [`ShellFrame::local_to_global`] convention at
-/// `crates/reify-solver-elastic/src/shell_assembly.rs`.
+/// `crates/reify-solver-elastic/src/elements/shell_frame.rs`.
 ///
 /// PRD §11 OQ-1 (per-element vs per-vertex) is tactically resolved as
 /// per-element here; nodal conversion lives in PRD task θ (GUI populator).
 ///
-/// [`ShellFrame::local_to_global`]: ../../reify-solver-elastic/src/shell_assembly.rs
+/// [`ShellFrame::local_to_global`]: ../../reify-solver-elastic/src/elements/shell_frame.rs
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellChannels {
     /// Per-element stress at z = +t/2 (outer fibre), flattened to match the
@@ -550,9 +549,9 @@ pub struct ElasticResult {
     /// Optional shell-element channels. `None` for tet-only bodies (the
     /// historical / v1 case); `Some(_)` for shell-classified bodies whose
     /// trampoline populates per-element top/bottom stress + local frames.
-    /// Tet-only consumers ignore this field; the `result.stress` alias
-    /// contract at stdlib `solver_elastic.ri:325-328`
-    /// (`ShellStress.homogeneous(field).mid`) is unchanged.
+    /// Tet-only consumers ignore this field; for shell results `stress` equals
+    /// the `ShellStress.mid` channel by construction (I-2; see the
+    /// `ShellStress` block in stdlib solver_elastic.ri).
     pub shell_channels: Option<ShellChannels>,
     // ── v3 additions (task #3428 step-4) ─────────────────────────────────────
     /// Grid lower bounds per axis (SI units). Matches `GridSpec::bounds_min`.
@@ -589,7 +588,6 @@ pub struct ElasticResult {
 ///
 /// This is the single-`ElasticResult` scalar counterpart to the
 /// `MultiCaseResult` `envelope_displacement_magnitude` builtin.
-/// The `.ri` / gate exposure is deferred to consumer task #3787.
 pub fn max_deflection_magnitude(displacement: &[f64]) -> f64 {
     displacement
         .chunks_exact(3)
@@ -2254,6 +2252,55 @@ mod tests {
         //     new fields (grid_bounds_min/max/counts, divergence, gradient, curl).
         let decoded = ElasticResult::deserialize_from_reader(&mut &buf_a[..]).unwrap();
         assert_eq!(decoded, original, "v3 round-trip must preserve all new fields losslessly");
+    }
+
+    /// Populates both the v3 grid/derivative slabs and a `Some(ShellChannels)`
+    /// tail. The tail is decoded after those slabs, so a misaligned slab read
+    /// would shift it.
+    #[test]
+    fn elastic_result_with_shell_channels_and_grid_round_trips_and_reserializes_identically() {
+        fn scrambled(len: u64, mul: u64, xor: u64) -> Vec<f64> {
+            (0..len)
+                .map(|i| f64::from_bits(i.wrapping_mul(mul) ^ xor))
+                .collect()
+        }
+        // 1×1×1 element-count grid → 8 nodes.
+        let n_nodes: usize = 8;
+        let original = ElasticResult {
+            displacement: (0..n_nodes * 3).map(|i| i as f64 * 0.001).collect(),
+            stress: (0..n_nodes * 9).map(|i| i as f64 * 1e6).collect(),
+            max_von_mises: 250e6,
+            converged: true,
+            iterations: 17,
+            solve_time_ms: 4321,
+            shell_channels: Some(ShellChannels {
+                top: scrambled(9, 0x9E37_79B9_7F4A_7C15, 0xABAD_1DEA_0BAD_F00D),
+                bottom: scrambled(9, 0x6C62_272E_07BB_0142, 0xC0DE_FACE_DEAD_C0DE),
+                frame: scrambled(9, 0xD737_E5B5_2727_2727, 0x1234_5678_9ABC_DEF0),
+            }),
+            grid_bounds_min: [0.0, -1.0, 0.0],
+            grid_bounds_max: [1.0, 0.3, 0.1],
+            grid_counts: [1, 1, 1],
+            divergence: (0..n_nodes).map(|i| i as f64 * 1e-5).collect(),
+            gradient: (0..n_nodes * 9).map(|i| i as f64 * 1e-3).collect(),
+            curl: (0..n_nodes * 3).map(|i| i as f64 * 2e-4).collect(),
+            aposteriori: None,
+        };
+
+        let mut bytes_a: Vec<u8> = Vec::new();
+        original.serialize_to_writer(&mut bytes_a).unwrap();
+        let decoded = ElasticResult::deserialize_from_reader(&mut &bytes_a[..]).unwrap();
+        assert_eq!(
+            decoded, original,
+            "shell + grid round-trip must preserve every field"
+        );
+
+        let mut bytes_b: Vec<u8> = Vec::new();
+        decoded.serialize_to_writer(&mut bytes_b).unwrap();
+        assert_eq!(
+            bytes_a, bytes_b,
+            "re-serializing a decoded value must be byte-identical"
+        );
     }
 
     #[test]

@@ -1,0 +1,18 @@
+module driver_parity_one_sided_auto_free
+// PRD evidence: docs/prds/v0_6/solver-driver-parity.md §4.6 case 2 (F2 ruling, option a2), §5 B4/B5.
+// The auto(free) twin of driver_parity_one_sided_auto.ri, and the SECOND
+// discriminating negative case. A one-sided `auto(free)` declares "any feasible
+// point will do", so the strict one-sided refusal (#6692) must NOT fire on it
+// under either arm. Its VALUE rule (user-anchored, never the default-box edge,
+// coded DomainUnbounded-class warning) is owned by P3-δ #6709.
+//
+// Baseline measured on main b234526fc4 (2026-10-22):
+//   reify eval -> OneSidedFree.rod.length = 10 m, plus "resolved via auto(free)" warning, exit 0
+pub structure Rod {
+    param length : Length = 5mm
+    let body = cylinder(3mm, length)
+}
+pub structure OneSidedFree {
+    sub rod = Rod(length: auto(free))
+    constraint self.rod.length >= 8mm
+}

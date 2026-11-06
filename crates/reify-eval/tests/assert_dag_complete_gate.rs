@@ -35,7 +35,7 @@ fn assert_gate_clean(source: &str) {
 
     let kernel = MockGeometryKernel::new();
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // This call must NOT panic (the gate must not fire on valid source).
     let result = engine.build(&compiled, ExportFormat::Step);

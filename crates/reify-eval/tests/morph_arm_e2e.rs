@@ -39,7 +39,7 @@ extern crate reify_kernel_occt as _;
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Serializes every test in this binary that touches the **process-global**
@@ -124,11 +124,15 @@ fn morph_probe_capture_fn(
     }
 }
 
-/// Read back the most-recently-captured body handle's `tet_indices`, asserting
-/// the probe actually captured a VolumeMesh (clear failure rather than an
+/// Run `f` over the most-recently-captured body handle's `VolumeMesh`,
+/// asserting the probe actually captured one (a clear failure rather than an
 /// index-out-of-bounds panic if the redispatch did not fire).
+///
+/// Two independent observations are made of each capture — its connectivity and
+/// its x-extent — so the slot read and the `volume_mesh()` unwrap live here
+/// once rather than in each accessor.
 #[cfg(has_gmsh)]
-fn captured_tet_indices(stage: &str) -> Vec<u32> {
+fn with_captured_volume_mesh<T>(stage: &str, f: impl FnOnce(&reify_ir::VolumeMesh) -> T) -> T {
     MORPH_PROBE_CAPTURED.with(|slot| {
         let captured = slot.borrow();
         assert!(
@@ -136,18 +140,41 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
             "{stage}: the redispatch must invoke the probe with the body's \
              RealizationReadHandle; captured nothing"
         );
-        captured[0]
-            .volume_mesh()
-            .unwrap_or_else(|| {
-                panic!(
-                    "{stage}: the captured body handle's volume_mesh() must be \
-                     Some — the VolumeMesh-demand → execute → project → read path \
-                     must deliver a tet mesh, not a None-content (BRep-only) handle"
-                )
-            })
-            .tet_indices()
+        let mesh = captured[0].volume_mesh().unwrap_or_else(|| {
+            panic!(
+                "{stage}: the captured body handle's volume_mesh() must be \
+                 Some — the VolumeMesh-demand → execute → project → read path \
+                 must deliver a tet mesh, not a None-content (BRep-only) handle"
+            )
+        });
+        f(mesh)
+    })
+}
+
+/// Read back the most-recently-captured body handle's `tet_indices`.
+#[cfg(has_gmsh)]
+fn captured_tet_indices(stage: &str) -> Vec<u32> {
+    with_captured_volume_mesh(stage, |mesh| {
+        mesh.tet_indices()
             .expect("morph arm operates on tet-only meshes")
             .to_vec()
+    })
+}
+
+/// The largest vertex x-coordinate of the most-recently-captured body handle's
+/// `VolumeMesh`, in metres.
+///
+/// `VolumeMesh::vertices` is flat `[x0, y0, z0, x1, ...]`, so this is every
+/// third element reduced by max. It is the observation that answers "did the
+/// capture actually MOVE across the tick?" — connectivity alone cannot, since a
+/// morph preserves it by definition.
+#[cfg(has_gmsh)]
+fn captured_max_vertex_x(stage: &str) -> f32 {
+    with_captured_volume_mesh(stage, |mesh| {
+        mesh.vertices
+            .chunks_exact(3)
+            .map(|v| v[0])
+            .fold(f32::NEG_INFINITY, f32::max)
     })
 }
 
@@ -164,32 +191,24 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
 ///    producer morphs the prior mesh IN PLACE (Laplacian quick-pass for the tiny
 ///    displacement).
 ///
-/// # What this test asserts, and what it deliberately does NOT (#7332)
+/// # What this test asserts (#7332)
 ///
-/// It asserts `reify_mesh_morph::diagnostics::snapshot().morphed == 1` — the
-/// morph_stats RPC data source, and the arm's actual end-to-end signal.
+/// That the warm `build_snapshot()` re-dispatches the geometry-consuming
+/// `@optimized` consumer exactly once, and that the mesh it then hands over is
+/// the POST-tick one: connectivity preserved, x-extent grown onto the new box
+/// face, `morphed == 1`. Each assertion carries its own rationale at its site;
+/// what is not local is the ORDER — the invocation-count pin is what makes the
+/// other three non-vacuous, since `MORPH_PROBE_CAPTURED` is written with `=`
+/// and a capture taken after a tick that re-dispatched zero times is the COLD
+/// capture read a second time.
 ///
-/// It does NOT compare the pre-tick and post-tick `tet_indices`, because on the
-/// `build_snapshot()` path THE CONSUMER IS NEVER RE-DISPATCHED, so there is no
-/// post-tick capture to compare against. `redispatch_geometry_consuming_compute_nodes`'
-/// Phase-1 candidate filter (`engine_build.rs:10022`) admits only compute nodes
-/// whose `realization_inputs` is still empty, and its own doc calls that "a
-/// ONE-SHOT LATCH" (`engine_build.rs:10234`). `build_snapshot()` reuses
-/// `eval_state.snapshot.graph` verbatim (`engine_build.rs:3443`) and never calls
-/// `eval()`, so the latch — set during the cold build's redispatch — closes the
-/// only dispatch surface this path has. That is task **#7332**.
-///
-/// MEASURED 2026-09-08 (release, real OCCT + gmsh): the probe fires exactly
-/// twice, BOTH inside the cold `build()` (the original `Undef`-bodied dispatch
-/// plus its redispatch), and ZERO times during the warm `build_snapshot()`,
-/// while `morphed` reaches 1. A `tet_indices` comparison across the tick would
-/// therefore read the SAME thread-local slot twice and compare the cold capture
-/// against itself — true exactly when the cold capture succeeded, and blind to
-/// every property it names. That assertion was deleted rather than kept green.
-///
-/// The invocation-count pin below records the latch as MEASURED STATE. When
-/// #7332 lands it goes RED, and the correct response is to TIGHTEN it back into
-/// a real pre-morph-vs-post-morph connectivity comparison — not to widen it.
+/// Two mechanisms carry it, and this test needs both. The redispatch-once
+/// signal is build-scoped (`RedispatchPassState::redispatched`), so the cold
+/// build's redispatch does not close the warm one. And
+/// `engine_edit::invalidate_realization_dirty_cone` evicts the
+/// `RealizationProjectionStore` memo over the edit's dirty cone, because its
+/// static `content_hash` key cannot see a value-driven change. Without the
+/// first the count pin reds; without the second the x-extent assertion does.
 #[cfg(has_gmsh)]
 #[test]
 fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
@@ -243,8 +262,8 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     // regression is in the morph or quality-gate logic, not in mesh determinism.
     // Either way, do NOT widen that `snap.morphed == 1` assertion to accept the
     // remesh fallback (the exact regression tasks 6635/6637 fixed), and do NOT
-    // delete it. (The separate `fires_across_tick == 0` assertion further down
-    // carries its own do-not-widen instruction, for the unrelated #7332 latch.)
+    // delete it. (The separate `fires_across_tick == 1` count pin further down
+    // guards the unrelated #7332 redispatch gate.)
     engine.register_volume_mesh_boundary_demand("test::vm-demand-probe");
     assert!(
         engine.ensure_gmsh_kernel(),
@@ -258,13 +277,11 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
 
     // (1) Cold build → from-scratch source VolumeMesh. `build()` establishes
     //     the eval_state snapshot internally (the redispatch + a later
-    //     `edit_param` both require it), so no separate `eval()` is needed — and
-    //     a separate `eval()` would finalize the probe cell, leaving the body's
-    //     compute node with non-empty realization_inputs so `build()`'s
-    //     redispatch skips it (capturing nothing).
+    //     `edit_param` both require it), so no separate `eval()` is needed.
     engine.build(&compiled, ExportFormat::Step);
     let fires_after_cold = MORPH_PROBE_INVOCATIONS.with(|n| n.get());
     let source_tets = captured_tet_indices("first build (source)");
+    let source_max_x = captured_max_vertex_x("first build (source)");
     assert!(
         !source_tets.is_empty() && source_tets.len().is_multiple_of(4),
         "source must be a valid P1 tet mesh (len % 4 == 0, > 0); got {} indices",
@@ -284,10 +301,12 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
         .expect("edit_param must succeed against the MorphBox.width Length param");
 
     // (3) Warm rebuild → the morph arm fires.
-    engine.build_snapshot(&compiled, ExportFormat::Step);
+    engine
+        .build_snapshot(&compiled, ExportFormat::Step)
+        .expect("build_snapshot must return a BuildResult after edit_param");
     let fires_across_tick = MORPH_PROBE_INVOCATIONS.with(|n| n.get()) - fires_after_cold;
 
-    // ── The #7332 latch pin ────────────────────────────────────────────────
+    // ── The #7332 count pin ────────────────────────────────────────────────
     //
     // Premise first: the cold build MUST have dispatched the probe, or the
     // delta below is trivially 0 and pins nothing. Two fires — the original
@@ -296,28 +315,86 @@ fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
         fires_after_cold, 2,
         "premise: the cold build() must dispatch the probe twice (original \
          Undef-bodied dispatch + post-hydration redispatch), else the \
-         zero-refire pin below is vacuous"
+         `fires_across_tick == 1` count pin below is vacuous"
     );
 
-    // MEASURED STATE, NOT A DESIRED CONTRACT. The one-shot Phase-1 candidate
-    // latch (engine_build.rs:10022/:10234) means build_snapshot() — which
-    // reuses eval_state.snapshot.graph verbatim and never calls eval() — has no
-    // remaining dispatch surface for this node. So the probe cannot observe the
-    // morphed mesh, and the pre/post `tet_indices` comparison this test used to
-    // make read one thread-local slot twice.
+    // Why exactly one. `morph_box.ri` declares a SINGLE template, so
+    // `build_snapshot`'s per-template loop calls
+    // `redispatch_geometry_consuming_compute_nodes` once — and unlike the cold
+    // `build()` (2: the original `Value::Undef`-bodied dispatch plus its
+    // redispatch) the warm surface never calls `eval()`, so it has no
+    // "original dispatch" half to add.
     //
-    // WHEN #7332 LANDS THIS GOES RED. Tighten it back into a genuine
-    // pre-morph-vs-post-morph connectivity comparison (`source_tets` is still
-    // captured above for exactly that purpose) — do NOT widen it to accept a
-    // re-fire, and do NOT delete it.
+    // Pinned as `== 1`, not `>= 1`: a count above one would mean the pass
+    // stopped being idempotent within a build, which is exactly what
+    // `RedispatchPassState` exists to prevent.
+    //
+    // Keep this adjacent to the two assertions below, which it guards.
+    // `MORPH_PROBE_CAPTURED` is written with `=`, so a capture taken after a
+    // tick that re-dispatched ZERO times is the COLD capture read a second
+    // time — under which `morphed_tets == source_tets` holds vacuously and the
+    // x-extent could not have moved. This count is what makes both of them
+    // claims about the morph rather than about the thread-local slot.
     assert_eq!(
-        fires_across_tick, 0,
-        "#7332: the redispatch candidate gate is a one-shot latch, so the warm \
-         build_snapshot() must not re-invoke the geometry-consuming @optimized \
-         consumer. A non-zero count here means #7332 landed — restore the \
-         connectivity assertion (see this test's doc comment)"
+        fires_across_tick, 1,
+        "#7332: the warm build_snapshot() must re-invoke the geometry-consuming \
+         @optimized consumer EXACTLY once. 0 means the cold build's redispatch \
+         closed the warm one: the redispatch-once signal stopped being \
+         build-scoped (see `RedispatchPassState::redispatched`). >1 means the \
+         within-build idempotence in \
+         `RedispatchPassState` broke and the pass is re-doing a node's work once \
+         per template."
     );
-    // Exactly one successful morph recorded (the morph_stats RPC data source).
+    // (a) CONNECTIVITY PRESERVED. A morph moves nodes and keeps elements; a
+    //     remesh would renumber and re-count them. Meaningful only because the
+    //     capture above is genuinely re-taken — see the count pin.
+    let morphed_tets = captured_tet_indices("warm rebuild (morphed)");
+    assert_eq!(
+        morphed_tets, source_tets,
+        "the morph must PRESERVE tet connectivity across a non-structural tick \
+         — identical element count and identical node ordering. A difference \
+         here means the arm silently fell back to a from-scratch remesh (which \
+         would also have to show up as morphed == 0 below), or that the morph \
+         renumbered nodes, which would break every attribution that indexes \
+         into this mesh. source {} indices, morphed {} indices",
+        source_tets.len(),
+        morphed_tets.len()
+    );
+
+    // (b) THE CAPTURE REALLY MOVED. Connectivity equality is preserved by a
+    //     morph BY DEFINITION, so on its own it cannot distinguish "the morph
+    //     ran" from "nothing happened". The geometry has to have changed too.
+    //
+    //     Primary form is threshold-free: the box grew 10mm → 10.5mm, so its
+    //     x-extent must strictly grow.
+    let morphed_max_x = captured_max_vertex_x("warm rebuild (morphed)");
+    assert!(
+        morphed_max_x > source_max_x,
+        "the morphed mesh's x-extent must have GROWN across the tick — the \
+         width went 10mm → 10.5mm. Equal extents mean the captured mesh is the \
+         pre-tick one (so the warm redispatch delivered a stale handle) or the \
+         morph displaced nothing. source_max_x = {source_max_x}, \
+         morphed_max_x = {morphed_max_x}"
+    );
+
+    //     Secondary, exact: `box(width, depth, height)` is ORIGIN-CENTRED, so
+    //     max_x is the half-width. 10mm measures -0.005..0.005, hence
+    //     0.0105 / 2 = 0.00525 m for the ticked width. The constant is derived
+    //     from that identity and the measured 10mm baseline, not tuned; the
+    //     1e-4 tolerance is well inside the 2.5e-4 gap between the two extents,
+    //     so this discriminates the morphed mesh from the source one.
+    const MORPHED_HALF_WIDTH_M: f32 = 0.00525;
+    assert!(
+        (morphed_max_x - MORPHED_HALF_WIDTH_M).abs() < 1e-4,
+        "the morphed mesh's boundary must land on the NEW box face: \
+         half-width 0.0105 / 2 = {MORPHED_HALF_WIDTH_M} m. Got \
+         morphed_max_x = {morphed_max_x} (source_max_x = {source_max_x}). A \
+         value stuck at the source half-width means the boundary nodes were \
+         never projected onto the new BRep; a value beyond it means the \
+         displacement overshot."
+    );
+
+    // (c) Exactly one successful morph recorded (the morph_stats RPC data source).
     // Snapshot-bound so a failure names the BUCKET, not just `left: 0, right: 1`.
     // This blind spot is why the task-6635 Stage A bug survived: the bare form
     // made a Stage-A over-reject, a Stage-B reject and a quality-gate reject
@@ -605,6 +682,54 @@ fn value_map_of(snapshot: &reify_eval::snapshot::Snapshot) -> reify_ir::ValueMap
     out
 }
 
+/// Both sides of one purely DIMENSIONAL tick, in the shape Stage A consumes.
+struct DimensionalTick {
+    graph_before: reify_eval::graph::EvaluationGraph,
+    values_before: reify_ir::ValueMap,
+    graph_after: reify_eval::graph::EvaluationGraph,
+    values_after: reify_ir::ValueMap,
+}
+
+/// Compile `src`, evaluate it cold, then set the `leaf` param to `new_value`
+/// through `Engine::edit_param`, as production drives a dimensional edit. Both
+/// sides are read from the engine snapshot (see [`value_map_of`]).
+///
+/// The engine is solver-free and kernel-free (`None` for the geometry kernel):
+/// Stage A reads the eval-surface ValueMap, which no kernel populates.
+fn dimensional_tick(
+    src: &str,
+    leaf: reify_core::ValueCellId,
+    new_value: reify_ir::Value,
+) -> DimensionalTick {
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(src);
+    let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
+        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
+        None,
+    );
+
+    engine.eval(&compiled);
+    let before = engine
+        .snapshot()
+        .expect("eval() must establish an engine snapshot");
+    let graph_before = before.graph.clone();
+    let values_before = value_map_of(before);
+
+    if let Err(e) = engine.edit_param(leaf.clone(), new_value) {
+        panic!("edit_param must succeed against the {leaf} param: {e:?}");
+    }
+    let after = engine
+        .snapshot()
+        .expect("edit_param must leave an engine snapshot in place");
+
+    DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after: after.graph.clone(),
+        values_after: value_map_of(after),
+    }
+}
+
 /// Task 6643: a purely DIMENSIONAL parameter tick must stay Stage-A eligible
 /// even though the production compiler emitted a DERIVED, non-whitelisted cell
 /// into the ValueMap — proved against a real compiled module, not a synthetic
@@ -632,24 +757,18 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
     use reify_core::{Type, ValueCellId};
     use reify_ir::Value;
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/morph_derived_let.ri"
-    ));
-
-    // Kernel-free engine: `None` for the geometry kernel. The fixture realizes
-    // no geometry, so nothing in this test can depend on OCCT or gmsh.
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
-        None,
+    // (1) The dimensional tick, width 10mm → 10.5mm. The fixture realizes no
+    //     geometry.
+    let DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after,
+        values_after,
+    } = dimensional_tick(
+        include_str!("fixtures/morph_derived_let.ri"),
+        ValueCellId::new("MorphDerivedLet", "width"),
+        Value::length(0.0105),
     );
-
-    // (1) Cold evaluation → the "old" side.
-    engine.eval(&compiled);
-    let snapshot_before = engine
-        .snapshot()
-        .expect("eval() must establish an engine snapshot");
-    let graph_before = snapshot_before.graph.clone();
-    let values_before = value_map_of(snapshot_before);
 
     // (2) PREMISE assertions against the REAL compiled graph. These are the
     //     genuinely new facts this test establishes — the synthetic unit tests
@@ -695,21 +814,7 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
          the two; a guard cell must still veto (Rule 2 runs before the kind match)"
     );
 
-    // (3) The dimensional tick: width 10mm → 10.5mm, driven at the numeric leaf
-    //     exactly as `Engine::edit_param` is in production.
-    engine
-        .edit_param(
-            ValueCellId::new("MorphDerivedLet", "width"),
-            Value::length(0.0105),
-        )
-        .expect("edit_param must succeed against the MorphDerivedLet.width Length param");
-    let snapshot_after = engine
-        .snapshot()
-        .expect("edit_param must leave an engine snapshot in place");
-    let graph_after = snapshot_after.graph.clone();
-    let values_after = value_map_of(snapshot_after);
-
-    // (4) The mechanism itself: a derived cell is a function of its leaves, so
+    // (3) The mechanism itself: a derived cell is a function of its leaves, so
     //     it differs on a PURELY DIMENSIONAL edit. This is why one such cell
     //     anywhere in a design made the morph arm 100% dormant.
     assert_ne!(
@@ -719,7 +824,7 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
          that is the mechanism the dormancy class rests on (measured: Bool(false) → Bool(true))"
     );
 
-    // (5) The contract.
+    // (4) The contract.
     assert!(
         reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
         "task 6643: a dimensional-only tick must be Stage-A eligible even though the \
@@ -730,12 +835,111 @@ fn stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module() 
     );
 }
 
+/// Task 7486: a purely DIMENSIONAL tick must stay Stage-A eligible when a
+/// `Param`-kind LEAF of type `List<Geometry>` differs, pinning task 7016's
+/// Rule-4 arm end to end against a real compiled module and the eval-surface
+/// ValueMap that production Stage A reads. Why the leaf is a list literal:
+/// `structural_classifier`'s `### List<Geometry>` note on `classify_cell`.
+#[test]
+fn stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module() {
+    use reify_compiler::ValueCellKind;
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::Value;
+
+    // (1) The dimensional tick, width 10mm → 10.5mm.
+    let DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after,
+        values_after,
+    } = dimensional_tick(
+        include_str!("fixtures/morph_param_list_geometry.ri"),
+        ValueCellId::new("MorphParamListGeometry", "width"),
+        Value::length(0.0105),
+    );
+
+    // (2) PREMISES against the REAL compiled graph.
+    let items = ValueCellId::new("MorphParamListGeometry", "items");
+    let node = graph_before
+        .value_cells
+        .get(&items)
+        .expect(
+            "premise: the production compiler must emit `param items: List<Geometry>` as a \
+             value cell reaching the ValueMap",
+        )
+        .clone();
+    assert_eq!(
+        node.kind,
+        ValueCellKind::Param,
+        "premise: `items` must be a LEAF. Task 6643's leaf scoping admits a differing `Let` \
+         regardless of task 7016's arm, which would make this test vacuous"
+    );
+    assert_eq!(
+        node.cell_type,
+        Type::List(Box::new(Type::Geometry)),
+        "premise: `items` must be exactly List<Geometry>, the one type task 7016's arm adds"
+    );
+    assert!(
+        !graph_before.structure_controlling.contains(&items),
+        "premise: `items` must NOT be structure_controlling, or Rule 2 would decide instead \
+         of Rule 4"
+    );
+    assert!(
+        !graph_before
+            .collection_subs
+            .iter()
+            .any(|sub| sub.count_cell == items)
+            && !graph_before
+                .keyed_subs
+                .iter()
+                .any(|sub| sub.count_cell.as_ref() == Some(&items)),
+        "premise: `items` must NOT be a collection or keyed count cell, or Rule 3/3b would \
+         decide instead of Rule 4"
+    );
+    match values_before.get_or_undef(&items) {
+        Value::List(elems)
+            if !elems.is_empty()
+                && elems
+                    .iter()
+                    .all(|e| matches!(e, Value::GeometryHandle { .. })) => {}
+        other => panic!(
+            "premise: `items` must hold a non-empty List of GeometryHandles on the eval \
+             surface, got {other:?}"
+        ),
+    }
+
+    // (3) The leaf really differs, and the shape gate does not short-circuit,
+    //     so the per-cell walk is what decides (4).
+    assert_ne!(
+        values_before.get_or_undef(&items),
+        values_after.get_or_undef(&items),
+        "premise: the List<Geometry> leaf must DIFFER across a purely dimensional tick (each \
+         handle's upstream_values_hash folds `width`), or the walk never reaches it"
+    );
+    assert_eq!(
+        reify_eval::realization_graph_shape_hash(&graph_before),
+        reify_eval::realization_graph_shape_hash(&graph_after),
+        "the graph shape must be unchanged, so `stage_a_eligible`'s short-circuit does not \
+         mask the per-cell rule this test is about"
+    );
+
+    // (4) The contract.
+    assert!(
+        reify_eval::stage_a_eligible(&graph_before, &graph_after, &values_before, &values_after),
+        "task 7016: a dimensional-only tick must be Stage-A eligible when a differing \
+         Param-kind List<Geometry> LEAF is present. The List<Geometry> arm of \
+         `classify_by_type` is the only thing that admits it; without the arm this returns \
+         false"
+    );
+}
+
 /// Task 6643, the VETO half: a compiler-synthesized `__guard_N`
 /// feature-suppression cell must still make a purely dimensional tick
 /// Stage-A INELIGIBLE — proved against a real compiled module.
 ///
-/// The sibling test above proves leaf scoping ADMITS a derived cell. This one
-/// proves it does not admit too much, and it carries the seam the unit test
+/// `stage_a_admits_dimensional_tick_with_derived_bool_let_from_compiled_module`
+/// proves leaf scoping ADMITS a derived cell. This one proves it does not
+/// admit too much, and it carries the seam the unit test
 /// `structural_classifier::tests::stage_a_eligible_derived_let_guard_cell_diff_returns_false`
 /// can only assume: that the production compiler + `EvaluationGraph::from_templates`
 /// really do route a `where` guard into `graph.structure_controlling`. Without
@@ -748,23 +952,19 @@ fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
     use reify_core::{Type, ValueCellId};
     use reify_ir::Value;
 
-    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
-        "fixtures/morph_derived_let_guarded.ri"
-    ));
-
-    let mut engine = reify_eval::Engine::new(
-        Box::new(reify_test_support::mocks::MockConstraintChecker::new()),
-        None,
+    // (1) The dimensional tick, width 10mm → 10.5mm.
+    let DimensionalTick {
+        graph_before,
+        values_before,
+        graph_after,
+        values_after,
+    } = dimensional_tick(
+        include_str!("fixtures/morph_derived_let_guarded.ri"),
+        ValueCellId::new("MorphDerivedLetGuarded", "width"),
+        Value::length(0.0105),
     );
 
-    engine.eval(&compiled);
-    let snapshot_before = engine
-        .snapshot()
-        .expect("eval() must establish an engine snapshot");
-    let graph_before = snapshot_before.graph.clone();
-    let values_before = value_map_of(snapshot_before);
-
-    // (1) PREMISE: the production compiler routed the `where` guard into
+    // (2) PREMISE: the production compiler routed the `where` guard into
     //     `structure_controlling`, at the Let+Bool shape Rule 2 has to catch.
     let guard_id = graph_before
         .structure_controlling
@@ -792,19 +992,6 @@ fn stage_a_vetoes_dimensional_tick_that_flips_a_compiled_guard_cell() {
         "premise: a compiler guard cell is Type::Bool — off Rule 4's Dimensional whitelist, \
          so only Rule 2 keeps it Structural once the kind match is reached"
     );
-
-    // (2) The same dimensional tick as the sibling test: width 10mm -> 10.5mm.
-    engine
-        .edit_param(
-            ValueCellId::new("MorphDerivedLetGuarded", "width"),
-            Value::length(0.0105),
-        )
-        .expect("edit_param must succeed against the MorphDerivedLetGuarded.width Length param");
-    let snapshot_after = engine
-        .snapshot()
-        .expect("edit_param must leave an engine snapshot in place");
-    let graph_after = snapshot_after.graph.clone();
-    let values_after = value_map_of(snapshot_after);
 
     // (3) The guard's value really flipped, so the union walk reaches it.
     assert_ne!(

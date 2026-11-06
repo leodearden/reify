@@ -12,9 +12,11 @@
 //! `CompiledExprKind::UserFunctionCall { function_name: "Trait::fn", .. }`,
 //! producing no Error diagnostics.
 
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity, Type};
 use reify_ir::CompiledExprKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only, warnings_only};
+use reify_test_support::{
+    compile_source, compile_source_with_stdlib, errors_only, get_let_expr_in, warnings_only,
+};
 
 // ── Step-1 producer tests — registered eagerly by traits_phase step 4 ───────
 
@@ -431,5 +433,63 @@ trait LegacyApi {
         "expected no deprecation warnings for unused @deprecated fn signature (no call site); \
          got: {:?}",
         dep_warns.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+// ── (#7872) Genericity-filter pin: generic slots admit any arg, concrete slots do not ──
+
+/// A `Trait::fn(args)` call to a generic static assoc fn admits any argument and
+/// is typed from its instantiated return type, while a concrete slot rejects a
+/// mismatched argument and poisons the call.
+#[test]
+fn trait_static_generic_slot_admits_any_arg_and_instantiates_return_type() {
+    let source = r#"
+trait Mk {
+    fn ident<T>(x: T) -> T { x }
+    fn only_len(x: Length) -> Real { 1.0 }
+}
+structure def Assembly {
+    let a = Mk::ident(5mm)
+    let b = Mk::ident(30deg)
+    let bad = Mk::only_len(30deg)
+}
+"#;
+    let module = compile_source(source);
+
+    for (member, expected) in [("a", Type::length()), ("b", Type::angle())] {
+        let expr = get_let_expr_in(&module, "Assembly", member);
+        assert!(
+            matches!(expr.kind, CompiledExprKind::UserFunctionCall { .. }),
+            "'{member}' should lower to UserFunctionCall; got: {:?}",
+            expr.kind
+        );
+        assert_eq!(
+            expr.result_type, expected,
+            "'{member}' should be typed from the instantiated return type"
+        );
+    }
+
+    let bad = get_let_expr_in(&module, "Assembly", "bad");
+    assert!(
+        !matches!(bad.kind, CompiledExprKind::UserFunctionCall { .. }),
+        "an Angle arg to a Length-only static fn must not lower to a call; got: {:?}",
+        bad.kind
+    );
+    assert_eq!(bad.result_type, Type::Error, "'bad' should be poisoned");
+
+    let instantiation_diagnostics: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.code,
+                Some(DiagnosticCode::FnTypeArgUnresolved) | Some(DiagnosticCode::FnTypeArgConflict)
+            )
+        })
+        .collect();
+    assert!(
+        instantiation_diagnostics.is_empty(),
+        "no instantiation diagnostic expected; all diagnostics: {:?}",
+        module.diagnostics
     );
 }

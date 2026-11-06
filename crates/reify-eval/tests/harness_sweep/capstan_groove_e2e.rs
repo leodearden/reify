@@ -157,14 +157,13 @@
 //! [`super::idler_seat_e2e`] wanted it verbatim against `printer.ri` (#6135).
 //!
 //! This module OWNS the `dev_capstan.ri` fixtures for the whole `harness_sweep`
-//! compile unit: [`DEV_CAPSTAN`], [`dev_capstan_compiled`],
-//! [`dev_capstan_checked`] and [`dev_capstan`] are `pub(super)`, and the sibling
-//! [`super::idler_seat_e2e`] (#6135, the IdlerPulley end of the same standard)
-//! consumes them rather than loading the file a second time — so the file is
-//! read, parsed, stdlib-compiled, checked and OCCT-tessellated ONCE per test
-//! binary however many gates read it, and the single-compilation argument
-//! [`dev_capstan_compiled`] makes holds across both modules rather than only
-//! inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
+//! compile unit (the file's path itself is `reify_test_support::design_files`'s):
+//! [`dev_capstan_compiled`], [`dev_capstan_checked`] and [`dev_capstan`] are
+//! `pub(super)`, shared by every gate in the unit that reads this file rather
+//! than loaded again by each — so the file is read, parsed, stdlib-compiled,
+//! checked and OCCT-tessellated ONCE per test binary however many gates read it, and the single-compilation
+//! argument [`dev_capstan_compiled`] makes holds across module boundaries
+//! rather than only inside this one. Nothing outside the compile unit compiles `dev_capstan.ri`
 //! (printer.ri is compiled by
 //! `crates/reify-compiler/tests/harness_constructor_typing/orientation_constructor_typing_tests.rs`
 //! for orientation-inference warnings, and by `idler_seat_e2e` for its own
@@ -182,6 +181,7 @@ use reify_core::{
 };
 use reify_eval::{CheckResult, TessellateResult};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
+use reify_test_support::design_files::{DEV_CAPSTAN, read_design_file};
 use std::collections::HashSet;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -191,17 +191,11 @@ use super::design_fixture::{
     assert_constraints_ok, entity_cell, entity_real, CellSpans, Strictness,
 };
 
-/// The real design file under test, reached from this crate's manifest dir.
-///
-/// `pub(super)` so the sibling [`super::idler_seat_e2e`] names the same path
-/// rather than spelling a second `concat!` for the same file.
-pub(super) const DEV_CAPSTAN: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../prj/printer_v01/dev_capstan.ri"
-);
-
 /// The design entity whose cells and constraints this module gates.
-const CAPSTAN_ENTITY: &str = "Capstan";
+///
+/// `pub(super)` so every gate in the compile unit that names this structure
+/// names it from this one source.
+pub(super) const CAPSTAN_ENTITY: &str = "Capstan";
 
 /// The fairlead shuttle that has to track the capstan's migrating wrap band.
 const FAIRLEAD_ENTITY: &str = "Fairlead";
@@ -437,10 +431,9 @@ const MESH_RADIAL_TOL_FRAC: f64 = 0.10;
 /// `crates/reify-eval/tests/auto_type_param_determinism_tests.rs`). Callers must
 /// have already checked `reify_kernel_occt::OCCT_AVAILABLE`.
 ///
-/// `pub(super)`: the sibling [`super::idler_seat_e2e`] reads its `IdlerPulley`
-/// mesh out of THIS result. A second fixture over the same file would pay that
-/// ~5 s again and spawn a second OCCT kernel actor for a solid already in
-/// memory.
+/// `pub(super)`: shared by every gate in the compile unit that reads this
+/// file's mesh. A second fixture over the same file would pay that ~5 s again
+/// and spawn a second OCCT kernel actor for a solid already in memory.
 pub(super) fn dev_capstan() -> &'static TessellateResult {
     static R: OnceLock<TessellateResult> = OnceLock::new();
     R.get_or_init(tessellate_dev_capstan)
@@ -457,8 +450,8 @@ pub(super) fn dev_capstan() -> &'static TessellateResult {
 /// `capstan_drive_constrains_the_shuttle_to_cover_the_band`, whose entire claim
 /// is that the relation bites *outside* a full OCCT run.
 ///
-/// `pub(super)`: [`super::idler_seat_e2e`]'s lockstep gate reads this file's
-/// `IdlerPulley` cells off this same surface.
+/// `pub(super)`: shared by every gate in the compile unit that reads this
+/// file's cells, so they all read one surface.
 pub(super) fn dev_capstan_checked() -> &'static CheckResult {
     static R: OnceLock<CheckResult> = OnceLock::new();
     R.get_or_init(check_dev_capstan)
@@ -466,10 +459,10 @@ pub(super) fn dev_capstan_checked() -> &'static CheckResult {
 
 /// The design file's compiled module, computed once per test binary — the
 /// single compilation EVERY fixture and test in the `harness_sweep` compile
-/// unit reads, this module's and [`super::idler_seat_e2e`]'s alike.
+/// unit reads.
 ///
-/// Memoized for correctness first and cost second. Three gates read the compiled
-/// module and the check surface *together*:
+/// Memoized for correctness first and cost second. Gates read the compiled
+/// module and the check surface *together* — for example,
 /// `capstan_drive_constrains_the_shuttle_to_cover_the_band` counts
 /// `drive_template.constraints` against `result.constraint_results`,
 /// [`check_dev_capstan`] maps diagnostic label spans back through
@@ -495,8 +488,7 @@ pub(super) fn dev_capstan_compiled() -> &'static reify_compiler::CompiledModule 
 /// stages are Error-diagnostic-free. Use [`dev_capstan_compiled`] rather than
 /// calling this directly — every caller must share one compilation.
 fn compile_dev_capstan() -> reify_compiler::CompiledModule {
-    let source = std::fs::read_to_string(DEV_CAPSTAN)
-        .unwrap_or_else(|e| panic!("failed to read design file {DEV_CAPSTAN}: {e}"));
+    let source = read_design_file(DEV_CAPSTAN);
 
     // ---- Parse ----
     let parsed = reify_syntax::parse(&source, ModulePath::single("dev_capstan"));
@@ -578,6 +570,7 @@ const VOLUME_UNRESOLVED_CELLS: [&str; 2] = ["Capstan.blank_volume", "Capstan.bod
 fn check_dev_capstan() -> CheckResult {
     let compiled = dev_capstan_compiled();
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         None,
     );
@@ -668,6 +661,7 @@ fn tessellate_dev_capstan() -> TessellateResult {
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
     let mut engine = reify_eval::Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(reify_constraints::SimpleConstraintChecker),
         Some(Box::new(planner)),
     );

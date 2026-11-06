@@ -1,0 +1,11 @@
+// /prd generic-instantiation-and-call-binding γ₂ evidence: eval runs the
+// overload the compiler chose. Output must be byte-identical before and after
+// γ₂ deletes eval's own overload re-resolution.
+module gicb_gamma_overload_dispatch
+
+fn pick(x: Int) -> Int { 1 }
+fn pick(x: Real) -> Int { 2 }
+structure def S {
+  let a = pick(1)
+  let b = pick(1.5)
+}

@@ -182,7 +182,7 @@ mod tests {
     /// these.
     #[test]
     fn cell_eval_ctx_matches_engine_method_wiring() {
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let values = ValueMap::new();
         let determinacy = PersistentMap::new();
         let sink = RefCell::new(Vec::new());

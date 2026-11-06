@@ -97,13 +97,10 @@ fn reify_eval_unmasked_rows_are_allow_listed() {
 
 #[test]
 fn reify_mesh_morph_unmasked_rows_are_allow_listed() {
-    assert_allow_listed(&[
-        (
-            "crates/reify-mesh-morph/src/diagnostics.rs",
-            "reset_for_test",
-        ),
-        ("crates/reify-mesh-morph/src/stats.rs", "reset_for_test"),
-    ]);
+    assert_allow_listed(&[(
+        "crates/reify-mesh-morph/src/diagnostics.rs",
+        "reset_for_test",
+    )]);
 }
 
 #[test]

@@ -6,7 +6,7 @@ use reify_ast::ParsedModule;
 use reify_core::ModulePath;
 use tower_lsp::lsp_types::Url;
 
-use crate::analysis::module_name_from_uri;
+use crate::decl_oracle::module_name_from_uri;
 
 /// State of a single open document.
 pub struct DocumentState {
@@ -62,6 +62,13 @@ impl DocumentState {
     /// poisoning is recovered rather than propagated, matching the crate's
     /// `eval_state` lock convention, so a panic mid-parse cannot wedge every
     /// subsequent request.
+    ///
+    /// The lock is held across the parse on purpose: concurrent callers for
+    /// this version wait for the one in-flight parse and share its `Arc`
+    /// (single-flight) rather than parsing again. A cold call can therefore
+    /// block its thread for up to one parse, so callers invoke it inside their
+    /// [`BlockingWorkPlacement`](crate::blocking_work::BlockingWorkPlacement)
+    /// work, never inline on an async executor.
     pub fn parsed_module(&self) -> Arc<ParsedModule> {
         let mut cache = self.parsed_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(parsed) = cache.as_ref() {

@@ -1,105 +1,94 @@
 /**
- * Layout store — holds the 5 pane/splitter dimensions that were previously
- * component-local signals in App.tsx.  Exposing them as a createStore-backed
- * `state` object lets the debug ctx read
- * `window.__REIFY_DEBUG__.stores.layout.state.*` uniformly.
- *
- * The store owns the load-on-init + debounced 300 ms persistence (moved out
- * of App.tsx so there is a single source of truth for the STORAGE_KEY).
+ * Panel layout store. LAYOUT_DIMENSIONS is the single source of the layout's
+ * keys, defaults, saved-form validation, state, setters, persistence and reset().
  */
 
 import { createEffect, onCleanup } from 'solid-js';
 import { createStore } from 'solid-js/store';
-import {
-  loadPanelLayout,
-  savePanelLayout,
-  type PanelLayout,
-} from '../hooks/useLayoutPersistence';
+import { readStoredPanelLayout, savePanelLayout } from '../hooks/useLayoutPersistence';
 
-// ---------------------------------------------------------------------------
-// Default values (mirrors App.tsx:97-101; App.tsx drops these after migration)
-// ---------------------------------------------------------------------------
+type LayoutDimension =
+  | { key: string; kind: 'px'; default: number; requiredInSaved?: true }
+  | { key: string; kind: 'flag'; default: boolean; requiredInSaved?: true };
 
-export const DEFAULT_EDITOR_WIDTH = 300;
-export const DEFAULT_SIDE_WIDTH = 300;
-export const DEFAULT_DESIGN_TREE_HEIGHT = 160;
-export const DEFAULT_PROPERTY_HEIGHT = 200;
-export const DEFAULT_CONSTRAINT_HEIGHT = 140;
-export const DEFAULT_PROBLEMS_HEIGHT = 160;
-export const DEFAULT_PROBLEMS_COLLAPSED = true;
+export const LAYOUT_DIMENSIONS = [
+  { key: 'editorWidth',       kind: 'px',   default: 300, requiredInSaved: true },
+  { key: 'sideWidth',         kind: 'px',   default: 300, requiredInSaved: true },
+  { key: 'designTreeHeight',  kind: 'px',   default: 160 },
+  { key: 'propertyHeight',    kind: 'px',   default: 200 },
+  { key: 'constraintHeight',  kind: 'px',   default: 140 },
+  { key: 'problemsHeight',    kind: 'px',   default: 160 },
+  { key: 'problemsCollapsed', kind: 'flag', default: true },
+] as const satisfies readonly LayoutDimension[];
 
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
+type Row = (typeof LAYOUT_DIMENSIONS)[number];
+export type LayoutKey = Row['key'];
+export type PanelLayout = {
+  [K in LayoutKey]: Extract<Row, { key: K }>['kind'] extends 'px' ? number : boolean;
+};
+
+type Updater<T> = T | ((prev: T) => T);
+type LayoutSetters = {
+  [K in LayoutKey as `set${Capitalize<K>}`]: (v: Updater<PanelLayout[K]>) => void;
+};
+
+export type LayoutStore = {
+  readonly state: PanelLayout;
+  set<K extends LayoutKey>(key: K, v: Updater<PanelLayout[K]>): void;
+  reset(): void;
+} & LayoutSetters;
+
+const SAVED_TYPEOF = { px: 'number', flag: 'boolean' } as const;
+
+const isRequiredInSaved = (row: LayoutDimension) => row.requiredInSaved === true;
+
+/**
+ * The saved layout's well-typed rows, or null when nothing usable is stored or
+ * a requiredInSaved row is absent or mistyped. Other mistyped rows are omitted.
+ */
+export function loadPanelLayout(): Partial<PanelLayout> | null {
+  const stored = readStoredPanelLayout();
+  if (typeof stored !== 'object' || stored === null) return null;
+  const saved = stored as Record<string, unknown>;
+
+  const layout: Record<string, number | boolean> = {};
+  for (const row of LAYOUT_DIMENSIONS) {
+    const value = saved[row.key];
+    if (typeof value === SAVED_TYPEOF[row.kind]) layout[row.key] = value as number | boolean;
+    else if (isRequiredInSaved(row)) return null;
+  }
+  return layout as Partial<PanelLayout>;
+}
+
+export function defaultLayout(): PanelLayout {
+  return Object.fromEntries(LAYOUT_DIMENSIONS.map((row) => [row.key, row.default])) as PanelLayout;
+}
 
 const SAVE_DEBOUNCE_MS = 300;
 
-export function createLayoutStore() {
-  const saved = loadPanelLayout();
+export function createLayoutStore(): LayoutStore {
+  const [state, setState] = createStore<PanelLayout>({ ...defaultLayout(), ...loadPanelLayout() });
 
-  const [state, setState] = createStore<PanelLayout>({
-    editorWidth: saved?.editorWidth ?? DEFAULT_EDITOR_WIDTH,
-    sideWidth: saved?.sideWidth ?? DEFAULT_SIDE_WIDTH,
-    designTreeHeight: saved?.designTreeHeight ?? DEFAULT_DESIGN_TREE_HEIGHT,
-    propertyHeight: saved?.propertyHeight ?? DEFAULT_PROPERTY_HEIGHT,
-    constraintHeight: saved?.constraintHeight ?? DEFAULT_CONSTRAINT_HEIGHT,
-    problemsHeight: saved?.problemsHeight ?? DEFAULT_PROBLEMS_HEIGHT,
-    problemsCollapsed: saved?.problemsCollapsed ?? DEFAULT_PROBLEMS_COLLAPSED,
-  });
+  const set: LayoutStore['set'] = (key, v) => setState(key, v);
+  const setterFor = <K extends LayoutKey>(key: K) => (v: Updater<PanelLayout[K]>) => set(key, v);
+  const namedSetters = Object.fromEntries(
+    LAYOUT_DIMENSIONS.map((row) => [
+      `set${row.key[0].toUpperCase()}${row.key.slice(1)}`,
+      setterFor(row.key),
+    ]),
+  ) as LayoutSetters;
 
-  // -------------------------------------------------------------------------
-  // Setters — accept a plain value or a functional updater.
-  // The `as any` cast is localised here; Solid's leaf-path setter natively
-  // supports updater functions so the cast is safe for all 5 dimensions.
-  // -------------------------------------------------------------------------
-
-  type Updater = number | ((prev: number) => number);
-  const makeSetter = (key: keyof PanelLayout) => (v: Updater) =>
-    setState(key, v as any);
-
-  const setEditorWidth = makeSetter('editorWidth');
-  const setSideWidth = makeSetter('sideWidth');
-  const setDesignTreeHeight = makeSetter('designTreeHeight');
-  const setPropertyHeight = makeSetter('propertyHeight');
-  const setConstraintHeight = makeSetter('constraintHeight');
-  const setProblemsHeight = makeSetter('problemsHeight');
-
-  type BooleanUpdater = boolean | ((prev: boolean) => boolean);
-  const setProblemsCollapsed = (v: BooleanUpdater) =>
-    setState('problemsCollapsed', v as any);
-
-  // -------------------------------------------------------------------------
-  // Debounced persistence
-  // -------------------------------------------------------------------------
+  const reset = () => setState(defaultLayout());
 
   let saveTimeout: ReturnType<typeof setTimeout> | undefined;
 
   createEffect(() => {
-    const layout: PanelLayout = {
-      editorWidth: state.editorWidth,
-      sideWidth: state.sideWidth,
-      designTreeHeight: state.designTreeHeight,
-      propertyHeight: state.propertyHeight,
-      constraintHeight: state.constraintHeight,
-      problemsHeight: state.problemsHeight,
-      problemsCollapsed: state.problemsCollapsed,
-    };
+    const snapshot = Object.fromEntries(LAYOUT_DIMENSIONS.map((row) => [row.key, state[row.key]]));
     clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => savePanelLayout(layout), SAVE_DEBOUNCE_MS);
+    saveTimeout = setTimeout(() => savePanelLayout(snapshot), SAVE_DEBOUNCE_MS);
   });
 
   onCleanup(() => clearTimeout(saveTimeout));
 
-  return {
-    state,
-    setEditorWidth,
-    setSideWidth,
-    setDesignTreeHeight,
-    setPropertyHeight,
-    setConstraintHeight,
-    setProblemsHeight,
-    setProblemsCollapsed,
-  };
+  return { state, set, reset, ...namedSetters };
 }
-
-export type LayoutStore = ReturnType<typeof createLayoutStore>;

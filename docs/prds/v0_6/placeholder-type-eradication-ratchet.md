@@ -81,7 +81,7 @@ retargets cheap now — all verified on main 2026-07-24):
   stdlib DAG foundation (#4574).
 - **The struct-ctor conformance chokepoint exists** (struct-ctor-field-type-conformance
   PRD): named-arg ctor binding is not type-gated at bind time; the conformance checker
-  (α #5302, in-progress) validates it separately, and δ #5306 (pending) flips it
+  (α #5302) validates it separately, and δ #5306 flips it
   Warning→Error. Structure-field retargets get their loudness there.
 - **Trait-typed params are wildcards** (`type_carries_trait_object` short-circuits the
   overload filter; `ty.rs:161-163` records call-site conformance as deferred) — so marker

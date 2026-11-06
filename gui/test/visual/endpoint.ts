@@ -1,30 +1,5 @@
 import * as net from 'node:net';
-
-const DEFAULT_DEBUG_PORT = 3939;
-
-/**
- * A TCP port from a raw env value, or undefined unless it is 1..65535 written
- * as pure decimal digits — strict, so whitespace-padded (" 4500 ") and
- * trailing garbage ("4500x") that parseInt would silently accept are rejected.
- * Same grammar as the Rust `parse_tcp_port` in `gui/src-tauri/src/tcp_port.rs`;
- * keep the two in lockstep.
- */
-function parsePort(raw: string | undefined): number | undefined {
-  if (raw === undefined || !/^\d+$/.test(raw)) return undefined;
-  const parsed = parseInt(raw, 10);
-  return parsed >= 1 && parsed <= 65535 ? parsed : undefined;
-}
-
-/**
- * Resolve the reify-debug port the GUI binds: what `parsePort` accepts, else
- * DEFAULT_DEBUG_PORT (3939), mirroring the fallback of `parse_debug_port` in
- * `gui/src-tauri/src/debug_server.rs`.
- *
- * Keep the two in lockstep if the rules change.
- */
-export function resolveDebugPort(env: Record<string, string | undefined> = process.env): number {
-  return parsePort(env['REIFY_DEBUG_PORT']) ?? DEFAULT_DEBUG_PORT;
-}
+import { parsePort } from './debugServerEndpoint.mjs';
 
 /** The GUI ports a harness run chooses for itself and hands to the launcher. */
 export type PerRunPortVar = 'REIFY_DEBUG_PORT' | 'REIFY_VITE_PORT';
@@ -43,10 +18,6 @@ export async function resolvePerRunPort(
   allocate: () => Promise<number> = allocateFreePort,
 ): Promise<number> {
   return parsePort(env[name]) ?? allocate();
-}
-
-export function debugUrlForPort(port: number): string {
-  return `http://127.0.0.1:${port}/mcp`;
 }
 
 /**

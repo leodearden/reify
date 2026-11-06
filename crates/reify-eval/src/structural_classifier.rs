@@ -238,9 +238,9 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// `classify_cell_list_of_length_returns_structural` and
 /// `classify_cell_nested_list_geometry_returns_structural`.
 ///
-/// Reachable today, not forward-looking. `adjacent_faces`, `shared_edges`,
+/// The TYPE is reachable today. `adjacent_faces`, `shared_edges`,
 /// `siblings_of_face`, `ancestor_faces_of_edge` and `split`
-/// (`reify-compiler/src/units.rs`) produce the type, as does any `Selector` cell
+/// (`reify-compiler/src/units.rs`) produce it, as does any `Selector` cell
 /// wrapped in `ResolveSelector`; bare `Type::Selector` cells are unaffected,
 /// their equality being content-hash based and excluding `kernel_handle`. Leaf
 /// scoping (task 6643) already admits the derived shape, so what this arm
@@ -250,6 +250,18 @@ pub fn realization_graph_shape_hash(graph: &EvaluationGraph) -> ContentHash {
 /// `param faces: List<Geometry>` is a leaf — compiled clean by the shipped
 /// `boundary8_empty_list_geometry_is_clean` — and `sub h = Holder(items: auto)`
 /// reaches it as `Auto`.
+///
+/// A differing VALUE of that leaf reaches this arm by a narrower route. Stage A
+/// reads the eval-surface ValueMap, and there a kernel-backed producer
+/// (`adjacent_faces` and the rest) or an `auto` sub-field is `Value::Undef` on
+/// both sides of a tick: geometry-consumer builtins need a realized kernel, and
+/// even under a kernel build the hydrated list lives only in
+/// `BuildResult::values`, which the morph arm does not hand Stage A. A leaf that
+/// does differ there is a list-literal default, e.g.
+/// `param items: List<Geometry> = [body]`, whose handles' `upstream_values_hash`
+/// moves with the dimensions `body` is built from. Pinned end to end by
+/// `tests/morph_arm_e2e.rs`'s
+/// `stage_a_admits_dimensional_tick_with_param_list_geometry_leaf_from_compiled_module`.
 ///
 /// #### A change to the list's LENGTH defers to Stage B
 ///

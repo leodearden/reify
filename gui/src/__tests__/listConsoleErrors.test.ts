@@ -25,6 +25,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { initDebugBridge } from '../debug/bridge';
 import { installConsoleErrorCapture, clearConsoleErrors } from '../debug/consoleErrors';
 import type { DebugStores } from '../debug/types';
+import { makeLayoutStore } from './debugBridgeTestHelpers';
+import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
 import type { ViewStateStore } from '../stores/viewStateStore';
 
 type DebugRequestHandler = (event: { payload: { id: number; command: string; params: Record<string, unknown> } }) => Promise<void>;
@@ -76,20 +78,8 @@ function makeStores(): DebugStores {
       },
     },
     viewState: { resetToDefaultView: vi.fn() } as unknown as ViewStateStore,
-    layout: {
-      state: {
-        editorWidth: 300,
-        sideWidth: 300,
-        designTreeHeight: 160,
-        propertyHeight: 200,
-        constraintHeight: 140,
-      },
-      setEditorWidth: vi.fn(),
-      setSideWidth: vi.fn(),
-      setDesignTreeHeight: vi.fn(),
-      setPropertyHeight: vi.fn(),
-      setConstraintHeight: vi.fn(),
-    },
+    layout: makeLayoutStore(),
+    viewportDisplay: createViewportDisplayStore(),
   };
 }
 

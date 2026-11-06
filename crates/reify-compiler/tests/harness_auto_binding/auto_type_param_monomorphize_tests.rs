@@ -7,9 +7,27 @@
 //! expressions, strips its `type_params`, and rewrites the originating
 //! `SubComponentDecl.structure_name` to the monomorph name.
 
+use reify_compiler::{CompiledModule, SubComponentDecl, find_template};
 use reify_config::Manifest;
 use reify_core::{DiagnosticCode, ModulePath, Severity, Type};
-use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
+use reify_test_support::{
+    check_source_with_stdlib, compile_source_with_stdlib, error_diags, errors_only,
+};
+
+/// The sub-component named `sub` inside the compiled `owner` template.
+fn sub_component<'a>(compiled: &'a CompiledModule, owner: &str, sub: &str) -> &'a SubComponentDecl {
+    find_template(&compiled.templates, owner)
+        .unwrap_or_else(|| panic!("expected '{owner}' template"))
+        .sub_components
+        .iter()
+        .find(|s| s.name == sub)
+        .unwrap_or_else(|| panic!("expected sub '{sub}' in '{owner}'"))
+}
+
+/// Names of every compiled template, for assertion-failure messages.
+fn template_names(compiled: &CompiledModule) -> Vec<&str> {
+    compiled.templates.iter().map(|t| t.name.as_str()).collect()
+}
 
 /// Keystone test: a single `auto:` use-site produces a monomorph template.
 ///
@@ -1402,6 +1420,265 @@ fn unseedable_explicit_type_arg_emits_diagnostic_rather_than_silent_leak() {
         sub_w.structure_name, "Widget",
         "sub 'w' must still reference the generic 'Widget' template, got: {:?}",
         sub_w.structure_name
+    );
+}
+
+/// Accepting-side pin for the seeding predicate (#7318), the counterpart of
+/// the un-seedable test above: `Widget<Box<SealA>, auto: Gasket>()` is a valid
+/// use-site, so it must get a monomorph rather than a diagnostic.
+///
+/// Known limitation (#7839): lowering keeps only the head name, so the
+/// predicate sees a bare `Box` — `SealA` is dropped and the still-generic
+/// `Box<X>` is seeded as if it were concrete. That is harmless here only
+/// because `Box` never uses `X`; this test does not endorse it, and so pins
+/// neither the mangle name nor `slot_t`'s type. Once lowering preserves
+/// `Type::Applied`, this goes RED until seeding learns it — the intended
+/// forcing function.
+#[test]
+fn explicit_applied_type_arg_is_seeded_by_head_only_known_limitation() {
+    let source = r#"
+        trait Gasket {}
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        structure def SealA { param d : Real = 2.0 }
+        structure def Box<X> { param d : Real = 1.0 }
+        structure def Widget<T, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<Box<SealA>, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    // (1) Accepted: zero Error diagnostics.
+    let errors = errors_only(&compiled);
+    assert_eq!(
+        errors.len(),
+        0,
+        "a type-arg with a known head must be accepted, got: {:?}",
+        errors
+    );
+
+    // (2) 'w' points at a synthesized 'Widget$...' monomorph, not the generic.
+    let sub_w = sub_component(&compiled, "WidgetAssembly", "w");
+    assert!(
+        sub_w.structure_name.starts_with("Widget$"),
+        "sub 'w' must reference a 'Widget$...' monomorph, got: {:?}",
+        sub_w.structure_name
+    );
+
+    // (3) That monomorph is concrete: no type_params, no top-level TypeParam cell.
+    let monomorph =
+        find_template(&compiled.templates, &sub_w.structure_name).unwrap_or_else(|| {
+            panic!(
+                "sub 'w' names '{}', which is not in compiled.templates: {:?}",
+                sub_w.structure_name,
+                template_names(&compiled)
+            )
+        });
+    assert!(
+        monomorph.type_params.is_empty(),
+        "monomorph '{}' must have no type_params, got: {:?}",
+        monomorph.name,
+        monomorph.type_params
+    );
+    let leaked_cells: Vec<_> = monomorph
+        .value_cells
+        .iter()
+        .filter(|c| matches!(&c.cell_type, Type::TypeParam(_)))
+        .map(|c| format!("'{}': {:?}", c.id.member, c.cell_type))
+        .collect();
+    assert!(
+        leaked_cells.is_empty(),
+        "monomorph '{}' retains TypeParam value cells: {:?}",
+        monomorph.name,
+        leaked_cells
+    );
+
+    // (4) Eval-level: a compile-only test cannot see a hydration panic (#6854).
+    let result = check_source_with_stdlib(source);
+    let eval_errors = error_diags(&result.diagnostics);
+    assert!(
+        eval_errors.is_empty(),
+        "expected clean evaluation, got: {:?}",
+        eval_errors
+    );
+}
+
+/// Rejecting-side pin for the seeding predicate (#7318): a non-`auto:`
+/// type-arg that lowers to a name no template defines — an undefined name, a
+/// declared default naming nothing, or an applied spelling with a non-structure
+/// head (`List<Real>`) — must not be seeded. T stays unbound, so the residual
+/// un-seedable diagnostic fires — naming the offending type-arg and whether it
+/// was written or defaulted, and anchored on the sub-component — and no
+/// monomorph is minted. T is UNBOUNDED on purpose so no bound-check error
+/// masks a silent mint. Diagnosing an unknown name where it is lowered is
+/// #8151's job; this pins only the seeding backstop.
+#[test]
+fn explicit_type_arg_naming_no_structure_is_not_seeded_and_is_diagnosed() {
+    let prelude = "trait Gasket {}\n\
+                   structure def GasketA : Gasket { param g : Real = 1.0 }";
+    let widget = "structure def Widget<T, U: Gasket> { param slot_t : T  param slot_u : U }";
+    let widget_defaulting_t = "structure def Widget<U: Gasket, T = Nonexistent> \
+                               { param slot_u : U  param slot_t : T }";
+
+    // The head-only `'List` needle holds before and after #7839 starts
+    // preserving the nested `<Real>`.
+    for (label, widget_def, use_site, offender) in [
+        (
+            "explicit undefined name",
+            widget,
+            "Widget<Nonexistent, auto: Gasket>()",
+            "explicit type-argument 'Nonexistent'",
+        ),
+        (
+            "declared-default undefined name",
+            widget_defaulting_t,
+            "Widget<auto: Gasket>()",
+            "declared default 'Nonexistent'",
+        ),
+        (
+            "applied spelling, non-structure head",
+            widget,
+            "Widget<List<Real>, auto: Gasket>()",
+            "explicit type-argument 'List",
+        ),
+    ] {
+        let source = format!(
+            "{prelude}\n{widget_def}\nstructure def WidgetAssembly {{ sub w = {use_site} }}"
+        );
+        let compiled = compile_source_with_stdlib(&source);
+
+        // (1) No monomorph is minted for the unresolvable name.
+        assert!(
+            !compiled
+                .templates
+                .iter()
+                .any(|t| t.name.starts_with("Widget$")),
+            "[{label}] an unresolvable type-arg must NOT synthesize a 'Widget$...' \
+             monomorph; got templates: {:?}",
+            template_names(&compiled)
+        );
+
+        // (2) Exactly one Error, naming the unbound type parameter, the target,
+        // the owner sub-component and the offending type-arg (quote-delimited,
+        // as in the un-seedable test above).
+        let errors = errors_only(&compiled);
+        assert_eq!(
+            errors.len(),
+            1,
+            "[{label}] expected exactly one error diagnostic, got: {:?}",
+            compiled.diagnostics
+        );
+        let message = &errors[0].message;
+        for needle in ["\"T\"", "'Widget'", "'w'", offender] {
+            assert!(
+                message.contains(needle),
+                "[{label}] diagnostic message must contain {needle}, got: {message:?}"
+            );
+        }
+
+        // (3) 'w' still references the generic 'Widget' template, and the
+        // error is anchored on it.
+        let sub_w = sub_component(&compiled, "WidgetAssembly", "w");
+        assert_eq!(
+            sub_w.structure_name, "Widget",
+            "[{label}] sub 'w' must still reference the generic 'Widget' template, got: {:?}",
+            sub_w.structure_name
+        );
+        let anchors: Vec<_> = errors[0].labels.iter().map(|l| l.span).collect();
+        assert_eq!(
+            anchors,
+            [sub_w.span],
+            "[{label}] the error must carry exactly one label, anchored on sub 'w'"
+        );
+    }
+}
+
+/// The seeding predicate judges a type-arg by the same template registry the
+/// resolver draws `auto:` candidates from, and that registry holds every local
+/// entity — an `occurrence def` included. So a local occurrence the resolver
+/// would pick for `auto: Seal` is equally seedable when named explicitly, and
+/// both spellings land on one monomorph (#7318). Narrowing the predicate to
+/// structures would reject the explicit spelling while the resolved one still
+/// compiles.
+#[test]
+fn explicit_type_arg_naming_local_occurrence_seeds_like_a_resolved_candidate() {
+    let definitions = r#"
+        trait Seal {}
+        trait Gasket {}
+        structure def GasketA : Gasket { param g : Real = 1.0 }
+        occurrence def Occ : Seal { param feed : Real = 100 }
+        structure def Widget<T: Seal, U: Gasket> { param slot_t : T  param slot_u : U }
+    "#;
+    let monomorph_of = |use_site: &str| {
+        let source =
+            format!("{definitions}\nstructure def WidgetAssembly {{ sub w = {use_site} }}");
+        let compiled = compile_source_with_stdlib(&source);
+        let errors = errors_only(&compiled);
+        assert!(
+            errors.is_empty(),
+            "[{use_site}] expected no errors, got: {errors:?}"
+        );
+        sub_component(&compiled, "WidgetAssembly", "w")
+            .structure_name
+            .clone()
+    };
+
+    let resolved = monomorph_of("Widget<auto: Seal, auto: Gasket>()");
+    let explicit = monomorph_of("Widget<Occ, auto: Gasket>()");
+
+    assert!(
+        resolved.starts_with("Widget$"),
+        "the resolver must pick the local occurrence and synthesize a monomorph, got: {resolved:?}"
+    );
+    assert_eq!(
+        explicit, resolved,
+        "an explicit local-occurrence type-arg must seed the monomorph the resolver picks"
+    );
+}
+
+/// Known limitation (#8151): an `auto:` clause that itself fails reports only
+/// the resolver's error. The residual un-seedable diagnostic fires only after
+/// the resolver has bound every `auto:` param, so an undefined name on a
+/// sibling position goes unreported here and surfaces once the `auto:` clause
+/// resolves, where the rejecting-side pin above applies. No monomorph is
+/// minted either way. Diagnosing the name where it is lowered adds a second
+/// error to this use-site, which is the cue to update this pin.
+#[test]
+fn undefined_type_arg_beside_a_failing_auto_clause_is_not_reported_known_limitation() {
+    // No structure implements `Gasket`, so `auto: Gasket` has no candidate.
+    let source = r#"
+        trait Gasket {}
+        structure def Widget<T, U: Gasket> { param slot_t : T  param slot_u : U }
+        structure def WidgetAssembly { sub w = Widget<Nonexistent, auto: Gasket>() }
+    "#;
+
+    let compiled = compile_source_with_stdlib(source);
+
+    let errors = errors_only(&compiled);
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected only the resolver's error, got: {:?}",
+        compiled.diagnostics
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::AutoTypeParamNoCandidate),
+        "the one error must be the resolver's, got: {:?}",
+        errors[0]
+    );
+    assert!(
+        !compiled
+            .templates
+            .iter()
+            .any(|t| t.name.starts_with("Widget$")),
+        "a failing `auto:` clause must NOT synthesize a 'Widget$...' monomorph; \
+         got templates: {:?}",
+        template_names(&compiled)
+    );
+    assert_eq!(
+        sub_component(&compiled, "WidgetAssembly", "w").structure_name,
+        "Widget",
+        "sub 'w' must still reference the generic 'Widget' template"
     );
 }
 

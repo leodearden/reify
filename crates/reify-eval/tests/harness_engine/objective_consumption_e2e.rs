@@ -38,16 +38,15 @@
 //! the emission must move to whichever objective-path site actually executes for
 //! the `dic_min_unconstrained` fixture, and the reason recorded there.
 
-use reify_constraints::SolverRegistry;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
 use reify_eval::Engine;
 use reify_test_support::{MockConstraintChecker, compile_source_with_stdlib};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/// Compile `source` (asserting it is compile-clean) and evaluate it with the
-/// production [`SolverRegistry`] — the same one `reify-cli` wires
-/// (`main.rs`'s `.with_solver(Box::new(SolverRegistry::production()))`) — so the
+/// Compile `source` (asserting it is compile-clean) and evaluate it on a
+/// `SolverPosture::Solve` engine, which wires the production solver registry —
+/// the same one `reify-cli` wires — so the
 /// objective path these tests describe is the one users actually hit. A bare
 /// `DimensionalSolver` is NOT equivalent: it solves the unconstrained fixture
 /// outright and leaves an `==`-pinned auto undef, so both would describe an
@@ -80,8 +79,7 @@ fn eval_with_solver_keeping_engine(source: &str) -> (Engine, reify_eval::EvalRes
          test; got {compile_errors:?}"
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
-        .with_solver(Box::new(SolverRegistry::production()));
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&compiled);
     (engine, result)
 }
@@ -430,16 +428,19 @@ structure DicLetIndirect {
 /// rather than *the whole scope went silent* — the suppression must cost the
 /// user nothing they were previously told. It doubles as the drift guard: a
 /// fixture that stopped failing would emit no failure diagnostic and trip here,
-/// instead of passing vacuously as a negative case.
+/// instead of passing vacuously as a negative case. A `ConstraintRefuted` proof
+/// (task #6655: an interval-refutable fixture such as `w >= 50mm ∧ w <= 10mm`)
+/// is a reported failure too.
 fn assert_solve_failure_still_reported(result: &reify_eval::EvalResult, why: &str) {
     let reported: Vec<&Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
-            d.code != Some(DiagnosticCode::ObjectiveUnconsumed)
-                && (d.message.contains("could not be satisfied")
-                    || d.message.contains("no progress")
-                    || d.message.contains("No progress"))
+            d.code == Some(DiagnosticCode::ConstraintRefuted)
+                || (d.code != Some(DiagnosticCode::ObjectiveUnconsumed)
+                    && (d.message.contains("could not be satisfied")
+                        || d.message.contains("no progress")
+                        || d.message.contains("No progress")))
         })
         .collect();
     assert!(

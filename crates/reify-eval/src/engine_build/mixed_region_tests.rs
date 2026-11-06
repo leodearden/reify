@@ -171,24 +171,24 @@
             let row = result
                 .mpc_rows
                 .iter()
-                .find(|r| r.dofs == vec![shell_disp, tet_mid_dof])
+                .find(|r| r.dofs() == [shell_disp, tet_mid_dof])
                 .unwrap_or_else(|| {
                     panic!(
                         "missing displacement row for axis {a}: dofs [{shell_disp}, {tet_mid_dof}]"
                     )
                 });
             assert_eq!(
-                row.coeffs,
-                vec![1.0, -1.0],
+                row.coeffs(),
+                [1.0, -1.0],
                 "displacement-matching row coeffs for axis {a}"
             );
-            assert_eq!(row.rhs, 0.0, "homogeneous tie (rhs = 0) for axis {a}");
+            assert_eq!(row.rhs(), 0.0, "homogeneous tie (rhs = 0) for axis {a}");
         }
 
         // D=6 sanity: every DOF index lies in the unified 6·node space.
         let n_total = result.nodes.len(); // 7
         for row in &result.mpc_rows {
-            for &d in &row.dofs {
+            for &d in row.dofs() {
                 assert!(
                     d < 6 * n_total,
                     "DOF {d} must lie within the D=6 space (6 · {n_total} nodes)"
@@ -203,7 +203,7 @@
             result
                 .mpc_rows
                 .iter()
-                .any(|r| r.dofs.iter().any(|d| shell_rot.contains(d))),
+                .any(|r| r.dofs().iter().any(|d| shell_rot.contains(d))),
             "a rotation row must reference a shell rotation DOF (6·n + 3..5)"
         );
     }
@@ -1164,7 +1164,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         // Shared primitive op used as a leaf source.
         let prim_box = || CompiledGeometryOp::Primitive {
@@ -1300,7 +1300,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1411,7 +1411,7 @@
             TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1489,7 +1489,7 @@
             CompiledModuleBuilder, MockConstraintChecker, TopologyTemplateBuilder,
         };
 
-        let engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
 
         let prim_box = || CompiledGeometryOp::Primitive {
             kind: PrimitiveKind::Box,
@@ -1627,7 +1627,7 @@
 
         // ── (A) registered VolumeMesh-demanding consumer → body → VolumeMesh ──
         let module = build_module(Some("test::vm-demand"));
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.register_volume_mesh_demand("test::vm-demand");
         let result = engine.compute_demanded_reprs(&module, ExportFormat::Step);
         assert_eq!(result.len(), 1, "one template → one outer entry");
@@ -1640,7 +1640,7 @@
         );
 
         // ── (B) same module, NO registration → body stays at Step BRep ──
-        let engine_unreg = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine_unreg = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let result_unreg = engine_unreg.compute_demanded_reprs(&module, ExportFormat::Step);
         assert_eq!(
             result_unreg[0][0],
@@ -1651,7 +1651,7 @@
 
         // ── (C) consumer target NOT registered → no false override ──
         let module_other = build_module(Some("test::other"));
-        let mut engine_c = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine_c = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine_c.register_volume_mesh_demand("test::vm-demand"); // a DIFFERENT target
         let result_c = engine_c.compute_demanded_reprs(&module_other, ExportFormat::Step);
         assert_eq!(
@@ -1703,7 +1703,7 @@
             .template(template_d)
             .function(consumer_fn(Some("test::vm-demand")))
             .build();
-        let mut engine_d = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine_d = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine_d.register_volume_mesh_demand("test::vm-demand");
         let result_d = engine_d.compute_demanded_reprs(&module_d, ExportFormat::Step);
         assert_eq!(
@@ -1809,7 +1809,7 @@
                 .template(template)
                 .build();
 
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         // Seed the consumer fn ONLY into `engine.functions` — simulating the
         // post-`check()`/`eval()` merged stdlib+module function table without
         // running a real build.

@@ -3,22 +3,36 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::dependent_reads::{CellReads, DependentCellReads};
+use crate::hc4;
+use crate::interval::Interval;
 use argmin::core::{CostFunction, Error as ArgminError, Executor, State, TerminationReason};
 use argmin::solver::neldermead::NelderMead;
+use reify_core::diagnostics::{BoundSide, UnboundedSide, unbounded_auto_clause};
 use reify_core::{
     ConstraintNodeId, DiagnosticCode, DimensionVector, Type, ValueCellId, hash::ContentHash,
 };
 use reify_ir::{
     AutoParam, BinOp, CompiledExpr, CompiledExprKind, CompiledFunction, ConstraintSolver,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ResolutionProblem, SolveResult,
-    TAG_CONDITIONAL, Value, ValueMap,
+    TAG_CONDITIONAL, Value, ValueMap, dimension_of,
 };
 
 /// Maximum iterations for Nelder-Mead.
 const MAX_ITERS: u64 = 5000;
 
-/// Residual threshold below which we consider constraints satisfied.
+/// Absolute acceptance slack for INEQUALITY rows, and the bound under which
+/// the early exit treats a seed as already converged. EQUALITY rows are
+/// accepted by the `==` verdict itself (`reify_expr::eval_eq`, i.e.
+/// `reify_core::scalar_tolerance`; task #6653), see [`RowResidual`].
 const FEASIBILITY_THRESHOLD: f64 = 1e-12;
+
+// `NM_SD_TOLERANCE` guarantees only that a converged residual reaches
+// `FEASIBILITY_THRESHOLD`, so an equality floor below it could reject an
+// equality the solver has converged on.
+const _: () = assert!(
+    FEASIBILITY_THRESHOLD <= reify_core::scalar_tolerance::DEFAULT_ABSOLUTE_FLOOR,
+    "every dimension's equality floor must admit the solver's reachable residual"
+);
 
 /// Penalty weight for constraint violations when optimizing an objective.
 /// Large enough to strongly enforce constraints while allowing the objective
@@ -49,8 +63,8 @@ const FEASIBLE_OPT_ITERS_PER_DIM: u64 = 500;
 /// Because the cost is quadratic in the linear residual `d`, a cost-SD floor of `S`
 /// corresponds to a **linear residual floor** of approximately `√S`. To guarantee
 /// that the linear residual (`max_constraint_residual`, compared against
-/// `FEASIBILITY_THRESHOLD = 1e-12` at the final feasibility check) can actually reach
-/// the threshold, we need:
+/// `FEASIBILITY_THRESHOLD = 1e-12` for inequality rows and at the early exit) can
+/// actually reach the threshold, we need:
 ///
 /// ```text
 ///   √(NM_SD_TOLERANCE) ≲ FEASIBILITY_THRESHOLD   →   NM_SD_TOLERANCE ≲ 1e-24
@@ -102,14 +116,6 @@ struct SolveMeta {
 /// the cost combines the objective value with a weighted penalty term.
 pub struct DimensionalSolver;
 
-/// Extract the DimensionVector from a Type, defaulting to DIMENSIONLESS.
-fn dimension_of(ty: &Type) -> DimensionVector {
-    match ty {
-        Type::Scalar { dimension } => *dimension,
-        _ => DimensionVector::DIMENSIONLESS,
-    }
-}
-
 /// Build the solved-values HashMap from auto params and their f64 solutions.
 ///
 /// Each param is mapped to a Value::Scalar with the correct SI value
@@ -158,12 +164,60 @@ pub(crate) fn ctx_with<'a>(
     }
 }
 
-/// Build a ValueMap from a base map with trial auto-param values inserted,
-/// then recompute the cluster's dependent cells AT that trial point.
+/// The solve-invariant inputs that turn a trial vector `x` into the
+/// [`ValueMap`] the solver evaluates at.  The solver's own trial-point builder
+/// and [`JacobianModel`](crate::JacobianModel) both read it, so a Jacobian is
+/// taken at the point the solver stands on.
+#[derive(Clone, Copy)]
+pub struct TrialModel<'a> {
+    /// The autos `x` binds, positionally: `x[i]` is `auto_params[i]`.
+    pub auto_params: &'a [AutoParam],
+    /// Every non-auto cell's value, carried through unchanged unless it is a
+    /// dependent cell.
+    pub base_values: &'a ValueMap,
+    /// Cluster cells that must be recomputed at every trial point (task #5189
+    /// β). Empty for every non-clustered solve, which is what keeps the legacy
+    /// cost surface bit-identical.
+    pub dependent_cells: &'a [(ValueCellId, CompiledExpr)],
+    /// User-defined functions available to every expression evaluated at the
+    /// trial point.
+    pub functions: &'a [CompiledFunction],
+    /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
+    /// path, which evaluates in a plain `EvalContext::new`. `Some(d)`
+    /// lets an `@optimized` call (e.g. `solve_elastic_static(..)`) resolve to a
+    /// REAL value at every trial point instead of body-evaluating to
+    /// `Value::Undef`.
+    ///
+    /// `reify_ir::ComputeDispatch: Send + Sync`, so a `TrialModel` is
+    /// `Send + Sync`, as argmin's `Executor` requires of the cost function
+    /// holding one.
+    pub dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+}
+
+impl<'a> TrialModel<'a> {
+    /// The trial model of `problem`: its autos, current values, dependent cells
+    /// and functions, evaluated through `dispatch`.
+    pub fn from_problem(
+        problem: &'a ResolutionProblem,
+        dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
+    ) -> Self {
+        Self {
+            auto_params: &problem.auto_params,
+            base_values: &problem.current_values,
+            dependent_cells: &problem.dependent_cells,
+            functions: &problem.functions,
+            dispatch,
+        }
+    }
+}
+
+/// Build a ValueMap from the model's base map with the trial point `x`
+/// inserted for its autos, then recompute the model's dependent cells AT that
+/// trial point.
 ///
 /// Clones the base map (O(1) via PersistentMap structural sharing) and
 /// inserts each auto param as a Value::Scalar with the correct dimension.
-/// Maps params directly to avoid the intermediate HashMap allocation that
+/// Maps the autos directly to avoid the intermediate HashMap allocation that
 /// `build_solved_values` would create — this is the hot path called on
 /// every Nelder-Mead iteration.
 ///
@@ -172,9 +226,10 @@ pub(crate) fn ctx_with<'a>(
 /// In a whole-model joint drive the objective typically does not read the auto
 /// directly — it reads a DERIVED cell that is a function of the auto (the
 /// stdlib `Costed` trait's `line_cost = unit_cost * quantity_produced` is the
-/// canonical case). Those derived cells are non-auto values living in `base`,
-/// so without this fold every trial point re-reads their STALE base value: the
-/// objective is constant in the auto and Nelder-Mead has no gradient to follow.
+/// canonical case). Those derived cells are non-auto values living in
+/// `base_values`, so without this fold every trial point re-reads their STALE
+/// base value: the objective is constant in the auto and Nelder-Mead has no
+/// gradient to follow.
 ///
 /// `dependent_cells` is consumed IN STORED ORDER, and the `EvalContext` is
 /// rebuilt against the RUNNING map each iteration so an earlier dependent cell
@@ -196,16 +251,20 @@ pub(crate) fn ctx_with<'a>(
 ///   evaluated. A collision is a membership BUG, so debug builds trip a
 ///   `debug_assert!` naming the offending cell; release builds skip the entry
 ///   and keep the trial point intact.
-pub(crate) fn build_trial_values(
-    base: &ValueMap,
-    params: &[AutoParam],
-    x: &[f64],
-    dependent_cells: &[(ValueCellId, CompiledExpr)],
-    functions: &[CompiledFunction],
-    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> ValueMap {
-    let mut values = base.clone();
-    for (param, &val) in params.iter().zip(x.iter()) {
+///
+/// # Panics
+///
+/// If `x.len() != model.auto_params.len()`. The mapping is positional, so an
+/// `x` of any other length names no point at all; silently truncating it would
+/// stand the solve at a point it never named.
+pub(crate) fn build_trial_values(model: &TrialModel<'_>, x: &[f64]) -> ValueMap {
+    assert_eq!(
+        model.auto_params.len(),
+        x.len(),
+        "auto_params and x must have the same length — the mapping is positional"
+    );
+    let mut values = model.base_values.clone();
+    for (param, &val) in model.auto_params.iter().zip(x.iter()) {
         values.insert(
             param.id.clone(),
             Value::Scalar {
@@ -219,10 +278,10 @@ pub(crate) fn build_trial_values(
     // expected 1–3 autos, and this is the per-Nelder-Mead-iteration hot path.
     fold_dependent_cells(
         &mut values,
-        dependent_cells,
-        functions,
-        |id| params.iter().any(|p| &p.id == id),
-        dispatch,
+        model.dependent_cells,
+        model.functions,
+        |id| model.auto_params.iter().any(|p| &p.id == id),
+        model.dispatch,
     );
     values
 }
@@ -549,10 +608,91 @@ fn extract_initial_point(
         .collect()
 }
 
+/// The residual of a constraint row at a candidate point, and of the part of
+/// it the solver REJECTS there. Rejection is never inferred from `magnitude`:
+/// equality rows are judged by the `==` verdict (`reify_expr::eval_eq`),
+/// inequality rows against [`FEASIBILITY_THRESHOLD`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RowResidual {
+    /// Over every row, accepted ones included: what convergence is judged on.
+    magnitude: f64,
+    /// The worst residual among the rejected rows, `None` when every row is
+    /// accepted: what an Infeasible report quotes. A NaN here is kept, never
+    /// folded away, so a rejected row cannot report as a zero residual.
+    rejected: Option<f64>,
+}
+
+impl RowResidual {
+    fn accepted(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            rejected: None,
+        }
+    }
+
+    fn rejected(magnitude: f64) -> Self {
+        Self {
+            magnitude,
+            rejected: Some(magnitude),
+        }
+    }
+
+    fn judged(magnitude: f64, accepted: bool) -> Self {
+        if accepted {
+            Self::accepted(magnitude)
+        } else {
+            Self::rejected(magnitude)
+        }
+    }
+
+    /// A NaN magnitude (from a NaN operand) is not a violation, exactly as the
+    /// pre-#6653 `f64::max` fold treated it: inequality acceptance is unchanged.
+    fn inequality(magnitude: f64) -> Self {
+        Self::judged(
+            magnitude,
+            magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD,
+        )
+    }
+
+    fn is_accepted(&self) -> bool {
+        self.rejected.is_none()
+    }
+
+    /// Accepted, with every row as tight as the inequality slack.
+    fn is_converged(&self) -> bool {
+        self.is_accepted() && self.magnitude <= FEASIBILITY_THRESHOLD
+    }
+
+    /// Both rows must hold (`And`, and every constraint of a set).
+    fn all(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) if a.is_nan() || b.is_nan() => Some(f64::NAN),
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (one, other) => one.or(other),
+        };
+        Self {
+            magnitude: self.magnitude.max(other.magnitude),
+            rejected,
+        }
+    }
+
+    /// Either row suffices (`Or`).
+    fn any(self, other: Self) -> Self {
+        let rejected = match (self.rejected, other.rejected) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            _ => None,
+        };
+        Self {
+            magnitude: self.magnitude.min(other.magnitude),
+            rejected,
+        }
+    }
+}
+
 /// Compute the absolute (L1) residual for a single comparison expression.
 ///
-/// Returns the absolute distance by which the constraint is violated,
-/// or 0.0 if satisfied. No squaring, no epsilon offset. Used for
+/// The magnitude is the absolute distance by which the comparison misses, or
+/// 0.0 for a satisfied inequality. No squaring, no epsilon offset. Used for
 /// accurate feasibility checking (not for optimization cost).
 fn comparison_residual(
     op: BinOp,
@@ -561,48 +701,40 @@ fn comparison_residual(
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+) -> RowResidual {
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
+    let (Some(l), Some(r)) = (lv.as_f64(), rv.as_f64()) else {
+        return RowResidual::rejected(1.0);
+    };
+    if let Some(holds) = order_holds(op, l, r) {
+        return RowResidual::inequality(if holds { 0.0 } else { (l - r).abs() });
+    }
 
-    match (lhs, rhs) {
-        (Some(l), Some(r)) => match op {
-            BinOp::Gt => {
-                if l > r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Ge => {
-                if l >= r {
-                    0.0
-                } else {
-                    r - l
-                }
-            }
-            BinOp::Lt => {
-                if l < r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Le => {
-                if l <= r {
-                    0.0
-                } else {
-                    l - r
-                }
-            }
-            BinOp::Eq => {
-                let d = (l - r).abs();
-                if d < 1e-15 { 0.0 } else { d }
-            }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
-            _ => 1.0,
-        },
-        _ => 1.0,
+    match op {
+        BinOp::Eq => RowResidual::judged(
+            (l - r).abs(),
+            reify_expr::eval_eq(&lv, &rv) == Value::Bool(true),
+        ),
+        BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => {
+            RowResidual::accepted(0.0)
+        }
+        _ => RowResidual::rejected(1.0),
+    }
+}
+
+/// `l OP r` as f64 compares it, for an order comparison (`>`, `>=`, `<`,
+/// `<=`); `None` for any other op. The one verdict that both a residual row
+/// ([`comparison_residual`]) and a derived bound's check ([`LeafProbe`])
+/// apply, before any acceptance threshold. A NaN operand never holds.
+fn order_holds(op: BinOp, l: f64, r: f64) -> Option<bool> {
+    match op {
+        BinOp::Gt => Some(l > r),
+        BinOp::Ge => Some(l >= r),
+        BinOp::Lt => Some(l < r),
+        BinOp::Le => Some(l <= r),
+        _ => None,
     }
 }
 
@@ -620,10 +752,11 @@ fn comparison_violation(
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> f64 {
-    let lhs = reify_expr::eval_expr(left, &ctx_with(values, functions, dispatch)).as_f64();
-    let rhs = reify_expr::eval_expr(right, &ctx_with(values, functions, dispatch)).as_f64();
+    let ctx = ctx_with(values, functions, dispatch);
+    let lv = reify_expr::eval_expr(left, &ctx);
+    let rv = reify_expr::eval_expr(right, &ctx);
 
-    match (lhs, rhs) {
+    match (lv.as_f64(), rv.as_f64()) {
         (Some(l), Some(r)) => match op {
             // For l > r: violation when l <= r, magnitude = (r - l)
             BinOp::Gt => {
@@ -662,7 +795,7 @@ fn comparison_violation(
                 let d = l - r;
                 if d.abs() < 1e-15 { 0.0 } else { d.powi(2) }
             }
-            BinOp::Ne if (l - r).abs() > 1e-15 => 0.0,
+            BinOp::Ne if reify_expr::eval_eq(&lv, &rv) == Value::Bool(false) => 0.0,
             // Not a comparison
             _ => 1.0,
         },
@@ -674,46 +807,42 @@ fn comparison_violation(
 /// Compute the absolute (L1) residual for a single constraint expression.
 ///
 /// Same decomposition structure as `constraint_violation` but returns
-/// absolute residual values. For And composites, returns the max of
-/// sub-residuals (both must hold). For Or, returns the min (one suffices).
+/// absolute residual values. An And composite needs both sub-rows
+/// ([`RowResidual::all`]); an Or composite needs one ([`RowResidual::any`]).
 fn constraint_residual(
     expr: &CompiledExpr,
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     match &expr.kind {
-        CompiledExprKind::BinOp { op, left, right } => {
-            match op {
-                BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
-                    comparison_residual(*op, left, right, values, functions, dispatch)
-                }
-                BinOp::And => {
-                    // AND: worst case (max) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.max(rr)
-                }
-                BinOp::Or => {
-                    // OR: best case (min) of sub-residuals
-                    let lr = constraint_residual(left, values, functions, dispatch);
-                    let rr = constraint_residual(right, values, functions, dispatch);
-                    lr.min(rr)
-                }
-                _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-                    Value::Bool(true) => 0.0,
-                    Value::Bool(false) => 1.0,
-                    Value::Undef => 10.0,
-                    _ => 1.0,
-                },
+        CompiledExprKind::BinOp { op, left, right } => match op {
+            BinOp::Gt | BinOp::Ge | BinOp::Lt | BinOp::Le | BinOp::Eq | BinOp::Ne => {
+                comparison_residual(*op, left, right, values, functions, dispatch)
             }
-        }
-        _ => match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
-            Value::Bool(true) => 0.0,
-            Value::Bool(false) => 1.0,
-            Value::Undef => 10.0,
-            _ => 1.0,
+            BinOp::And => constraint_residual(left, values, functions, dispatch)
+                .all(constraint_residual(right, values, functions, dispatch)),
+            BinOp::Or => constraint_residual(left, values, functions, dispatch)
+                .any(constraint_residual(right, values, functions, dispatch)),
+            _ => boolean_row_residual(expr, values, functions, dispatch),
         },
+        _ => boolean_row_residual(expr, values, functions, dispatch),
+    }
+}
+
+/// Residual of a row the solver cannot decompose into a comparison: its
+/// evaluated truth value, with an undefined row weighted heaviest.
+fn boolean_row_residual(
+    expr: &CompiledExpr,
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> RowResidual {
+    match reify_expr::eval_expr(expr, &ctx_with(values, functions, dispatch)) {
+        Value::Bool(true) => RowResidual::accepted(0.0),
+        Value::Bool(false) => RowResidual::rejected(1.0),
+        Value::Undef => RowResidual::rejected(10.0),
+        _ => RowResidual::rejected(1.0),
     }
 }
 
@@ -770,19 +899,19 @@ fn constraint_violation(
 
 /// Compute the maximum absolute residual across all constraints (L1 feasibility).
 ///
-/// Returns the worst-case per-constraint absolute residual. Zero means
-/// all constraints are satisfied. Used for binary feasibility decisions
+/// The magnitude is the worst-case per-constraint absolute residual; the set
+/// is accepted only when every row is. Used for binary feasibility decisions
 /// instead of sum-of-squares (which can mask small violations).
 fn max_constraint_residual(
     constraints: &[(ConstraintNodeId, CompiledExpr)],
     values: &ValueMap,
     functions: &[CompiledFunction],
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
-) -> f64 {
+) -> RowResidual {
     constraints
         .iter()
         .map(|(_, expr)| constraint_residual(expr, values, functions, dispatch))
-        .fold(0.0_f64, f64::max)
+        .fold(RowResidual::accepted(0.0), RowResidual::all)
 }
 
 /// Compute the total violation across all constraints.
@@ -819,14 +948,14 @@ fn compute_total_violation(
 /// the decomposition rules here, apply the same change to `has_inequality_slack` and
 /// vice versa (both functions carry the cross-reference comment).
 ///
-/// **Op-rule pact (three members, in-crate)**: `collect_floor_terms` and
-/// `derive_from_expr` (task #5618) reuse this exact Ge/Gt/Le/Lt/And decomposition.
-/// Any op-rule change here must be reflected in BOTH of them; all three carry the
-/// cross-reference comment.  `derive_from_expr` holds only the OP half: its `And`
-/// split was factored out to `for_each_leaf_conjunct`, which its two callers
-/// (`derive_param_intervals`, `params_in_underivable_constraints`) drive.  A
-/// change to the `And` rule itself therefore lands in three places, not four —
-/// here, in `collect_floor_terms`, and in `for_each_leaf_conjunct`.
+/// **Op-rule pact (two members, in-crate)**: `collect_floor_terms` reuses this
+/// exact Ge/Gt/Le/Lt/And decomposition; any op-rule change here must be reflected
+/// there, and both carry the cross-reference comment.  The bound derivation is no
+/// longer a member that mirrors the rules: `derive_from_leaf` must read a
+/// SUPERSET of them (every `l − r >= m` slack form is an HC4 order relation for
+/// any compilable `l` and `r`), and its `And` split is `for_each_leaf_conjunct`.
+/// A change to the `And` rule therefore lands here, in `collect_floor_terms`, and
+/// in `for_each_leaf_conjunct`.
 fn collect_slack_terms(expr: &CompiledExpr, slacks: &mut Vec<CompiledExpr>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -933,11 +1062,9 @@ fn objective_is_money(obj: &ObjectiveSet) -> bool {
 /// - All other ops: skip
 ///
 /// **Parallel to `collect_slack_terms`**: any op-rule change there must also be
-/// reflected here — and, since task #5618, in `derive_from_expr` as well. The
-/// cross-reference comment in `collect_slack_terms` records the three-member pact;
-/// keep all three in sync. `derive_from_expr`'s `And` half lives in
-/// `for_each_leaf_conjunct`, so an `And`-rule change lands there rather than in
-/// `derive_from_expr` itself.
+/// reflected here; the cross-reference comment in `collect_slack_terms` records
+/// the pact, and the superset contract the bound derivation (`derive_from_leaf`)
+/// owes the slack form this emits.
 fn collect_floor_terms(expr: &CompiledExpr, out: &mut Vec<(CompiledExpr, CompiledExpr, Type)>) {
     if let CompiledExprKind::BinOp { op, left, right } = &expr.kind {
         match op {
@@ -1119,7 +1246,7 @@ fn worst_unmet_floor_term(
 ///      evaluation to be told so again.  That is why rung 1 is live for the
 ///      ORIGINALS target only: the floored call comes from an emit site reached
 ///      exactly when the residual against `effective_constraints` ALREADY
-///      exceeds `FEASIBILITY_THRESHOLD`, so offering it that same point would be
+///      fails acceptance, so offering it that same point would be
 ///      a guaranteed-false re-computation of a value in hand.
 ///   2. one bounded FEASIBILITY-ONLY re-solve — floor off, objective dropped.
 ///      A Money objective steep relative to `PENALTY_WEIGHT` parks the floored
@@ -1152,8 +1279,7 @@ fn constraints_witness(
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> Option<ValueMap> {
     let satisfies_target = |values: &ValueMap| {
-        max_constraint_residual(target, values, &problem.functions, dispatch)
-            <= FEASIBILITY_THRESHOLD
+        max_constraint_residual(target, values, &problem.functions, dispatch).is_accepted()
     };
 
     // ── rung 1: a point the caller already holds (free) ──────────────────────
@@ -1222,22 +1348,16 @@ fn constraints_witness(
         .iter()
         .map(|p| values.get(&p.id).and_then(Value::as_f64))
         .collect::<Option<_>>()?;
-    let witness = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        &xs,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let witness = build_trial_values(&TrialModel::from_problem(problem, dispatch), &xs);
     satisfies_target(&witness).then_some(witness)
 }
 
 /// The `RobustnessFloorInfeasible` diagnostic for a solve that failed WITH the
 /// synthesised floor applied (tasks #5618 step-10, #5714).
 ///
-/// `final_max_residual` is measured against `effective_constraints`, i.e. the
-/// user's constraints PLUS the floor.  On its own it cannot tell the three
+/// `worst_rejected_residual` is the worst residual among the rows of
+/// `effective_constraints`, i.e. the user's constraints PLUS the floor, that
+/// fail acceptance at `final_values`.  On its own it cannot tell the three
 /// situations below apart, and the message used to assert the worst of them in
 /// all cases.  For a tight-but-satisfiable bracket that is simply false, and it
 /// was the original report's sharpest complaint: the diagnostic sent the user
@@ -1281,12 +1401,12 @@ fn floor_infeasible_diagnostic(
     problem: &ResolutionProblem,
     effective_constraints: &[(ConstraintNodeId, CompiledExpr)],
     final_values: &ValueMap,
-    final_max_residual: f64,
+    worst_rejected_residual: f64,
     sd_tolerance: f64,
     dispatch: Option<&dyn reify_ir::ComputeDispatch>,
 ) -> reify_core::Diagnostic {
-    // `converged: None` — this function is reached only when `final_max_residual`
-    // against `effective_constraints` already exceeds `FEASIBILITY_THRESHOLD`, so
+    // `converged: None` — this function is reached only when the final residual
+    // against `effective_constraints` already fails acceptance, so
     // offering `final_values` as a floored candidate would re-derive a value
     // already in hand and known to fail.  Rung 1 is live for the ORIGINALS search
     // below, where the answer is genuinely unknown.
@@ -1298,10 +1418,10 @@ fn floor_infeasible_diagnostic(
         // BOTH halves of the claim below are proved at one concrete point — no
         // inference.  Offer NONE of class 2's remedies: nothing is
         // over-constrained and there is no cost/robustness conflict to trade
-        // off, so all three would be wrong advice.  `final_max_residual` is
+        // off, so all three would be wrong advice.  `worst_rejected_residual` is
         // reported because it describes the point the solve actually REACHED —
-        // at the witness it is 0.0, which would tell the user nothing about the
-        // failure.
+        // at the witness no row is rejected, which would tell the user nothing
+        // about the failure.
         //
         // TODO(#7632): the witness is a verified feasible point and is thrown
         // away — the user gets a hard `Infeasible` on a model this function is
@@ -1317,7 +1437,7 @@ fn floor_infeasible_diagnostic(
              absolute residual at the point it reached: {:.2e}); this is \
              a solver convergence limit, not an over-constrained design",
             REL_MARGIN * 100.0,
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     }
@@ -1337,7 +1457,7 @@ fn floor_infeasible_diagnostic(
             "infeasible under robustness floor: the floored feasible \
              region is empty (max absolute residual: {:.2e}); relax \
              opposing constraints or widen the tolerance margin",
-            final_max_residual
+            worst_rejected_residual
         ))
         .with_code(DiagnosticCode::RobustnessFloorInfeasible);
     };
@@ -1410,7 +1530,8 @@ fn floor_infeasible_diagnostic(
 // seeded at the fixed `0.01`, outside the synthesised robustness floor's window,
 // and reported a false `RobustnessFloorInfeasible`.
 //
-// These helpers recover a usable box from the inequality constraints themselves.
+// These helpers recover a usable box from the order constraints themselves, each
+// leaf read by HC4-revise (`crate::hc4`) on its own.
 // Three consumers, with different obligations — one [`StrictBound`] variant each:
 //
 //   - the SEED box, derived from `problem.constraints` under [`StrictBound::Kept`]
@@ -1497,12 +1618,11 @@ enum StrictBound {
     /// direct `p OP c` / `c OP p` comparison holds, since the checker compares
     /// exactly.
     ///
-    /// That guarantee is exact for the DIRECT shape only. For the shifted shapes
-    /// `p − k OP c` / `k − p OP c` the derived bound is itself an f64
-    /// rearrangement (`c + k`, `k − c`), rounded once already, so the edge is not
-    /// guaranteed to satisfy the model's own leaf. The same holds for a
-    /// non-strict side there: it is a pre-existing property of the derivation,
-    /// not of this policy (task #7959).
+    /// That guarantee is exact for the DIRECT shape only. A rearranged shape
+    /// (`p − k OP c`, `2·p OP c`, …) is directed-rounded by HC4, so an exact
+    /// rearrangement stays exact; an inexact one is settled onto the leaf's own
+    /// non-strict verdict ([`LeafProbe::edge`]), but one step inside it is not
+    /// guaranteed to satisfy the STRICT leaf (task #7959).
     SteppedInside,
 }
 
@@ -1522,24 +1642,19 @@ impl StrictBound {
 
 /// Everything the bound-derivation family reads and nothing it mutates:
 /// [`derive_param_intervals`], [`params_in_underivable_constraints`] and the
-/// per-leaf workers they drive ([`derive_from_expr`], [`derive_from_side`],
-/// [`collect_underivable_in_leaf`], [`constant_operand_value`]).
+/// per-leaf worker they share ([`derive_from_leaf`]), to which it is also the
+/// [`hc4::OperandClassifier`]. A lookup the whole family needs is a new MEMBER
+/// here rather than a parameter on every signature.
 ///
-/// One context rather than a positional quartet repeated at every hop: the
-/// family is six functions deep and each signature used to re-list
-/// `(auto_index, values, functions, dispatch)` verbatim, which is what pushed
-/// [`derive_from_side`] past clippy's argument-count threshold. A lookup the
-/// whole family needs is then a new MEMBER here, not a seventh parameter on six
-/// signatures.
-///
-/// Built once per derivation walk by the two entry points, which are the only
-/// members holding `auto_params`; every inner member takes `&DerivationCtx`.
+/// Built once per walk by the derivation's two entry points and by
+/// [`refuted_before_solve`]; every inner member takes `&DerivationCtx`.
 ///
 /// COST: `auto_reads` is a pure function of `(dependent_cells, auto_params)`,
 /// neither of which changes across a resolution — yet it is rebuilt at every
-/// entry-point call, which over one resolution is `extract_initial_point` +
-/// [`derived_seed_box`] + one per `solve_core_with_sd_tolerance` across the
-/// multistart points + two in `verify_uniqueness`. A model with NO dependent
+/// entry-point call, which over one resolution is [`refuted_before_solve`] +
+/// `extract_initial_point` + [`derived_seed_box`] + one per
+/// `solve_core_with_sd_tolerance` across the multistart points + two in
+/// `verify_uniqueness`. A model with NO dependent
 /// cells pays nothing (`dependent_cell_auto_reads` early-returns an empty
 /// map), and otherwise the reachability DFS is dwarfed by the Nelder-Mead fold
 /// it precedes — so this is priced, not overlooked. Hoisting it to once per
@@ -1547,9 +1662,11 @@ impl StrictBound {
 /// which is task #7728 rather than part of the fix this context exists to
 /// carry.
 struct DerivationCtx<'a> {
-    /// Position of each auto param within `auto_params` — the index every
-    /// `DerivedInterval` buffer in the family is addressed by, and the family's
-    /// test for "is this ref an auto?".
+    /// The auto params, in the order every `DerivedInterval` buffer is
+    /// addressed by.
+    autos: &'a [AutoParam],
+    /// Position of each auto param within `autos` — the family's test for "is
+    /// this ref an auto?".
     auto_index: HashMap<ValueCellId, usize>,
     /// Per dependent cell, the autos it reads TRANSITIVELY and whether a fold
     /// derives it — [`crate::dependent_reads::dependent_cell_auto_reads`]
@@ -1564,13 +1681,14 @@ struct DerivationCtx<'a> {
 
 impl<'a> DerivationCtx<'a> {
     fn new(
-        auto_params: &[AutoParam],
+        auto_params: &'a [AutoParam],
         dependent_cells: &[(ValueCellId, CompiledExpr)],
         values: &'a ValueMap,
         functions: &'a [CompiledFunction],
         dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
     ) -> Self {
         Self {
+            autos: auto_params,
             auto_index: auto_params
                 .iter()
                 .enumerate()
@@ -1713,8 +1831,9 @@ fn constant_operand_value(expr: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Optio
 ///
 /// Deliberately NOT part of the `collect_slack_terms` op-rule pact: the pact
 /// governs the per-leaf OP RULES (`Ge`/`Gt` vs `Le`/`Lt` vs skip), which
-/// [`collect_slack_terms`], [`collect_floor_terms`] and [`derive_from_expr`]
-/// each still own. This owns only the structural walk down to the leaves.
+/// [`collect_slack_terms`] and [`collect_floor_terms`] own and
+/// [`derive_from_leaf`] reads a superset of. This owns only the structural walk
+/// down to the leaves.
 fn for_each_leaf_conjunct(expr: &CompiledExpr, f: &mut impl FnMut(&CompiledExpr)) {
     if let CompiledExprKind::BinOp {
         op: BinOp::And,
@@ -1748,112 +1867,234 @@ fn derive_param_intervals(
     let ctx = DerivationCtx::new(auto_params, dependent_cells, values, functions, dispatch);
     for (_, expr) in constraints {
         for_each_leaf_conjunct(expr, &mut |leaf| {
-            derive_from_expr(leaf, &ctx, &mut out);
+            derive_from_leaf(leaf, &ctx, &mut out);
         });
     }
     out
 }
 
-/// Per-leaf op-rule worker for [`derive_param_intervals`].
+/// Per-leaf worker for [`derive_param_intervals`] and
+/// [`collect_underivable_in_leaf`]: HC4-revise ONE leaf conjunct alone, every
+/// auto starting at the whole real line, and record each finite side it
+/// narrows.
 ///
-/// **Third member of the `collect_slack_terms` op-rule pact**: same
-/// `Ge`/`Gt` → left-bounded-below, `Le`/`Lt` → left-bounded-above, everything
-/// else (including `Eq`, `Ne`, `Or`) → skip.  Any op-rule change in
-/// `collect_slack_terms` or `collect_floor_terms` must be reflected here.
+/// Reads ORDER relations only (`Ge`/`Gt`/`Le`/`Lt`). An `Eq` pin contracts to
+/// a point, and a point box makes [`compose_interval`] discard the sibling
+/// inequality bounds wholesale, so `==` is read by the refutation pre-check
+/// alone. A leaf that is empty on its own records nothing; the refutation
+/// reports it.
 ///
-/// Takes ONE leaf conjunct and does not recurse: the pact's `And` → recurse
-/// half lives in [`for_each_leaf_conjunct`], which every caller drives (review
-/// suggestion 3 — [`collect_underivable_in_leaf`] used to carry a second copy
-/// of that recursion). Calling this directly on an `A AND B` node therefore
-/// derives NOTHING, by design; go through [`for_each_leaf_conjunct`].
-fn derive_from_expr(expr: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
-    let CompiledExprKind::BinOp { op, left, right } = &expr.kind else {
+/// Per leaf, not to a cross-constraint fixpoint, so each side has ONE source
+/// leaf and is strict only if that leaf is. A side the leaf's operator DOMAIN
+/// sets rather than its comparison (`sqrt(q) < 3` ⇒ `q >= 0`) is no strict
+/// bound, so where a [`LeafProbe`] can check the leaf, a side is strict only
+/// if the model's evaluator rejects the strict leaf there. Any other leaf keeps
+/// its strictness on every side: at worst one ulp lost, the safe direction for
+/// every [`StrictBound`] policy.
+///
+/// Must read a SUPERSET of the `collect_slack_terms` / `collect_floor_terms`
+/// op rules: every `l − r >= m` slack form `synthesise_floor_constraints`
+/// emits is a compilable order relation for any compilable `l` and `r`.
+///
+/// Takes ONE leaf and does not recurse: an `A AND B` node is not a relation
+/// and derives NOTHING; go through [`for_each_leaf_conjunct`].
+fn derive_from_leaf(leaf: &CompiledExpr, ctx: &DerivationCtx<'_>, out: &mut [DerivedInterval]) {
+    let Some(relation) = hc4::Relation::compile(leaf, ctx).filter(hc4::Relation::is_order) else {
         return;
     };
-    match op {
-        BinOp::Ge | BinOp::Gt => {
-            // left ≥ right → `left` bounded BELOW by right, `right` bounded ABOVE by left.
-            let strict = matches!(op, BinOp::Gt);
-            derive_from_side(left, right, true, strict, ctx, out);
-            derive_from_side(right, left, false, strict, ctx, out);
+    let mut bx = vec![Interval::ENTIRE; out.len()];
+    if relation.revise(&mut bx, hc4::Slack::Exact) == hc4::Revision::Empty {
+        return;
+    }
+    let mut probe = LeafProbe::of(leaf, &relation, ctx);
+    for (auto, (side, derived)) in bx.iter().zip(out.iter_mut()).enumerate() {
+        let mut edge = |value: f64, inward: fn(f64) -> f64| match probe.as_mut() {
+            Some(probe) if probe.auto == auto => probe.edge(value, inward),
+            _ => (value, relation.is_strict()),
+        };
+        if side.lo().is_finite() {
+            let (lo, strict) = edge(side.lo(), f64::next_up);
+            derived.push_lo(lo, strict);
         }
-        BinOp::Le | BinOp::Lt => {
-            // left ≤ right → `left` bounded ABOVE by right, `right` bounded BELOW by left.
-            let strict = matches!(op, BinOp::Lt);
-            derive_from_side(left, right, false, strict, ctx, out);
-            derive_from_side(right, left, true, strict, ctx, out);
+        if side.hi().is_finite() {
+            let (hi, strict) = edge(side.hi(), f64::next_down);
+            derived.push_hi(hi, strict);
         }
-        // And (split upstream by `for_each_leaf_conjunct`, so it cannot appear
-        // here on the intended call path), Eq, Ne, Or and every arithmetic op:
-        // no one-sided bound on a single auto.
-        _ => {}
     }
 }
 
-/// Match `near` against the linear-in-one-auto shapes and, when `far` is constant,
-/// record the implied bound.
+/// The pre-solve interval refutation (task #6655): contract EVERY original
+/// leaf conjunct, auto-free ones included, from the whole real line, relaxed by
+/// the solver's own acceptance (`FEASIBILITY_THRESHOLD` for order rows, the
+/// #6653 policy for `==`). An empty box is a PROOF that no point is accepted,
+/// reported as [`DiagnosticCode::ConstraintRefuted`] naming the constraint whose
+/// narrowing emptied it — before any solver evaluation.
 ///
-/// `lower == true` means the inequality bounds `near` from BELOW (`near ≥ far`).
-/// Four shapes are recognised — the last two are REQUIRED, because
-/// `synthesise_floor_constraints` emits exactly that slack form:
-///
-/// - `p OP far`                → bound = `far`,        direction unchanged
-/// - `p − k OP far`            → bound = `far + k`,    direction unchanged
-/// - `k − p OP far`            → bound = `k − far`,    direction FLIPPED
-///
-/// (the "`far OP p`" shape is covered by the caller invoking this function once per
-/// operand side).  Anything else is skipped.
-fn derive_from_side(
-    near: &CompiledExpr,
-    far: &CompiledExpr,
-    lower: bool,
-    strict: bool,
-    ctx: &DerivationCtx<'_>,
-    out: &mut [DerivedInterval],
-) {
-    let Some(far_value) = constant_operand_value(far, ctx) else {
-        return;
-    };
-    match &near.kind {
-        CompiledExprKind::ValueRef(id) => {
-            if let Some(&i) = ctx.auto_index.get(id) {
-                record_bound(&mut out[i], far_value, lower, strict);
+/// Explicit `AutoParam.bounds` and [`default_bounds_for`] are not part of the
+/// proof: a box they empty has no constraint to name. The constraints are the
+/// ORIGINAL ones: the robustness floor does not exist yet, so a floor-infeasible
+/// but feasible model keeps its `RobustnessFloorInfeasible` diagnosis.
+fn refuted_before_solve(
+    problem: &ResolutionProblem,
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Option<SolveResult> {
+    let operands = DerivationCtx::new(
+        &problem.auto_params,
+        &problem.dependent_cells,
+        &problem.current_values,
+        &problem.functions,
+        dispatch,
+    );
+    let mut sources = Vec::new();
+    let mut relations = Vec::new();
+    for (id, expr) in &problem.constraints {
+        for_each_leaf_conjunct(expr, &mut |leaf| {
+            if let Some(relation) = hc4::Relation::compile(leaf, &operands) {
+                relations.push(relation);
+                sources.push(id);
             }
+        });
+    }
+    let mut bx = vec![Interval::ENTIRE; problem.auto_params.len()];
+    let slack = hc4::Slack::Acceptance {
+        inequality: FEASIBILITY_THRESHOLD,
+    };
+    let hc4::Contraction::Empty { relation } = hc4::contract(&relations, &mut bx, slack) else {
+        return None;
+    };
+    let narrowing = sources[relation].clone();
+    Some(SolveResult::Infeasible {
+        diagnostics: vec![
+            reify_core::Diagnostic::error(reify_ir::Completeness::Refuted { narrowing }.describe())
+                .with_code(DiagnosticCode::ConstraintRefuted),
+        ],
+    })
+}
+
+/// How many ulps [`LeafProbe::edge`] may move a derived side.
+const SETTLE_MAX_STEPS: usize = 4;
+
+/// A fully compiled order leaf over ONE Scalar auto and no other moving
+/// quantity, evaluated by the model's own evaluator with that auto set to a
+/// trial value: what a derived side of the auto is settled onto and judged
+/// strict against. Owns one copy of the value map, in which each probe
+/// overwrites only the auto's slot.
+struct LeafProbe<'p> {
+    ctx: &'p DerivationCtx<'p>,
+    op: BinOp,
+    left: &'p CompiledExpr,
+    right: &'p CompiledExpr,
+    auto: usize,
+    dimension: DimensionVector,
+    values: ValueMap,
+}
+
+impl<'p> LeafProbe<'p> {
+    /// The probe for `leaf`, when the leaf has the shape a probe needs.
+    fn of(
+        leaf: &'p CompiledExpr,
+        relation: &hc4::Relation,
+        ctx: &'p DerivationCtx<'p>,
+    ) -> Option<Self> {
+        let CompiledExprKind::BinOp { op, left, right } = &leaf.kind else {
+            return None;
+        };
+        if !relation.is_fully_representable() {
+            return None;
         }
-        CompiledExprKind::BinOp {
-            op: BinOp::Sub,
+        let auto = Self::single_auto(leaf, ctx)?;
+        let Type::Scalar { dimension } = &ctx.autos[auto].param_type else {
+            return None;
+        };
+        Some(Self {
+            ctx,
+            op: *op,
             left,
             right,
-        } => {
-            // `p − k OP far` → `p OP far + k`
-            if let CompiledExprKind::ValueRef(id) = &left.kind
-                && let Some(&i) = ctx.auto_index.get(id)
-                && let Some(k) = constant_operand_value(right, ctx)
-            {
-                record_bound(&mut out[i], far_value + k, lower, strict);
-                return;
-            }
-            // `k − p OP far` → `p OP′ k − far`  (multiplying by −1 flips the direction)
-            if let CompiledExprKind::ValueRef(id) = &right.kind
-                && let Some(&i) = ctx.auto_index.get(id)
-                && let Some(k) = constant_operand_value(left, ctx)
-            {
-                record_bound(&mut out[i], k - far_value, !lower, strict);
+            auto,
+            dimension: *dimension,
+            values: ctx.values.clone(),
+        })
+    }
+
+    /// The one auto `leaf` mentions, when it mentions exactly one and no other
+    /// moving quantity.
+    fn single_auto(leaf: &CompiledExpr, ctx: &DerivationCtx<'_>) -> Option<usize> {
+        let mut only = None;
+        for id in leaf.collect_value_refs() {
+            match hc4::OperandClassifier::classify(ctx, &id) {
+                hc4::RefClass::Fixed => {}
+                hc4::RefClass::Varying => return None,
+                hc4::RefClass::Variable(i) if only.is_none_or(|o| o == i) => only = Some(i),
+                hc4::RefClass::Variable(_) => return None,
             }
         }
-        _ => {}
+        only
+    }
+
+    /// An HC4-derived side of the auto, as `(value, strict)`.
+    ///
+    /// HC4 rounds outward, so an inexact rearrangement (`p − k >= m` ⇒
+    /// `p >= m + k`) can sit one ulp outside the bound the model's evaluator
+    /// accepts — a real-number bound, but a clamp target the floor's own
+    /// comparison rejects. The side steps `inward` one ulp at a time, at most
+    /// [`SETTLE_MAX_STEPS`], until the leaf's NON-STRICT closure holds there;
+    /// one that never settles is kept as derived. It is strict when the leaf is
+    /// and the strict leaf does not hold at the settled value.
+    fn edge(&mut self, derived: f64, inward: fn(f64) -> f64) -> (f64, bool) {
+        let closure = match self.op {
+            BinOp::Gt => BinOp::Ge,
+            BinOp::Lt => BinOp::Le,
+            op => op,
+        };
+        let mut settled = derived;
+        for _ in 0..=SETTLE_MAX_STEPS {
+            if self.holds_at(closure, settled) {
+                let strict = closure != self.op && !self.holds_at(self.op, settled);
+                return (settled, strict);
+            }
+            settled = inward(settled);
+        }
+        (derived, closure != self.op)
+    }
+
+    /// Whether `left OP right` holds, by [`order_holds`], in the model's
+    /// evaluator with the auto at `value`; `false` for anything that does not
+    /// evaluate to two numbers.
+    fn holds_at(&mut self, op: BinOp, value: f64) -> bool {
+        self.values.insert(
+            self.ctx.autos[self.auto].id.clone(),
+            Value::Scalar {
+                si_value: value,
+                dimension: self.dimension,
+            },
+        );
+        let eval = ctx_with(&self.values, self.ctx.functions, self.ctx.dispatch);
+        let side = |expr: &CompiledExpr| reify_expr::eval_expr(expr, &eval).as_f64();
+        match (side(self.left), side(self.right)) {
+            (Some(l), Some(r)) => order_holds(op, l, r) == Some(true),
+            _ => false,
+        }
     }
 }
 
-/// Route one derived bound to the correct side of `iv`, dropping non-finite values.
-fn record_bound(iv: &mut DerivedInterval, value: f64, lower: bool, strict: bool) {
-    if !value.is_finite() {
-        return;
+/// The derivation family's operand knowledge, as HC4 consumes it: an auto is a
+/// box variable, a ref that [`DerivationCtx::varies_with_solve`] is a moving
+/// quantity that bounds nothing, and anything else is evaluated through
+/// [`constant_operand_value`], the family's single evaluation path.
+impl hc4::OperandClassifier for DerivationCtx<'_> {
+    fn classify(&self, id: &ValueCellId) -> hc4::RefClass {
+        if let Some(&i) = self.auto_index.get(id) {
+            hc4::RefClass::Variable(i)
+        } else if self.varies_with_solve(id) {
+            hc4::RefClass::Varying
+        } else {
+            hc4::RefClass::Fixed
+        }
     }
-    if lower {
-        iv.push_lo(value, strict);
-    } else {
-        iv.push_hi(value, strict);
+
+    fn evaluate(&self, expr: &CompiledExpr) -> Option<f64> {
+        constant_operand_value(expr, self)
     }
 }
 
@@ -1970,25 +2211,22 @@ fn seed_box_from_intervals(
 /// whenever some leaf conjunct MENTIONS it (via
 /// `CompiledExpr::collect_value_refs`, which walks every expression kind) while
 /// yielding NO bound at all for it. That is deliberately not a list of
-/// enumerated shapes: [`derive_from_expr`]/[`derive_from_side`] recognise only
-/// `p OP c`, `p − k OP c` and `k − p OP c` on `Ge`/`Gt`/`Le`/`Lt` with a
-/// CONSTANT, auto-free far operand, so *everything else* a user can legitimately
-/// write derives to `None` and abstains. Examples, NOT an exhaustive taxonomy:
+/// enumerated shapes: [`derive_from_leaf`] reads any ORDER relation HC4 can
+/// compile, one leaf at a time from the whole real line, so what it cannot read
+/// derives to `None` and abstains. Examples, NOT an exhaustive taxonomy:
 ///
-/// - `Eq` is skipped outright by the op rule, yet `constraint x == 10mm` is the
+/// - `Eq` is not a derivation input, yet `constraint x == 10mm` is the
 ///   canonical DSL way to determine a strict auto
 ///   (`examples/auto_binding_sites.ri`);
-/// - coefficient/nonlinear forms (`2*t > 3mm`, `t*t > 4`) match no shape;
-/// - a COUPLED bound (`y < 5mm - x`) has a far operand naming another auto, so
-///   [`constant_operand_value`] rejects it for BOTH params;
-/// - `Or` is skipped by the same op rule as `Eq` (it is not split like `And`),
-///   so a disjunctive conjunct abstains for every param it mentions;
-/// - a SUM constraint (`x + y > 1mm`) puts the param inside an unrecognised
-///   near-side expression;
-/// - a DISPATCH-BACKED predicate (`stress(t) < LIMIT`, the FEA shape this
-///   crate's own `fea_binding_problem` fixture uses) is unreadable on BOTH
-///   sides: `derive_from_side` cannot see a `Call` on the near side, and
-///   [`constant_operand_value`] rejects a far side naming the auto.
+/// - a COUPLED or SUM bound (`y < 5mm - x`, `x + y > 1mm`) bounds neither param
+///   on its own, since every other auto starts unbounded;
+/// - `Or`, `Ne` and `Implies` compile to no relation (`Or` is not split like
+///   `And`), so such a conjunct abstains for every param it mentions;
+/// - an OPAQUE call — an unrecognised builtin, or a DISPATCH-BACKED predicate
+///   (`stress(t) < LIMIT`, the FEA shape this crate's own `fea_binding_problem`
+///   fixture uses) — encloses to the whole real line with nothing to invert;
+/// - a ref that moves with the solve without being an auto
+///   ([`DerivationCtx::varies_with_solve`]) bounds nothing.
 ///
 /// Those `None`s are derivation BLIND SPOTS, not evidence that the user left a
 /// side unbounded — the distinction [`default_bounded_strict_autos`] needs in
@@ -2001,17 +2239,17 @@ fn seed_box_from_intervals(
 /// error: it can only turn a `ConstraintNonUnique` error into a `Solved`
 /// verdict, never the reverse, and the alternative (reading a blind spot as
 /// evidence) was MEASURED to reject valid, bounded models. Narrowing it means
-/// teaching [`derive_from_expr`] the missing shapes, not tightening the test
-/// here.
+/// teaching the derivation the missing shapes, not tightening the test here.
 ///
-/// That consequence is PINNED, not merely narrated (review suggestion 2):
-/// `gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved`
-/// (`tests/cost_robustness_tradeoff_blend.rs`) builds exactly the losing
-/// shape — a genuinely unbounded upper side plus ONE redundant, unreadable
-/// conjunct mentioning the same param — and measures both arms: without the
-/// conjunct every λ errors `ConstraintNonUnique`; with it every λ reports
+/// That consequence is PINNED, not merely narrated, in
+/// `tests/cost_robustness_tradeoff_blend.rs`:
+/// `gamma_one_sided_plus_unreadable_conjunct_abstains_to_solved` builds the
+/// losing shape — a genuinely unbounded upper side plus ONE redundant `Or`
+/// conjunct mentioning the same param — where every λ reports
 /// `Solved { unique: true }`, λ=0 landing on [`default_bounds_for`]'s 10 m
-/// `Length` ceiling. Re-deciding the rule means re-deciding that test.
+/// `Length` ceiling; `gamma_one_sided_plus_coefficient_conjunct_stays_non_unique`
+/// is its control, a readable conjunct that leaves the error standing.
+/// Re-deciding the rule means re-deciding those tests.
 ///
 /// Conjuncts are split on `And` before the test, by the SAME
 /// [`for_each_leaf_conjunct`] walk [`derive_param_intervals`] drives — one
@@ -2071,7 +2309,7 @@ fn params_in_underivable_constraints(
 }
 
 /// Per-leaf worker for [`params_in_underivable_constraints`]: scores ONE leaf
-/// conjunct by re-running [`derive_from_expr`] on it into a scratch buffer and
+/// conjunct by re-running [`derive_from_leaf`] on it into a scratch buffer and
 /// comparing what it bounded against what it mentions.
 ///
 /// Does not recurse — the caller drives [`for_each_leaf_conjunct`], the single
@@ -2080,7 +2318,7 @@ fn params_in_underivable_constraints(
 /// leaf and lose the per-conjunct granularity this function exists to provide.
 ///
 /// `scratch` is caller-owned and RESET (not reallocated) at each leaf; it must be
-/// `auto_params.len()` long, since `derive_from_expr` indexes it by auto index.
+/// `auto_params.len()` long, since `derive_from_leaf` indexes it by auto index.
 /// Its contents carry no meaning across leaves — the per-conjunct granularity
 /// documented on [`params_in_underivable_constraints`] depends on the reset.
 fn collect_underivable_in_leaf(
@@ -2090,7 +2328,7 @@ fn collect_underivable_in_leaf(
     out: &mut HashSet<usize>,
 ) {
     scratch.fill(DerivedInterval::default());
-    derive_from_expr(leaf, ctx, scratch);
+    derive_from_leaf(leaf, ctx, scratch);
     for id in leaf.collect_value_refs() {
         if let Some(&i) = ctx.auto_index.get(&id)
             && scratch
@@ -2141,27 +2379,53 @@ impl DefaultBoundedParam {
         })
     }
 
+    /// The model bounds this param on exactly one side; the other fell back to
+    /// the solver default.
+    fn is_one_sided(&self) -> bool {
+        self.default_lo.is_some() != self.default_hi.is_some()
+    }
+
+    /// The solve put this param ON a default bound it fell back to. `false`
+    /// for a missing or non-numeric solved value.
+    fn solved_on_default_edge(&self, solved: &HashMap<ValueCellId, Value>) -> bool {
+        let Some(value) = solved.get(&self.id).and_then(Value::as_f64) else {
+            return false;
+        };
+        [self.default_lo, self.default_hi]
+            .into_iter()
+            .flatten()
+            .any(|edge| within_uniqueness_tol(value, edge))
+    }
+
     /// The user-facing clause naming this param, each side no constraint
-    /// bounded, and the solver-internal bound used there.
+    /// bounded, and the solver-internal bound used there, in the wording the
+    /// compile-time arm shares ([`unbounded_auto_clause`]).
     ///
-    /// ONE rendering path for one, two or both sides — the invariant above makes
-    /// `sides` non-empty, so there is no empty-list case to special-case. Each
-    /// bound renders through `Value`'s `Display`, the same `Value::Scalar` shape
+    /// The invariant above makes the side list non-empty. Each bound renders
+    /// through `Value`'s `Display`, the same `Value::Scalar` shape
     /// [`build_solved_values`] reports a resolved value in, so the unit label is
     /// the one the user sees on every other value.
     fn clause(&self) -> String {
-        let quantity = |si_value: f64| Value::Scalar {
-            si_value,
-            dimension: self.dimension,
+        let quantity = |si_value: f64| {
+            Value::Scalar {
+                si_value,
+                dimension: self.dimension,
+            }
+            .to_string()
         };
-        let mut sides = Vec::with_capacity(2);
-        if let Some(lo) = self.default_lo {
-            sides.push(format!("below (solver default {})", quantity(lo)));
-        }
-        if let Some(hi) = self.default_hi {
-            sides.push(format!("above (solver default {})", quantity(hi)));
-        }
-        format!("no constraint bounds `{}` {}", self.id, sides.join(" or "))
+        let unbounded: Vec<UnboundedSide> = [
+            (BoundSide::Below, self.default_lo),
+            (BoundSide::Above, self.default_hi),
+        ]
+        .into_iter()
+        .filter_map(|(side, default)| {
+            default.map(|bound| UnboundedSide {
+                side,
+                solver_default: Some(quantity(bound)),
+            })
+        })
+        .collect();
+        unbounded_auto_clause(&self.id, &unbounded)
     }
 }
 
@@ -2177,11 +2441,11 @@ enum Determinedness {
     /// Every listed param is bounded on a side only by a solver-internal
     /// default — genuine non-determinedness, with the measurement to prove it.
     ///
-    /// Reachable ONLY from the γ `cost_robustness_tradeoff` branch, which is the
-    /// only route that computes per-param evidence. That is a statement about
-    /// where the evidence comes from, not a general capability: the perturbation
-    /// path answers §11.6 by re-solving, and a re-solve disagreeing says nothing
-    /// about WHICH bound was responsible.
+    /// Two producers, both of which compute per-param evidence: the γ
+    /// `cost_robustness_tradeoff` bracketing branch, and the synthetic-centrality
+    /// corner-pick screen ([`centrality_corner_picks`], #6692). The perturbation
+    /// path cannot produce it: it answers §11.6 by re-solving, and a re-solve
+    /// disagreeing says nothing about WHICH bound was responsible.
     DefaultBoundsDetermined(Vec<DefaultBoundedParam>),
     /// Non-determinedness with no per-param evidence: the perturbation re-solve
     /// disagreed, or the missing/non-numeric solved-value guard fired.
@@ -2197,6 +2461,8 @@ enum Determinedness {
 /// optimal under the applicable objective") for the γ `cost_robustness_tradeoff`
 /// path, where the perturbation machinery `verify_uniqueness` normally uses is
 /// structurally inapplicable (see that function's doc for the measured ruling).
+/// Its second consumer, [`centrality_corner_picks`] (#6692), projects it onto
+/// the one-sided entries the solve landed on the default edge of.
 ///
 /// - Both sides constraint-derived ⇒ NO entry. The objective's argmin is taken
 ///   over an interval the USER authored, so the resolved value is fixed by the
@@ -2210,11 +2476,11 @@ enum Determinedness {
 ///   measured cause.
 /// - A side missing but the param present in `underivable` ⇒ ABSTAIN, omitting
 ///   the param (esc-5711-3). The `None` there is a derivation BLIND SPOT, not
-///   evidence about the user's model. Everything outside [`derive_from_side`]'s
-///   three recognised shapes is invisible to [`derive_param_intervals`] — `Eq`,
-///   coefficient, nonlinear, coupled, `Or`, sum and dispatch-backed predicates
-///   among them, as EXAMPLES rather than a taxonomy (see
-///   [`params_in_underivable_constraints`] for the general rule). Letting one
+///   evidence about the user's model. Whatever a leaf's per-leaf HC4 revise
+///   cannot read is invisible to [`derive_param_intervals`] — `Eq`, coupled,
+///   sum, `Or` and dispatch-backed predicates among them, as EXAMPLES rather
+///   than a taxonomy (see [`params_in_underivable_constraints`] for the general
+///   rule). Letting one
 ///   masquerade as "the user did not bound this side" converts a valid, bounded
 ///   γ model into a user-facing `error: strict auto parameter resolution is not
 ///   uniquely determined`. MEASURED before the fix, on this branch: γ +
@@ -2230,11 +2496,11 @@ enum Determinedness {
 ///
 /// MONOTONE in `underivable`: growing that set can only move a param from
 /// "reported" to "abstained", never the reverse, so the returned list can only
-/// SHRINK. `verify_uniqueness` RELIES on this — it evaluates against an empty
-/// set first and only builds the (per-conjunct, eval-heavy) evidence set if that
-/// first answer is NON-EMPTY. Keep the `underivable` filter AHEAD of the
-/// per-param evidence step; a rule that let the evidence set ADD an entry would
-/// silently break that short-circuit.
+/// SHRINK. [`default_bounded_after_abstention`] RELIES on this — it evaluates
+/// against an empty set first and only builds the (per-conjunct, eval-heavy)
+/// evidence set if that first answer is NON-EMPTY. Keep the `underivable`
+/// filter AHEAD of the per-param evidence step; a rule that let the evidence
+/// set ADD an entry would silently break that short-circuit.
 /// `default_bounded_strict_autos_abstains_for_underivable_param` pins both
 /// directions on one fixture.
 ///
@@ -2331,6 +2597,61 @@ fn default_bounded_strict_autos(
             DefaultBoundedParam::new(p, &intervals.get(i).copied().unwrap_or_default())
         })
         .collect()
+}
+
+/// [`default_bounded_strict_autos`] restricted to the entries `keep` accepts,
+/// with the esc-5711-3 abstention ([`params_in_underivable_constraints`])
+/// applied LAZILY.
+///
+/// The abstention set re-runs `derive_from_leaf`, and through it `eval_expr`,
+/// once per leaf conjunct, so it is built only when the raw derivation already
+/// reports something. That skip is sound because the detector is MONOTONE in
+/// the abstention set and `keep` judges each entry alone: the second answer can
+/// only shrink the first, so an empty first answer is final.
+fn default_bounded_after_abstention(
+    problem: &ResolutionProblem,
+    intervals: &[DerivedInterval],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+    keep: impl Fn(&DefaultBoundedParam) -> bool,
+) -> Vec<DefaultBoundedParam> {
+    let kept = |underivable: &HashSet<usize>| -> Vec<DefaultBoundedParam> {
+        default_bounded_strict_autos(&problem.auto_params, intervals, underivable)
+            .into_iter()
+            .filter(|param| keep(param))
+            .collect()
+    };
+    let raw = kept(&HashSet::new());
+    if raw.is_empty() {
+        return raw;
+    }
+    kept(&params_in_underivable_constraints(
+        &problem.auto_params,
+        &problem.constraints,
+        &problem.dependent_cells,
+        &problem.current_values,
+        &problem.functions,
+        dispatch,
+    ))
+}
+
+/// The strict autos the synthetic centrality objective CORNER-PICKED (#6692):
+/// bounded by the model on one side only, and solved onto the solver-default
+/// edge of the other. Centrality is monotone in such a param, so its argmax is
+/// that edge — an artifact of [`default_bounds_for`], not a designed value.
+///
+/// A projection of [`default_bounded_strict_autos`], never a second detector.
+/// The on-edge filter is a trust check on the solve RESULT: a param the
+/// syntactic derivation reads as one-sided, but which a derived cell bounds on
+/// the other side (#7727), resolves off the edge and is not reported.
+fn centrality_corner_picks(
+    problem: &ResolutionProblem,
+    solved_values: &HashMap<ValueCellId, Value>,
+    intervals: &[DerivedInterval],
+    dispatch: Option<&dyn reify_ir::ComputeDispatch>,
+) -> Vec<DefaultBoundedParam> {
+    default_bounded_after_abstention(problem, intervals, dispatch, |param| {
+        param.is_one_sided() && param.solved_on_default_edge(solved_values)
+    })
 }
 
 /// Build a default Chebyshev-centre (max-min slack) objective for a continuous scope
@@ -2453,29 +2774,13 @@ pub fn build_centrality_objective(
 /// Evaluates constraint violations (and optionally an objective) given
 /// a parameter vector of f64 SI values.
 struct ConstraintCostFunction<'a> {
-    auto_params: &'a [AutoParam],
+    trial: TrialModel<'a>,
     constraints: &'a [(ConstraintNodeId, CompiledExpr)],
-    base_values: &'a ValueMap,
     objective: Option<&'a ObjectiveSet>,
-    functions: &'a [CompiledFunction],
-    /// Clamp box, one entry per `auto_params` entry, from [`resolve_bounds`]
-    /// (task #5618). Was `effective_bounds(param)` computed inline, which for a
-    /// dimensionless Real is the useless `(-1e6, 1e6)`.
+    /// Clamp box, one entry per `trial.auto_params` entry, from
+    /// [`resolve_bounds`] (task #5618). Was `effective_bounds(param)` computed
+    /// inline, which for a dimensionless Real is the useless `(-1e6, 1e6)`.
     bounds: &'a [(f64, f64)],
-    /// Cluster cells that must be recomputed at every trial point — see
-    /// [`build_trial_values`]. Empty for every non-clustered solve, which is
-    /// what keeps the legacy cost surface bit-identical.
-    dependent_cells: &'a [(ValueCellId, CompiledExpr)],
-    /// `@optimized` compute-dispatch hook (task #4880). `None` on every legacy
-    /// path, which makes [`ctx_with`] degenerate to `EvalContext::new` and the
-    /// cost surface byte-identical to pre-#4880. `Some(d)` lets an `@optimized`
-    /// call inside a constraint / objective expression (e.g.
-    /// `solve_elastic_static(..)`) resolve to a REAL value at every Nelder-Mead
-    /// trial point instead of body-evaluating to `Value::Undef`.
-    ///
-    /// `reify_ir::ComputeDispatch: Send + Sync`, so `&dyn ComputeDispatch` keeps
-    /// `ConstraintCostFunction` `Send + Sync` as argmin's `Executor` requires.
-    dispatch: Option<&'a dyn reify_ir::ComputeDispatch>,
 }
 
 /// Why [`eval_objective_set`] could not produce an orderable score.
@@ -2641,22 +2946,20 @@ impl CostFunction for ConstraintCostFunction<'_> {
             clamped.push(cv);
         }
 
-        let values = build_trial_values(
-            self.base_values,
-            self.auto_params,
-            &clamped,
-            self.dependent_cells,
-            self.functions,
-            self.dispatch,
+        let values = build_trial_values(&self.trial, &clamped);
+        let violation = compute_total_violation(
+            self.constraints,
+            &values,
+            self.trial.functions,
+            self.trial.dispatch,
         );
-        let violation =
-            compute_total_violation(self.constraints, &values, self.functions, self.dispatch);
 
         let cost = match self.objective {
             Some(obj) => {
                 // Combine objective with penalty for constraint violations and bounds
-                let obj_value = eval_objective_set(obj, &values, self.functions, self.dispatch)
-                    .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
+                let obj_value =
+                    eval_objective_set(obj, &values, self.trial.functions, self.trial.dispatch)
+                        .unwrap_or(UNDEF_OBJECTIVE_PENALTY);
                 obj_value + PENALTY_WEIGHT * violation + PENALTY_WEIGHT * bound_penalty
             }
             None => {
@@ -2876,10 +3179,10 @@ fn solve_core_with_sd_tolerance(
     // floor constraint was added; used below to emit the distinct diagnostic.
     //
     // ORDERING INVARIANT (load-bearing): `effective_constraints` MUST be built
-    // BEFORE the `initially_feasible` check.  A floor-infeasible box that is
+    // BEFORE the seed is judged.  A floor-infeasible box that is
     // feasible without the floor must be seen as infeasible at the initial-point
-    // check, so the `initially_feasible` drift fallback below (in the
-    // `final_max_residual > FEASIBILITY_THRESHOLD` branch) does NOT mask the
+    // check, so the `seed_accepted` drift fallback below (in the
+    // rejected-final-residual branch) does NOT mask the
     // infeasibility by falling back to Solved.
     //
     // Gate on `problem.objective` money-ness AND [`SolveRegime::RobustnessFloor`]
@@ -2898,14 +3201,8 @@ fn solve_core_with_sd_tolerance(
     // fallback objective validation when the optimizer drifts infeasible.
     // Building it here before the floor block eliminates the redundant second
     // call that was previously inside the floor synthesis branch.
-    let trial_values = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        initial,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
+    let trial_model = TrialModel::from_problem(problem, dispatch);
+    let trial_values = build_trial_values(&trial_model, initial);
 
     let mut effective_constraints: Vec<(ConstraintNodeId, CompiledExpr)> =
         problem.constraints.clone();
@@ -3017,8 +3314,8 @@ fn solve_core_with_sd_tolerance(
         // `bounds: None` shape `effective_bounds` is only
         // `default_bounds_for(Length) = [1µm, 10m]`, so without this box nothing
         // snaps the penalty minimiser's finite undershoot past the strict bound
-        // back: `final_max_residual` exceeds `FEASIBILITY_THRESHOLD`, the
-        // `initially_feasible` fallback below fires, and the blend reports THE
+        // back: the strict-bound row fails acceptance, the
+        // `seed_accepted` fallback below fires, and the blend reports THE
         // SEED. Pinned by
         // `gamma_anchor_lambdas_are_seed_invariant_without_explicit_bounds`.
         SolveRegime::TradeoffBlend => derived_clamp_box(StrictBound::SteppedInside),
@@ -3035,12 +3332,19 @@ fn solve_core_with_sd_tolerance(
     // immediately below, and (2) the fallback objective validation when the
     // optimizer drifts infeasible (see `eval_objective_set(&trial_values, …)`).
     // Do not inline into the feasibility check.
-    let initially_feasible = max_constraint_residual(
+    let seed_residual = max_constraint_residual(
         &effective_constraints,
         &trial_values,
         &problem.functions,
         dispatch,
-    ) <= FEASIBILITY_THRESHOLD;
+    );
+    // The early exit and the warm-start budget need a CONVERGED seed: returning
+    // one whose equality rows are merely within tolerance would let
+    // `verify_uniqueness` compare it against a re-solve converged ~1e-16 away
+    // and report a false `ConstraintNonUnique`. The drift fallback needs only
+    // what the final gate needs of any answer, so it takes an ACCEPTED seed.
+    let seed_converged = seed_residual.is_converged();
+    let seed_accepted = seed_residual.is_accepted();
 
     // Synthesise a default centrality (Chebyshev-centre) objective when the scope has
     // inequality constraints but no explicit user objective (PRD η).  The synthetic
@@ -3066,7 +3370,7 @@ fn solve_core_with_sd_tolerance(
     // Pure feasibility + already feasible → return immediately.
     // Gate on the EFFECTIVE objective so a centrality scope optimises instead of
     // short-circuiting to the first feasible boundary point.
-    if initially_feasible && effective_objective.is_none() {
+    if seed_converged && effective_objective.is_none() {
         let n_params = problem.auto_params.len();
         tracing::debug!(
             n_params,
@@ -3085,9 +3389,9 @@ fn solve_core_with_sd_tolerance(
     // Nelder-Mead needs O(N+1) evaluations per simplex sweep, so scale
     // the budget proportionally to give higher-dimensional problems enough
     // iterations to converge.
-    // After the early-return above for `initially_feasible && effective_objective.is_none()`,
-    // reaching here with `initially_feasible=true` implies `effective_objective.is_some()`.
-    let max_iters = if initially_feasible {
+    // After the early-return above for `seed_converged && effective_objective.is_none()`,
+    // reaching here with `seed_converged=true` implies `effective_objective.is_some()`.
+    let max_iters = if seed_converged {
         debug_assert!(
             effective_objective.is_some(),
             "warm-start budget path reached without objective — early-return invariant violated"
@@ -3099,14 +3403,10 @@ fn solve_core_with_sd_tolerance(
     };
 
     let cost_fn = ConstraintCostFunction {
-        auto_params: &problem.auto_params,
+        trial: trial_model,
         constraints: &effective_constraints,
-        base_values: &problem.current_values,
         objective: effective_objective,
-        functions: &problem.functions,
         bounds: &bounds,
-        dependent_cells: &problem.dependent_cells,
-        dispatch,
     };
 
     // Build simplex from the provided initial point
@@ -3146,7 +3446,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed; hit iteration limit — objective may be suboptimal"
         );
@@ -3156,7 +3457,8 @@ fn solve_core_with_sd_tolerance(
             n_params,
             max_iters,
             has_objective,
-            initially_feasible,
+            seed_converged,
+            seed_accepted,
             iter_limited,
             "solver completed"
         );
@@ -3189,25 +3491,18 @@ fn solve_core_with_sd_tolerance(
 
     // Check feasibility by re-evaluating constraint violations
     // (best_cost may include the objective term, so we check violations separately)
-    let final_values = build_trial_values(
-        &problem.current_values,
-        &problem.auto_params,
-        &clamped,
-        &problem.dependent_cells,
-        &problem.functions,
-        dispatch,
-    );
-    let final_max_residual = max_constraint_residual(
+    let final_values = build_trial_values(&trial_model, &clamped);
+    let final_residual = max_constraint_residual(
         &effective_constraints,
         &final_values,
         &problem.functions,
         dispatch,
     );
-    if final_max_residual > FEASIBILITY_THRESHOLD {
+    if let Some(worst_rejected_residual) = final_residual.rejected {
         // If the initial point was feasible but the optimizer drifted infeasible
         // while chasing an objective, fall back to the initial feasible values
         // rather than reporting a false Infeasible.
-        if initially_feasible {
+        if seed_accepted {
             // Validate that the objective is numeric at the initial point
             // before promoting to Solved. The trial_values ValueMap was built
             // from the same initial point and is still in scope.
@@ -3234,7 +3529,7 @@ fn solve_core_with_sd_tolerance(
             let fallback = build_solved_values(&problem.auto_params, initial);
             tracing::debug!(
                 n_params,
-                final_max_residual,
+                worst_rejected_residual,
                 "optimizer drifted infeasible while chasing objective; \
                  falling back to initial feasible point"
             );
@@ -3253,14 +3548,14 @@ fn solve_core_with_sd_tolerance(
                         problem,
                         &effective_constraints,
                         &final_values,
-                        final_max_residual,
+                        worst_rejected_residual,
                         sd_tolerance,
                         dispatch,
                     )
                 } else {
                     reify_core::Diagnostic::error(format!(
                         "constraints could not be satisfied (max absolute residual: {:.2e})",
-                        final_max_residual
+                        worst_rejected_residual
                     ))
                     .with_code(DiagnosticCode::ConstraintUnsatisfiable)
                 }],
@@ -4188,31 +4483,10 @@ fn verify_uniqueness(
         // esc-5711-3: a param whose missing side is attributable to a
         // constraint the derivation could not READ abstains rather than
         // reporting non-uniqueness — see `params_in_underivable_constraints`.
-        //
-        // Computed LAZILY (review suggestion 1). The predicate is MONOTONE in
-        // its `underivable` argument — that set can only move a param from
-        // "not bracketed" to "abstain", never the reverse — so when the raw
-        // derivation already brackets every strict auto the evidence set cannot
-        // change the verdict, and the per-conjunct re-derivation (which re-runs
-        // `derive_from_expr`, and through it `eval_expr`, once per leaf
-        // conjunct) is skipped entirely. That is the common case: the γ models
-        // this branch exists to keep green.
-        let mut default_bounded =
-            default_bounded_strict_autos(&problem.auto_params, &intervals, &HashSet::new());
-        if !default_bounded.is_empty() {
-            default_bounded = default_bounded_strict_autos(
-                &problem.auto_params,
-                &intervals,
-                &params_in_underivable_constraints(
-                    &problem.auto_params,
-                    &problem.constraints,
-                    &problem.dependent_cells,
-                    &problem.current_values,
-                    &problem.functions,
-                    dispatch,
-                ),
-            );
-        }
+        // The common case, where the raw derivation already brackets every
+        // strict auto, skips that evidence set entirely (review suggestion 1).
+        let default_bounded =
+            default_bounded_after_abstention(problem, &intervals, dispatch, |_| true);
         // debug!, deliberately NOT warn!: solver_tracing.rs's
         // `normal_solve_emits_zero_warns` expectation and step-4's exact-WARN-count
         // assertion must both stay untouched by this branch.
@@ -4227,6 +4501,23 @@ fn verify_uniqueness(
         } else {
             Determinedness::DefaultBoundsDetermined(default_bounded)
         };
+    }
+
+    // #6692: with no explicit objective the solve was steered by the synthetic
+    // centrality objective, which drives a one-sided strict auto onto its
+    // default edge — and a perturbation re-solve lands on the same edge and
+    // calls it unique. An explicit objective governs its own solve and is left
+    // to the perturbation path (#5975 owns the unbounded-objective case).
+    if problem.objective.is_none() {
+        let corner_picks = centrality_corner_picks(problem, solved_values, &intervals, dispatch);
+        // debug!, NOT warn!: solver_tracing.rs pins this module's warn counts.
+        tracing::debug!(
+            corner_picks = corner_picks.len(),
+            "uniqueness check: screening for centrality corner-picks of one-sided strict autos"
+        );
+        if !corner_picks.is_empty() {
+            return Determinedness::DefaultBoundsDetermined(corner_picks);
+        }
     }
 
     tracing::debug!(
@@ -4395,11 +4686,12 @@ fn finalise_uniqueness(
                     .with_code(DiagnosticCode::ConstraintNonUnique),
                 ],
             },
-            // The γ branch DID measure a cause, so report it: which param,
-            // which side no constraint bounded, the bound the solve fell back
-            // to, and the fix. The `not uniquely determined` diagnosis phrase is
-            // shared with the arm above, so the diagnosis is ONE phrase rather
-            // than two dialects.
+            // Both producers (γ bracketing, the centrality corner-pick screen)
+            // measured a cause, so report it: which param, which side no
+            // constraint bounded, the bound the solve fell back to, and the
+            // fix. The `not uniquely determined` diagnosis phrase is shared
+            // with the arm above, so the diagnosis is ONE phrase rather than
+            // two dialects.
             //
             // `reify_core::Diagnostic` has no note/help channel and its
             // `candidates` field carries a bare-FQN-only invariant, so the cause
@@ -4514,6 +4806,10 @@ impl DimensionalSolver {
             );
         }
 
+        if let Some(refuted) = refuted_before_solve(problem, dispatch) {
+            return (refuted, SolveMeta::default());
+        }
+
         let initial = extract_initial_point(problem, dispatch);
 
         // γ cost_robustness_tradeoff dispatch (task #4791, PRD §2.4/§8.1): a
@@ -4609,6 +4905,12 @@ impl DimensionalSolver {
         if !multistart_eligible {
             let (result, meta) = self.solve_with_meta(problem, dispatch);
             return rank_single(problem, result, meta, dispatch);
+        }
+
+        if let Some(refuted) =
+            refuted_before_solve(problem, dispatch).and_then(SolveResult::into_ranked_pass_through)
+        {
+            return refuted;
         }
 
         // ---- best-of-K multistart (dim>=2 + objective, §5.3/§11 Q4) ----
@@ -4762,6 +5064,22 @@ mod tests {
         (id, params)
     }
 
+    /// A [`super::TrialModel`] with no user functions and no compute dispatch —
+    /// the shape the `build_trial_values` and cost-function tests need.
+    fn trial_model<'a>(
+        base: &'a ValueMap,
+        params: &'a [reify_ir::AutoParam],
+        cells: &'a [(reify_core::ValueCellId, reify_ir::CompiledExpr)],
+    ) -> super::TrialModel<'a> {
+        super::TrialModel {
+            auto_params: params,
+            base_values: base,
+            dependent_cells: cells,
+            functions: &[],
+            dispatch: None,
+        }
+    }
+
     /// The pre-#5618 reflection box: each param's own [`super::effective_bounds`].
     ///
     /// Task #5618 made [`super::build_perturbation_anchors`]' box caller-supplied so
@@ -4887,7 +5205,7 @@ mod tests {
             free: false,
         }];
 
-        let trial = build_trial_values(&base, &params, &[0.005], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
 
         // Auto param should be inserted with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -4951,7 +5269,7 @@ mod tests {
             },
         ];
 
-        let trial = build_trial_values(&base, &params, &[0.005, 1.2], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &params, &[]), &[0.005, 1.2]);
 
         // First auto param: length with correct dimension
         let thickness = trial.get(&thickness_id).expect("thickness should exist");
@@ -5439,7 +5757,7 @@ mod tests {
         );
 
         // Empty params slice — should return base unchanged
-        let trial = build_trial_values(&base, &[], &[], &[], &[], None);
+        let trial = build_trial_values(&trial_model(&base, &[], &[]), &[]);
 
         // Base value preserved
         let width = trial.get(&width_id).expect("width should be preserved");
@@ -6367,9 +6685,9 @@ mod tests {
 
     // ---- abstention on an UNREADABLE constraint (esc-5711-3) ----
     //
-    // `derive_param_intervals` recognises only three syntactic shapes with a
-    // constant far operand, so `Eq`, coefficient/nonlinear and coupled bounds
-    // all derive to `None`. Those `None`s are derivation BLIND SPOTS, and
+    // `derive_param_intervals` reads order relations one leaf at a time, so
+    // `Eq`, coupled and opaque bounds all derive to `None`. Those `None`s are
+    // derivation BLIND SPOTS, and
     // reading one as "the user did not bound this side" turns a valid, bounded
     // γ model into `error: strict auto parameter resolution is not uniquely
     // determined`. `params_in_underivable_constraints` is the evidence source
@@ -6377,8 +6695,8 @@ mod tests {
     // confirmed unbounded; the integration-level counterparts live in
     // `tests/cost_robustness_tradeoff_blend.rs`.
 
-    /// A readable one-sided bound flags NOTHING: `q >= 1.0` is exactly the
-    /// shape `derive_from_side` handles, so the missing upper side really is
+    /// A readable one-sided bound flags NOTHING: `q >= 1.0` is the direct
+    /// shape the derivation reads, so the missing upper side really is
     /// `default_bounds_for`'s and must keep reporting non-determinedness.
     #[test]
     fn params_in_underivable_constraints_readable_bound_flags_nothing() {
@@ -6402,7 +6720,7 @@ mod tests {
         );
     }
 
-    /// `constraint q == 5.0` — skipped outright by `derive_from_expr`'s op rule,
+    /// `constraint q == 5.0` — not a derivation input (order relations only),
     /// yet the canonical DSL way to determine a strict auto
     /// (`examples/auto_binding_sites.ri`). Must be flagged.
     #[test]
@@ -6463,9 +6781,10 @@ mod tests {
         );
     }
 
-    /// A COEFFICIENT bound (`2*q > 3`) matches none of the three shapes.
+    /// A COEFFICIENT bound (`2*q > 3`) is read by HC4 (task #6655) as
+    /// `q > 1.5`, so it is evidence, not a blind spot.
     #[test]
-    fn params_in_underivable_constraints_flags_coefficient_form() {
+    fn params_in_underivable_constraints_reads_coefficient_form() {
         use reify_core::Type;
         use reify_ir::{BinOp, CompiledExpr};
 
@@ -6493,8 +6812,8 @@ mod tests {
                 &[],
                 None,
             ),
-            std::collections::HashSet::from([0]),
-            "`2*q > 3` bounds q at 1.5 — the derivation just cannot read it"
+            std::collections::HashSet::new(),
+            "`2*q > 3` bounds q below at 1.5, which HC4 reads"
         );
     }
 
@@ -6544,7 +6863,7 @@ mod tests {
             ops,
             vec![BinOp::Ge, BinOp::Le, BinOp::Eq],
             "nested `And`s must flatten left-to-right, and no `And` node may reach the \
-             leaf callback — `derive_from_expr` no longer recurses, so an `And` that \
+             leaf callback — `derive_from_leaf` does not recurse, so an `And` that \
              leaked through would derive nothing at all"
         );
     }
@@ -6599,11 +6918,10 @@ mod tests {
         );
     }
 
-    /// A NON-ENUMERATED shape: `Or`. The doc's four named shapes (Eq /
-    /// coefficient / nonlinear / coupled) are EXAMPLES, not a taxonomy — the
-    /// rule is "any conjunct that mentions the param and yields no bound". `Or`
-    /// falls into `derive_from_expr`'s same `_ => {}` arm as `Eq` and is NOT
-    /// split like `And`, so `q >= 1 OR q <= 4` bounds nothing while mentioning
+    /// A NON-ENUMERATED shape: `Or`. The doc's named shapes are EXAMPLES, not a
+    /// taxonomy — the rule is "any conjunct that mentions the param and yields
+    /// no bound". `Or` compiles to no relation and is NOT split like `And`, so
+    /// `q >= 1 OR q <= 4` bounds nothing while mentioning
     /// `q`. Pins the true reach of the abstention rather than leaving it
     /// inferred from the enumeration (review, robustness).
     #[test]
@@ -6637,9 +6955,9 @@ mod tests {
 
     /// A NON-ENUMERATED shape that is also the realistic one: a DISPATCH-BACKED
     /// predicate, `stress(t) < LIMIT` (this file's own `fea_binding_problem`,
-    /// the FEA fixture from #4880). Unreadable on BOTH sides — `derive_from_side`
-    /// cannot see a `Call` on the near side, and `constant_operand_value` rejects
-    /// a far side naming the auto — so `t` is flagged even though the constraint
+    /// the FEA fixture from #4880). The user-function call is OPAQUE to HC4 —
+    /// it encloses to the whole real line with nothing to invert — so `t` is
+    /// flagged even though the constraint
     /// is the model's whole point. Asserted WITH a live dispatch attached, since
     /// the derivation threads one through and a reader could otherwise assume the
     /// hook rescues the shape.
@@ -6815,8 +7133,10 @@ mod tests {
             ConstraintNodeId::new("Part", 0),
             CompiledExpr::binop(BinOp::Ge, length_ref(&a), length_ref(&side), Type::Bool),
         )];
-        let values =
-            super::build_trial_values(&ValueMap::new(), &params, &[0.0, 0.0025], &cells, &[], None);
+        let values = super::build_trial_values(
+            &trial_model(&ValueMap::new(), &params, &cells),
+            &[0.0, 0.0025],
+        );
 
         let intervals =
             super::derive_param_intervals(&params, &constraints, &cells, &values, &[], None);
@@ -7529,7 +7849,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "Gt violated by 1e-7 should have residual ~1e-7, got {:.2e}",
@@ -7558,7 +7878,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Ge, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Ge with l==r should be satisfied (residual=0)");
     }
 
@@ -7584,7 +7904,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Lt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 0.005).abs() < 1e-15,
             "Lt violated by 0.005 should have residual 0.005, got {}",
@@ -7613,7 +7933,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Le, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Le with l<r should be satisfied");
     }
 
@@ -7638,7 +7958,7 @@ mod tests {
             Type::length(),
         );
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Eq, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-6).abs() < 1e-12,
             "Eq with difference 1e-6 should have residual 1e-6, got {:.2e}",
@@ -7672,7 +7992,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&expr, &values, &[], None);
+        let res = constraint_residual(&expr, &values, &[], None).magnitude;
         assert!(
             (res - 1e-7).abs() < 1e-12,
             "single Gt constraint_residual should delegate correctly, got {:.2e}",
@@ -7725,7 +8045,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&and_expr, &values, &[], None);
+        let res = constraint_residual(&and_expr, &values, &[], None).magnitude;
         // max(1e-7, 1e-5) = 1e-5
         assert!(
             (res - 1e-5).abs() < 1e-10,
@@ -7779,7 +8099,7 @@ mod tests {
             },
         );
 
-        let res = constraint_residual(&or_expr, &values, &[], None);
+        let res = constraint_residual(&or_expr, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "Or with one satisfied should return 0.0");
     }
 
@@ -7836,7 +8156,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert!(
             (res - 1e-5).abs() < 1e-10,
             "should return worst violation ~1e-5, got {:.2e}",
@@ -7871,7 +8191,7 @@ mod tests {
             },
         );
 
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "all satisfied should return 0.0");
     }
 
@@ -7881,8 +8201,47 @@ mod tests {
 
         let constraints = vec![];
         let values = ValueMap::new();
-        let res = max_constraint_residual(&constraints, &values, &[], None);
+        let res = max_constraint_residual(&constraints, &values, &[], None).magnitude;
         assert_eq!(res, 0.0, "empty constraints should return 0.0");
+    }
+
+    #[test]
+    fn max_constraint_residual_keeps_a_nan_rejected_residual() {
+        use super::max_constraint_residual;
+        use reify_core::{ConstraintNodeId, DimensionVector, Type};
+        use reify_ir::{BinOp, CompiledExpr, Value};
+
+        let length = |si_value| {
+            CompiledExpr::literal(
+                Value::Scalar {
+                    si_value,
+                    dimension: DimensionVector::LENGTH,
+                },
+                Type::length(),
+            )
+        };
+        let nan_equality = (
+            ConstraintNodeId::new("Part", 0),
+            CompiledExpr::binop(BinOp::Eq, length(f64::NAN), length(0.01), Type::Bool),
+        );
+        let false_row = (
+            ConstraintNodeId::new("Part", 1),
+            CompiledExpr::literal(Value::Bool(false), Type::Bool),
+        );
+        let values = ValueMap::new();
+        for (label, constraints) in [
+            ("NaN equality alone", vec![nan_equality.clone()]),
+            (
+                "NaN equality beside a rejected row",
+                vec![nan_equality, false_row],
+            ),
+        ] {
+            let res = max_constraint_residual(&constraints, &values, &[], None);
+            assert!(
+                res.rejected.is_some_and(f64::is_nan),
+                "{label}: the rejected residual must stay NaN, got {res:?}"
+            );
+        }
     }
 
     #[test]
@@ -7894,13 +8253,13 @@ mod tests {
         let values = ValueMap::new();
 
         let t = CompiledExpr::literal(Value::Bool(true), Type::Bool);
-        assert_eq!(constraint_residual(&t, &values, &[], None,), 0.0);
+        assert_eq!(constraint_residual(&t, &values, &[], None,).magnitude, 0.0);
 
         let f = CompiledExpr::literal(Value::Bool(false), Type::Bool);
-        assert_eq!(constraint_residual(&f, &values, &[], None,), 1.0);
+        assert_eq!(constraint_residual(&f, &values, &[], None,).magnitude, 1.0);
 
         let u = CompiledExpr::literal(Value::Undef, Type::Bool);
-        assert_eq!(constraint_residual(&u, &values, &[], None,), 10.0);
+        assert_eq!(constraint_residual(&u, &values, &[], None,).magnitude, 10.0);
     }
 
     #[test]
@@ -7913,7 +8272,7 @@ mod tests {
         let l_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let r_expr = CompiledExpr::literal(Value::Undef, Type::Bool);
         let values = ValueMap::new();
-        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None);
+        let res = comparison_residual(BinOp::Gt, &l_expr, &r_expr, &values, &[], None).magnitude;
         assert_eq!(res, 1.0, "Non-numeric inputs should give residual 1.0");
     }
 
@@ -7946,16 +8305,12 @@ mod tests {
         let base_values = ValueMap::new();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base_values, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base_values,
             objective: None,
-            functions: &[],
             // Task #5618: the clamp box is now supplied by the caller
             // (`resolve_bounds`) rather than read from `AutoParam.bounds` inline.
             bounds: &[(0.0, 0.010)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         // In bounds: x=0.005
@@ -8020,14 +8375,10 @@ mod tests {
         let base_values = ValueMap::new();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base_values, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base_values,
             objective: Some(&objective),
-            functions: &[],
             bounds: &[(0.0, 0.010)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         cost_fn
@@ -9073,8 +9424,8 @@ mod tests {
     /// This completes the trio with `undefined_objective_at_feasible_initial_returns_no_progress`
     /// and `undefined_objective_at_fallback_triggers_no_progress`, covering all three
     /// branches of the objective-validation tail of `solve_core_with_sd_tolerance`:
-    /// the `initially_feasible` drift fallback in the
-    /// `final_max_residual > FEASIBILITY_THRESHOLD` branch (its undefined-objective
+    /// the `seed_accepted` drift fallback in the
+    /// rejected-final-residual branch (its undefined-objective
     /// and Solved arms) plus the post-solve objective check at the solution point.
     #[test]
     fn defined_objective_at_fallback_returns_solved() {
@@ -10048,7 +10399,7 @@ mod tests {
                 },
             );
         }
-        let values = super::build_trial_values(&prior, &params, &trial, cells, &[], None);
+        let values = super::build_trial_values(&trial_model(&prior, &params, cells), &trial);
         super::derive_param_intervals(&params, &as_constraints(exprs), cells, &values, &[], None)
     }
 
@@ -10167,20 +10518,23 @@ mod tests {
         );
     }
 
-    /// CONTROL — green today and must STAY green. An INLINE far operand naming
-    /// an auto (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
-    /// `constraint t >= (if up then 3.0 else 5.0)`) is already rejected,
-    /// because `collect_value_refs` recurses into `Conditional`. The hole is
-    /// the dependent-cell INDIRECTION specifically, not inline expressions.
+    /// An INLINE far operand naming an auto
+    /// (`docs/prds/v0_6/fixtures/discrete_mixed.ri`'s
+    /// `constraint t >= (if up then 3.0 else 5.0)`) is read by HC4 as the HULL
+    /// of its branches: the sound low end, whichever branch this trial takes.
+    /// #6146's concern was mining the TRIAL SNAPSHOT of a moving quantity, so
+    /// the branch order here discriminates: the taken branch (`up = 1.0`, the
+    /// `then` branch) is 5.0 and the hull's low end 3.0. The dependent-cell
+    /// indirection tests above still derive nothing.
     #[test]
-    fn derive_intervals_still_rejects_an_inline_far_operand_naming_an_auto() {
+    fn derive_intervals_reads_an_inline_conditional_far_operand_as_its_branch_hull() {
         use reify_core::{Type, ValueCellId, hash::ContentHash};
         use reify_ir::{BinOp, CompiledExpr, CompiledExprKind};
         let a = ValueCellId::new("Derive", "a");
         let up = ValueCellId::new("Derive", "up");
         let condition = real_ref(&up);
-        let then_branch = real_lit(3.0);
-        let else_branch = real_lit(5.0);
+        let then_branch = real_lit(5.0);
+        let else_branch = real_lit(3.0);
         let content_hash = ContentHash::of(&[TAG_CONDITIONAL])
             .combine(condition.content_hash)
             .combine(then_branch.content_hash)
@@ -10201,11 +10555,11 @@ mod tests {
             vec![CompiledExpr::binop(BinOp::Ge, real_ref(&a), far, Type::Bool)],
         );
         assert_eq!(
-            ivs[0].lo, None,
-            "`a >= (if up then 3.0 else 5.0)` must derive NO lower bound: the \
-             branch taken varies with auto `up`, and `collect_value_refs` \
-             already sees `up` through the `Conditional`. A fix for the \
-             dependent-cell hole must not regress this syntactic arm"
+            ivs[0].lo,
+            Some((3.0, false)),
+            "`a >= (if up then 5.0 else 3.0)` must derive the branch hull's low end \
+             3.0, never this trial's taken-branch snapshot 5.0: the branch taken \
+             varies with auto `up`"
         );
     }
 
@@ -10519,6 +10873,113 @@ mod tests {
             intervals[1],
             super::DerivedInterval::default(),
             "none of the skipped shapes may contribute a bound for p"
+        );
+    }
+
+    /// (e′) Coefficient and nonlinear ORDER shapes, read by HC4 (task #6655):
+    /// each derives the bound its rearrangement implies, with the leaf's own
+    /// strictness.
+    #[test]
+    fn derive_intervals_reads_nonlinear_order_shapes() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let real = Type::dimensionless_scalar;
+        let cmp =
+            |op, near: CompiledExpr, v| CompiledExpr::binop(op, near, real_lit(v), Type::Bool);
+        let arith = |op, l, r| CompiledExpr::binop(op, l, r, real());
+
+        let scaled = derive_one(
+            &q,
+            vec![cmp(
+                BinOp::Gt,
+                arith(BinOp::Mul, real_lit(2.0), real_ref(&q)),
+                3.0,
+            )],
+        );
+        assert_eq!(scaled.lo, Some((1.5, true)), "`2*q > 3` ⇒ q > 1.5");
+        assert_eq!(scaled.hi, None);
+
+        let squared = derive_one(
+            &q,
+            vec![cmp(
+                BinOp::Le,
+                arith(BinOp::Mul, real_ref(&q), real_ref(&q)),
+                4.0,
+            )],
+        );
+        assert_eq!(
+            (squared.lo, squared.hi),
+            (Some((-2.0, false)), Some((2.0, false))),
+            "`q*q <= 4` ⇒ -2 <= q <= 2"
+        );
+
+        let root = reify_test_support::std_call("sqrt", vec![real_ref(&q)], real());
+        let rooted = derive_one(&q, vec![cmp(BinOp::Le, root, 3.0)]);
+        assert_eq!(
+            (rooted.lo, rooted.hi),
+            (Some((0.0, false)), Some((9.0, false))),
+            "`sqrt(q) <= 3` ⇒ 0 <= q <= 9 (the low side is sqrt's domain)"
+        );
+
+        let halved = derive_one(
+            &q,
+            vec![cmp(
+                BinOp::Ge,
+                arith(BinOp::Div, real_ref(&q), real_lit(2.0)),
+                1.0,
+            )],
+        );
+        assert_eq!(halved.lo, Some((2.0, false)), "`q / 2 >= 1` ⇒ q >= 2");
+    }
+
+    /// A side an operator's DOMAIN sets, not the comparison, is strict only
+    /// where the strict leaf really fails. `sqrt(q) < 3` holds at q = 0, so a
+    /// strict low side would make `StrictBound::SteppedInside` drop that valid
+    /// point; `sqrt(q) > 0` fails there, so its low side stays strict. A leaf
+    /// over two autos cannot be evaluated at one auto's endpoint, so its sides
+    /// keep the leaf's strictness: the safe direction for every
+    /// `StrictBound` consumer.
+    #[test]
+    fn derive_intervals_marks_a_side_strict_only_where_the_strict_leaf_fails() {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let q = reify_core::ValueCellId::new("Derive", "q");
+        let p = reify_core::ValueCellId::new("Derive", "p");
+        let real = Type::dimensionless_scalar;
+        let root = || reify_test_support::std_call("sqrt", vec![real_ref(&q)], real());
+        let cmp =
+            |op, near: CompiledExpr, v| CompiledExpr::binop(op, near, real_lit(v), Type::Bool);
+
+        let below = derive_one(&q, vec![cmp(BinOp::Lt, root(), 3.0)]);
+        assert_eq!(
+            (below.lo, below.hi),
+            (Some((0.0, false)), Some((9.0, true))),
+            "`sqrt(q) < 3` ⇒ 0 <= q < 9: sqrt(0) < 3 holds, sqrt(9) < 3 does not"
+        );
+
+        let above = derive_one(&q, vec![cmp(BinOp::Gt, root(), 0.0)]);
+        assert_eq!(
+            above.lo,
+            Some((0.0, true)),
+            "`sqrt(q) > 0` ⇒ q > 0: sqrt(0) > 0 fails, so the domain edge stays strict"
+        );
+
+        let coupled = cmp(
+            BinOp::Lt,
+            CompiledExpr::binop(
+                BinOp::Add,
+                root(),
+                CompiledExpr::binop(BinOp::Mul, real_ref(&p), real_ref(&p), real()),
+                real(),
+            ),
+            3.0,
+        );
+        let ivs = derive_with_dependent_cells(&[], &[(&q, 1.0), (&p, 1.0)], &[], vec![coupled]);
+        assert_eq!(
+            ivs[0].lo,
+            Some((0.0, true)),
+            "`sqrt(q) + p*p < 3` over two autos keeps the leaf's strictness"
         );
     }
 
@@ -10919,6 +11380,90 @@ mod tests {
         );
     }
 
+    /// `t * 2 < 30mm` with `t` a Length auto, the Mul literal on the RIGHT as
+    /// the `.ri` compiles it.
+    fn length_times_two_lt(t: &reify_core::ValueCellId, si_metres: f64) -> reify_ir::CompiledExpr {
+        use reify_core::Type;
+        use reify_ir::{BinOp, CompiledExpr};
+        let doubled = CompiledExpr::binop(
+            BinOp::Mul,
+            CompiledExpr::value_ref(t.clone(), Type::length()),
+            real_lit(2.0),
+            Type::length(),
+        );
+        let limit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::Scalar {
+                si_value: si_metres,
+                dimension: reify_core::DimensionVector::LENGTH,
+            },
+            Type::length(),
+        );
+        CompiledExpr::binop(BinOp::Lt, doubled, limit, Type::Bool)
+    }
+
+    /// The #5715 seed, executable (`examples/cost_robustness_tradeoff.ri`).
+    /// HC4 reads `t * 2 < 30mm` as `t < 15mm`, so the derived box is
+    /// [1mm, 15mm] and the seed its midpoint, 8mm — with or without the
+    /// example's redundant `t < 25mm`, which is therefore no longer
+    /// load-bearing for the seed.
+    #[test]
+    fn extract_initial_point_seeds_scaled_mul_bound_for_5715_shape() {
+        use reify_ir::BinOp;
+        let t = reify_core::ValueCellId::new("Seed", "thickness");
+        let strict_t = reify_ir::AutoParam {
+            free: false,
+            ..length_auto(t.clone())
+        };
+        let with_crutch = vec![
+            length_cmp(BinOp::Gt, &t, 0.001),
+            length_cmp(BinOp::Lt, &t, 0.025),
+            length_times_two_lt(&t, 0.030),
+        ];
+        let without_crutch = vec![
+            length_cmp(BinOp::Gt, &t, 0.001),
+            length_times_two_lt(&t, 0.030),
+        ];
+        for (label, exprs) in [
+            ("with `t < 25mm`", with_crutch),
+            ("without it", without_crutch),
+        ] {
+            let problem = seed_problem(vec![strict_t.clone()], exprs, ValueMap::new());
+            let seed = super::extract_initial_point(&problem, None)[0];
+            assert!(
+                (seed - 0.008).abs() < 1e-15,
+                "{label}: expected the midpoint of the derived [1mm, 15mm] box, 0.008 m, \
+                 got {seed} m. 0.013 would be the pre-#6655 [1mm, 25mm] midpoint (the \
+                 coefficient row unread), 0.01 the fixed fallback, 0.0011 the one-sided \
+                 nudge from 1mm"
+            );
+        }
+    }
+
+    /// The derivation reads ORDER relations only. An `==` pin contracts to a
+    /// point, and a point box would make `compose_interval` discard the
+    /// sibling inequality bound wholesale; so `w >= 8mm ∧ w == 25mm` keeps the
+    /// one-sided seed nudged in from 8mm.
+    #[test]
+    fn extract_initial_point_eq_pin_does_not_discard_the_inequality_box() {
+        use reify_ir::BinOp;
+        let w = reify_core::ValueCellId::new("Seed", "w");
+        let problem = seed_problem(
+            vec![length_auto(w.clone())],
+            vec![
+                length_cmp(BinOp::Ge, &w, 0.008),
+                length_cmp(BinOp::Eq, &w, 0.025),
+            ],
+            ValueMap::new(),
+        );
+        let seed = super::extract_initial_point(&problem, None)[0];
+        let expected = 0.008 + (super::SEED_NUDGE_REL * 0.008).max(super::SEED_NUDGE_ABS);
+        assert!(
+            (seed - expected).abs() < 1e-15,
+            "expected the one-sided seed nudged in from 8mm ({expected} m), got {seed} m; \
+             0.01 means the Eq pin's point box discarded the inequality bound"
+        );
+    }
+
     /// (f) The one-sided nudge is clamped inside the composed box, so it can never
     /// cross the opposing default bound.
     #[test]
@@ -11072,8 +11617,8 @@ mod tests {
             joint_drive_dependent_cell_fixture();
 
         // ---- half 1: the helper folds, so the objective moves ----
-        let lo = build_trial_values(&base, &auto_params, &[2.0], &dependent_cells, &[], None);
-        let hi = build_trial_values(&base, &auto_params, &[8.0], &dependent_cells, &[], None);
+        let lo = build_trial_values(&trial_model(&base, &auto_params, &dependent_cells), &[2.0]);
+        let hi = build_trial_values(&trial_model(&base, &auto_params, &dependent_cells), &[8.0]);
 
         let obj_lo = eval_objective_set(&objective, &lo, &[], None)
             .expect("objective must be numeric at q=2 once line_cost is folded");
@@ -11108,19 +11653,15 @@ mod tests {
         // Pinning only the helper would leave `cost()` free to keep calling an
         // unfolded variant, which is precisely the divergence β must prevent.
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base, &auto_params, &dependent_cells),
             constraints: &constraints,
-            base_values: &base,
             objective: Some(&objective),
-            functions: &[],
             // Task #5618: the clamp box is supplied by the caller. This is what
             // `resolve_bounds` yields for the fixture's lone `q >= 1.0` composed
             // against the dimensionless default box — so q=2 and q=8 are both
             // strictly inside it and contribute no bound penalty, keeping the
             // objective the only varying term this test is measuring.
             bounds: &[(1.0, 1e6)],
-            dependent_cells: &dependent_cells,
-            dispatch: None,
         };
         let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
         let cost_hi = cost_fn.cost(&vec![8.0]).expect("cost at q=8");
@@ -11143,6 +11684,159 @@ mod tests {
             cost_lo < UNDEF_OBJECTIVE_PENALTY,
             "cost must not be the Undef sentinel; got {cost_lo}"
         );
+    }
+
+    /// `TrialModel::from_problem` must wire the problem's autos, current values
+    /// and `dependent_cells`: a model that dropped the cells would hand back
+    /// `line_cost`'s stale base value (999.0) at every trial point. The other two
+    /// inputs, `functions` and `dispatch`, are pinned by the next test.
+    #[test]
+    fn trial_model_from_problem_folds_the_problems_dependent_cells_at_the_trial_point() {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::DimensionVector;
+        use reify_ir::Value;
+
+        let (auto_params, constraints, base, dependent_cells, objective) =
+            joint_drive_dependent_cell_fixture();
+        let q_id = auto_params[0].id.clone();
+        let line_cost_id = dependent_cells[0].0.clone();
+        let problem = ResolutionProblem {
+            auto_params,
+            constraints,
+            current_values: base.clone(),
+            objective: Some(objective),
+            functions: vec![].into(),
+            dependent_cells,
+        };
+        let model = TrialModel::from_problem(&problem, None);
+
+        let mut line_costs = Vec::new();
+        for q in [2.0_f64, 8.0_f64] {
+            let values = build_trial_values(&model, &[q]);
+
+            assert_eq!(
+                values.get(&q_id),
+                Some(&Value::Scalar {
+                    si_value: q,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                }),
+                "the auto must hold the trial scalar with its declared dimension"
+            );
+            for (id, v) in base.iter() {
+                if id != &line_cost_id {
+                    assert_eq!(
+                        values.get(id),
+                        Some(v),
+                        "base-only cell {id:?} must pass through"
+                    );
+                }
+            }
+            assert_eq!(values.len(), base.len() + 1, "only the auto may be added");
+
+            // line_cost = unit_cost * q, with unit_cost = 0.5 USD in the fixture.
+            let want = 0.5 * q;
+            match values.get(&line_cost_id) {
+                Some(&Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => {
+                    assert!(
+                        (si_value - want).abs() < 1e-12,
+                        "line_cost at q={q} must be recomputed as 0.5*q = {want}, got \
+                         {si_value} (999.0 means `from_problem` dropped the dependent cells)"
+                    );
+                    assert_eq!(dimension, DimensionVector::MONEY);
+                    line_costs.push(si_value);
+                }
+                other => panic!("expected a Scalar at line_cost, got {other:?}"),
+            }
+        }
+        assert_ne!(
+            line_costs[0], line_costs[1],
+            "the dependent cell must differ between the two trial points"
+        );
+    }
+
+    /// `TrialModel::from_problem` must also wire the problem's `functions` and
+    /// the caller's `dispatch`. The dependent cell here is `stress(t)`, an
+    /// `@optimized` stub whose body is `Undef`: it folds to `K / t` only when the
+    /// call finds `stress` among the functions AND the dispatcher answers its
+    /// target. A model that dropped either input folds `Undef` instead.
+    #[test]
+    fn trial_model_from_problem_evaluates_dependent_cells_with_the_problems_functions_and_dispatch()
+    {
+        use super::{TrialModel, build_trial_values};
+        use reify_core::{DimensionVector, Type, ValueCellId};
+        use reify_ir::{CompiledExpr, Value};
+        use std::sync::atomic::AtomicUsize;
+
+        let (t_id, mut problem) = fea_binding_problem();
+        let stress_id = ValueCellId::new("Bracket", "stress");
+        problem.current_values.insert(
+            stress_id.clone(),
+            Value::Scalar {
+                si_value: 999.0,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        );
+        problem.dependent_cells = vec![(
+            stress_id.clone(),
+            CompiledExpr::user_function_call(
+                "stress".to_string(),
+                vec![CompiledExpr::value_ref(t_id, Type::length())],
+                Type::dimensionless_scalar(),
+            ),
+        )];
+        let dispatch = CountingDispatch {
+            calls: AtomicUsize::new(0),
+            k: 1.0,
+        };
+        let model = TrialModel::from_problem(&problem, Some(&dispatch));
+
+        for t in [0.25_f64, 0.5_f64] {
+            let want = 1.0 / t;
+            match build_trial_values(&model, &[t]).get(&stress_id) {
+                Some(&Value::Scalar { si_value, .. }) => assert!(
+                    (si_value - want).abs() < 1e-12,
+                    "stress at t={t} must fold to K/t = {want}, got {si_value} \
+                     (999.0 means `from_problem` dropped the dependent cells)"
+                ),
+                other => panic!(
+                    "stress at t={t} must fold to the dispatched Scalar {want}, got \
+                     {other:?} (Undef means `from_problem` dropped `functions` or \
+                     `dispatch`)"
+                ),
+            }
+        }
+    }
+
+    /// The x ↔ auto_params mapping is positional, so an `x` of the wrong
+    /// length names no point at all: it must be refused, not truncated to
+    /// whichever autos happen to have a coordinate.
+    #[test]
+    #[should_panic(expected = "the mapping is positional")]
+    fn build_trial_values_refuses_an_x_that_does_not_match_auto_params() {
+        use super::build_trial_values;
+        use reify_core::{Type, ValueCellId};
+        use reify_ir::AutoParam;
+
+        let params = vec![
+            AutoParam {
+                id: ValueCellId::new("Bracket", "thickness"),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+            AutoParam {
+                id: ValueCellId::new("Bracket", "angle"),
+                param_type: Type::angle(),
+                bounds: Some((0.0, std::f64::consts::PI)),
+                free: false,
+            },
+        ];
+        let base = ValueMap::new();
+
+        let _ = build_trial_values(&trial_model(&base, &params, &[]), &[0.005]);
     }
 
     /// Assert two `ValueMap`s hold exactly the same keys bound to exactly the
@@ -11225,14 +11919,14 @@ mod tests {
         );
 
         assert_same_value_map(
-            &build_trial_values(&base, &params, &[0.005, 1.2], &[], &[], None),
+            &build_trial_values(&trial_model(&base, &params, &[]), &[0.005, 1.2]),
             &expected,
             "multi-param, empty dependent_cells",
         );
 
         // Empty params AND empty dependent_cells: the base map, untouched.
         assert_same_value_map(
-            &build_trial_values(&base, &[], &[], &[], &[], None),
+            &build_trial_values(&trial_model(&base, &[], &[]), &[]),
             &base,
             "empty params, empty dependent_cells",
         );
@@ -11255,17 +11949,13 @@ mod tests {
             joint_drive_dependent_cell_fixture();
 
         let cost_fn = ConstraintCostFunction {
-            auto_params: &auto_params,
+            trial: trial_model(&base, &auto_params, &[]),
             constraints: &constraints,
-            base_values: &base,
             objective: Some(&objective),
-            functions: &[],
             // Task #5618: same clamp box as the sibling test above — see there
             // for why (1.0, 1e6) is the production-faithful value for this
             // fixture, and why it must not clamp q=2 or q=8.
             bounds: &[(1.0, 1e6)],
-            dependent_cells: &[],
-            dispatch: None,
         };
 
         let cost_lo = cost_fn.cost(&vec![2.0]).expect("cost at q=2");
@@ -11460,7 +12150,7 @@ mod tests {
 
         let (_q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
-        let _ = build_trial_values(&base, &auto_params, &[2.0_f64], &hostile, &[], None);
+        let _ = build_trial_values(&trial_model(&base, &auto_params, &hostile), &[2.0_f64]);
     }
 
     /// BT-2 never-overwrite-auto INVARIANT (PRD §6.2 first INVARIANT) — the
@@ -11490,7 +12180,7 @@ mod tests {
         let (q_id, base, auto_params, hostile) = hostile_auto_collision_fixture();
 
         for trial in [2.0_f64, 8.0_f64] {
-            let values = build_trial_values(&base, &auto_params, &[trial], &hostile, &[], None);
+            let values = build_trial_values(&trial_model(&base, &auto_params, &hostile), &[trial]);
             match values.get(&q_id) {
                 Some(&Value::Scalar { si_value, .. }) => assert!(
                     (si_value - trial).abs() < 1e-12,
@@ -11574,8 +12264,10 @@ mod tests {
         )];
 
         for trial in [2.0_f64, 8.0_f64] {
-            let values =
-                build_trial_values(&base, &auto_params, &[trial], &dependent_cells, &[], None);
+            let values = build_trial_values(
+                &trial_model(&base, &auto_params, &dependent_cells),
+                &[trial],
+            );
 
             match values.get(&dispatched_id) {
                 Some(&Value::Scalar { si_value, .. }) => assert!(

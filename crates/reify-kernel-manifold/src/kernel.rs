@@ -22,31 +22,17 @@
 //! (`reify_eval::propagate_via_kernel_attribute_hook`) routes Manifold ops
 //! through the hook.
 //!
-//! ## Task-9-pending stub semantics
+//! ## Attribute propagation
 //!
-//! [`KernelAttributeHook::propagate_attributes`] currently returns
-//! `Ok(KernelAttributeOutcome::Discarded)` and emits a
-//! `tracing::warn!(reason="task_9_pending", …)` event before returning.
-//! The Manifold C++ FFI is wired and the manifold3d accessors
-//! (`originalID`, `MeshGL.run_*`, merge vectors, etc.) are reachable from
-//! this crate, but the actual MeshGL walk is implemented in
-//! persistent-naming-v2 PRD task 9 (a separate task that depends on this
-//! crate's FFI wiring). The trait surface is stable across that swap; only
-//! the body changes.
+//! [`KernelAttributeHook::propagate_attributes`] walks the boolean result's
+//! `MeshGL64` provenance and returns `Propagated`; it returns `Discarded`
+//! with one WARN only on the degenerate path (see the impl's rustdoc).
 
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
 use reify_ir::geometry::MeshContractMode;
 use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, KernelHandle, KernelId, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
-
-/// Error message used by the v0.2 stub paths (`query`/`export`) that
-/// have not yet been wired to real FFI. Boolean ops (`Union`,
-/// `Difference`, `Intersection`) and `tessellate` are now wired via
-/// `manifold3d` 0.1; `query`/`export` remain follow-up work for v0.2.
-const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
-    boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
-    are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
 
 /// [`MeshInvariant::NonDegenerate`](reify_ir::geometry::MeshInvariant::NonDegenerate)
 /// twice-area epsilon used by the pre-ingest [`Mesh::check_mesh_contract_welded`]
@@ -209,6 +195,19 @@ impl ManifoldKernel {
         self.next_id += 1;
         self.sub_shapes.insert(id, sub);
         GeometryHandleId(id)
+    }
+
+    /// The coalesced planar-face topology of a stored shape — what
+    /// `AdjacentFaces` / `SharedEdges` answer from.
+    fn planar_face_topology(
+        &self,
+        shape: GeometryHandleId,
+    ) -> Result<crate::queries::PlanarFaceTopology, QueryError> {
+        let m = self
+            .get_manifold(shape)
+            .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
+        let (verts, tris) = crate::queries::mesh_geometry(m);
+        Ok(crate::queries::PlanarFaceTopology::of_mesh(&verts, &tris))
     }
 }
 
@@ -411,9 +410,12 @@ impl GeometryKernel for ManifoldKernel {
                 let result = l.intersection(r);
                 Ok(self.store(result))
             }
-            // Non-boolean ops are out of scope for the v0.2 manifold
-            // adapter — see `STUB_MSG`.
-            _ => Err(GeometryError::OperationFailed(STUB_MSG.into())),
+            // Only booleans execute natively; primitives arrive via ingest_mesh,
+            // and every other op is rejected.
+            other => Err(GeometryError::OperationFailed(format!(
+                "unsupported op {} on manifold kernel",
+                other.kind_name()
+            ))),
         }
     }
 
@@ -569,75 +571,52 @@ impl GeometryKernel for ManifoldKernel {
             }
             // Performance note — per-query re-extraction (accepted v0.2 cost).
             // The four topology/mass arms below each call `mesh_geometry` (a
-            // full `to_mesh_f64` + vertex copy) on every invocation, and
-            // `SharedEdges` additionally rebuilds the `canonical_edges` BTreeSet
-            // per call; iterating queries over many face/edge pairs of one shape
-            // is therefore O(pairs · mesh_size) with repeated full-mesh
-            // re-extraction. This mirrors OCCT's per-query model and is left
-            // un-memoized intentionally for v0.2. If profiling shows these hot,
-            // cache `(verts, triangles, canonical_edges)` alongside `shapes`,
-            // invalidated whenever a handle's mesh is (re)stored.
+            // full `to_mesh_f64` + vertex copy) on every invocation, and the two
+            // adjacency arms additionally rebuild a `PlanarFaceTopology`
+            // (coplanar grouping + `canonical_edges`) per call; iterating
+            // queries over many face/edge pairs of one shape is therefore
+            // O(pairs · mesh_size) with repeated full-mesh re-extraction. This
+            // mirrors OCCT's per-query model and is left un-memoized
+            // intentionally for v0.2. If profiling shows these hot, cache the
+            // `PlanarFaceTopology` (and the mass-property mesh) alongside
+            // `shapes`, invalidated whenever a handle's mesh is (re)stored.
             //
-            // Faces (mesh triangles) sharing at least one edge with triangle
-            // `face_index`, self excluded, ascending — Value::List<Value::Int>
-            // mirroring OCCT's AdjacentFaces wire format. On the closed cube
-            // each triangle has exactly 3 such neighbours. (KGQ-π / task 3625.)
-            //
-            // NOTE: `face_index` is a raw mesh-triangle index (0..num_triangles),
-            // NOT an index into the coalesced planar-face handles returned by
-            // `extract_faces`. These two index spaces are disjoint. A unit cube
-            // has 12 raw triangles (face_index in 0..12) and 6 planar-face
-            // handles from extract_faces; the two cannot be used interchangeably.
+            // Coalesced planar faces (`extract_faces` positions) sharing at
+            // least one edge with face `face_index`, self excluded, ascending —
+            // Value::List<Value::Int> mirroring OCCT's AdjacentFaces wire
+            // format. (KGQ-π / task 3625.)
             GeometryQuery::AdjacentFaces { shape, face_index } => {
-                let (_verts, tris) = {
-                    let m = self
-                        .get_manifold(*shape)
-                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
-                    crate::queries::mesh_geometry(m)
-                };
-                let triangles = crate::queries::triangles_of(&tris);
-                match crate::queries::adjacent_faces(&triangles, *face_index) {
+                let topology = self.planar_face_topology(*shape)?;
+                match topology.adjacent_faces(*face_index) {
                     Some(neighbours) => Ok(Value::List(
                         neighbours.into_iter().map(|i| Value::Int(i as i64)).collect(),
                     )),
                     None => Err(QueryError::QueryFailed(format!(
-                        "AdjacentFaces: face_index {} out of range 0..{}",
-                        face_index,
-                        triangles.len()
+                        "AdjacentFaces: face_index {face_index} out of range 0..{} \
+                         (coalesced planar faces)",
+                        topology.face_count()
                     ))),
                 }
             }
-            // Canonical edge indices shared by triangles `face_a` and `face_b`,
-            // ascending — Value::List<Value::Int> mirroring OCCT. `face_a ==
-            // face_b` yields an empty list (design decision). Edge indices are
-            // into the same canonical_edges enumeration extract_edges exposes,
-            // so SharedEdges and extract_edges agree. (KGQ-π / task 3625.)
-            //
-            // NOTE: `face_a` and `face_b` are raw mesh-triangle indices
-            // (0..num_triangles), NOT handles or indices from extract_faces'
-            // coalesced planar-face space. These two index spaces are disjoint.
+            // `extract_edges` positions of the edges shared by faces `face_a`
+            // and `face_b` (`extract_faces` positions), ascending —
+            // Value::List<Value::Int> mirroring OCCT. Both indices are
+            // range-checked before `face_a == face_b` yields an empty list, as
+            // on OCCT. (KGQ-π / task 3625.)
             GeometryQuery::SharedEdges {
                 shape,
                 face_a,
                 face_b,
             } => {
-                let (verts, tris) = {
-                    let m = self
-                        .get_manifold(*shape)
-                        .map_err(|e| QueryError::QueryFailed(format!("{e:?}")))?;
-                    crate::queries::mesh_geometry(m)
-                };
-                let triangles = crate::queries::triangles_of(&tris);
-                let (index_pairs, _endpoints) = crate::queries::canonical_edges(&verts, &tris);
-                match crate::queries::shared_edges(&triangles, &index_pairs, *face_a, *face_b) {
+                let topology = self.planar_face_topology(*shape)?;
+                match topology.shared_edges(*face_a, *face_b) {
                     Some(shared) => Ok(Value::List(
                         shared.into_iter().map(|i| Value::Int(i as i64)).collect(),
                     )),
                     None => Err(QueryError::QueryFailed(format!(
-                        "SharedEdges: face index out of range 0..{} (face_a={}, face_b={})",
-                        triangles.len(),
-                        face_a,
-                        face_b
+                        "SharedEdges: face index out of range 0..{} (coalesced planar \
+                         faces; face_a={face_a}, face_b={face_b})",
+                        topology.face_count()
                     ))),
                 }
             }
@@ -691,8 +670,10 @@ impl GeometryKernel for ManifoldKernel {
                     )),
                 }
             }
-            // All other queries remain follow-up work (see STUB_MSG).
-            _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
+            other => Err(QueryError::QueryFailed(format!(
+                "unsupported query {} on manifold kernel",
+                other.kind_name()
+            ))),
         }
     }
 
@@ -724,7 +705,9 @@ impl GeometryKernel for ManifoldKernel {
                     .map(|_warnings| ())
                     .map_err(|e| ExportError::IoError(e.to_string()))
             }
-            _ => Err(ExportError::FormatError(STUB_MSG.into())),
+            other => Err(ExportError::FormatError(format!(
+                "unsupported export format {other:?} on manifold kernel"
+            ))),
         }
     }
 
@@ -1485,9 +1468,6 @@ mod tests {
     /// construction, and the `tessellate` boundary intentionally ignores
     /// the caller-supplied tolerance for the v0.2 path. Step-8 wires
     /// `tessellate` via `Manifold::to_mesh_f64()`.
-    ///
-    /// Currently fails because `tessellate` returns the stub
-    /// `TessError::TessellationFailed`.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn tessellate_of_stored_union_returns_nonempty_mesh() {
@@ -1616,7 +1596,7 @@ mod tests {
             ),
         }
 
-        // (b) Table is unchanged: stub does not write spurious entries.
+        // (b) Table is unchanged: the degenerate path does not write spurious entries.
         assert!(
             table.is_empty(),
             "Manifold Discarded path must not write to TopologyAttributeTable — \
@@ -2114,11 +2094,6 @@ mod tests {
     /// [0,0,0] occupies x ∈ [0,1] and the cube at [5,0,0] occupies x ∈
     /// [5,6].  The closest vertex pair is at x=1 vs x=5, giving an exact
     /// vertex-to-vertex min distance of |5 − 1| = 4.0.
-    ///
-    /// RED (task 3610 step-7): `ManifoldKernel::query` currently returns
-    /// `Err(QueryError::QueryFailed(STUB_MSG))` for every query variant.
-    /// GREEN is delivered by step-8 which adds `queries.rs` and wires
-    /// the `Distance` arm.
     ///
     /// Match-on-Ok rather than assert_eq! because `QueryError` does not
     /// derive `PartialEq`.
@@ -2774,8 +2749,6 @@ mod tests {
     /// Mirrors `export_stl_of_unit_cube_writes_valid_binary` for 3MF.
     /// Because Stored=uncompressed, OPC part names and model XML appear
     /// literally in raw bytes — no zip reader needed.
-    ///
-    /// RED before step-8: Manifold export() routes ThreeMF to `_ => Err(STUB_MSG)`.
     #[cfg(feature = "test-fixtures")]
     #[test]
     fn export_3mf_of_unit_cube_writes_valid_package() {

@@ -120,3 +120,9 @@ Machine-readable twin: `assembly-derivation-toolbox.capability-manifest.yaml`.
   born-at-L2 human escalation at dispatch (docs/task-authoring.md §4 — routes
   to a HUMAN; this is the one leaf that genuinely requires the design
   authority). PASS.
+
+## Amendment 2026-10-15 — delivered checks widened for the S18 verify cutover
+
+S18 (`docs/prds/v0_6/verify-structured-plan-and-role-table.md`, Leo ruling Q4) moves `scripts/verify.sh`'s logic into `scripts/reify_verify/` and replaces the coupled fixture lists with a derived set and `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`. These checks were widened so they give the same verdict today and after the move (three writes: task metadata, the `.yaml` sidecar, this note):
+
+- `observation-channels`: paths now `scripts/verify.sh`, `gui/src/__tests__/reifyGrammarCorpus.test.ts`, `gui/src/__tests__/reifyGrammarCorpus.expected-clean.json`, `tree-sitter-reify/tests/derived_sub_grammar_tests.rs`; pattern now `adt_mirror_of_arm.ri`.

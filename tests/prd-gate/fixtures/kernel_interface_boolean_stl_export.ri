@@ -1,0 +1,16 @@
+module kernel_interface_boolean_stl_export
+
+// S10 leaf ι₄ evidence. `reify build <this> -o x.stl` on main 274a212e0a:
+// exit 1, "error: internal error: dispatcher named target kernel 'manifold' not
+// present in engine.geometry_kernels for a conversion plan", and the STL holds
+// only box_b (12 triangles, x in [0, 10] mm; box() is centred on the origin).
+// The dispatcher plans over the process-global registry, which lists a kernel
+// this Engine never instantiated. After ι₄: exit 0, no internal error, and the
+// STL spans the union, x in [-5, 10] mm.
+structure OverlapUnion {
+    param offset : Length = 5mm
+    let box_a = box(10mm, 10mm, 10mm)
+    let box_b_raw = box(10mm, 10mm, 10mm)
+    let box_b = translate(box_b_raw, offset, 0mm, 0mm)
+    let body = union(box_a, box_b)
+}

@@ -8,9 +8,10 @@
 // arms in `project_realization_read_handle` with real kernel projection + store
 // insert.  δ (Sdf/Voxel→densify) has already landed (task 4510).
 //
-// PRD §10 OQ-2 (eviction): the store is unbounded in v1; eviction is deferred
-// to a future task.  Content is immutable once keyed (realization identity is
-// content-addressed), so stale entries are unreachable rather than incorrect.
+// PRD §10 OQ-2 (eviction): the store has no SIZE cap in v1 — an LRU is still
+// deferred.  CORRECTNESS eviction is not: see the eviction note on
+// `RealizationProjectionStore`, and `RealizationProjectionStore::evict`, which
+// `engine_edit::invalidate_realization_dirty_cone` drives (#7332).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,7 +49,8 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 ///
 /// Keyed by `RealizationNodeId → ContentHash → RealizedContent` (two-level map)
 /// so that two dispatches over the same realization identity but *different*
-/// content hashes are never conflated (e.g. after a parameter edit).
+/// content hashes are never conflated.  A parameter VALUE edit does not move
+/// the content hash; see "Eviction" below for how that case is handled.
 ///
 /// The two-level structure lets [`get`](RealizationProjectionStore::get) borrow
 /// `node_id` directly (no clone) for the outer lookup.
@@ -60,12 +62,29 @@ const MESH_PROJECTION_SENTINEL_TOL: f64 = 0.0001;
 /// itself is shared, so both the store and the caller observe the same heap
 /// allocation — `Arc::ptr_eq` on the inner pointer holds.
 ///
-/// ## Eviction (PRD §10 OQ-2)
+/// ## Eviction (PRD §10 OQ-2, corrected by #7332)
 ///
-/// The store is unbounded in v1.  Because realization identity is
-/// content-addressed, a stale entry (content_hash that is no longer current for
-/// a given node) is simply never looked up again — it is unreachable, not
-/// incorrect.  A future task may add an LRU cap.
+/// The store has no SIZE cap in v1; a future task may add an LRU one.  It does
+/// have a CORRECTNESS eviction, and that one is load-bearing: the second key is
+/// `RealizationNodeData::content_hash`, a Debug render of the op IR, which
+/// provably does NOT move when a parameter VALUE changes.  So a
+/// `(node_id, content_hash)` key really is re-looked-up verbatim after an
+/// `edit_param`, and an un-evicted entry is served as if fresh.
+///
+/// On the edit surfaces (`edit_param`, `edit_source`) the invariant is upheld
+/// by the caller: `engine_edit::invalidate_realization_dirty_cone`
+/// [`evict`](Self::evict)s
+/// the edit's stale set, `realization_staleness::stale_realizations`: every
+/// realization whose EVALUATED input cone moved, plus the `GeomRef::Sub`
+/// consumers downstream of them.  "Moved" is keyed on
+/// `RealizationNodeData::input_cone_hash` precisely because `content_hash`
+/// cannot see a value-driven change.
+///
+/// KNOWN GAP, owned by #5953: nothing evicts on a `param_overrides` change
+/// that does not go through an edit surface (`set_param_and_invalidate`, or
+/// `edit_param`'s solver branch writing resolved auto-params) followed by
+/// `build()`, which keeps this store and re-projects under the new overrides
+/// with an unchanged `content_hash`.
 #[allow(dead_code)] // consumed by project_realization_read_handle / step-4
 pub(crate) struct RealizationProjectionStore {
     memo: HashMap<RealizationNodeId, HashMap<ContentHash, RealizedContent>>,
@@ -109,6 +128,20 @@ impl RealizationProjectionStore {
             .entry(node_id)
             .or_default()
             .insert(content_hash, content);
+    }
+
+    /// Drop every memoized projection of `node_id`, whatever its content hash.
+    ///
+    /// The unit is the whole node rather than one `(node_id, content_hash)`
+    /// pair because the caller knows the realization's geometry moved but not
+    /// which key the now-stale content was filed under — and the second key
+    /// cannot tell a moved value apart from an unmoved one (see the eviction
+    /// note on the type).  Over-eviction costs one re-projection;
+    /// under-eviction serves stale geometry.
+    ///
+    /// Idempotent: evicting an absent node is a no-op.
+    pub(crate) fn evict(&mut self, node_id: &RealizationNodeId) {
+        self.memo.remove(node_id);
     }
 }
 
@@ -403,7 +436,7 @@ mod tests {
     };
 
     fn make_engine() -> Engine {
-        Engine::new(Box::new(MockConstraintChecker::new()), None)
+        Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None)
     }
 
     fn make_mesh() -> Arc<Mesh> {
@@ -468,6 +501,31 @@ mod tests {
         assert!(
             store.get(&r1, h).is_none(),
             "different RealizationNodeId must be a miss"
+        );
+    }
+
+    #[test]
+    fn evict_drops_every_content_hash_of_one_node_only() {
+        let mut store = RealizationProjectionStore::new();
+        let a = RealizationNodeId::new("E", 0);
+        let b = RealizationNodeId::new("E", 1);
+        let never_inserted = RealizationNodeId::new("E", 2);
+        let h1 = ContentHash::of_str("hash-1");
+        let h2 = ContentHash::of_str("hash-2");
+        store.insert(a.clone(), h1, RealizedContent::SurfaceMesh(make_mesh()));
+        store.insert(a.clone(), h2, RealizedContent::SurfaceMesh(make_mesh()));
+        store.insert(b.clone(), h1, RealizedContent::SurfaceMesh(make_mesh()));
+
+        store.evict(&a);
+        assert!(store.get(&a, h1).is_none(), "evict must drop (a, h1)");
+        assert!(store.get(&a, h2).is_none(), "evict must drop (a, h2)");
+        assert!(store.get(&b, h1).is_some(), "evict(a) must keep b's entry");
+
+        store.evict(&a);
+        store.evict(&never_inserted);
+        assert!(
+            store.get(&b, h1).is_some(),
+            "repeat and never-inserted evicts must be no-ops"
         );
     }
 
@@ -1056,23 +1114,9 @@ mod tests {
     // Degradation tests should already PASS (None+1 diag from both old & new arm).
 
     /// Closed box mesh (±1.0 mm on each axis, 12 triangles).
-    /// Same fixture as `ingest_mesh_densify_tests::box_2mm`.
     #[cfg(has_openvdb)]
     fn box_2mm() -> reify_ir::Mesh {
-        let v: Vec<f32> = vec![
-            -1.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0,
-            1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0, 1.0,
-        ];
-        #[rustfmt::skip]
-        let i: Vec<u32> = vec![
-            0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
-            2,3,7, 2,7,6,  0,4,7, 0,7,3,  1,2,6, 1,6,5,
-        ];
-        reify_ir::Mesh {
-            vertices: v,
-            indices: i,
-            normals: None,
-        }
+        reify_kernel_openvdb::test_fixtures::box_mesh(1.0, 1.0, 1.0)
     }
 
     /// δ SUCCESS: `project_realization_read_handle` on a Voxel node backed by
@@ -1366,7 +1410,7 @@ mod tests {
     fn project_voxel_stub_build_returns_none_no_fabricated_field() {
         use reify_test_support::mocks::MockConstraintChecker;
 
-        let mut engine = Engine::with_registered_kernels(Box::new(MockConstraintChecker::new()));
+        let mut engine = Engine::with_registered_kernels(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()));
         let mut graph = EvaluationGraph::default();
         let r0 = RealizationNodeId::new("stub-voxel", 0);
         let h = ContentHash::of_str("stub-hash");

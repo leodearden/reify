@@ -152,15 +152,17 @@ use reify_ir::{
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
 use crate::cell_commit::{
-    CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result, commit_cell_result_at,
+    CacheLeg, CommitLegs, DeterminacyRule, commit_cell_result, commit_cell_result_at,
 };
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
 use crate::graph::{ConstraintNodeData, EvaluationGraph, GuardedGroupInfo};
+use crate::journal::TraceSource;
 use crate::realization_staleness::{
     compute_changed_realizations, realization_cone_seeds, stale_realization_entities,
+    stale_realizations,
 };
 use crate::warm_pool::WarmStatePool;
 use crate::{
@@ -187,54 +189,6 @@ pub(crate) fn deactivate_if_not_auto(
         values.insert(id.clone(), Value::Undef);
         snapshot_values.insert(id.clone(), (Value::Undef, DeterminacyState::Undetermined));
     }
-}
-
-/// Rewrite the FIRST occurrence of `<sub_name>[0]` → `<sub_name>[i]` in a
-/// flat port-name template.
-///
-/// Used by the forall-Connect runtime re-emission path (task 2690) to
-/// substitute the captured placeholder element index into each per-element
-/// `CompiledConnection`'s `left_port` / `right_port`.
-///
-/// # Single-replacement contract (task 2690 amendment)
-///
-/// The captured templates come from `connect.rs::resolve_port_name`, which
-/// returns a flat string with at most one bracketed index per side and bails
-/// on nested `IndexAccess`. We use `replacen(.., 1)` rather than `replace(..)`
-/// to bound the rewrite to exactly one occurrence, so that unrelated incidental
-/// repetitions of `<sub_name>[0]` elsewhere in the same template string are
-/// not silently rewritten.
-///
-/// # Substring-rewrite divergence
-///
-/// `resolve_port_name` flattens user-written `Ident[NumberLiteral].member`
-/// shapes into a plain dotted-bracket string before the template is captured.
-/// This means that a port expression such as `vents[0].foo` on the LEFT side
-/// of a forall-Connect body
-///
-/// ```text
-/// forall v in vents: connect vents[0].foo -> v.bar
-/// ```
-///
-/// produces the captured template `"vents[0].foo"`, where the `[0]` is a
-/// *user-written* literal — not the placeholder substituted at runtime.
-/// For `i > 0`, `replacen(.., 1)` rewrites that literal to `vents[i].foo`,
-/// diverging from the resolved (non-deferred) Connect path, where
-/// `compile_connection` runs independently per element and the LEFT-side
-/// literal stays `vents[0].foo` for every `i`. This is a known, vanishingly
-/// rare edge case; it is documented here rather than guarded against at
-/// runtime.
-///
-/// The compile-time placeholder element shape is `<sub>[0]` for the deferred
-/// capture path, mirroring the Constraint-arm's
-/// `<parent>.<sub>[0]` cell-id rewrite (see `engine_edit.rs` Constraint arm
-/// and `types.rs::CompiledForallBody::Connect` docstring). The substring is
-/// anchored on `sub_name` (not just `[0]`) to reduce the risk of accidentally
-/// rewriting a literal `[0]` elsewhere in the port name.
-pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -> String {
-    let placeholder = format!("{}[0]", sub_name);
-    let target = format!("{}[{}]", sub_name, i);
-    template.replacen(&placeholder, &target, 1)
 }
 
 /// Re-elaborate the active and inactive branches of a single guarded group
@@ -625,6 +579,26 @@ fn assert_realization_ids_unchanged<'a>(
 /// `None` for a node that carries none, so the non-Compute kinds cost one
 /// map lookup.
 ///
+/// # The memoized projection store is evicted too (#7332)
+///
+/// A fifth realization-keyed dependent kind lives outside the reverse index:
+/// `Engine::realization_projection_store`, the `(realization_ref,
+/// content_hash) -> RealizedContent` memo that
+/// `project_realization_read_handle` serves `@optimized` consumers from. Its
+/// second key is the STATIC `content_hash`, which never moves on a
+/// value-driven change (the same property [`compute_changed_realizations`]
+/// exists to work around), so a post-edit lookup re-hits the pre-edit entry
+/// verbatim — that is a stale read, not the unreachable entry the store's own
+/// doc used to claim. Dropping the cache entry alone does not fix it: the
+/// re-dispatch it forces projects through the store and gets the stale content
+/// back.
+///
+/// The evicted set is [`stale_realizations`]`(seeds, cone)`, the same set whose
+/// entities both callers hand to `RealizationCache::evict_family`, so the two
+/// caches drop the same realizations by construction. It includes the
+/// `GeomRef::Sub` consumers [`realization_cone_seeds`] adds, whose
+/// `content_hash` and `input_cone_hash` both stay put on a value edit.
+///
 /// # Which reverse index is used
 ///
 /// Edge #10 is registered by
@@ -678,6 +652,7 @@ fn assert_realization_ids_unchanged<'a>(
 fn invalidate_realization_dirty_cone(
     cache: &mut CacheStore,
     warm_pool: &mut WarmStatePool,
+    projection_store: &mut crate::realization_content::RealizationProjectionStore,
     graph: &EvaluationGraph,
     compiled_fields: &[reify_compiler::CompiledField],
     prebuilt_index: Option<&crate::deps::ReverseDependencyIndex>,
@@ -715,6 +690,9 @@ fn invalidate_realization_dirty_cone(
         }
         cache.invalidate(node);
     }
+    for rid in stale_realizations(seeds, &dirty) {
+        projection_store.evict(rid);
+    }
     dirty
 }
 
@@ -742,7 +720,7 @@ fn invalidate_realization_dirty_cone(
 ///
 /// The guard holds `&'a mut WarmStatePool` but no other `Engine` field.  Rust's
 /// disjoint-field borrow rules therefore allow the caller to hold simultaneous
-/// `&mut self.cache`, `&mut self.solver`, etc. while the guard is live.  Step (9)'s
+/// `&mut self.cache`, `&mut self.solve_stage`, etc. while the guard is live.  Step (9)'s
 /// `donate_warm_state_and_invalidate` calls use [`pool_mut`](Self::pool_mut) to obtain a
 /// re-borrow of the pool through the guard rather than accessing `self.warm_pool`
 /// directly.
@@ -776,21 +754,6 @@ impl<'a> PendingWarmSeedsGuard<'a> {
         self.map.insert(nid, (state, last_accessed, cost_per_byte));
     }
 
-    /// Insert a checked-out entry into the staging map, defaulting `cost_per_byte` to `0.0`.
-    ///
-    /// Back-compat wrapper around [`insert_with_cost`](Self::insert_with_cost).  Existing
-    /// call sites that obtained the stamp from `checkout_with_lru_stamp` (which discards
-    /// cost) continue to compile unchanged.
-    #[cfg(test)]
-    fn insert(
-        &mut self,
-        nid: NodeId,
-        state: reify_ir::OpaqueState,
-        last_accessed: std::time::Instant,
-    ) {
-        self.insert_with_cost(nid, state, last_accessed, 0.0);
-    }
-
     /// Re-borrow the pool for callers that need `&mut WarmStatePool` while
     /// the guard is live (e.g. step (9)'s `donate_warm_state_and_invalidate`).
     fn pool_mut(&mut self) -> &mut WarmStatePool {
@@ -799,16 +762,16 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
     /// Drain the staging map: route each entry to `cache.donate_warm_state`
     /// when the cache holds a matching entry, else re-donate to `self.pool`
-    /// **preserving the original `last_accessed` stamp**.
+    /// **preserving the original `last_accessed` stamp and `cost_per_byte`**.
     ///
     /// - **cache hit** → `cache.donate_warm_state(&nid, state)` (seeds the
     ///   cache's warm-state slot for the upcoming evaluation round).  The
     ///   `last_accessed` stamp is discarded on this path because the entry
     ///   leaves the pool; its LRU position no longer matters.
-    /// - **cache miss** → `pool.donate_preserving_lru(nid, state, stamp)`
+    /// - **cache miss** → `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)`
     ///   (re-donates the entry so it remains recoverable on a subsequent
     ///   topology event, preserving the original LRU ordering instead of
-    ///   refreshing the stamp to `Instant::now()`).
+    ///   refreshing the stamp to `Instant::now()`, and the original cost).
     ///
     /// After this method returns, `self.map` is empty, so the natural `Drop`
     /// is a no-op (no double-donation).  On any early-return / panic between
@@ -831,15 +794,15 @@ impl<'a> PendingWarmSeedsGuard<'a> {
 
 impl Drop for PendingWarmSeedsGuard<'_> {
     /// Re-donate all remaining staged entries back to the pool, preserving
-    /// each entry's original `last_accessed` stamp via
-    /// [`WarmStatePool::donate_preserving_lru`].
+    /// each entry's original `last_accessed` stamp and `cost_per_byte` via
+    /// [`WarmStatePool::donate_preserving_lru_with_cost`].
     ///
     /// This is the panic safety net: if `drain_into_cache_or_repool` was already
     /// called (success path), `self.map` is empty and this is a no-op.  Otherwise
     /// every surviving entry is re-donated so the pool can recover it on the next
     /// `edit_source` call.
     ///
-    /// Using `donate_preserving_lru` (rather than `donate`) ensures that an entry
+    /// Using `donate_preserving_lru_with_cost` (rather than `donate`) ensures that an entry
     /// which panics out between steps (4c) and (14b) does not unfairly reset its
     /// LRU clock — the entry returns to the pool with the same age it had when it
     /// was originally checked out.
@@ -857,17 +820,17 @@ impl Drop for PendingWarmSeedsGuard<'_> {
     /// # Double-panic note
     ///
     /// When the safety net fires, this `Drop` impl calls `tracing::warn!`
-    /// **before** calling `pool.donate_preserving_lru`.  Both are on the
+    /// **before** calling `pool.donate_preserving_lru_with_cost`.  Both are on the
     /// double-panic hot path: if `Drop` fires during stack-unwinding from
-    /// another panic, either the `warn!` dispatch or `donate_preserving_lru`
+    /// another panic, either the `warn!` dispatch or `donate_preserving_lru_with_cost`
     /// could theoretically panic, triggering an unconditional
     /// `std::process::abort`.
     ///
     /// `tracing::warn!` is unlikely to panic in well-behaved subscribers, but
     /// does dispatch (and may allocate) when a subscriber is attached — a
     /// buggy subscriber could in principle panic on the unwind path.
-    /// `donate_preserving_lru` only panics in debug builds when the events
-    /// buffer is at its cap (65 536 entries).  Both risks are documented here
+    /// `donate_preserving_lru_with_cost` only panics in debug builds when the events
+    /// buffer is at its cap (65 536 entries by default).  Both risks are documented here
     /// for completeness.
     ///
     /// # Test-context note
@@ -1419,8 +1382,8 @@ impl Engine {
                 }
 
                 // Commit via the cell-commit primitive (task δ #5056): atomically
-                // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
-                // edit-reeval provenance slug on the journal's Started event. The
+                // writes values/snapshot/cache/journal (INV-EVAL-1), recording an
+                // EditReeval commit tag on the journal's Started event. The
                 // primitive's own Instant::now() supersedes the Started timestamp
                 // this loop used to capture before eval_expr — the Started/
                 // Completed pair now brackets the commit itself rather than the
@@ -1453,9 +1416,8 @@ impl Engine {
                     VersionId(version_id),
                     CacheLeg::Record,
                 );
-                let outcome = commit_outcome
-                    .cache_outcome()
-                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
+                let outcome =
+                    commit_outcome.expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // μ (#5062): store this re-evaluated cell's diagnostics delta
                 // for replay on future cache-hit serves (empty delta clears
@@ -1588,8 +1550,8 @@ impl Engine {
                 Some(&runtime_sink),
             );
             // Commit via the cell-commit primitive (task δ #5056): atomically
-            // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
-            // edit-reeval provenance slug on the journal's Started event (see
+            // writes values/snapshot/cache/journal (INV-EVAL-1), recording an
+            // EditReeval commit tag on the journal's Started event (see
             // T2's commit above for the full rationale). Records the static
             // dependency trace (matching the cold-start contract) rather than
             // `DependencyTrace::default()` — without this,
@@ -1737,10 +1699,10 @@ impl Engine {
         // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
         // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
         // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
-        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        // so it aliases neither the warm-pool borrow nor the `self.solve_stage` borrow below.
         let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
 
-        if let Some(ref solver) = self.solver {
+        if let Some(solver) = self.solve_stage.as_ref().map(|stage| stage.solver()) {
             // Group auto params by entity (template) name.
             //
             // Warm-resolution sync note (task #4710): connector-instance auto cells
@@ -2182,7 +2144,7 @@ impl Engine {
                                 // on Skip was considered and rejected: it would
                                 // reopen the silent-provenance gap INV-EVAL-1 /
                                 // commit_cell_result exists to close, and the
-                                // `cache-skip=<reason>` marker it produces is
+                                // `CacheLegKind::Skipped` tag it records is
                                 // itself a tested, already-landed done-criterion
                                 // of this task (step-5/6's
                                 // `edit_param_unrecorded_sites_skip_cache_via_
@@ -2507,7 +2469,6 @@ impl Engine {
                 // `<parent>.<sub>[i]` for `i ∈ 0..new_count`.
                 //
                 // Hook point named in `forall_elaborate.rs`'s contract block.
-                // ConnectBody re-emission is reserved for follow-up task 2690.
                 //
                 // `forall_templates` and the ledger were hoisted + realigned
                 // above the outer collection_subs loop; the loop body only
@@ -2565,12 +2526,13 @@ impl Engine {
                     // `forall_emitted[t_idx]` for symmetric drain-on-decrease.
                     match &t.body {
                         CompiledForallBody::Connect {
-                            left_port_template,
+                            left,
                             operator,
-                            right_port_template,
+                            right,
                             connector_type: _,
                             params: _,
                             port_mappings,
+                            directions_compatible,
                         } => {
                             // task 2690: per-element forall-Connect runtime
                             // re-emission. Mirrors the Constraint-arm shape:
@@ -2585,51 +2547,30 @@ impl Engine {
                             //     from the Constraint arm's `forall:`
                             //     prefix, so existing label-filtering tests
                             //     don't mix arms.
-                            //   * Port-name `<sub>[0]` → `<sub>[i]` rewrite
-                            //     is a substring substitution: the captured
-                            //     templates are flat strings (per
-                            //     `connect.rs::resolve_port_name`), so
-                            //     there's no AST to walk. The substring is
-                            //     anchored on `coll_sub_name` to reduce the
-                            //     risk of accidentally rewriting a literal
-                            //     `[0]` elsewhere in the port name. The
-                            //     resolved (non-deferred) Connect path
-                            //     compiles each element directly through
-                            //     `compile_connection`; this runtime path
-                            //     trades that fidelity for not re-running
-                            //     `compile_connection` on every count edit
-                            //     — the same trade the Constraint arm makes
-                            //     for `compile_expr`.
-                            //   * Synthetic compatibility constraint emits
-                            //     `Bool::True` literal — direction-check
-                            //     and `connector_sub`/`frame_constraint`
-                            //     auto-creation are out of scope for this
-                            //     task (per the task's "Out of scope" list).
-                            // Port-name `<sub>[0]` → `<sub>[i]` rewrite is
-                            // factored into `rewrite_port_placeholder` (top
-                            // of file); see its docstring for the
-                            // substring-rewrite edge-case discussion.
+                            //   * Each endpoint is a typed `PortPath`;
+                            //     `at_element` renders the bound element as
+                            //     `<sub>[i]` and leaves a literal index as
+                            //     written. This path does not re-run
+                            //     `compile_connection` on every count edit —
+                            //     the same trade the Constraint arm makes for
+                            //     `compile_expr`.
+                            //   * The compatibility constraint's literal is
+                            //     `directions_compatible`. What this path
+                            //     keeps from `compile_connection`, and what
+                            //     it drops, is listed on
+                            //     `CompiledForallBody::Connect`.
                             let cnid_entity = format!(
                                 "forall_connect:{}@{}.{}#{}",
                                 t.variable, t.parent_entity, t.collection_sub_name, t_idx,
                             );
                             for i in 0..new_count {
-                                let rewritten_left = rewrite_port_placeholder(
-                                    left_port_template,
-                                    &t.collection_sub_name,
-                                    i,
-                                );
-                                let rewritten_right = rewrite_port_placeholder(
-                                    right_port_template,
-                                    &t.collection_sub_name,
-                                    i,
-                                );
-
                                 let cnid = ConstraintNodeId::new(&cnid_entity, i as u32);
                                 let id_hash = ContentHash::of_str(&format!("{}", cnid));
                                 let label = format!("forall_connect@{}[{}]", t.variable, i);
-                                let compat_expr =
-                                    CompiledExpr::literal(Value::Bool(true), Type::Bool);
+                                let compat_expr = CompiledExpr::literal(
+                                    Value::Bool(*directions_compatible),
+                                    Type::Bool,
+                                );
                                 let node = ConstraintNodeData {
                                     id: cnid.clone(),
                                     label: Some(label),
@@ -2639,9 +2580,9 @@ impl Engine {
                                 };
                                 new_snapshot.graph.constraints.insert(cnid.clone(), node);
                                 new_snapshot.graph.connections.push(CompiledConnection {
-                                    left_port: rewritten_left,
+                                    left_port: left.at_element(&t.collection_sub_name, i),
                                     operator: *operator,
-                                    right_port: rewritten_right,
+                                    right_port: right.at_element(&t.collection_sub_name, i),
                                     connector_sub: None,
                                     compatibility_constraint: cnid.clone(),
                                     port_mappings: port_mappings.clone(),
@@ -2933,7 +2874,12 @@ impl Engine {
         //
         // `edit_param` does not rebuild the graph, so the persisting graph
         // is BOTH the prior and the new side of the comparison — the
-        // helper's `edit_param` contract.
+        // helper's `edit_param` contract. The persisting graph also carries
+        // each ComputeNode's `realization_inputs` forward, deliberately: it
+        // is a dependency record, not a redispatch flag (see
+        // `RedispatchPassState::redispatched` in `engine_build.rs`), and
+        // clearing it over the dirty cone would drop edge #10 and
+        // under-evict.
         {
             let ctx = crate::eval_ctx_with_meta(&values, &functions, &self.meta_map);
             let state = self.eval_state.as_ref().unwrap();
@@ -2984,6 +2930,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 graph,
                 &self.compiled_fields,
                 reusable_index,
@@ -3627,7 +3574,7 @@ impl Engine {
         //      donate cost+state to the pool, then invalidate the cache
         //      entry. The reinsert half of the round-trip lands inside
         //      `run_compute_dispatch` (engine_compute.rs) via its
-        //      cache-miss → `warm_pool.checkout_with_lru_stamp` fallback.
+        //      cache-miss → `warm_pool.checkout` fallback.
         //      Collect ids into a Vec to drop the iter borrow on
         //      `eval_state.snapshot.graph.compute_nodes` before mutating
         //      `self.cache` inside the loop body.
@@ -3742,8 +3689,8 @@ impl Engine {
 
                 // Commit via the cell-commit primitive (task #6998): atomically
                 // writes values/snapshot/cache/journal (INV-EVAL-1), recording
-                // the edit-reeval provenance slug on the journal's Started
-                // event (previously `payload: None`). This is the third and
+                // an EditReeval commit tag on the journal's Started event
+                // (previously untagged). This is the third and
                 // last edit_source write-back site to migrate, after the
                 // `SolveResult::Solved` resolution arm (#6373) and the wave2
                 // dependent-re-eval loop (#6423) above.
@@ -3772,9 +3719,8 @@ impl Engine {
                     VersionId(version_id),
                     CacheLeg::Record,
                 );
-                let outcome = commit_outcome
-                    .cache_outcome()
-                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
+                let outcome =
+                    commit_outcome.expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // Early-cutoff propagation — identical policy to edit_param:
                 // - Changed: dependents inherit has_changed_parent and are
@@ -4087,10 +4033,10 @@ impl Engine {
         // holds `&mut self.warm_pool` across this region via `PendingWarmSeedsGuard`, so
         // a whole-`&self` reborrow is rejected while a disjoint field borrow is accepted.
         // That borrow ends at the `;` and the dispatcher owns a cloned fn-pointer map,
-        // so it aliases neither the warm-pool borrow nor the `self.solver` borrow below.
+        // so it aliases neither the warm-pool borrow nor the `self.solve_stage` borrow below.
         let dispatcher = OptimizedComputeDispatcher::from_registry(&self.compute_registry);
 
-        if let Some(ref solver) = self.solver {
+        if let Some(solver) = self.solve_stage.as_ref().map(|stage| stage.solver()) {
             // Group auto params by entity (template) name.
             //
             // Warm-resolution sync note (task #4710): connector-instance auto cells
@@ -4582,10 +4528,10 @@ impl Engine {
         //       variants gain edit-time cache entries the donate-back
         //       path simply stops triggering.
         //
-        //       The cache-miss re-donation now calls `donate_preserving_lru`
+        //       The cache-miss re-donation now calls `donate_preserving_lru_with_cost`
         //       (via `PendingWarmSeedsGuard::drain_into_cache_or_repool`),
-        //       preserving the entry's original `last_accessed` stamp from
-        //       step (4c).  This prevents a round-tripping entry from
+        //       preserving the entry's original `last_accessed` stamp and
+        //       `cost_per_byte` from step (4c).  This prevents a round-tripping entry from
         //       appearing "recently accessed" relative to entries that were
         //       never checked out, which would unfairly shield it from LRU
         //       eviction (reviewer suggestion S1, task 2516).
@@ -4781,6 +4727,7 @@ impl Engine {
             let cone = invalidate_realization_dirty_cone(
                 &mut self.cache,
                 &mut self.warm_pool,
+                &mut self.realization_projection_store,
                 &new_snapshot.graph,
                 &self.compiled_fields,
                 None,
@@ -5729,10 +5676,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 node_id.clone(),
                 OpaqueState::new(0xDEADBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
             // Guard goes out of scope here, triggering Drop — no drain called
         }
@@ -5776,15 +5724,17 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xAAu8, 100),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBBu8, 50),
                 std::time::Instant::now(),
+                0.0,
             );
             // Neither node has a cache entry → drain MUST re-donate both to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5834,20 +5784,23 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 val_nid.clone(),
                 OpaqueState::new(0xDEADu32, 8),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 con_nid.clone(),
                 OpaqueState::new(0xBEEFu32, 16),
                 std::time::Instant::now(),
+                0.0,
             );
-            pending.insert(
+            pending.insert_with_cost(
                 rea_nid.clone(),
                 OpaqueState::new(0xFEEDu32, 24),
                 std::time::Instant::now(),
+                0.0,
             );
             // No drain — Drop fires with all three entries
         }
@@ -5928,10 +5881,11 @@ mod tests {
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(
+            pending.insert_with_cost(
                 nid.clone(),
                 OpaqueState::new(PAYLOAD, SIZE),
                 std::time::Instant::now(),
+                0.0,
             );
             // Cache HIT → state goes to cache, NOT to pool.
             pending.drain_into_cache_or_repool(&mut cache);
@@ -5966,25 +5920,25 @@ mod tests {
 
     /// `drain_into_cache_or_repool` cache-MISS arm: when the cache holds NO
     /// entry for a node, the staged warm-state is re-donated to the pool via
-    /// `pool.donate_preserving_lru(nid, state, stamp)` — preserving the
-    /// originally-staged `last_accessed` Instant rather than refreshing it
-    /// to `Instant::now()`.
+    /// `pool.donate_preserving_lru_with_cost(nid, state, stamp, cost)` — preserving
+    /// the originally-staged `last_accessed` Instant rather than refreshing it
+    /// to `Instant::now()`, and the originally-staged `cost_per_byte`.
     ///
     /// Pins `drain_into_cache_or_repool`'s cache-MISS arm:
     /// ```text
-    /// else { self.pool.donate_preserving_lru(nid, state, stamp); }
+    /// else { self.pool.donate_preserving_lru_with_cost(nid, state, stamp, cost); }
     /// ```
     ///
     /// After drain the pool holds exactly one entry — the re-donated state with
-    /// the original payload bytes AND the original LRU stamp — the cache has no
-    /// warm-state for the node, and the subsequent guard Drop is inert (map was
-    /// emptied by drain, so no double re-donation occurs).
+    /// the original payload bytes, the original LRU stamp AND the original cost —
+    /// the cache has no warm-state for the node, and the subsequent guard Drop is
+    /// inert (map was emptied by drain, so no double re-donation occurs).
     ///
     /// Sibling of `pending_warm_seeds_guard_drain_cache_hit_makes_drop_inert`
     /// (the cache-HIT counterpart); both together pin the binary `if cache.get(&nid).is_some()`
     /// dispatch in `drain_into_cache_or_repool`.
     #[test]
-    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp() {
+    fn pending_warm_seeds_guard_drain_cache_miss_repools_with_lru_stamp_and_cost() {
         use super::PendingWarmSeedsGuard;
         use crate::cache::{CacheStore, NodeId};
         use crate::warm_pool::WarmStatePool;
@@ -5992,6 +5946,7 @@ mod tests {
 
         const PAYLOAD: u32 = 0xDEAD_BEEF;
         const SIZE: usize = 8;
+        const COST: f64 = 0.25;
 
         let mut pool = WarmStatePool::new(1024);
         let mut cache = CacheStore::new();
@@ -6004,14 +5959,15 @@ mod tests {
             "cache must be empty before drain so the MISS branch is taken"
         );
 
-        // Capture the exact stamp passed to `insert` so we can assert exact equality
-        // on the re-donated entry's `last_accessed` later.
+        // Capture the exact stamp passed to `insert_with_cost` so we can assert exact
+        // equality on the re-donated entry's `last_accessed` later.
         let stamp = std::time::Instant::now();
 
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp);
-            // Cache MISS → state goes back to pool via `donate_preserving_lru(nid, state, stamp)`.
+            pending.insert_with_cost(nid.clone(), OpaqueState::new(PAYLOAD, SIZE), stamp, COST);
+            // Cache MISS → state goes back to pool via
+            // `donate_preserving_lru_with_cost(nid, state, stamp, cost)`.
             pending.drain_into_cache_or_repool(&mut cache);
             // Guard drops here with empty map → Drop is a no-op (no double re-donation).
         }
@@ -6039,9 +5995,10 @@ mod tests {
              (cache had no entry, so the MISS branch fired and routed to pool)"
         );
 
-        // (d) Pool entry must carry the original payload AND the original LRU stamp.
-        let (state, recovered_stamp) = pool
-            .checkout_with_lru_stamp(&nid)
+        // (d) Pool entry must carry the original payload, the original LRU stamp
+        //     AND the original cost.
+        let (state, recovered_stamp, recovered_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&nid)
             .expect("cache-miss: pool must hold the re-donated entry");
         assert_eq!(
             state.downcast::<u32>(),
@@ -6051,7 +6008,12 @@ mod tests {
         assert_eq!(
             recovered_stamp, stamp,
             "cache-miss: re-donated entry's LRU stamp must EQUAL the originally-staged \
-             stamp (donate_preserving_lru must NOT refresh to Instant::now())"
+             stamp (donate_preserving_lru_with_cost must NOT refresh to Instant::now())"
+        );
+        assert_eq!(
+            recovered_cost, COST,
+            "cache-miss: re-donated entry's cost_per_byte must EQUAL the originally-staged \
+             cost (the drain must not reset it to 0.0)"
         );
     }
 
@@ -6077,25 +6039,30 @@ mod tests {
         let mut pool = WarmStatePool::new(1024);
         let node_id = NodeId::Value(ValueCellId::new("T", "panic_node"));
 
-        // Prime the pool with a known payload so we can verify recovery.
-        pool.donate(node_id.clone(), OpaqueState::new(0xCAFEu32, 4));
+        // Prime the pool with a known payload and cost so we can verify recovery.
+        pool.donate_with_cost(node_id.clone(), OpaqueState::new(0xCAFEu32, 4), 0.5);
 
         // Simulate step (4c): checkout → guard live → panic → Drop re-donates.
         // AssertUnwindSafe wraps the closure unconditionally, so &mut pool can
         // be captured directly without a raw-pointer indirection.
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             let mut guard = PendingWarmSeedsGuard::new(&mut pool);
-            let (state, stamp) = guard
+            let (state, stamp, cost) = guard
                 .pool_mut()
-                .checkout_with_lru_stamp(&node_id)
+                .checkout_with_lru_stamp_and_cost(&node_id)
                 .expect("state should be in pool before panic");
-            guard.insert(node_id.clone(), state, stamp);
+            guard.insert_with_cost(node_id.clone(), state, stamp, cost);
             // Simulate a panic inside edit_source between steps (4c) and (14b).
             panic!("simulated mid-edit panic");
         }));
         assert!(result.is_err(), "catch_unwind must catch the panic");
 
         // After the unwind, the guard's Drop must have re-donated the entry.
+        assert_eq!(
+            pool.cost_per_byte_of(&node_id),
+            Some(0.5),
+            "Drop re-donation must preserve cost_per_byte"
+        );
         let recovered = pool
             .checkout(&node_id)
             .expect("pool must contain the entry re-donated by guard Drop");
@@ -6142,7 +6109,12 @@ mod tests {
                 let mut pool = WarmStatePool::new(1024);
                 let nid = NodeId::Value(ValueCellId::new("T", "safety_net"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xABu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xABu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Drop fires here with a non-empty map → safety net → must WARN.
             });
 
@@ -6167,7 +6139,12 @@ mod tests {
                 let mut cache = CacheStore::new();
                 let nid = NodeId::Value(ValueCellId::new("T", "inert_drop"));
                 let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-                pending.insert(nid, OpaqueState::new(0xCDu8, 8), std::time::Instant::now());
+                pending.insert_with_cost(
+                    nid,
+                    OpaqueState::new(0xCDu8, 8),
+                    std::time::Instant::now(),
+                    0.0,
+                );
                 // Success path: drain empties the map.
                 pending.drain_into_cache_or_repool(&mut cache);
                 // Drop fires here with an empty map → no WARN.
@@ -6213,7 +6190,12 @@ mod tests {
             let mut pool = WarmStatePool::new(1024);
             let nid = NodeId::Value(ValueCellId::new("T", "count_field_test"));
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(nid, OpaqueState::new(0xAAu8, 8), std::time::Instant::now());
+            pending.insert_with_cost(
+                nid,
+                OpaqueState::new(0xAAu8, 8),
+                std::time::Instant::now(),
+                0.0,
+            );
             // Drop fires with a non-empty map → safety-net WARN must fire.
         });
 
@@ -6262,18 +6244,18 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// `drain_into_cache_or_repool` must re-donate cache-miss entries with
-    /// their *original* `last_accessed` stamp (via `donate_preserving_lru`),
+    /// their *original* `last_accessed` stamp (via `donate_preserving_lru_with_cost`),
     /// not a fresh `Instant::now()`.
     ///
-    /// Setup (budget = 300):
+    /// Setup (budget = 300; every entry carries cost 0.0 so the LRU tiebreak decides):
     /// 1. Donate X (100 bytes) at time T_X.
     /// 2. Sleep 2 ms so T_X is strictly older than any later timestamp.
-    /// 3. `checkout_with_lru_stamp(&X)` → `(x_state, x_stamp)`.
-    /// 4. Build a guard; `pending.insert(X, x_state, x_stamp)`.
+    /// 3. `checkout_with_lru_stamp_and_cost(&X)` → `(x_state, x_stamp, x_cost)`.
+    /// 4. Build a guard; `pending.insert_with_cost(X, x_state, x_stamp, x_cost)`.
     /// 5. Donate Y (100 bytes) directly to pool; Y's stamp is newer than T_X.
     ///    used_pool = 100 (only Y, since X was checked out).
     /// 6. `drain_into_cache_or_repool(&mut empty_cache)`: X has no cache entry,
-    ///    so it must be re-pooled via `donate_preserving_lru` preserving T_X.
+    ///    so it must be re-pooled via `donate_preserving_lru_with_cost` preserving T_X.
     ///    used_pool = 200 (X + Y).
     /// 7. Donate Z (200 bytes): 200+200=400 > 300 → evict exactly one entry.
     ///    X's stamp (T_X) < Y's stamp → X is the LRU victim.
@@ -6301,17 +6283,17 @@ mod tests {
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
         std::thread::sleep(Duration::from_millis(15));
 
-        // Step 3: capture X's state and its original stamp.
-        let (x_state, x_stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        // Step 3: capture X's state, its original stamp and its cost.
+        let (x_state, x_stamp, x_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in pool");
         // pool is now empty (X checked out).
 
-        // Step 4: build guard and stage X with its original stamp.
+        // Step 4: build guard and stage X with its original stamp and cost.
         let mut cache = CacheStore::new();
         {
             let mut pending = PendingWarmSeedsGuard::new(&mut pool);
-            pending.insert(node_x.clone(), x_state, x_stamp);
+            pending.insert_with_cost(node_x.clone(), x_state, x_stamp, x_cost);
 
             // Step 5: donate Y directly (Y's stamp is fresh / newer than x_stamp).
             pending
@@ -6319,7 +6301,8 @@ mod tests {
                 .donate(node_y.clone(), OpaqueState::new(0xBBu8, 100));
             // pool holds Y (100 bytes); X is still in the guard's staging map.
 
-            // Step 6: drain — X has no cache entry → cache-miss → donate_preserving_lru.
+            // Step 6: drain — X has no cache entry → cache-miss →
+            // donate_preserving_lru_with_cost.
             pending.drain_into_cache_or_repool(&mut cache);
             // pool holds X (stamp = T_X) + Y (stamp > T_X), used = 200.
         }
@@ -6331,7 +6314,7 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "X must be evicted: its preserved stamp T_X is older than Y's; \
-             if drain used pool.donate() instead of donate_preserving_lru(), \
+             if drain used pool.donate() instead of donate_preserving_lru_with_cost(), \
              X would look fresh and Y would be evicted instead"
         );
         assert!(
@@ -6344,12 +6327,13 @@ mod tests {
         );
     }
 
-    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru`
+    /// The panic-path `Drop` must also re-donate using `donate_preserving_lru_with_cost`
     /// (preserving the original stamp), not the plain `donate` that refreshes
     /// the LRU clock.
     ///
-    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` but the
-    /// guard is dropped during a panic unwind instead of calling `drain_…`.
+    /// Same setup as `…drain_preserves_lru_stamp_for_repooled_entries` (X staged via
+    /// `insert_with_cost`, every entry at cost 0.0) but the guard is dropped during
+    /// a panic unwind instead of calling `drain_…`.
     #[test]
     fn pending_warm_seeds_guard_drop_preserves_lru_stamp_on_panic() {
         use super::PendingWarmSeedsGuard;
@@ -6368,8 +6352,8 @@ mod tests {
         // 15 ms ensures strictly-ordered Instants on coarse-grained platforms.
         pool.donate(node_x.clone(), OpaqueState::new(0xAAu8, 100));
         std::thread::sleep(Duration::from_millis(15));
-        let (x_state, x_stamp) = pool
-            .checkout_with_lru_stamp(&node_x)
+        let (x_state, x_stamp, x_cost) = pool
+            .checkout_with_lru_stamp_and_cost(&node_x)
             .expect("X must be in pool");
 
         // Run the panic scenario: guard stages X then panics before drain.
@@ -6382,7 +6366,7 @@ mod tests {
             let result = panic::catch_unwind(AssertUnwindSafe(|| {
                 let pool_ref = unsafe { &mut *pool_ptr };
                 let mut guard = PendingWarmSeedsGuard::new(pool_ref);
-                guard.insert(nid_x.clone(), x_state, x_stamp);
+                guard.insert_with_cost(nid_x.clone(), x_state, x_stamp, x_cost);
                 // Donate Y directly so it has a newer stamp than x_stamp.
                 guard
                     .pool_mut()
@@ -6401,7 +6385,7 @@ mod tests {
         assert!(
             pool.checkout(&node_x).is_none(),
             "X must be evicted after Drop: its preserved stamp is older than Y's; \
-             if Drop used pool.donate() instead of donate_preserving_lru(), \
+             if Drop used pool.donate() instead of donate_preserving_lru_with_cost(), \
              X would look fresh and Y would be the LRU victim"
         );
         assert!(
@@ -6611,6 +6595,27 @@ mod tests {
         assert_eq!(messages, vec!["a", "b", "c"]);
     }
 
+    /// Asserts `event` is a `Started` event carrying an `EditReeval` commit
+    /// tag with the given cache leg.
+    fn assert_edit_reeval_commit(
+        event: &crate::journal::EvalEvent,
+        cache: crate::journal::CacheLegKind,
+        label: &str,
+    ) {
+        use crate::journal::{CommitTag, EventKind, TraceSource};
+        match &event.kind {
+            EventKind::Started { commit } => assert_eq!(
+                *commit,
+                Some(CommitTag {
+                    trace: TraceSource::EditReeval,
+                    cache,
+                }),
+                "{label}: Started must carry this commit tag"
+            ),
+            other => panic!("{label}: expected a Started event, got {other:?}"),
+        }
+    }
+
     /// Assert that `v` is a `Value::Scalar` whose SI value is within `tol`
     /// of `si`. Dimension-agnostic (works for any scalar, not just lengths)
     /// — shared by `edit_param_back_props_solved_auto` /
@@ -6655,7 +6660,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
         engine.eval(&compiled);
@@ -6749,7 +6754,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 10mm = 0.01 m.
         engine.eval(&compiled);
@@ -6907,7 +6912,7 @@ mod tests {
         // Capture the shared call-counter handle BEFORE moving spy into the engine.
         let captured = spy.captured_problems();
 
-        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(spy));
 
         // Cold eval: solver call 1 → x = mm(5.0)
@@ -6957,7 +6962,7 @@ mod tests {
     ///
     /// Asserts two things the hand-rolled copy cannot produce today:
     /// (1) journal provenance — `q`'s journal gains a `Started` event whose
-    ///     payload carries `TraceSource::EditReeval.as_str()` ("edit-reeval"),
+    ///     commit tag is `EditReeval` with a `Recorded` cache leg,
     ///     paired with a `Completed{outcome}` — RED on base, where the
     ///     Started event at engine_edit.rs:1060 always uses `payload: None`;
     /// (2) three-leg agreement — `result.values[q]`, `engine.snapshot().values[q]`,
@@ -6976,8 +6981,7 @@ mod tests {
         use reify_test_support::compile_source;
 
         use crate::cache::{CachedResult, NodeId};
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CacheLegKind, EventKind};
 
         const SRC: &str = r#"structure S {
     param p : Length = 1mm
@@ -6985,7 +6989,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let p_id = ValueCellId::new("S", "p");
@@ -6999,7 +7003,7 @@ mod tests {
             .expect("edit_param must succeed");
 
         // Journal: the primitive's own Started/Completed pair, with the
-        // EditReeval provenance slug recorded on Started.
+        // EditReeval commit tag recorded on Started.
         let events_after = engine.journal().events_for_node(&q_node);
         assert!(
             events_after.len() >= events_before_len + 2,
@@ -7009,22 +7013,7 @@ mod tests {
         );
         let started = events_after[events_after.len() - 2];
         let completed = events_after[events_after.len() - 1];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug,
-                TraceSource::EditReeval.as_str(),
-                "Started payload must carry the edit-reeval provenance slug"
-            ),
-            other => panic!(
-                "expected Started payload Custom(\"{}\"), got {other:?}",
-                TraceSource::EditReeval.as_str()
-            ),
-        }
+        assert_edit_reeval_commit(started, CacheLegKind::Recorded, "q");
         assert!(
             matches!(completed.kind, EventKind::Completed { .. }),
             "expected the last event to be Completed, got {:?}",
@@ -7146,7 +7135,7 @@ mod tests {
 }"#;
 
         let compiled_a = compile_source(SRC_A);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         // Cold eval — populates eval_state; solver resolves x = 20mm = 0.02 m.
         engine.eval(&compiled_a);
@@ -7284,8 +7273,8 @@ mod tests {
     /// decision D5. Two sources differing only in `p`'s default, so
     /// `edit_source` re-evaluates the dependents `q` and `r`.
     ///
-    /// RED on base, measured verbatim from assertion (3)'s helper call:
-    /// `expected Started payload Custom("edit-reeval"), got None`. Assertions
+    /// RED on base: assertion (3)'s helper found `q`'s Started event carried
+    /// no edit-reeval provenance. Assertions
     /// (1), (2), (4), (5) all already pass on base — they are the
     /// behaviour-preservation net that must stay green through the migration.
     ///
@@ -7315,7 +7304,7 @@ mod tests {
 }"#;
 
         let compiled_a = compile_source(SRC_A);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         // Cold eval — solver-free, so no auto resolution is involved.
         engine.eval(&compiled_a);
 
@@ -7365,8 +7354,8 @@ mod tests {
             q_events_after.len()
         );
 
-        // (3) RED SIGNAL — measured on base:
-        // `expected Started payload Custom("edit-reeval"), got None`. The
+        // (3) RED SIGNAL — on base, `q`'s Started event carried no
+        // edit-reeval provenance. The
         // helper's snapshot/cache three-leg checks already pass on base
         // (snapshot[q] = (0.003, Determined), cache[q] = Value(0.003,
         // Determined)) — they are the behaviour-preservation half of this
@@ -7413,8 +7402,8 @@ mod tests {
 
     /// Assert that `id`'s journal, snapshot, and cache all show the effects of
     /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
-    /// commit: a `Started`/`Completed` journal pair with the edit-reeval
-    /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
+    /// commit: a `Started`/`Completed` journal pair with the `EditReeval`
+    /// `Recorded` commit tag, and `(expected_si, DeterminacyState::Determined)` in
     /// both the snapshot and the cache, within the default `1e-9` tolerance.
     /// Shared by the recorded-site fixtures below (task δ #5056 step-3) so
     /// each site's test is a thin setup + one-line assertion, mirroring
@@ -7445,8 +7434,7 @@ mod tests {
         label: &str,
     ) {
         use crate::cache::{CachedResult, NodeId};
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CacheLegKind, EventKind};
         use reify_ir::DeterminacyState;
 
         let node = NodeId::Value(id.clone());
@@ -7457,22 +7445,7 @@ mod tests {
         );
         let started = events[events.len() - 2];
         let completed = events[events.len() - 1];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "{label}: expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug,
-                TraceSource::EditReeval.as_str(),
-                "{label}: Started payload must carry the edit-reeval provenance slug"
-            ),
-            other => panic!(
-                "{label}: expected Started payload Custom(\"{}\"), got {other:?}",
-                TraceSource::EditReeval.as_str()
-            ),
-        }
+        assert_edit_reeval_commit(started, CacheLegKind::Recorded, label);
         assert!(
             matches!(completed.kind, EventKind::Completed { .. }),
             "{label}: expected the last event to be Completed, got {:?}",
@@ -7544,7 +7517,7 @@ mod tests {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+        let mut engine = crate::Engine::new(crate::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
             .with_solver(Box::new(DimensionalSolver));
         engine.eval(&compiled);
 
@@ -7581,11 +7554,10 @@ mod tests {
     ///     `(5mm, DeterminacyState::Determined)`;
     /// (b) `engine.cache_store().get(&node)` is `None` (no cache entry —
     ///     the site is deliberately unrecorded);
-    /// (c) the journal's `Started` event for the node carries the
-    ///     `"edit-reeval|cache-skip=<reason>"` marker — the exact format
-    ///     `commit_cell_result` stamps on its `CacheLeg::Skip` arm
-    ///     (cell_commit.rs:268-271). Checked via `starts_with` (not an exact
-    ///     string) since the specific `<reason>` text is step-6's to choose.
+    /// (c) one of the journal's `Started` events for the node carries an
+    ///     `EditReeval` commit tag whose cache leg is
+    ///     `CacheLegKind::Skipped` with this site's own `CacheLeg::Skip`
+    ///     reason — the tag `commit_cell_result` records for a Skip commit.
     ///
     /// RED on base: (a) and (b) already hold today (the site already inserts
     /// into values/snapshot without touching the cache), but the site emits
@@ -7599,8 +7571,7 @@ mod tests {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::{CacheLegKind, CommitTag, EventKind, TraceSource};
 
         const SRC: &str = r#"structure BoltPart {
     param diameter : Length = 5mm
@@ -7612,7 +7583,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7652,29 +7623,24 @@ structure GrowColl {
             "bolts[2].diameter must have NO cache entry (unrecorded site)"
         );
 
-        // (c) journal Started payload carries the cache-skip marker. RED on
-        // base: the site emits no journal event at all today, so this fails
-        // before ever reaching the payload-format check.
+        // (c) a journal Started event carries U2's own Skipped commit tag.
+        // U4 re-commits this node after U2, so U2's commit is not the last
+        // one (the U4 fixture pins that). RED on base: the site emitted no
+        // journal event at all.
         let events = engine.journal().events_for_node(&node);
+        let u2_commit = Some(CommitTag {
+            trace: TraceSource::EditReeval,
+            cache: CacheLegKind::Skipped {
+                reason: "collection-resize child re-recorded by structural rebuild",
+            },
+        });
         assert!(
-            events.len() >= 2,
-            "expected at least a Started+Completed pair for bolts[2].diameter, got {events:?}"
-        );
-        let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert!(
-                slug.starts_with(&format!("{}|cache-skip=", TraceSource::EditReeval.as_str())),
-                "Started payload must carry the edit-reeval cache-skip marker, got {slug:?}"
+            events.iter().any(
+                |event| matches!(&event.kind, EventKind::Started { commit } if *commit == u2_commit)
             ),
-            other => panic!(
-                "expected Started payload Custom(\"edit-reeval|cache-skip=<reason>\"), got {other:?}"
-            ),
-        }
+            "bolts[2].diameter (U2): expected a Started event carrying {u2_commit:?}, \
+             got {events:?}"
+        );
     }
 
     /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
@@ -7691,9 +7657,8 @@ structure GrowColl {
     /// `edit_path_reeval_surfaces_dropped_field_oob_warning`'s
     /// `OOB_GUARD_SRC` shape (same "directly-edited bool guard activates a
     /// member" pattern, minus the field sampling — that fixture proves the
-    /// runtime-sink leg; this one proves the cache-skip leg with U1's own
-    /// exact reason string, checked via equality rather than the shared
-    /// prefix `edit_param_unrecorded_sites_skip_cache_via_primitive` uses).
+    /// runtime-sink leg; this one proves the skipped cache leg with U1's own
+    /// exact reason string).
     #[test]
     fn edit_param_u1_guard_member_reseed_skips_cache_via_primitive() {
         use reify_constraints::SimpleConstraintChecker;
@@ -7702,8 +7667,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::CacheLegKind;
 
         const SRC: &str = r#"structure GuardU1 {
     param cond : Bool = false
@@ -7713,7 +7677,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let cond_id = ValueCellId::new("GuardU1", "cond");
@@ -7751,31 +7715,22 @@ structure GrowColl {
             "m must have NO cache entry (U1 is an unrecorded site)"
         );
 
-        // (c) journal Started payload carries U1's OWN cache-skip reason,
-        // checked by exact equality (not just the shared prefix) so a
-        // regression that mixed up U1's reason with another site's is caught.
+        // (c) journal Started event carries U1's OWN Skipped reason, checked
+        // by exact equality so a regression that mixed up U1's reason with
+        // another site's is caught.
         let events = engine.journal().events_for_node(&node);
         assert!(
             events.len() >= 2,
             "expected at least a Started+Completed pair for m, got {events:?}"
         );
         let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
+        assert_edit_reeval_commit(
+            started,
+            CacheLegKind::Skipped {
+                reason: "post-wave2 guard-member reseed",
+            },
+            "m (U1)",
         );
-        let expected_slug = format!(
-            "{}|cache-skip=post-wave2 guard-member reseed",
-            TraceSource::EditReeval.as_str()
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, &expected_slug,
-                "Started payload must carry U1's exact cache-skip reason"
-            ),
-            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
-        }
     }
 
     /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
@@ -7797,8 +7752,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::CacheLegKind;
 
         const SRC: &str = r#"structure BoltPart {
     param diameter : Length = 5mm
@@ -7810,7 +7764,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7849,30 +7803,21 @@ structure GrowColl {
             "__list_bolts__diameter must have NO cache entry (U3 is an unrecorded site)"
         );
 
-        // (c) journal Started payload carries U3's OWN cache-skip reason,
-        // checked by exact equality (not just the shared prefix).
+        // (c) journal Started event carries U3's OWN Skipped reason, checked
+        // by exact equality.
         let events = engine.journal().events_for_node(&node);
         assert!(
             events.len() >= 2,
             "expected at least a Started+Completed pair for __list_bolts__diameter, got {events:?}"
         );
         let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
+        assert_edit_reeval_commit(
+            started,
+            CacheLegKind::Skipped {
+                reason: "synthetic member-list aggregate",
+            },
+            "__list_bolts__diameter (U3)",
         );
-        let expected_slug = format!(
-            "{}|cache-skip=synthetic member-list aggregate",
-            TraceSource::EditReeval.as_str()
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, &expected_slug,
-                "Started payload must carry U3's exact cache-skip reason"
-            ),
-            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
-        }
     }
 
     /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
@@ -7889,8 +7834,8 @@ structure GrowColl {
     /// documents). This fixture checks the journal's LAST Started/Completed
     /// pair for the node — the final, persisted commit — and pins it to
     /// U4's OWN `CacheLeg::Skip("grown-instance reseed after structural
-    /// grow (θ2)")` reason specifically (exact equality, not the shared
-    /// prefix), so a regression isolated to U4's reason/rule/journal leg
+    /// grow (θ2)")` reason specifically (exact equality), so a regression
+    /// isolated to U4's reason/rule/journal leg
     /// (while leaving U2's untouched) is caught here even though it would
     /// slip past the U2-only fixture above.
     #[test]
@@ -7901,8 +7846,7 @@ structure GrowColl {
         use reify_test_support::compile_source;
 
         use crate::cache::NodeId;
-        use crate::cell_commit::TraceSource;
-        use crate::journal::{EventKind, EventPayload};
+        use crate::journal::CacheLegKind;
 
         const SRC: &str = r#"structure BoltPart {
     param diameter : Length = 5mm
@@ -7914,7 +7858,7 @@ structure GrowColl {
 }"#;
 
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
 
         let n_id = ValueCellId::new("GrowColl", "n");
@@ -7935,23 +7879,13 @@ structure GrowColl {
              (U2 then U4), got {events:?}"
         );
         let started = events[events.len() - 2];
-        assert!(
-            matches!(started.kind, EventKind::Started),
-            "expected the second-to-last event to be Started, got {:?}",
-            started.kind
+        assert_edit_reeval_commit(
+            started,
+            CacheLegKind::Skipped {
+                reason: "grown-instance reseed after structural grow (θ2)",
+            },
+            "bolts[2].diameter, final writer (U4)",
         );
-        let expected_slug = format!(
-            "{}|cache-skip=grown-instance reseed after structural grow (θ2)",
-            TraceSource::EditReeval.as_str()
-        );
-        match &started.payload {
-            Some(EventPayload::Custom(slug)) => assert_eq!(
-                slug, &expected_slug,
-                "the FINAL Started payload for bolts[2].diameter must carry U4's \
-                 exact cache-skip reason (U4 is the last writer)"
-            ),
-            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
-        }
     }
 
     /// A REJECTED `edit_param` must leave `last_changed_realizations` intact
@@ -7979,7 +7913,7 @@ structure GrowColl {
         let sentinel = reify_core::RealizationNodeId::new("Stale", 0);
 
         // ── Rejection 1: NotInitialized (no eval() has run) ─────────────
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.last_changed_realizations.insert(sentinel.clone());
         let err = engine
             .edit_param(ValueCellId::new("Nope", "x"), Value::Int(1))
@@ -8000,7 +7934,7 @@ structure GrowColl {
     param w : Length = 5mm
 }"#;
         let compiled = compile_source(SRC);
-        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        let mut engine = crate::Engine::new(crate::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), None);
         engine.eval(&compiled);
         engine.last_changed_realizations.insert(sentinel.clone());
         let err = engine

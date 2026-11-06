@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use reify_eval::CancellationHandle;
+use reify_ir::ExportFormat;
 use reify_mcp::{SelectionInfo, SourceLocationInfo};
 
 use crate::claude_bridge::SidecarHandle;
@@ -705,28 +706,29 @@ pub fn disk_reload_edit(engine: Arc<Mutex<EngineSession>>, path: PathBuf) -> Eva
     })
 }
 
-/// Map an export-format SPELLING to the [`reify_ir::ExportFormat`] it names.
+/// Every export-format spelling a GUI export surface accepts, paired with the
+/// format it names; `stp` is an alias of `step`.
+pub(crate) const EXPORT_FORMAT_SPELLINGS: [(&str, ExportFormat); 5] = [
+    ("step", ExportFormat::Step),
+    ("stp", ExportFormat::Step),
+    ("stl", ExportFormat::Stl),
+    ("obj", ExportFormat::Obj),
+    ("3mf", ExportFormat::ThreeMF),
+];
+
+/// The ONE map from an export-format spelling to the [`ExportFormat`] it
+/// names, read by every GUI export surface: [`export_impl`],
+/// `TauriToolContext::export`, and the `reify_export` debug tool.
 ///
-/// Extracted from [`export_impl`] so the Tauri command and the reify-debug
-/// `reify_export` write tool (task 5097 δ) consult ONE map: which spellings
-/// are accepted is a contract an AI client and the GUI must agree on, and two
-/// hand-copied `match`es have nothing structural stopping one from gaining a
-/// format the other lacks.
+/// It names every format. Whether a format can be WRITTEN is the geometry
+/// kernel's decision, refused by the kernel itself.
 ///
-/// `mcp_context.rs`'s `TauriToolContext::export` calls this too, so all three
-/// export surfaces read ONE map. Re-homing that context is η's Phase 3, but
-/// the format map is not waiting on it: leaving a third hand-copied `match`
-/// there is exactly the drift this extraction exists to prevent.
-///
-/// The `Err` text is the message every caller surfaces verbatim —
-/// `TauriToolContext::export` wraps it in `ToolError::InvalidParams`
-/// unchanged.
-pub fn parse_export_format(format: &str) -> Result<reify_ir::ExportFormat, String> {
-    match format {
-        "step" | "stp" => Ok(reify_ir::ExportFormat::Step),
-        "stl" => Ok(reify_ir::ExportFormat::Stl),
-        _ => Err(format!("Unknown export format: {}", format)),
-    }
+/// Callers surface the `Err` text verbatim.
+pub fn parse_export_format(format: &str) -> Result<ExportFormat, String> {
+    EXPORT_FORMAT_SPELLINGS
+        .iter()
+        .find_map(|&(spelling, named)| (spelling == format).then_some(named))
+        .ok_or_else(|| format!("Unknown export format: {format}"))
 }
 
 /// Export geometry to a file.

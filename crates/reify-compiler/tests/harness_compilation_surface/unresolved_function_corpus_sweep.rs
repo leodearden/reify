@@ -51,7 +51,7 @@ use reify_compiler::cfg::CfgSet;
 use reify_ir::{
     ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
 };
-use reify_test_support::examples_corpus::discover_ri_files;
+use reify_test_support::{diags_with_code, examples_corpus::discover_ri_files};
 
 /// A local always-indeterminate checker (same contract as the compiler's stub).
 struct Indeterminate;
@@ -275,10 +275,7 @@ fn sweep() -> Vec<Violation> {
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        for d in &diagnostics {
-            if d.code != Some(DiagnosticCode::UnresolvedFunction) {
-                continue;
-            }
+        for d in diags_with_code(&diagnostics, DiagnosticCode::UnresolvedFunction) {
             let offset = d.labels.first().map(|l| l.span.start).unwrap_or(0);
             violations.push(Violation {
                 file: rel.clone(),

@@ -1,4 +1,6 @@
-// Shared staleness primitives for the tree-sitter parser pipeline.
+// The build-script logic shared with `tests/build_logic_tests.rs` for the
+// tree-sitter parser pipeline: staleness predicates, stamp writers, and the
+// generate step's helpers.
 //
 // `include!`-ed by BOTH `build.rs` and `tests/build_logic_tests.rs`. It is a
 // bare item list, not a module: a build script cannot be `use`d by a test
@@ -17,9 +19,104 @@
 //     against a parser that does not match the grammar is the silent false
 //     GREEN this whole file exists to prevent.
 
-/// The expected output files that tree-sitter generate produces.
+/// The grammar-derived outputs of `tree-sitter generate`, content-attested by
+/// the outputs manifest.
 #[allow(dead_code)]
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
+
+/// The runtime headers `tree-sitter generate` writes beside its outputs
+/// (`src_dir`-relative). Untracked since `#9741`: their bytes vary by CLI
+/// version. Existence-checked only, since they do not derive from grammar.js.
+#[allow(dead_code)]
+const GENERATED_HEADERS: &[&str] = &[
+    "tree_sitter/alloc.h",
+    "tree_sitter/array.h",
+    "tree_sitter/parser.h",
+];
+
+/// True when every `GENERATED_HEADERS` entry exists in `src_dir`.
+#[allow(dead_code)]
+fn generated_headers_present(src_dir: &std::path::Path) -> bool {
+    GENERATED_HEADERS
+        .iter()
+        .all(|rel| src_dir.join(rel).exists())
+}
+
+/// Compute a content hash of a file's bytes, returning a hex-encoded u64.
+/// Used for staleness detection — not for security.
+#[allow(dead_code)]
+fn content_hash(path: &std::path::Path) -> String {
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|e| panic!("Failed to read {} for hashing: {}", path.display(), e));
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hash::hash(&bytes, &mut hasher);
+    format!("{:016x}", std::hash::Hasher::finish(&hasher))
+}
+
+/// Report which `EXPECTED_OUTPUTS`, then which `GENERATED_HEADERS`, are missing
+/// from `src_dir` after a generate.
+/// The build script panics on `Err`, so the message is what cargo prints.
+#[allow(dead_code)]
+fn verify_outputs(src_dir: &std::path::Path) -> Result<(), String> {
+    let missing: Vec<&str> = EXPECTED_OUTPUTS
+        .iter()
+        .chain(GENERATED_HEADERS)
+        .copied()
+        .filter(|name| !src_dir.join(name).exists())
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "tree-sitter generate succeeded but these output files are missing: {}. \
+         Check tree-sitter CLI version.",
+        missing.join(", ")
+    ))
+}
+
+/// Run a command with a timeout. Returns Ok(()) on success, Err on failure/timeout.
+///
+/// Stdio disposition rationale: see test_run_with_timeout_discards_child_stdout
+/// and test_run_with_timeout_inherits_child_stderr in tests/build_logic_tests.rs.
+#[allow(dead_code)]
+fn run_with_timeout(cmd: &str, args: &[&str], timeout_secs: u64) -> Result<(), String> {
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn '{}': {}", cmd, e))?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                } else {
+                    return Err(format!(
+                        "'{}' failed with exit code {}",
+                        cmd,
+                        status.code().unwrap_or(-1)
+                    ));
+                }
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait(); // Reap the process.
+                    return Err(format!("'{}' timed out after {}s", cmd, timeout_secs));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait(); // Reap the process to prevent orphans.
+                return Err(format!("Error waiting for '{}': {}", cmd, e));
+            }
+        }
+    }
+}
 
 /// Filename of the generated-output content manifest, written beside the
 /// outputs it describes (i.e. inside `tree-sitter-reify/src/`).
@@ -278,10 +375,10 @@ fn outputs_manifest_matches(manifest_path: &std::path::Path, src_dir: &std::path
 
 /// Check if regeneration is needed based on content staleness.
 ///
-/// TRUE (regenerate) when any expected output is missing, when
-/// `$OUT_DIR/grammar_hash.stamp` is missing, when its hash differs from
-/// `grammar_hash`, OR when `src_dir`'s outputs do not match the
-/// `.generated_outputs.stamp` beside them.
+/// TRUE (regenerate) when any expected output is missing, when any
+/// `GENERATED_HEADERS` entry is missing, when `$OUT_DIR/grammar_hash.stamp` is
+/// missing, when its hash differs from `grammar_hash`, OR when `src_dir`'s
+/// outputs do not match the `.generated_outputs.stamp` beside them.
 ///
 /// That last clause is `#6992`. The OUT_DIR stamp attests ONE fact — "the
 /// grammar hashed to X when this stamp was written" — and the old code let a
@@ -308,6 +405,9 @@ fn needs_generate(
             return true;
         }
     }
+    if !generated_headers_present(src_dir) {
+        return true;
+    }
     // Must regenerate if stamp file is missing.
     let stamp_content = match std::fs::read_to_string(stamp_path) {
         Ok(s) => s,
@@ -333,7 +433,7 @@ fn needs_generate(
 /// the build script is redundant and, on a loaded host, risks timing out.
 ///
 /// Returns `true` (safe to skip generation) only when ALL of:
-///   1. Every expected output file exists.
+///   1. Every expected output file and every `GENERATED_HEADERS` entry exists.
 ///   2. `.grammar_hash.stamp` contains a non-empty hash string.
 ///   3. `sha256(grammar.js)` matches that hash exactly.
 ///   4. `.generated_outputs.stamp` matches the outputs' bytes ON DISK.
@@ -367,11 +467,14 @@ fn shell_stamp_is_current(
     output_paths: &[&std::path::Path],
     src_dir: &std::path::Path,
 ) -> bool {
-    // 1. All expected output files must exist.
+    // 1. All expected output files and generated headers must exist.
     for path in output_paths {
         if !path.exists() {
             return false;
         }
+    }
+    if !generated_headers_present(src_dir) {
+        return false;
     }
     // 2. Shell-script stamp must exist and contain a non-empty hash.
     let shell_stamp = match std::fs::read_to_string(src_dir.join(GRAMMAR_STAMP_NAME)) {
@@ -474,5 +577,18 @@ fn write_shell_stamps(src_dir: &std::path::Path, grammar_sha: &str) {
             src_dir.join(OUTPUTS_STAMP_NAME).display(),
             e
         );
+    }
+}
+
+/// Write `$OUT_DIR/grammar_hash.stamp`: the exact bytes of `grammar_hash`, the
+/// `content_hash` of grammar.js — NOT the sha256 `.grammar_hash.stamp` that
+/// `write_shell_stamps` writes into `src/`.
+///
+/// Never fatal. A failed write leaves the next build regenerating rather than
+/// failing.
+#[allow(dead_code)]
+fn write_out_dir_grammar_stamp(stamp_path: &std::path::Path, grammar_hash: &str) {
+    if let Err(e) = std::fs::write(stamp_path, grammar_hash) {
+        eprintln!("warning: failed to write {}: {}", stamp_path.display(), e);
     }
 }

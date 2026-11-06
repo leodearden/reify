@@ -131,6 +131,15 @@ its post-landing checkpoint; see §8 β.)*
   per-code escalation lists). Constraint verdicts keep never-false-Violated
   (INV-SF-4): affected constraints stay Indeterminate with an attributable
   cause; the RUN fails because the error was emitted.
+  *(Ruling, 2026-10-18, Leo, option (d) of esc-6586-18: the C4 Error is keyed on
+  the undef's ROOT CAUSE, not on whether the template is a module root. An undef
+  ctor arg whose root cause is an unbound required parameter of the template
+  being checked, or an explicit `undef` argument, is a legal partial design
+  (spec §4.7 rule 3; R1a #5973; #7874): no C4 Error, so a standalone check of a
+  library module forwarding a required param stays green. A value the engine
+  lost, or geometry that fails to realize, is the C4 Error. The note names the
+  root cause (undef-self-describing B2), never just the symptom ctor arg.
+  Implemented by #9345 after α #6586.)*
 - **C5 — Instance-scoped constraint truth.** A constraint declared in a child
   definition is checked against each instance's effective valuation, not only
   the template defaults — an override that violates a child constraint turns

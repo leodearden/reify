@@ -15,7 +15,7 @@
 use reify_compiler::CompiledModule;
 use reify_core::{SnapshotId, ValueCellId};
 use reify_ir::{Satisfaction, SnapshotProvenance, Value};
-use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib};
+use reify_test_support::{kg, make_simple_engine, mm, parse_and_compile_with_stdlib, scalar_si};
 
 /// Absolute path to the example file, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
@@ -51,14 +51,6 @@ fn make_eval_engine() -> (reify_eval::Engine, reify_eval::EvalResult) {
     (engine, result)
 }
 
-/// Extract the SI value from a Value::Scalar, panicking with a helpful message otherwise.
-fn si_value(v: &Value, label: &str) -> f64 {
-    match v {
-        Value::Scalar { si_value, .. } => *si_value,
-        other => panic!("expected Scalar for {label}, got {other:?}"),
-    }
-}
-
 /// Extract the first component's SI value from a Value::Point or Value::Vector.
 fn point_component(v: &Value, component: usize, label: &str) -> f64 {
     match v {
@@ -66,7 +58,7 @@ fn point_component(v: &Value, component: usize, label: &str) -> f64 {
             let item = items
                 .get(component)
                 .unwrap_or_else(|| panic!("{label} has no component {component}"));
-            si_value(item, &format!("{label}[{component}]"))
+            scalar_si(item, &format!("{label}[{component}]"))
         }
         other => panic!("expected Point/Vector for {label}, got {other:?}"),
     }
@@ -84,7 +76,7 @@ fn cold_start_baseline_values() {
     let e = "Assembly";
 
     // height = 300mm = 0.3 SI
-    let h = si_value(
+    let h = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "height"))
@@ -97,7 +89,7 @@ fn cold_start_baseline_values() {
     );
 
     // width = 150mm = 0.15 SI
-    let w = si_value(
+    let w = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "width"))
@@ -110,7 +102,7 @@ fn cold_start_baseline_values() {
     );
 
     // mass = 5kg = 5.0 SI
-    let m = si_value(
+    let m = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "mass"))
@@ -123,7 +115,7 @@ fn cold_start_baseline_values() {
     );
 
     // clearance = 500mil = 500*0.0000254 = 0.0127 SI
-    let c = si_value(
+    let c = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "clearance"))
@@ -136,7 +128,7 @@ fn cold_start_baseline_values() {
     );
 
     // position_x = 100mm = 0.1 SI
-    let px = si_value(
+    let px = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "position_x"))
@@ -583,7 +575,7 @@ fn multiple_edits_accumulate_correctly() {
         .expect("second edit_param should succeed");
 
     // height = 0.4 SI
-    let h = si_value(
+    let h = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "height"))
@@ -596,7 +588,7 @@ fn multiple_edits_accumulate_correctly() {
     );
 
     // width = 0.2 SI
-    let w = si_value(
+    let w = scalar_si(
         result
             .values
             .get(&ValueCellId::new(e, "width"))

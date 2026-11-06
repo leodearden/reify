@@ -1,0 +1,13 @@
+// /prd generic-instantiation-and-call-binding α₁ evidence (probe e, #7337):
+// a non-generic builtin type name given type arguments is an arity error
+// (arity 0). Today every argument below is silently discarded and the file
+// checks clean; `Orientation<2>` silently means the 3D quaternion type.
+module gicb_alpha_nongeneric_builtin_args
+
+structure def S {
+  param a : Int<Real> = 1
+  param b : Length<Int> = 1mm
+  param c : Bool<Length> = true
+  param d : String<Int> = "x"
+  param o : Orientation<2>
+}

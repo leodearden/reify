@@ -659,7 +659,7 @@ End-to-end runnable examples:
 - `examples/generics/unbound_param.ri` -- `constant_field(42.5)`: `C`=Real, `D` nested-unbound (tolerated, no `E_FN_TYPE_ARG_UNRESOLVED`)
 - `examples/generics/dim_param.ri` -- `scale_q` at two dimensions (`Q`=LENGTH and `Q`=PRESSURE)
 
-See also the `fn distance<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
+See also the `fn gap<Q: Dimension>(…)` example in §4.3 (function declarations) for the canonical dimension-generic function form.
 
 #### 3.9.2 Generic enums
 
@@ -674,6 +674,8 @@ A type annotation pins every type argument positionally and overrides payload-dr
 ```
 param r : Result<Length, String> = Ok { value: 5mm }
 ```
+
+An annotation must supply every type argument: a bare generic enum name such as `param r : Result` is the arity error "enum `Result` expects 2 type arguments, found 0", the same diagnostic a wrong-length argument list gets. The one exception is an enum whose every declared type parameter has a default (`enum Wrapper<T = Length>`): there the bare name means the defaults, so `param w : Wrapper` is `Wrapper<Length>`. A default may name an earlier type parameter: for `enum Pair<A = Length, B = A>`, bare `Pair` is `Pair<Length, Length>`. A partially defaulted enum written bare is still an arity error. Defaults fill annotations only; construction inference never consults them. **Known limitation (#9358).** Enum variant payload fields and `let` annotations do not yet apply this rule: a bare generic enum there is accepted with its type arguments erased. **Known limitation (#5994).** A default written with type arguments, such as `B = Option<A>`, currently loses them, so it does not yet fill as `Option<Length>`.
 
 Once type arguments are known (pinned or inferred), each supplied field's value is checked against its declared field type with the type parameters substituted; a mismatch is an error (`E_VARIANT_PAYLOAD_TYPE`, the same payload-type check §4.5 describes for non-generic enums), e.g. constructing `Ok { value: "x" }` against `Result<Length, String>` expects `Length`, not `String`.
 
@@ -888,8 +890,8 @@ trait Cylindrical {
 
 ```
 // Valid: same name, different parameter types
-fn area(surface: Surface) -> Scalar<Area> { ... }
-fn area(solid: Solid) -> Scalar<Area> { ... }
+fn footprint(surface: Surface) -> Scalar<Area> { ... }
+fn footprint(solid: Solid) -> Scalar<Area> { ... }
 
 // Valid: same name, different arity
 fn align<G: Transformable>(geometry: G, axis: Vector3<Dimensionless>, angle: Angle) -> G { ... }
@@ -901,24 +903,24 @@ fn align<G: Transformable>(geometry: G, orientation: Orientation<3>) -> G { ... 
 Functions are non-entity declarations: no identity, no determinacy state, no evaluation graph presence. They are pure computations.
 
 ```
-fn von_mises(t : Tensor<2, 3, Pressure>) -> Scalar<Pressure> {
-    let dx = t.xx - t.yy
-    let dy = t.yy - t.zz
-    let dz = t.zz - t.xx
-    sqrt(0.5 * (dx^2 + dy^2 + dz^2))
+fn hoop_stress(p : Scalar<Pressure>, r : Length, t : Length) -> Scalar<Pressure> {
+    let ratio = r / t;
+    p * ratio
 }
 
-fn clamp(x : Real, lo : Real, hi : Real) -> Real {
-    if x < lo then lo else if x > hi then hi else x
+fn friction_factor(re : Real) -> Real {
+    if re < 2300 then 64 / re else 0.316 / re^0.25
 }
+
+fn as_percent(fraction : Real) -> Real = fraction * 100
 ```
 
 Semantics:
 - **Pure** -- no side effects, no state.
-- **Block body** -- `{ }` block containing `let` bindings and a final expression (the return value). No `return` keyword.
+- **Block body** -- `{ }` block containing `let` bindings, each terminated by `;`, and a final expression (the return value). No `return` keyword. A body with no bindings may instead be written `= expr` (as `as_percent` shows).
 - **Type annotations mandatory** on parameters and return type.
 - **Can be `pub`** for cross-module reuse.
-- **Supports type parameters:** `fn distance<Q: Dimension>(a : Point3<Q>, b : Point3<Q>) -> Scalar<Q> { ... }`
+- **Supports type parameters:** `fn gap<Q: Dimension>(a : Point3<Q>, b : Point3<Q>) -> Scalar<Q> { ... }`
 - **`@optimized` hook available** for built-in fast paths.
 - **Recursion permitted.** Self-recursion and mutual recursion are both permitted. Infinite recursion is a runtime error (stack overflow), not a compile-time error. The compiler does not attempt termination checking.
 
@@ -1325,6 +1327,8 @@ a < b       a > b       a <= b      a >= b
 
 Equality is structural for value types, identity for structure references.
 
+`==` and `!=` on `Scalar<Q>` and `Real` operands are toleranced, not bit-exact: two values are equal when they differ by no more than the larger of a relative tolerance of the larger magnitude and an absolute floor chosen per dimension. The DimensionalSolver accepts equality constraints by the same rule, so a solved model never reports its own equalities violated. `Int`-to-`Int`, `Bool`, `String` and enum equality stay exact. An `Int` compared with a `Real` or dimensionless `Scalar` is promoted and compared by the toleranced rule, so `1000000001 == 1.0e9` holds while `1000000001 == 1000000000` does not. Toleranced equality is not transitive: `a == b` and `b == c` do not imply `a == c`. Ordering comparisons are never toleranced. The tolerance constants live in `crates/reify-core/src/scalar_tolerance.rs`.
+
 **Chained comparisons:** `a < b < c` desugars to `a < b and b < c`. Any comparison operators may chain.
 
 ```
@@ -1498,7 +1502,7 @@ param width : Length = auto          // Delegated to solver
 let area = thickness * width         // area is undef if either input is undef
 ```
 
-`undef` and `auto` are valid in any expression position where a value is expected. Detailed propagation rules for `undef` through all operator and expression types are specified in Section 9.2.
+`undef` is valid in any expression position where a value is expected; `auto` is valid only at the binding sites listed in §2.9, never as an expression operand. Detailed propagation rules for `undef` through all operator and expression types are specified in Section 9.2.
 
 ---
 
@@ -2284,10 +2288,12 @@ match outer {
 <!-- sc-anchor: sc-b6ef4d -->
 #### 9.2.9 Tracing
 
-A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation rejected an undef argument), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
+A read-only undef-cause tracer reconstructs the complete, deduplicated set of root causes for an `undef` cell: `Unbound` (a required param with no value), `AwaitingSolve` (an `auto` param not yet resolved by the constraint solver), `SolveFailed` (the solve was infeasible or made no progress), `OpContractFailed` (an operation returned `undef` although every input was determined -- a type or contract violation), or `UserUndef` (an explicit `undef` literal). The tracer walks forward dependencies through undef cells only, so a value made `undef` by propagation (§9.2.1) reports its upstream roots, not itself.
+
+These causes classify as **expected** or **unexpected** (INV-SF-4, `docs/legibility/design-invariants.md`). `Unbound` and `UserUndef` are expected: the design is declaredly unfinished at that point. The rest are unexpected, because a mechanism failed to deliver a value: `SolveFailed`, `OpContractFailed`, and `AwaitingSolve` on a driver that resolves `auto` (§9.3, §10.2). What gates today: `reify check --strict` fails on every indeterminate constraint, whatever its cause. Plain `reify check` exits 0 for an indeterminate constraint and fails on errors, such as an infeasible solve or a strict `auto` missing a bound. Plain `check` does not yet fail on every unexpected cause: a constraint that reads a sub-instance member as `x.length` instead of `self.x.length` is reported INDETERMINATE (`operator undefined for these operand kinds: StructureInstance`), and `check` still exits 0.
 
 <!-- sc-anchor: sc-66993d -->
-Three tooling surfaces expose the tracer: the CLI (`reify eval`, widened to every undef cell with `--explain-undef`), the GUI parameter panel and hover (via the `reify-debug` MCP server), and the LSP hover. All three report the same underlying cause set for a given cell but apply surface-appropriate framing -- e.g. the CLI qualifies each cause by entity (`Tube.outer_diameter unbound`) where the GUI/LSP hover already has the entity in view (`outer_diameter unbound`).
+Three tooling surfaces expose the tracer: the CLI's `reify eval` (a `note: <cell> is undef (because: <causes>)` line per printed undef cell, widened to every undef cell with `--explain-undef`), the GUI parameter panel and hover (via the `reify-debug` MCP server), and the LSP hover. All three report the same underlying cause set for a given cell but apply surface-appropriate framing -- e.g. the CLI qualifies each cause by entity (`Tube.outer_diameter unbound`) where the GUI/LSP hover already has the entity in view (`outer_diameter unbound`). `reify check` and `reify build` do not run the tracer: they print each indeterminate constraint's direct reason, such as `undefined inputs: Plate.b`, where `reify eval` traces that cell to its root (`Plate.b is undef (because: Plate.a unbound)`).
 
 <!-- sc-anchor: sc-1a4c93 -->
 This is a tooling/implementation concern, not a language semantics concern: the tracer is purely additive and read-only, with no effect on `undef` value identity, content-hash, or the propagation rules above. See §9.4 for the complementary determinacy predicates, which answer *whether* a param is determined -- the tracer answers *why* it is not.
@@ -2297,6 +2303,8 @@ This is a tooling/implementation concern, not a language semantics concern: the 
 - A decision, not an absence.
 - **Strict `auto` (default):** Resolved value must be uniquely determined or uniquely optimal. If not, resolution failure with diagnostic.
 - **Free `auto`:** Returns a feasible solution, warns about non-uniqueness.
+
+**Which commands resolve `auto`:** every CLI subcommand that evaluates a model (`reify check` with or without `--strict`, `test`, `build`, `eval` / `run`, `report` and `explain`) and the GUI viewport; the other drivers are covered in §10.2. A driver that does not resolve shows the value as `undef` (`AwaitingSolve`, §9.2.9). A strict `auto` that its constraints bound on one side only is a compile-time error naming the missing bound (e.g. ``no constraint bounds `Flange.radius` above``): the solve could only return the edge of the solver's internal default domain.
 
 **`auto` for type parameters:** Valid -- means "pick a type that satisfies the bounds." See §3.9 and `docs/auto-type-param-resolution.md` for the resolution algorithm (per-parameter BFS, cap of 10, lexicographic tiebreak by FQN).
 
@@ -2378,7 +2386,9 @@ constraint def Coincident(a : Point3<Length>, b : Point3<Length>) {
 2. **Solving:** Given a partially determined design with `auto` parameters, find values satisfying all constraints.
 3. **Proposing:** Given a highly underdetermined design, provide useful feedback about what is constrainable, what is in conflict, and what would need to be determined to make progress.
 
-Three modes form a hierarchy with graceful degradation.
+These are three capabilities of one resolution, not three modes a tool chooses between: resolving a model solves its `auto` parameters (§9.3), checks every constraint against the result, and reports what is still undetermined, unbounded or in conflict.
+
+A **driver** is a tool that evaluates a model: a CLI subcommand, the language server, or the GUI. Drivers are not the sub-solvers of §10.3, which the engine dispatches to inside a single resolution. Two drivers may differ only in iteration budget and in staleness (whether they may serve a previously computed result); no driver may skip the solve (`docs/prds/v0_6/solver-driver-parity.md`, invariant I5). Every CLI subcommand that evaluates a model already resolves, and so does the GUI viewport. Whether the language server and the GUI definition preview do yet is recorded in one place, the `solving` chunk of the language reference (`crates/reify-mcp/src/tools/chunks/solving.md`).
 
 ### 10.3 Constraint Domains
 
@@ -2841,12 +2851,13 @@ assoc_type_decl ::= 'type' TYPE_IDENT (':' trait_bound)?         (* associated t
 
 (* --- Function declarations --- *)
 fn_decl         ::= 'pub'? 'fn' IDENT type_params? '(' fn_params? ')' '->' type_expr
-                     '{' fn_body '}'
+                     fn_body
 
 fn_params       ::= fn_param (',' fn_param)*
 fn_param        ::= IDENT ':' type_expr
 
-fn_body         ::= (let_decl)* expr
+fn_body         ::= '{' fn_let_decl* expr '}' | '=' expr
+fn_let_decl     ::= 'let' IDENT (':' type_expr)? '=' expr ';'
 
 (* --- Type alias declarations --- *)
 type_alias_decl ::= 'pub'? 'type' TYPE_IDENT type_params? '=' type_expr
@@ -3147,7 +3158,7 @@ where
 | 7 | Tolerance stack-up analysis | Realized (v0.6) | `stackup_worst_case` / `stackup_rss` / `monte_carlo_stackup` eval builtins; v1 is explicit-chain only (assembly-graph auto-derivation deferred). See docs/prds/v0_6/tolerance-stackup-analysis.md. |
 | 8 | Keyed collection identity | v0.2 | Named/keyed members in collections instead of positional |
 | 9 | Field-valued material properties | v0.2 | `Field<Temperature, Pressure>` for temperature-dependent properties |
-| 10 | Expression-body sugar for `fn` | Deferred | `fn f(x: T) -> T = expr` shorthand |
+| 10 | Expression-body sugar for `fn` | Realized (v0.6) | `fn f(x: T) -> T = expr` shorthand; §4.3/§15 `fn_body`; see docs/prds/v0_6/expression-operator-completion.md |
 | 11 | No `Date` type | v0.1 | ISO 8601 strings used for timestamps |
 | 12 | No `priv` modifier | Deferred | Hidden parameters on public definitions not yet justified |
 | 13 | Conditional compilation | Deferred | Conditional imports, platform-specific module variants |

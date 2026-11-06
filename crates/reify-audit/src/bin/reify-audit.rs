@@ -7,7 +7,8 @@
 //!
 //! - `reify-audit --task <id> --pre-done`  P5 only; exit non-zero on detection.
 //! - `reify-audit --task <id>`             Spot-check, all three detectors.
-//! - `reify-audit --since <iso-date>`      Window sweep, all three detectors.
+//! - `reify-audit --project-root <path>`  Whole-corpus sweep, every default-sweep
+//!   detector. An empty argv prints usage and exits 125.
 //! - `--pattern <token>[,<token>…]`  Restrict which detector(s) run; comma-separated for multi-detector union (e.g. `--pattern P1,P2,P5`). The token vocabulary is [`reify_audit::pattern_flag::TOKENS`].
 //!   `PDIAG` is the INV-SF-6 codes-mandatory ratchet — opt-in only, and one of
 //!   the restricted detectors that move the exit code (see
@@ -65,13 +66,14 @@ use std::process::ExitCode;
 // still carries its own (see that doc). The library's `MockJCodemunchOps`
 // remains test-only via the `test-support` feature.
 use reify_audit::{
-    AuditContext, Finding, RealGitOps, Severity, TaskMetadata, TimeWindow,
+    AuditContext, Finding, RealGitOps, Severity, TaskMetadata,
     fused_memory_client::FusedMemoryClient,
     jcodemunch_client::RealJCodemunchOps,
     jcodemunch_index,
     jcodemunch_seam::{Seam, SeamUnavailable},
     p1_producer_orphan, p2_consumer_stub, p5_phantom_done, pattern_flag, pcite, pdcheck,
-    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, pprdstatus, ptodo, puntested,
+    pdead_dead_code, pdiag, pdoccover, pdssentinel, player, plinecite, pprdstatus, ptodo,
+    puntested,
 };
 
 // -----------------------------------------------------------------------
@@ -84,14 +86,13 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "Options:");
     let _ = writeln!(out, "  --task <id>              Spot-check a single task (all detectors)");
     let _ = writeln!(out, "  --pre-done               With --task: run P5 pre-done check only");
-    let _ = writeln!(out, "  --since <iso-date>       Window sweep from ISO date (all detectors)");
     let _ = writeln!(
         out,
         "  --pattern {} Restrict to detector(s); comma-separated for union (e.g. --pattern P1,P2,P5)",
         pattern_flag::TOKENS.join("|")
     );
     let _ = writeln!(out, "                           PDIAG: INV-SF-6 codes-mandatory ratchet (opt-in; see docs/notes/diagnostic-severity-policy.md)");
-    let _ = writeln!(out, "  --tasks-file <path>      JSON array of TaskMetadata (overrides live loader; for tests)");
+    let _ = writeln!(out, "  --tasks-file <path>      TaskMetadata JSON-array test fixture; overrides the live loader (fixtures only)");
     let _ = writeln!(out, "  --fused-memory-url <url> MCP endpoint (default: $FUSED_MEMORY_URL or http://localhost:8002/mcp)");
     let _ = writeln!(out, "  --runs-db <path>         SQLite runs.db path (default: data/orchestrator/runs.db)");
     let _ = writeln!(out, "  --project-root <path>    Repo root for git ops + fused-memory project key (default: .)");
@@ -108,7 +109,7 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "  --help, -h               Show this help");
     let _ = writeln!(out, "  --version, -V            Print version");
     let _ = writeln!(out);
-    let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern or --since.");
+    let _ = writeln!(out, "Conflicts: --pre-done cannot be combined with --pattern.");
     let _ = writeln!(out);
     let _ = writeln!(out, "--pre-done landing gate:");
     let _ = writeln!(out, "  Refuses the done-flip when a declared, non-gitignored metadata.files");
@@ -125,9 +126,10 @@ fn print_usage(out: &mut dyn Write) {
     let _ = writeln!(out, "                                   Soak by running this binary directly.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Tasks source:");
-    let _ = writeln!(out, "  By default, tasks are loaded live from the fused-memory MCP server.");
-    let _ = writeln!(out, "  Pass --tasks-file <path> to load from a JSON array fixture instead");
-    let _ = writeln!(out, "  (used by the integration test suite).");
+    let _ = writeln!(out, "  Tasks are loaded live from the fused-memory MCP server (--pre-done: one");
+    let _ = writeln!(out, "  get_task; otherwise one get_tasks). Every production caller (the pre-done");
+    let _ = writeln!(out, "  wrapper, the /audit skill) uses this live loader. --tasks-file <path> is");
+    let _ = writeln!(out, "  for test fixtures only.");
     let _ = writeln!(out);
     let _ = writeln!(out, "Output:");
     let _ = writeln!(out, "  stderr: JSON array of Finding objects");
@@ -267,7 +269,6 @@ fn high_severity_exit_code(findings: &[Finding]) -> u8 {
 struct Args {
     task_id: Option<String>,
     pre_done: bool,
-    since: Option<String>,
     /// Validated comma-separated detector token list (e.g. `"P1,P2,P5"`).
     /// Each token is a member of [`pattern_flag::TOKENS`].
     /// `None` means no restriction — all default-sweep detectors run.
@@ -341,7 +342,6 @@ struct Args {
 fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut task_id = None;
     let mut pre_done = false;
-    let mut since = None;
     let mut pattern = None;
     let mut tasks_file: Option<String> = None;
     // Default uses `/mcp` (no trailing slash) — `/mcp/` triggers a 307
@@ -388,8 +388,8 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
 
     // NOTE: Last-wins semantics for duplicate flags.
     // When a flag appears more than once (e.g. the pre-done hook wrapper passes
-    // its own --tasks-file, --runs-db, and --project-root before forwarding $@
-    // which may include caller-supplied overrides), the last occurrence wins.
+    // its own --runs-db and --project-root before forwarding $@, which may
+    // include caller-supplied overrides), the last occurrence wins.
     // The wrapper relies on this contract: it prepends its defaults so that
     // any flag in the caller's $@ implicitly overrides the wrapper-supplied
     // value without requiring the wrapper to parse and strip $@.
@@ -408,14 +408,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             }
             "--pre-done" => {
                 pre_done = true;
-            }
-            "--since" => {
-                i += 1;
-                since = Some(
-                    argv.get(i)
-                        .ok_or("--since requires a value")?
-                        .clone(),
-                );
             }
             "--pattern" => {
                 i += 1;
@@ -509,7 +501,6 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     Ok(Args {
         task_id,
         pre_done,
-        since,
         pattern,
         tasks_file,
         fused_memory_url,
@@ -560,18 +551,30 @@ fn load_tasks_from_json_file(path: &str) -> Result<HashMap<String, TaskMetadata>
         .collect())
 }
 
+/// The whole `--pre-done` fused-memory fetch (handshake plus `get_task`) must
+/// finish within this. dark-factory's `pre_done_hook.py` kills the hook at
+/// 30 s while it holds the project's task-mutation write lock. This share
+/// leaves the rest of that 30 s for the freshness guard and P5's git legs, and
+/// turns a hung fused-memory into this binary's own diagnosable 125 rather
+/// than a `pre_done_hook_timeout` kill. See f-infra-design §11.1.2.
+const PRE_DONE_FUSED_MEMORY_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Live fused-memory MCP loader (production path).
 ///
 /// `pre_done_task_id` is `Some(id)` on the pre-done hook hot path — only
-/// that one task is fetched (`get_task`). On the sweep path it is `None`
-/// and the whole task corpus is pulled (`get_tasks`).
+/// that one task is fetched (`get_task`), within
+/// [`PRE_DONE_FUSED_MEMORY_BUDGET`]. On the sweep path it is `None` and the
+/// whole task corpus is pulled (`get_tasks`).
 fn load_tasks_from_fused_memory(
     url: &str,
     project_root: &str,
     pre_done_task_id: Option<&str>,
 ) -> Result<HashMap<String, TaskMetadata>, String> {
-    let client = FusedMemoryClient::new(url)
-        .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
+    let client = match pre_done_task_id {
+        Some(_) => FusedMemoryClient::with_budget(url, PRE_DONE_FUSED_MEMORY_BUDGET),
+        None => FusedMemoryClient::new(url),
+    }
+    .map_err(|e| format!("error connecting to fused-memory at '{}': {}", url, e))?;
     // Canonicalize project_root so `.` (the hook's inherited cwd) becomes
     // the absolute path fused-memory keys its DB on.
     let project_root_abs = std::fs::canonicalize(project_root)
@@ -615,6 +618,19 @@ fn pattern_selects(pattern: &str, token: &str) -> bool {
 fn needs_jcodemunch(args: &Args) -> bool {
     !args.pre_done
         && selected_detectors(args.pattern.as_deref()).any(|detector| detector.jcodemunch.queries())
+}
+
+/// The branch whose history [`RealGitOps`] snapshots for this run, or `None`
+/// to fork one git call per question.
+///
+/// Only a sweep repays the snapshot: it asks ancestry, grep and changed-path
+/// questions for thousands of tasks, while a `--task` spot-check asks a
+/// handful, fewer than one whole-history dump costs. `--pre-done` runs inside
+/// fused-memory's per-project write lock under a 30 s budget and must never
+/// pay a dump. `main` is the base both P5 and P2 query; a snapshot of any
+/// other branch would never be consulted.
+fn history_snapshot_branch(args: &Args) -> Option<&'static str> {
+    (!args.pre_done && args.task_id.is_none()).then_some("main")
 }
 
 /// Return true when EVERY detector selected by `--pattern` requires
@@ -773,6 +789,7 @@ const DETECTORS: &[Detector] = &[
     Detector { token: pattern_flag::PDCHECK,     in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pdcheck::check),                  jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PCITE,       in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(pcite::check),                    jcodemunch: JcodemunchUse::Never },
     Detector { token: pattern_flag::PPRDSTATUS,  in_default_sweep: false, refuses_empty_task_corpus: true,  check: Check::Plain(pprdstatus::check),               jcodemunch: JcodemunchUse::Never },
+    Detector { token: pattern_flag::PLINECITE,   in_default_sweep: false, refuses_empty_task_corpus: false, check: Check::Plain(plinecite::check),                jcodemunch: JcodemunchUse::Never },
 ];
 
 /// What one detector run produced.
@@ -786,7 +803,7 @@ struct DetectorRun {
 /// Run one detector. A detector that refuses an empty task corpus is not run
 /// on one: the breadcrumb marks its zero findings as unchecked.
 fn run_detector(detector: &Detector, ctx: &AuditContext<'_>) -> DetectorRun {
-    if detector.refuses_empty_task_corpus && ctx.task_metadata.is_empty() {
+    if detector.refuses_empty_task_corpus && ctx.task_metadata().is_empty() {
         eprintln!(
             "reify-audit: {} skipped — the task corpus is empty; \
              this is NOT a clean bill of health",
@@ -938,13 +955,9 @@ fn main() -> ExitCode {
         eprintln!("reify-audit: error: --pre-done requires --task");
         return ExitCode::from(ERROR_EXIT);
     }
-    // --pre-done cannot be combined with --pattern or --since.
+    // --pre-done cannot be combined with --pattern.
     if args.pre_done && args.pattern.is_some() {
         eprintln!("reify-audit: error: --pre-done cannot be combined with --pattern");
-        return ExitCode::from(ERROR_EXIT);
-    }
-    if args.pre_done && args.since.is_some() {
-        eprintln!("reify-audit: error: --pre-done cannot be combined with --since");
         return ExitCode::from(ERROR_EXIT);
     }
 
@@ -1011,6 +1024,10 @@ fn main() -> ExitCode {
 
     // Construct seam impls.
     let git = RealGitOps::new(PathBuf::from(&args.project_root));
+    let git = match history_snapshot_branch(&args) {
+        Some(branch) => git.with_history_snapshot(branch),
+        None => git,
+    };
 
     // Resolve the jcodemunch repo identity ONCE, before the seam is
     // constructed, so the identity queried and the identity gated cannot
@@ -1031,22 +1048,11 @@ fn main() -> ExitCode {
         );
     }
 
-    // Build window (for --since).
-    let window = args.since.as_ref().map(|s| TimeWindow {
-        since: Some(s.clone()),
-        until: None,
-    });
-
-    let ctx = AuditContext {
-        project_root: PathBuf::from(&args.project_root),
-        conn: &conn,
-        git: &git,
-        jcodemunch: seam.ops(),
-        task_metadata,
-        target_task_id: args.task_id.clone(),
-        window,
-        now: None,
-        producer_branch: None,
+    let ctx = AuditContext::new(PathBuf::from(&args.project_root), &conn, &git, seam.ops())
+        .with_tasks(task_metadata);
+    let ctx = match args.task_id.as_deref() {
+        Some(id) => ctx.targeting(id),
+        None => ctx,
     };
 
     // Dispatch.
@@ -1055,13 +1061,13 @@ fn main() -> ExitCode {
         let task_id = args.task_id.as_deref().expect("pre_done requires task_id");
         reify_audit::p5_phantom_done::check_pre_done(&ctx, task_id)
     } else {
-        // Spot-check or window sweep: every detector this run selects.
+        // Spot-check or sweep: every detector this run selects.
         let mut findings = Vec::new();
         for detector in selected_detectors(args.pattern.as_deref()) {
             let run = run_detector(detector, &ctx);
             // Before any findings array is serialized, like the fast path.
             if tasks_db_requirement_unmet(&args, &run) {
-                let path = ptodo::tasks_db_path(&ctx.project_root);
+                let path = ptodo::tasks_db_path(ctx.project_root());
                 eprintln!(
                     "reify-audit: {}",
                     tasks_db_refusal(&path, "it opened, but the lanes degraded on it")
@@ -1177,7 +1183,6 @@ mod tests {
         let args = parse_args(&[]).unwrap_or_else(|e| panic!("empty argv must parse: {e}"));
         assert!(args.task_id.is_none());
         assert!(!args.pre_done);
-        assert!(args.since.is_none());
         assert!(args.pattern.is_none());
         assert!(args.tasks_file.is_none());
         assert_eq!(args.runs_db, "data/orchestrator/runs.db");
@@ -1210,13 +1215,26 @@ mod tests {
         );
     }
 
+    /// `--since` never narrowed any detector and is gone: the catch-all arm
+    /// rejects it like any other unknown token.
+    #[test]
+    fn parse_args_rejects_since_as_an_unknown_flag() {
+        let err = unwrap_err(parse_args(&[
+            "--since".to_string(),
+            "2026-01-01".to_string(),
+        ]));
+        assert!(
+            err.contains("unknown flag '--since'"),
+            "--since must be rejected as an unknown flag; got: {err}"
+        );
+    }
+
     #[test]
     fn parse_args_missing_value_after_each_flag_returns_err() {
         // Every flag that takes a value must report its name in the error
         // when the value is missing (final-position bare flag).
         for flag in [
             "--task",
-            "--since",
             "--pattern",
             "--tasks-file",
             "--runs-db",
@@ -1282,8 +1300,6 @@ mod tests {
             "--task",
             "3242",
             "--pre-done",
-            "--since",
-            "2026-05-01",
             "--pattern",
             "P5",
             "--tasks-file",
@@ -1304,7 +1320,6 @@ mod tests {
         let args = parse_args(&argv).unwrap_or_else(|e| panic!("happy-path argv must parse: {e}"));
         assert_eq!(args.task_id.as_deref(), Some("3242"));
         assert!(args.pre_done);
-        assert_eq!(args.since.as_deref(), Some("2026-05-01"));
         assert_eq!(args.pattern.as_deref(), Some("P5"));
         assert_eq!(args.tasks_file.as_deref(), Some("/tmp/tasks.json"));
         assert_eq!(args.runs_db, "/tmp/runs.db");
@@ -1382,7 +1397,6 @@ mod tests {
         Args {
             task_id: None,
             pre_done,
-            since: None,
             pattern: pattern.map(|s| s.to_string()),
             tasks_file: None,
             fused_memory_url: String::new(),
@@ -1400,6 +1414,36 @@ mod tests {
     /// Whether a run with this `--pattern` value dispatches `token`'s detector.
     fn selects(token: &str, pattern: Option<&str>) -> bool {
         selected_detectors(pattern).any(|detector| detector.token == token)
+    }
+
+    /// The history snapshot is bound for sweeps only: a `--task` spot-check
+    /// asks too few questions to repay a whole-history dump, and `--pre-done`
+    /// runs inside fused-memory's write lock under a hard timeout.
+    #[test]
+    fn history_snapshot_binds_for_sweeps_only() {
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, None)),
+            Some("main")
+        );
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, Some("P5"))),
+            Some("main")
+        );
+        assert_eq!(
+            history_snapshot_branch(&make_args(false, Some("P2"))),
+            Some("main")
+        );
+
+        let spot_check = Args {
+            task_id: Some("1".to_string()),
+            ..make_args(false, None)
+        };
+        assert_eq!(history_snapshot_branch(&spot_check), None);
+        let pre_done = Args {
+            task_id: Some("1".to_string()),
+            ..make_args(true, None)
+        };
+        assert_eq!(history_snapshot_branch(&pre_done), None);
     }
 
     #[test]
@@ -2273,6 +2317,43 @@ mod tests {
                 "--pattern {pattern:?} must not refuse an empty task corpus"
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // PLINECITE (task #6935) — hard line cites in source comments
+    // -------------------------------------------------------------------
+
+    /// PLINECITE is OPT-IN although it cannot move the exit code (Medium
+    /// only): new cites accrue weekly, so a pattern-less sweep would turn
+    /// every bare run into follow-up traffic.
+    #[test]
+    fn plinecite_is_opt_in_not_in_default_sweep() {
+        assert!(
+            !selects(pattern_flag::PLINECITE, None),
+            "PLINECITE must NOT run in the no-`--pattern` default sweep"
+        );
+        assert!(
+            selects(pattern_flag::PLINECITE, Some("PLINECITE")),
+            "PLINECITE must activate when --pattern PLINECITE is given"
+        );
+        assert!(
+            !selects(pattern_flag::PLINECITE, Some("P2")),
+            "PLINECITE must be excluded when a named non-PLINECITE pattern is given"
+        );
+    }
+
+    #[test]
+    fn needs_jcodemunch_plinecite_routes_false() {
+        assert!(
+            !needs_jcodemunch(&make_args(false, Some("PLINECITE"))),
+            "PLINECITE reads the tracked tree only; it must not open a jcodemunch \
+             connection"
+        );
+        assert!(
+            !jcodemunch_only_run_set(&make_args(false, Some("PLINECITE"))),
+            "a PLINECITE-only run must not reach jcodemunch_only_run_set's \
+             stale-index refusal (exit 125)"
+        );
     }
 
     // -------------------------------------------------------------------

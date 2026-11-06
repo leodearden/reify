@@ -28,7 +28,7 @@ GPS-C1 (was #6803); C7 ← #5403, #5404, #6800, #6806, #5517–#5521.
 
 ## SCS-C1 (γ+ε+ι): fixture harness + manifest, divergence baseline, E_*↔DiagnosticCode bridge
 
-**Deps:** #6758 (done), #6759 (in-progress standard leaf — real edge kept). **Priority:** high.
+**Deps:** #6758 (done), #6759 (standard leaf — real edge kept). **Priority:** high.
 **Files (4):** crates/reify-spec-conformance/manifest.json,
 crates/reify-spec-conformance/divergence-baseline.txt, crates/reify-core/src/diagnostics.rs,
 tests/prd-gate/fixtures/spec_conformance_directive_block.ri (evidence, kept working)

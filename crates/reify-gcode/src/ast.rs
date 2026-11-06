@@ -4,8 +4,8 @@
 //! `docs/prds/v0_3/trajectory-input-shaping.md` §11 task μ.
 //!
 //! Design note: variants are *semantic* (LinearMove, ArcMove, …) rather
-//! than literal G-code numbers — see plan design decision #1 for the
-//! rationale (shared-AST contract with task ν Klipper).
+//! than literal G-code numbers, so every dialect (Marlin, Klipper) lowers
+//! into one shared AST.
 
 /// A single parsed G-code command from any supported dialect.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,8 +30,9 @@ pub enum GcodeCommand {
     /// Klipper-dialect `SET_VELOCITY_LIMIT KEY=VAL ...` directive. Carries
     /// ordered KEY=VALUE pairs as raw strings; semantic interpretation of
     /// the keys/values is the consumer's responsibility (task ο,
-    /// `gcode_import`). See plan design decision #3 for why this is
-    /// `Vec<(String, String)>` rather than a typed struct or HashMap.
+    /// `gcode_import`). Stored as `Vec<(String, String)>`: order matters for
+    /// round-trip `Display`, and raw strings keep the parser
+    /// dialect-agnostic.
     SetVelocityLimit(SetVelocityLimit),
     /// Klipper-dialect `INPUT_SHAPER KEY=VAL ...` directive. The
     /// **variant identity** itself is the cross-task signal: consumer
@@ -39,7 +40,7 @@ pub enum GcodeCommand {
     /// to emit `W_GcodeDialectShaperConflict` (PRD §10.1) when the
     /// in-PRD shaper-design supersedes the file-declared shaper.
     /// Parameters are carried as raw strings for the same reasons as
-    /// [`SetVelocityLimit`]; see plan design decisions #2 and #3.
+    /// [`SetVelocityLimit`].
     InputShaper(InputShaper),
 }
 
@@ -137,7 +138,6 @@ pub struct SetVelocityLimit {
 /// `W_GcodeDialectShaperConflict` when the file-declared shaper is
 /// superseded by the in-PRD shaper-design (PRD §10.1). This task
 /// (ν) only preserves the directive; it does NOT emit the warning.
-/// See plan design decision #2.
 ///
 /// `params` is ordered + raw-string for the same round-trip reasons as
 /// [`SetVelocityLimit`].

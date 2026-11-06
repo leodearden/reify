@@ -12,20 +12,21 @@
 use std::collections::{HashMap, HashSet};
 
 use reify_ast::TraitDecl;
-use reify_ir::CompiledFunction;
 
 use crate::CompiledModule;
 use crate::annotations::{deprecation_message, emit_deprecation_warning};
 use crate::compile_builder::ctx::CompilationCtx;
+use crate::compile_builder::functions_phase::build_resolution_functions;
 use crate::expr::trait_static_fn_symbol;
 use crate::functions::compile_function;
-use crate::merge_prelude_functions;
+use crate::name_env;
 use crate::traits::compile_trait;
 use crate::types::{CompiledTrait, DefaultKind};
 
-/// Build a combined trait registry (prelude first, then local override on
-/// name collision) used by downstream phases for deprecation checks and
-/// type-parameter bound resolution.
+/// Build the trait registry — every trait name bound by [`crate::name_env`]
+/// (NS-P1: local, then imports, then std modules, first wins) — used by
+/// downstream phases for deprecation checks and type-parameter bound
+/// resolution.
 ///
 /// Borrows from both `local` (module-local trait defs in ctx) and every
 /// prelude module's `trait_defs`. The returned map is phase-local because
@@ -35,16 +36,10 @@ pub(crate) fn build_trait_registry<'a>(
     local: &'a [CompiledTrait],
     prelude: &[&'a CompiledModule],
 ) -> HashMap<String, &'a CompiledTrait> {
-    let mut registry: HashMap<String, &'a CompiledTrait> = HashMap::new();
-    for m in prelude {
-        for t in &m.trait_defs {
-            registry.insert(t.name.clone(), t);
-        }
-    }
-    for t in local {
-        registry.insert(t.name.clone(), t);
-    }
-    registry
+    name_env::bind(local, prelude.iter().copied())
+        .winners()
+        .map(|t| (t.name.clone(), t))
+        .collect()
 }
 
 /// Run phase-8 (traits). Returns the compile-time `trait_names` set used by
@@ -117,8 +112,9 @@ pub(crate) fn phase_traits(
     // 4. Register namespaced trait-static functions into `ctx.functions`.
     //
     // For each locally-compiled trait's body-carrying static (no-`self`) assoc fn,
-    // compile the body in a neutral scope (same as a free fn) and register the result
-    // as a `CompiledFunction` named `"Trait::method"` in `ctx.functions`.
+    // compile the body in a neutral scope against the user fns registered so far plus
+    // the prelude (the same rule `phase_functions` uses for a free fn) and register the
+    // result as a `CompiledFunction` named `"Trait::method"` in `ctx.functions`.
     //
     // This registration is what makes `TraitStaticCall { trait_name, method, args }`
     // dispatch possible: the `compile_expr_guarded` arm for `TraitStaticCall` looks up
@@ -142,7 +138,8 @@ pub(crate) fn phase_traits(
     // Performance note: `ctx.resolution_functions` is only rebuilt when at least one
     // static fn is actually registered. For modules that declare no traits or no
     // body-carrying static assoc fns, resolution_functions is already correct from
-    // phase_functions and the O(prelude) clone+merge is skipped entirely.
+    // phase_functions and the O(prelude) clone+merge is skipped entirely. Each
+    // registered static fn's body does pay one such clone+merge (`body_table`, below).
     // The module's declared callable vocabulary, merged ONCE for the phase and
     // borrowed by every static-fn body scope below (task #5371). Rationale:
     // `CompilationScope::declared_callable_names`.
@@ -167,14 +164,17 @@ pub(crate) fn phase_traits(
                 let mut namespaced_fn = fn_def.clone();
                 namespaced_fn.name = trait_static_fn_symbol(&compiled_trait.name, &fn_def.name);
                 // Compile the body. Borrows of ctx fields are disjoint here:
-                // - resolution_enums, functions, alias_registry, resolution_structure_names
+                // - functions is read only to build `body_table`, rebuilt per static fn
+                //   so a later one can call an earlier one's `Trait::method` symbol.
+                // - resolution_enums, alias_registry, resolution_structure_names
                 //   are immutable borrows released when compile_function returns.
                 // - diagnostics is the mutable borrow taken by compile_function.
                 // - functions.push() runs after compile_function returns (NLL-safe).
+                let body_table = build_resolution_functions(&ctx.functions, prelude);
                 let compiled_fn = compile_function(
                     &namespaced_fn,
                     &ctx.resolution_enums,
-                    &ctx.functions,
+                    &body_table,
                     &ctx.alias_registry,
                     &ctx.resolution_structure_names,
                     &trait_names,
@@ -194,20 +194,14 @@ pub(crate) fn phase_traits(
     }
 
     // Rebuild `ctx.resolution_functions` so entity bodies (compiled in phase_entities,
-    // which runs after phase_traits) can resolve `Trait::method` calls.
-    // Pattern mirrors functions_phase.rs: user functions first (shadowing priority),
-    // then prelude functions for distinct (name, arity, param_types) triples.
-    // Note: `ctx.functions` (user-only, includes newly registered static fns) flows
+    // which runs after phase_traits) can resolve `Trait::method` calls — the same
+    // helper phase_functions uses. Note: `ctx.functions` (user-only, includes newly registered static fns) flows
     // to the final `CompiledModule.functions` (ctx.rs:181) used by the eval engine.
     //
     // Skipped entirely when no static fns were registered: resolution_functions is
     // already correct from phase_functions and the O(prelude) clone+merge is redundant.
     if any_static_fn_registered {
-        let prelude_fns: Vec<CompiledFunction> = prelude
-            .iter()
-            .flat_map(|m| m.functions.iter().cloned())
-            .collect();
-        ctx.resolution_functions = merge_prelude_functions(&ctx.functions, &prelude_fns);
+        ctx.resolution_functions = build_resolution_functions(&ctx.functions, prelude);
     }
 
     trait_names

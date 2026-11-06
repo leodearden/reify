@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "excluded": {
+    "reify-compiler": "glob imports hide edges until S7 κ; S7 ξ adds the rows"
+  },
+  "crates": {
+    "reify-eval": [
+      [
+        "cache",
+        "cell_commit",
+        "compute_persist",
+        "demand",
+        "deps",
+        "dirty",
+        "engine_admin",
+        "engine_build",
+        "engine_compute",
+        "engine_edit",
+        "engine_eval",
+        "engine_fixpoint",
+        "freshness_walk",
+        "geometry_ops",
+        "invariants",
+        "journal",
+        "observed_demand",
+        "realization_content",
+        "realization_staleness",
+        "resolve_order",
+        "shell_extract_compute",
+        "undef_tracer",
+        "unfold",
+        "warm_pool"
+      ],
+      [
+        "compute_targets",
+        "dynamics_ops",
+        "modal_ops",
+        "selector_vocabulary_v2",
+        "topology_selectors"
+      ]
+    ],
+    "reify-gui": [
+      [
+        "diff",
+        "gui_state_schema",
+        "types"
+      ]
+    ],
+    "reify-ir": [
+      [
+        "completeness",
+        "ranked"
+      ],
+      [
+        "expr",
+        "value"
+      ]
+    ],
+    "reify-kernel-gmsh": [
+      [
+        "init",
+        "log_capture"
+      ]
+    ],
+    "reify-shell-extract": [
+      [
+        "medial",
+        "walk_direction"
+      ]
+    ],
+    "reify-solver-elastic": [
+      [
+        "assembly",
+        "elements",
+        "shell_kinematics"
+      ]
+    ],
+    "reify-stdlib": [
+      [
+        "dynamics",
+        "joints",
+        "mechanism",
+        "snapshot"
+      ]
+    ]
+  }
+}

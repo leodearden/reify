@@ -49,7 +49,7 @@
 //!
 //! | Construct               | Where it slots in                                   | `InferredTraits`                      |
 //! |-------------------------|-----------------------------------------------------|---------------------------------------|
-//! | `extrude_infinite(...)` | Dedicated `"extrude_infinite"` arm in `infer_traits_for_function_call_in_env` | `InferredTraits::none()` |
+//! | `extrude_infinite(...)` | `SweepKind::ExtrudeInfinite` arm of [`combine_sweep`], shared by both walkers | `InferredTraits::none()` flags |
 //!
 //! ## Unimplemented Unbounded primitives
 //!
@@ -73,7 +73,7 @@
 //! defeats the Bounded check.
 
 use crate::types::{
-    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind,
+    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind, SweepKind,
 };
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
@@ -104,17 +104,16 @@ pub enum GeometryTrait {
 /// `crates/reify-compiler/stdlib/geometry_traits.ri`) and consumed by the
 /// profile-precondition check in `crates/reify-compiler/src/geometry.rs`.
 ///
-/// # Producer → dimension table (task α)
+/// # Producer → dimension table
 ///
 /// | Producer family                                              | `dimension` |
 /// |--------------------------------------------------------------|-------------|
 /// | curves (`line_segment`/`arc`/`helix`/`interp`/`bezier`/`nurbs`) | `Curve`  |
+/// | profile faces (`rectangle`/`circle`/`ellipse`/`polygon`/…), `nurbs_surface` | `Surface` |
 /// | primitives (`box`/`box_centered`/`cylinder`/`cylinder_centered`/`sphere`/`tube`) | `Solid` |
-/// | boolean / sweep / pattern / modify results                   | `Solid`     |
+/// | boolean / pattern / modify results                           | `Solid`     |
+/// | sweep results (see [`combine_sweep`])                        | lifts the section by one; `pipe`/`loft` → `Solid` |
 /// | transform (`translate`/`rotate`/`scale`/`rotate_around`)      | preserves operand |
-///
-/// `Surface` is reserved for the 2-D profile constructors that land in sibling
-/// tasks ζ/η (`rectangle`/`circle`/…); no task-α producer is a `Surface`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GeomDim {
     /// A 1-D curve (a sweep/pipe *path*).
@@ -169,7 +168,7 @@ impl InferredTraits {
     }
 
     /// All three flags cleared — used for sources that fail every check
-    /// (e.g. a future `extrude_infinite` primitive).
+    /// (e.g. `extrude_infinite`, see [`combine_sweep`]).
     pub const fn none() -> Self {
         Self {
             bounded: false,
@@ -346,12 +345,8 @@ impl InferredTraits {
 /// Connected+Convex but **not bounded** (`InferredTraits::unbounded_convex()`)
 /// — the first `Bounded=false` producer.
 ///
-/// # Future variants
-///
-/// When PRD `geometry-traits.md` adds `extrude_infinite`, extend this match to
-/// return `InferredTraits::none()` (or a tuned subset) for that kind. The
-/// exhaustive `match` will fail to compile against the un-updated arm, so the
-/// maintenance is localised.
+/// The match is exhaustive, so a new `PrimitiveKind` must state its traits
+/// here. (`extrude_infinite` is a `SweepKind`, handled by [`combine_sweep`].)
 pub const fn infer_primitive(kind: PrimitiveKind) -> InferredTraits {
     match kind {
         PrimitiveKind::Box
@@ -467,22 +462,56 @@ pub const fn combine_pattern(input: InferredTraits) -> InferredTraits {
     }
 }
 
-/// Sweep propagation rule (loft/extrude/revolve/sweep/extrude_symmetric/
-/// sweep_guided/loft_guided/pipe).
+/// Sweep propagation rule, shared by both inference walkers.
 ///
-/// `bounded` and `connected` are inherited from the **profile** (a
-/// bounded, connected profile swept along a finite path stays bounded
-/// and connected). `convex` is always dropped: even a convex profile
-/// swept along a curved path produces a non-convex solid in general.
-pub const fn combine_sweep(profile: InferredTraits) -> InferredTraits {
-    InferredTraits {
-        bounded: profile.bounded,
-        connected: profile.connected,
-        convex: false,
-        // A sweep result is a 3-D solid.
-        dimension: GeomDim::Solid,
-        planar: false,
-        closed: false,
+/// `first_operand` is the op's first geometry operand: the (first) section
+/// profile for every kind except `Pipe`, whose first operand is its PATH.
+///
+/// A sweep raises its section's dimension by one: a swept curve is an
+/// un-capped, non-planar surface (OCCT builds a shell), a swept face a solid.
+/// `Pipe` sweeps a kernel-synthesised circle face, and `Loft` reduces every
+/// section to its wire and caps the result (ThruSections, isSolid=true), so
+/// both are solids whatever their operand; an open-wire loft is the residual
+/// this over-claims.
+///
+/// `ExtrudeInfinite` is unbounded whatever its profile, so it yields the
+/// [`InferredTraits::none`] flags. Every other kind inherits `bounded` and
+/// `connected` from the operand (a bounded, connected section swept along a
+/// finite path stays so). `convex` is always dropped: even a convex section
+/// swept along a curved path is non-convex in general.
+pub const fn combine_sweep(kind: SweepKind, first_operand: InferredTraits) -> InferredTraits {
+    let dimension = swept_dimension(kind, first_operand.dimension);
+    match kind {
+        SweepKind::ExtrudeInfinite => InferredTraits {
+            dimension,
+            ..InferredTraits::none()
+        },
+        _ => InferredTraits {
+            bounded: first_operand.bounded,
+            connected: first_operand.connected,
+            convex: false,
+            dimension,
+            planar: false,
+            closed: false,
+        },
+    }
+}
+
+/// The dimension of a `kind` sweep whose first operand has dimension `operand`.
+/// See [`combine_sweep`].
+const fn swept_dimension(kind: SweepKind, operand: GeomDim) -> GeomDim {
+    match kind {
+        SweepKind::Pipe | SweepKind::Loft => GeomDim::Solid,
+        SweepKind::Extrude
+        | SweepKind::ExtrudeSymmetric
+        | SweepKind::ExtrudeInfinite
+        | SweepKind::Revolve
+        | SweepKind::Sweep
+        | SweepKind::SweepGuided
+        | SweepKind::LoftGuided => match operand {
+            GeomDim::Curve => GeomDim::Surface,
+            GeomDim::Surface | GeomDim::Solid => GeomDim::Solid,
+        },
     }
 }
 
@@ -509,6 +538,39 @@ pub struct EmptyLetEnv;
 
 impl LetBindingEnv for EmptyLetEnv {
     fn lookup(&self, _id: &ValueCellId) -> Option<InferredTraits> {
+        None
+    }
+}
+
+/// An environment that resolves a `GeomRef::Sub(name)` operand to the inferred
+/// traits of its referent.
+///
+/// The op-array walker does not own name→ops resolution: a `Sub` ref names a
+/// sibling realization on the enclosing template, which only the conformance
+/// walker can look up. This trait is the seam it reaches through, mirroring
+/// [`LetBindingEnv`] for the expression walker.
+///
+/// Returns `None` for any name the implementor declines to resolve (unknown,
+/// deliberately out of scope, or already in flight on the current call stack),
+/// in which case the caller falls back to `InferredTraits::all()` — the same
+/// safe-default convention [`LetBindingEnv`] uses.
+pub trait SubRefEnv {
+    /// Look up the inferred traits for the geometry named by a `GeomRef::Sub`.
+    ///
+    /// Returns `Some(traits)` if `name` resolves, or `None` for "unknown / use
+    /// the safe default". Implementors MUST terminate cycles themselves —
+    /// nothing in this module tracks which names are already being resolved.
+    fn lookup_sub(&self, name: &str) -> Option<InferredTraits>;
+}
+
+/// An empty `SubRefEnv` that always returns `None`.
+///
+/// Used by the env-less [`infer_traits_for_op`] wrapper and by any call site
+/// that has no sibling-realization context to offer.
+pub struct EmptySubRefEnv;
+
+impl SubRefEnv for EmptySubRefEnv {
+    fn lookup_sub(&self, _name: &str) -> Option<InferredTraits> {
         None
     }
 }
@@ -577,7 +639,13 @@ pub fn infer_traits_for_expr_in_env(
     }
 }
 
-/// Walk the inference table over a compiled geometry op-array.
+/// Walk the inference table over a compiled geometry op-array that has NO
+/// sibling scope.
+///
+/// This wrapper never resolves `GeomRef::Sub`: every such operand infers
+/// `all()`, so an unbounded sibling-let operand would satisfy `Bounded`. Use it
+/// only for an op-array with no enclosing template (e.g. a hand-built one); a
+/// caller that can name the template must use [`infer_traits_for_op_in_env`].
 ///
 /// This is the **inverse** of the `infer_traits_for_expr` FunctionCall arm —
 /// same dispatch table (same `combine_*` helpers and `infer_primitive` lookup)
@@ -593,9 +661,7 @@ pub fn infer_traits_for_expr_in_env(
 ///
 /// - Empty array → `InferredTraits::all()` (defensive; compiler never emits an
 ///   empty realization).
-/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (safe-default: sub-component
-///   geometry is not chased through the call stack; doing so would require
-///   resolving cross-entity references that are out of scope here).
+/// - `GeomRef::Sub(_)` → `InferredTraits::all()` (see above).
 /// - Out-of-range `GeomRef::Step(idx)` → `InferredTraits::all()` (defensive;
 ///   well-formed IR never produces an out-of-range index).
 /// - Self-referential or forward-chain `GeomRef::Step(idx)` (`idx >=
@@ -603,9 +669,27 @@ pub fn infer_traits_for_expr_in_env(
 ///   SSA-style construction guarantees `idx < current_position`, so any
 ///   violation is malformed IR that would otherwise infinite-recurse).
 pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
+    infer_traits_for_op_in_env(ops, &EmptySubRefEnv)
+}
+
+/// Walk the inference table over a compiled geometry op-array, consulting
+/// `env` to resolve `GeomRef::Sub(name)` operands to their referent's traits.
+///
+/// Every arm behaves identically to [`infer_traits_for_op`] except
+/// `GeomRef::Sub`, which delegates to `env.lookup_sub(name)` and safe-defaults
+/// to `InferredTraits::all()` only when the env declines. The dispatch table
+/// lives here and the env-less wrapper is a thin alias over `EmptySubRefEnv`.
+///
+/// The env is responsible for its own cycle termination — a sibling
+/// realization can name a sibling that names it back, and this walker's
+/// `idx < current_position` guard only covers `GeomRef::Step` within one array.
+pub fn infer_traits_for_op_in_env(
+    ops: &[CompiledGeometryOp],
+    env: &dyn SubRefEnv,
+) -> InferredTraits {
     match ops.last() {
         None => InferredTraits::all(),
-        Some(op) => infer_op(op, ops, ops.len() - 1),
+        Some(op) => infer_op(op, ops, ops.len() - 1, env),
     }
 }
 
@@ -614,11 +698,14 @@ pub fn infer_traits_for_op(ops: &[CompiledGeometryOp]) -> InferredTraits {
 ///
 /// `current_position` is the index of `op` within `ops`. It is threaded
 /// through all recursive calls so that `infer_geom_ref` can enforce the
-/// `idx < current_position` SSA-style invariant.
+/// `idx < current_position` SSA-style invariant. `env` is threaded the same
+/// way, so every `GeomRef::Sub` reachable from the root sees the same
+/// resolution environment.
 fn infer_op(
     op: &CompiledGeometryOp,
     ops: &[CompiledGeometryOp],
     current_position: usize,
+    env: &dyn SubRefEnv,
 ) -> InferredTraits {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => infer_primitive(*kind),
@@ -628,8 +715,8 @@ fn infer_op(
             left,
             right,
         } => {
-            let a = infer_geom_ref(left, ops, current_position);
-            let b = infer_geom_ref(right, ops, current_position);
+            let a = infer_geom_ref(left, ops, current_position, env);
+            let b = infer_geom_ref(right, ops, current_position, env);
             match bool_op {
                 BooleanOp::Union => combine_union(a, b),
                 BooleanOp::Difference => combine_difference(a, b),
@@ -638,25 +725,24 @@ fn infer_op(
         }
 
         CompiledGeometryOp::Modify { target, .. } => {
-            combine_modify(infer_geom_ref(target, ops, current_position))
+            combine_modify(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Transform { target, .. } => {
-            combine_transform(infer_geom_ref(target, ops, current_position))
+            combine_transform(infer_geom_ref(target, ops, current_position, env))
         }
 
         CompiledGeometryOp::Pattern { target, .. } => {
-            combine_pattern(infer_geom_ref(target, ops, current_position))
+            combine_pattern(infer_geom_ref(target, ops, current_position, env))
         }
 
-        CompiledGeometryOp::Sweep { profiles, .. } => {
-            // Sweep inherits traits from the first profile (bounded, connected
-            // geometry swept along a finite path stays bounded and connected).
-            let profile = profiles
+        CompiledGeometryOp::Sweep { kind, profiles, .. } => {
+            // `profiles[0]` is the first geometry operand `combine_sweep` reads.
+            let first_operand = profiles
                 .first()
-                .map(|r| infer_geom_ref(r, ops, current_position))
+                .map(|r| infer_geom_ref(r, ops, current_position, env))
                 .unwrap_or(InferredTraits::all());
-            combine_sweep(profile)
+            combine_sweep(*kind, first_operand)
         }
 
         // Curve constructors are 1-D primitives → GeomDim::Curve (preserving
@@ -686,7 +772,8 @@ fn infer_op(
 }
 
 /// Resolve a `GeomRef` within an op-array, returning the inferred traits for
-/// the referenced op. `GeomRef::Sub(_)` returns the safe all() default.
+/// the referenced op. `GeomRef::Sub(name)` delegates to `env.lookup_sub(name)`
+/// and falls back to the safe all() default only when the env declines.
 ///
 /// # Cycle guard — `idx < current_position` invariant
 ///
@@ -705,6 +792,7 @@ fn infer_geom_ref(
     geom_ref: &GeomRef,
     ops: &[CompiledGeometryOp],
     current_position: usize,
+    env: &dyn SubRefEnv,
 ) -> InferredTraits {
     match geom_ref {
         GeomRef::Step(idx) => {
@@ -723,11 +811,14 @@ fn infer_geom_ref(
                 "cycle guard should have caught idx >= current_position"
             );
             ops.get(*idx)
-                .map(|op| infer_op(op, ops, *idx))
+                .map(|op| infer_op(op, ops, *idx, env))
                 .unwrap_or(InferredTraits::all())
         }
-        // Sub-component geometry is not chased through the call stack.
-        GeomRef::Sub(_) => InferredTraits::all(),
+        // Sub-component geometry is resolved by the env, which owns
+        // name→realization lookup and its own cycle termination. `None` means
+        // the env declined (unknown name, out of scope, or already in flight),
+        // which collapses to the module-wide safe default.
+        GeomRef::Sub(name) => env.lookup_sub(name).unwrap_or(InferredTraits::all()),
     }
 }
 
@@ -844,23 +935,20 @@ pub fn try_infer_traits_for_function_call_in_env(
             Some(combine_pattern(t))
         }
 
-        // ─── extrude_infinite → Unbounded (task #3466) ──────────────────
-        // extrude_infinite always produces an unbounded solid regardless of its
-        // profile argument — the defining property of a semi-infinite or
-        // bi-infinite extrusion. Returns InferredTraits::none() (bounded=false,
-        // connected=false, convex=false) so the conformance walker emits
-        // E_GEOMETRY_UNBOUNDED whenever the result is placed at a `param g :
-        // Bounded` slot.
-        "extrude_infinite" => Some(InferredTraits::none()),
-
         // ─── Sweep combinators → recurse + combine_sweep ────────────────
-        // zone_cylinder and zone_annulus both lower to Pipe sweeps (axis-swept circles/annuli)
-        // so they belong here. zone_profile is in the modify arm above.
-        "extrude" | "extrude_symmetric" | "revolve" | "revolve_full" | "sweep" | "sweep_guided"
-        | "loft" | "loft_guided" | "pipe" | "zone_cylinder" | "zone_annulus" => {
-            let t = first_geometry_arg_in_env(args, env);
-            Some(combine_sweep(t))
-        }
+        // Each name maps to the SweepKind its geometry.rs lowering arm emits.
+        // zone_annulus is the exception: it lowers to a Difference of two Pipe
+        // sweeps, whose op-array inference drops `connected`, while this arm
+        // keeps it. zone_profile is in the modify arm above.
+        "extrude" => Some(sweep_in_env(SweepKind::Extrude, args, env)),
+        "extrude_symmetric" => Some(sweep_in_env(SweepKind::ExtrudeSymmetric, args, env)),
+        "extrude_infinite" => Some(sweep_in_env(SweepKind::ExtrudeInfinite, args, env)),
+        "revolve" | "revolve_full" => Some(sweep_in_env(SweepKind::Revolve, args, env)),
+        "sweep" => Some(sweep_in_env(SweepKind::Sweep, args, env)),
+        "sweep_guided" => Some(sweep_in_env(SweepKind::SweepGuided, args, env)),
+        "loft" => Some(sweep_in_env(SweepKind::Loft, args, env)),
+        "loft_guided" => Some(sweep_in_env(SweepKind::LoftGuided, args, env)),
+        "pipe" | "zone_cylinder" | "zone_annulus" => Some(sweep_in_env(SweepKind::Pipe, args, env)),
 
         // ─── Curve constructors → curve() (1-D primitives) ──────────────
         "line_segment" | "arc" | "helix" | "interp" | "bezier" | "nurbs" => {
@@ -935,6 +1023,11 @@ fn first_geometry_arg_in_env(args: &[CompiledExpr], env: &dyn LetBindingEnv) -> 
         .find(|a| is_geometry_operand(a))
         .map(|a| infer_traits_for_expr_in_env(a, env))
         .unwrap_or(InferredTraits::all())
+}
+
+/// [`combine_sweep`] of `kind` over the call's first geometry operand.
+fn sweep_in_env(kind: SweepKind, args: &[CompiledExpr], env: &dyn LetBindingEnv) -> InferredTraits {
+    combine_sweep(kind, first_geometry_arg_in_env(args, env))
 }
 
 /// Fold `combine` across every geometry-typed argument with env threading

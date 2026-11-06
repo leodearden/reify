@@ -22,8 +22,9 @@
 //! TRAIT-BODY shapes ARE reachable from this file, provided a CONFORMER is
 //! declared. The vacuity condition is narrower than "trait body": a trait
 //! compiled with NO conformer is not dimension-checked at all (measured — see
-//! `trait_body_without_conformer_is_not_dimension_checked`), so only a
-//! conformer-less probe is vacuous. Add a conformer and the same body emits
+//! `trait_body_without_conformer_is_not_dimension_checked` in
+//! `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`),
+//! so only a conformer-less probe is vacuous. Add a conformer and the same body emits
 //! `DiagnosticCode::DimensionMismatch` on a mismatch, so the trait-body pins
 //! below carry real compile signal. `polymorphic_zero_trait_eval.rs` in
 //! reify-eval complements them with the RUNTIME satisfaction signal
@@ -38,8 +39,7 @@
 
 use reify_core::DiagnosticCode;
 use reify_test_support::{
-    assert_error_code_present, assert_no_error_diagnostics, collect_errors,
-    compile_source_with_stdlib,
+    assert_error_code_present, assert_no_error_diagnostics, compile_source_with_stdlib,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -454,7 +454,8 @@ structure S {
 /// Written as a `structure`; the `trait Physical` shape it mirrors is pinned
 /// separately by `trait_body_with_conformer_member_access_gt_zero_no_error`
 /// below (a trait body needs a CONFORMER to be dimension-checked at all — see
-/// `trait_body_without_conformer_is_not_dimension_checked`).
+/// `trait_body_without_conformer_is_not_dimension_checked` in
+/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`).
 #[test]
 fn member_access_lhs_gt_zero_no_error() {
     let compiled = compile_source_with_stdlib(
@@ -479,7 +480,8 @@ structure S {
 ///
 /// This guard is not ceremonial: the same probe written against a CONFORMER-LESS
 /// `trait` body goes silent — see
-/// `trait_body_without_conformer_is_not_dimension_checked` below.
+/// `trait_body_without_conformer_is_not_dimension_checked` in
+/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`.
 #[test]
 fn member_access_mismatched_non_zero_still_errors() {
     let compiled = compile_source_with_stdlib(
@@ -517,9 +519,10 @@ structure S {
 /// there is a CALL-SITE preference, not a compiler limit.
 ///
 /// Written as a `structure`, not a bare `trait`: per
-/// `trait_body_without_conformer_is_not_dimension_checked` a conformer-less
-/// trait body is not dimension-checked at all, so both halves of this pair
-/// would pass vacuously.
+/// `trait_body_without_conformer_is_not_dimension_checked` (in
+/// `crates/reify-compiler/tests/harness_traits/trait_body_deferred_check_tests.rs`)
+/// a conformer-less trait body is not dimension-checked at all, so both halves
+/// of this pair would pass vacuously.
 #[test]
 fn index_access_subscript_gt_zero_no_error() {
     let compiled = compile_source_with_stdlib(
@@ -570,35 +573,6 @@ structure S {
 // TRAIT-BODY shapes (task 6038 amendment): the two swept stdlib sites whose
 // constraints live in a trait body rather than a structure body.
 // ────────────────────────────────────────────────────────────────────────────
-
-/// SCOPE OF THE VACUITY CARVE-OUT — a trait body compiled with NO conformer is
-/// not dimension-checked at all.
-///
-/// Measured, not assumed: `constraint material.density > 1m` in a conformer-less
-/// trait produces ZERO diagnostics, even though the same body in a structure
-/// (`member_access_mismatched_non_zero_still_errors` above) errors with
-/// `DimensionMismatch`. This is why every trait-body pin below declares a
-/// conformer — and it bounds the carve-out to exactly that case, rather than to
-/// "trait bodies" generally.
-#[test]
-fn trait_body_without_conformer_is_not_dimension_checked() {
-    let compiled = compile_source_with_stdlib(
-        r#"
-trait HasBody {
-    param material : Material
-    constraint material.density > 1m
-}
-"#,
-    );
-    let errors = collect_errors(&compiled.diagnostics);
-    assert!(
-        errors.is_empty(),
-        "a conformer-less trait body is expected to go unchecked (that is the \
-         documented vacuity condition). If this now errors, the carve-out in \
-         this file's module doc and in docs/notes/dimensioned-zero-coercion.md \
-         is stale and should be deleted. Diagnostics: {errors:#?}"
-    );
-}
 
 /// TRAIT BODY + MEMBER ACCESS, WITH CONFORMER — the `structural_physical.ri`
 /// `trait Physical` / `constraint material.density > 0kg/m^3` shape, compiled

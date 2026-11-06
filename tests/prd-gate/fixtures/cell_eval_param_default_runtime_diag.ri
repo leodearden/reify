@@ -1,0 +1,12 @@
+// PRD docs/prds/v0_6/cell-eval-transaction-closure.md, leaf η (INV-EVAL-2; the
+// cold Param arm moves onto the per-cell elaboration primitive).
+// A param default that emits a runtime diagnostic. Before η the cold Param
+// default is evaluated without a runtime-diagnostics sink, so `reify eval`
+// prints `S.xs = undef` and exits 0. After η it also prints
+// `error: generate: count must be a non-negative Int` and exits 1, the same
+// as the let form in cell_eval_let_runtime_diag_control.ri.
+module cell_eval_param_default_runtime_diag
+
+structure S {
+    param xs : List<Int> = generate(-1, |i: Int| i * 2)
+}

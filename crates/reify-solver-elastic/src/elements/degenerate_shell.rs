@@ -54,31 +54,24 @@
 //! 4065's. The element stiffness assembled from these pieces lives beside its
 //! flat-facet sibling in [`crate::shell_assembly`].
 //!
-//! # Transverse shear: exact kinematics and the in-plane-metric improvement
+//! # Transverse shear: exact kinematics
 //!
 //! The carried MITC3+ assumed-strain *locking treatment* (Lee–Lee–Bathe Eq. 9
 //! interior tying, task 3392's deliverable) is reused **verbatim**; only the
 //! per-tying-point covariant *samples* are re-derived from the true degenerate
 //! kinematics ([`degenerate_exact_covariant_shear_b`]) — the exact covariant
-//! shear `γ_αζ = g_α·u_,ζ + g_ζ·u_,α` rather than task 3392's flat global-DOF
-//! field. This is the only form that is simultaneously frame-objective (rotates
-//! as a tensor under rigid 3D rotation) and rigid-body-compatible — see
-//! esc-4068-127.
+//! shear `γ_αζ = g_α·u_,ζ + g_ζ·u_,α` rather than the flat-facet field. This is
+//! the only form that is simultaneously frame-objective (rotates as a tensor
+//! under rigid 3D rotation) and rigid-body-compatible — see esc-4068-127.
 //!
-//! A consequence (esc-4068-134): the exact covariant shear carries the in-plane
-//! metric on the rotation term — its `γ_αζ[θ]` coefficient is `|g_α|·h_i`, the
-//! genuine standard-MITC3 value — whereas task 3392's
-//! [`Mitc3Plus::covariant_shear_b_nodal`] writes the bare `h_i` with no metric.
-//! On a UNIT-metric orthogonal flat triangle (`|g_α| = 1`) the two coincide
-//! bit-for-bit, so this element reduces exactly to flat MITC3+ there (the
-//! flat-reduction anchors). On a general (non-unit / skew) flat triangle the
-//! degenerate element computes the physically-correct standard-MITC3 transverse
-//! shear, which differs from 3392's simplified flat-facet value by `|g_α|` — a
-//! strict **improvement** (part of the step-21 curved-benchmark gain), pinned
-//! positively by the non-unit constant-shear patch test, NOT a regression.
+//! On a flat facet (directors ∥ the facet normal, uniform thickness) the exact
+//! covariant shear is `(t/2)×` the flat field
+//! [`crate::shell_kinematics::ShellKinematics::covariant_shear_b`], whose
+//! rotation term carries the same in-plane metric `g_α`. The element therefore
+//! reduces to flat MITC3+ on any flat triangle (the flat-reduction anchors).
 
 use crate::elements::mitc3_plus::{Mitc3Plus, ShellReferenceCoord};
-use crate::shell_assembly::build_shell_frame;
+use crate::elements::shell_frame::build_shell_frame;
 
 /// A 3D degenerate-shell reference coordinate `(ξ, η, ζ)`.
 ///
@@ -253,7 +246,7 @@ fn jinv_t_mul(j_inv: &[[f64; 3]; 3], g_ref: &[f64; 3]) -> [f64; 3] {
 /// - `e2 = e3 × e1`.
 ///
 /// On a flat facet (directors ∥ facet normal, `g1` in-plane) this reduces
-/// exactly to [`crate::shell_assembly::build_shell_frame`], so `plane_stress_d`
+/// exactly to [`build_shell_frame`], so `plane_stress_d`
 /// — expressed in this lamina frame — applies and the flat reduction is exact.
 fn lamina_frame(j: &[[f64; 3]; 3], n: &[f64; 3], directors: &[Director; 3]) -> [[f64; 3]; 3] {
     // e3 = normalized interpolated director.
@@ -620,48 +613,43 @@ fn degenerate_exact_covariant_membrane_b(
     b
 }
 
-/// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) at the in-plane
-/// reference coordinate `coord`, carried VERBATIM from the MITC3+ formulation
-/// (task 3392) using the **flat-facet** (global `u_z/θ_x/θ_y`) kinematics.
+/// Assumed **covariant** transverse-shear B-matrix (`2 × 18`) of the flat-facet
+/// MITC3+ element for the flat triangle `nodes`, at the in-plane reference
+/// coordinate `coord`.
 ///
 /// Rows are the covariant components `(γ_ξζ, γ_ηζ)`; columns the 18 nodal DOFs
-/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`). Construction — identical to the inline
-/// assembly in [`crate::shell_assembly::shell_element_stiffness_mitc3_plus`]:
+/// (`6·node + {u_x,u_y,u_z,θ_x,θ_y,θ_z}`) in the facet's local frame. Construction
+/// — identical to [`crate::shell_assembly::shell_element_stiffness_mitc3_plus`]:
 ///
-/// 1. sample the bare three-node (DISP3) covariant shear
-///    ([`Mitc3Plus::covariant_shear_b_nodal`]) at the six interior tying points
-///    ([`Mitc3Plus::interior_tying_points`]);
+/// 1. sample the metric-carrying three-node (DISP3) covariant shear
+///    ([`crate::shell_kinematics::ShellKinematics::covariant_shear_b`]) at the six
+///    interior tying points ([`Mitc3Plus::interior_tying_points`]);
 /// 2. re-interpolate each DOF column via
 ///    [`Mitc3Plus::interpolate_assumed_shear_mitc3_plus`] (Lee–Lee–Bathe Eq. 9).
 ///
-/// This field is **geometry-free** (pure natural coordinates): it is *exactly*
-/// task 3392's assumed transverse-shear field — no new shear formulation is
-/// introduced here.
+/// # Role: a flat-equivalence reference, NOT the stiffness path
 ///
-/// # Role: a documented flat-equivalence reference, NOT the stiffness path
-///
-/// `Mitc3Plus::covariant_shear_b_nodal` hard-codes the flat-facet Reissner–Mindlin
-/// kinematics — it reads the *global* `u_z` (DOF 2), `θ_x` (DOF 3), `θ_y` (DOF 4)
-/// and assumes the shell normal is the global `+z`; it carries neither `θ_z` nor
-/// the per-node director `V_i`. On a curved (tilted-director) patch no linear
-/// covariant→physical map of this flat field can simultaneously satisfy the
-/// rigid-body null-space and 3D-rotation isotropy (esc-4068-127). It is therefore
-/// **not** the field the stiffness uses; [`degenerate_transverse_shear_b`] builds
-/// the covariant shear from the *exact* degenerate kinematics instead. This
-/// function is a test-only (`#[cfg(test)]`) witness that, when flat, the exact
-/// kinematics coincide with task 3392's carried DISP3 covariant field, used by
-/// the constant-state and flat-reduction tests below. "No new shear field" holds
-/// by construction: it invokes only the task-3392 primitives
-/// (`covariant_shear_b_nodal` + `interpolate_assumed_shear_mitc3_plus`), so there
-/// is no second reconstruction to drift against.
+/// The flat field reads `u_z` (DOF 2), `θ_x` (DOF 3), `θ_y` (DOF 4) about the
+/// facet normal; it carries neither `θ_z` nor the per-node director `V_i`. On a
+/// curved (tilted-director) patch no linear covariant→physical map of this flat
+/// field can simultaneously satisfy the rigid-body null-space and 3D-rotation
+/// isotropy (esc-4068-127), so [`degenerate_transverse_shear_b`] builds the
+/// covariant shear from the *exact* degenerate kinematics instead. This
+/// test-only witness checks that, when flat, those exact kinematics coincide
+/// with the flat MITC3+ field. It invokes only the flat element's own
+/// primitives, so there is no second reconstruction to drift against.
 #[cfg(test)]
-fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18]; 2] {
+fn degenerate_assumed_covariant_shear_b(
+    nodes: &[[f64; 3]; 3],
+    coord: ShellReferenceCoord,
+) -> [[f64; 18]; 2] {
     use crate::elements::mitc3_plus::ShearStrain;
+    let kin = crate::shell_kinematics::shell_kinematics(nodes, &build_shell_frame(nodes));
     let interior = Mitc3Plus.interior_tying_points();
-    // (1) Sample the bare-DISP3 covariant shear at the six interior tying points.
+    // (1) Sample the DISP3 covariant shear at the six interior tying points.
     let mut b_tp = [[[0.0_f64; 18]; 2]; Mitc3Plus::N_INTERIOR_TYING_POINTS];
     for (k, tp) in interior.iter().enumerate() {
-        b_tp[k] = Mitc3Plus.covariant_shear_b_nodal(tp.coord);
+        b_tp[k] = kin.covariant_shear_b(tp.coord);
     }
     // (2) Re-interpolate each DOF column via Eq. 9 at `coord`.
     let mut b = [[0.0_f64; 18]; 2];
@@ -708,10 +696,10 @@ fn degenerate_assumed_covariant_shear_b(coord: ShellReferenceCoord) -> [[f64; 18
 /// rotation — the two properties no linear remap of the flat global-DOF field
 /// could provide together (esc-4068-127).
 ///
-/// On a flat facet (`V_i ∥ +z`, planar nodes) this reduces — after the
-/// through-thickness `1/|g_ζ|` and in-plane `J⁻ᵀ` map of
-/// [`degenerate_transverse_shear_b`] — to task 3392's carried DISP3 covariant
-/// field, so the flat reduction is preserved.
+/// On a flat facet (`V_i ∥ +z`, planar nodes) this is `(t/2)×`
+/// [`crate::shell_kinematics::ShellKinematics::covariant_shear_b`] on any flat
+/// triangle, so after the through-thickness `1/|g_ζ|` and in-plane `J⁻ᵀ` map of
+/// [`degenerate_transverse_shear_b`] the flat reduction is preserved.
 fn degenerate_exact_covariant_shear_b(
     nodes: &[[f64; 3]; 3],
     directors: &[Director; 3],
@@ -793,9 +781,10 @@ fn degenerate_exact_covariant_shear_b(
 /// # Flat reduction
 ///
 /// On a flat facet `J` is `ζ`-invariant, `q` reduces to
-/// [`crate::shell_assembly::build_shell_frame`], `s₃ = 2/t = 1/|g_ζ|`, and the
-/// exact covariant samples × `s₃·m2` reduce to task 3392's
-/// `jac2_inv_t · covariant_shear_b_nodal` flat map at every `ζ`.
+/// [`build_shell_frame`], `s₃ = 2/t = 1/|g_ζ|`, and the
+/// exact covariant samples × `s₃·m2` reduce to the flat map
+/// `jac2_inv_t · ShellKinematics::covariant_shear_b` at every `ζ`, on any flat
+/// triangle.
 pub fn degenerate_transverse_shear_b(
     nodes: &[[f64; 3]; 3],
     directors: &[Director; 3],
@@ -1484,12 +1473,13 @@ mod tests {
 
     /// (i) Patch-safety prerequisite: the carried assumed **covariant** shear
     /// field reproduces a CONSTANT covariant transverse-shear state exactly at
-    /// every probe. Mirrors
-    /// `covariant_shear_b_nodal_plus_eq9_reproduces_constant_shear_state`: a
-    /// uniform `θ_y = α` (with `w = 0`, `θ_x = 0`) is the constant covariant
+    /// every probe. Mirrors shell_kinematics'
+    /// `covariant_shear_b_plus_eq9_reproduces_the_constant_covariant_state_on_non_unit_triangle`
+    /// on the unit triangle: a uniform `θ_y = α` (with `w = 0`, `θ_x = 0`) is the constant covariant
     /// state `(γ_ξζ = α, γ_ηζ = 0)`, so Eq. 9 must return `(α, 0)` at any `(ξ,η)`.
     #[test]
     fn degenerate_assumed_covariant_shear_reproduces_constant_state() {
+        let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let alpha = 0.7_f64;
         let mut u = [0.0_f64; 18];
         for i in 0..3 {
@@ -1500,58 +1490,40 @@ mod tests {
             ShellReferenceCoord::new(0.2, 0.3),
             ShellReferenceCoord::new(0.5, 0.25),
         ] {
-            let b = degenerate_assumed_covariant_shear_b(p);
+            let b = degenerate_assumed_covariant_shear_b(&nodes, p);
             let e = shear_b_times_u(&b, &u);
             assert!((e[0] - alpha).abs() < TOL, "γ_ξζ at {p:?} = {} expected {alpha}", e[0]);
             assert!(e[1].abs() < TOL, "γ_ηζ at {p:?} = {} expected 0", e[1]);
         }
     }
 
-    /// (ii) FLAT-facet reduction on a UNIT-METRIC orthogonal triangle: the
-    /// varying-J covariant→physical shear map equals task 3392's constant `J2⁻ᵀ`
-    /// map. The reference triangle `[(0,0),(1,0),(0,1)]` in the xy-plane has its
-    /// first edge along +x (so `build_shell_frame`'s lamina frame is the global
-    /// xyz frame) AND `g_ξ = (1,0,0)`, `g_η = (0,1,0)` — i.e. `|g_ξ| = |g_η| = 1`
-    /// and `g_ξ ⊥ g_η`. With directors +z and uniform thickness, the physical
-    /// transverse-shear B from [`degenerate_transverse_shear_b`] equals the
-    /// carried covariant field mapped by `shell_kinematics(...).jac2_inv_t` — at
-    /// every ζ (a flat facet has a ζ-invariant J) — to 1e-12 (measured: max diff
-    /// 0.0).
-    ///
-    /// # Why the UNIT-metric triangle (esc-4068-134)
-    ///
-    /// The exact degenerate kinematics ([`degenerate_exact_covariant_shear_b`])
-    /// carry the in-plane metric on the rotation term: the covariant `γ_αζ[θ]`
-    /// coefficient is `|g_α|·h_i`, the genuine standard-MITC3 value. Task 3392's
-    /// [`Mitc3Plus::covariant_shear_b_nodal`] writes the bare `h_i` with **no**
-    /// metric, and the energy applies `jac2_inv_t` (the contravariant metric
-    /// `g^{αβ}`), so 3392's physical rotation shear is `h_i/|g_α|` — metric-
-    /// SIMPLIFIED, exact only where `|g_α| = 1`. The two therefore agree bit-for-
-    /// bit **only** on a unit-metric orthogonal flat triangle (here, the unit
-    /// reference triangle, where iteration-6 measured max diff 0.0). On a general
-    /// (non-unit / skew) flat triangle the degenerate element computes the
-    /// physically-correct standard-MITC3 shear, differing from 3392's simplified
-    /// value by the in-plane metric `|g_α|` — a strict IMPROVEMENT, pinned
-    /// positively by the non-unit constant-shear PATCH test in `shell_assembly`.
-    /// "Carry MITC3+ shear" stays satisfied: the assumed-strain Eq. 9 LOCKING
-    /// treatment (3392's deliverable) is carried verbatim; only the per-tying-
-    /// point covariant SAMPLES use true curved kinematics.
+    /// (ii) FLAT-facet reduction at the B level: the varying-J covariant→physical
+    /// shear map equals the flat constant `J2⁻ᵀ` map. On the unit reference
+    /// triangle `[(0,0),(1,0),(0,1)]` (first edge along +x, so
+    /// `build_shell_frame`'s lamina frame is the global xyz frame) with directors
+    /// +z and uniform thickness, the physical transverse-shear B from
+    /// [`degenerate_transverse_shear_b`] equals the flat MITC3+ covariant field
+    /// mapped by `shell_kinematics(...).jac2_inv_t` — at every ζ (a flat facet
+    /// has a ζ-invariant J) — to 1e-12. The reduction holds on any flat triangle;
+    /// `shell_assembly`'s `degenerate_flat_reduces_to_mitc3_plus_on_any_flat_triangle`
+    /// pins it at the K level on non-unit and skew ones. The assumed-strain Eq. 9
+    /// LOCKING treatment (3392's deliverable) is carried verbatim; only the
+    /// per-tying-point covariant SAMPLES use true curved kinematics.
     #[test]
     fn degenerate_transverse_shear_b_flat_reduces_to_mitc3_plus_j2_inv_t() {
-        // UNIT reference triangle: |g_ξ| = |g_η| = 1, g_ξ ⊥ g_η — the one flat
-        // geometry where 3392's metric-simplified shear equals the exact one.
         let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let directors = [[0.0, 0.0, 1.0]; 3];
         let thicknesses = [0.25; 3];
 
-        // 3392 covariant→physical map: J2⁻ᵀ from the shared shell kinematics.
+        // Flat covariant→physical map: J2⁻ᵀ from the shared shell kinematics.
         let frame = build_shell_frame(&nodes);
         let kin = crate::shell_kinematics::shell_kinematics(&nodes, &frame);
         let inv_t = kin.jac2_inv_t;
 
         let (pxi, peta) = (0.25_f64, 0.35_f64);
-        let b_cov = degenerate_assumed_covariant_shear_b(ShellReferenceCoord::new(pxi, peta));
-        // Reference physical B = J2⁻ᵀ · b_cov (3392's constant-J flat map).
+        let b_cov =
+            degenerate_assumed_covariant_shear_b(&nodes, ShellReferenceCoord::new(pxi, peta));
+        // Reference physical B = J2⁻ᵀ · b_cov (the constant-J flat map).
         let mut b_ref = [[0.0_f64; 18]; 2];
         for dof in 0..18 {
             b_ref[0][dof] = inv_t[0][0] * b_cov[0][dof] + inv_t[0][1] * b_cov[1][dof];
@@ -1571,7 +1543,7 @@ mod tests {
                 for c in 0..18 {
                     assert!(
                         (b_deg[r][c] - b_ref[r][c]).abs() < 1e-12,
-                        "flat shear B[{r}][{c}] @ ζ={zeta} = {} ≠ 3392 J2⁻ᵀ map {}",
+                        "flat shear B[{r}][{c}] @ ζ={zeta} = {} ≠ flat J2⁻ᵀ map {}",
                         b_deg[r][c],
                         b_ref[r][c],
                     );

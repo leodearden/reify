@@ -301,7 +301,7 @@ fn shift_changes_the_mode_set_and_warns_once() {
     );
 
     // (4b) NOT CLAIMED UN-HONORED. This path honors the shift, so the lumped
-    //      path's "declared but not yet honored" warning (#6097) would be a
+    //      path's W_ModalOptionUnsupported warning (#6097) would be a
     //      false message here.
     assert!(
         shifted

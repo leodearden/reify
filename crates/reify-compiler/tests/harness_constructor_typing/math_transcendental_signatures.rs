@@ -29,9 +29,15 @@
 //! assertion in this suite (and the cascade dimension), which tests the
 //! compile-time dimension contract directly.
 //!
-//! exp/log rows feed a dimensionless Real — eval Undefs on a dimensioned arg
-//! (`unary_f64` rejects dimensions), so their rows are contract pins; their
-//! behavioral RED is at the `is_math_typed_fn` recognition level.
+//! exp/log rows feed a dimensionless Real, so their rows are contract pins;
+//! their behavioral RED is at the `is_math_typed_fn` recognition level.
+//!
+//! The two sub-families differ on a DIMENSIONED argument. exp/log extract via
+//! `Value::as_f64`, which accepts any `Value::Scalar`, so `log(2mm)` silently
+//! evaluates `ln(0.002)` — its fix is owned by #6943, fenced below. Forward
+//! trig's `trig_input` returns `None` for a non-ANGLE scalar, which eval turns
+//! into `Value::Undef`; the "Forward-trig argument-dimension rejection" section
+//! below pins the compile-time `ArgTypeMismatch` that surfaces it instead.
 //!
 //! # Arg-independent arms
 //!
@@ -90,7 +96,7 @@ fn compile_and_eval() -> (CompiledModule, EvalResult) {
         errs.is_empty(),
         "boundary source must produce no Error-severity diagnostics; got: {errs:?}"
     );
-    let mut engine = reify_eval::Engine::new(Box::new(MockConstraintChecker::new()), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
     let result = engine.eval(&module);
     let eval_errs: Vec<_> = result
         .diagnostics
@@ -341,4 +347,237 @@ fn sin_times_mm_cascade_is_length() {
         }
         other => panic!("sin*mm cascade eval should be Value::Scalar, got {other:?}"),
     }
+}
+
+// ── Forward-trig argument-dimension rejection ────────────────────────────────
+//
+// `sin`/`cos`/`tan` reject a dimensioned, non-ANGLE argument at COMPILE time
+// with a coded `ArgTypeMismatch` Error.
+
+/// Every `ArgTypeMismatch` Error in `compiled` — mirrors the helper of the same
+/// name in `tests/harness_type_checking/builtin_arg_signature_tests.rs` so
+/// assertions here read the same way as the established sibling suite.
+fn arg_type_mismatch_errors(compiled: &CompiledModule) -> Vec<&reify_core::Diagnostic> {
+    compiled
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::ArgTypeMismatch)
+                && d.severity == Severity::Error
+        })
+        .collect()
+}
+
+/// Compile a one-`let` structure body and return its `ArgTypeMismatch` Errors'
+/// messages. `expr` is spliced verbatim into `let b = <expr>`.
+fn trig_arg_mismatch_messages(expr: &str) -> Vec<String> {
+    let src = format!("structure def TrigArgCheck {{\n    let b = {expr}\n}}\n");
+    let module = compile_with_stdlib_helper(&src);
+    arg_type_mismatch_errors(&module)
+        .iter()
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+/// Assert `expr` raises EXACTLY one `ArgTypeMismatch` Error naming `name`.
+///
+/// Exactly 1, not "at least 1": a duplicate would mean the diagnostic is being
+/// emitted from two wiring sites.
+fn assert_one_trig_arg_mismatch(expr: &str, name: &str) {
+    let msgs = trig_arg_mismatch_messages(expr);
+    assert_eq!(
+        msgs.len(),
+        1,
+        "`{expr}` must raise exactly one ArgTypeMismatch Error, got: {msgs:#?}"
+    );
+    assert!(
+        msgs[0].contains(name),
+        "`{expr}` diagnostic must name `{name}`, got: {:?}",
+        msgs[0]
+    );
+}
+
+/// `sin(5.0mm)` — a LENGTH argument. Eval silently yields `Value::Undef`
+/// (`trig_input` returns `None` for a non-ANGLE dimension); this pins the
+/// compile-time rejection that surfaces it instead.
+#[test]
+fn sin_of_length_raises_arg_type_mismatch() {
+    assert_one_trig_arg_mismatch("sin(5.0mm)", "sin");
+}
+
+/// `cos(5.0mm)` — sibling of the `sin` case.
+#[test]
+fn cos_of_length_raises_arg_type_mismatch() {
+    assert_one_trig_arg_mismatch("cos(5.0mm)", "cos");
+}
+
+/// `tan(2.0kg)` — a MASS argument, pinning that the rule is "any dimensioned
+/// non-ANGLE scalar", not a LENGTH special case.
+#[test]
+fn tan_of_mass_raises_arg_type_mismatch() {
+    assert_one_trig_arg_mismatch("tan(2.0kg)", "tan");
+}
+
+// ── Acceptance boundary + scope fence ────────────────────────────────────────
+//
+// These pin the check against being OVER-BROAD. Each case is RED against a
+// plausible mis-implementation.
+
+/// Assert `expr` raises ZERO `ArgTypeMismatch` Errors.
+fn assert_no_trig_arg_mismatch(expr: &str, why: &str) {
+    let msgs = trig_arg_mismatch_messages(expr);
+    assert!(
+        msgs.is_empty(),
+        "`{expr}` must raise no ArgTypeMismatch ({why}), got: {msgs:#?}"
+    );
+}
+
+// (a) ACCEPTANCE ─────────────────────────────────────────────────────────────
+
+/// `sin(0.5rad)` / `cos(0.0rad)` / `tan(0.5rad)` — a true `Angle` argument is
+/// accepted (`trig_input`'s `Value::Scalar { dimension: ANGLE }` arm).
+///
+/// RED against an implementation that accepts only dimensionless. This is the
+/// load-bearing acceptance case: this file's own `BOUNDARY_SOURCE` already
+/// depends on it, so an ANGLE-rejecting checker would red the whole suite.
+#[test]
+fn forward_trig_accepts_angle_arguments() {
+    assert_no_trig_arg_mismatch("sin(0.5rad)", "ANGLE is the canonical trig input");
+    assert_no_trig_arg_mismatch("cos(0.0rad)", "ANGLE is the canonical trig input");
+    assert_no_trig_arg_mismatch("tan(0.5rad)", "ANGLE is the canonical trig input");
+}
+
+/// `sin(2.5)` — a bare dimensionless literal is accepted as radians
+/// (`trig_input`'s `Value::Real` arm).
+///
+/// RED against an ANGLE-only implementation.
+#[test]
+fn forward_trig_accepts_dimensionless_arguments() {
+    assert_no_trig_arg_mismatch("sin(2.5)", "bare Real is treated as radians at eval");
+}
+
+/// `cos(3 * 2)` — an `Int`-typed argument is accepted (`trig_input`'s
+/// `Value::Int` arm).
+///
+/// RED against a `Type::Scalar`-only implementation. Overload resolution
+/// carries no Int→Real widening, so such a rule would statically reject what
+/// eval happily evaluates.
+#[test]
+fn forward_trig_accepts_int_arguments() {
+    assert_no_trig_arg_mismatch("cos(3 * 2)", "trig_input accepts Value::Int");
+}
+
+// (b) SCOPE FENCE ────────────────────────────────────────────────────────────
+//
+// The six non-forward-trig transcendental names must ALSO stay unchecked here.
+// RED against an implementation that gates on `MATH_TRANSCENDENTAL_NAMES`
+// wholesale instead of the three forward-trig names — the most likely
+// over-broad mistake, and one that would pre-empt #6943 and #5809.
+
+/// SCOPE FENCE — `exp`/`log` argument dimensions are OWNED BY TASK #6943
+/// (`docs/prds/v0_6/builtin-signature-registry.md` §3 decision 6(b),
+/// Leo-ratified 2026-08-07), which delivers them as registry rows with a
+/// chartered `E_ArgDimension` code family and dimension-aware fixit hints.
+///
+/// **Implementer of #6943: FLIP this assertion, do not delete it.**
+#[test]
+fn scope_fence_exp_and_log_stay_unchecked_pending_6943() {
+    assert_no_trig_arg_mismatch("exp(5.0mm)", "exp arg dimension is owned by #6943");
+    assert_no_trig_arg_mismatch("log(5.0mm)", "log arg dimension is owned by #6943");
+}
+
+/// SCOPE FENCE — inverse-trig argument dimensions are OWNED BY TASK #5809
+/// (`docs/prds/v0_6/dimension-checked-readers.md` leaf κ), which already has a
+/// committed before-image fixture.
+///
+/// `atan2` is a further trap: its correct rule is same-dimension-PAIR, not
+/// dimensionless-only (`atan2(dy, dx)` over two LENGTHs is legitimate — the
+/// ratio is dimensionless), which is why it is not expressible with this
+/// leaf's mechanism at all.
+///
+/// **Implementer of #5809: FLIP this assertion, do not delete it.**
+#[test]
+fn scope_fence_inverse_trig_stays_unchecked_pending_5809() {
+    assert_no_trig_arg_mismatch("asin(3.0mm)", "asin arg dimension is owned by #5809");
+    assert_no_trig_arg_mismatch("acos(3.0mm)", "acos arg dimension is owned by #5809");
+    assert_no_trig_arg_mismatch("atan(3.0mm)", "atan arg dimension is owned by #5809");
+    assert_no_trig_arg_mismatch(
+        "atan2(1.0mm, 1.0kg)",
+        "atan2 needs a same-dimension-PAIR rule, owned by #5809",
+    );
+}
+
+// (c) CORPUS GUARD ───────────────────────────────────────────────────────────
+
+/// The only live forward-trig call sites in the whole tracked `.ri` corpus are
+/// the two in `examples/generate_bolt_circle.ri`. Compile both shapes here so the
+/// corpus is covered by a fast unit-level test rather than only by the slower
+/// `examples_smoke` sweep.
+///
+/// `i * 2 * pi / bolt_count` is dimensionless throughout (`pi` is a
+/// dimensionless Real; `i` and `bolt_count` are Ints), so both must stay clean.
+#[test]
+fn corpus_guard_bolt_circle_forward_trig_sites_stay_clean() {
+    let src = r#"
+structure def BoltCircleTrig {
+    let bolt_count = 4
+    let radius = 50mm
+    let i = 1
+    let x = radius * cos(i * 2 * pi / bolt_count)
+    let y = radius * sin(i * 2 * pi / bolt_count)
+}
+"#;
+    let module = compile_with_stdlib_helper(src);
+    let mismatches: Vec<_> = arg_type_mismatch_errors(&module)
+        .iter()
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "the live examples/generate_bolt_circle.ri trig call shapes must stay clean, got: \
+         {mismatches:#?}"
+    );
+}
+
+// (d) USER-FN SHADOWING ──────────────────────────────────────────────────────
+
+/// A user-defined `fn sin(x : Length) -> Length` shadows the builtin AND its
+/// argument check: `sin(5.0mm)` resolves to the user fn (the cell takes its
+/// declared `Length` return, not the builtin's dimensionless result) and raises
+/// no `ArgTypeMismatch`. RED if the check runs before user-fn dispatch.
+#[test]
+fn user_defined_sin_shadows_builtin_arg_check() {
+    let src = r#"
+fn sin(x : Length) -> Length {
+    x
+}
+structure def UserSinShadow {
+    let b = sin(5.0mm)
+}
+"#;
+    let module = compile_with_stdlib_helper(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a user `fn sin(x : Length)` must accept `sin(5.0mm)` cleanly, got: {errors:#?}"
+    );
+    let cell_type = &module
+        .templates
+        .iter()
+        .find(|t| t.name == "UserSinShadow")
+        .expect("template `UserSinShadow` not found")
+        .value_cells
+        .iter()
+        .find(|c| c.id.member == "b")
+        .expect("cell `b` not found")
+        .cell_type;
+    assert_eq!(
+        *cell_type,
+        Type::length(),
+        "`sin(5.0mm)` must dispatch to the user fn's declared `Length` return"
+    );
 }

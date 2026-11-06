@@ -120,7 +120,7 @@ gate *decides* is caught without a GUI — only the live *execution* needs one.
 
 | Tool | Args | Returns |
 |------|------|---------|
-| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, …) |
+| `store_state` | `{}` | Full Solid store snapshot (`engine`, `editor`, `selection`, `claude`, `viewports` per-viewport `meshCount`, `viewport.edges` the edges-in-black toggle) |
 | `get_window_state` | `{}` | `{devicePixelRatio, innerWidth, innerHeight, …}` |
 | `get_layout_metrics` | `{selector}` | `{exists, bounds, visible, hitTestable, scroll:{top,left,width,height}, client:{width,height}, overflow:{horizontal,vertical}}` — check `hitTestable` before click_at at the bounds centre (contract §3) |
 
@@ -205,7 +205,7 @@ when omitted, the first populated viewport is targeted.
 | `load_fixture` | `{name}` | `{ok}` — loads a named fixture from debug_server.rs catalogue |
 | `open_file` | `{path}` | `{ok}` — opens an arbitrary .ri path |
 | `inject_diagnostics` | `{diagnostics:[…], source}` | `{ok}` |
-| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection |
+| `reset_app_state` | `{}` | `{ok}` — clears openFiles + selection, resets the camera view, injected diagnostics and layout pane dimensions, and turns the edges-in-black toggle off (persisted) |
 | `element_screenshot` | `{testId, viewportId?}` | `{data}` — base64 PNG of a single element; `viewportId` picks which pane to crop. A call matching more than one element also returns `{viewportId, matchCount}` naming the pane it guessed — scoped or not, since a testId can repeat within one pane — delivered over MCP as a second `text` content block after the image |
 | `screenshot` / `screenshot_window` | `{}` | `{data}` — full viewport PNG |
 
@@ -225,7 +225,7 @@ when omitted, the first populated viewport is targeted.
 | `reify_update_source` | `{file_path, content}` | `{success, diagnostics_count, diagnostics}` — active file only, in memory; writes no disk |
 | `reify_open_file` | `{file_path}` | `{success, source}` |
 | `reify_save_file` | `{file_path?}` | `{success}` — saves the active file when `file_path` is omitted |
-| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is `step`, `stp` or `stl` |
+| `reify_export` | `{format, output_path}` | `{success, path}` — `format` is one of the tool schema's `format` enum, derived from `EXPORT_FORMAT_SPELLINGS` in `gui/src-tauri/src/commands.rs`; the geometry kernel refuses a format it cannot write |
 
 Their write semantics are specified in
 [debug-mcp-contract.md](debug-mcp-contract.md) §0 "AI write tools" and are not

@@ -70,10 +70,10 @@
 #                   to run at a human/agent checkpoint.
 #   ensure          REPAIR, scoped to the WHOLE tree.  On any stale archive — live
 #                   or dormant — bump the mtime of the watched inputs (grammar.js,
-#                   src/scanner.c, src/tree_sitter/*.h) so cargo is guaranteed to
-#                   re-run the build script, and thus recompile, on the next
-#                   invocation.  This is what verify.sh runs after
-#                   tree-sitter-generate.sh and before every cargo leaf.
+#                   src/scanner.c) so cargo is guaranteed to re-run the build
+#                   script, and thus recompile, on the next invocation.  This is
+#                   what verify.sh runs after tree-sitter-generate.sh and before
+#                   every cargo leaf.
 #   --help, -h      This message.
 #
 # LIVE vs DORMANT — WHY `check` AND `ensure` HAVE DIFFERENT SCOPES
@@ -832,27 +832,28 @@ ts_unattestable_lines() {
 
 # ts_watched_inputs
 #
-# The subset of the compilation inputs that build.rs declares via
-# cargo:rerun-if-changed — i.e. exactly what `ensure` is permitted to touch.
-# Derived FROM ts_inputs() (rather than restated) so it cannot drift, plus
-# grammar.js, which is an input to generation rather than to compilation.
+# Exactly what `ensure` is permitted to touch: grammar.js, which is an input to
+# generation rather than to compilation, plus the compilation inputs from
+# ts_inputs() (derived rather than restated, so it cannot drift).
 #
-# src/parser.c is excluded on purpose, and stays excluded after `#6992` made
-# build.rs WATCH it (see ts_inputs above).  The two sets answer different
-# questions: build.rs's watch set is what cargo re-runs the build script FOR,
-# whereas this is what `ensure` is allowed to force-TOUCH.  Adding a
+# Generate outputs (src/parser.c, src/tree_sitter/*.h) are excluded on purpose,
+# although build.rs WATCHES them (`#6992`, #9741).  The two sets answer
+# different questions: build.rs's watch set is what cargo re-runs the build
+# script FOR, whereas this is what `ensure` is allowed to force-TOUCH.  Adding a
 # build-script OUTPUT to a force set risks a touch/regenerate loop, and would
 # make the ts_max_watched_mtime witness move on every regeneration — weakening
 # the rewind signature at ts_ledger_force_in_effect that guards against
 # warm-lane mtime rollback.  Touching grammar.js already re-triggers the build
-# script, so the narrower set loses nothing.
+# script, which recompiles against the current outputs, so the narrower set
+# loses nothing.
 ts_watched_inputs() {
     printf 'grammar.js\n'
     local rel
     while IFS= read -r rel; do
-        if [ "$rel" != "src/parser.c" ]; then
-            printf '%s\n' "$rel"
-        fi
+        case "$rel" in
+            src/parser.c | src/tree_sitter/*) ;;
+            *) printf '%s\n' "$rel" ;;
+        esac
     done < <(ts_inputs)
 }
 
@@ -1101,7 +1102,7 @@ ts_mode_ensure() {
     echo "tree-sitter-freshness: forcing rebuild — a built archive does not match the sources on disk:"
     ts_stale_lines
     ts_dormant_lines
-    echo "tree-sitter-freshness: bumping the mtime (content untouched) of every input build.rs watches,"
+    echo "tree-sitter-freshness: bumping the mtime (content untouched) of the watched sources,"
     echo "    so cargo must re-run the build script — and recompile — on the next invocation:"
 
     local force_rc=0

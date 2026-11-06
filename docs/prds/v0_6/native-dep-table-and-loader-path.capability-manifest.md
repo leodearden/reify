@@ -23,7 +23,9 @@ Machine-readable twin: `native-dep-table-and-loader-path.capability-manifest.yam
   PASS.
 - `kernel-suites-nonvacuous-baseline` (G6): the silent-vacuity check compares per-crate passed counts from one captured run (`scripts/cargo-test-tally.py`) with main's. The floor is "equal to main and non-zero", never a literal number. PASS.
 
-## β — `detect(dep)`
+## β — `detect(dep)` (subsumed by #8935)
+
+**Status: subsumed by #8935** (S10 β₁; #8646 cancelled with `x_subsumed_by = 8935` under retro-critic R12, 2026-10-20). The `hand-written-cfg-sites-baseline` check moved to #8935 as `hand-written-cfg-sites-gone`; this section keeps it as recorded.
 
 - `hand-written-cfg-sites-baseline` (signal premise). `git grep` over `*build.rs` finds:
   - `rustc-cfg=has_`: 10

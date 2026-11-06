@@ -231,7 +231,7 @@ structure Rig {{
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&compiled);
 
     let problem = captured
@@ -342,7 +342,7 @@ fn dependent_cells_holds_coupled_lets_excludes_auto_and_is_topologically_ordered
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problem = captured.lock().unwrap().clone().expect(
@@ -545,7 +545,7 @@ fn dependent_cells_excludes_optimized_userfunctioncall_cell() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let _result = engine.eval(&module);
 
     let problem = captured.lock().unwrap().clone().expect(
@@ -738,7 +738,7 @@ fn bt4_dependent_cells_is_cross_scope_topo_order_and_writeback_authority() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     let problem = captured.lock().unwrap().clone().expect(
@@ -874,7 +874,7 @@ fn eval_ri_with_real_solver(src: &str, what: &str) -> EvalResult {
         "the {what} source must compile without errors; got {errors:#?}",
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 
@@ -1491,7 +1491,7 @@ structure CyclicLetWithAuto {
          got compile errors {errors:#?}",
     );
 
-    let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None)
         .with_solver(Box::new(DimensionalSolver));
     let result = engine.eval(&compiled);
 
@@ -1632,7 +1632,7 @@ fn bt6b_cross_scope_value_cycle_surfaces_eval_cycle_through_engine_eval() {
     let captured = spy.captured_problem();
 
     let mut engine =
-        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+        Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
     let result = engine.eval(&module);
 
     // ---- the ERROR reaches EvalResult.diagnostics, coded EvalCycle. ----

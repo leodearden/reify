@@ -66,7 +66,7 @@ fn tessellate_preserves_realization_handles_populated_by_build() {
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
-    let mut engine = Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // ── build surface: populates realization_handles ──────────────────────
     let build_result = engine.build(&compiled, ExportFormat::Step);

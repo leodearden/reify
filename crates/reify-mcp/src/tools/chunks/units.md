@@ -125,23 +125,23 @@ Every rejection reads the same way — one diagnostic per offending argument, so
 bare dimensions reports three:
 
 ```text
-box: width argument expects Length, got Int; pass a dimensioned length such as `5mm`
+box: size_x argument expects Length, got Int; pass a dimensioned length such as `5mm`
 ```
 
 The `pass a dimensioned length such as `5mm`` tail is `reify-core::units::LENGTH_MIGRATION_HINT`,
 rendered by both the compile-time and the run-time check, so one authoring mistake reads identically
 whichever layer catches it.
 
-**Which command catches it.** `reify eval` and `reify build` reject every form above — exit 1,
-every time. `reify check` is **not** equivalent. It prints the same `error:` lines, but its EXIT
-CODE depends on which layer owns the constructor's argument slots.
+**Which command catches it.** `reify eval`, `reify build` and `reify check` all reject every form
+above with exit 1. What differs under `reify check` is WHERE it stops, and that depends on which
+layer owns the constructor's argument slots.
 
 `box`, `translate`, `fillet`, `rotate_around` and the pivot triple of 7-argument `mirror` are
-checked by the **compiler**, and `reify check` exits 1 on a bare argument. `helix`, `polygon`,
-`arc`, `line_segment`, `interp`, `bezier` and `nurbs` have no compile-time length slot at all:
-their bare arguments are caught only at build/eval time, so `reify check` prints the rejection,
-adds `failed to compile geometry operation: missing or non-Length argument '<arg>' for <op>`, and
-then **exits 0**.
+checked by the **compiler**: `reify check` stops before evaluating anything, so it prints no
+verdict. `helix`, `polygon`, `arc`, `line_segment`, `interp`, `bezier` and `nurbs` have no
+compile-time length slot at all: their bare arguments are caught at build/eval time, so
+`reify check` evaluates the constraints first, prints `All constraints satisfied.` beside the
+`error:` lines, and still **exits 1**.
 
 <!-- These rows are the SAME rule as the block above; they differ only in which layer sees them.
      The ```reify-rejected-at-eval tag is matched BYTE-EXACTLY and carries the OPPOSITE
@@ -153,16 +153,19 @@ then **exits 0**.
 
      THAT HAS ALREADY HAPPENED ONCE. `mirror` was a third row here until its 7-argument pivot
      triple gained compile-layer `ox`/`oy`/`oz` LENGTH slots; the test went red naming the row, and
-     it now sits in the ```reify-rejected block above. Do not re-add it here. -->
+     it now sits in the ```reify-rejected block above. Do not re-add it here.
+
+     Moving a row between the two blocks also moves its row in cli_check_bare_length_exit.rs to
+     the other `Layer`. -->
 
 ```reify-rejected-at-eval
 helix(10, 2, 50)             -->  helix(10mm, 2mm, 50mm)
 polygon(0, 0, 10, 0, 5, 10)  -->  polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)
 ```
 
-**So gate a design on `reify eval` or `reify build`, never on `reify check`'s exit status alone.**
-The exit-code gap is a known residual, tracked in
-`docs/prds/v0_6/check-diagnostic-truthfulness.md`.
+**So read `reify check`'s exit status and its `error:` lines, never its verdict line alone.**
+`All constraints satisfied.` speaks for the declared constraints only. The exit gate is decision D3
+of `docs/prds/v0_6/check-diagnostic-truthfulness.md`.
 
 <!-- SYNC: which claim in this section is pinned by an executable test, and which is prose — so the
      unpinned ones are visibly unpinned rather than looking equally guarded.
@@ -185,11 +188,12 @@ The exit-code gap is a known residual, tracked in
     units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer
   `reify check` EXITS 1 on a bare `mirror` pivot — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build
-  the REST of `reify check`'s EXIT CODE (1 for box/translate/fillet, 0 for helix/polygon) —
-    UNPINNED, prose only. Measured 2026-08-30 against a debug `reify` binary; the guards in this
-    harness compile in-process and never run the CLI, so nothing here observes an exit status.
-    Re-verify before relying on it. Residual tracked in
-    docs/prds/v0_6/check-diagnostic-truthfulness.md.
+  `reify check` EXITS 1 with no verdict line on a bare argument to the compiler-checked
+    constructors above, and 0 on its migration — PINNED at the CLI seam by
+    crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs::check_exits_1_before_its_verdict_on_a_bare_compiler_checked_length
+  `reify check` EXITS 1 after its verdict line on a bare argument to the eval-checked
+    constructors above, and 0 on its migration — PINNED at the CLI seam by
+    crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs::check_exits_1_after_its_verdict_on_a_bare_eval_checked_length
   a unit in a DIMENSIONLESS slot is not reported — UNPINNED, prose only. Measured 2026-08-30:
     scale(g, 2mm) accepted, dimensioned axis direction in mirror and linear_pattern accepted.
     Re-verify before relying on it. -->
@@ -204,10 +208,11 @@ direction only. Measured 2026-08-30: `scale(g, 2mm)` is accepted, as is a dimens
 in `mirror` or `linear_pattern`. So a unit in a dimensionless slot will not be reported; write these
 bare because it is what you mean, not because you will be told.
 
+<!-- LENGTH-ARGS-XREF -->
 **Which argument of which constructor is length-semantic** is catalogued per position in the
-`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor,
-under "Dimensioned arguments". This section states the rule and the idiom; that one enumerates the
-positions — read it before dimensioning an unfamiliar signature.
+`geometry` chunk — topic `geometry` of `reify_language_reference` — constructor by constructor.
+This section states the rule and the idiom; that one enumerates the positions — read it before
+dimensioning an unfamiliar signature.
 
 Worked, compile-gated exemplar: `examples/best_practices/dimensioned_arguments.ri`.
 
@@ -238,7 +243,7 @@ it demonstrates the algebra but not the arithmetic. `arc2` is the direction an
 author usually wants: an arc length computed from an angle that was *not* derived
 from a ratio.
 
-Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `Parse error: syntax error in structure body`.
+Always the **no-space** literal: `1rad`. The spaced form `1 rad` is `` Parse error: syntax error in structure body — if `rad` in `x` is a unit, it must follow its number with no whitespace: write `1rad` in place of `1 rad` ``.
 
 This is not a style preference — the crossing is what makes the binding compile. On an annotated `param`/`let` whose initializer is an *expression*, omitting it is a hard error:
 

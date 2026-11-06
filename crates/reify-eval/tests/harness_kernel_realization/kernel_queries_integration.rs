@@ -118,7 +118,7 @@ fn all_queries_walk_evals_top_level_helpers_to_non_undef() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Helper: assert a cell is Some(v) with v != Value::Undef and the expected variant.
@@ -315,9 +315,9 @@ fn multi_feature_part_sub_handle_queries_return_non_undef() {
 
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(30.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(20.0e-3),
+            size_z: Value::Real(30.0e-3),
         })
         .expect("box(10mm, 20mm, 30mm) should build via OCCT");
 
@@ -556,9 +556,9 @@ fn profile_topology_selectors_and_sub_handle_memory() {
     let n_iters = 100_usize;
     let box_handle = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(30.0e-3),
+            size_x: Value::Real(10.0e-3),
+            size_y: Value::Real(20.0e-3),
+            size_z: Value::Real(30.0e-3),
         })
         .expect("box should build for latency profiling");
 

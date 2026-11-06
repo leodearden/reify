@@ -39,15 +39,30 @@ pub fn regular3d_field(
     bounds_min: f64,
     phi: impl Fn(f64, f64, f64) -> f64,
 ) -> SampledField {
-    let n = voxel_count;
-    let axis_grid: Vec<f64> = (0..n).map(|i| bounds_min + (i as f64) * h).collect();
-    let bounds_max = axis_grid[n - 1];
+    regular3d_field_with_counts(name, h, [voxel_count; 3], bounds_min, phi)
+}
 
-    // Row-major flat layout: data[i*n*n + j*n + k] at index (i,j,k).
-    let mut data = Vec::with_capacity(n * n * n);
-    for &x in &axis_grid {
-        for &y in &axis_grid {
-            for &z in &axis_grid {
+/// [`regular3d_field`] with a per-axis voxel count: axis `a` holds
+/// `counts[a]` samples at `bounds_min + i·h`. A count of 1 makes a
+/// single-sample (zero-extent) axis, which `compute_medial_mask` accepts.
+pub fn regular3d_field_with_counts(
+    name: &str,
+    h: f64,
+    counts: [usize; 3],
+    bounds_min: f64,
+    phi: impl Fn(f64, f64, f64) -> f64,
+) -> SampledField {
+    let axis_grids: Vec<Vec<f64>> = counts
+        .iter()
+        .map(|&n| (0..n).map(|i| bounds_min + (i as f64) * h).collect())
+        .collect();
+    let bounds_max: Vec<f64> = axis_grids.iter().map(|grid| grid[grid.len() - 1]).collect();
+
+    // Row-major flat layout: data[i*ny*nz + j*nz + k] at index (i,j,k).
+    let mut data = Vec::with_capacity(counts.iter().product());
+    for &x in &axis_grids[0] {
+        for &y in &axis_grids[1] {
+            for &z in &axis_grids[2] {
                 data.push(phi(x, y, z));
             }
         }
@@ -57,9 +72,9 @@ pub fn regular3d_field(
         name: name.to_string(),
         kind: SampledGridKind::Regular3D,
         bounds_min: vec![bounds_min, bounds_min, bounds_min],
-        bounds_max: vec![bounds_max, bounds_max, bounds_max],
+        bounds_max,
         spacing: vec![h, h, h],
-        axis_grids: vec![axis_grid.clone(), axis_grid.clone(), axis_grid],
+        axis_grids,
         interpolation: InterpolationKind::Linear,
         data,
         oob_emitted: AtomicBool::new(false),

@@ -32,8 +32,9 @@
 #   G — basecommit provenance: per-gen .basecommit stamp == --landed-commit, reaped with its gen
 #   H — buildroot provenance: per-gen .buildroot stamp == realpath(advancing worktree root)
 #   I — WIP refusal: advancing worktree with tracked WIP is refused; wording advises committing, never stashing
+#   LAND — landed-ness guard: a --landed-commit that is not an ancestor of refs/heads/main (or a repo without it, or an ancestry check git cannot evaluate) is refused before any copy; main's tip and its strict ancestors are accepted
 #   DEPS — debug/deps faithful copy: every hash variant in the advancing debug/deps reaches the new gen, incl. same-mtime registry variants (#8366)
-#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen; live variants, non-candidates and other dirs survive
+#   LIVE — liveness prune: debug/deps units whose fingerprint was not consulted within 7 days of the tree's newest consult are pruned from the base gen, together with their .fingerprint records and depth-1 .dwo shards unless the hash has a build/ dir; live variants, non-candidates and other dirs survive
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 #
@@ -137,10 +138,11 @@ chmod +x "$STUB_DIR/xfs_bmap"
 
 # rm stub: record argv; when REIFY_TEST_PRUNE_RM_FAIL=1, fail ONLY the prune
 # stage's own `xargs -0 rm -f -- <files>` (first args "-f" "--") while every other
-# invocation — the EXIT trap's `rm -rf "$_p"` and `rm -f "$_PRUNE_SUMMARY_FILE"`,
-# GC's `rm -f lock` — execs the real rm. This isolates "the prune's own unlink
-# failed" from "the trap's cleanup afterward also failed": a filesystem-permission
-# fault cannot make that distinction, since it defeats `rm -rf` identically.
+# invocation — the EXIT trap's `rm -rf "$_p"`, prune-unconsulted-target.sh's
+# summary-file `rm -f <file>`, GC's `rm -f lock` — execs the real rm. This
+# isolates "the prune's own unlink failed" from "the trap's cleanup afterward
+# also failed": a filesystem-permission fault cannot make that distinction,
+# since it defeats `rm -rf` identically.
 # Real rm path embedded at stub-creation time (mirrors the cp stub).
 _REAL_RM="$(command -v rm)"
 cat > "$STUB_DIR/rm" << STUB_EOF
@@ -213,7 +215,7 @@ mk_git_advancing() {
     local lane_dir="$parent_dir/lane"
     mkdir -p "$lane_dir"
     printf 'placeholder\n' > "$lane_dir/.placeholder"
-    git -C "$lane_dir" init -q
+    git -C "$lane_dir" init -q -b main
     git -C "$lane_dir" add -- .placeholder
     git -C "$lane_dir" \
         -c user.email="warm-lane-test@localhost" \
@@ -834,6 +836,148 @@ assert "I4: refusal does NOT advise stashing" \
     bash -c '! printf "%s\n" "$1" | grep -qi "stash"' _ "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block LAND — the landed-ness guard (task 9180)
+#
+# inv.9: only a commit already on refs/heads/main may advance the base. A clean
+# lane whose HEAD is committed-but-unlanded work satisfies HEAD == --landed-commit
+# and must still be refused before any staging copy.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block LAND: landed-ness guard ---"
+
+# _commit_tracked_change <lane> <msg> — commit a change to a TRACKED file on
+# whatever HEAD the lane has checked out, leaving the worktree clean.
+_commit_tracked_change() {
+    local lane="$1" msg="$2"
+    printf '%s\n' "$msg" >> "$lane/.placeholder"
+    git -C "$lane" add -- .placeholder
+    git -C "$lane" \
+        -c user.email="warm-lane-test@localhost" \
+        -c user.name="Warm Lane Test" \
+        -c commit.gpgsign=false \
+        commit -q --no-verify -m "$msg"
+}
+
+# LAND1: committed but unlanded — clean task branch, HEAD == --landed-commit.
+LAND1_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land1-XXXXXX)"
+_TMPDIRS+=("$LAND1_TMP")
+LAND1_LANE="$(mk_git_advancing "$LAND1_TMP")"
+LAND1_C1="$(git -C "$LAND1_LANE" rev-parse HEAD)"
+git -C "$LAND1_LANE" switch -q -c task/unlanded
+_commit_tracked_change "$LAND1_LANE" "fixture: committed but unlanded task work"
+LAND1_C2="$(git -C "$LAND1_LANE" rev-parse HEAD)"
+echo "content" > "$LAND1_LANE/advancing/file.txt"
+LAND1_BASE="$LAND1_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND1_LANE/advancing" "$LAND1_BASE" --landed-commit "$LAND1_C2"
+assert "LAND1: unlanded --landed-commit is refused (non-zero)" test "$RC" -ne 0
+assert "LAND1: refusal names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+assert "LAND1: refusal names the full --landed-commit sha" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$LAND1_C2"
+assert "LAND1: refusal names refs/heads/main's tip sha" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "$2"' _ "$ERR_OUT" "$LAND1_C1"
+assert "LAND1: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND1_BASE"
+assert "LAND1: no <base>.gen.* entry exists (no gen dir, no .basecommit)" \
+    bash -c '_n=0; for _p in "${1}".gen.*; do { [ -e "$_p" ] || [ -L "$_p" ]; } && _n=$((_n+1)); done; [ "$_n" -eq 0 ]' _ "$LAND1_BASE"
+assert "LAND1: no staging cp ran (refused inside the provenance guard)" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# LAND2: control on the SAME lane — fast-forward main to C2, re-run identically.
+git -C "$LAND1_LANE" branch -f main HEAD
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND1_LANE/advancing" "$LAND1_BASE" --landed-commit "$LAND1_C2"
+assert "LAND2: same commit once landed on main is accepted (exit 0)" test "$RC" -eq 0
+assert "LAND2: promoted gen .basecommit == the landed commit" \
+    bash -c '[ "$(cat "$(readlink "$1").basecommit")" = "$2" ]' _ "$LAND1_BASE" "$LAND1_C2"
+
+# LAND3: a strict ancestor of main is landed — main's TIP is not required.
+LAND3_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land3-XXXXXX)"
+_TMPDIRS+=("$LAND3_TMP")
+LAND3_LANE="$(mk_git_advancing "$LAND3_TMP")"
+LAND3_C1="$(git -C "$LAND3_LANE" rev-parse HEAD)"
+_commit_tracked_change "$LAND3_LANE" "fixture: main moves past the landed commit"
+git -C "$LAND3_LANE" checkout -q --detach HEAD~1
+echo "content" > "$LAND3_LANE/advancing/file.txt"
+LAND3_BASE="$LAND3_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND3_LANE/advancing" "$LAND3_BASE" --landed-commit "$LAND3_C1"
+assert "LAND3: strict ancestor of refs/heads/main is accepted (exit 0)" test "$RC" -eq 0
+assert "LAND3: promoted gen .basecommit == the ancestor commit" \
+    bash -c '[ "$(cat "$(readlink "$1").basecommit")" = "$2" ]' _ "$LAND3_BASE" "$LAND3_C1"
+
+# LAND4: fail-closed when refs/heads/main does not resolve.
+LAND4_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land4-XXXXXX)"
+_TMPDIRS+=("$LAND4_TMP")
+LAND4_LANE="$(mk_git_advancing "$LAND4_TMP")"
+git -C "$LAND4_LANE" branch -m main trunk
+echo "content" > "$LAND4_LANE/advancing/file.txt"
+LAND4_BASE="$LAND4_TMP/base"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND4_LANE/advancing" "$LAND4_BASE" \
+    --landed-commit "$(git -C "$LAND4_LANE" rev-parse HEAD)"
+assert "LAND4: absent refs/heads/main is refused (non-zero)" test "$RC" -ne 0
+assert "LAND4: refusal names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+assert "LAND4: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND4_BASE"
+assert "LAND4: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# LAND5: the missing-flag hint points at refs/heads/main as the sha's source.
+LAND5_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land5-XXXXXX)"
+_TMPDIRS+=("$LAND5_TMP")
+LAND5_LANE="$(mk_git_advancing "$LAND5_TMP")"
+echo "content" > "$LAND5_LANE/advancing/file.txt"
+
+reset_calls
+REIFY_TEST_REFLINK_OK=1 run_helper "$LAND5_LANE/advancing" "$LAND5_TMP/base"
+assert "LAND5: missing --landed-commit is refused (non-zero)" test "$RC" -ne 0
+assert "LAND5: missing-flag hint names refs/heads/main" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "refs/heads/main"' _ "$ERR_OUT"
+
+# LAND6: an ancestry check git cannot evaluate is refused, and not misreported
+# as "has not landed". A git wrapper fails every `merge-base` with rc 128 (as a
+# corrupt object store would) and execs the real git for everything else.
+LAND6_TMP="$(mktemp -d /tmp/test-refresh-warm-base-land6-XXXXXX)"
+_TMPDIRS+=("$LAND6_TMP")
+LAND6_LANE="$(mk_git_advancing "$LAND6_TMP")"
+echo "content" > "$LAND6_LANE/advancing/file.txt"
+LAND6_BASE="$LAND6_TMP/base"
+LAND6_GIT_STUB_DIR="$LAND6_TMP/git-stub"
+mkdir -p "$LAND6_GIT_STUB_DIR"
+_REAL_GIT="$(command -v git)"
+cat > "$LAND6_GIT_STUB_DIR/git" << STUB_EOF
+#!/usr/bin/env bash
+for _a in "\$@"; do
+    if [ "\$_a" = "merge-base" ]; then
+        echo "fatal: SIMULATED merge-base failure" >&2
+        exit 128
+    fi
+done
+exec "${_REAL_GIT}" "\$@"
+STUB_EOF
+chmod +x "$LAND6_GIT_STUB_DIR/git"
+
+reset_calls
+PATH="$LAND6_GIT_STUB_DIR:$PATH" REIFY_TEST_REFLINK_OK=1 \
+    run_helper "$LAND6_LANE/advancing" "$LAND6_BASE" \
+    --landed-commit "$(git -C "$LAND6_LANE" rev-parse HEAD)"
+assert "LAND6: unevaluable ancestry is refused (non-zero)" test "$RC" -ne 0
+assert "LAND6: refusal reports git's exit code" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "rc=128"' _ "$ERR_OUT"
+assert "LAND6: refusal does not claim the commit has not landed" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "has not landed"' _ "$ERR_OUT"
+assert "LAND6: <base> not created" \
+    bash -c '[ ! -e "$1" ] && [ ! -L "$1" ]' _ "$LAND6_BASE"
+assert "LAND6: no staging cp ran" \
+    bash -c '! grep -q "^cp " "$1"' _ "$CALLS_FILE"
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block DEPS — debug/deps faithful copy (task 8366)
 #
 # The new gen's debug/deps must hold every artefact the advancing target holds.
@@ -911,6 +1055,10 @@ assert "DEPS3: gen debug/deps filename set equals the advancing debug/deps filen
 # within 7 days of the copied tree's newest consult, the ANCHOR. Cargo reads a
 # unit's fingerprint on every build whose graph contains the unit, so a hash
 # the lanes still build is consulted continuously whatever its artefact mtime.
+# The refresh passes --prune-dead-unit-records, so a pruned hash with no
+# debug/build/<pkg>-<hash> dir also loses its .fingerprint record and its
+# depth-1 .dwo shards, keyed on the shard name cut at its first dot (LIVE7,
+# LIVE8b); a hash with a build/ dir keeps both (LIVE8).
 #
 # Fixtures use fixed past dates: no sleeps, and the window being anchored on
 # the tree rather than on `date` is itself under test (LIVE1).
@@ -1120,7 +1268,9 @@ assert "LIVE6: the dead control is pruned" \
 # never candidates. Each near-miss that carries a hash-like token is tied to a
 # DEAD fingerprint dir a looser grammar would key on, so its survival is
 # discriminating rather than vacuous; the dead unit's own conforming file is
-# the control.
+# the control. A .dwo shard is keyed on its name cut at the FIRST dot, never on
+# its 16-hex cgu token: the dead hash's shard goes with the dead unit, and a
+# live hash's shard whose cgu token is the dead hash stays.
 _live_case
 _mint_anchor "$LIVE_PROFILE"
 LIVE7_DEAD=deadbeef00000007
@@ -1133,17 +1283,26 @@ _mint_unit "$LIVE_PROFILE" foo 0123456789abcdef "$LIVE_DEAD" "$LIVE_DEAD" foo-01
 LIVE7_SHARD="axum-$LIVE7_DEAD.axum.7a7a7a7a7a7a7a7a-cgu.09.rcgu.dwo"
 echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_SHARD"
 touch -d "$LIVE_DEAD" "$LIVE_PROFILE/deps/$LIVE7_SHARD"
+LIVE7_LIVE_SHARD="anchor-00000000000000a1.anchor.${LIVE7_DEAD}-cgu.03.rcgu.dwo"
+echo "shard" > "$LIVE_PROFILE/deps/$LIVE7_LIVE_SHARD"
 _live_refresh
 assert "LIVE7: refresh exits 0" test "$RC" -eq 0
-assert "LIVE7: README, a .json, a short hash, an uppercase hash, a 17-hex hash and a split-debuginfo shard all survive" \
+assert "LIVE7: grammar near-misses all survive: README, a .json, a short hash, an uppercase hash, a 17-hex hash" \
     _all_present "$LIVE_GEN/debug/deps" README build-plan.json foo-abc123.rlib foo-AAAABBBBCCCCDDDD \
-        foo-0123456789abcdef0.rlib "$LIVE7_SHARD"
-assert "LIVE7: the dead unit's own conforming file is pruned" \
-    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib"
+        foo-0123456789abcdef0.rlib
+assert "LIVE7: the dead unit's own conforming file and the dead hash's shard are pruned" \
+    _none_present "$LIVE_GEN/debug/deps" "libdead-$LIVE7_DEAD.rlib" "$LIVE7_SHARD"
+assert "LIVE7: a live hash's shard survives although its cgu token is the dead hash" \
+    _all_present "$LIVE_GEN/debug/deps" "$LIVE7_LIVE_SHARD"
+assert "LIVE7: the dead unit's .fingerprint record is pruned" \
+    _none_present "$LIVE_GEN/debug/.fingerprint" "dead-$LIVE7_DEAD"
+assert "LIVE7: a dead record with no grammar deps file pruned for it survives (foo's 17-hex near-miss)" \
+    _all_present "$LIVE_GEN/debug/.fingerprint" foo-0123456789abcdef/lib-foo
 
 # LIVE8 — scope: only debug/deps at depth 1 is ever pruned. A dead hash's files
-# elsewhere — build/, the profile root, a nested deps dir, the whole release
-# profile, and the fingerprint dir (the evidence itself) — are untouched.
+# elsewhere — build/, the profile root, a nested deps dir and the whole release
+# profile — are untouched, and its debug fingerprint record is kept because the
+# hash has a debug/build/dead-<hash> dir.
 _live_case
 _mint_anchor "$LIVE_PROFILE"
 LIVE8_DEAD=deadbeef00000008
@@ -1156,7 +1315,7 @@ _mint_anchor "$LIVE_ADV/release"
 _mint_unit "$LIVE_ADV/release" dead "$LIVE8_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libdead-$LIVE8_DEAD.rlib"
 _live_refresh
 assert "LIVE8: refresh exits 0" test "$RC" -eq 0
-assert "LIVE8: the dead hash's files outside debug/deps depth 1 all survive (build/, profile root, nested, release/, .fingerprint)" \
+assert "LIVE8: the dead hash's files outside debug/deps depth 1 survive (build/, profile root, nested, release/), and its debug .fingerprint record is kept by the build/ guard" \
     _all_present "$LIVE_GEN" "debug/build/dead-$LIVE8_DEAD/out.txt" "debug/dead-$LIVE8_DEAD" \
         "debug/deps/nested/libdead-$LIVE8_DEAD.rlib" "release/deps/libdead-$LIVE8_DEAD.rlib" \
         "release/.fingerprint/dead-$LIVE8_DEAD/lib-dead" "debug/.fingerprint/dead-$LIVE8_DEAD/lib-dead"
@@ -1164,6 +1323,25 @@ assert "LIVE8: the dead hash's debug/deps/ file is pruned (control)" \
     _none_present "$LIVE_GEN" "debug/deps/libdead-$LIVE8_DEAD.rlib"
 assert "LIVE8: only the depth-1 file is counted as a victim (files=1) — the nested twin is never even a candidate" \
     _stderr_matches 'prune deps=.*files=1( |$)'
+
+# LIVE8b — record scope: a dead unit with NO build/ dir loses its debug
+# .fingerprint record, and only that one: the release profile and a nested
+# deps twin are untouched, since the refresh prunes debug/deps depth 1 only.
+_live_case
+_mint_anchor "$LIVE_PROFILE"
+LIVE8B_DEAD=deadbeef0000008b
+_mint_unit "$LIVE_PROFILE" nobuild "$LIVE8B_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libnobuild-$LIVE8B_DEAD.rlib"
+mkdir -p "$LIVE_PROFILE/deps/nested"
+echo "nested" > "$LIVE_PROFILE/deps/nested/libnobuild-$LIVE8B_DEAD.rlib"
+_mint_anchor "$LIVE_ADV/release"
+_mint_unit "$LIVE_ADV/release" nobuild "$LIVE8B_DEAD" "$LIVE_DEAD" "$LIVE_DEAD" "libnobuild-$LIVE8B_DEAD.rlib"
+_live_refresh
+assert "LIVE8b: refresh exits 0" test "$RC" -eq 0
+assert "LIVE8b: the dead unit's debug .fingerprint record is pruned" \
+    _none_present "$LIVE_GEN" "debug/.fingerprint/nobuild-$LIVE8B_DEAD"
+assert "LIVE8b: release/'s record and deps file, and the nested debug twin, survive" \
+    _all_present "$LIVE_GEN" "release/.fingerprint/nobuild-$LIVE8B_DEAD/lib-nobuild" \
+        "release/deps/libnobuild-$LIVE8B_DEAD.rlib" "debug/deps/nested/libnobuild-$LIVE8B_DEAD.rlib"
 
 # LIVE9 — operator contract: stderr carries the machine-greppable summary
 # `prune deps=<path> files=N victim_bytes=N`, the byte figure being the summed
@@ -1180,12 +1358,14 @@ LIVE9_TMPDIR="$(mktemp -d /tmp/test-refresh-warm-base-live9-tmp-XXXXXX)"
 _TMPDIRS+=("$LIVE9_TMPDIR")
 TMPDIR="$LIVE9_TMPDIR" _live_refresh
 assert "LIVE9: refresh exits 0" test "$RC" -eq 0
-assert "LIVE9: the stage's summary temp file is removed after a successful prune" \
+assert "LIVE9: the stage's temp work dir is removed after a successful prune" \
     test -z "$(ls -A "$LIVE9_TMPDIR")"
 assert "LIVE9: stderr reports the prune with files=2" \
     _stderr_matches 'prune deps=.*files=2( |$)'
 assert "LIVE9: stderr's victim_bytes is the summed apparent size of exactly the two dead files" \
     _stderr_matches "files=2 victim_bytes=${LIVE9_BYTES}( |\$)"
+assert "LIVE9: stderr counts both dead units' fingerprint records (records=2) and no shards (dwo=0)" \
+    _stderr_matches 'files=2 victim_bytes=[0-9]+ records=2 dwo=0( |$)'
 assert "LIVE9: stdout stays empty" test -z "$OUT"
 
 # LIVE10 — skip paths: with no deps dir, or no .fingerprint to read liveness

@@ -1,66 +1,9 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
+/// The flat port name of a connect endpoint outside any `forall` binding.
 pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
-    match &expr.kind {
-        reify_ast::ExprKind::Ident(name) => Some(name.clone()),
-        reify_ast::ExprKind::MemberAccess { object, member } => match &object.kind {
-            reify_ast::ExprKind::Ident(obj_name) => Some(format!("{}.{}", obj_name, member)),
-            // Indexed sub-component port refs after `forall` substitution
-            // (task 2364): e.g. `vents[0].inlet` parses as
-            // `MemberAccess { object: IndexAccess { Ident("vents"),
-            //                                       NumberLiteral(0) },
-            //                 member: "inlet" }`. Format as the dotted-bracket
-            // string `"vents[0].inlet"` so the sub-member endpoint branches in
-            // `compile_connection` — which skip the own-entity `CompiledPort`
-            // lookup (`own_compiled_port` is `None` for them) and resolve the
-            // direction through `endpoint_direction` instead — flow unchanged.
-            reify_ast::ExprKind::IndexAccess {
-                object: inner,
-                index,
-            } => match (&inner.kind, &index.kind) {
-                (
-                    reify_ast::ExprKind::Ident(obj_name),
-                    reify_ast::ExprKind::NumberLiteral { value: n, .. },
-                ) => Some(format!("{}[{}].{}", obj_name, *n as i64, member)),
-                // Keyed sub-component port refs (task 3932 δ): e.g.
-                // `vents["intake"].inlet`. Format the key with {:?} (Debug)
-                // so the emitted segment `vents["intake"].inlet` is
-                // byte-identical to MemberKey::path_segment's output dotted
-                // with the port member name — the connection's right_port must
-                // match the scoped-entity NodeId that from_templates stamps.
-                (reify_ast::ExprKind::Ident(obj_name), reify_ast::ExprKind::StringLiteral(key)) => {
-                    Some(format!("{}[{:?}].{}", obj_name, key, member))
-                }
-                _ => None,
-            },
-            _ => None,
-        },
-        // Bare indexed sub-component (e.g. `vents[0]`) — also produced by
-        // `forall` substitution when the body references the bound var
-        // without dotting into a port. Returned as `"vents[0]"`. Currently
-        // only well-formed `Ident[NumberLiteral]` shapes are accepted; other
-        // index expressions (non-literal index, non-Ident object) return
-        // None so existing diagnostic behaviour is preserved.
-        reify_ast::ExprKind::IndexAccess { object, index } => {
-            match (&object.kind, &index.kind) {
-                (
-                    reify_ast::ExprKind::Ident(obj_name),
-                    reify_ast::ExprKind::NumberLiteral { value: n, .. },
-                ) => Some(format!("{}[{}]", obj_name, *n as i64)),
-                // Bare keyed sub-component ref (task 3932 δ): `vents["intake"]`.
-                // Format the key with {:?} (Debug) so the emitted segment is
-                // byte-identical to MemberKey::path_segment: `vents["intake"]`.
-                (reify_ast::ExprKind::Ident(obj_name), reify_ast::ExprKind::StringLiteral(key)) => {
-                    Some(format!("{}[{:?}]", obj_name, key))
-                }
-                _ => None,
-            }
-        }
-        // Ad-hoc selector: `port @ face("top")` — extract the base port name.
-        reify_ast::ExprKind::AdHocSelector { base, .. } => resolve_port_name(base),
-        _ => None,
-    }
+    PortPath::parse(expr, None)?.port_name()
 }
 
 /// Check if an expression is an ad-hoc selector.
@@ -260,7 +203,7 @@ fn own_port_name(port_ref: &str) -> Option<&str> {
 /// * `self.p` — the same own port named the long way round; resolves identically
 ///   to bare `p` (both through `own_compiled_port`), so writing the dot buys no
 ///   escape from this check, nor from the undefined-port check in
-///   `compile_connection`.
+///   `report_undefined_endpoints`.
 /// * `sub.p` — a port on a sub-component; read from `scope.sub_port_directions`,
 ///   which the entity Sub pre-pass populated from that sub's resolved child
 ///   template.
@@ -570,57 +513,37 @@ fn own_compiled_port<'c>(ctx: &'c ConnectContext, endpoint: &str) -> Option<&'c 
     find_own_port(ctx, own_port_name(endpoint)?)
 }
 
-/// Compile a single connection (from connect statement or chain desugaring).
-pub(crate) fn compile_connection(
+/// The endpoint checks every connect gets, wherever it is compiled: each
+/// endpoint names something that exists, and the two declared directions suit
+/// the operator.
+///
+/// Returns the direction verdict, which the `connect_compat_*` constraint
+/// carries. An endpoint whose declaration this compile cannot see passes (see
+/// `endpoint_direction`).
+pub(crate) fn check_connect_endpoints(
     ctx: &ConnectContext,
-    input: &ConnectInput,
+    left_port: &str,
+    operator: reify_ast::ConnectOp,
+    right_port: &str,
+    span: SourceSpan,
     diagnostics: &mut Vec<Diagnostic>,
-    acc: &mut ConnectAccumulator,
+) -> bool {
+    report_undefined_endpoints(ctx, left_port, right_port, span, diagnostics);
+    directions_compatible(ctx, left_port, operator, right_port, span, diagnostics)
+}
+
+/// Report each endpoint that names nothing that exists: an own-entity endpoint
+/// (bare `p` or `self.p`) that is not one of THIS entity's ports, a sub-member
+/// endpoint that is not a member its sub's resolved child declares — see
+/// `names_undefined_port`.
+fn report_undefined_endpoints(
+    ctx: &ConnectContext,
+    left_port: &str,
+    right_port: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let left_expr = input.left_expr;
-    let right_expr = input.right_expr;
-    let operator = input.operator;
-    let span = input.span;
-    let connector_type = input.connector_type;
-    let params = input.params;
-    let port_mappings = input.port_mappings;
-    let left_port = match resolve_port_name(left_expr) {
-        Some(name) => name,
-        None => {
-            diagnostics.push(
-                Diagnostic::error("invalid port reference in connect statement").with_label(
-                    DiagnosticLabel::new(left_expr.span, "unsupported expression"),
-                ),
-            );
-            return;
-        }
-    };
-    let right_port = match resolve_port_name(right_expr) {
-        Some(name) => name,
-        None => {
-            diagnostics.push(
-                Diagnostic::error("invalid port reference in connect statement").with_label(
-                    DiagnosticLabel::new(right_expr.span, "unsupported expression"),
-                ),
-            );
-            return;
-        }
-    };
-
-    // Hoist the own-entity port lookups once — they feed `auto_match_port_members`
-    // and the asymmetric-LocatedPort check, which need the whole `CompiledPort`
-    // and are deliberately own-entity-only.
-    let left_compiled = own_compiled_port(ctx, &left_port);
-    let right_compiled = own_compiled_port(ctx, &right_port);
-    // Directions are resolved separately and more widely: a sub-member endpoint
-    // has no `CompiledPort` here, but its declared direction is still knowable.
-    let left_dir = endpoint_direction(ctx, &left_port);
-    let right_dir = endpoint_direction(ctx, &right_port);
-
-    // Every endpoint must name something that exists: an own-entity endpoint
-    // (bare `p` or `self.p`) one of THIS entity's ports, a sub-member endpoint a
-    // member its sub's resolved child declares — see `names_undefined_port`.
-    if names_undefined_port(ctx, &left_port) {
+    if names_undefined_port(ctx, left_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -629,7 +552,7 @@ pub(crate) fn compile_connection(
             .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
-    if names_undefined_port(ctx, &right_port) {
+    if names_undefined_port(ctx, right_port) {
         diagnostics.push(
             Diagnostic::error(format!(
                 "undefined port '{}' in connect statement",
@@ -638,9 +561,25 @@ pub(crate) fn compile_connection(
             .with_label(DiagnosticLabel::new(span, "undefined port")),
         );
     }
+}
 
-    // Direction compatibility check
-    let compatible = match operator {
+/// Whether the endpoints' declared directions suit `operator`, reporting the
+/// mismatch when they do not.
+///
+/// Directions are resolved more widely than the own-entity `CompiledPort`: a
+/// sub-member endpoint has no `CompiledPort` here, but its declared direction
+/// is still knowable.
+fn directions_compatible(
+    ctx: &ConnectContext,
+    left_port: &str,
+    operator: reify_ast::ConnectOp,
+    right_port: &str,
+    span: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let left_dir = endpoint_direction(ctx, left_port);
+    let right_dir = endpoint_direction(ctx, right_port);
+    match operator {
         reify_ast::ConnectOp::Forward => {
             match (left_dir, right_dir) {
                 (Some(l), Some(r)) => {
@@ -695,7 +634,54 @@ pub(crate) fn compile_connection(
             }
             _ => true,
         },
+    }
+}
+
+/// Compile a single connection (from connect statement or chain desugaring).
+pub(crate) fn compile_connection(
+    ctx: &ConnectContext,
+    input: &ConnectInput,
+    diagnostics: &mut Vec<Diagnostic>,
+    acc: &mut ConnectAccumulator,
+) {
+    let left_expr = input.left_expr;
+    let right_expr = input.right_expr;
+    let operator = input.operator;
+    let span = input.span;
+    let connector_type = input.connector_type;
+    let params = input.params;
+    let port_mappings = input.port_mappings;
+    let left_port = match resolve_port_name(left_expr) {
+        Some(name) => name,
+        None => {
+            diagnostics.push(
+                Diagnostic::error("invalid port reference in connect statement").with_label(
+                    DiagnosticLabel::new(left_expr.span, "unsupported expression"),
+                ),
+            );
+            return;
+        }
     };
+    let right_port = match resolve_port_name(right_expr) {
+        Some(name) => name,
+        None => {
+            diagnostics.push(
+                Diagnostic::error("invalid port reference in connect statement").with_label(
+                    DiagnosticLabel::new(right_expr.span, "unsupported expression"),
+                ),
+            );
+            return;
+        }
+    };
+
+    // Hoist the own-entity port lookups once — they feed `auto_match_port_members`
+    // and the asymmetric-LocatedPort check, which need the whole `CompiledPort`
+    // and are deliberately own-entity-only.
+    let left_compiled = own_compiled_port(ctx, &left_port);
+    let right_compiled = own_compiled_port(ctx, &right_port);
+
+    let compatible =
+        check_connect_endpoints(ctx, &left_port, operator, &right_port, span, diagnostics);
 
     // Asymmetric LocatedPort check: warn when exactly one side of a connection
     // satisfies LocatedPort (directly or via refinement chain). Sub-component

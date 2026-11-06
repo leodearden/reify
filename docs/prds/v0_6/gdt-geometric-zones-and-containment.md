@@ -122,7 +122,7 @@ deviation is B-rep-sampled). Per-instance `.ri` constraint enforcement (general 
 
 | Other PRD / task | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
-| #4269 (deferred zone-REGION task) | absorbs | zone-region construction scope | **this PRD** (γ+δ) | decompose closes 4269 cancelled-superseded citing γ/δ |
+| #4269 (zone-REGION task) | absorbs | zone-region construction scope | **this PRD** (γ+δ) | decompose closes 4269 cancelled-superseded citing γ/δ |
 | `geometric-relations.md` (4382/4385) | consumes | typed datums + feature→datum projections for ι/κ | **geometric-relations** | dep edges ι←4382,4385 (pending) |
 | `geometric-relations.md` (4388) | consumes | DOF ledger for DRF-arrest diagnosis (κ) | **geometric-relations** | dep edge κ←4388 (pending) |
 | `process-dfm-overhang-draft.md` (4408/4410) | sibling pattern | check-time measure-pass shape; each pass owns its OWN engine-integration-norm §3 entry | each PRD its own | **θ landed second** — §3.11 (GD&T conformance walk) authored by θ/4481, cross-references §3.8 (DFM walk, 4408 landed first); engine-integration-norm §11 cross-PRD row added |

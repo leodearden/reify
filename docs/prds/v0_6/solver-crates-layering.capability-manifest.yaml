@@ -155,9 +155,12 @@ tasks:
       paths:
       - crates/reify-solver-elastic/src/assembly/mod.rs
   - name: no-external-data-readers
-    binding: 'git grep for `k_e.data` / `ElementStiffness {` outside crates/reify-solver-elastic finds
-      none in src or tests (measured), so the accessor migration is crate-internal.'
-    verdict: PASS
+    binding: 'R2 M4 (retro-critic sitting 2026-10-19) corrected this binding: the original grep searched
+      only the `k_e.data` spelling and missed one external reader, crates/reify-eval/tests/harness_topology_selector/shell_mixed_region_validation.rs
+      (`ke.data` / `ke.n_dofs`, :330 and :347). ε migrates it to get()/n_dofs() in the same diff; the
+      file is in ε''s files. Re-run the reader grep as `\.data\[|\.n_dofs\b` over crates/*/{src,tests}
+      outside reify-solver-elastic before closing.'
+    verdict: FAIL→corrected
     delivered_check:
       kind: manual
       reason: 'scope measurement; the ratchet row in α carries the gate.'
@@ -301,37 +304,8 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'discovered by running the suites; this leaf owns the outcome.'
-- label: κ
-  task_id: 8632
-  title: 'solver-layering κ: GeometryError::BackendUnavailable; structural routing in both map_geometry_error'
-  capabilities:
-  - name: typed-variant
-    binding: 'GeometryError (crates/reify-ir/src/geometry.rs) has InvalidReference, OperationFailed,
-      InitFailed, MeshContractViolation; no exhaustive match outside its Display impl (measured).'
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: BackendUnavailable
-      expect: present
-      paths:
-      - crates/reify-ir/src/geometry.rs
-  - name: substring-parsers-gone
-    binding: 'grep:mesher.rs and volume_refine.rs `msg.contains(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER)` present at main (one each, production).'
-    verdict: PASS
-    delivered_check:
-      kind: grep
-      pattern: 'msg\.contains\(reify_kernel_gmsh::STUB_UNAVAILABLE_MARKER\)'
-      expect: absent
-      paths:
-      - crates/reify-solver-elastic/src
-  - name: stub-arm-compilable
-    binding: 'reify-kernel-gmsh build.rs reruns on GMSH_LIB_DIR/GMSH_INCLUDE_DIR and omits cfg(has_gmsh)
-      when the lib is not found, so the stub arms compile with an empty GMSH_LIB_DIR (the mechanism
-      check-manifold-deps.sh''s behavioural loop uses).'
-    verdict: PASS
-    delivered_check:
-      kind: manual
-      reason: 'a stub-build compile is run by the implementer; the gate host always has gmsh.'
+# κ #8632 removed (retro-critic R2 polarity): cancelled 2026-10-14, subsumed by S10 β₁ #8935 (S10 R5
+# removes the gmsh-free build). Its checks were dead: substring-parsers-gone would go green through #8935, not κ.
 - label: λ
   task_id: 8637
   title: 'solver-layering λ: TetSpatialIndex<''a> owns its mesh borrow and tol; TetShape<''a> carries its mesh'
@@ -483,6 +457,16 @@ tasks:
       expect: present
       paths:
       - crates/reify-constraints/src/solver/uniqueness.rs
+  - name: no-stitched-solver-tests-file
+    binding: 'R2 polarity: inline-test-module-gone alone goes green on a verbatim `#[cfg(test)] mod tests;`
+      plus src/solver/tests.rs stitch, which D19 forbids. Path-absent twin; absent at main (a guard,
+      so it holds before and after).'
+    verdict: PASS
+    delivered_check:
+      kind: path
+      expect: absent
+      paths:
+      - crates/reify-constraints/src/solver/tests.rs
 - label: ρ
   task_id: 8660
   title: 'solver-layering ρ: PRD close'
@@ -493,3 +477,157 @@ tasks:
     delivered_check:
       kind: manual
       reason: 'the deliverable is the committed header.'
+# Gap-fill leaves (2026-10-16; plans/gap-fill-deliberation-reify-20261016.md §K3-D3, §K6-D1, §K6-D2, §K6-D3).
+# Checks verified with `git grep -E` against main 2026-10-17 (c7bbfe2519): each present check has no match, each absent check matches.
+- label: ξ₂
+  task_id: 9267
+  title: 'solver-layering ξ₂: ParamDomain carrier — one feasible-domain table in reify-constraints; AutoParam.bounds deleted'
+  capabilities:
+  - name: param-domain-carrier
+    binding: 'grep: no `ParamDomain`/`DomainTable` in crates/ at main; AutoParam.bounds is the only continuous bound field and its three production writers write None (engine_eval.rs, engine_edit.rs x2).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct ParamDomain
+      expect: present
+      paths:
+      - crates/reify-constraints/src
+  - name: autoparam-bounds-gone
+    binding: 'grep: `pub bounds: Option<(f64, f64)>` on AutoParam at crates/reify-ir/src/constraint.rs (AutoParam.bounds) at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'pub bounds: Option<'
+      expect: absent
+      paths:
+      - crates/reify-ir/src/constraint.rs
+  - name: hc4-and-xi-land-first
+    binding: 'producer:task-6655 (HC4 derivation), task-8653 (ξ moves derive/bounds); upstream dep edges (G1: #6655 is not widened).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'ordering, enforced by the dependency edges.'
+- label: ξ₃
+  task_id: 9268
+  title: 'solver-layering ξ₃: leaf_verdicts — solver acceptance by the checker''s comparison semantics; NaN/Undef Undecidable'
+  capabilities:
+  - name: leaf-verdicts
+    binding: 'grep: no `fn leaf_verdicts` at main; inequality acceptance is `magnitude <= FEASIBILITY_THRESHOLD` with `BinOp::Gt` scoring 0.0 at l == r (solver.rs).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn leaf_verdicts
+      expect: present
+      paths:
+      - crates/reify-constraints/src
+  - name: nan-accepted-arm-gone
+    binding: 'grep: `magnitude.is_nan() || magnitude <= FEASIBILITY_THRESHOLD` in RowResidual::inequality (solver.rs) at main; the only match in crates/reify-constraints/src.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'magnitude\.is_nan\(\) \|\|'
+      expect: absent
+      paths:
+      - crates/reify-constraints/src
+- label: η₂
+  task_id: 9271
+  title: 'solver-layering η₂: FreeSpec/GroupSpec, finiteness and the aniso material frame inside the validated force-density problem'
+  capabilities:
+  - name: group-spec-home
+    binding: 'grep: no `GroupSpec` at main; the GroupRatios four-check guard is copied in form_find_group_ratios and form_find_group_ratios_combined.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct GroupSpec
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: non-finite-input-error
+    binding: 'grep: no `NonFinite {` variant in crates/reify-solver-elastic/src at main (only NonFiniteEntry / NonFiniteSize elsewhere).
+      R2 polarity: anchored on `NonFinite \{ what` so φ-ff''s SpectrumError cannot satisfy it.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'NonFinite \{ what'
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: warp-dir-guard-replaced
+    binding: 'grep: build_material_frame''s `wip_norm_sq < 1e-16 * wd_norm_sq` (form_find.rs:887) at main, false for zero and NaN warp_dir.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'wip_norm_sq < 1e-16'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+- label: η₃
+  task_id: 9272
+  title: 'solver-layering η₃: GroupRatios gauge covariance measured first; StiffnessScale only if it reds'
+  capabilities:
+  - name: gauge-measured
+    binding: 'the 2^±20 gauge suite is Explicit-only at main (tests/tensegrity_free_surface_gauge_covariance.rs); the outcome is conditional (StiffnessScale if red, regression lock if green).'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'conditional deliverable: the parametrised GroupRatios gauge test lands either way; StiffnessScale only if it reds. No single pattern holds in both outcomes.'
+- label: φ-ff
+  task_id: 9273
+  title: 'solver-layering φ-ff: fd_matrix/spectrum module below form_find, form_find_free and prestress_stability'
+  capabilities:
+  - name: spectrum-type
+    binding: 'grep: no `SymmetricSpectrum` at main; NULLITY_REL_TOL defined twice (form_find_free.rs, prestress_stability.rs).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: struct SymmetricSpectrum
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: eigen-calls-leave-solvers
+    binding: 'grep: `.self_adjoint_eigen(Side::Lower)` with a panicking .expect at form_find_free.rs:1418 and prestress_stability.rs:230/408/682 at main.
+      R2 polarity: anchored on `\.self_adjoint_eigen\(` (the leaf''s ratchet needle); the bare word also
+      matched three doc-prose lines in prestress_stability.rs.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '\.self_adjoint_eigen\('
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src/prestress_stability.rs
+      - crates/reify-solver-elastic/src/form_find_free.rs
+- label: χ-ff
+  task_id: 9274
+  title: 'solver-layering χ-ff: split the free-standing combined outer loop (CombinedIterate, QSource, StallGuard, relax step)'
+  capabilities:
+  - name: q-source
+    binding: 'grep: no `QSource` at main; form_find_free_surfaces (~311 lines) branches the spec axis inline 3 times.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '(enum|trait) QSource'
+      expect: present
+      paths:
+      - crates/reify-solver-elastic/src
+- label: ψ-ff
+  task_id: 9275
+  title: 'solver-layering ψ-ff: form-find private-name tests rewritten at pub(crate) seams; test-local assembler and residual deleted'
+  capabilities:
+  - name: test-assembler-gone
+    binding: 'grep: `fn reassemble_d(` in form_find.rs''s test module at main (form_find_free.rs''s reassemble_d_free does not match the word-bounded pattern).'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'fn reassemble_d\b'
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src
+  - name: test-residual-gone
+    binding: 'grep: `fn equilibrium_residual_scaled` in form_find.rs''s test module at main.'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: fn equilibrium_residual_scaled
+      expect: absent
+      paths:
+      - crates/reify-solver-elastic/src

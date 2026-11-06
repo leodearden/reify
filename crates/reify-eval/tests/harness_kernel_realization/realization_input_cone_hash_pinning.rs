@@ -49,7 +49,7 @@ fn build_engine_from_source(source: &str, module_name: &str) -> reify_eval::Engi
     );
 
     let checker = reify_constraints::SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let mut engine = reify_eval::Engine::with_registered_kernel(reify_eval::SolverPosture::SolverFree, Box::new(checker));
     let result = engine.build(&compiled, ExportFormat::Step);
     assert!(
         result.geometry_output.is_some(),

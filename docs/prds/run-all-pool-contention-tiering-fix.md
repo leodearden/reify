@@ -1,7 +1,7 @@
 # PRD — `run_all.sh` pool-contention tiering fix + Phase-1 robustness
 
-**Status:** author-complete (2026-07-06). Decompose-ready — **stop here for Leo's review.** L0 is the
-scheduler-resume gate: it may be pulled forward and landed **before** the rest is decomposed (§9 priority).
+**Status: SHIPPED.** All decomposition leaves have landed — L0 (L0a + L0b) #5125, L1 #5129, L2 #5130, L3a #5131; L3b is the dark-factory-owned dispatch-admission companion, out of scope here (§7, `cpu-load-admission-control.md`). Authored 2026-07-06; shipped-status recorded 2026-10-18.
+**The body below is the AS-AUTHORED design record** — its measurements, `file:line` anchors and decompose-time instructions are dated 2026-07-06 pre-implementation provenance; they are not current statements of fact. **LIVE vs AS-AUTHORED:** LIVE — §4 (INV-1…INV-5′: `scripts/verify.sh` and `tests/infra/test_run_all_tiering.sh` defer to INV-5′, and `merge-gate-riders.md` amends INV-5 in place), §8 (do-nots) and §9's L3b entry (the cross-repo seam `scripts/fleet-load-detector.sh` cites). AS-AUTHORED — §§0–3, §§5–7, the rest of §9, and §10.
 **Slug:** `run-all-pool-contention-tiering-fix` · **Milestone:** version-agnostic verify-pipeline infra (root `docs/prds/`).
 **Corrects/extends:** `docs/prds/run-all-host-infra-partition.md` (Part A shipped the H2 concurrent pool this PRD
 re-tiers and hardens) · **Companions:** `docs/prds/cpu-load-admission-control.md` (the dispatch-admission axis, §7

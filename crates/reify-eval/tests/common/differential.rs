@@ -103,7 +103,7 @@ use reify_test_support::{MockGeometryKernel, compile_source, compile_source_with
 /// unneeded registration only widens blast radius. Add it only if a corpus build
 /// actually surfaces that target's trampoline-missing diagnostic.
 fn fresh_engine(scheduler: BuildScheduler, kernel: Box<dyn GeometryKernel>) -> Engine {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(SimpleConstraintChecker), Some(kernel));
     reify_eval::compute_targets::register_compute_fns(&mut engine);
     engine.set_build_scheduler(scheduler);
     engine
@@ -1470,7 +1470,7 @@ pub const WARM_AUTO_CONST_LET_SRC: &str = r#"structure WarmAutoConstLet {
 /// eval_cached back-prop tests which need a solver to exercise the
 /// `SolveResult::Solved` arm but do NOT need geometry (kernel is `None`).
 pub fn fresh_engine_with_solver(scheduler: BuildScheduler) -> Engine {
-    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None)
+    let mut engine = Engine::new(reify_eval::SolverPosture::Solve(reify_ir::ResolutionProfile::FRESH), Box::new(SimpleConstraintChecker), None)
         .with_solver(Box::new(DimensionalSolver));
     engine.set_build_scheduler(scheduler);
     engine

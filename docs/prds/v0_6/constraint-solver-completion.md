@@ -30,7 +30,7 @@ Proposing-mode feedback (§10.2) and coupling-detection (§10.6) are looser — 
 
 **Who reads the legibility surface?** Two named readers:
 1. The same CLI designer, via a new `reify explain <file>` subcommand that prints, per `auto` cell, which objective governed its resolution and (where applicable) the active weighting/priority and the chosen combination strategy.
-2. The GUI auto-resolve panel and the LSP, which already surface determinacy state (`crates/reify-cli/src/mcp_context.rs` maps `DeterminacyState`); the legibility data structure this PRD adds (`ObjectiveProvenance`) is the substrate they will later render. **This is a declared future consumer, not a wired one** — the CLI `reify explain` path is the in-batch leaf that proves the surface end-to-end (G1 satisfied by the CLI; GUI/LSP wiring is out of scope, §10).
+2. The GUI auto-resolve panel and the LSP, which already surface determinacy state (`crates/reify-cli/src/mcp_context.rs` maps `DeterminacyState`) *(that file was deleted by bbfbc7dd29 (#6665); the GUI's surviving mapper is `format_determinacy` in `gui/src-tauri/src/types.rs`)*; the legibility data structure this PRD adds (`ObjectiveProvenance`) is the substrate they will later render. **This is a declared future consumer, not a wired one** — the CLI `reify explain` path is the in-batch leaf that proves the surface end-to-end (G1 satisfied by the CLI; GUI/LSP wiring is out of scope, §10).
 
 Every mechanism this PRD introduces and its consumer:
 

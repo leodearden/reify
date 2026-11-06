@@ -1,0 +1,16 @@
+// /prd generic-instantiation-and-call-binding β₁ evidence (probe k): two
+// monomorphs of one generic get distinct cell ids. Today both keep
+// ValueCellId("Widget", ..) and `reify eval` prints the generic's own cell as
+// `Widget.slot_t = SealB { b: 2 }` (last write wins).
+module gicb_beta_two_monomorph_collision
+
+trait Seal {}
+trait Gasket {}
+structure def SealA : Seal { param a : Real = 1.0 }
+structure def SealB : Seal { param b : Real = 2.0 }
+structure def G1 : Gasket { param g : Real = 3.0 }
+structure def Widget<S: Seal, G: Gasket> { param slot_t : S }
+structure def Top {
+  sub w1 = Widget<SealA, auto: Gasket>()
+  sub w2 = Widget<SealB, auto: Gasket>()
+}

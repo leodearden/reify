@@ -155,7 +155,7 @@ fn box_edges_integration_test() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Task 4118 (γ): `edges(b)` now packages a kernel-free typed selector
@@ -212,7 +212,7 @@ fn box_faces_integration_test() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Task 4118 (γ): `faces(b)` now packages a kernel-free typed selector
@@ -277,7 +277,7 @@ fn box_edges_freshness_cascade() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // Sanity: the `b` cell must be a GeometryHandle (realization_reads wired).

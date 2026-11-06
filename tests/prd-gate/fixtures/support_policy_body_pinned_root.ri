@@ -1,0 +1,18 @@
+module support_policy_body_pinned_root
+
+// support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf β.
+// Body overload of solve_elastic_static with a PinnedSupport on the root. A pin is a hinge (ruling
+// R3); a hinge is not realizable on a realized face whose tangent frame the solver does not know,
+// so it is refused (ruling R9) rather than solved as a clamp. Today, on the gmsh path, the solve
+// clamps the AABB x-min face with no diagnostic; under `reify eval` (no gmsh kernel registered,
+// #6660) the pre-hydration guard returns Failed with no diagnostic and nothing is solved. After β,
+// its in-process gmsh test gets Failed with one FeaSupportNotRealized Error naming the PinnedSupport
+// and its span.
+
+structure SupportPolicyBodyPinnedRoot {
+    let material = Steel_AISI_1045()
+    let body = box(1000mm, 100mm, 100mm)
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let pinned_mount = PinnedSupport(target: "root")
+    let result = solve_elastic_static(material, body, [tip_load], [pinned_mount], ElasticOptions())
+}

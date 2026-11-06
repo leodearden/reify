@@ -150,7 +150,7 @@ mod tests {
     /// `Engine::mark_demand_pruned_pending` method.
     #[test]
     fn mark_demand_pruned_pending_is_noop_under_full_scope() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         engine.set_demand_full_scope(true);
         assert_eq!(
             engine.mark_demand_pruned_pending(),

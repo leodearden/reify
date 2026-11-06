@@ -6,6 +6,8 @@ import {
   GRID_RENDER_ORDER,
   AXES_RENDER_ORDER,
   AXIS_LABEL_RENDER_ORDER,
+  EDGES_OVERLAY_RENDER_ORDER,
+  SELECTION_OUTLINE_RENDER_ORDER,
 } from '../../viewport/renderOrder';
 
 // No vi.mock('three') here: renderOrder.ts is deliberately a plain numeric-constant
@@ -37,5 +39,11 @@ describe('viewport render-order ladder', () => {
     // scene-content overlay strictly above it and strictly below the helpers.
     expect(UNDERLAY_RENDER_ORDER).toBeLessThan(0);
     expect(OVERLAY_RENDER_ORDER).toBeGreaterThan(0);
+  });
+
+  it('the edges overlay sits above the mesh tier and below the selection outline, both below the helper tier', () => {
+    expect(EDGES_OVERLAY_RENDER_ORDER).toBeGreaterThan(0);
+    expect(EDGES_OVERLAY_RENDER_ORDER).toBeLessThan(SELECTION_OUTLINE_RENDER_ORDER);
+    expect(SELECTION_OUTLINE_RENDER_ORDER).toBeLessThan(GRID_RENDER_ORDER);
   });
 });

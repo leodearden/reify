@@ -74,9 +74,9 @@ fn extrude_infinite_intersected_with_box_yields_finite_clipped_solid() {
     // 20mm × 20mm × 10mm box centred at origin → Z spans [−5mm, +5mm].
     let box_h = kernel
         .execute(&GeometryOp::Box {
-            width: Value::Real(20.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(10.0e-3),
+            size_x: Value::Real(20.0e-3),
+            size_y: Value::Real(20.0e-3),
+            size_z: Value::Real(10.0e-3),
         })
         .expect("Box creation should succeed");
 

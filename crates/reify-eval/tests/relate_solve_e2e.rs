@@ -32,15 +32,19 @@ use std::collections::HashMap;
 
 use reify_compiler::{CompiledModule, TopologyTemplate};
 use reify_constraints::relate_solve::{
-    FrameUnknown, Operand, Pose, RelateTolerance, RelationInstance, max_relation_residual,
-    partition_driving_set, pose_from_frame,
+    FrameUnknown, Operand, Pose, RelationInstance, max_relation_exceedance, partition_driving_set,
+    pose_from_frame, solve_scaling,
 };
+use reify_constraints::scaling::RelateTolerance;
+use reify_constraints::trust_region::SolveBudget;
 use reify_core::{Diagnostic, DiagnosticCode, Severity, Type};
 use reify_eval::relate_solve::{
     RealizedDatums, RelateScope, RelateSolution, auto_pose_cell, collect_relate_scope,
-    realize_operand_datums, solve_relate_scope, trace_to_ground,
+    realize_operand_datums, solve_relate_scope, solve_relate_scope_within, trace_to_ground,
 };
-use reify_ir::{CompiledExpr, CompiledExprKind, ExportFormat, Value};
+use reify_ir::{
+    CompiledExpr, CompiledExprKind, ExportFormat, ResidualSource, SolveFailureCause, Value,
+};
 use reify_test_support::{compile_source_with_stdlib, frame_val, orientation_val, point3};
 
 /// Read the committed §1 worked example so the kernel-free unit slice and the
@@ -161,7 +165,7 @@ fn occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)))
 }
 
 /// A placeholder seed Frame for one `at auto` unknown, at `origin` with the given
@@ -298,6 +302,19 @@ fn realize_operand_datums_yields_concrete_pose_independent_local_datums() {
 /// from the SAME self-contained primitives as
 /// `examples/geometric_relations/bolt_plate.ri`.
 fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
+    bolt_scope_source(SECTION_1_PLATE, extra_fn, members)
+}
+
+/// The §1 `Plate` structure's body.
+const SECTION_1_PLATE: &str = "    let body = box(40mm, 40mm, 5mm)
+    let hole = cylinder(3.2mm, 5mm)
+    let hole_axis : Axis = hole.axis
+    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane";
+
+/// [`bolt_plate_scope_source`] with `plate_body` as the `Plate` structure's body —
+/// the §1 `Bolt` and `BoltPlate` scope around a different anchor.
+fn bolt_scope_source(plate_body: &str, extra_fn: Option<&str>, members: &[&str]) -> String {
     let extra_fn = match extra_fn {
         Some(f) => format!("{f}\n\n"),
         None => String::new(),
@@ -314,11 +331,7 @@ fn bolt_plate_scope_source(extra_fn: Option<&str>, members: &[&str]) -> String {
 }}
 
 structure Plate {{
-    let body = box(40mm, 40mm, 5mm)
-    let hole = cylinder(3.2mm, 5mm)
-    let hole_axis : Axis = hole.axis
-    let top = rectangle(40mm, 40mm)
-    let top_plane : Plane = top.plane
+{plate_body}
 }}
 
 structure BoltPlate {{
@@ -377,12 +390,20 @@ fn identity_bolt_seeds() -> HashMap<String, Value> {
 /// Compile `source`, collect the `BoltPlate` scope, realize its operand datums
 /// against a real OCCT kernel, and run the full per-scope relate-solve.
 fn solve_bolt_plate(source: &str) -> RelateSolution {
+    let (scope, realized) = realize_bolt_plate(source);
+    solve_relate_scope(&scope, &realized)
+}
+
+/// Compile `source`, collect the `BoltPlate` scope and realize its operand datums
+/// against a real OCCT kernel — everything [`solve_bolt_plate`] does short of the
+/// solve.
+fn realize_bolt_plate(source: &str) -> (RelateScope, RealizedDatums) {
     let module = compile_source_with_stdlib(source);
     let bp = template(&module, "BoltPlate");
     let scope: RelateScope = collect_relate_scope(bp);
     let mut engine = occt_engine();
     let realized = realize_operand_datums(&scope, &module, &mut engine, &identity_bolt_seeds());
-    solve_relate_scope(&scope, &realized)
+    (scope, realized)
 }
 
 /// step-13 — a redundant-remainder relation CONSISTENT with the driven placement
@@ -475,6 +496,70 @@ fn remainder_violated_relation_emits_diagnostic() {
     assert!(
         errors.iter().any(|m| m.contains("perpendicular")),
         "the assertion diagnostic must name the violated relation `perpendicular`, got: {errors:?}"
+    );
+}
+
+/// The redundant-remainder re-check judges a metre row against the SCALED assertion
+/// rung `assertion · max(L / R_ref, 1)` (PRD §7.3 "Coherence at every scale"), so a
+/// large model's solver-satisfied geometry does not fail its own re-check.
+///
+/// The redundant `offset` repeats the driving one's rows with a target 5e-5 m
+/// further out, so its residual at the solved placement is 5e-5 m. At `L` ≈ 20 m the
+/// metre rung is ≈ 2e-4 m and the remainder is consistent; at `L` ≈ 0.5 m it is
+/// the absolute 1e-5 m and the same 5e-5 m is a colocated conflict.
+#[test]
+fn large_model_redundant_relation_is_judged_against_the_scaled_assertion_rung() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping large_model_redundant_relation_is_judged_against_the_scaled_assertion_rung: \
+             OCCT not available"
+        );
+        return;
+    }
+    let solve_offset_pair = |driving: &str, redundant: &str| {
+        solve_bolt_plate(&bolt_plate_scope_source(
+            None,
+            &[
+                "concentric(bolt.shank_axis, plate.hole_axis)",
+                &format!("offset(bolt.seat_plane, plate.top_plane, {driving})"),
+                &format!("offset(bolt.seat_plane, plate.top_plane, {redundant})"),
+            ],
+        ))
+    };
+    let errors = |solution: &RelateSolution| -> Vec<String> {
+        solution
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| d.message.clone())
+            .collect()
+    };
+
+    let large = solve_offset_pair("20m", "20.00005m");
+    assert_eq!(
+        large.redundant, 1,
+        "the second offset repeats the first's rows"
+    );
+    assert!(
+        matches!(large.poses.get("bolt"), Some(Value::Frame { .. })),
+        "the driving set solves; the bolt is placed"
+    );
+    assert!(
+        errors(&large).is_empty(),
+        "a 5e-5 m remainder is within the metre rung at L ≈ 20 m, got: {:?}",
+        errors(&large)
+    );
+
+    let small = solve_offset_pair("0.5m", "0.50005m");
+    assert_eq!(
+        small.redundant, 1,
+        "the second offset repeats the first's rows"
+    );
+    assert!(
+        errors(&small).iter().any(|m| m.contains("offset")),
+        "a 5e-5 m remainder exceeds the 1e-5 m metre rung at L ≈ 0.5 m and must be \
+         reported as a conflict naming `offset`, got: {:?}",
+        errors(&small)
     );
 }
 
@@ -672,7 +757,7 @@ fn conflicting_relations_fail_with_minimal_geometric_diagnostic() {
 //      1) with 1 residual (spin about the shared axis) — exact integer codimensions
 //      (design "single-knob tolerance": DOF counts are exact, not tuned epsilons).
 //      The coaxial+flush placement holds "within the solver's convergence tolerance"
-//      — the method guarantee of `solve_frame` returning `Solved`, surfaced here as
+//      — the method guarantee of `solve_frame_outcome` converging, surfaced here as
 //      the bolt receiving a concrete `Value::Frame` (never Undef / Infeasible).
 //
 // RED until step-18 (a) adds `auto_pose_cell` to `reify_eval::relate_solve` and
@@ -1253,9 +1338,9 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // ── (b) the solve CONVERGED and the tangency holds within the assertion tol ──
     //
     // This is THE assertion the pre-task silent no-solve would have passed vacuously:
-    // with no residual rows `max_relation_residual` reads a flat 0.0 whatever the
-    // placement. It is meaningful only because (c) proves the rows exist and (e)
-    // proves they measure the right geometry.
+    // with no residual rows the exceedance reads a flat 0.0 whatever the placement.
+    // It is meaningful only because (c) proves the rows exist and (e) proves they
+    // measure the right geometry. Each row is judged against its own unit's rung.
     let solve_errors: Vec<&str> = solution
         .diagnostics
         .iter()
@@ -1273,13 +1358,19 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     };
     let solved_pose = pose_from_frame(roller_pose)
         .expect("the solved roller Frame must convert back to a Pose");
-    let residual = max_relation_residual(&instances, &unknown, &solved_pose);
-    let tol = RelateTolerance::kernel_default();
+    let scaling = solve_scaling(
+        &instances,
+        &unknown,
+        &Pose::identity(),
+        RelateTolerance::kernel_default(),
+    );
+    let exceedance = max_relation_exceedance(&instances, &unknown, &solved_pose, |u| {
+        scaling.assertion_rung(u)
+    });
     assert!(
-        residual < tol.assertion(),
-        "both tangency relations must hold at the solved placement: residual {residual:e} \
-         exceeds the assertion tolerance {:e}",
-        tol.assertion()
+        exceedance <= 1.0,
+        "both tangency relations must hold at the solved placement: the worst row is \
+         {exceedance:e}× its unit's assertion rung"
     );
 
     // ── (c) DOF accounting is OPERAND-CONDITIONAL, per relation ─────────────────
@@ -1287,8 +1378,7 @@ fn tangent_roller_example_solves_places_and_holds_tangency() {
     // The exact integers, not a range: cylinder/plane is codimension 2 and
     // cylinder/cylinder codimension 1, so the scope spends 3 and leaves 3. A silent
     // no-solve measures individual_rank 0 for BOTH.
-    let partition =
-        partition_driving_set(&instances, &unknown, &Pose::identity(), tol.solver_convergence());
+    let partition = partition_driving_set(&instances, &unknown, &Pose::identity(), &scaling);
     assert_eq!(
         partition.per_relation[0].individual_rank, 2,
         "tangent(cylinder, plane) is codimension 2 — one rotational row (axis ⟂ normal) \
@@ -1863,4 +1953,243 @@ fn occt_required_when_ci_profile_expects_it() {
         "occt_required_when_ci_profile_expects_it: REIFY_REQUIRE_OCCT={require} OCCT_AVAILABLE={}",
         reify_kernel_occt::OCCT_AVAILABLE
     );
+}
+
+// ─── η #6675 (OCCT-gated) — B9: infeasible and out-of-budget are told apart ────
+//
+// A failed relate-solve reports WHY, as a typed `SolveFailureCause` on the
+// `RelateSolution` and a distinct diagnostic code: a driving set that no placement
+// can satisfy is certified `SolverInfeasible` (the solve reached a stationary
+// point of ‖r̃‖² that is not a root and that no probed direction lowers, with the
+// gradient certificate and the blamed relations), while a feasible set that ran
+// out of iterations is `SolverBudgetExhausted` (counts and step-norm trend).
+// Before η both read as the same uncoded "cannot be satisfied simultaneously"
+// sentence.
+
+/// A `Plate` whose top plane faces `+z` and whose wall plane, rotated 90° about
+/// `y`, faces `x` — no seat plane can be flush with both.
+const PERPENDICULAR_WALLS_PLATE: &str = "    let top = rectangle(40mm, 40mm)
+    let top_plane : Plane = top.plane
+    let wall = rotate(rectangle(40mm, 5mm), 0.0, 1.0, 0.0, 90deg)
+    let wall_plane : Plane = wall.plane";
+
+fn perpendicular_walls_source() -> String {
+    bolt_scope_source(
+        PERPENDICULAR_WALLS_PLATE,
+        None,
+        &[
+            "flush(bolt.seat_plane, plate.top_plane)",
+            "flush(bolt.seat_plane, plate.wall_plane)",
+        ],
+    )
+}
+
+/// A `Plate` whose hole axis is tilted 20° about `x` and offset in-plane, so
+/// seating the shank in it is nonlinear in rotation and takes several steps.
+const TILTED_HOLE_PLATE: &str =
+    "    let hole = translate(rotate(cylinder(3.2mm, 5mm), 1.0, 0.0, 0.0, 20deg), 4mm, 3mm, 0mm)
+    let hole_axis : Axis = hole.axis";
+
+fn tilted_hole_source() -> String {
+    bolt_scope_source(
+        TILTED_HOLE_PLATE,
+        None,
+        &["concentric(bolt.shank_axis, plate.hole_axis)"],
+    )
+}
+
+fn errors(solution: &RelateSolution) -> Vec<&Diagnostic> {
+    solution
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect()
+}
+
+/// B9 (a): two DRIVING `flush` relations whose normals cannot both hold are a
+/// certified infeasibility.
+#[test]
+fn inconsistent_driving_relations_are_certified_solver_infeasible() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping inconsistent_driving_relations_are_certified_solver_infeasible: OCCT not available"
+        );
+        return;
+    }
+    let solution = solve_bolt_plate(&perpendicular_walls_source());
+
+    assert_eq!(
+        (solution.driving, solution.redundant),
+        (2, 0),
+        "both relations must drive, so the verdict is the solver's, not the remainder's"
+    );
+    let errors = errors(&solution);
+    assert_eq!(errors.len(), 1, "{:?}", solution.diagnostics);
+    let error = errors[0];
+    assert_eq!(
+        error.code,
+        Some(DiagnosticCode::SolverInfeasible),
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("flush") && error.message.contains("bolt"),
+        "{error:?}"
+    );
+    assert!(
+        error.message.contains("range cosine"),
+        "the diagnostic carries the gradient certificate: {error:?}"
+    );
+    assert!(
+        error.message.contains("plate.wall_plane"),
+        "the blamed relation is named by its operands: {error:?}"
+    );
+    let Some(SolveFailureCause::Infeasible(certificate)) = &solution.failure else {
+        panic!(
+            "expected a certified infeasibility, got {:?}",
+            solution.failure
+        );
+    };
+    assert!(
+        !certificate.blame.is_empty()
+            && certificate
+                .blame
+                .iter()
+                .all(|b| matches!(b.source, ResidualSource::Relation(i) if i < solution.driving)),
+        "every blamed row names a driving relation: {certificate:?}"
+    );
+    assert!(
+        solution.poses.is_empty(),
+        "no placement for an infeasible scope"
+    );
+    assert!(
+        diags_with_code(&solution.diagnostics, DiagnosticCode::SolverBudgetExhausted).is_empty()
+    );
+}
+
+/// B9 (b): a feasible scope given one iteration exhausts its budget — and the same
+/// scope under the default budget solves, so the budget, not the geometry, failed.
+#[test]
+fn a_feasible_scope_out_of_budget_is_solver_budget_exhausted() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping a_feasible_scope_out_of_budget_is_solver_budget_exhausted: OCCT not available"
+        );
+        return;
+    }
+    let (scope, realized) = realize_bolt_plate(&tilted_hole_source());
+
+    let starved = solve_relate_scope_within(&scope, &realized, SolveBudget { max_iterations: 1 });
+    let starved_errors = errors(&starved);
+    assert_eq!(starved_errors.len(), 1, "{:?}", starved.diagnostics);
+    let error = starved_errors[0];
+    assert_eq!(
+        error.code,
+        Some(DiagnosticCode::SolverBudgetExhausted),
+        "{error:?}"
+    );
+    assert!(error.message.contains("bolt"), "{error:?}");
+    assert!(
+        error.message.contains("1 of 1"),
+        "the counts are stated: {error:?}"
+    );
+    assert!(
+        error.message.contains("step norm"),
+        "the step-norm trend is stated: {error:?}"
+    );
+    assert!(
+        matches!(starved.failure, Some(SolveFailureCause::BudgetExhausted(_))),
+        "{:?}",
+        starved.failure
+    );
+    assert!(starved.poses.is_empty());
+    assert!(diags_with_code(&starved.diagnostics, DiagnosticCode::SolverInfeasible).is_empty());
+    assert!(!error.message.contains("conflicting"), "{error:?}");
+
+    let control = solve_relate_scope(&scope, &realized);
+    assert!(errors(&control).is_empty(), "{:?}", control.diagnostics);
+    assert!(control.poses.contains_key("bolt"), "{control:?}");
+    assert!(control.failure.is_none());
+}
+
+/// B9 (c): the two failures carry different codes.
+#[test]
+fn infeasible_and_out_of_budget_carry_different_codes() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping infeasible_and_out_of_budget_carry_different_codes: OCCT not available"
+        );
+        return;
+    }
+    let infeasible = solve_bolt_plate(&perpendicular_walls_source());
+    let (scope, realized) = realize_bolt_plate(&tilted_hole_source());
+    let starved = solve_relate_scope_within(&scope, &realized, SolveBudget { max_iterations: 1 });
+    let code = |s: &RelateSolution| errors(s).first().and_then(|d| d.code);
+    assert!(code(&infeasible).is_some() && code(&starved).is_some());
+    assert_ne!(code(&infeasible), code(&starved));
+}
+
+/// The #4388 seam: the §1 bolt (concentric + flush) leaves one free DOF, published
+/// as one twist — a pure rotation about the shank axis, which passes through the
+/// bolt frame's origin.
+#[test]
+fn bolt_plate_publishes_the_spin_about_the_shank_as_its_free_twist() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping bolt_plate_publishes_the_spin_about_the_shank_as_its_free_twist: OCCT not available"
+        );
+        return;
+    }
+    let solution = solve_bolt_plate(&bolt_plate_scope_source(
+        None,
+        &[
+            "concentric(bolt.shank_axis, plate.hole_axis)",
+            "flush(bolt.seat_plane, plate.top_plane)",
+        ],
+    ));
+    assert_eq!(solution.free, 1);
+    assert_eq!(
+        solution.free_twists.len(),
+        solution.free as usize,
+        "{solution:?}"
+    );
+    let twist = solution.free_twists[0];
+    let [rx, ry, rz] = twist.rotation;
+    assert!(
+        rz.abs() > 0.5,
+        "the twist rotates about the shank (z): {twist:?}"
+    );
+    assert!(rx.hypot(ry) <= 1e-9, "{twist:?}");
+    let translation = twist.translation.iter().map(|t| t * t).sum::<f64>().sqrt();
+    assert!(translation <= 1e-9, "a pure rotation: {twist:?}");
+}
+
+/// A `Plate` whose hole is drilled along `x` (rotated 90° about `y`), so the
+/// identity seed puts the shank's tilt row at its maximum.
+const SIDE_HOLE_PLATE: &str = "    let hole = rotate(cylinder(3.2mm, 5mm), 0.0, 1.0, 0.0, 90deg)
+    let hole_axis : Axis = hole.axis";
+
+fn side_hole_source() -> String {
+    bolt_scope_source(
+        SIDE_HOLE_PLATE,
+        None,
+        &["concentric(bolt.shank_axis, plate.hole_axis)"],
+    )
+}
+
+/// A seed at a stationary MAXIMUM of a relation's residual is not an
+/// infeasibility: the bolt seats in a side-drilled hole.
+#[test]
+fn a_side_drilled_hole_seats_the_bolt() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!("skipping a_side_drilled_hole_seats_the_bolt: OCCT not available");
+        return;
+    }
+    let solution = solve_bolt_plate(&side_hole_source());
+    assert_eq!(solution.failure, None, "{solution:?}");
+    assert!(errors(&solution).is_empty(), "{:?}", solution.diagnostics);
+    assert!(solution.poses.contains_key("bolt"), "{solution:?}");
+    // The seed puts the lone `concentric` at its crest, where the seed partition
+    // under-reads its rank; the reported count must be the solved placement's.
+    assert_eq!(solution.free as usize, solution.free_twists.len(), "{solution:?}");
+    assert_eq!(solution.spent + solution.free, 6, "{solution:?}");
 }

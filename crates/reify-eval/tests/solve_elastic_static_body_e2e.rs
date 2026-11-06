@@ -167,7 +167,7 @@ const REALIZED_CYLINDER_GRID_NODES: usize = REALIZED_CYLINDER_GRID_AXES[0]
 fn make_occt_engine() -> reify_eval::Engine {
     let checker = reify_constraints::SimpleConstraintChecker;
     let kernel = reify_kernel_occt::OcctKernelHandle::spawn();
-    reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)))
+    reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)))
 }
 
 /// Extract a named field from an ElasticResult `Value` (StructureInstance or the
@@ -329,6 +329,13 @@ fn build_realized(
         errors.is_empty(),
         "expected no Error diagnostics from the {label} build — a tessellation or \
          mesher failure on this fixture's geometry would surface here. got: {errors:?}"
+    );
+    assert!(
+        build_result
+            .geometry_output
+            .as_ref()
+            .is_some_and(|bytes| !bytes.is_empty()),
+        "the {label} build must export the body's STEP geometry"
     );
 
     (engine, build_result)

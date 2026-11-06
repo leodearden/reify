@@ -4,7 +4,7 @@ PRD: `docs/prds/v0_6/dependency-invalidation-stratum.md`. Machine-readable twin:
 
 **Code anchors** verified against main `8e6ffcac9d` (2026-10-12). Cite-by-symbol; re-locate lines at implementation time.
 
-Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's own work product. No FAIL rows; the two rows that were OPEN pending lead rulings (OQ-1, OQ-2) are PASS since the 2026-10-12 rulings.
+Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's own work product. FAIL→corrected = the authoring binding was false and a ruling corrected it (one row, ζ runtime-policy-has-own-consumer, retro-critic R13 M7, 2026-10-20). The two rows that were OPEN pending lead rulings (OQ-1, OQ-2) are PASS since the 2026-10-12 rulings.
 
 | Leaf | Capability | Evidence (authoring) | Verdict | delivered_check |
 |---|---|---|---|---|
@@ -20,17 +20,17 @@ Verdicts: PASS = binding held at authoring; OPEN = the decision is this leaf's o
 | β | residual-after-move | edge-deletion simulation: {engine_admin, engine_build, engine_edit, engine_eval, geometry_ops} + {cache, deps} | PASS | manual (baseline diff in β's commit) |
 | β | symbolic-selector-map-single-home | `symbolic_eval_helper_for_name` shared by dispatcher and predicate | PASS | grep `enum SymbolicSelectorCtor` present in `expr_classify.rs` |
 | γ | peers-have-no-production-caller | dirty_set 0; check_early_cutoff, compute_input_hash, free derive_output_freshness test-only; topological_order only via dirty_set | PASS | grep `fn (dirty_set\|check_early_cutoff\|compute_input_hash\|topological_order)\b` absent |
-| δ | three-walks-and-paired-sites | 3 builders; 5 paired sites + 1 reverse-only rebuild | PASS | grep `fn build_from_graph_and_fields\|fn build_trace_map_and_fields\|struct DependencyMap\b` absent (definition-anchored after the commit_planning polarity warning: prose mentions in cache.rs / freshness_walk.rs would have kept a bare-name check red; behavioural cover is δ's B5 inversion-law test) |
+| δ | three-walks-and-paired-sites | 3 builders; 5 paired sites + 1 reverse-only rebuild | PASS (corrected 2026-10-20, retro-critic R13: absent pattern widened) | grep `fn build_from_graph(_and_fields)?\b\|fn build_trace_map(_and_fields)?\b\|struct DependencyMap\b` absent in `crates/reify-eval/src` (R13: also covers `fn build_from_graph` / `fn build_trace_map`, still read by reify-runtime lib.rs, realization_staleness.rs and selective_eviction_staleness_differential.rs; definition-anchored after the commit_planning polarity warning: prose mentions in cache.rs / freshness_walk.rs would have kept a bare-name check red; behavioural cover is δ's B5 inversion-law test) |
 | δ | compute-asymmetry-is-deliberate | reverse has edges #6/#10; forward has no compute loop; #4958: compute nodes dispatched inline | PASS | grep `fn schedulable_traces` present in `deps.rs` |
 | δ | explain-undef-is-the-user-surface | reify-cli prints `note: … is undef (because: …)` via `Engine::trace_undef_causes` | PASS | grep `DependencyGraph` present in `undef_tracer.rs` |
 | ε | callers-and-bodies | 8 + 1 production callers; duplicated ValueCell BFS; one exhaustive match | PASS | grep `ConePolicy::ThroughRealizations` present in `dirty.rs` |
 | ε | old-bodies-gone | post-delivery | PASS | grep `fn compute_dirty_cone(_with_realizations)?\b` absent |
 | ζ | walk-has-no-production-caller | callers are tests only; completion site carries `TODO(#5023)` | PASS | grep `propagate_freshness_only\|mod freshness_walk\|mod gating` absent |
 | ζ | no-async-completion-path-exists | #5023 / #4958 records: executor deleted by #5065 | PASS | — |
-| ζ | runtime-policy-has-own-consumer | reify-runtime `commitment.rs` consumes `OnlyRunOnFinalInputs` itself | PASS | — |
+| ζ | runtime-policy-has-own-consumer | reify-runtime `commitment.rs` consumes `OnlyRunOnFinalInputs` itself. Corrected by retro-critic R13 M7: declared but not consumed (three G-allows "pending #5023"; reify.toml `[[node_overrides]]` has no effect); owned placeholder under #5023, ζ re-justifies the G-allow reasons | FAIL→corrected | — |
 | ζ | inv-eval-6-row-repointed | INV-EVAL-6 enforcement reads "completion transaction + panic boundary" | PASS | grep `INV-EVAL-6.*dirty_cone` present in `docs/invariants.md` |
-| η | inline-hash-sites | graph 6, engine_edit 2, + one doc restatement | PASS | grep `id_hash\.combine\(expr_hash\)` absent |
-| η | constructor-present | post-delivery | PASS | grep `pub fn new\(\s*id: ValueCellId` present in `graph.rs` |
+| η | inline-hash-sites | graph 6, engine_edit 2, + one doc restatement | PASS (corrected 2026-10-20, retro-critic R13: paths narrowed) | grep `id_hash\.combine\(expr_hash\)` absent in `engine_eval.rs`, `engine_edit.rs`, `engine_purposes.rs`, `engine_build.rs` (graph.rs excluded: `ValueCellNode::new` keeps the canonical spelling) |
+| η | constructor-present | post-delivery | PASS (corrected 2026-10-20, retro-critic R13: line-anchored pattern) | grep `pub fn new\(` present in `graph.rs` (git grep is line-based; a wrapped signature cannot match a multi-line pattern) |
 | η | no-parity-test-today | review measurement: 0 | PASS | manual |
 | θ | mirror-and-resolver-exist | private exporter map + `split_once('.')`; deps resolver trio private; semantics agree | PASS | grep `fn sub_operand_resolves` present in `deps.rs` |
 | θ | mirror-test-gone | post-delivery | PASS | grep `the_dropped_operand_rule_agrees_with_the_reverse_index` absent |

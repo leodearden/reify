@@ -6,6 +6,7 @@ license.workspace = true
 description = "Meaning-free primitive vocabulary for Reify (leaf crate per docs/prds/core-ast-ir-layering.md task γ)"
 
 [dependencies]
+workspace-feature-union.workspace = true
 xxhash-rust.workspace = true
 strum.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }

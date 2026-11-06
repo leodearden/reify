@@ -68,8 +68,8 @@
 //! 2. **`@` left delimiter** — `pipe@region(outer)` is an ad-hoc port/region
 //!    designator on a value (connect.md:52; docs/reify-language-spec.md:1488,
 //!    §D5); the same rule as (1), a different delimiter for the same shape.
-//! 3. **[`RI_KEYWORDS`] membership** — the language's full reserved-word set
-//!    (spec §2.10), not just declaration keywords: `Trait::fn(args)` reads
+//! 3. **[`reify_syntax::KEYWORDS`] membership** — the language's full keyword
+//!    table (spec §2.10), not just declaration keywords: `Trait::fn(args)` reads
 //!    as a call to `fn`, `auto(free)` reads as a call to `auto`; no keyword
 //!    is ever a builtin.
 //! 4. **file-scoped [`ri_declared_name`]** — a name this chunk's own
@@ -113,15 +113,15 @@
 //! - a "single-character argument" metavariable rule (to catch
 //!   `predicate(x)` specifically) was measured to ALSO drop `determined`,
 //!   `constrained`, `undetermined` and `partially_determined` — FOUR names,
-//!   exactly those of spec §2.10:221's ten-name carve-out that this corpus
+//!   exactly those of spec §2.10's ten-name carve-out that this corpus
 //!   documents in the `f(x)` shape, and every one of them a standard
 //!   library FUNCTION the spec is explicit is not a keyword, so filter 3
 //!   deliberately leaves all four claimable. Blinding the lane to four real
 //!   builtins to win one metavariable is the wrong trade. (`some(spec)` is
 //!   dropped by the rejected rule too, but is NOT part of that cost and
-//!   must not be counted as a fifth: `some` is a §2.10:212 value-literal
+//!   must not be counted as a fifth: `some` is a §2.10 value-literal
 //!   KEYWORD, filter 3 already drops it unconditionally, and
-//!   `ri_keywords_excludes_the_spec_carve_outs` omits it from the carve-out
+//!   `keyword_filter_excludes_the_spec_carve_outs` omits it from the carve-out
 //!   list for exactly that reason.)
 //!
 //! Do not add a context-modelling filter to [`chunk_call_mentions`] without
@@ -212,7 +212,7 @@
 //! itself (the `.`/`@` left delimiter, the `(...)` elision) or a whole-
 //! `content` set built from the SAME line-level [`ri_declared_name`] grammar
 //! the oracle already uses (the file-scoped declaration filter), or a static
-//! set membership test ([`RI_KEYWORDS`]). None inspects a heading, a fence
+//! set membership test ([`reify_syntax::KEYWORDS`]). None inspects a heading, a fence
 //! tag, a table pipe or any other markdown structure, so a chunk reformat
 //! still cannot break extraction — only a change to the `.ri` grammar these
 //! filters key on could.
@@ -236,7 +236,9 @@
 //! relaxing the floor restores the exact silent-false-clean failure the guard
 //! exists to prevent.
 
-use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, Ledger, parse_baseline};
+use crate::comment_lex::{BlockDepth, lex_line, literal_len};
+use crate::pdoccover_baseline::{BASELINE_PATH, BaselineRow, parse_baseline};
+use crate::ratchet_ledger::{Ledger, committed_rows};
 use crate::scan_util::{
     allow_marker_body, contains_word, find_word_boundary_token, is_identifier_shaped, is_word_byte,
 };
@@ -291,113 +293,28 @@ const ALLOW_TOKEN: &str = "pdoccover:allow";
 /// The identifier suffix that marks a const as a builtin-name registry.
 const REGISTRY_SUFFIX: &str = "_NAMES";
 
-/// Strip a trailing `// …` line comment from `line`, returning the code part.
+/// Strip every comment from `line`: the `/* … */` spans, whose open state
+/// carries across lines in `depth`, and the `// …` tail. The code [`lex_line`]
+/// reports is joined with a single space, so bracket depth and quoted-token
+/// extraction both see only real code. Without this a `/* … "phantom" … */`
+/// span inside a registry body, or a `"box", // renamed from "cube"` tail,
+/// would contribute a name that exists nowhere in the compiler.
 ///
-/// Quote-aware: a `//` inside a double-quoted string literal is NOT a comment
-/// start. Without this, an entry line whose trailing comment itself contains a
-/// quoted token (`"box", // renamed from "cube"`) would contribute a phantom
-/// registry entry.
-fn strip_line_comment(line: &str) -> &str {
-    let bytes = line.as_bytes();
-    let mut in_str = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' if in_str => i += 1, // skip the escaped byte
-            b'"' => in_str = !in_str,
-            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'/' => {
-                return &line[..i];
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    line
-}
-
-/// Strip `/* … */` block-comment spans from `line`, tracking open state across
-/// lines via `in_block`.
-///
-/// Returns the code outside any block comment, with the commented spans
-/// replaced by a space so bracket depth and quoted-token extraction both see
-/// only real code. Without this a `/* … "phantom" … */` span inside a registry
-/// body would contribute a name that exists nowhere in the compiler.
-///
-/// Quote-aware in the same sense as [`strip_line_comment`]: a `/*` inside a
-/// string literal does not open a block comment. Nested block comments (legal
-/// in Rust) are depth-counted.
-/// Operates on BYTES, accumulating into a `Vec<u8>` rather than slicing the
-/// `&str`. `units.rs` doc-comments contain non-ASCII (`§`, `→`, em dashes), and
-/// any `&line[i..i+1]`-style slice would panic on a multibyte char boundary.
-/// Every retained byte is copied verbatim, so multibyte sequences survive
-/// intact; every dropped span is delimited by ASCII `/*`/`*/`/`//`, so a drop
-/// can never split a char.
-///
-/// Returns [`Cow::Borrowed`] for the overwhelmingly common line that has
-/// nothing to strip. With no open block and no `/` anywhere, the loop below
-/// provably copies the input byte-for-byte: depth can only rise through the
-/// `/*` arm, the `//` break needs a `/`, and every other arm (including the
-/// in-string `\` escape, which pushes both of its bytes) falls through to a
-/// verbatim push. So the early-out is an identity, not an approximation — and
-/// it matters, because [`known_name_index`] runs this over the whole oracle
-/// corpus (~200k lines of compiler and stdlib source on the real tree) and
-/// every allocation it makes there is immediately discarded by
-/// [`strip_line_comment`]/[`quoted_tokens`].
-fn strip_block_comments<'a>(line: &'a str, depth: &mut usize) -> Cow<'a, str> {
-    if *depth == 0 && !line.contains('/') {
-        return Cow::Borrowed(line);
-    }
-    let bytes = line.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut in_str = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        if *depth > 0 {
-            if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-                *depth += 1;
-                i += 2;
-                continue;
-            }
-            if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                *depth -= 1;
-                out.push(b' ');
-                i += 2;
-                continue;
-            }
-            i += 1;
-            continue;
-        }
-        match bytes[i] {
-            b'\\' if in_str => {
-                // Copy the backslash and the first byte of the escaped char.
-                // A multibyte escaped char's continuation bytes are copied by
-                // the default arm on subsequent iterations.
-                out.push(bytes[i]);
-                if i + 1 < bytes.len() {
-                    out.push(bytes[i + 1]);
-                }
-                i += 2;
-                continue;
-            }
-            b'"' => in_str = !in_str,
-            // A `//` line comment outside a string ends the line; everything
-            // after it (including a `/*`) is comment text, never code.
-            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'/' => break,
-            b'/' if !in_str && i + 1 < bytes.len() && bytes[i + 1] == b'*' => {
-                *depth += 1;
-                out.push(b' ');
-                i += 2;
-                continue;
-            }
-            _ => {}
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    // Lossy is unreachable in practice (every retained byte comes from a valid
-    // &str and sequences are never split), but it keeps this infallible rather
-    // than panicking inside a fail-safe detector.
-    Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+/// Allocates only when two or more code spans must be joined; a line with one
+/// span or none is borrowed. That matters because [`known_name_index`] runs
+/// this over the whole oracle corpus (~200k lines of compiler and stdlib
+/// source on the real tree), and every allocation it makes there is
+/// immediately discarded by [`quoted_tokens`].
+fn strip_comments<'a>(line: &'a str, depth: &mut BlockDepth) -> Cow<'a, str> {
+    let mut code: Option<Cow<'a, str>> = None;
+    *depth = lex_line(line, *depth, |span| {
+        let text = &line[span];
+        code = Some(match code.take() {
+            None => Cow::Borrowed(text),
+            Some(joined) => Cow::Owned(joined.into_owned() + " " + text),
+        });
+    });
+    code.unwrap_or(Cow::Borrowed(""))
 }
 
 /// `true` when `line` carries a `pdoccover:allow` marker at all — with or
@@ -442,42 +359,20 @@ fn is_cfg_test_attr(code: &str) -> bool {
 ///
 /// Used ONLY for brace counting: a `{` inside `"unknown unit: {}"` must not
 /// move the module-nesting depth that decides what is inside `#[cfg(test)]`
-/// scope. Char literals are recognised only in the exact `'x'` / `'\x'` shapes
-/// so a lifetime (`&'static str`) is never mistaken for an unterminated one —
-/// which would swallow every brace to the end of the line.
+/// scope. The literals are the shapes [`literal_len`] measures, which keeps a
+/// lifetime from swallowing every brace to the end of the line.
 fn blank_literals(code: &str) -> String {
     let bytes = code.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        match bytes[i] {
-            b'"' => {
-                out.push(b' ');
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'"' {
-                    if bytes[i] == b'\\' {
-                        i += 1;
-                    }
-                    out.push(b' ');
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    out.push(b' ');
-                    i += 1;
-                }
+        match literal_len(bytes, i) {
+            Some(len) => {
+                out.resize(out.len() + len, b' ');
+                i += len;
             }
-            // `'x'` (3 bytes) or `'\x'` (4 bytes) only — anything else is a
-            // lifetime and is copied through untouched.
-            b'\'' if i + 2 < bytes.len() && bytes[i + 2] == b'\'' => {
-                out.extend_from_slice(b"   ");
-                i += 3;
-            }
-            b'\'' if i + 3 < bytes.len() && bytes[i + 1] == b'\\' && bytes[i + 3] == b'\'' => {
-                out.extend_from_slice(b"    ");
-                i += 4;
-            }
-            b => {
-                out.push(b);
+            None => {
+                out.push(bytes[i]);
                 i += 1;
             }
         }
@@ -588,7 +483,7 @@ struct CodeView {
 /// depth both carry across lines, so neither can be done lazily per line.
 fn code_view(units_src: &str) -> CodeView {
     let lines: Vec<&str> = units_src.lines().collect();
-    let mut block_depth = 0usize;
+    let mut block_depth = BlockDepth::default();
     let mut brace_depth: i32 = 0;
     // A `#[cfg(test)]` attribute has been seen and its item not yet identified.
     let mut pending_cfg_test = false;
@@ -598,8 +493,7 @@ fn code_view(units_src: &str) -> CodeView {
     let mut in_test: Vec<bool> = Vec::with_capacity(lines.len());
 
     for raw in &lines {
-        let no_block = strip_block_comments(raw, &mut block_depth);
-        let code = strip_line_comment(&no_block).to_string();
+        let code = strip_comments(raw, &mut block_depth).into_owned();
         let is_attr = is_attribute_line(&code);
 
         if is_attr && is_cfg_test_attr(&code) {
@@ -977,6 +871,18 @@ fn leading_ident(tok: &str) -> &str {
 ///
 /// `structure` and `occurrence` are the two-word forms (`structure def X`) and
 /// are handled by consuming the `def` token before the name.
+///
+/// ## Deliberately narrower than [`reify_syntax::KEYWORDS`]
+///
+/// This list drives [`ri_declared_name`], which feeds the existence ORACLE
+/// ([`known_name_index`]) for `.ri` stdlib sources. Widening it to the full
+/// keyword table would make `let foo`, `param foo`, `port foo` and `sub foo`
+/// parse as declarations of `foo`, admitting local bindings into the oracle
+/// and vouching for names the compiler never provides — turning the
+/// fabrication lane into a false-negative machine. The mention side has the
+/// opposite polarity (a keyword before `(` is grammar, never a claim), so
+/// [`chunk_call_mentions`] filters on the full table, and ONLY there. Do not
+/// fold the two together.
 const RI_DECL_KEYWORDS: &[&str] = &[
     "fn",
     "unit",
@@ -988,60 +894,6 @@ const RI_DECL_KEYWORDS: &[&str] = &[
     "joint",
     "structure",
     "occurrence",
-];
-
-/// Every reserved word in the language grammar — mention-side only.
-///
-/// = docs/reify-language-spec.md §2.10 "Keywords (Complete Post-Review List)"
-/// (:191-219) / §17 alphabetical appendix (:2880-2897, "Total: 46 keywords" —
-/// the two forms agree exactly) UNION [`RI_DECL_KEYWORDS`]. `joint` is a
-/// grammar-only keyword that post-dates the spec table.
-///
-/// The superset-of-[`RI_DECL_KEYWORDS`] property is what makes widening the
-/// mention-side filter unable to regress the narrower filter a63c892eea
-/// already shipped — but it is ENFORCED BY TEST, not by construction. This
-/// is a hand-maintained flat literal in which the declaration keywords are
-/// re-typed inline rather than spliced in, so
-/// `ri_keywords_is_a_superset_of_ri_decl_keywords` is the only thing that
-/// will notice a new `RI_DECL_KEYWORDS` entry which was not also added here.
-/// Add to both; do not read the "UNION" above as a mechanism.
-///
-/// DELIBERATELY EXCLUDED, both pinned by tests:
-/// - the spec's "Removed keywords (not part of v0.1)" (`derived`, `require`,
-///   `dimension`, :219) — none is part of the language at all;
-/// - the spec's "Not keywords (standard library functions)" (`determined`,
-///   `constrained`, `undetermined`, `partially_determined`, `point3`,
-///   `vec3`, `point2`, `vec2`, `project`, `geo_equiv`, :221) — these are real
-///   builtins, and admitting them here would silently drop every chunk claim
-///   naming one (`ri_keywords_excludes_the_spec_carve_outs`, and against the
-///   real `units.rs` census, `ri_keywords_never_collides_with_the_real_registry_census`
-///   in tests/pdoccover.rs).
-///
-/// ## A separate const from `RI_DECL_KEYWORDS`, deliberately not unified
-///
-/// `RI_DECL_KEYWORDS` also drives [`ri_declared_name`], which feeds the
-/// existence ORACLE ([`known_name_index`]) for `.ri` stdlib sources. Widening
-/// *that* function to the full reserved-word set would make `let foo`,
-/// `param foo`, `port foo` and `sub foo` parse as declarations of `foo`,
-/// admitting local bindings into the oracle and vouching for names the
-/// compiler never provides — turning the fabrication lane into a
-/// false-negative machine. The mention side has the opposite polarity (a
-/// keyword before `(` is grammar, never a claim), so the wider set is
-/// correct there, and ONLY there. Do not fold the two consts together.
-// G-allow: consumed by chunk_call_mentions in-module, and by the
-// keyword-vs-builtin collision guard in tests/pdoccover.rs — a separate
-// crate, so pub is required.
-pub const RI_KEYWORDS: &[&str] = &[
-    "and", "as", "auto", "chain", "connect", "constraint", "def", "else", "enum", "exists",
-    "false", "field", "fn", "forall", "if", "implies", "import", "in", "let", "map", "match",
-    "maximize", "meta", "minimize", "module", "none", "not", "occurrence", "or", "out", "param",
-    "port", "pub", "purpose", "self", "set", "some", "structure", "sub", "then", "trait", "true",
-    "type", "undef", "unit", "where",
-    // From RI_DECL_KEYWORDS only — a grammar-only keyword that post-dates
-    // the spec table (kept so this const stays a superset; the superset
-    // property is enforced by ri_keywords_is_a_superset_of_ri_decl_keywords,
-    // not by how this literal is written).
-    "joint",
 ];
 
 /// Name declared by a `.ri` line, if it is a declaration at all.
@@ -1100,16 +952,15 @@ pub fn known_name_index(sources: &[(String, String)]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for (path, content) in sources {
         let is_ri = path.ends_with(".ri");
-        let mut block_depth = 0usize;
+        let mut block_depth = BlockDepth::default();
         for raw in content.lines() {
-            let no_block = strip_block_comments(raw, &mut block_depth);
-            let code = strip_line_comment(&no_block);
+            let code = strip_comments(raw, &mut block_depth);
             if is_ri {
-                if let Some(name) = ri_declared_name(code) {
+                if let Some(name) = ri_declared_name(&code) {
                     out.insert(name.to_string());
                 }
             } else {
-                for tok in quoted_tokens(code) {
+                for tok in quoted_tokens(&code) {
                     if is_identifier_shaped(&tok) {
                         out.insert(tok);
                     }
@@ -1180,8 +1031,8 @@ fn in_oracle_scope(path: &str) -> bool {
 ///
 /// 1. **`.` left delimiter** and 2. **`@` left delimiter** — one rule with
 ///    two delimiters, described above.
-/// 3. **[`RI_KEYWORDS`] membership** — the language's FULL reserved-word set
-///    (spec §2.10), not just the declaration keywords [`ri_declared_name`]
+/// 3. **[`reify_syntax::KEYWORDS`] membership** — the language's FULL keyword
+///    table (spec §2.10), not just the declaration keywords [`ri_declared_name`]
 ///    parses with: `Trait::fn(args)` in prose about static dispatch reads as
 ///    a call to `fn`, and `auto(free)` reads as a call to `auto`; no keyword
 ///    is ever a builtin.
@@ -1251,11 +1102,11 @@ pub fn chunk_call_mentions(content: &str) -> Vec<(String, usize)> {
             if start > 0 && matches!(bytes[start - 1], b'.' | b'@') {
                 continue;
             }
-            // A reserved word is never a builtin (`Trait::fn(args)`,
+            // A keyword is never a builtin (`Trait::fn(args)`,
             // `auto(free)`), and a name this CHUNK declares anywhere is
             // defined by its own example source, not claimed of the
             // compiler.
-            if RI_KEYWORDS.contains(&name) || declared_names.contains(name) {
+            if reify_syntax::lookup_keyword(name).is_some() || declared_names.contains(name) {
                 continue;
             }
             // An argument list that is literally `(...)` is a schematic
@@ -1431,14 +1282,14 @@ fn is_chunk_path(path: &str) -> bool {
 
 /// Gather the inputs BOTH lanes need — deliberately not the oracle sources.
 ///
-/// Path membership comes from `ctx.git.ls_files()` — content from `std::fs`,
+/// Path membership comes from `ctx.git().ls_files()` — content from `std::fs`,
 /// mirroring `pdssentinel::check`. Only tracked files participate, so a stray
 /// untracked `units.rs.orig` or a scratch chunk never perturbs the census.
 ///
 /// The committed ledger is deliberately NOT an input: both lanes are blind to
-/// it, and only [`audit`] reads it, via [`committed_baseline`].
+/// it, and only [`audit`] reads it, via [`committed_rows`].
 fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
-    let mut tracked: Vec<String> = ctx.git.ls_files();
+    let mut tracked: Vec<String> = ctx.git().ls_files();
     tracked.sort();
 
     let registries = if tracked.iter().any(|p| p == UNITS_PATH) {
@@ -1460,17 +1311,6 @@ fn load_inputs(ctx: &AuditContext<'_>) -> Inputs {
         registries,
         chunk_sources,
     }
-}
-
-/// The committed ledger's rows — none when the file is absent, untracked,
-/// unreadable or empty (an untracked copy is inert, like every input).
-fn committed_baseline(ctx: &AuditContext<'_>, tracked: &[String]) -> BTreeSet<BaselineRow> {
-    if !tracked.iter().any(|p| p == BASELINE_PATH) {
-        return BTreeSet::new();
-    }
-    ctx.read_relative(BASELINE_PATH)
-        .map(|c| parse_baseline(&c))
-        .unwrap_or_default()
 }
 
 /// Read the fabrication lane's existence-oracle corpus.
@@ -1852,7 +1692,7 @@ impl fmt::Display for DegenerateInputs {
 /// [`baseline_ledger`], and so the one place a degenerate tree is refused.
 struct Audit {
     lanes: LaneResults,
-    ledger: Ledger,
+    ledger: Ledger<BaselineRow>,
 }
 
 fn audit(ctx: &AuditContext<'_>) -> Result<Audit, DegenerateInputs> {
@@ -1869,7 +1709,7 @@ fn audit(ctx: &AuditContext<'_>) -> Result<Audit, DegenerateInputs> {
     lanes.debt.extend(fabrication.debt);
     let ledger = Ledger {
         live: lanes.debt.keys().cloned().collect(),
-        committed: committed_baseline(ctx, &inputs.tracked),
+        committed: committed_rows(ctx, &inputs.tracked, BASELINE_PATH, parse_baseline),
     };
     Ok(Audit { lanes, ledger })
 }
@@ -1940,7 +1780,7 @@ pub fn check(ctx: &AuditContext<'_>) -> Vec<Finding> {
 /// derivation [`check`] settles, so a regenerated ledger is by construction
 /// one the ratchet accepts. Refuses a degenerate tree rather than deriving a
 /// ledger that would wipe the committed one.
-pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger, DegenerateInputs> {
+pub fn baseline_ledger(ctx: &AuditContext<'_>) -> Result<Ledger<BaselineRow>, DegenerateInputs> {
     audit(ctx).map(|audit| audit.ledger)
 }
 
@@ -2083,8 +1923,7 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
         );
     }
 
-    /// The comment stripper must BORROW the common line and allocate only when
-    /// it actually rewrites something.
+    /// The comment stripper must BORROW the common, comment-free line.
     ///
     /// `known_name_index` runs it over ~200k lines of compiler and stdlib
     /// source per fabrication-lane run; an unconditional `Vec<u8>` + `String`
@@ -2092,8 +1931,8 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
     /// The early-out must also be an IDENTITY, so the same-output assertions
     /// below matter as much as the borrow ones.
     #[test]
-    fn strip_block_comments_borrows_when_there_is_nothing_to_strip() {
-        let mut depth = 0usize;
+    fn strip_comments_borrows_when_there_is_nothing_to_strip() {
+        let mut depth = BlockDepth::default();
         for line in [
             "    \"is_watertight\",",
             "pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[",
@@ -2101,32 +1940,56 @@ pub const SOME_OTHER: &[&str] = &["not_a_registry"];
             "    let msg = \"unresolved unit: {} — see §3\";",
             "    let escaped = \"a\\\"b\";",
         ] {
-            let got = strip_block_comments(line, &mut depth);
+            let got = strip_comments(line, &mut depth);
             assert!(
                 matches!(got, Cow::Borrowed(_)),
                 "{line:?} has nothing to strip and must not allocate"
             );
             assert_eq!(got, line, "the early-out must be an identity");
-            assert_eq!(depth, 0, "{line:?} must not open a block");
+            assert_eq!(
+                depth,
+                BlockDepth::default(),
+                "{line:?} must not open a block"
+            );
         }
 
-        // Anything that actually rewrites still returns an owned String, and
-        // still rewrites correctly.
-        let mut depth = 0usize;
-        let got = strip_block_comments("\"a\", /* \"phantom\" */ \"b\",", &mut depth);
-        assert!(matches!(got, Cow::Owned(_)), "a stripped line is owned");
+        // Anything that actually rewrites still rewrites correctly.
+        let mut depth = BlockDepth::default();
+        let got = strip_comments("\"a\", /* \"phantom\" */ \"b\",", &mut depth);
         assert_eq!(quoted_tokens(&got), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(depth, 0);
+        assert_eq!(depth, BlockDepth::default());
 
         // An OPEN block is stripped even with no `/` on the line — the
-        // early-out must not fire on depth > 0.
-        let mut depth = 1usize;
-        let got = strip_block_comments("still inside the comment", &mut depth);
+        // early-out must not fire on an open depth.
+        let mut depth = BlockDepth::default();
+        strip_comments("/* opened", &mut depth);
+        let got = strip_comments("still inside the comment", &mut depth);
         assert!(
-            matches!(got, Cow::Owned(_)) && got.is_empty(),
+            got.is_empty(),
             "a line inside an open block must be dropped, got {got:?}"
         );
-        assert_eq!(depth, 1, "the block is still open");
+        assert_ne!(depth, BlockDepth::default(), "the block is still open");
+        assert_eq!(strip_comments("x */ y", &mut depth), " y");
+    }
+
+    /// A `'"'` char literal must not open a phantom string that hides the
+    /// real block comment after it.
+    #[test]
+    fn strip_comments_is_char_literal_aware() {
+        let mut depth = BlockDepth::default();
+        let got = strip_comments("let q = '\"'; /* \"phantom\" */ \"b\",", &mut depth);
+        assert_eq!(got, "let q = '\"';   \"b\",");
+        assert_eq!(depth, BlockDepth::default());
+    }
+
+    /// `strip_comments` alone owns `//` stripping, so a char literal must not
+    /// flip quote parity and leak the tail's quoted token.
+    #[test]
+    fn strip_comments_drops_a_line_comment_after_a_char_literal() {
+        let mut depth = BlockDepth::default();
+        let got = strip_comments("    '\"' => \"x\", // renamed from \"y\"", &mut depth);
+        assert_eq!(got, "    '\"' => \"x\", ");
+        assert_eq!(depth, BlockDepth::default());
     }
 
     /// Three spellings that mean exactly what `pub const X_NAMES: &[&str]`
@@ -3346,7 +3209,7 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
 
     /// Non-function call-shaped syntax that reads like a call but is grammar,
     /// not an API claim. `auto(free)` is the real `parameters.md:13` shape (a
-    /// value literal/keyword, spec §2.10:207); `some(...)` is a language-level
+    /// value literal/keyword, spec §2.10); `some(...)` is a language-level
     /// `Option` constructor intercepted before general function resolution
     /// (crates/reify-compiler/src/expr.rs:2222-2223, "some() is a
     /// language-level constructor, not a user-defined function" — `none` gets
@@ -3371,16 +3234,16 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
         );
     }
 
-    /// The carve-out that stops [`RI_KEYWORDS`] rotting into a false-negative
-    /// machine. docs/reify-language-spec.md:221 explicitly lists these as
-    /// "Not keywords (standard library functions)" — every one must still be
-    /// extracted as a claim when written call-shaped, and none may be a
-    /// `RI_KEYWORDS` member. The spec's "Removed keywords" (`derived`,
-    /// `require`, `dimension`, :219) are likewise absent — they are not part
-    /// of v0.1 at all, so admitting them as keywords would silently disarm a
-    /// chunk that (incorrectly) still calls them.
+    /// The carve-out that stops the keyword filter rotting into a
+    /// false-negative machine. docs/reify-language-spec.md §2.10 explicitly
+    /// lists these as "Not keywords (standard library functions)" — every one
+    /// must still be extracted as a claim when written call-shaped, and none
+    /// may be a [`reify_syntax::KEYWORDS`] row. The spec's "Removed keywords"
+    /// (`derived`, `require`, `dimension`) are likewise absent — they are not
+    /// part of v0.1 at all, so admitting them as keywords would silently
+    /// disarm a chunk that (incorrectly) still calls them.
     #[test]
-    fn ri_keywords_excludes_the_spec_carve_outs() {
+    fn keyword_filter_excludes_the_spec_carve_outs() {
         for name in [
             "determined",
             "constrained",
@@ -3394,9 +3257,9 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
             "geo_equiv",
         ] {
             assert!(
-                !RI_KEYWORDS.contains(&name),
+                reify_syntax::lookup_keyword(name).is_none(),
                 "{name:?} is a spec §2.10 standard-library function, not a \
-                 keyword — it must not be in RI_KEYWORDS"
+                 keyword — it must not be a reify_syntax::KEYWORDS row"
             );
             let hits = chunk_call_mentions(&format!("`{name}(x)`\n"));
             assert_eq!(
@@ -3409,24 +3272,24 @@ A `type(x)` or `unit(y)` in prose is grammar, not a call.
 
         for removed in ["derived", "require", "dimension"] {
             assert!(
-                !RI_KEYWORDS.contains(&removed),
-                "{removed:?} is a REMOVED keyword (spec :219, not part of \
-                 v0.1) — it must not be in RI_KEYWORDS"
+                reify_syntax::lookup_keyword(removed).is_none(),
+                "{removed:?} is a REMOVED keyword (spec §2.10, not part of \
+                 v0.1) — it must not be a reify_syntax::KEYWORDS row"
             );
         }
     }
 
-    /// `RI_KEYWORDS` must be a strict superset of [`RI_DECL_KEYWORDS`], so
-    /// widening the mention-side filter can never regress the declaration-
+    /// Every [`RI_DECL_KEYWORDS`] word is a [`reify_syntax::KEYWORDS`] row,
+    /// so the mention-side keyword filter can never regress the declaration-
     /// keyword filter a63c892eea already shipped.
     #[test]
-    fn ri_keywords_is_a_superset_of_ri_decl_keywords() {
+    fn every_ri_decl_keyword_is_a_keyword_table_row() {
         for kw in RI_DECL_KEYWORDS {
             assert!(
-                RI_KEYWORDS.contains(kw),
-                "{kw:?} is in RI_DECL_KEYWORDS but not RI_KEYWORDS — the \
-                 widening must never lose a keyword the narrower filter \
-                 already had"
+                reify_syntax::lookup_keyword(kw).is_some(),
+                "{kw:?} is in RI_DECL_KEYWORDS but is not a \
+                 reify_syntax::KEYWORDS row — the mention filter must never \
+                 lose a keyword the narrower filter already had"
             );
         }
     }

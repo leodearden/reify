@@ -16,7 +16,8 @@
 //   Prover ‖ Adversary  — run concurrently:
 //     Prover:   receive premises inline; write to temp file; invoke
 //               `prd-decompose-verify.py bind` then `prd-capability-check.py
-//               --json`; return result records via RESULTS_SCHEMA
+//               --json` (REIFY_BIN-prefixed when args.reify_bin names a
+//               binary); return result records via RESULTS_SCHEMA
 //     Adversary: independent lens — hunt unlisted premises + falsifications;
 //               return its own α result records via RESULTS_SCHEMA
 //   Synthesize — agent receives combined records inline; writes to temp file;
@@ -34,14 +35,17 @@
 //
 // Two lines of defence against a verdict with no evidence behind it:
 //   1. RESULT_RECORD_SCHEMA (below) — an agent cannot EMIT a record without a
-//      capability, a verdict from the closed vocabulary, an argv-array command
-//      and an integer exit_code.  VERDICT_SCHEMA likewise requires the
+//      capability, a verdict from the closed vocabulary, an argv-array command,
+//      an integer exit_code and α's fixture_present, which may be null only
+//      beside HARNESS_ERROR.  VERDICT_SCHEMA likewise requires the
 //      executed/total counters, so a Synthesize agent cannot drop them and have
-//      the batch silently read as INCOMPLETE.
+//      the batch silently read as INCOMPLETE.  Every schema literal mirrors a
+//      `prd-decompose-verify.py print-schema` member (B9 holds them equal).
 //   2. The Python harness (has_probe_evidence / classify_record) — a
-//      FAIL/UNPROVABLE that still arrives evidence-free is reported as
-//      MALFORMED rather than tabulated as a premise falsification (PRD §6
-//      decision 4).
+//      FAIL/UNPROVABLE that still arrives evidence-free, or any record whose
+//      fixture_present is not α's boolean, is reported as MALFORMED rather
+//      than tabulated as a premise falsification or counted as verified (PRD
+//      §6 decision 4, §5.2).
 //
 // Committed under scripts/ (not .claude/workflows/ which is .gitignored) so
 // β can reference it by a stable path and D4 can re-run it.  .mjs extension
@@ -61,6 +65,18 @@ export const meta = {
 // ---------------------------------------------------------------------------
 // JSON schemas for structured agent output
 // ---------------------------------------------------------------------------
+//
+// These literals mirror `python3 scripts/prd-decompose-verify.py print-schema`,
+// because a Workflow script cannot read files (PRD §3 M4).  B9 in
+// scripts/test_prd_decompose_verify_mjs.py holds each schema an agent() call
+// receives equal to its member.  One array per vocabulary, in the Python enum
+// order, feeds both the schemas and the role prompts.
+
+const ASSERTION_KINDS = ["rejection", "parses", "resolves", "produces", "ir", "value"];
+const HARNESS_ERROR = "HARNESS_ERROR";
+const VERDICTS = ["PASS", "FAIL", "UNPROVABLE", HARNESS_ERROR];
+const PROBE_KINDS = ["grammar", "check", "ir", "value"];
+const HARNESS_FAILURE_KINDS = ["launch", "setup", "timeout", "grammar_load"];
 
 const PREMISES_SCHEMA = {
     type: "object",
@@ -73,8 +89,7 @@ const PREMISES_SCHEMA = {
                 required: ["text", "assertion_kind", "fixture", "match"],
                 properties: {
                     text:           { type: "string" },
-                    assertion_kind: { type: "string",
-                                      enum: ["rejection", "parses", "resolves", "produces", "ir", "value"] },
+                    assertion_kind: { type: "string", enum: ASSERTION_KINDS },
                     fixture:        { type: "string" },
                     match:          { type: "object" },
                     capability:     { type: "string" },
@@ -98,22 +113,47 @@ const PREMISES_SCHEMA = {
 //
 // Requiring capability/verdict/command/exit_code, pinning `verdict` to the
 // PRD §6 decision 3 vocabulary, and typing `command` as an array of strings
-// makes all three unrepresentable at the agent boundary.
+// makes all three unrepresentable at the agent boundary.  Every property is α's
+// published result_record shape (§5.1), relayed verbatim; pdv's widening is
+// fixture_present's null, admitted only by the if/then arm beside HARNESS_ERROR.
 const RESULT_RECORD_SCHEMA = {
     type: "object",
-    required: ["capability", "verdict", "command", "exit_code"],
+    required: ["capability", "verdict", "command", "exit_code", "fixture_present"],
     properties: {
         capability: { type: "string" },
-        probe_kind: { type: "string" },
-        verdict:    { type: "string",
-                      enum: ["PASS", "FAIL", "UNPROVABLE", "HARNESS_ERROR"] },
+        probe_kind: { type: "string", enum: PROBE_KINDS },
+        verdict:    { type: "string", enum: VERDICTS },
         // argv TOKENS, never a ready-to-paste shell string.
         command:    { type: "array", items: { type: "string" } },
         // A real process outcome.  -1 when no process ran (HARNESS_ERROR).
         exit_code:  { type: "integer" },
         stdout:     { type: "string" },
         stderr:     { type: "string" },
+        fixture:    { type: "string" },
+        fixture_present: { type: ["boolean", "null"] },
+        harness_failure: {
+            type: ["object", "null"],
+            required: ["kind", "detail", "cache_denied"],
+            properties: {
+                kind:         { type: "string", enum: HARNESS_FAILURE_KINDS },
+                detail:       { type: "string" },
+                cache_denied: { type: "boolean" },
+            },
+        },
+        value_observation: {
+            type: "object",
+            required: ["satisfied", "captured", "failed_constraint"],
+            properties: {
+                satisfied:         { type: "boolean" },
+                captured:          { type: ["string", "null"] },
+                failed_constraint: { type: ["string", "null"] },
+            },
+        },
     },
+    // null is the Prover's own no-process HARNESS_ERROR fallback; on any other
+    // verdict fixture_present is α's true/false.
+    if:   { properties: { verdict: { not: { const: HARNESS_ERROR } } } },
+    then: { properties: { fixture_present: { type: "boolean" } } },
 };
 
 // The record-shape contract in prose, stated ONCE and interpolated into BOTH
@@ -121,20 +161,27 @@ const RESULT_RECORD_SCHEMA = {
 // it was duplicated near-verbatim into the Prover and Adversary prompts and the
 // two copies had ALREADY drifted in their closing paragraph.  Prose that drifts
 // from the schema is prose an agent will follow into a rejected response.
-const RECORD_SHAPE_RULES = `RECORD SHAPE — every result record MUST carry all four of capability, verdict,
-command and exit_code, and:
+const RECORD_SHAPE_RULES = `RECORD SHAPE — every result record MUST carry all five of capability, verdict,
+command, exit_code and fixture_present, and:
   - \`command\` MUST be an ARRAY OF STRINGS (argv tokens, e.g.
     ["python3", "scripts/prd-capability-check.py", "--json", "/tmp/ps.json"]).
     Do NOT return a single ready-to-paste shell string — it is not re-runnable
     as captured evidence and the schema rejects it.
   - \`exit_code\` MUST be an INTEGER (use -1 when no process ran).  Never null.
-  - \`verdict\` MUST be one of PASS / FAIL / UNPROVABLE / HARNESS_ERROR.
+  - \`verdict\` MUST be one of ${VERDICTS.join(" / ")}.
+  - \`fixture\`, \`fixture_present\` and \`harness_failure\` are relayed VERBATIM
+    from α's record.  fixture_present is α's true/false.  null is allowed ONLY
+    on a ${HARNESS_ERROR} record no α process produced; on any other verdict a
+    missing or null fixture_present makes the record MALFORMED — it is set
+    aside and never counts as verified.
 A FAIL or UNPROVABLE you did not actually RUN is not a falsification — the
 harness discards any such record with no captured command+exit_code as an
 unexecuted promise, so an invented record wins you nothing.  HARNESS_ERROR is
 the ONE exception: it reports that the probe machinery itself could not run, so
 it blocks the batch whether or not it carries evidence.  Use it — never a bare
-FAIL — when a step of your own procedure died.`;
+FAIL — when a step of your own procedure died.  That record's stderr is the
+failed step's exit code and then its stderr VERBATIM, never a paraphrase, and
+it keeps the no-probe shape: command [], exit_code -1, fixture_present null.`;
 
 const RESULTS_SCHEMA = {
     type: "object",
@@ -195,26 +242,108 @@ const VERDICT_SCHEMA = {
 // ---------------------------------------------------------------------------
 
 function normalizeLeaves(rawArgs, warn) {
-    let value = rawArgs;
-    if (typeof rawArgs === "string") {
-        try {
-            const parsed = JSON.parse(rawArgs);
-            if (Array.isArray(parsed)) {
-                value = parsed; // stringified leaf array -> real array: fan-out restored
-            } else {
-                warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
-                    + "non-array value; treating the whole string as ONE mega-leaf — "
-                    + "per-leaf fan-out is DEGRADED.");
-                // keep value = rawArgs (original single-leaf fallback)
-            }
-        } catch (e) {
-            warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
-                + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
-                + "JSON.parse error: " + e.message);
-            // keep value = rawArgs (original single-leaf fallback)
-        }
+    return leavesFrom(rawArgs, destringifyArgs(rawArgs), warn);
+}
+
+// The one place a stringified args is parsed.  A string becomes its JSON value;
+// a non-JSON string stays itself, with parseError set; anything else passes
+// through.
+function destringifyArgs(rawArgs) {
+    if (typeof rawArgs !== "string") return { value: rawArgs, parseError: null };
+    try {
+        return { value: JSON.parse(rawArgs), parseError: null };
+    } catch (e) {
+        return { value: rawArgs, parseError: e };
     }
-    return Array.isArray(value) ? value : (value ? [value] : []);
+}
+
+// rawArgs and its destringifyArgs result -> the leaf array.  A stringified leaf
+// array fans out; any other string is ONE mega-leaf, and says so.
+function leavesFrom(rawArgs, { value, parseError }, warn) {
+    if (Array.isArray(value)) return value;
+    if (parseError !== null) {
+        warn("normalizeLeaves: args arrived as a non-JSON string; treating the "
+            + "whole string as ONE mega-leaf — per-leaf fan-out is DEGRADED. "
+            + "JSON.parse error: " + parseError.message);
+    } else if (typeof rawArgs === "string") {
+        warn("normalizeLeaves: args arrived as a JSON string that parsed to a "
+            + "non-array value; treating the whole string as ONE mega-leaf — "
+            + "per-leaf fan-out is DEGRADED.");
+    }
+    return rawArgs ? [rawArgs] : [];
+}
+
+// ---------------------------------------------------------------------------
+// batchArgs — the args envelope {leaves, reify_bin} (task #9772)
+//
+// The operator, never an agent, names the reify binary α probes with: binary
+// trust is SHA identity (#8649), and this script cannot read files or env
+// (PRD §3 M4), so args is the only channel.  A non-array object (or a JSON
+// string of one) owning an envelope key is an envelope; anything else is the
+// leaf batch itself, as before.  Operator contract:
+// .claude/skills/prd/project.md, "Choosing the reify binary".
+// ---------------------------------------------------------------------------
+
+const BATCH_ENVELOPE_KEYS = ["leaves", "reify_bin"];
+
+function batchEnvelope(value) {
+    const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
+    return isObject && BATCH_ENVELOPE_KEYS.some(
+        key => Object.prototype.hasOwnProperty.call(value, key)) ? value : null;
+}
+
+// leaves as normalizeLeaves takes it: an array (an explicit [] is the empty
+// batch), one leaf object, or a non-blank string.  Anything else, a blank
+// template slot rendered as "" included, would become a vacuous zero-leaf PASS
+// or a leaf made of a bare scalar.
+function isLeafBatch(leaves) {
+    return (leaves !== null && typeof leaves === "object")
+        || (typeof leaves === "string" && leaves.trim() !== "");
+}
+
+// The invariant a malformed envelope breaks, or null.  A malformed envelope is
+// an invocation error, so it throws before any agent is paid rather than
+// returning a verdict that would read as a premise falsification.  Whether the
+// binary exists is α's to report (a launch HARNESS_ERROR); this script cannot
+// stat it.
+function envelopeRefusal(envelope) {
+    const unknown = Object.keys(envelope).filter(key => !BATCH_ENVELOPE_KEYS.includes(key));
+    if (unknown.length > 0) {
+        return `the envelope accepts only ${BATCH_ENVELOPE_KEYS.join(", ")}; `
+            + `unknown key(s): ${JSON.stringify(unknown)}`;
+    }
+    if (!isLeafBatch(envelope.leaves)) {
+        return "leaves must be the leaf array, its JSON string, or one leaf object; "
+            + `got ${JSON.stringify(envelope.leaves)}`;
+    }
+    const bin = envelope.reify_bin;
+    if (bin != null && !(typeof bin === "string" && bin.startsWith("/"))) {
+        return "reify_bin must be the absolute path of the reify binary α probes with; "
+            + `got ${JSON.stringify(bin)}`;
+    }
+    return null;
+}
+
+function batchArgs(rawArgs, warn) {
+    const destringified = destringifyArgs(rawArgs);
+    const envelope = batchEnvelope(destringified.value);
+    if (envelope === null) {
+        return { leaves: leavesFrom(rawArgs, destringified, warn), reifyBin: null };
+    }
+    const refusal = envelopeRefusal(envelope);
+    if (refusal !== null) throw new Error(`prd-decompose-verify args: ${refusal}`);
+    return { leaves: normalizeLeaves(envelope.leaves, warn), reifyBin: envelope.reify_bin ?? null };
+}
+
+function shellQuote(s) {
+    return "'" + s.replaceAll("'", "'\\''") + "'";
+}
+
+// The one home of the α command line the Prover and Adversary are told to run.
+const ALPHA_RUNNER = "python3 scripts/prd-capability-check.py --json";
+
+function alphaInvocation(reifyBin) {
+    return reifyBin === null ? ALPHA_RUNNER : `REIFY_BIN=${shellQuote(reifyBin)} ${ALPHA_RUNNER}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +447,8 @@ const _wfResult = await (async function runWorkflow() {
 
     // `args` is injected by the Workflow harness. Normalize defensively: args
     // has been observed arriving JSON-stringified (task #4960 mega-leaf trap).
-    const leaves = normalizeLeaves(args, log); // eslint-disable-line no-undef
+    const { leaves, reifyBin } = batchArgs(args, log); // eslint-disable-line no-undef
+    const alphaCommand = alphaInvocation(reifyBin);
 
     if (leaves.length === 0) {
         log("No leaves provided — γ verification skipped."); // eslint-disable-line no-undef
@@ -377,15 +507,30 @@ Instructions:
 1. Read the leaf signal carefully.
 2. For each factual claim or behavioral assertion, create one premise record.
 3. Enforce the NEGATIVE-ASSERTION MANDATE: for any "X is rejected" or "X should
-   fail" assertion, use assertion_kind="rejection" with match.exit_code=1.
+   fail" assertion, use assertion_kind="rejection".  Bind ALWAYS sets
+   match.exit_code=1 for a rejection, whether or not the premise writes it,
+   and refuses a premise that writes any other exit_code.  Add
+   match.stderr_contains naming the diagnostic, to pin WHICH rejection fires.
    DO NOT use observation="absent" for rejection premises — that would silently
    pass the 4575 silent-accept bug.
-4. assertion_kind values:
-   - "rejection": compiler must reject (exit_code:1) — e.g. type mismatches
-   - "parses":    tree-sitter parses the fixture without errors
-   - "resolves":  reify check passes (exit_code:0)
-   - "produces":  reify eval exits non-zero with this signature in stderr
+4. assertion_kind values, and the match keys each accepts.  The closed list is
+   ${ASSERTION_KINDS.join(", ")}.  Bind refuses any
+   match key the kind does not consult: a misspelt key would otherwise be
+   silently ignored, leaving the probe asserting nothing.
+   - "rejection": compiler must reject — e.g. type mismatches.  Bind sets
+                  exit_code 1 (step 3); optional stderr_contains /
+                  stdout_contains.
+   - "parses":    tree-sitter parses the fixture without errors.  match must
+                  be {}.
+   - "resolves":  reify check passes.  Bind sets exit_code 0 whether or not
+                  the premise says so, and refuses any other exit_code.
+                  Optional stderr_contains / stdout_contains.
+   - "produces":  reify eval exits non-zero with this signature in stderr.
+                  match.stderr_contains is the signature, and it is the only
+                  key.  Bind refuses a produces premise without one: it could
+                  never pass.
    - "ir":        reify eval exits 0 (clean, no error) — observation=absent.
+                  Optional stderr_contains only.
                   This proves ONLY "eval exits 0, clean".  It CANNOT see what
                   was printed: the ir arm answers on exit 0 without reading the
                   match dict at all.
@@ -405,9 +550,10 @@ Instructions:
                   ("Structure.field = <value> [unit]"): a pattern that locates
                   nothing is UNPROVABLE, not a failure, because a mis-aimed
                   probe is indistinguishable from an absent capability.
-5. Each premise needs a fixture path (repo-relative). If the leaf doesn't
-   specify one, you may need to reference an existing fixture in
-   tests/prd-gate/fixtures/ or note that a new fixture is needed.
+5. Each premise needs a non-empty fixture path (repo-relative); bind refuses
+   an empty one.  If the leaf doesn't specify one, you may need to reference an
+   existing fixture in tests/prd-gate/fixtures/ or note that a new fixture is
+   needed.
 6. Return ONLY premises you are confident about. An empty list is valid.
 
 Return a JSON object {premises: [...]} matching the schema.`,
@@ -451,7 +597,7 @@ Steps (use your own shell/file tools):
    Capture stdout (the probe-set JSON). If exit code != 0, return a HARNESS_ERROR record.
 3. Write the probe-set JSON to another temp file, e.g.:
      /tmp/pdv_probeset_${idx}.json
-4. Run: python3 scripts/prd-capability-check.py --json /tmp/pdv_probeset_${idx}.json
+4. Run: ${alphaCommand} /tmp/pdv_probeset_${idx}.json
    Capture the full stdout JSON. Parse the "results" array from it.
 5. Return {prover: [result_records...], adversary: []}.
 
@@ -463,7 +609,8 @@ If any step fails, return a single HARNESS_ERROR result record (this record is
 EXEMPT from the evidence rule above and DOES block — it is how "I could not run
 anything at all" reaches the caller):
   {capability: "${leafLabel}", probe_kind: "check", verdict: "HARNESS_ERROR",
-   command: [], exit_code: -1, stdout: "", stderr: "<error detail>"}`,
+   command: [], exit_code: -1, fixture_present: null, stdout: "",
+   stderr: "<as RECORD SHAPE above says>"}`,
                     { label: `prove:${idx}`, phase: "Prove", schema: RESULTS_SCHEMA, model: "sonnet", effort: "medium" }
                 ),
 
@@ -482,7 +629,8 @@ ${premisesJson}
 
 Instructions:
 1. Are there any premises NOT listed above that should hold? If so, bind them
-   to probes and run them via prd-capability-check.py --json using your own tools.
+   to probes and run them using your own tools, with exactly:
+     ${alphaCommand} <your probe-set file>
 2. Are any of the enumerated premises stated with the WRONG polarity (e.g., a
    rejection premise bound to observation="absent" instead of "present")?
    Flag these as FAIL records.

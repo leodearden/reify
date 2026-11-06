@@ -6,6 +6,7 @@ license.workspace = true
 description = "Engine facade and evaluation loop for Reify"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 # Task 7245: the persistent compute cache persists `DiagnosticCode` by its serde
 # name (src/persistent_cache.rs), and reify-core gates those derives behind its
@@ -27,7 +28,7 @@ reify-compiler.workspace = true
 reify-compute-contract.workspace = true
 # Task 4386 (geometric-relations ζ): src/relate_solve.rs's per-scope relate-solve
 # orchestration (`solve_relate_scope`) calls `reify_constraints::relate_solve`'s
-# `partition_driving_set` / `solve_frame` / `max_relation_residual` over realized
+# `partition_driving_set` / `solve_frame_outcome` / `max_relation_exceedance` over realized
 # datum Values. Promoted from [dev-dependencies] to a normal dep — reify-constraints
 # does NOT depend on reify-eval (no cycle) and pulls in no OCCT (argmin/ndarray
 # only), so this does not widen `scripts/occt-touching-crates.txt`.

@@ -107,9 +107,7 @@ pub(crate) fn compile_function(
         // The return-type resolution below installs its own separately-
         // scoped `EnumNameScope` (result-fallback Layer-B substrate,
         // return-position sibling of this param-position scope).
-        let _enum_scope = crate::type_resolution::EnumNameScope::new(
-            enum_defs.iter().map(|e| e.name.clone()).collect(),
-        );
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
         for p in &fn_def.params {
             let (ty, resolved) = match resolve_type_expr_with_aliases_kinded(
                 &p.type_expr,
@@ -248,9 +246,7 @@ pub(crate) fn compile_function(
         // `Option<Color>`). Scoped to this block — dropped before the function
         // body is compiled below — so body compilation is byte-for-byte
         // unchanged.
-        let _enum_scope = crate::type_resolution::EnumNameScope::new(
-            enum_defs.iter().map(|e| e.name.clone()).collect(),
-        );
+        let _enum_scope = crate::type_resolution::EnumNameScope::new(enum_defs);
         match &fn_def.return_type {
             Some(te) => {
                 match resolve_type_expr_with_aliases_kinded(
@@ -813,28 +809,25 @@ pub(crate) fn compile_assoc_function(
     Some(compiled)
 }
 
-/// Resolve a type name in field context. Unlike resolve_type_name, unresolved
-/// names become StructureRef (geometric domain types like Point3, Vector3)
-/// but a diagnostic warning is emitted so the user knows the type was not
-/// resolved from the built-in set.
+/// Resolve a type name in field context. Builtins, aliases, declared structures
+/// (StructureRef) and declared traits (TraitObject) resolve normally; only a name
+/// none of those hold (e.g. bare `Point3`/`Vector3`) coerces to StructureRef with
+/// a warning.
 pub(crate) fn resolve_field_type_name(
     name: &str,
     span: reify_core::SourceSpan,
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Type {
     let empty_params = HashSet::new();
-    // Field types do not currently resolve trait or structure names into
-    // TraitObject/StructureRef via the unified resolver path; pass empty sets
-    // so behavior is unchanged for fields.
-    let empty_structs: HashSet<String> = HashSet::new();
-    let empty_traits: HashSet<String> = HashSet::new();
     resolve_type_with_aliases(
         name,
         &empty_params,
         alias_registry,
-        &empty_structs,
-        &empty_traits,
+        structure_names,
+        trait_names,
     )
     .unwrap_or_else(|| {
         diagnostics.push(
@@ -873,6 +866,8 @@ pub(crate) fn compile_field(
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
     alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledField {
     // Resolve domain and codomain types. A structurally-invalid type-expr (e.g.
@@ -888,6 +883,8 @@ pub(crate) fn compile_field(
             name.as_str(),
             field_def.domain_type.span,
             alias_registry,
+            structure_names,
+            trait_names,
             diagnostics,
         ),
         reify_ast::TypeExprKind::DimensionalOp { .. } => {
@@ -967,6 +964,8 @@ pub(crate) fn compile_field(
             name.as_str(),
             field_def.codomain_type.span,
             alias_registry,
+            structure_names,
+            trait_names,
             diagnostics,
         ),
         reify_ast::TypeExprKind::DimensionalOp { .. } => {
@@ -1855,7 +1854,15 @@ mod tests {
         for domain in [ds_dim_op(), ds_int_lit(), ds_auto(), ds_qual_assoc()] {
             let field = ds_field(domain.clone(), ds_named("Length"));
             let mut diags: Vec<Diagnostic> = Vec::new();
-            let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+            let compiled = compile_field(
+                &field,
+                &[],
+                &[],
+                &TypeAliasRegistry::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut diags,
+            );
             assert!(
                 compiled.domain_type.is_error(),
                 "field domain {:?} must resolve to Type::Error, got: {:?}",
@@ -1890,7 +1897,15 @@ mod tests {
         for codomain in [ds_dim_op(), ds_int_lit(), ds_auto(), ds_qual_assoc()] {
             let field = ds_field(ds_named("Length"), codomain.clone());
             let mut diags: Vec<Diagnostic> = Vec::new();
-            let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+            let compiled = compile_field(
+                &field,
+                &[],
+                &[],
+                &TypeAliasRegistry::new(),
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut diags,
+            );
             assert!(
                 compiled.codomain_type.is_error(),
                 "field codomain {:?} must resolve to Type::Error, got: {:?}",
@@ -1930,7 +1945,15 @@ mod tests {
         // Arrow as field DOMAIN (codomain a valid Named type).
         let field = ds_field(ds_function_type(), ds_named("Length"));
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        let compiled = compile_field(
+            &field,
+            &[],
+            &[],
+            &TypeAliasRegistry::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut diags,
+        );
         assert!(
             compiled.domain_type.is_error(),
             "arrow field domain must be Type::Error (poison, #4657 CONVERT), got: {:?}",
@@ -1940,7 +1963,15 @@ mod tests {
         // Arrow as field CODOMAIN (domain a valid Named type).
         let field = ds_field(ds_named("Length"), ds_function_type());
         let mut diags: Vec<Diagnostic> = Vec::new();
-        let compiled = compile_field(&field, &[], &[], &TypeAliasRegistry::new(), &mut diags);
+        let compiled = compile_field(
+            &field,
+            &[],
+            &[],
+            &TypeAliasRegistry::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut diags,
+        );
         assert!(
             compiled.codomain_type.is_error(),
             "arrow field codomain must be Type::Error (poison, #4657 CONVERT), got: {:?}",

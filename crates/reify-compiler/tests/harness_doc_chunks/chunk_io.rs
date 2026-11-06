@@ -1,13 +1,13 @@
 //! Where the MCP language-reference chunk corpus lives, how a chunk is read and
 //! listed, and how a corpus-wide gate over it reports what it found.
 //!
-//! `reify-mcp` does NOT depend on `reify-compiler`, so the chunks cannot be
-//! reached through `language_chunks::get_chunk` from here; they are read BY PATH
-//! at runtime instead, so an edit to the markdown is seen by `cargo test`
-//! without a rebuild of this crate. Every path is REPO-RELATIVE — the currency a
-//! violation message names a chunk in, so a failure reads as a path a developer
-//! can open rather than an absolute build-machine one. A wrong path fails
-//! loudly at read time; nothing here ever skips.
+//! The chunks are read BY PATH at runtime, because the on-disk corpus is what
+//! every gate in this harness inspects; `fence_gate`'s check 4 is the one place
+//! that ties that corpus to what `reify_mcp::tools::language_chunks` serves.
+//! Every path is REPO-RELATIVE — the currency a violation message names a chunk
+//! in, so a failure reads as a path a developer can open rather than an
+//! absolute build-machine one. A wrong path fails loudly at read time; nothing
+//! here ever skips.
 
 use std::path::{Path, PathBuf};
 
@@ -57,7 +57,7 @@ pub(crate) const CONSTRAINTS_CHUNK_PATH: &str = concat!(chunks_dir!(), "/constra
 /// named `chunk_file_count_is_exact_not_slack`, so a diff that legitimately
 /// adds a chunk gets a message telling it to re-measure rather than a vacuity
 /// warning describing a bug that did not happen.
-pub(crate) const CHUNK_FILE_COUNT: usize = 19;
+pub(crate) const CHUNK_FILE_COUNT: usize = 20;
 
 /// Repo root, derived from this crate's manifest dir
 /// (`<repo>/crates/reify-compiler`) — what every repo-relative path in this

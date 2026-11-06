@@ -1,0 +1,635 @@
+# Machine-readable twin of analysis-stratum.capability-manifest.md
+# Every grep delivered_check below was confirmed RED at main b1a7be2982 (2026-10-13).
+prd: docs/prds/v0_6/analysis-stratum.md
+schema_version: 1
+tasks:
+  - label: "α"
+    task_id: 8984
+    title: "Shared wire primitives in reify_core::persistent_cache (f64 slab codec, MAX_F64_ELEMENTS, check_len, severity pair); copies deleted; S5 ratchet member created"
+    capabilities:
+      - name: "core-f64-slab"
+        binding: "producer:α — reify_core::persistent_cache holds only the trait at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn read_f64_slab"
+          paths: ["crates/reify-core/src"]
+          expect: "present"
+      - name: "core-severity-pair"
+        binding: "producer:α"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn severity_to_u8"
+          paths: ["crates/reify-core/src"]
+          expect: "present"
+      - name: "shell-extract-f64-copy-gone"
+        binding: "grep: private read_f64_slab copy in result.rs at main (drifted BE path + SAFETY text)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn read_f64_slab"
+          paths: ["crates/reify-shell-extract/src/result.rs"]
+          expect: "absent"
+      - name: "shell-extract-severity-copy-gone"
+        binding: "grep: severity_to_u8 copy in result.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn severity_to_u8"
+          paths: ["crates/reify-shell-extract/src/result.rs"]
+          expect: "absent"
+      - name: "diagnostics-wire-severity-copy-gone"
+        binding: "grep: severity_to_u8 copy in diagnostics_wire.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn severity_to_u8"
+          paths: ["crates/reify-eval/src/persistent_cache/diagnostics_wire.rs"]
+          expect: "absent"
+      - name: "contract-slab-definition-gone"
+        binding: "grep: pub fn read_f64_slab defined in the contract at main (callers stay; only the definition moves)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn read_f64_slab"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "absent"
+      - name: "ratchet-member-registered"
+        binding: "producer:α — new infra member; manifest row same diff (esc-4914-162)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "test_analysis_stratum_ratchet"
+          paths: ["tests/infra/run-all-classification.manifest"]
+          expect: "present"
+      - name: "persisted-round-trips-unchanged"
+        binding: "behavioural: ElasticResult / BucklingResultCache / ShellExtractionResult round-trip tests pass unchanged"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "existing behavioural tests are the enforcement"
+  - label: "β"
+    task_id: 8986
+    title: "Contract-owned StructuredComputeDetail::Fea(FeaDetail); From<FeaDiagnosticDetail> at the producer; dispatch.rs names no solver type"
+    capabilities:
+      - name: "contract-owned-fea-detail"
+        binding: "producer:β"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub enum FeaDetail"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "dispatch-solver-variant-gone"
+        binding: "grep: StructuredComputeDetail::Fea wraps reify_solver_elastic::FeaDiagnosticDetail at main (construct-scoped, comment-immune)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "Fea\\(reify_solver_elastic::FeaDiagnosticDetail\\)"
+          paths: ["crates/reify-compute-contract/src/dispatch.rs"]
+          expect: "absent"
+      - name: "gui-and-persisted-detail-unchanged"
+        binding: "behavioural: persistent_round_trip_replays_fea_under_constrained_unanchored + gui fea_diagnostics_from_structured tests pass unchanged (on-disk mirror order unchanged)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "behavioural tests are the enforcement"
+  - label: "γ"
+    task_id: 8991
+    title: "Delete the engine_compute and graph contract re-export shims; repoint 30 paths; move the six RealizationReadHandle tests into the contract crate"
+    capabilities:
+      - name: "engine-compute-shim-gone"
+        binding: "grep: pub use reify_compute_contract::{…} block in engine_compute.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub use reify_compute_contract"
+          paths: ["crates/reify-eval/src/engine_compute.rs"]
+          expect: "absent"
+      - name: "graph-shim-gone"
+        binding: "grep: graph.rs re-exports CancellationHandle at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub use reify_compute_contract::CancellationHandle"
+          paths: ["crates/reify-eval/src/graph.rs"]
+          expect: "absent"
+      - name: "handle-tests-in-contract"
+        binding: "producer:γ — 0 tests in realization.rs at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn handle_new_stores_content_hash"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "upstream-8687-8551"
+        binding: "producer:#8687 (S3 β) and #8551 (S7) upstream — they repoint two importers / delete the persistent_cache shims first"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+  - label: "δ"
+    task_id: 8988
+    title: "One cancellation channel: CancellationHandle::child; dispatch argument and ComputeNodeData.running are a child of active_solve_cancel; solver_progress moves to the contract carrying the sink only; elastic_static polls the argument"
+    capabilities:
+      - name: "linked-child-handle"
+        binding: "producer:δ"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn child\\("
+          paths: ["crates/reify-compute-contract/src/cancellation.rs"]
+          expect: "present"
+      - name: "ambient-cancel-poll-gone"
+        binding: "grep: ambient_cg_cancel_poll reads the thread-local cancel handle at main (crate-wide: #8374 may move elastic code into static_linear_solve.rs)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn ambient_cg_cancel_poll"
+          paths: ["crates/reify-eval/src"]
+          expect: "absent"
+      - name: "context-cancel-slot-gone"
+        binding: "grep: the dispatch context's cancel: Option<CancellationHandle> slot (solver_progress.rs) at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "cancel: Option<CancellationHandle>"
+          paths: ["crates/reify-eval/src", "crates/reify-compute-contract/src"]
+          expect: "absent"
+      - name: "progress-channel-in-contract"
+        binding: "producer:δ — solver_progress lives in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "trait SolverProgressSink"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "context-extensions"
+        binding: "producer:δ — typed extension map for family state (D15)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub struct Extensions"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "BT7-gui-cancel-reaches-every-cooperative-target"
+        binding: "behavioural: pre-cancelled set_active_solve_cancel handle yields DispatchError::Cancelled for modal/transient/inverse-dynamics/trajectory/shell-extract (red today) and elastic_static"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT7 is the enforcement; no grep can assert an outcome"
+  - label: "ε"
+    task_id: 8994
+    title: "Descriptor registry in place: contract target module, rows in reify-eval's legacy table, generic persist/significance/completion/upstream paths, registered_compute_targets(), target-string-routing ratchet row"
+    capabilities:
+      - name: "descriptor-type"
+        binding: "producer:ε"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub struct ComputeTargetDescriptor"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "persistable-allowlist-gone"
+        binding: "grep: const PERSISTABLE_TARGETS string allowlist at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "const PERSISTABLE_TARGETS"
+          paths: ["crates/reify-eval/src/compute_persist.rs"]
+          expect: "absent"
+      - name: "significance-optin-list-gone"
+        binding: "grep: fn is_opted_in(target: &str) string list at main (scoped to the string-keyed signature: unit tests named is_opted_in_* and a generic row-based helper do not match)"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn is_opted_in\\(target: &str"
+          paths: ["crates/reify-eval/src"]
+          expect: "absent"
+      - name: "elastic-upstream-branch-gone"
+        binding: "grep: if target == \"solver::elastic_static\" upstream branches (2 in engine_eval at main; S4 η #8864 may move the survivor into cell_elaboration.rs) — scanned crate-wide so a relocated branch still reds"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "if target == \"solver::elastic_static\""
+          paths: ["crates/reify-eval/src"]
+          expect: "absent"
+      - name: "fold-target-branch-gone"
+        binding: "grep: if target == \"shell-extract::extract\" fold sites (2 in run_compute_dispatch at main), scanned crate-wide"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "if target == \"shell-extract::extract\""
+          paths: ["crates/reify-eval/src"]
+          expect: "absent"
+      - name: "target-enumerator"
+        binding: "producer:ε — no public enumerator over compute_registry at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn registered_compute_targets"
+          paths: ["crates/reify-eval/src"]
+          expect: "present"
+      - name: "routing-ratchet-row"
+        binding: "producer:ε — target-string-routing row in α's member"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the ratchet member is the enforcement (a bare-token grep over tests/infra is satisfiable by a docstring)"
+      - name: "upstream-epsilon"
+        binding: "producer:#8690 #8706 #8686 #8525 #8864 upstream (§10 prereqs)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+      - name: "upstream-8864"
+        binding: "producer:#8864 (S4 η) upstream — one CellHooks site; program cross-reference"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edge is the enforcement"
+      - name: "BT3-scratch-descriptor"
+        binding: "behavioural: a scratch row with persistence/significance/on_completed/demand works end to end with no reify-eval source edit"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT3 is the enforcement"
+  - label: "ζ"
+    task_id: 8996
+    title: "One shell projection codec (project only what decode rebuilds); persistence, fold hook and GUI view over it; engine_admin parser, classifier and stale G-allow deleted"
+    capabilities:
+      - name: "gui-parser-gone"
+        binding: "grep: engine_admin::parse_shell_extraction_result (second decoder) at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "fn parse_shell_extraction_result"
+          paths: ["crates/reify-eval/src/engine_admin.rs"]
+          expect: "absent"
+      - name: "generic-results-iterator"
+        binding: "producer:ζ"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub fn compute_results"
+          paths: ["crates/reify-eval/src"]
+          expect: "present"
+      - name: "shell-decoder-ratchet-row"
+        binding: "producer:ζ — shell-value-decoder row in α's member"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the ratchet member is the enforcement"
+      - name: "BT8-cold-equals-warm"
+        binding: "behavioural: shell_extract_persistent_cache_round_trip asserts cold Value == warm Value (today pins regions divergence)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT8 is the enforcement"
+      - name: "BT9-gui-view"
+        binding: "behavioural: shell_gui_mesh_data_returns_one_entry_with_valid_fields equivalent over the new free fn"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT9 is the enforcement"
+  - label: "ι"
+    task_id: 8990
+    title: "tensegrity_load .ri surface: structure def TensegrityLoadResult + @optimized(\"solver::tensegrity_load\") fn; builder parity; stdlib.md Tensegrity analysis section"
+    capabilities:
+      - name: "tensegrity-load-fn-declared"
+        binding: "producer:ι — no .ri caller of solver::tensegrity_load at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "@optimized\\(\"solver::tensegrity_load\"\\)"
+          paths: ["crates/reify-compiler/stdlib/tensegrity.ri"]
+          expect: "present"
+      - name: "tensegrity-load-result-declared"
+        binding: "producer:ι"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "structure def TensegrityLoadResult"
+          paths: ["crates/reify-compiler/stdlib/tensegrity.ri"]
+          expect: "present"
+      - name: "chunk-section"
+        binding: "producer:ι — no analysis surface in any MCP chunk at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "## Tensegrity analysis"
+          paths: ["crates/reify-mcp/src/tools/chunks/stdlib.md"]
+          expect: "present"
+      - name: "grammar-fixture"
+        binding: "grammar-fixture:tests/prd-gate/fixtures/s5_tensegrity_load_surface.ri — tree-sitter parse --quiet exit 0; reify check exit 0 at main (probe names)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "grammar gate evidence, committed with the PRD"
+      - name: "BT12-eval"
+        binding: "behavioural: reify eval on ι's committed fixture prints converged: true with per-node displacements"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT12 is the enforcement"
+  - label: "η"
+    task_id: 8997
+    title: "Identity and schema: RiSurface on every row; .ri parity test; ENGINE_INTERNAL_RESULT_TYPES + representative-dispatch walk; reify-lsp hand list deleted"
+    capabilities:
+      - name: "ri-surface-field"
+        binding: "producer:η"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "enum RiSurface"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "present"
+      - name: "lsp-hand-list-gone"
+        binding: "grep: const ALL_PRODUCTION_COMPUTE_TARGETS hand copy (18 of 19) at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "const ALL_PRODUCTION_COMPUTE_TARGETS"
+          paths: ["crates/reify-lsp/src/diagnostics.rs"]
+          expect: "absent"
+      - name: "internal-result-register"
+        binding: "producer:η"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "ENGINE_INTERNAL_RESULT_TYPES"
+          paths: ["crates"]
+          expect: "present"
+      - name: "BT5-BT6"
+        binding: "behavioural: identity parity and register walk; seeded failures name the target / type"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT5 and BT6 are the enforcement"
+  - label: "κ₁"
+    task_id: 8999
+    title: "Create reify-analysis: shared foundation (cross-family helpers, stdlib_inputs, result_topology), transitional reify-eval edge, injection, version-hash composition, crate-DAG rows, test registration repoint"
+    capabilities:
+      - name: "workspace-member"
+        binding: "producer:κ₁"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "\"crates/reify-analysis\""
+          paths: ["Cargo.toml"]
+          expect: "present"
+      - name: "result-topology-moved"
+        binding: "grep: compute_targets::result_topology module in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod result_topology"
+          paths: ["crates/reify-eval/src/compute_targets/mod.rs"]
+          expect: "absent"
+      - name: "dag-rows"
+        binding: "producer:κ₁ — no reify-analysis row in the crate-DAG gate at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "reify-analysis"
+          paths: ["scripts/assert-crate-dag.sh"]
+          expect: "present"
+      - name: "transitional-edge-ratchet"
+        binding: "producer:κ₁ — eval-imports-analysis row in α's member (only falls; π → 0)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the ratchet member is the enforcement"
+      - name: "C5-composed-key"
+        binding: "behavioural: BT10 one-byte flip on either side changes the composed key; closure guard twin registered (manifest row same diff)"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "BT10 and the twin guard are the enforcement"
+      - name: "upstream-S15-code-leaves"
+        binding: "producer:#8674 #8679 #8683 #8686 #8690 #8693 #8697 #8698 #8702 #8706 #8711 (S15) and #8747 (S13 α) upstream"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement (program order S15 → S5)"
+  - label: "κ₂"
+    task_id: 9001
+    title: "Move the FDM family (as_printed_material, as_printed_material_r0, fdm_slice); R0 row RustOnly owned by #7087"
+    capabilities:
+      - name: "fdm-family-moved"
+        binding: "grep: mod as_printed_material in reify-eval compute_targets at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod as_printed_material"
+          paths: ["crates/reify-eval/src/compute_targets/mod.rs"]
+          expect: "absent"
+      - name: "BT11-fdm-bracket"
+        binding: "behavioural: reify eval examples/fdm_bracket.ri identical before and after"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "regression floor"
+  - label: "λ"
+    task_id: 9002
+    title: "Move dynamics/trajectory (trampoline halves + cache keys); mass-props half stays as body_mass_props.rs; stdlib dynamics/trajectory trampoline.rs deleted"
+    capabilities:
+      - name: "trajectory-ops-moved"
+        binding: "grep: pub mod trajectory_ops in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub mod trajectory_ops"
+          paths: ["crates/reify-eval/src/lib.rs"]
+          expect: "absent"
+      - name: "stdlib-dynamics-key-moved"
+        binding: "grep: struct InverseDynamicsCacheKey in reify-stdlib at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "struct InverseDynamicsCacheKey"
+          paths: ["crates/reify-stdlib/src"]
+          expect: "absent"
+      - name: "upstream-S6-trajectory"
+        binding: "producer:#8848 #8850 #8854 (S6) upstream — trajectory/trampoline.rs partitioned to the cache keys; trajectory_ops TOTS codes"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"
+      - name: "BT11-dynamics-trajectory"
+        binding: "behavioural: dynamics and trajectory examples identical"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "regression floor"
+  - label: "μ"
+    task_id: 9003
+    title: "Move modal (modal_ops, ModalCacheKey/TransientCacheKey, free_vibration); carried-mode selector resolver to reify-ir"
+    capabilities:
+      - name: "modal-ops-moved"
+        binding: "grep: pub mod modal_ops in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub mod modal_ops"
+          paths: ["crates/reify-eval/src/lib.rs"]
+          expect: "absent"
+      - name: "stdlib-modal-key-moved"
+        binding: "grep: struct ModalCacheKey in reify-stdlib at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "struct ModalCacheKey"
+          paths: ["crates/reify-stdlib/src"]
+          expect: "absent"
+      - name: "upstream-S6-modal"
+        binding: "producer:#8837 (S6 κ) upstream — modal_ops record-key reads rewritten"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edge is the enforcement"
+      - name: "BT11-modal"
+        binding: "behavioural: modal examples identical; BT7 modal rows green"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "regression floor"
+  - label: "ν"
+    task_id: 9004
+    title: "Move the FEA core; ElasticResult & co. out of the contract; contract drops reify-solver-elastic; BT1"
+    capabilities:
+      - name: "contract-drops-solver"
+        binding: "grep: reify-solver-elastic normal + dev deps in the contract Cargo.toml at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "^reify-solver-elastic"
+          paths: ["crates/reify-compute-contract/Cargo.toml"]
+          expect: "absent"
+      - name: "elastic-result-out-of-contract"
+        binding: "grep: pub struct ElasticResult in the contract at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub struct ElasticResult"
+          paths: ["crates/reify-compute-contract/src"]
+          expect: "absent"
+      - name: "fea-core-moved"
+        binding: "grep: mod elastic_static in reify-eval compute_targets at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod elastic_static"
+          paths: ["crates/reify-eval/src/compute_targets/mod.rs"]
+          expect: "absent"
+      - name: "BT1-cargo-tree"
+        binding: "behavioural: crate-DAG row — contract normal/build closure has no solver/kernel/eval/analysis"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the crate-DAG gate (crates/reify-build-utils/tests/crate_dag_assertion.rs) is the enforcement"
+  - label: "ξ"
+    task_id: 9006
+    title: "Move tensegrity/form-find (form_find, membrane_load, tensegrity_load, tensegrity_crack)"
+    capabilities:
+      - name: "tensegrity-family-moved"
+        binding: "grep: mod form_find in reify-eval compute_targets at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod form_find"
+          paths: ["crates/reify-eval/src/compute_targets/mod.rs"]
+          expect: "absent"
+      - name: "BT11-pavilion"
+        binding: "behavioural: examples/tensegrity_pavilion.ri and form-find examples identical; BT12 green"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "regression floor"
+  - label: "ο"
+    task_id: 9007
+    title: "Move shell-extract with the codec, GUI view fn and ENGINE_INTERNAL_RESULT_TYPES"
+    capabilities:
+      - name: "shell-extract-moved"
+        binding: "grep: mod shell_extract_compute in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "mod shell_extract_compute"
+          paths: ["crates/reify-eval/src/lib.rs"]
+          expect: "absent"
+      - name: "BT8-BT9-after-move"
+        binding: "behavioural: BT8/BT9 green after the move; fea_shell_flexure.ri identical"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "boundary tests are the enforcement"
+  - label: "π"
+    task_id: 9008
+    title: "Retire the legacy table and the transitional edge; reify-eval drops reify-analysis (normal), reify-fdm, faer; INV-ARCH-1 row lowered; #4936 re-pointed"
+    capabilities:
+      - name: "compute-targets-module-gone"
+        binding: "grep: pub mod compute_targets in reify-eval at main"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "pub mod compute_targets"
+          paths: ["crates/reify-eval/src/lib.rs"]
+          expect: "absent"
+      - name: "BT2-eval-half"
+        binding: "behavioural: cargo tree -p reify-eval -e normal,build has no reify-analysis / reify-fdm / faer (crate-DAG row); eval-imports-analysis = 0"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "the crate-DAG gate and the ratchet row are the enforcement (faer stays a dev-dependency, so no Cargo.toml grep)"
+  - label: "ρ"
+    task_id: 9009
+    title: "Record: compute-node-contract.md §2/§4 amended, Phases 7–8 frozen; INV-PD-2 enforcement pointer; /prd overlay evidence paths"
+    capabilities:
+      - name: "contract-doc-amended"
+        binding: "docs: §2/§4 describe CancellationHandle per-dispatch fresh and the fns HashMap registry at main"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "prose row; asserting wording is forbidden"
+      - name: "inv-pd-2-pointer"
+        binding: "docs: INV-PD-2 enforcement names PVAC (and, after S15 π, C4) only"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "prose row; pointer only"
+  - label: "σ"
+    task_id: 9010
+    title: "PRD close: terminal stamp"
+    capabilities:
+      - name: "terminal-stamp"
+        binding: "PRD-close: SHIPPED header with landed leaf ids + AS-AUTHORED freeze + LIVE/AS-AUTHORED map"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "committed header is the signal"
+  - label: "τ"
+    task_id: 9288
+    title: "Completed-with-Error census, then call_compute_fn_guarded converts a Completed carrying an Error into Failed with a coded ComputeOutcomeIncoherent naming the target (gap-fill 2026-10-16 K5-1 part 2; follow-on after #8525)"
+    capabilities:
+      - name: "incoherent-outcome-code"
+        binding: "producer:τ — no DiagnosticCode names an incoherent ComputeOutcome at main; Completed.diagnostics is documented 'Non-fatal' and nothing enforces it"
+        verdict: PASS
+        delivered_check:
+          kind: "grep"
+          pattern: "ComputeOutcomeIncoherent"
+          paths: ["crates/reify-core/src"]
+          expect: "present"
+      - name: "census-first"
+        binding: "behavioural: a census test enumerates every registered target and records which return Completed carrying a Severity::Error before the release conversion lands; a scratch trampoline returning Completed with an Error is asserted Failed with ComputeOutcomeIncoherent"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "census and scratch-trampoline tests are the enforcement"
+      - name: "upstream-8525"
+        binding: "producer:#8525 (call_compute_fn_guarded) and S15 ζ₀ (modal error paths already Failed) upstream"
+        verdict: PASS
+        delivered_check:
+          kind: "manual"
+          reason: "dependency edges are the enforcement"

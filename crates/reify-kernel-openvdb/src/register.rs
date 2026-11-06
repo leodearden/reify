@@ -143,11 +143,10 @@ pub const OPENVDB_KERNEL_VERSION: &str = "13.0.0";
 /// `OpenVdbKernel::realize_mesh_from_voxel_with_options` (kernel_real.rs);
 /// the trait `tessellate` route calls it with `MarchingCubesOptions::default()`.
 ///
-/// Trait-`execute()` of the terminal Voxel op intentionally returns
-/// `GeometryError::OperationFailed` (graceful degradation, pinned by
-/// `tests/dispatcher_integration.rs::openvdb_two_stage_chain_terminal_op_execute_degrades_gracefully`)
-/// until task ε wires the wrapper into engine dispatch (no `GeometryOp`
-/// Mesh-input variant exists, so trait-execute routing is structurally deferred).
+/// The three `(Boolean*, Voxel)` entries are **EXECUTABLE** declarations:
+/// `OpenVdbKernel::execute` (kernel_real.rs) runs `openvdb::tools::csg*Copy`
+/// on two registered level-set grids, resampling the right operand onto the
+/// left's transform when they differ.
 ///
 /// The `(Surface, Mesh)` entry (task 5033, PRD `voxel-to-mesh-surfacing.md`
 /// §10 OQ-1 option (a)) is an **EXECUTABLE** declaration for the isosurface

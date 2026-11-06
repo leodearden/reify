@@ -29,9 +29,9 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::{RealizationNodeId, ValueCellId};
 use reify_core::ty::SelectorKind;
 use reify_eval::{Engine, topology_selectors};
-use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
+use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
 use reify_ir::{EdgeCurveKind, ExportFormat, FaceSurfaceKind, GeometryOp, Value};
-use reify_test_support::{errors_only, parse_and_compile_with_stdlib};
+use reify_test_support::{assert_selector_leaf, errors_only, parse_and_compile_with_stdlib};
 
 const FIXTURE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -44,9 +44,9 @@ const BOX_SIDE_M: f64 = 10.0e-3;
 
 fn ten_mm_box_op() -> GeometryOp {
     GeometryOp::Box {
-        width: Value::Real(BOX_SIDE_M),
-        height: Value::Real(BOX_SIDE_M),
-        depth: Value::Real(BOX_SIDE_M),
+        size_x: Value::Real(BOX_SIDE_M),
+        size_y: Value::Real(BOX_SIDE_M),
+        size_z: Value::Real(BOX_SIDE_M),
     }
 }
 
@@ -77,7 +77,7 @@ fn selector_vocabulary_v2_leaves_compile_and_mint_typed_selectors() {
     let checker = SimpleConstraintChecker;
     let kernel: Box<dyn reify_ir::GeometryKernel> =
         Box::new(reify_kernel_occt::OcctKernelHandle::spawn());
-    let mut engine = Engine::new(Box::new(checker), Some(kernel));
+    let mut engine = Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(kernel));
     let result = engine.build(&compiled, ExportFormat::Step);
 
     // faces_perp → Selector(Face), ByPerpendicular{+Z, 1°}
@@ -276,24 +276,4 @@ fn resolve_count(
     let mut diags = Vec::new();
     let got = topology_selectors::resolve(&sv, kernel, &mut diags).expect("resolve must succeed");
     got.len()
-}
-
-/// Assert a cell holds a kernel-free `Value::Selector` whose node is a single
-/// `Leaf` of the expected `kind`, then run `check_query` against the leaf's
-/// `LeafQuery`. Mirrors the helper in `kernel_queries_directional_selectors.rs`.
-fn assert_selector_leaf(
-    cell_value: Option<&Value>,
-    label: &str,
-    kind: SelectorKind,
-    check_query: impl FnOnce(&LeafQuery),
-) {
-    let sv = match cell_value {
-        Some(Value::Selector(sv)) => sv,
-        other => panic!("{label} must be a kernel-free Value::Selector (4119 value model), got: {other:?}"),
-    };
-    assert_eq!(sv.kind, kind, "{label}: selector kind");
-    match &sv.node {
-        SelectorNode::Leaf { query, .. } => check_query(query),
-        other => panic!("{label} must be a Leaf selector node, got: {other:?}"),
-    }
 }

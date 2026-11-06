@@ -1,0 +1,20 @@
+// S6 PRD evidence (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md): a tie whose branches share an unbound carriage joint (T1)
+// Before-image measured at main e217c0f30b (2026-10-13); outputs recorded in the capability manifest.
+module s6_shared_carriage_tie
+
+// Lead probe: a TIE (well-formed four-bar-like loop) whose two branches share an
+// UNBOUND ancestor joint j0 (a moving carriage). Both branches hang off the carriage.
+// Loop: j0 + j1 == j0 + j2  (all prismatic along x)  =>  j2 must equal j1.
+structure def SharedAncestor {
+    let j0 = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)   // carriage on the ground
+    let j1 = prismatic(vec3(1, 0, 0), 0mm .. 1001mm)   // branch 1 on the carriage
+    let j2 = prismatic(vec3(1, 0, 0), 0mm .. 1002mm)   // branch 2 on the carriage
+    let m0 = mechanism()
+    let m1 = body(m0, "carriage", j0, world())
+    let m2 = body(m1, "armA", j1, j0)
+    let m3 = body(m2, "armB", j2, j0)
+    let m4 = body(m3, "tie", j1, j2)        // closing edge: j1's frame tied to j2's frame
+    let lcs = m4.loop_closures
+    let s = snapshot(m4, [bind(j1, 300mm)])
+    let fv = s.free_values
+}

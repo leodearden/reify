@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn morph_source_absent_key_returns_none() {
-        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
         assert!(
             engine.morph_source(&rnid).is_none(),
@@ -359,7 +359,7 @@ mod tests {
 
     #[test]
     fn morph_source_stores_and_reads_back_most_recent() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         // Store v1, read it back.
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn invalidate_morph_source_removes_stored_entry_and_returns_it() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         engine.store_morph_source(
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn invalidate_morph_source_on_absent_key_returns_none() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         assert!(
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn invalidate_morph_source_leaves_other_ids_intact() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
         let other = RealizationNodeId::new("Part", 1);
 
@@ -499,7 +499,7 @@ mod tests {
     fn morph_composition_slides_hit_cache_refine_now_invalidates_re_establish() {
         use reify_solver_elastic::{RefineTrigger, should_run_refinement};
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let rnid = RealizationNodeId::new("Part", 0);
 
         // A coarse solve establishes the initial morph source.
@@ -580,7 +580,7 @@ mod tests {
             RefineTrigger::ExplicitRequest,
             RefineTrigger::UserPause,
         ] {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             let rnid = RealizationNodeId::new("Part", 0);
 
             engine.store_morph_source(
@@ -613,7 +613,7 @@ mod tests {
     fn on_refine_trigger_settled_on_absent_key_returns_none_no_panic() {
         use reify_solver_elastic::RefineTrigger;
 
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
         let absent = RealizationNodeId::new("Part", 0);
 
         assert!(
@@ -629,7 +629,7 @@ mod tests {
         use reify_solver_elastic::RefineTrigger;
 
         for trigger in [RefineTrigger::ParameterSlide, RefineTrigger::ParameterProbe] {
-            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            let mut engine = Engine::new(crate::SolverPosture::SolverFree, Box::new(MockConstraintChecker::new()), None);
             let rnid = RealizationNodeId::new("Part", 0);
 
             engine.store_morph_source(

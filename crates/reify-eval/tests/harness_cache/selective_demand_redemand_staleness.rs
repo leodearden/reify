@@ -117,6 +117,7 @@ fn redemand_body_b_snapshot_sb_reflects_current_param_after_hidden_edit() {
     let sb_id = ValueCellId::new(e, "sb");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -220,6 +221,7 @@ fn redemand_body_b_snapshot_sb_reflects_current_param_after_hidden_edit() {
     //     so the oracle hash is the same whether or not tessellate is called.
     let oracle_compiled = compile_source(differential::SELECTIVE_DEMAND_MULTIBODY_EDITED_SRC);
     let mut oracle_engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -316,6 +318,7 @@ fn redemand_body_b_no_edit_reuses_cached_geometry_hash_gate() {
     let sb_id = ValueCellId::new(e, "sb");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -494,6 +497,7 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
     let p_id = ValueCellId::new(e, "p");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -587,6 +591,7 @@ fn redemand_body_b_excl_param_edited_value_not_reverted_on_unhide() {
     // default) via cold eval(). After eval(), snapshot.values[p] = 20mm.
     let oracle_compiled = compile_source(differential::SELECTIVE_DEMAND_EXCL_PARAM_EDITED_SRC);
     let mut oracle_engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -679,6 +684,7 @@ fn edit_param_rebuild_keeps_geometry_list_resolved_and_refreshed() {
     let holes_id = ValueCellId::new(e, "holes");
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );
@@ -1144,6 +1150,7 @@ fn selectively_demanded_engine(
         .collect();
 
     let mut engine = Engine::new(
+        reify_eval::SolverPosture::SolverFree,
         Box::new(SimpleConstraintChecker),
         Some(Box::new(MockGeometryKernel::new())),
     );

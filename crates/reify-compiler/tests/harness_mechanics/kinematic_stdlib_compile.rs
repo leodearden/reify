@@ -81,6 +81,21 @@ fn find_trait(name: &str) -> &'static reify_compiler::CompiledTrait {
         })
 }
 
+fn find_enum(name: &str) -> &'static reify_ir::EnumDef {
+    let module = load_stdlib_module();
+    module
+        .enum_defs
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected enum {} in std/kinematic, got: {:?}",
+                name,
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
+            )
+        })
+}
+
 // ─── module loads cleanly ────────────────────────────────────────────────────
 
 #[test]
@@ -1196,4 +1211,59 @@ fn compliant_joint_fields_keep_their_dimensions() {
         "Revolute.spring_rate stays Option<RotationalStiffness>; got: {:?}",
         spring_rate.cell_type
     )
+}
+
+// ─── JointPosition enum (C4) ─────────────────────────────────────────────────
+
+/// `enum JointPosition` carries one named-field variant per driving joint kind
+/// (docs/prds/v0_6/kinematics-typed-kinds-and-mechanism-record.md §4 C4).
+/// Coupling and Fixed have no position variant.
+///
+/// The whole variant list is compared at once, so a missing, extra or renamed
+/// variant or field, a reordered field, or a mis-resolved field type
+/// (e.g. `Orientation` falling back to a structure reference) reds with a full
+/// diff.
+#[test]
+fn joint_position_declares_one_named_variant_per_driving_kind() {
+    use reify_ir::{EnumVariantDef, VariantPayload};
+
+    let named = |name: &str, fields: &[(&str, Type)]| EnumVariantDef {
+        name: name.to_string(),
+        payload: VariantPayload::Named(
+            fields
+                .iter()
+                .map(|(field, ty)| (field.to_string(), ty.clone()))
+                .collect(),
+        ),
+    };
+
+    let joint_position = find_enum("JointPosition");
+    assert!(
+        joint_position.type_params.is_empty(),
+        "JointPosition is not generic; got type params: {:?}",
+        joint_position.type_params
+    );
+    assert_eq!(
+        joint_position.variants,
+        vec![
+            named("PrismaticPosition", &[("distance", Type::length())]),
+            named("RevolutePosition", &[("angle", Type::angle())]),
+            named(
+                "CylindricalPosition",
+                &[("distance", Type::length()), ("angle", Type::angle())],
+            ),
+            named(
+                "PlanarPosition",
+                &[
+                    ("x", Type::length()),
+                    ("y", Type::length()),
+                    ("angle", Type::angle()),
+                ],
+            ),
+            named(
+                "SphericalPosition",
+                &[("orientation", Type::Orientation(3))]
+            ),
+        ],
+    );
 }

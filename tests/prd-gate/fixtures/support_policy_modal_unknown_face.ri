@@ -1,0 +1,22 @@
+module support_policy_modal_unknown_face
+
+// support-realization-policy (docs/prds/v0_6/support-realization-policy.md) evidence fixture, leaf ε (and
+// S16 ξ #9120's K5-3 refusal). A modal support whose target names no box face. Today modal skips it
+// silently, so the solve is free-free and reports only W_ModalRigidBodyMode. After ξ (modal-local) and
+// the module (α₂), reify eval exits 1 with one FeaSupportNotRealized Error naming the support and its
+// span. Same short beam as support_policy_modal_lone_pin.ri (546 DOFs, under the dense ceiling).
+
+structure SupportPolicyModalUnknownFace {
+    let material = Steel_AISI_1045()
+    let mi = FEAMaterialInput(material: material)
+    let typo_mount = FixedSupport(target: "nonexistent_face")
+    let opts = ModalOptions(
+        n_modes: 3,
+        boundary_conditions: [typo_mount],
+        damping: NoDamping(),
+        reference_direction: vec3(0.0, 0.0, 1.0),
+        element_order: ElementOrder.P1
+    )
+    let modes = modal_analysis(mi.material, 20mm, 10mm, 10mm, opts)
+    let f1 = modes.modes[0].frequency
+}

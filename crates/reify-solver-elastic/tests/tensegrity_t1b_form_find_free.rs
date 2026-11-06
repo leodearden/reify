@@ -32,6 +32,7 @@
 //! memory note for the derivation.
 
 use reify_solver_elastic::{ForceDensitySpec, FreeFormResult, MemberKind, form_find_free};
+use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -74,26 +75,11 @@ fn triplex_group_ids() -> Vec<usize> {
     ]
 }
 
-/// The canonical symmetric triplex prism (R = 1, height = 1, twist 30°), node
-/// order matching `triplex_topology`: 0,1,2 top (z = 1) at azimuth 120°·i;
-/// 3,4,5 bottom (z = 0) at azimuth 120°·i + 30°.
-fn canonical_prism() -> Vec<[f64; 3]> {
-    let deg = std::f64::consts::PI / 180.0;
-    let top = |i: usize| {
-        let a = 120.0 * (i as f64) * deg;
-        [a.cos(), a.sin(), 1.0]
-    };
-    let bot = |i: usize| {
-        let a = (120.0 * (i as f64) + 30.0) * deg;
-        [a.cos(), a.sin(), 0.0]
-    };
-    vec![top(0), top(1), top(2), bot(0), bot(1), bot(2)]
-}
-
-/// A mildly perturbed (~1e-3 per coordinate, deterministic — no RNG) symmetric-
-/// prism guess. Form-finding refines a guess, so the gauge-fixing aligns the
-/// recovered shape to this near-symmetric placement; fixed offsets keep the
-/// golden bit-stable.
+/// A mildly perturbed (~1e-3 per coordinate, deterministic — no RNG) guess
+/// around the canonical prism (R = 1, height = 1, twist 30°, node order
+/// matching `triplex_topology`). Form-finding refines a guess, so the
+/// gauge-fixing aligns the recovered shape to this near-symmetric placement;
+/// fixed offsets keep the golden bit-stable.
 fn perturbed_prism_guess() -> Vec<[f64; 3]> {
     const PERTURB: [[f64; 3]; 6] = [
         [0.0009, -0.0011, 0.0007],
@@ -103,7 +89,7 @@ fn perturbed_prism_guess() -> Vec<[f64; 3]> {
         [0.0010, -0.0008, -0.0013],
         [-0.0011, 0.0013, 0.0006],
     ];
-    canonical_prism()
+    triplex_node_coords(CANONICAL_TRIPLEX_BOTTOM_Z)
         .iter()
         .zip(PERTURB.iter())
         .map(|(p, d)| [p[0] + d[0], p[1] + d[1], p[2] + d[2]])

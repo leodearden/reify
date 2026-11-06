@@ -12,20 +12,21 @@
 //! additionally covers the compile → eval geometry-error diagnostic channel
 //! and the mesh / STEP output path.
 //!
-//! Profile choice: a bare `circle(3mm)` suffices for the full-pipeline
-//! no-error + non-empty-geometry acceptance this test makes (OCCT `MakePipe`
-//! transports the section along the spine frame, producing exactly one
-//! non-empty solid). The posed, volume-accurate case (π·r²·L within 5%) is
-//! covered by the kernel integration test.
+//! Profile choice: the circle is posed normal to the helix start tangent,
+//! because `sweep` transports the profile as posed. A bare `circle(3mm)` sits
+//! only 2.66° off that tangent (|t̂·n̂| = 0.046370259), which #7248's 4° pose
+//! guard refuses. The volume-accurate case (π·r²·L within 5%) stays covered by
+//! the kernel integration test.
 //!
 //! Modeled on the full-pipeline section of `tube_pipe_e2e.rs`.
 
 use reify_core::{ModulePath, Severity};
 use reify_ir::ExportFormat;
 
-/// Full-pipeline e2e: `sweep(circle(3mm), helix(24mm, 7mm, 63mm))` must flow
-/// through parse → compile → tessellate → STEP export with no Error
-/// diagnostics and non-empty mesh / STEP output.
+/// Full-pipeline e2e: a circle posed normal to the helix start tangent, swept
+/// along `helix(24mm, 7mm, 63mm)`, must flow through parse → compile →
+/// tessellate → STEP export with no Error diagnostics and non-empty mesh /
+/// STEP output.
 #[test]
 fn helix_sweep_through_full_pipeline_succeeds() {
     if !reify_kernel_occt::OCCT_AVAILABLE {
@@ -34,7 +35,7 @@ fn helix_sweep_through_full_pipeline_succeeds() {
     }
 
     let source = r#"structure S {
-    let groove = sweep(circle(3mm), helix(24mm, 7mm, 63mm))
+    let groove = sweep(translate(rotate(circle(3mm), 1.0, 0.0, 0.0, -90deg), 24mm, 0mm, 0mm), helix(24mm, 7mm, 63mm))
 }"#;
 
     // ---- Parse ----
@@ -62,7 +63,7 @@ fn helix_sweep_through_full_pipeline_succeeds() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let tess_result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = tess_result
@@ -97,7 +98,7 @@ fn helix_sweep_through_full_pipeline_succeeds() {
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let mut planner2 = reify_geometry::SingleKernelHolder::new();
     planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
+    let mut engine2 = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(planner2)));
 
     let build_result = engine2.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result

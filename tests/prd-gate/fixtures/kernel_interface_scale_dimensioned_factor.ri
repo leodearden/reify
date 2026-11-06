@@ -1,0 +1,14 @@
+module kernel_interface_scale_dimensioned_factor
+
+// S10 (docs/prds/v0_6/kernel-interface-typed-replies-total-delegation.md) leaf θ₆ evidence.
+// A LENGTH-dimensioned scale factor reaches GeometryOp::Scale.factor through a
+// bare-accepting f64 read. Main 274a212e0a: exit 0, v_bad = 0.000000000008 m^3
+// (scaled by 0.002, no diagnostic). After θ₆: `bad` is rejected with a
+// DimensionedArgRejected error naming `scale` and the factor argument.
+structure def ScaledBlock {
+    param base : Solid = box(100mm, 100mm, 100mm)
+    param good : Solid = scale(base, 2.0)
+    param bad : Solid = scale(base, 2mm)
+    param v_good : Volume = volume(good)
+    param v_bad : Volume = volume(bad)
+}

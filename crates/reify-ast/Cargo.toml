@@ -6,6 +6,7 @@ license.workspace = true
 description = "Parsed expression/type AST for Reify (Phase 2 of docs/prds/core-ast-ir-layering.md task δ)"
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 

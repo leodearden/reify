@@ -1,20 +1,13 @@
-// shell_result.rs — Rust runtime container for the structured shell stress
-// result (PRD task T16, `docs/prds/v0_4/structural-analysis-shells.md` §
-// "Stress through thickness").
+// shell_result.rs — MITC3 shell stress recovery (PRD T16,
+// `docs/prds/v0_4/structural-analysis-shells.md` § "Stress through thickness").
 //
-// Sibling to the stdlib-level `ShellStress` structure_def declared at
-// `crates/reify-compiler/stdlib/solver_elastic.ri:366` (std/solver/elastic).
-// Both definitions must stay shape-aligned (top/mid/bottom); if a future task
-// adds a fourth layer, update both sides together. Engine-integration tasks
-// T18-T20 will add a cross-assertion once they consume both sides. This
-// file ships the data-only contract (define the shape + tet constructor);
-// engine-integration tasks T18-T20 are responsible for actually populating
-// these fields from the MITC3 kernel and wiring the `to_global(stress,
-// frame)` dispatch helper.
+// `shell_element_stress` recovers each element's top/mid/bottom Cauchy stress
+// in its local frame. `flatten_shell_channels` packs the per-element results
+// into neutral buffers; the DSL-facing shape of those layers is the stdlib
+// `ShellStress` structure (std/solver/elastic).
 
 use crate::constitutive::IsotropicElastic;
-use crate::shell_assembly::{ShellFrame, build_shell_frame, plane_stress_d};
-use reify_ir::Value;
+use crate::elements::shell_frame::{ShellFrame, ShellSection, build_shell_frame, plane_stress_d};
 
 /// Per-element Cauchy stress tensors in the local mid-surface frame for a
 /// MITC3 shell element.
@@ -39,7 +32,7 @@ use reify_ir::Value;
 ///
 /// # To-global transform (T18-T20)
 ///
-/// Use [`crate::shell_assembly::ShellFrame::local_to_global`] to obtain the
+/// Use [`ShellFrame::local_to_global`] to obtain the
 /// local-to-global rotation matrix F, then `σ_global = F · σ_local · Fᵀ` for each layer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShellElementStress {
@@ -173,12 +166,9 @@ pub fn shell_element_stress(
     let g_phys_yz = inv_t[1][0] * g_cov_ctr.gamma_xi_zeta + inv_t[1][1] * g_cov_ctr.gamma_eta_zeta;
 
     // Shear stresses: σ_xz = κ·G·γ_xz_phys, σ_yz = κ·G·γ_yz_phys (κ = 5/6)
-    let e = material.youngs_modulus;
-    let nu = material.poisson_ratio;
-    let g_mod = e / (2.0 * (1.0 + nu));
-    const KAPPA: f64 = 5.0 / 6.0;
-    let s_xz = KAPPA * g_mod * g_phys_xz;
-    let s_yz = KAPPA * g_mod * g_phys_yz;
+    let kappa_g = ShellSection::shear_kappa_g(material);
+    let s_xz = kappa_g * g_phys_xz;
+    let s_yz = kappa_g * g_phys_yz;
 
     // --- Assemble per-layer 3×3 stress tensors ---
     // In-plane: σ_voigt(z) = sv_mem + z·sv_bend; transverse-shear uniform.
@@ -193,49 +183,6 @@ pub fn shell_element_stress(
         top: make_layer(t / 2.0),
         mid: make_layer(0.0),
         bottom: make_layer(-t / 2.0),
-    }
-}
-
-/// Structured shell stress result carrying per-integration-layer stress
-/// channels.
-///
-/// # Channels
-///
-/// - `top`    — top-surface stress (outer fibre in the element's local-z).
-/// - `mid`    — mid-surface (neutral-plane) stress. For tet results all three
-///   channels are equal (no through-thickness gradient).
-/// - `bottom` — bottom-surface stress (inner fibre opposite to `top`).
-///
-/// The per-element local-to-global rotation frame lives on `ElasticResult`
-/// (as `frame : Real` placeholder for `Field<Point3<Length>, Matrix<3,3,Real>>`),
-/// not on `ShellStress`. All three channels share the same per-element
-/// rotation, so keeping `frame` at the `ElasticResult` level avoids
-/// duplicating it across channels.
-///
-/// # Note on `Eq`
-///
-/// `PartialEq` is derived; `Eq` cannot be derived because `Value` contains
-/// `f64`, which does not implement `Eq`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShellStress {
-    pub top: Value,
-    pub mid: Value,
-    pub bottom: Value,
-}
-
-impl ShellStress {
-    /// Canonical tet-result constructor. Sets `top == mid == bottom == field`
-    /// (no through-thickness stress variation for solid elements).
-    ///
-    /// Engine-integration tasks T18-T20 call this for every tet-element result
-    /// when packaging the solver output. For shell elements they use direct
-    /// struct initialisation with distinct per-layer fields.
-    pub fn homogeneous(field: Value) -> Self {
-        Self {
-            top: field.clone(),
-            mid: field.clone(),
-            bottom: field,
-        }
     }
 }
 
@@ -310,9 +257,9 @@ pub fn flatten_shell_channels(
 #[allow(clippy::identity_op)] // explicit `6 * node + dof` form mirrors the DOF layout
 mod tests {
     use super::*;
-    use reify_ir::Value;
     use crate::assembly::ElementStiffness;
-    use crate::shell_assembly::{ShellFrame, shell_element_stiffness};
+    use crate::elements::shell_frame::ShellFrame;
+    use crate::shell_assembly::shell_element_stiffness;
 
     /// Compute K · u for an 18-DOF stiffness matrix.
     fn matvec(k: &ElementStiffness, u: &[f64; 18]) -> [f64; 18] {
@@ -541,9 +488,7 @@ mod tests {
 
         let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
 
-        let e = mat.youngs_modulus;
-        let nu = mat.poisson_ratio;
-        let g_mod = e / (2.0 * (1.0 + nu));
+        let g_mod = mat.shear_modulus();
         let kappa = 5.0_f64 / 6.0;
         let expected_sxz = kappa * g_mod * alpha;
 
@@ -597,55 +542,6 @@ mod tests {
                 layer[0][1]
             );
         }
-    }
-
-    /// `ShellStress::homogeneous(field)` is the canonical tet-result constructor.
-    /// It must set all three stress channels to the same field value.
-    ///
-    /// This test pins the tet-result population contract:
-    ///   result.top    == input field
-    ///   result.mid    == input field
-    ///   result.bottom == input field
-    #[test]
-    fn shell_stress_homogeneous_replicates_field_across_channels() {
-        let field = Value::Real(42.0);
-        let result = ShellStress::homogeneous(field.clone());
-
-        assert_eq!(
-            result.top, field,
-            "homogeneous: top should equal the input field"
-        );
-        assert_eq!(
-            result.mid, field,
-            "homogeneous: mid should equal the input field"
-        );
-        assert_eq!(
-            result.bottom, field,
-            "homogeneous: bottom should equal the input field"
-        );
-    }
-
-    /// Explicit construction must preserve distinct per-channel values, proving
-    /// that `ShellStress` can represent the fully differentiated per-layer
-    /// stress distribution produced by the MITC3 shell kernel.
-    ///
-    /// This test pins the explicit/per-channel shape needed for shell results:
-    /// each of top/mid/bottom round-trips through the struct unchanged.
-    #[test]
-    fn shell_stress_explicit_construction_preserves_per_channel_values() {
-        let top = Value::Real(1.0);
-        let mid = Value::Real(2.0);
-        let bottom = Value::Real(3.0);
-
-        let result = ShellStress {
-            top: top.clone(),
-            mid: mid.clone(),
-            bottom: bottom.clone(),
-        };
-
-        assert_eq!(result.top, top, "explicit: top round-trips");
-        assert_eq!(result.mid, mid, "explicit: mid round-trips");
-        assert_eq!(result.bottom, bottom, "explicit: bottom round-trips");
     }
 
     /// Locks the membrane path of `shell_element_stiffness` and `shell_element_stress`
@@ -732,6 +628,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Locks the transverse-shear path of `shell_element_stiffness` and
+    /// `shell_element_stress` together on the shear correction κ: the strain energy
+    /// `½·uᵀ·K·u` of a uniform `θ_y = α` state must equal `½·σ_xz·γ_xz·t·A` with
+    /// `σ_xz` recovered by the stress kernel and `γ_xz = α`.
+    ///
+    /// Uniform `θ_y` carries no membrane strain and, by partition of unity, no
+    /// curvature, so the stiffness energy is pure transverse shear. On UNIT_TRI
+    /// (R = identity, J2 = identity) the MITC3 assumed shear is `γ_xz = α`
+    /// everywhere, so stiffness and recovery can only agree if both use one κ·G.
+    #[test]
+    fn shell_transverse_shear_energy_locks_stiffness_and_stress_paths() {
+        let mat = steel_like();
+        let t = 0.05_f64;
+        let area = 0.5_f64; // UNIT_TRI area
+        let alpha = 0.003_f64;
+
+        let mut u = [0.0_f64; 18];
+        for n in 0..3 {
+            u[6 * n + 4] = alpha; // uniform θ_y at all nodes
+        }
+
+        let k = shell_element_stiffness(&UNIT_TRI, t, &mat);
+        let ku = matvec(&k, &u);
+        let u_stiffness = 0.5 * ku.iter().zip(u.iter()).map(|(ki, ui)| ki * ui).sum::<f64>();
+
+        let s = shell_element_stress(&UNIT_TRI, t, &mat, &u);
+        let u_stress = 0.5 * s.mid[0][2] * alpha * t * area;
+
+        assert!(
+            (u_stiffness - u_stress).abs() <= 1e-9 * u_stress.abs(),
+            "½·uᵀKu = {u_stiffness:.12e}, ½·σ_xz·α·t·A = {u_stress:.12e}",
+        );
     }
 
     /// Zero-DOF regression guard (relocated from lib.rs doctest and strengthened).

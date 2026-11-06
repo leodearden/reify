@@ -2,7 +2,7 @@
 //!
 //! This module exposes the structural ingestion path that takes an
 //! OpenVDB grid (in-memory `OpenVdbGridSource`) and lowers it to the
-//! internal [`reify_types::SampledField`] representation already used by
+//! internal [`reify_ir::SampledField`] representation already used by
 //! `field def F { source = sampled { … } }`. The compiler/eval wiring
 //! (`field def … source = imported { … }`) is wired in task 5.
 //!
@@ -27,6 +27,7 @@
 //! - [`read_vdb_file`] — v0.2 stub that returns `FfiNotImplemented`.
 
 use reify_ir::sampled::{LINSPACE_MAX_INTERVALS, LinspaceError, linspace_inclusive};
+use reify_core::units::BUILTIN_UNITS;
 use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, Type};
 use reify_ir::{InterpolationKind, SampledField, SampledGridKind};
 
@@ -64,15 +65,18 @@ pub enum OpenVdbInterpolation {
 pub struct OpenVdbGridSource {
     /// 1D / 2D / 3D shape selector.
     pub kind: OpenVdbGridKind,
-    /// Per-axis lower bound (length 1/2/3 matching `kind`).
+    /// Per-axis lower bound (length 1/2/3 matching `kind`), in world-space
+    /// SI metres — reify model space, as for the `sampled { … }` source.
     pub bounds_min: Vec<f64>,
-    /// Per-axis upper bound.
+    /// Per-axis upper bound, in world-space SI metres.
     pub bounds_max: Vec<f64>,
-    /// Per-axis grid spacing.
+    /// Per-axis grid spacing, in world-space SI metres.
     pub spacing: Vec<f64>,
-    /// Flat row-major data buffer (axis-0 outermost).
+    /// Flat row-major data buffer (axis-0 outermost), in the declared
+    /// `units` (already SI when `units` is `None`).
     pub data: Vec<f64>,
     /// Optional grid-units string from OpenVDB metadata (e.g. `"m"`, `"MPa"`).
+    /// Names the unit of `data` only, never of the voxel transform.
     pub units: Option<String>,
     /// Interpolation mode declared on the grid metadata.
     pub interpolation: OpenVdbInterpolation,
@@ -188,7 +192,7 @@ pub enum IngestError {
         /// `spacing[axis]` that produced the collapse.
         spacing: f64,
     },
-    /// An axis interval count exceeds [`reify_types::sampled::LINSPACE_MAX_INTERVALS`].
+    /// An axis interval count exceeds [`reify_ir::sampled::LINSPACE_MAX_INTERVALS`].
     ///
     /// A legitimately-finite but enormous combination such as
     /// `bounds_min=0.0`, `bounds_max=1e308`, `spacing=1.0` would make
@@ -231,12 +235,61 @@ pub enum IngestError {
     },
 }
 
-/// v0.2 OpenVDB units → [`DimensionVector`] lookup table.
+/// One OpenVDB grid unit: `si_value = grid_value * si_scale`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KnownUnit {
+    pub symbol: &'static str,
+    pub si_scale: f64,
+    pub dimension: DimensionVector,
+}
+
+impl KnownUnit {
+    /// The row for `symbol` exactly as [`BUILTIN_UNITS`] defines it, so a unit
+    /// that table already holds keeps its scale and dimension in one place.
+    /// A symbol missing from it fails the build.
+    const fn from_reify_core(symbol: &'static str) -> KnownUnit {
+        let mut i = 0;
+        while i < BUILTIN_UNITS.len() {
+            let (builtin_symbol, si_scale, dimension) = BUILTIN_UNITS[i];
+            if const_str_eq(builtin_symbol, symbol) {
+                return KnownUnit {
+                    symbol,
+                    si_scale,
+                    dimension,
+                };
+            }
+            i += 1;
+        }
+        panic!("KnownUnit::from_reify_core: symbol is not in reify_core::units::BUILTIN_UNITS");
+    }
+}
+
+/// `a == b` for use in `const fn`, where `str`'s `PartialEq` is not callable.
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// v0.2 OpenVDB units, each with its SI scale and [`DimensionVector`].
 ///
 /// Intentionally small: covers the units the PRD's worked examples and the
 /// common engineering-OpenVDB grid metadata use (m / mm / cm / km;
 /// Pa / kPa / MPa / GPa; K; kg; kg/m^3). Unrecognised unit strings yield
-/// [`IngestError::UnknownUnit`].
+/// [`IngestError::UnknownUnit`]. The symbol list is local so the accepted
+/// vocabulary stays this narrow, but rows for symbols that `reify_core`'s
+/// [`BUILTIN_UNITS`] defines take their scale and dimension from it at
+/// compile time. Only km and the pressure and density units carry their own
+/// literals.
 ///
 /// # Why not `reify-compiler`'s unit registry?
 ///
@@ -246,23 +299,42 @@ pub enum IngestError {
 /// full unit registry would form a cycle. A small static slice is
 /// sufficient for v0.2; the follow-up FFI task can revisit if a wider
 /// corpus of real `.vdb` files surfaces missing units.
-pub static KNOWN_UNITS: &[(&str, DimensionVector)] = &[
-    // Length and prefixed variants — all map to the LENGTH dimension.
-    ("m", DimensionVector::LENGTH),
-    ("mm", DimensionVector::LENGTH),
-    ("cm", DimensionVector::LENGTH),
-    ("km", DimensionVector::LENGTH),
-    // Pressure and prefixed variants.
-    ("Pa", DimensionVector::PRESSURE),
-    ("kPa", DimensionVector::PRESSURE),
-    ("MPa", DimensionVector::PRESSURE),
-    ("GPa", DimensionVector::PRESSURE),
-    // Temperature.
-    ("K", DimensionVector::TEMPERATURE),
-    // Mass.
-    ("kg", DimensionVector::MASS),
-    // Mass density.
-    ("kg/m^3", DimensionVector::MASS_DENSITY),
+pub static KNOWN_UNITS: &[KnownUnit] = &[
+    KnownUnit::from_reify_core("m"),
+    KnownUnit::from_reify_core("mm"),
+    KnownUnit::from_reify_core("cm"),
+    KnownUnit {
+        symbol: "km",
+        si_scale: 1000.0,
+        dimension: DimensionVector::LENGTH,
+    },
+    KnownUnit {
+        symbol: "Pa",
+        si_scale: 1.0,
+        dimension: DimensionVector::PRESSURE,
+    },
+    KnownUnit {
+        symbol: "kPa",
+        si_scale: 1e3,
+        dimension: DimensionVector::PRESSURE,
+    },
+    KnownUnit {
+        symbol: "MPa",
+        si_scale: 1e6,
+        dimension: DimensionVector::PRESSURE,
+    },
+    KnownUnit {
+        symbol: "GPa",
+        si_scale: 1e9,
+        dimension: DimensionVector::PRESSURE,
+    },
+    KnownUnit::from_reify_core("K"),
+    KnownUnit::from_reify_core("kg"),
+    KnownUnit {
+        symbol: "kg/m^3",
+        si_scale: 1.0,
+        dimension: DimensionVector::MASS_DENSITY,
+    },
 ];
 
 /// Successful ingestion result: the lowered field plus any non-fatal
@@ -299,8 +371,8 @@ pub struct IngestOutcome {
 ///   ~3 GiB rather than holding both buffers live (esc-3095-97 suggestion 2).
 /// - `units_str.is_empty() → None` — an empty units string from
 ///   `grid_units()` means the grid carries no units metadata; `None` in
-///   `OpenVdbGridSource` is the signal that `validate_grid_units` short-circuits
-///   without a `UnitMismatch` check.
+///   `OpenVdbGridSource` makes `resolve_value_si_scale` short-circuit to a
+///   scale of 1.0 without a `UnitMismatch` check.
 /// - `interpolation = Linear` — `meshToLevelSet`-built grids do not write
 ///   interpolation metadata; the correct interpolation for a continuous SDF
 ///   is linear (box-sampler).
@@ -336,6 +408,13 @@ pub(crate) fn build_realized_grid_source(
 /// each to the corresponding [`SampledGridKind`] and constructing per-axis
 /// grids via [`linspace_inclusive`].
 ///
+/// # Units
+///
+/// The lowered data values are SI: each is multiplied by the `si_scale` of
+/// the grid's declared [`KNOWN_UNITS`] row. The domain (bounds, spacing) is
+/// read as SI metres and never rescaled by the value unit — see
+/// `docs/prds/v0_2/imported-field-source.md` "Unit handling for OpenVDB".
+///
 /// # Errors
 ///
 /// Returns [`IngestError`] for any fatal ingestion failure:
@@ -349,7 +428,7 @@ pub fn lower_to_sampled(
     name: &str,
     codomain_type: &Type,
 ) -> Result<IngestOutcome, IngestError> {
-    validate_grid_units(grid.units.as_deref(), codomain_type)?;
+    let value_si_scale = resolve_value_si_scale(grid.units.as_deref(), codomain_type)?;
 
     let axis_count = match grid.kind {
         OpenVdbGridKind::Regular1D => 1,
@@ -472,7 +551,7 @@ pub fn lower_to_sampled(
         spacing: grid.spacing.clone(),
         axis_grids,
         interpolation,
-        data: grid.data.clone(),
+        data: grid.data.iter().map(|v| v * value_si_scale).collect(),
         oob_emitted: std::sync::atomic::AtomicBool::new(false),
     };
 
@@ -522,47 +601,57 @@ fn map_interpolation(
     }
 }
 
-/// Validate that the OpenVDB grid's declared units are dimensionally
-/// compatible with the field declaration's codomain type.
+/// Validate the OpenVDB grid's declared units against the field
+/// declaration's codomain type — the same check [`lower_to_sampled`] runs.
 ///
-/// Returns:
-///   - `Ok(())` when both sides agree (or when the grid declares no units —
-///     interpreted as a caller-managed contract; the codomain is still
-///     extracted to surface unsupported-codomain errors regardless).
-///   - `Err(IngestError::UnknownUnit)` when the grid's unit string is not
-///     in [`KNOWN_UNITS`].
-///   - `Err(IngestError::UnitMismatch)` when the grid's unit dimension does
-///     not match the codomain's leaf-Scalar dimension.
-///   - `Err(IngestError::UnsupportedCodomain)` when the codomain is not a
+/// Exposed publicly so callers can pre-validate before invoking the full
+/// lowering pipeline.
+///
+/// Returns `Ok(())` when the grid's unit and the codomain's leaf-Scalar
+/// dimension agree, or when the grid declares no units — interpreted as a
+/// caller-managed contract; the codomain is still checked regardless.
+///
+/// # Errors
+///
+///   - [`IngestError::UnknownUnit`] when the grid's unit string is not in
+///     [`KNOWN_UNITS`].
+///   - [`IngestError::UnitMismatch`] when the grid's unit dimension does not
+///     match the codomain's leaf-Scalar dimension.
+///   - [`IngestError::UnsupportedCodomain`] when the codomain is not a
 ///     numeric Scalar / Real / Tensor / Vector / Point.
-///
-/// Used internally by [`lower_to_sampled`]; exposed publicly so the
-/// follow-up FFI body and task-5's compiler/eval wiring can pre-validate
-/// before invoking the full lowering pipeline.
 pub fn validate_grid_units(
     grid_units: Option<&str>,
     codomain_type: &Type,
 ) -> Result<(), IngestError> {
+    resolve_value_si_scale(grid_units, codomain_type).map(|_| ())
+}
+
+/// The factor that converts the grid's data values to SI: the matching
+/// [`KNOWN_UNITS`] row's `si_scale`, or `1.0` when the grid declares no units.
+/// Fails exactly as [`validate_grid_units`] documents.
+fn resolve_value_si_scale(
+    grid_units: Option<&str>,
+    codomain_type: &Type,
+) -> Result<f64, IngestError> {
     let expected_dimension = extract_codomain_dimension(codomain_type)?;
     let Some(unit_str) = grid_units else {
         // Grid has no declared units — codomain extraction succeeded, so the
         // numeric path is at least valid. The caller takes responsibility
         // for the dimensional contract (matches the `sampled { … }` source
         // path which has no unit metadata at all).
-        return Ok(());
+        return Ok(1.0);
     };
-    let found_dimension =
-        lookup_unit_dimension(unit_str).ok_or_else(|| IngestError::UnknownUnit {
-            unit: unit_str.to_string(),
-        })?;
-    if found_dimension != expected_dimension {
+    let unit = lookup_unit(unit_str).ok_or_else(|| IngestError::UnknownUnit {
+        unit: unit_str.to_string(),
+    })?;
+    if unit.dimension != expected_dimension {
         return Err(IngestError::UnitMismatch {
             expected_dimension,
-            found_dimension,
+            found_dimension: unit.dimension,
             found_unit: unit_str.to_string(),
         });
     }
-    Ok(())
+    Ok(unit.si_scale)
 }
 
 /// Read a `.vdb` file and lower the named `FloatGrid` to a [`SampledField`].
@@ -619,7 +708,7 @@ pub fn read_vdb_file(
 ///
 /// # Library initialisation
 ///
-/// Calls [`crate::init::ensure_initialized`] before any FFI access so callers
+/// Calls `crate::init::ensure_initialized` before any FFI access so callers
 /// that invoke `read_vdb_file` directly — without first instantiating an
 /// `OpenVdbKernel` — still register the built-in grid types in OpenVDB's
 /// I/O dispatch table. Without this, `gridPtrCast<FloatGrid>` returns null
@@ -777,11 +866,8 @@ impl std::fmt::Display for IngestError {
 impl std::error::Error for IngestError {}
 
 /// Look up a unit string in [`KNOWN_UNITS`].
-fn lookup_unit_dimension(unit: &str) -> Option<DimensionVector> {
-    KNOWN_UNITS
-        .iter()
-        .find(|(s, _)| *s == unit)
-        .map(|(_, d)| *d)
+fn lookup_unit(unit: &str) -> Option<KnownUnit> {
+    KNOWN_UNITS.iter().find(|row| row.symbol == unit).copied()
 }
 
 /// Extract the leaf-Scalar dimension from a field codomain type.

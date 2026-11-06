@@ -1,0 +1,15 @@
+module dims_support_root_plus_xmax_thick
+
+// PRD docs/prds/v0_6/elastic-modal-trampoline-factoring.md leaf μ (BT5a, thick twin). A
+// tet-routed dims bar (50 x 10 x 10 mm, aspect 0.2: not below shell_threshold 0.2,
+// ShellForce Auto), the thick twin of dims_support_root_plus_xmax.ri. At main 1b06f93151 the PinnedSupport on x_max is dropped silently on both dims routes: max_vm equals the root-only solve and no diagnostic names it. After μ (R3): reify eval exits 1 with one FeaDimsSupportNotRealized Error naming x_max.
+structure P {
+    param length : Length = 50mm
+    param width  : Length = 10mm
+    param height : Length = 10mm
+    let material = Steel_AISI_1045()
+    let body = box(length, width, height)
+    let tip_load = PointLoad(point: "tip", force: 10.0)
+    let result = solve_elastic_static(material, length, width, height, [tip_load], [FixedSupport(target: "root"), PinnedSupport(target: "x_max")], ElasticOptions())
+    let max_vm = result.max_von_mises
+}

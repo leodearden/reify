@@ -12,9 +12,6 @@ use reify_ir::{
 };
 use reify_test_support::*;
 
-#[path = "../common/angle_expr.rs"]
-mod angle_expr;
-use angle_expr::angle_literal;
 
 // ---------------------------------------------------------------------------
 // Shared helper: build a CompiledModule with fixed params and optional ops
@@ -30,7 +27,6 @@ use angle_expr::angle_literal;
 /// does not need to accept kernel or format parameters.
 fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compiler::CompiledModule {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let mut builder = TopologyTemplateBuilder::new(e)
         .param(e, "width", Type::length(), Some(mm_literal(80.0)))
@@ -51,14 +47,13 @@ fn build_module_with_ops(path: &str, ops: &[CompiledGeometryOp]) -> reify_compil
 /// Creates a compiled module with a single structure containing one box
 /// primitive realization, so there is exactly one geometry operation to process.
 fn module_with_box_realization() -> reify_compiler::CompiledModule {
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -85,7 +80,6 @@ fn make_sentinel_module(
     std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let sphere_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -157,7 +151,7 @@ fn build_returns_no_geometry_when_all_kernel_ops_fail() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Should have no geometry output when all ops fail
@@ -200,7 +194,7 @@ fn build_returns_no_geometry_when_all_ops_fail_to_compile() {
     // Use standard MockGeometryKernel — kernel.execute() should never be called
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -271,7 +265,7 @@ fn build_no_export_error_when_all_ops_fail() {
     let module = module_with_box_realization();
     let checker = MockConstraintChecker::new();
     let kernel = FailingExportMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Export should not have been attempted
@@ -299,7 +293,7 @@ fn build_with_no_realizations_still_exports() {
     let module = bracket_compiled_module();
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -321,7 +315,6 @@ fn loft_through_full_eval_pipeline() {
     use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, SweepKind};
 
     let e = "TestLoft";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (produces handle at step index 0)
     let sphere_op_0 = CompiledGeometryOp::Primitive {
@@ -354,7 +347,7 @@ fn loft_through_full_eval_pipeline() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     // Inspect the recorded operations
@@ -413,7 +406,6 @@ fn loft_through_full_eval_pipeline() {
 #[test]
 fn cascading_compile_failures_aborted_after_first() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // compile_geometry_op returns None for each because step_handles is empty.
@@ -445,7 +437,7 @@ fn cascading_compile_failures_aborted_after_first() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // All 3 ops are attempted with sentinel — each emits its own diagnostic
@@ -481,31 +473,30 @@ fn cascading_compile_failures_aborted_after_first() {
 #[test]
 fn cascading_kernel_failures_aborted_after_first() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Box primitives — all will compile successfully but fail at kernel.execute
     let box_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(10.0)),
-            ("height".into(), mm_literal(20.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(10.0)),
+            ("size_y".into(), mm_literal(20.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let box_op_1 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(30.0)),
-            ("height".into(), mm_literal(40.0)),
-            ("depth".into(), mm_literal(15.0)),
+            ("size_x".into(), mm_literal(30.0)),
+            ("size_y".into(), mm_literal(40.0)),
+            ("size_z".into(), mm_literal(15.0)),
         ],
     };
     let box_op_2 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(50.0)),
-            ("height".into(), mm_literal(60.0)),
-            ("depth".into(), mm_literal(25.0)),
+            ("size_x".into(), mm_literal(50.0)),
+            ("size_y".into(), mm_literal(60.0)),
+            ("size_z".into(), mm_literal(25.0)),
         ],
     };
 
@@ -520,7 +511,7 @@ fn cascading_kernel_failures_aborted_after_first() {
 
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let kernel_errors: Vec<_> = result
@@ -549,7 +540,6 @@ fn cascading_kernel_failures_aborted_after_first() {
 #[test]
 fn realization_abort_is_per_realization() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Realization 0: Boolean union referencing non-existent steps → compile failure
     let union_op = CompiledGeometryOp::Boolean {
@@ -562,9 +552,9 @@ fn realization_abort_is_per_realization() {
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -583,7 +573,7 @@ fn realization_abort_is_per_realization() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) exactly 1 compile-failure diagnostic from realization 0
@@ -631,7 +621,6 @@ fn realization_abort_is_per_realization() {
 #[test]
 fn tessellate_aborts_cascading_compile_failures() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Three Boolean(Union) ops, all referencing non-existent Step indices.
     // With the sentinel fix, all 3 are attempted → 3 compile-failure diagnostics.
@@ -662,7 +651,7 @@ fn tessellate_aborts_cascading_compile_failures() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
     // All 3 ops attempted with sentinel → 3 compile-failure diagnostics
@@ -701,15 +690,14 @@ fn tessellate_aborts_cascading_compile_failures() {
 fn mixed_failure_then_dependent_ops_aborted() {
     use reify_compiler::ModifyKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box (succeeds) → handle at step[0]
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -743,7 +731,7 @@ fn mixed_failure_then_dependent_ops_aborted() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) kernel received exactly 1 execute call (the Box from op0)
@@ -801,15 +789,14 @@ fn mixed_failure_then_dependent_ops_aborted() {
 #[test]
 fn partial_failure_tessellate_produces_no_mesh() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive (compiles and executes OK)
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -833,7 +820,7 @@ fn partial_failure_tessellate_produces_no_mesh() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
     // (a) The failing realization should produce NO mesh — the intermediate
@@ -880,7 +867,7 @@ fn partial_failure_tessellate_produces_no_mesh() {
 #[test]
 fn tessellate_sentinel_placeholder_continues_independent_ops() {
     let (module, checker, kernel, ops_ref) = make_sentinel_module("test_tess_sentinel_continues");
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.tessellate_realizations(&module);
 
     let kernel_ops = ops_ref.lock().unwrap();
@@ -904,15 +891,14 @@ fn tessellate_sentinel_placeholder_continues_independent_ops() {
 #[test]
 fn partial_failure_build_produces_no_geometry() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive (compiles and executes OK)
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -936,7 +922,7 @@ fn partial_failure_build_produces_no_geometry() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) geometry_output should be None — the intermediate Box handle must
@@ -978,15 +964,14 @@ fn partial_failure_build_produces_no_geometry() {
 #[test]
 fn partial_failure_does_not_contaminate_subsequent_realization() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Realization 0: [Box (succeeds), Boolean union with bad refs (compile failure)]
     let box_op_0 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let union_op = CompiledGeometryOp::Boolean {
@@ -999,9 +984,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     let box_op_1 = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(40.0)),
-            ("height".into(), mm_literal(50.0)),
-            ("depth".into(), mm_literal(10.0)),
+            ("size_x".into(), mm_literal(40.0)),
+            ("size_y".into(), mm_literal(50.0)),
+            ("size_z".into(), mm_literal(10.0)),
         ],
     };
 
@@ -1022,7 +1007,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     {
         let checker = MockConstraintChecker::new();
         let kernel = MockGeometryKernel::new();
-        let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
         let result = engine.tessellate_realizations(&module);
 
         // (a) exactly 1 mesh produced (from realization 1 only)
@@ -1059,7 +1044,7 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
     {
         let checker = MockConstraintChecker::new();
         let kernel = MockGeometryKernel::new();
-        let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+        let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
         let result = engine.build(&module, ExportFormat::Step);
 
         // (d) geometry_output is Some (realization 1 succeeded)
@@ -1084,9 +1069,9 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 // Regression guard: missing primitive arg → no kernel call, no 'geometry error'
 // ---------------------------------------------------------------------------
 
-/// When a Box primitive is missing a required arg ('width'), build() should:
+/// When a Box primitive is missing a required arg ('size_x'), build() should:
 /// 1. Short-circuit: return geometry_output=None (kernel never called).
-/// 2. Emit a Warning: "missing required geometry argument" mentioning 'width'.
+/// 2. Emit a Warning: "missing required geometry argument" mentioning 'size_x'.
 /// 3. Emit an Error: "failed to compile geometry operation".
 /// 4. NOT emit any diagnostic containing "geometry error" (kernel was never reached).
 ///
@@ -1095,15 +1080,14 @@ fn partial_failure_does_not_contaminate_subsequent_realization() {
 #[test]
 fn build_primitive_missing_arg_no_kernel_error() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
-    // Box with height and depth present, but 'width' deliberately omitted
+    // Box with size_y and size_z present, but 'size_x' deliberately omitted
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-            // width deliberately omitted
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
+            // size_x deliberately omitted
         ],
     };
 
@@ -1122,7 +1106,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // Only test exercising the None (zero kernel ops) path of assert_rejected_at_compile.
@@ -1130,7 +1114,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
         &result,
         &ops_ref.lock().unwrap(),
         None,
-        &["missing required geometry argument", "width"],
+        &["missing required geometry argument", "size_x"],
     );
 }
 
@@ -1148,7 +1132,7 @@ fn build_primitive_missing_arg_no_kernel_error() {
 ///
 /// The invariants pinned here:
 /// - `.filter(|d| Severity::Warning).count() == 1` — one (not two) warnings.
-/// - That Warning contains 'missing required geometry argument' and 'width'.
+/// - That Warning contains 'missing required geometry argument' and 'size_x'.
 /// - Exactly one `failed to compile geometry operation` Error diagnostic.
 /// - No diagnostic contains 'expected Geometry' or 'found Undef' (no cascade).
 ///
@@ -1159,14 +1143,13 @@ fn build_primitive_missing_arg_no_kernel_error() {
 #[test]
 fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
-            // width deliberately omitted
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
+            // size_x deliberately omitted
         ],
     };
 
@@ -1181,23 +1164,23 @@ fn build_primitive_missing_arg_emits_exactly_one_compile_warning() {
 
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
-    // (a) Exactly one Warning containing the missing-arg message and 'width'.
+    // (a) Exactly one Warning containing the missing-arg message and 'size_x'.
     let matching_warnings: Vec<&Diagnostic> = result
         .diagnostics
         .iter()
         .filter(|d| {
             d.severity == reify_core::Severity::Warning
                 && d.message.contains("missing required geometry argument")
-                && d.message.contains("width")
+                && d.message.contains("size_x")
         })
         .collect();
     assert_eq!(
         matching_warnings.len(),
         1,
-        "expected exactly one Warning about missing 'width'; got {}: {:?}",
+        "expected exactly one Warning about missing 'size_x'; got {}: {:?}",
         matching_warnings.len(),
         result
             .diagnostics
@@ -1313,16 +1296,15 @@ fn build_modify_missing_arg_case(
     kind_name_for_warning: &str,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Modify op's target.
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -1349,7 +1331,7 @@ fn build_modify_missing_arg_case(
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1497,19 +1479,15 @@ fn assert_rejected_at_compile(
 fn build_scale_negative_factor_emits_diagnostic() {
     use reify_compiler::TransformKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Box primitive with all three required args — provides step_handles[0]
     // as the Scale op's target
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
 
@@ -1535,7 +1513,7 @@ fn build_scale_negative_factor_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1582,7 +1560,6 @@ fn build_scale_negative_factor_emits_diagnostic() {
 fn build_extrude_nonfinite_distance_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere primitive with radius — provides step_handles[0] as the
     // Extrude's profile handle
@@ -1618,7 +1595,7 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1649,10 +1626,6 @@ fn build_extrude_nonfinite_distance_emits_diagnostic() {
 fn build_revolve_degenerate_axis_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1689,7 +1662,7 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1724,10 +1697,6 @@ fn build_revolve_degenerate_axis_emits_diagnostic() {
 fn build_revolve_zero_angle_emits_diagnostic() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Revolve's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1764,7 +1733,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -1790,7 +1759,7 @@ fn build_revolve_zero_angle_emits_diagnostic() {
 #[test]
 fn sentinel_placeholder_continues_independent_ops() {
     let (module, checker, kernel, ops_ref) = make_sentinel_module("test_sentinel_continues");
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let kernel_ops = ops_ref.lock().unwrap();
@@ -1818,7 +1787,6 @@ fn sentinel_placeholder_continues_independent_ops() {
 #[test]
 fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     // Op 0: Sphere (compiles and executes OK) → valid handle in step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1846,7 +1814,7 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) kernel received exactly 1 execute call (Sphere from op0)
@@ -1902,10 +1870,6 @@ fn sentinel_had_failure_triggers_rollback_despite_partial_success() {
 fn draft_plane_invalid_sentinel_causes_compile_failure() {
     use reify_compiler::ModifyKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     // Op 0: Sphere — succeeds, produces a valid handle at step_handles[0]
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -1954,7 +1918,7 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     // (a) Kernel received exactly 1 execute call — only the Sphere from op0.
@@ -2019,7 +1983,7 @@ fn draft_plane_invalid_sentinel_causes_compile_failure() {
 fn build_snapshot_sentinel_placeholder_continues_independent_ops() {
     let (module, checker, kernel, ops_ref) =
         make_sentinel_module("test_build_snapshot_sentinel_continues");
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
 
     // Populate the snapshot first so build_snapshot returns Some(...).
     // Eval runs constraint solving only, not geometry compilation, so the bad
@@ -2064,7 +2028,7 @@ fn build_zero_ops_result(path: &str) -> reify_eval::BuildResult {
     let module = build_module_with_ops(path, &[]);
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     engine.build(&module, ExportFormat::Step)
 }
 
@@ -2141,7 +2105,7 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
     let module = module_with_box_realization(); // total_ops=1
     let checker = MockConstraintChecker::new();
     let kernel = FailingMockGeometryKernel; // all execute() calls return Err
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert!(
@@ -2178,16 +2142,6 @@ fn build_all_ops_fail_diagnostic_emitted_after_refactor() {
 fn build_extrude_distance_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let length_literal = |si_value: f64| {
-        reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Scalar {
-                si_value,
-                dimension: reify_core::DimensionVector::LENGTH,
-            },
-            Type::length(),
-        )
-    };
 
     // Op 0: Sphere primitive — provides step_handles[0] as the Extrude's profile handle
     let sphere_op = CompiledGeometryOp::Primitive {
@@ -2215,7 +2169,7 @@ fn build_extrude_distance_just_below_threshold_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2234,16 +2188,6 @@ fn build_extrude_distance_just_below_threshold_rejected() {
 fn build_extrude_distance_at_threshold_accepted() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let length_literal = |si_value: f64| {
-        reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Scalar {
-                si_value,
-                dimension: reify_core::DimensionVector::LENGTH,
-            },
-            Type::length(),
-        )
-    };
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2269,7 +2213,7 @@ fn build_extrude_distance_at_threshold_accepted() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -2318,10 +2262,6 @@ fn build_extrude_distance_at_threshold_accepted() {
 fn build_revolve_angle_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2357,7 +2297,7 @@ fn build_revolve_angle_just_below_threshold_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2377,10 +2317,6 @@ fn build_revolve_angle_just_below_threshold_rejected() {
 fn build_revolve_angle_negative_just_below_threshold_rejected() {
     use reify_compiler::SweepKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal = |v: f64| {
-        reify_ir::CompiledExpr::literal(reify_ir::Value::Real(v), Type::dimensionless_scalar())
-    };
 
     let sphere_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Sphere,
@@ -2414,7 +2350,7 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2430,22 +2366,19 @@ fn build_revolve_angle_negative_just_below_threshold_rejected() {
 // ---------------------------------------------------------------------------
 
 /// Circular pattern dispatch rejects a missing `count` argument at compile
-/// time. The Warning message identifies both the arg name and the kind name
-/// (lowercase `circular` via the Display impl).
+/// time. The Warning message identifies both the arg name and the
+/// `circular_pattern` builtin the author typed.
 #[test]
 fn build_circular_pattern_missing_count_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     // Circular pattern with full ox/oy/oz/ax/ay/az/angle but no `count`.
@@ -2479,14 +2412,18 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "count", "circular"],
+        &[
+            "missing required geometry argument",
+            "count",
+            "circular_pattern",
+        ],
     );
 }
 
@@ -2497,16 +2434,13 @@ fn build_circular_pattern_missing_count_no_kernel_error() {
 fn build_circular_pattern_missing_axis_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     // Circular pattern missing `ax` (axis X-component).
@@ -2539,14 +2473,18 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
         &result,
         &ops_ref.lock().unwrap(),
         Some(|op| matches!(op, reify_ir::GeometryOp::Box { .. })),
-        &["missing required geometry argument", "ax", "circular"],
+        &[
+            "missing required geometry argument",
+            "ax",
+            "circular_pattern",
+        ],
     );
 }
 
@@ -2557,16 +2495,13 @@ fn build_circular_pattern_missing_axis_no_kernel_error() {
 fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     use reify_compiler::PatternKind;
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
-    let real_literal =
-        |v: f64| reify_ir::CompiledExpr::literal(Value::Real(v), Type::dimensionless_scalar());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let mirror_op = CompiledGeometryOp::Pattern {
@@ -2593,7 +2528,7 @@ fn build_mirror_pattern_missing_plane_origin_no_kernel_error() {
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
 
     assert_rejected_at_compile(
@@ -2718,14 +2653,13 @@ fn run_boolean_unresolved_ref_case(
     std::sync::Arc<std::sync::Mutex<Vec<GeometryOpRecord>>>,
 ) {
     let e = "TestShape";
-    let mm_literal = |v: f64| reify_ir::CompiledExpr::literal(mm(v), Type::length());
 
     let box_op = CompiledGeometryOp::Primitive {
         kind: PrimitiveKind::Box,
         args: vec![
-            ("width".into(), mm_literal(80.0)),
-            ("height".into(), mm_literal(100.0)),
-            ("depth".into(), mm_literal(5.0)),
+            ("size_x".into(), mm_literal(80.0)),
+            ("size_y".into(), mm_literal(100.0)),
+            ("size_z".into(), mm_literal(5.0)),
         ],
     };
     let boolean_op = CompiledGeometryOp::Boolean { op, left, right };
@@ -2740,7 +2674,7 @@ fn run_boolean_unresolved_ref_case(
     let checker = MockConstraintChecker::new();
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let result = engine.build(&module, ExportFormat::Step);
     (result, ops_ref)
 }

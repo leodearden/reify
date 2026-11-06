@@ -1,0 +1,13 @@
+module auto_reach_conn_free_connect_param
+trait Signal {}
+
+structure ConnAuto {
+    param gain : Length = auto
+    constraint self.gain == 10mm
+}
+
+structure E {
+    port a : out Signal {}
+    port b : in Signal {}
+    connect a -> b : ConnAuto { gain = auto(free) }
+}

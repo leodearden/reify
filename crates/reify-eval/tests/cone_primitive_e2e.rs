@@ -47,7 +47,7 @@ fn cone_through_mock_kernel_emits_geometry_op_cone() {
     let kernel = MockGeometryKernel::new();
     let ops_ref = kernel.operations_ref();
 
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(kernel)));
     let _result = engine.build(&module, ExportFormat::Step);
 
     let ops = ops_ref.lock().unwrap();
@@ -147,7 +147,7 @@ fn cone_frustum_through_full_pipeline_produces_geometry() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let tess_result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = tess_result
@@ -180,7 +180,7 @@ fn cone_frustum_through_full_pipeline_produces_geometry() {
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let mut planner2 = reify_geometry::SingleKernelHolder::new();
     planner2.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine2 = reify_eval::Engine::new(Box::new(checker2), Some(Box::new(planner2)));
+    let mut engine2 = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker2), Some(Box::new(planner2)));
     let build_result = engine2.build(&compiled, ExportFormat::Step);
     let build_errors: Vec<_> = build_result
         .diagnostics
@@ -234,7 +234,7 @@ fn cone_pointed_through_full_pipeline_produces_geometry() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let tess_result = engine.tessellate_realizations(&compiled);
     let geom_errors: Vec<_> = tess_result
@@ -303,7 +303,7 @@ fn cone_negative_bottom_radius_emits_error_diagnostic() {
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut planner = reify_geometry::SingleKernelHolder::new();
     planner.register_kernel(Box::new(reify_kernel_occt::OcctKernelHandle::spawn()));
-    let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(planner)));
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), Some(Box::new(planner)));
 
     let result = engine.build(&compiled, ExportFormat::Step);
 

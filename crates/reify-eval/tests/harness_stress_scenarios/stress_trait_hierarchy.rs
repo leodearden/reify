@@ -41,7 +41,7 @@ fn eval_ri_file(path: &str, module_name: &str) -> reify_eval::EvalResult {
         errors
     );
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics
@@ -85,7 +85,7 @@ fn compile_and_eval_ri(
         errors
     );
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
     let eval_errors: Vec<_> = result
         .diagnostics
@@ -223,7 +223,7 @@ fn three_deep_chain_constraints_all_satisfied() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
     // First eval to populate values
     let _ = engine.eval(&compiled);
@@ -277,7 +277,7 @@ fn diamond_inheritance_merges_correctly() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // d = 10mm = 0.01 m SI (single merged param from diamond)
@@ -349,7 +349,7 @@ fn multi_trait_impl_three_independent() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // mass = 2kg = 2.0 SI
@@ -472,7 +472,7 @@ fn diamond_with_extra_constraints() {
     assert!(errors.is_empty(), "compile errors: {:?}", errors);
 
     let checker = SimpleConstraintChecker;
-    let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+    let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
     let result = engine.eval(&compiled);
 
     // x = 10mm = 0.01 m SI
