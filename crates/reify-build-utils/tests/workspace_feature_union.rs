@@ -204,10 +204,11 @@ fn manifest_path(root: &Path, name: &str) -> PathBuf {
 
 /// A stand-in for cargo that serves the fixture's canned files by argv and
 /// logs every argv to cargo-argv.log. `tree -p NAME` serves
-/// tree-NAME.after.txt once the union manifest matches the grep pattern in
-/// after-pattern, and tree-NAME.txt before that. Like real cargo, an
-/// `--offline` tree may rewrite Cargo.lock: the stub appends its argv to the
-/// fixture's Cargo.lock when one exists.
+/// tree-NAME.after-K.txt for the highest K whose tree-NAME.after-K.pattern,
+/// and the pattern of every earlier stage, matches the union manifest
+/// (`grep -f`), and serves tree-NAME.txt when stage 1's pattern does not
+/// match. Like real cargo, an `--offline` tree may rewrite Cargo.lock: the
+/// stub appends its argv to the fixture's Cargo.lock when one exists.
 const STUB_CARGO: &str = r#"#!/usr/bin/env bash
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -232,12 +233,15 @@ case "${1:-}" in
         exec cat "$here/tree-workspace.txt"
       fi
       if [ "$prev" = "-p" ]; then
-        if [ -e "$here/tree-$arg.after.txt" ] \
-          && grep -qf "$here/after-pattern" "$here/crates/workspace-feature-union/Cargo.toml"; then
-          exec cat "$here/tree-$arg.after.txt"
-        fi
-        if [ -e "$here/tree-$arg.txt" ]; then
-          exec cat "$here/tree-$arg.txt"
+        served="$here/tree-$arg.txt"
+        stage=1
+        while [ -e "$here/tree-$arg.after-$stage.txt" ] \
+          && grep -qf "$here/tree-$arg.after-$stage.pattern" "$here/crates/workspace-feature-union/Cargo.toml"; do
+          served="$here/tree-$arg.after-$stage.txt"
+          stage=$((stage + 1))
+        done
+        if [ -e "$served" ]; then
+          exec cat "$served"
         fi
         echo "stub cargo: no fixture tree for -p $arg" >&2
         exit 3
@@ -287,10 +291,16 @@ impl Fixture {
     }
 
     /// Serves `text` for `cargo tree -p <name>` once the union manifest
-    /// matches the grep pattern `pinned`.
+    /// matches the grep pattern `pinned` and every pattern of the stages
+    /// added for `name` before this one.
     fn tree_after(self, name: &str, pinned: &str, text: &str) -> Fixture {
-        self.write(&format!("tree-{name}.after.txt"), text);
-        self.write("after-pattern", &format!("{pinned}\n"));
+        let stage_file =
+            |stage: u32, extension: &str| format!("tree-{name}.after-{stage}.{extension}");
+        let stage = (1..)
+            .find(|&candidate| !self.path(&stage_file(candidate, "txt")).exists())
+            .expect("an unbounded range always has a free stage number");
+        self.write(&stage_file(stage, "txt"), text);
+        self.write(&stage_file(stage, "pattern"), &format!("{pinned}\n"));
         self
     }
 
@@ -877,6 +887,69 @@ features = ["ahash", "inline-more"]"#,
 version = "0.17"
 default-features = false
 features = ["default-hasher"]"#,
+    );
+}
+
+/// `--workspace` for `a`, and the tree `-p a` converges to.
+const WS_A_HASHBROWN_FOLDHASH: &str = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+`-- hashbrown v0.15.5|default-hasher,inline-more
+    `-- foldhash v0.1.5|default,std
+";
+
+/// Pinning hashbrown's `default-hasher` pulls foldhash into `-p a` without the
+/// `std` feature `--workspace` builds it with, which takes a second rewrite.
+#[test]
+fn generate_keeps_earlier_pins_when_a_pin_surfaces_a_new_split() {
+    let before = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+`-- hashbrown v0.15.5|inline-more
+";
+    let foldhash_split = "\
+a v0.1.0 (/fixture/crates/a)|
+|-- workspace-feature-union v0.1.0 (/fixture/crates/workspace-feature-union)|
+`-- hashbrown v0.15.5|default-hasher,inline-more
+    `-- foldhash v0.1.5|
+";
+    let fixture = Fixture::new(
+        &covered_a(),
+        &workspace_of(&[WS_A_HASHBROWN_FOLDHASH, TREE_UNION]),
+    )
+    .with_union_manifest(&empty_union_manifest())
+    .tree("a", before)
+    .tree_after("a", "^hashbrown ", foldhash_split)
+    .tree_after("a", "^foldhash ", WS_A_HASHBROWN_FOLDHASH);
+
+    let out = fixture.generate();
+    assert_exit(
+        &out,
+        0,
+        "pinning hashbrown surfaces a foldhash split, which needs a second growing rewrite",
+    );
+    let text = fixture.union_manifest();
+    assert_region_only_rewritten(&text);
+    let manifest = parse_toml(&text, "the rewritten union manifest");
+    assert_pin(
+        &manifest,
+        "dependencies",
+        "hashbrown",
+        r#"version = "0.15"
+default-features = false
+features = ["default-hasher", "inline-more"]"#,
+    );
+    assert_pin(
+        &manifest,
+        "dependencies",
+        "foldhash",
+        r#"version = "0.1"
+features = ["std"]"#,
+    );
+
+    assert_green(
+        &fixture.check(),
+        "check after a generate that needed two growing rewrites",
     );
 }
 
