@@ -323,13 +323,13 @@ fn assemble_p2_stiffness(
 fn solve_p2_pipeline_with_opts(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
-    mut bcs: Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
     opts: CgSolverOptions,
 ) -> Vec<f64> {
     let f = rhs_from_point_loads(nodes.len(), point_loads);
-    solve_displacement(assemble_p2_stiffness(nodes, conns, mat), &f, &mut bcs, opts)
+    solve_displacement(assemble_p2_stiffness(nodes, conns, mat), &f, bcs, opts)
 }
 
 /// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system using the
@@ -392,10 +392,10 @@ fn cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko() {
 
     let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
 
-    let (nodes, conns, mut bcs, end) = cantilever_clamped_p1(L, H, B, NX, NY, NZ);
+    let (nodes, conns, bcs, end) = cantilever_clamped_p1(L, H, B, NX, NY, NZ);
     let n_nodes = nodes.len();
     let loads = distributed_tip_load(&end, F);
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
 
     let tip_disp = mean_tip_deflection(&u, &end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
@@ -480,9 +480,9 @@ fn simple_shear_uniform_stress_p1_within_1pct() {
     let (nodes, conns) = box_p1_mesh(1.0, 1.0, 1.0, N, N, N);
     let tol = 0.25 / N as f64; // < half the 1/N spacing
     let field = |p: [f64; 3]| [GAMMA * p[1], 0.0, 0.0];
-    let mut bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, tol, field);
+    let bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, tol, field);
 
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &[], &mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &[], &mat);
 
     let expected_sxy = g * GAMMA;
     let expected_vm = 3.0_f64.sqrt() * expected_sxy;
@@ -586,9 +586,9 @@ fn cantilever_faithful_convergence_study() {
     println!("L/H=2 Timoshenko ref: {delta_ref:.6}");
 
     for &(nx, ny, nz) in &[(12usize, 12usize, 4usize), (16, 16, 6), (20, 20, 6), (24, 24, 8)] {
-        let (nodes, conns, mut bcs, end) = cantilever_clamped_p1(l, h, b, nx, ny, nz);
+        let (nodes, conns, bcs, end) = cantilever_clamped_p1(l, h, b, nx, ny, nz);
         let loads = distributed_tip_load(&end, f);
-        let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+        let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
         let d = mean_tip_deflection(&u, &end);
         let err = (d - delta_ref).abs() / delta_ref * 100.0;
         println!("P1 {nx}×{ny}×{nz}: δ={d:.6} err={err:.2}% n_nodes={}", nodes.len());
@@ -707,9 +707,9 @@ fn boussinesq_subsurface_sigma_z_p1_within_10pct() {
     let (cx, cy) = (SIDE / 2.0, SIDE / 2.0);
 
     let load_node = find_node_at(&nodes, [cx, cy, 0.0], 0.4 * h);
-    let mut bcs = dirichlet_fix_face(&nodes, 2, SIDE, 0.5 * h);
+    let bcs = dirichlet_fix_face(&nodes, 2, SIDE, 0.5 * h);
     let loads = vec![(load_node * 3 + 2, P)]; // +z, into the half-space
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
     let sigma = recover_nodal_p1(&nodes, &conns, &u, &mat);
 
     let (fe, an) = boussinesq_ring(&nodes, &sigma, [cx, cy], 2.0 * h, 5.0 * h, P, 0.5 * h);
@@ -1039,9 +1039,9 @@ fn cylinder_p1_solve_and_recover(
     p_i: f64, mat: &IsotropicElastic, tol_geom: f64,
 ) -> (Vec<[f64; 3]>, Vec<[[f64; 3]; 3]>, f64) {
     let (nodes, conns, inner_faces) = annular_p1_mesh(a, b, l, nr, ntheta, nz);
-    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
+    let bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
     let loads = inner_pressure_loads(&inner_faces, &nodes, p_i);
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
     let sigma = recover_nodal_p1(&nodes, &conns, &u, mat);
     let max_vm = nodes.iter().enumerate()
         .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
@@ -1463,7 +1463,7 @@ fn assemble_hex_p1_stiffness(
 fn solve_hex_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 8]],
-    mut bcs: Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
@@ -1471,7 +1471,7 @@ fn solve_hex_p1_pipeline(
     solve_displacement(
         assemble_hex_p1_stiffness(nodes, conns, mat),
         &f,
-        &mut bcs,
+        bcs,
         CgSolverOptions::default(),
     )
 }
@@ -1559,7 +1559,7 @@ fn assemble_wedge_p1_stiffness(
 fn solve_wedge_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 6]],
-    mut bcs: Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
@@ -1567,7 +1567,7 @@ fn solve_wedge_p1_pipeline(
     solve_displacement(
         assemble_wedge_p1_stiffness(nodes, conns, mat),
         &f,
-        &mut bcs,
+        bcs,
         CgSolverOptions::default(),
     )
 }
@@ -1612,10 +1612,10 @@ fn cantilever_dof_error_curve(
             ElementKind::Tet => {
                 let (nodes, conns) = box_p1_mesh(l, h, b, nx, ny, nz);
                 let n = nodes.len();
-                let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+                let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
                 let end = end_face_nodes(&nodes, l, tol_x);
                 let loads = distributed_tip_load(&end, f_mag);
-                let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
                 let d = mean_tip_deflection(&u, &end);
                 ((d - delta_ref).abs() / delta_ref, n)
             }
