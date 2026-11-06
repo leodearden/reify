@@ -178,6 +178,26 @@ splits (#9825, see Limits), plus the downstream rebuild each triggers.
 - **What the gate proves.** The gate checks `cargo tree` resolution, not
   compiled units. Resolution reproduced the task's observed syn fingerprint
   exactly, and the probes above are the compile-level evidence.
+- **Cold and release builds.** Every figure above is a warm-lane build, where
+  the externals are already compiled. A cold target must compile the union's
+  whole dependency set: tokio, the url/icu stack, nalgebra, regex, futures
+  and serde_json. Every covered member depends on the union, including the
+  DAG root reify-core and, by their manifests, the otherwise dependency-free
+  reify-gcode and reify-spec-conformance, so none of them can start before the
+  union's metadata exists. Measured on 2026-11-06 with sccache off, an empty
+  target and `cargo build -p reify-core --locked --offline --timings`, on main
+  just before the union (`7f0bdbdf3e`) against `363d090775` plus this note:
+  - Units compiled 10 → 101; wall 1:03.63 → 2:55.88, under load averages of
+    153/304/239 → 158/277/234 (before) and 158/277/234 → 107/209/216 (after).
+  - reify-core's start offset 61.29 s → 174.08 s. The union started at
+    174.05 s, when nalgebra's metadata became ready, behind serde_derive (a
+    proc-macro, usable only once fully built), serde, num-complex and simba.
+  - The host was loaded, so walls and offsets are indicative only:
+    serde_derive started 63 s after its last dependency finished.
+
+  Dev-only features come along. That cold build compiled tokio with
+  `test-util`, and release builds take the same pins. This is deliberate; the
+  reason is the **Normal, not dev, pins** bullet in Mechanism.
 - **A lower bound only.** `--workspace` includes the union's own pins, so the
   gate cannot see over-pinning. Two pins pass it:
   - a pinned feature no member needs any more;
