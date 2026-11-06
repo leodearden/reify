@@ -328,7 +328,10 @@ pub fn assemble_eliminate_and_solve(
 /// # Panics
 ///
 /// As [`eliminate_and_solve`], and if the CG solve does not converge within
-/// `opts.max_iter` iterations.
+/// `opts.max_iter` iterations. The convergence panic is `#[track_caller]`, so
+/// it names the line that called the pipeline; a wrapper that carries the
+/// attribute too passes that line through.
+#[track_caller]
 pub fn solve_displacement(
     k: SparseRowMat<usize, f64>,
     raw_f: &[f64],
@@ -340,8 +343,9 @@ pub fn solve_displacement(
     *bcs = solved.bcs_deduped;
     assert!(
         solved.primal.converged,
-        "solve_displacement: CG did not converge after {} iterations (cap={max_iter})",
+        "solve_displacement: CG did not converge after {} iterations (cap={max_iter}, ndof={})",
         solved.primal.iterations,
+        solved.k_eliminated.nrows(),
     );
     solved.primal.u().to_vec()
 }
@@ -356,6 +360,7 @@ pub fn solve_displacement(
 ///
 /// Displacement vector `u` of length `3 * nodes.len()`:
 /// `u[3*n + α]` is displacement of node `n` in axis `α ∈ {0=x, 1=y, 2=z}`.
+#[track_caller]
 pub fn solve_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 4]],

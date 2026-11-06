@@ -319,6 +319,7 @@ fn assemble_p2_stiffness(
 ///
 /// `opts` controls the CG solver's convergence criterion and iteration cap.
 /// For slender or otherwise ill-conditioned problems, pass a raised `max_iter`.
+#[track_caller]
 fn solve_p2_pipeline_with_opts(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
@@ -336,6 +337,7 @@ fn solve_p2_pipeline_with_opts(
 ///
 /// For slender or otherwise ill-conditioned problems use
 /// [`solve_p2_pipeline_with_opts`] with a raised `max_iter`.
+#[track_caller]
 fn solve_p2_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
@@ -1458,6 +1460,7 @@ fn assemble_hex_p1_stiffness(
 /// [`rhs_from_point_loads`] and [`assemble_hex_p1_stiffness`] fed to
 /// [`solve_displacement`] with the crate-default `CgSolverOptions`. `bcs` is
 /// deduplicated in place.
+#[track_caller]
 fn solve_hex_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 8]],
@@ -1554,6 +1557,7 @@ fn assemble_wedge_p1_stiffness(
 /// [`rhs_from_point_loads`] and [`assemble_wedge_p1_stiffness`] fed to
 /// [`solve_displacement`] with the crate-default `CgSolverOptions`. `bcs` is
 /// deduplicated in place.
+#[track_caller]
 fn solve_wedge_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 6]],
