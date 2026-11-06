@@ -268,9 +268,7 @@ prints `All constraints satisfied.` beside the `error:` lines and then exits 1. 
 status and `error:` lines, never the verdict line alone. Which constructor falls on which side, and
 the tests pinning each, is stated once in the `units` chunk under "Which command catches it". The
 compile-layer half of that split is pinned by
-units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer, and the
-`mirror` exit by
-crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build.
+units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer.
 
 
 ## Fillet & chamfer

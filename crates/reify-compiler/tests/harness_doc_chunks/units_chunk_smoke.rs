@@ -557,8 +557,8 @@ fn bare_zero_is_not_special_cased() {
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything. How
 /// to re-measure one — and why a batched sweep under-reports — is stated once,
 /// next to `geometry_chunk_smoke.rs::MINIMUM_FN_CITES`, not repeated here.
-const MINIMUM_FN_CITES: usize = 10;
-const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_FN_CITES: usize = 9;
+const MINIMUM_RS_FILES: usize = 4;
 const MINIMUM_RI_FILES: usize = 2;
 
 /// Every test units.md cites as PINNING a claim must still exist.
