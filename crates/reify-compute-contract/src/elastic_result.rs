@@ -616,8 +616,10 @@ impl ElasticResult {
 /// and [`ElasticResult`].
 ///
 /// The five shared fields (`displacement`, `stress`, `max_von_mises`, `converged`,
-/// `iterations`) are mapped by name with their exact types.  The two
-/// `ElasticResult`-only fields receive documented neutral defaults:
+/// `iterations`) are mapped by name with their exact types.  Every
+/// `ElasticResult`-only field receives a neutral default; the exhaustive struct
+/// literal below is the authoritative list of those fields.  Two defaults carry
+/// rationale that is not obvious from the literal:
 ///
 /// - `solve_time_ms: 0` — a mid-solve partial snapshot has no eviction-cost
 ///   metric; the caller fills this in when it promotes a snapshot to a final
