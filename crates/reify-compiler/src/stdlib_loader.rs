@@ -543,19 +543,13 @@ pub fn build_stdlib_modules(sources: &[(&str, &str)]) -> Vec<CompiledModule> {
 }
 
 /// One cross-module name collision: the same key declared by two stdlib modules.
+/// The module fields are spelled DOTTED, as keyed in [`stdlib_sources`],
+/// because that list is where a collision gets fixed.
 struct NameCollision {
     kind: &'static str,
     name: String,
     first_module: String,
     second_module: String,
-}
-
-/// Render a module path in the DOTTED form used as the key in
-/// [`stdlib_sources`] — that list is where a collision actually gets fixed, so
-/// the panic message should spell modules the way they are spelled there.
-/// `Display for ModulePath` is slash-separated (`std/solver/buckling`).
-fn dotted(path: &reify_core::ModulePath) -> String {
-    path.to_dotted()
 }
 
 /// NS-P2 (task 5496, PRD docs/prds/v0_6/stdlib-namespace.md §7): no two stdlib
@@ -609,7 +603,7 @@ fn assert_no_cross_module_name_collisions(modules: &[CompiledModule]) {
     };
 
     for module in modules {
-        let m = dotted(&module.path);
+        let m = module.path.to_dotted();
 
         // Templates carry their own kind label so `structure` and `occurrence`
         // are distinguishable in the message; derived, never hard-coded.
