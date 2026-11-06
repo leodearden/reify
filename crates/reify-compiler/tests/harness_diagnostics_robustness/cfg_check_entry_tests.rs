@@ -1,6 +1,7 @@
-//! Tests for `program::compile_program` — the `reify check` compiler entry
-//! point that seeds the full stdlib prelude AND walks a `#cfg(...)`-gated
-//! user-import DAG (Task δ / Slice D; promoted to `compile_program` by #5516).
+//! Tests for `program::compile_program_with_parsed_entry` — the `reify check`
+//! compiler entry point, handed the entry's parse as the CLI hands it — which
+//! seeds the full stdlib prelude AND walks a `#cfg(...)`-gated user-import DAG
+//! (Task δ / Slice D; promoted to the program compile by #5516).
 //!
 //! This is the bridge that neither of the other entry points provides alone:
 //! - `compile_with_stdlib` seeds the stdlib prelude but has no user-import DAG.
@@ -18,7 +19,7 @@ use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
-use reify_compiler::program::compile_program;
+use reify_compiler::program::compile_program_with_parsed_entry;
 use reify_core::Severity;
 use reify_ir::Satisfaction;
 use reify_test_support::mocks::MockConstraintChecker;
@@ -100,9 +101,10 @@ fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
         parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
     let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    compile_program(
+    compile_program_with_parsed_entry(
         &entry_path,
         &entry_src,
+        &parsed,
         &resolver,
         cfg,
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),

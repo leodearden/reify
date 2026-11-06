@@ -582,18 +582,6 @@ fn compile_with_healthy_sibling(
     program
 }
 
-fn rehomed_from<'m>(
-    entry: &'m CompiledModule,
-    module_key: &str,
-) -> Vec<&'m reify_core::Diagnostic> {
-    let prefix = format!("in imported module '{module_key}' (");
-    entry
-        .diagnostics
-        .iter()
-        .filter(|d| d.message.starts_with(&prefix))
-        .collect()
-}
-
 /// (a) A missing import file surfaces as an Error naming the module and the
 /// path that was tried.
 #[test]
@@ -683,7 +671,7 @@ fn compile_program_rehomes_import_unit_diagnostics_onto_entry() {
     );
 
     let parts_path = dir.path().join("parts.ri").display().to_string();
-    let rehomed = rehomed_from(&program.entry, "parts");
+    let rehomed: Vec<&reify_core::Diagnostic> = program.rehomed_from("parts").collect();
     for original in &originals {
         let location = original
             .labels
@@ -720,6 +708,15 @@ fn compile_program_rehomes_import_unit_diagnostics_onto_entry() {
         rehomed.iter().all(|d| d.severity != Severity::Info),
         "Info diagnostics are not re-homed: {rehomed:?}"
     );
+    let own_errors: Vec<&reify_core::Diagnostic> = program
+        .entry_own_diagnostics()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        own_errors.is_empty(),
+        "the entry raised no Error of its own; its own diagnostics must hold no copy: \
+         {own_errors:?}"
+    );
 }
 
 /// (d) A transitive import's Error is surfaced on the entry exactly once,
@@ -743,8 +740,8 @@ fn compile_program_rehomes_transitive_import_errors_once() {
     );
 
     let leaf_path = dir.path().join("leaf.ri").display().to_string();
-    let leaf_errors: Vec<&reify_core::Diagnostic> = rehomed_from(&program.entry, "leaf")
-        .into_iter()
+    let leaf_errors: Vec<&reify_core::Diagnostic> = program
+        .rehomed_from("leaf")
         .filter(|d| d.severity == Severity::Error && d.message.contains("Nope"))
         .collect();
     assert_eq!(
@@ -778,9 +775,84 @@ fn compile_program_healthy_import_contributes_no_diagnostics() {
         "precondition: the healthy unit must be clean, got {:?}",
         healthy_unit.diagnostics
     );
-    assert!(
-        rehomed_from(&program.entry, "healthy").is_empty(),
+    assert_eq!(
+        program.rehomed_from("healthy").count(),
+        0,
         "a clean import must contribute nothing, got {:?}",
+        program.entry.diagnostics
+    );
+}
+
+const DIAMOND_MAIN_SRC: &str = "module main\nimport a\nimport b\nimport healthy\n\
+     structure def Rig {\n    sub h = Healthy()\n}\n";
+
+/// The two sides of a diamond: `a` and `b` both import `leaf`.
+fn diamond_sides() -> [(&'static str, &'static str); 2] {
+    [
+        (
+            "a.ri",
+            "module a\nimport leaf\npub structure def A {\n    param x : Real = 1\n}\n",
+        ),
+        (
+            "b.ri",
+            "module b\nimport leaf\npub structure def B {\n    param y : Real = 1\n}\n",
+        ),
+    ]
+}
+
+/// (f) A leaf that fails to parse, imported by two direct imports, has each of
+/// its parse errors reported on the entry once, not once per importer.
+#[test]
+fn compile_program_reports_a_broken_diamond_leaf_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leaf_src = "module leaf\npub structure def Leaf { param = }\n";
+    let [a, b] = diamond_sides();
+    let program =
+        compile_with_healthy_sibling(dir.path(), &[a, b, ("leaf.ri", leaf_src)], DIAMOND_MAIN_SRC);
+
+    let rendered = reify_compiler::parse_with_stdlib(leaf_src, ModulePath::single("leaf"))
+        .render_errors(leaf_src);
+    assert!(
+        !rendered.is_empty(),
+        "precondition: leaf.ri must fail to parse"
+    );
+    let leaf_path = dir.path().join("leaf.ri").display().to_string();
+    for line_col_message in &rendered {
+        let located = format!("{leaf_path}:{line_col_message}");
+        let reports = program
+            .entry
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.code == Some(DiagnosticCode::ImportedModuleParseError)
+                    && d.message.contains(&located)
+            })
+            .count();
+        assert_eq!(
+            reports, 1,
+            "the parse error at {located:?} must reach the entry exactly once, got {:?}",
+            program.entry.diagnostics
+        );
+    }
+}
+
+/// (g) A leaf that compiles with an Error, imported by two direct imports, has
+/// that Error re-homed onto the entry once.
+#[test]
+fn compile_program_rehomes_an_erroring_diamond_leaf_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let leaf_src = "module leaf\npub structure def Leaf {\n    param z : Nope\n}\n";
+    let [a, b] = diamond_sides();
+    let program =
+        compile_with_healthy_sibling(dir.path(), &[a, b, ("leaf.ri", leaf_src)], DIAMOND_MAIN_SRC);
+
+    let leaf_errors = program
+        .rehomed_from("leaf")
+        .filter(|d| d.severity == Severity::Error && d.message.contains("Nope"))
+        .count();
+    assert_eq!(
+        leaf_errors, 1,
+        "the leaf Error must reach the entry exactly once, got {:?}",
         program.entry.diagnostics
     );
 }

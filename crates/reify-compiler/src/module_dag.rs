@@ -442,7 +442,7 @@ impl ModuleDag {
         // stdlib_root directory on disk). This preserves the behaviour of
         // compile_project_stdlib_unit_collision_mentions_stdlib, which places a
         // real units.ri under stdlib_root and expects the filesystem version to win.
-        let is_std_path = module_path == "std" || module_path.starts_with("std.");
+        let is_std_path = is_std_import_path(module_path);
         debug_assert!(
             self.stdlib == StdlibVisibility::Imported || !is_std_path,
             "a DAG with ambient stdlib visibility must never be asked to compile '{module_path}'"
@@ -908,7 +908,7 @@ pub(crate) fn entry_module_name(entry_path: &Path) -> &str {
 /// Such imports are never followed under [`StdlibVisibility::Ambient`] (the
 /// regime [`crate::program::compile_program`] uses): the full stdlib is already
 /// seeded into every unit's prelude via `stdlib_loader::load_stdlib_context()`.
-pub(crate) fn is_std_import_path(path: &str) -> bool {
+fn is_std_import_path(path: &str) -> bool {
     path == "std" || path.starts_with("std.")
 }
 
@@ -916,8 +916,9 @@ pub(crate) fn is_std_import_path(path: &str) -> bool {
 /// own template list, **first-wins** with a `Warning` on every name collision.
 ///
 /// This is the single home of the cross-import template-merge policy shared by
-/// [`crate::program::compile_program`] (the CLI `reify check` entry) and the
-/// GUI's `compile_entry_with_imports` (dirty-buffer bridge). Keeping the policy
+/// the program compile ([`crate::program::compile_program_with_parsed_entry`],
+/// which the CLI's `reify check` enters through) and the GUI's
+/// `compile_entry_with_imports` (dirty-buffer bridge). Keeping the policy
 /// — the visibility filter, the first-wins de-dup, and the collision-warning
 /// wording — in one place ensures the two callers cannot drift (e.g. a fix to
 /// the collision logic landing in only one of them).

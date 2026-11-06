@@ -46,6 +46,48 @@ pub struct CompiledProgram {
     /// The source of every user module compiled into the program, in
     /// topological order (dependencies first), entry last.
     pub sources: Vec<ModuleSource>,
+    /// Which of `entry.diagnostics` are re-homed copies of a compiled user
+    /// module's own diagnostics, in `entry.diagnostics` order.
+    rehomed: Vec<RehomedDiagnostic>,
+}
+
+/// One of the entry's diagnostics that is a re-homed copy.
+#[derive(Debug, Clone)]
+struct RehomedDiagnostic {
+    /// The dotted key of the user module whose compile raised the original.
+    module_key: String,
+    /// The copy's index in the entry's diagnostics as compiled; appending to
+    /// them keeps it valid.
+    entry_index: usize,
+}
+
+impl CompiledProgram {
+    /// The entry's diagnostics re-homed from the user module `module_key` (a
+    /// direct or transitive import), in the order they were raised.
+    // G-allow: P1 skeleton API for per-file diagnostics; consumers are LSP ζ #5520 and GUI ε #5519
+    pub fn rehomed_from(&self, module_key: &str) -> impl Iterator<Item = &Diagnostic> {
+        self.rehomed
+            .iter()
+            .filter(move |rehomed| rehomed.module_key == module_key)
+            .map(|rehomed| &self.entry.diagnostics[rehomed.entry_index])
+    }
+
+    /// The entry's diagnostics that are not re-homed copies: those raised
+    /// compiling the entry itself, and the failures of its imports.
+    // G-allow: P1 skeleton API for per-file diagnostics; consumers are LSP ζ #5520 and GUI ε #5519
+    pub fn entry_own_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
+        self.entry
+            .diagnostics
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                !self
+                    .rehomed
+                    .iter()
+                    .any(|rehomed| rehomed.entry_index == *index)
+            })
+            .map(|(_, diag)| diag)
+    }
 }
 
 /// Compile the program rooted at `entry_path`, taking the entry's text from
@@ -64,7 +106,9 @@ pub struct CompiledProgram {
 /// caller's "any Error diagnostic, exit non-zero" policy handles every failure
 /// uniformly. Every Error and Warning a compiled user module carries —
 /// transitive modules included — is re-homed onto the entry too, attributed to
-/// its file (see `rehome_imported`).
+/// its file (see `rehome_imported`); [`CompiledProgram::rehomed_from`] and
+/// [`CompiledProgram::entry_own_diagnostics`] tell those copies apart from the
+/// entry's own diagnostics.
 ///
 /// **Entry/import checker asymmetry.** Only the entry's compile receives
 /// `checker`; import units are compiled with the compile-time stub checker,
@@ -76,6 +120,7 @@ pub struct CompiledProgram {
 /// compile-time value map is empty, so both paths return `Indeterminate` and no
 /// divergence is observable. The integration test
 /// `compile_program_import_uses_stub` pins this.
+// G-allow: PRD §3.1 canonical program entry; production consumers are P1 γ #5517 and δ #5518
 pub fn compile_program(
     entry_path: &Path,
     entry_source: &str,
@@ -121,7 +166,7 @@ pub fn compile_program_with_parsed_entry(
     let mut import_error_diags: Vec<Diagnostic> = Vec::new();
     for import_path in &followed {
         if let Err(diags) = dag.compile_module(import_path, resolver) {
-            import_error_diags.extend(diags);
+            push_unreported(&mut import_error_diags, diags);
         }
     }
 
@@ -137,7 +182,7 @@ pub fn compile_program_with_parsed_entry(
 
     attach_module_path_diag(&mut entry, parsed);
     entry.diagnostics.extend(import_error_diags);
-    entry.diagnostics.extend(rehomed_unit_diagnostics(&dag));
+    let rehomed = rehome_unit_diagnostics(&dag, &mut entry.diagnostics);
     let entry_origin = entry.path.0.join(".");
     merge_imported_pub_templates(&mut entry, &entry_origin, &compiled_imports);
 
@@ -168,6 +213,23 @@ pub fn compile_program_with_parsed_entry(
         entry,
         imports,
         sources,
+        rehomed,
+    }
+}
+
+/// Append each of `diags` that `reported` does not already hold.
+///
+/// A DAG does not remember a module that failed (a retry re-reads it), so a
+/// broken module shared by two direct imports fails once per importer, with the
+/// same diagnostics each time; the entry reports each failure once.
+fn push_unreported(reported: &mut Vec<Diagnostic>, diags: Vec<Diagnostic>) {
+    for diag in diags {
+        let already = reported.iter().any(|seen| {
+            seen.severity == diag.severity && seen.code == diag.code && seen.message == diag.message
+        });
+        if !already {
+            reported.push(diag);
+        }
     }
 }
 
@@ -190,21 +252,32 @@ fn followed_direct_imports<'p>(
     followed
 }
 
-/// Every Error and Warning carried by a unit `dag` compiled, re-homed for the
-/// entry. Walks the topological order, not just the direct imports, so a
-/// transitive unit's diagnostic is not swallowed one level down.
-fn rehomed_unit_diagnostics(dag: &ModuleDag) -> Vec<Diagnostic> {
-    dag.topo_order
-        .iter()
-        .filter_map(|key| dag.modules.get(key).map(|module| (key, module)))
-        .flat_map(|(key, module)| {
-            module
-                .diagnostics
-                .iter()
-                .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
-                .map(move |d| rehome_imported(d, key, dag.source(key)))
-        })
-        .collect()
+/// Append to the entry's `diagnostics` a re-homed copy of every Error and
+/// Warning carried by a unit `dag` compiled, and record where each copy landed.
+/// Walks the topological order, not just the direct imports, so a transitive
+/// unit's diagnostic is not swallowed one level down.
+fn rehome_unit_diagnostics(
+    dag: &ModuleDag,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<RehomedDiagnostic> {
+    let mut rehomed = Vec::new();
+    for key in &dag.topo_order {
+        let Some(module) = dag.modules.get(key) else {
+            continue;
+        };
+        for diag in module
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, Severity::Error | Severity::Warning))
+        {
+            rehomed.push(RehomedDiagnostic {
+                module_key: key.clone(),
+                entry_index: diagnostics.len(),
+            });
+            diagnostics.push(rehome_imported(diag, key, dag.source(key)));
+        }
+    }
+    rehomed
 }
 
 /// A copy of `diag`, raised while compiling the imported module `module_key`,
@@ -216,8 +289,8 @@ fn rehomed_unit_diagnostics(dag: &ModuleDag) -> Vec<Diagnostic> {
 /// or `(embedded stdlib)` when the module has no source. Every label span is
 /// moved to the prelude sentinel, because it indexes the imported file and
 /// would otherwise mark a wrong offset in the entry. Severity, code and
-/// candidates are kept, so code-keyed consumers treat the copy exactly like
-/// the original.
+/// candidates are kept, so an exit policy keyed on them treats the copy exactly
+/// like the original.
 fn rehome_imported(
     diag: &Diagnostic,
     module_key: &str,
@@ -228,8 +301,7 @@ fn rehome_imported(
         Some(origin) => {
             let path = origin.path.display();
             let in_file = diag.labels.iter().find(|label| {
-                label.span != SourceSpan::prelude()
-                    && (label.span.start as usize) <= origin.source.len()
+                !label.span.is_prelude() && (label.span.start as usize) <= origin.source.len()
             });
             match in_file {
                 Some(label) => {

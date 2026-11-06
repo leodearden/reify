@@ -231,21 +231,25 @@ fn an_import_shadowing_the_stdlib_does_not_warn_in_the_entry() {
     )
     .expect("write a.ri");
     let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let module = compile_program(
+    let program = compile_program(
         &dir.join("main.ri"),
         entry,
         &resolver,
         &CfgSet::default(),
         &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
-    )
-    .entry;
-    assert_eq!(errors_of(&module), Vec::<&str>::new());
-    let shadows = shadow_warnings(&module);
+    );
+    assert_eq!(errors_of(&program.entry), Vec::<&str>::new());
+    let is_shadow = |d: &&Diagnostic| d.code == Some(DiagnosticCode::StdlibNameShadowed);
+    let local: Vec<&Diagnostic> = program.entry_own_diagnostics().filter(is_shadow).collect();
     assert!(
-        shadows.iter().all(|d| {
-            d.message.starts_with("in imported module '") && !d.message.contains("in module 'main'")
-        }),
-        "an import-tier winner is not a local shadowing: {shadows:?}"
+        local.is_empty(),
+        "an import-tier winner is not a local shadowing: {local:?}"
+    );
+    let rehomed: Vec<&Diagnostic> = program.rehomed_from("a").filter(is_shadow).collect();
+    assert!(
+        rehomed.iter().any(|d| d.message.contains("Color")),
+        "a.ri's own shadowing of Color is re-homed onto the entry, got {:?}",
+        program.entry.diagnostics
     );
 }
 
