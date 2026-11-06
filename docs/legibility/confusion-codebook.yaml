@@ -1919,6 +1919,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Turns 640 and 680 ran ls/grep with 2>/dev/null piped to head, then used the result in a test or && chain. An empty result produced a bare exit 1 that was logged as a tool_error, so 'no match' could not be told apart from a real path error.
+  - date: '2026-11-05'
+    project: reify
+    session: 091de8ed-78e1-4e35-9b57-ac9bae653d81
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: The failing Bash command pipes `xargs git grep -ln` with `2>/dev/null`. xargs returns 123 when git grep exits 1 (no matches), so the 'no matches' outcome surfaces as a tool_error indistinguishable from a real failure. The digest does not show the agent's follow-up, so the match is partial.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260730-4
@@ -3207,6 +3213,12 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: 'Turn 406: async task output polled with head -c piped to python3 JSON parsing; JSONDecodeError on empty content (line 1 column 1 / char 0) indicates premature polling before task completion or missing output file. Consistent with chained polling pattern instead of Monitor/run_in_background.'
+  - date: '2026-11-05'
+    project: reify
+    session: 654d1e20-579e-4e74-aeb3-48f47981cf9e
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: Agent chained `sleep 240; tail` to poll test-progress log files instead of using Monitor with an until-loop or run_in_background, and the guard blocked it (turn 172).
 - id: entry-cand-20260725-2
   title: Heredoc commit message with literal parentheses breaks under eval-wrapped bash execution
   severity: medium
@@ -4275,6 +4287,12 @@ entries:
     origin_phase: unknown
     manifested_phase: ops
     note: Command expanded $DARK_FACTORY_ROOT to empty, so python3 tried /orchestrator/src/orchestrator/session_registry.py (Errno 2) in a cross-project watcher session for /home/leo/src/reify. This matches the missing-DARK_FACTORY_ROOT pattern. The origin phase is not evidenced in the digest.
+  - date: '2026-11-05'
+    project: reify
+    session: c8053069-dc76-4208-aa52-e89ec957d05f
+    origin_phase: ops
+    manifested_phase: ops
+    note: Watcher session ran with DARK_FACTORY_ROOT empty. The python3 $DARK_FACTORY_ROOT/... call resolved to /orchestrator/src/... and failed with exit 2 and 'no such file or directory'.
 - id: entry-cand-20260719-4
   title: Bounded rearm wait re-issued identically after hitting its own ceiling
   severity: medium
@@ -4694,6 +4712,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: Bash watcher-rearm.sh --timeout 3600 hit its own CEILING (exit 124) and was re-issued with the identical command three times in the Retry Loops signal.
+  - date: '2026-11-05'
+    project: reify
+    session: c8053069-dc76-4208-aa52-e89ec957d05f
+    origin_phase: ops
+    manifested_phase: ops
+    note: The watcher-rearm.sh --level 2 --timeout 3600 command was re-issued 14 times with identical arguments (run_in_background), without changing the approach.
+  - date: '2026-11-05'
+    project: reify
+    session: 4c7cc86a-cace-46a9-bbff-64de125500f0
+    origin_phase: unknown
+    manifested_phase: ops
+    note: 'The watcher-rearm.sh bounded wait hit its own CEILING (exit 124, WATCHER_REARM_OUTCOME: CEILING) at turns 138 and 226 and was re-issued with the same command and timeout, then again at turn 309 with only the timeout changed (3600 to 900). The digest does not show whether the origin is in the rearm script''s design or in how the agent sets the wait.'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -6581,6 +6611,12 @@ entries:
     origin_phase: unknown
     manifested_phase: verify
     note: Autonomous orchestrated-task session (don't-ask permission mode) kept issuing Bash calls for git diff, log, and ls-tree investigation after Bash was denied at turns 35, 60, and 74, following the post-merge verification failure. This matches the entry's assumption of an unrestricted default toolset in an autonomous role. The digest does not show the origin of the toolset assumption, so origin is unknown.
+  - date: '2026-11-05'
+    project: reify
+    session: 5ad3d39a-1e0f-466b-a1e2-29a607ce79b7
+    origin_phase: architect
+    manifested_phase: architect
+    note: 'The architect session assumed Bash was available for git and file inspection. The run then hit a don''t-ask-mode permission denial at turn 27 and had to fall back to other tools. This is a partial match: the entry describes assuming an unrestricted default toolset, and the denial shows that assumption failing.'
 - id: entry-cand-20260727-5
   title: Cancelling a task doesn't auto-repoint dependents whose scope absorbed the cancelled task's work
   severity: medium
@@ -8972,6 +9008,12 @@ entries:
     origin_phase: ops
     manifested_phase: ops
     note: At turn 1448 the agent chained 'sleep 25; ls ...; cd ...; python3 ...' and was blocked by the guard, which said to use Monitor with an until-loop or run_in_background rather than chaining sleeps.
+  - date: '2026-11-05'
+    project: reify
+    session: c8053069-dc76-4208-aa52-e89ec957d05f
+    origin_phase: ops
+    manifested_phase: ops
+    note: A chained 'sleep 60; ls ...; journalctl ...' command was blocked by the sandbox guard, which instructed use of Monitor or run_in_background instead.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260719-7
@@ -11096,6 +11138,18 @@ entries:
     origin_phase: unknown
     manifested_phase: unknown
     note: The digest lists the injected /team spawn command (turn 3) and the esc-8739-2 handoff message (turn 285) under User Corrections. Neither is a correction of the agent's behavior. They are injected task context, the same kind of mislabeling as the injected escalation notification in this entry.
+  - date: '2026-11-05'
+    project: reify
+    session: c8053069-dc76-4208-aa52-e89ec957d05f
+    origin_phase: ops
+    manifested_phase: ops
+    note: The digest's User Corrections section lists an injected /escalation-watcher command block, which is a session prompt rather than a user correction.
+  - date: '2026-11-05'
+    project: reify
+    session: c63283ca-ae17-4024-b1c5-f4f11eb1a145
+    origin_phase: unknown
+    manifested_phase: unknown
+    note: 'The ''User Corrections'' section (turn 3) contains an orchestrator block-reason notification for task 9798, not a user turn. The digest reports n_user_turns: 1, so the notification is mislabeled as a User Correction, matching this entry''s pattern.'
   last_seen_runs:
   - census-reify-20261022
   - census-reify-20261030
@@ -12064,6 +12118,12 @@ entries:
     origin_phase: implement
     manifested_phase: implement
     note: Two pkill -f calls whose patterns (e.g. 'cargo nextest run -p reify-kernel-occt', 'occt-6344.log') textually match the invoking Bash command line itself, producing exit 144 (self-termination) twice in a row; the second attempt repeated the same self-matching approach.
+  - date: '2026-11-05'
+    project: reify
+    session: c8053069-dc76-4208-aa52-e89ec957d05f
+    origin_phase: ops
+    manifested_phase: ops
+    note: The composite Bash command ran 'pgrep -f' with a pattern that also appears in its own argv, so the watcher-up check can self-match and report a false positive.
   last_seen_runs:
   - census-reify-20261022
 - id: entry-cand-20260926-5
@@ -31763,6 +31823,19 @@ candidates:
     origin_phase: unknown
     manifested_phase: verify
     evidence_quote: 'FAIL: run-gui.sh: cargo resolves reify-gui under --features ''gui,embedded-frontend'' (rc 1; on a cold registry warm it with `cargo fetch --locked`, or run scripts/setup-dev.sh)'
+- id: cand-20261105-1
+  title: Task completion claimed via precondition commit with no declared attribution basis; operational step run out-of-band by unsandboxed architect
+  cause: 'A task was marked done by pointing at a precondition commit from another task, but the attribution basis was not declared (attribution_basis: nothing_declared), so the block gate returned no_attribution. The architect then performed the required generator step itself, outside the implementer''s landlock-confined sandbox, and recorded it only in a memory and a follow-up ticket. The next change has no declared record tying the task to the generated-artifact state.'
+  area: task-attribution / role-boundary
+  first_seen: '2026-11-05'
+  disposition: pending
+  sightings:
+  - date: '2026-11-05'
+    project: reify
+    session: 5ad3d39a-1e0f-466b-a1e2-29a607ce79b7
+    origin_phase: unknown
+    manifested_phase: architect
+    evidence_quote: I am an unsandboxed architect; the implementer is landlock-confined to its worktree and cannot write to project_root.
 historical_backfill:
   run_id: census-reify-20261022
   unmatched_task_ids:
