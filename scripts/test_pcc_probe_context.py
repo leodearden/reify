@@ -13,7 +13,6 @@ tests/infra/test_prd_capability_check.sh.
 
 import dataclasses
 import os
-import subprocess
 import tempfile
 import unittest
 import unittest.mock
@@ -21,19 +20,14 @@ import unittest.mock
 from _pcc_test_support import (
     pcc,
     _REPO_ROOT,
+    git,
     make_fixture_repo,
+    make_git_fixture_repo,
     probe_context,
+    trust_environ,
+    write_bin_sidecar,
+    write_profile_binary,
 )
-
-
-def _write_binary(root: str, relpath: str, mode: int = 0o755) -> str:
-    """Create a file at <root>/<relpath> with `mode` and return its absolute path."""
-    path = os.path.join(root, relpath)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("#!/bin/sh\nexit 0\n")
-    os.chmod(path, mode)
-    return path
 
 
 class TestFromEnvironment(unittest.TestCase):
@@ -68,7 +62,7 @@ class TestFromEnvironment(unittest.TestCase):
         self.assertEqual(self._ctx({"REIFY_BIN": ""}).reify_bin, "reify")
 
     def test_empty_reify_bin_falls_through_to_the_fixture_binary(self):
-        debug = _write_binary(self.root, "target/debug/reify")
+        debug = write_profile_binary(self.root, "target/debug/reify")
         self.assertEqual(self._ctx({"REIFY_BIN": ""}).reify_bin, debug)
 
     def test_cache_home_override_is_read_and_empty_counts_as_unset(self):
@@ -82,13 +76,13 @@ class TestFromEnvironment(unittest.TestCase):
     def test_a_lone_executable_profile_binary_is_picked(self):
         for relpath in ("target/debug/reify", "target/release/reify"):
             with self.subTest(binary=relpath), tempfile.TemporaryDirectory() as tmp:
-                path = _write_binary(tmp, relpath)
+                path = write_profile_binary(tmp, relpath)
                 ctx = pcc.ProbeContext.from_environment(environ={}, repo_root=tmp)
                 self.assertEqual(ctx.reify_bin, path)
                 self.assertTrue(os.path.isabs(ctx.reify_bin))
 
     def test_a_non_executable_profile_binary_is_not_picked(self):
-        _write_binary(self.root, "target/release/reify", mode=0o644)
+        write_profile_binary(self.root, "target/release/reify", mode=0o644)
         self.assertEqual(self._ctx({}).reify_bin, "reify")
 
     def test_repo_root_defaults_to_this_checkout(self):
@@ -124,24 +118,6 @@ class TestProbeContextInvariants(unittest.TestCase):
 
 
 
-def _without_git_vars(environ):
-    """`environ` minus every GIT_* key.
-
-    Under a hook (pre-commit / pre-merge-commit) GIT_DIR is exported and would
-    aim a test's `git init` / `git commit` at the real repository.
-    """
-    return {k: v for k, v in environ.items() if not k.startswith("GIT_")}
-
-
-def _git(root, *args):
-    """Run git in `root` with no GIT_* variable and no config write; return stdout."""
-    return subprocess.run(
-        ["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
-         "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", *args],
-        env=_without_git_vars(os.environ), capture_output=True, text=True, check=True,
-    ).stdout.strip()
-
-
 class TestReifyBinaryTrust(unittest.TestCase):
     """R14 M6: with both profiles built, only a SHA identity picks one; mtime never does.
 
@@ -156,31 +132,23 @@ class TestReifyBinaryTrust(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _environ(self, **extra):
-        environ = _without_git_vars(os.environ)
-        environ.pop("REIFY_BIN", None)
-        return dict(environ, **extra)
-
     def _ctx(self, **extra):
-        return pcc.ProbeContext.from_environment(environ=self._environ(**extra),
+        return pcc.ProbeContext.from_environment(environ=trust_environ(**extra),
                                                  repo_root=self.root)
 
     def _both_binaries(self, newer):
-        release = _write_binary(self.root, "target/release/reify")
-        debug = _write_binary(self.root, "target/debug/reify")
+        release = write_profile_binary(self.root, "target/release/reify")
+        debug = write_profile_binary(self.root, "target/debug/reify")
         old, new = 1_600_000_000, 1_700_000_000
         os.utime(release, (new, new) if newer == "release" else (old, old))
         os.utime(debug, (new, new) if newer == "debug" else (old, old))
         return release, debug
 
     def _sidecar(self, text):
-        with open(os.path.join(self.root, "target", ".reify-bin-sha"), "w") as fh:
-            fh.write(text)
+        write_bin_sidecar(self.root, text)
 
     def _head(self):
-        _git(self.root, "init", "-q")
-        _git(self.root, "commit", "-q", "--allow-empty", "-m", "x")
-        return _git(self.root, "rev-parse", "HEAD")
+        return make_git_fixture_repo(self.root)
 
     def test_two_unvouched_binaries_are_refused_whichever_is_newer(self):
         for newer in ("debug", "release"):
@@ -208,8 +176,8 @@ class TestReifyBinaryTrust(unittest.TestCase):
         release, _ = self._both_binaries(newer="debug")
         self._sidecar(self._head() + "\n")
         with tempfile.TemporaryDirectory(prefix="pcc_trust_other_") as other:
-            _git(other, "init", "-q")
-            _git(other, "commit", "-q", "--allow-empty", "-m", "another repository")
+            git(other, "init", "-q")
+            git(other, "commit", "-q", "--allow-empty", "-m", "another repository")
             for label, git_dir in (("another repository", os.path.join(other, ".git")),
                                    ("a nonexistent path", os.path.join(other, "no-such-git"))):
                 with self.subTest(git_dir=label):
@@ -265,11 +233,10 @@ class TestReifyBinaryTrust(unittest.TestCase):
             for sidecar in (None, "0" * 40):
                 with self.subTest(binary=relpath, sidecar=sidecar), \
                      tempfile.TemporaryDirectory() as root:
-                    path = _write_binary(root, relpath)
+                    path = write_profile_binary(root, relpath)
                     if sidecar is not None:
-                        with open(os.path.join(root, "target", ".reify-bin-sha"), "w") as fh:
-                            fh.write(sidecar)
-                    ctx = pcc.ProbeContext.from_environment(environ=self._environ(),
+                        write_bin_sidecar(root, sidecar)
+                    ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
                                                             repo_root=root)
                     self.assertEqual(ctx.reify_bin, path)
                     self.assertIsNone(ctx.reify_bin_refusal)
