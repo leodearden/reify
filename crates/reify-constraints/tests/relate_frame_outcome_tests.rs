@@ -9,8 +9,8 @@
 mod common;
 
 use common::{
-    axis, b5_relations, bolt_unknown, datum, dir, fully_determined_relations, plane, relation,
-    scaling_for, solve_frame_result, unknown,
+    axis, b5_relations, bolt_unknown, datum, dir, fully_determined_relations, plane, point3,
+    relation, scaling_for, solve_frame_result, unknown,
 };
 use reify_constraints::relate_solve::{
     FrameSolveOutcome, FrameUnknown, Pose, RelationInstance, Twist, max_relation_exceedance,
@@ -19,7 +19,7 @@ use reify_constraints::relate_solve::{
 use reify_constraints::scaling::SolveScaling;
 use reify_constraints::trust_region::{RANGE_COSINE_TOLERANCE, SolveBudget};
 use reify_core::DiagnosticCode;
-use reify_ir::{ResidualSource, SolveFailureCause, SolveResult, SolveStall, Value};
+use reify_ir::{NonFiniteEntry, ResidualSource, SolveFailureCause, SolveResult, SolveStall, Value};
 
 // ── η #6675: typed termination causes and the null-space basis ───────────────
 //
@@ -586,4 +586,74 @@ fn perpendicular_top_and_wall_flush_stays_certified() {
             .any(|b| b.source == ResidualSource::Relation(1)),
         "the wall flush must be blamed: {cert:?}"
     );
+}
+
+// ── η #6675: a non-finite evaluation names its relation ──────────────────────
+//
+// A residual row that evaluates to NaN ends the solve as a typed `NonFinite`
+// cause naming the relation that produced the row. The solve scaling drops
+// non-finite points, so a NaN anchor datum reaches no row but its own relation's.
+
+/// A `concentric` already seated at the seed, beside a `coincident` whose plate
+/// point has a NaN coordinate: relation 0's four rows are finite, so the first
+/// non-finite row is relation 1's first.
+fn nan_anchor_beside_a_seated_concentric() -> (Vec<RelationInstance>, FrameUnknown, Pose) {
+    let relations = vec![
+        relation(
+            "concentric",
+            vec![
+                datum("bolt", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+                datum("plate", axis((0.0, 0.0, 0.0), (0.0, 0.0, 1.0))),
+            ],
+            4,
+        ),
+        relation(
+            "coincident",
+            vec![
+                datum("bolt", point3(0.0, 0.0, 0.0)),
+                datum("plate", point3(f64::NAN, 0.0, 0.0)),
+            ],
+            3,
+        ),
+    ];
+    (relations, bolt_unknown(), Pose::identity())
+}
+
+/// The non-finite row is attributed to the relation that produced it. Row 4 is the
+/// first row past the seated `concentric`'s four, the boundary where an off-by-one
+/// in the cumulative row count would name relation 0 instead.
+#[test]
+fn a_nan_anchor_is_a_non_finite_evaluation_of_its_own_relation() {
+    let outcome = outcome_of(
+        &nan_anchor_beside_a_seated_concentric(),
+        SolveBudget::default(),
+    );
+    let SolveFailureCause::NonFinite(found) = failure_of(&outcome) else {
+        panic!("expected NonFinite, got {outcome:?}");
+    };
+    assert_eq!(found.source, ResidualSource::Relation(1), "{found:?}");
+    assert_eq!(found.row, 4, "past relation 0's four rows: {found:?}");
+    assert_eq!(found.entry, NonFiniteEntry::Residual, "{found:?}");
+    assert!(found.value.is_nan(), "{found:?}");
+    assert_eq!(found.iterations, 0, "{found:?}");
+    assert_eq!(outcome.iterations, 0, "{outcome:?}");
+}
+
+/// A non-finite evaluation is a search failure, so the adapter reports
+/// `NoProgress` rendering it, never a coded `Infeasible`.
+#[test]
+fn solve_result_adapter_reports_a_non_finite_evaluation_as_no_progress() {
+    let fixture = nan_anchor_beside_a_seated_concentric();
+    let outcome = outcome_of(&fixture, SolveBudget::default());
+    let cause = failure_of(&outcome).clone();
+    match outcome.into_solve_result(&fixture.1) {
+        SolveResult::NoProgress { reason } => {
+            assert!(
+                reason.contains(&cause.to_string()),
+                "the reason renders the cause's own figures: {reason}"
+            );
+            assert!(reason.contains("`bolt`"), "{reason}");
+        }
+        other => panic!("expected NoProgress, got {other:?}"),
+    }
 }
