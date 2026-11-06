@@ -556,10 +556,10 @@ pub(crate) enum ConstraintOutcome {
 ///
 /// # Dedup key
 ///
-/// [`DiagnosticIdentity`]: severity, code and message, with labels and
-/// candidates excluded.  All three helpers — this one, [`dedup_diagnostics`]
-/// and [`strip_diagnostics_reproduced_by`] — share [`DiagnosticIdentity::of`],
-/// so they cannot drift onto different keys.
+/// [`DiagnosticIdentity`] — see its contract; this merge relies on it
+/// excluding spans, for the reason below.  All three helpers — this one,
+/// [`dedup_diagnostics`] and [`strip_diagnostics_reproduced_by`] — share
+/// [`DiagnosticIdentity::of`], so they cannot drift onto different keys.
 ///
 /// Membership is tested against the ACCUMULATING set — seeded from
 /// `check_diags`, then grown as build entries are appended — so duplicates

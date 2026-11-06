@@ -19,8 +19,9 @@ use reify_core::{
 use reify_eval::{BuildResult, CheckResult, ConstraintCheckEntry};
 use reify_ir::Satisfaction;
 
-/// Deliberately message-only, NOT `reify_core::DiagnosticIdentity`: assertions
-/// that reused the production key could not observe a change to it.
+/// Deliberately an independent copy of the production key's fields, NOT
+/// `reify_core::DiagnosticIdentity`: assertions that reused the production key
+/// could not observe a change to it.
 fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
     (d.severity, d.code, d.message.clone())
 }
