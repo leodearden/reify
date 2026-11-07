@@ -318,9 +318,6 @@ pub fn assemble_eliminate_and_solve(
 /// [`eliminate_and_solve`] with an asserted convergence, keeping only the
 /// displacement `u`.
 ///
-/// `bcs` is deduplicated in place: afterwards the caller's `Vec` holds the
-/// sorted, deduplicated list.
-///
 /// # Returns
 ///
 /// Displacement vector `u` of length `k.nrows()`.
@@ -335,12 +332,11 @@ pub fn assemble_eliminate_and_solve(
 pub fn solve_displacement(
     k: SparseRowMat<usize, f64>,
     raw_f: &[f64],
-    bcs: &mut Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     opts: CgSolverOptions,
 ) -> Vec<f64> {
     let max_iter = opts.max_iter;
-    let solved = eliminate_and_solve(k, raw_f, std::mem::take(bcs), opts);
-    *bcs = solved.bcs_deduped;
+    let solved = eliminate_and_solve(k, raw_f, bcs, opts);
     assert!(
         solved.primal.converged,
         "solve_displacement: CG did not converge after {} iterations (cap={max_iter}, ndof={})",
@@ -353,8 +349,6 @@ pub fn solve_displacement(
 /// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system, keeping only
 /// the displacement: [`rhs_from_point_loads`] and [`assemble_p1_stiffness`]
 /// fed to [`solve_displacement`] with the crate-default `CgSolverOptions`.
-/// `bcs` is deduplicated in place: afterwards the caller's `Vec` holds the
-/// sorted, deduplicated list.
 ///
 /// # Returns
 ///
@@ -364,7 +358,7 @@ pub fn solve_displacement(
 pub fn solve_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 4]],
-    bcs: &mut Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
