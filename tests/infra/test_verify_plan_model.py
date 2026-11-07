@@ -584,7 +584,8 @@ class TestSlotFdClosed(unittest.TestCase):
 
 
 class TestPassInvariants(unittest.TestCase):
-    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded."""
+    """A recording runner runs --no-fail-fast; the gui-feature pass is never filtered nor recorded;
+    a recording pass carries no guard."""
 
     def test_a_recording_runner_runs_no_fail_fast(self):
         with self.assertRaises(ValueError) as raised:
@@ -602,6 +603,15 @@ class TestPassInvariants(unittest.TestCase):
                 with self.assertRaises(ValueError) as raised:
                     PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", **extra)
                 self.assertIn("gui-feature", str(raised.exception))
+
+    def test_a_recording_pass_carries_no_guard(self):
+        guard = gatepaths.GUI_CRATE_GUARD
+        with self.assertRaises(ValueError) as raised:
+            PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
+        message = str(raised.exception)
+        for part in ("PassSpec", CONFIRM_RECORDER, guard.setup.path):
+            self.assertIn(part, message)
+        PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",), guard=guard)
 
     def test_only_a_profile_pass_records(self):
         runner = recording_runner()
