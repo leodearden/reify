@@ -42,14 +42,14 @@ use reify_solver_elastic::{
 mod fea_harness;
 use fea_harness::{
     box_p1_mesh, dirichlet_fix_face, distributed_tip_load, end_face_nodes,
-    rhs_from_point_loads, solve_displacement, solve_p1_pipeline, von_mises_of_tensor,
+    rhs_from_point_loads, solve_displacement, solve_p1_pipeline,
 };
 #[path = "common/analytical_fixtures.rs"]
 mod analytical_fixtures;
 use analytical_fixtures::{
     annular_symmetry_plane_strain_bcs, cylinder_p1_solve_and_recover,
-    inner_pressure_loads_core, lame_von_mises, mean_tip_deflection,
-    timoshenko_tip_deflection,
+    inner_pressure_loads_core, lame_von_mises, max_inner_ring_von_mises,
+    mean_tip_deflection, timoshenko_tip_deflection,
 };
 
 // ─── P1 hex mesh / solve helpers ─────────────────────────────────────────────
@@ -706,10 +706,7 @@ fn cylinder_hex_dof_error_curve(
                     inner_pressure_loads_core(&inner_quad_faces, &nodes, p_i, FaceOrder::P1Quad);
                 let u = solve_hex_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
                 let sigma = recover_nodal_hex(n, &nodes, &conns, &u, mat);
-                let max_vm = nodes.iter().enumerate()
-                    .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
-                    .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
-                    .fold(0.0_f64, f64::max);
+                let max_vm = max_inner_ring_von_mises(&nodes, &sigma, a, tol_geom);
                 ((max_vm - lame_ref).abs() / lame_ref, n)
             }
             ElementKind::Tet => {
@@ -827,10 +824,7 @@ fn thick_walled_cylinder_hex_p1_max_von_mises_within_5pct_of_lame() {
 
     let sigma = recover_nodal_hex(n_nodes, &nodes, &conns, &u, &mat);
     let lame_ref = lame_von_mises(A, A, B, P_I, NU);
-    let max_vm = nodes.iter().enumerate()
-        .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - A).abs() < tol_geom)
-        .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
-        .fold(0.0_f64, f64::max);
+    let max_vm = max_inner_ring_von_mises(&nodes, &sigma, A, tol_geom);
 
     let rel_err = (max_vm - lame_ref).abs() / lame_ref;
     assert!(

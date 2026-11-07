@@ -99,8 +99,8 @@ use fea_harness::{
 mod analytical_fixtures;
 use analytical_fixtures::{
     annular_p1_mesh, annular_symmetry_plane_strain_bcs, cylinder_p1_solve_and_recover,
-    inner_pressure_loads_core, lame_stresses, lame_von_mises, mean_tip_deflection,
-    recover_nodal_p1, timoshenko_tip_deflection,
+    inner_pressure_loads_core, lame_stresses, lame_von_mises, max_inner_ring_von_mises,
+    mean_tip_deflection, recover_nodal_p1, timoshenko_tip_deflection,
 };
 
 // ─── cantilever fixtures and local helpers ──────────────────────────────────
@@ -1062,10 +1062,7 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
     // Lamé peak is at r=a and is fully captured by the included corner nodes.
     let sigma = recover_nodal_p2(&p2_nodes, &p2_conns, &u, &mat);
     let lame_ref = lame_von_mises(A, A, B, P_I, NU);
-    let max_vm = p2_nodes.iter().enumerate()
-        .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - A).abs() < tol_geom)
-        .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
-        .fold(0.0_f64, f64::max);
+    let max_vm = max_inner_ring_von_mises(&p2_nodes, &sigma, A, tol_geom);
 
     let rel_err = (max_vm - lame_ref).abs() / lame_ref;
     assert!(

@@ -204,16 +204,19 @@ pub fn annular_symmetry_plane_strain_bcs(
     bcs
 }
 
-/// Shared implementation for P1 and P2 inner-pressure load assembly.
+/// Shared implementation for P1-tri, P2-tri and P1-quad inner-pressure load
+/// assembly.
 ///
 /// For each face in `inner_faces`:
-/// 1. Build `face_phys` from the node indices (all nodes, P1 or P2 count).
+/// 1. Build `face_phys` from the node indices (every node of the face).
 /// 2. Compute the centroid radial direction `r̂ = (cx, cy, 0) / ||(cx,cy)||`
-///    from the **first 3 corner nodes** (`face[0..3]`).
+///    from the **first 3 corner nodes** (`face[0..3]`), whatever the face's
+///    node count.
 /// 3. Apply traction `t = P_i · r̂` via `apply_traction_load` using `face_order`.
 ///
-/// `face_order` selects `FaceOrder::P1Tri` (3-node) or `FaceOrder::P2Tri`
-/// (6-node) quadrature.  Returns nonzero `(dof, value)` pairs.
+/// `face_order` selects the face quadrature and must match the face arity:
+/// `FaceOrder::P1Tri` (3-node triangle), `FaceOrder::P2Tri` (6-node triangle)
+/// or `FaceOrder::P1Quad` (4-node quad).  Returns nonzero `(dof, value)` pairs.
 pub fn inner_pressure_loads_core<F: AsRef<[usize]>>(
     inner_faces: &[F],
     nodes: &[[f64; 3]],
@@ -270,9 +273,23 @@ pub fn cylinder_p1_solve_and_recover(
     let loads = inner_pressure_loads(&inner_faces, &nodes, p_i);
     let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
     let sigma = recover_nodal_p1(&nodes, &conns, &u, mat);
-    let max_vm = nodes.iter().enumerate()
+    let max_vm = max_inner_ring_von_mises(&nodes, &sigma, a, tol_geom);
+    (nodes, sigma, max_vm)
+}
+
+/// Maximum nodal von Mises stress over the inner-ring nodes of a cylinder
+/// mesh: the nodes whose xy-plane radius is within `tol_geom` of `a`.
+///
+/// `sigma[i]` is the recovered stress tensor at `nodes[i]`. Returns `0.0` when
+/// no node lies on the ring.
+pub fn max_inner_ring_von_mises(
+    nodes: &[[f64; 3]],
+    sigma: &[[[f64; 3]; 3]],
+    a: f64,
+    tol_geom: f64,
+) -> f64 {
+    nodes.iter().enumerate()
         .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
         .map(|(ni, _)| von_mises_of_tensor(&sigma[ni]))
-        .fold(0.0_f64, f64::max);
-    (nodes, sigma, max_vm)
+        .fold(0.0_f64, f64::max)
 }
