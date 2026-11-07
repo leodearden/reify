@@ -210,9 +210,10 @@ tasks:
       kind: manual
       reason: authoring-time premise verified at main 274a212e0a (2026-10-13); a mechanical check would be vacuous and gate nothing.
   - name: every-detector-requires
-    binding: nine build scripts detect a native dep today (five kernels incl. conformance, plus reify-cli, reify-eval, reify-mesh-morph, gui) via reify_build_utils::find(..).is_some()/match; all switch
-      to require
-    verdict: 'PASS (corrected 2026-10-20, retro-critic R12: grep → ratchet row)'
+    binding: 'nine build scripts detect a native dep today (five kernels incl. conformance, plus reify-cli, reify-eval, reify-mesh-morph, gui) via reify_build_utils::find(..).is_some()/match; all switch
+      to require. Verdict qualifier, moved here from the verdict field on 2026-11-07 (task 9891) —
+      corrected 2026-10-20, retro-critic R12: grep → ratchet row.'
+    verdict: PASS
     delivered_check:
       kind: manual
       reason: 'R12 polarity: a find()-private diff alone (the subsumed S21 β #8646) would turn a `reify_build_utils::find\(` absent grep green without any require() existing, so it is vacuous as evidence of β₁. It is held as a tests/infra/adoption-ratchet.manifest row at ceiling 0 (S21 M1); require-helper and hand-written-cfg-sites-gone are the delivered checks.'
