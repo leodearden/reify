@@ -73,12 +73,18 @@ REIFY_BIN_NOT_BUILT=2
 #
 # Prints the current HEAD commit SHA of repo_root. Prints nothing (empty
 # string) when repo_root is not a git repo or has no HEAD. Every exported GIT_*
-# variable is dropped first, so `-C repo_root` alone decides the repository:
-# under a hook GIT_DIR is exported and would answer for another one.
+# variable except GIT_CEILING_DIRECTORIES is dropped first, so `-C repo_root`
+# alone decides the repository: under a hook GIT_DIR is exported and would
+# answer for another one. The ceiling is kept because it can only stop
+# discovery short of a repository: it never redirects discovery, and it never
+# hides repo_root itself, which git always checks. That lets a caller bound
+# the walk-up for a non-git repo_root.
 reify_bin_head_sha() {
     local repo_root="${1:-$PWD}"
     (
-        for v in $(compgen -e GIT_); do unset "$v"; done
+        for v in $(compgen -e GIT_); do
+            [ "$v" = GIT_CEILING_DIRECTORIES ] || unset "$v"
+        done
         git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null
     ) || true
 }
