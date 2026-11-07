@@ -24,6 +24,32 @@ fn script() -> PathBuf {
     workspace_root().join("scripts/workspace-feature-union.py")
 }
 
+/// `python3 -I <script> <subcommand> [--root <root>] <extra>...` with the
+/// inherited environment, plus CARGO=`cargo` when one is given.
+fn run_script(
+    subcommand: &str,
+    root: Option<&Path>,
+    cargo: Option<&Path>,
+    extra: &[&str],
+) -> Output {
+    let mut command = Command::new("python3");
+    command
+        .arg("-I")
+        .arg(script())
+        .arg(subcommand)
+        .current_dir(workspace_root());
+    if let Some(root) = root {
+        command.arg("--root").arg(root);
+    }
+    command.args(extra);
+    if let Some(cargo) = cargo {
+        command.env("CARGO", cargo);
+    }
+    command
+        .output()
+        .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script().display()))
+}
+
 const UNION: &str = "workspace-feature-union";
 
 fn describe(out: &Output) -> String {
@@ -116,13 +142,7 @@ fn assert_input_error(out: &Output, needles: &[&str], context: &str) {
 /// output carries every SPLIT/UNCOVERED line and the remedy.
 #[test]
 fn real_workspace_resolves_every_member_like_the_workspace() {
-    let out = Command::new("python3")
-        .arg("-I")
-        .arg(script())
-        .arg("check")
-        .current_dir(workspace_root())
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script().display()));
+    let out = run_script("check", None, None, &[]);
     assert!(
         out.status.success(),
         "a member resolves an external package unlike --workspace; \
@@ -207,6 +227,12 @@ fn manifest_path(root: &Path, name: &str) -> PathBuf {
     root.join("crates").join(name).join("Cargo.toml")
 }
 
+fn write_file(path: &Path, contents: &str) {
+    let parent = path.parent().expect("a written file has a parent");
+    fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
+    fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+}
+
 /// A stand-in for cargo that serves the fixture's canned files by argv and
 /// logs every argv to cargo-argv.log. `tree -p NAME` serves
 /// tree-NAME.after-K.txt for the highest K whose tree-NAME.after-K.pattern,
@@ -287,8 +313,7 @@ impl Fixture {
     }
 
     fn write(&self, name: &str, contents: &str) {
-        let path = self.path(name);
-        fs::write(&path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        write_file(&self.path(name), contents);
     }
 
     fn manifest(&self, name: &str) -> String {
@@ -314,10 +339,7 @@ impl Fixture {
     }
 
     fn with_union_manifest(self, text: &str) -> Fixture {
-        let path = self.union_manifest_path();
-        fs::create_dir_all(path.parent().expect("manifest has a parent"))
-            .unwrap_or_else(|e| panic!("mkdir for {}: {e}", path.display()));
-        fs::write(&path, text).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        write_file(&self.union_manifest_path(), text);
         self
     }
 
@@ -327,16 +349,12 @@ impl Fixture {
     }
 
     fn run_with(&self, subcommand: &str, extra: &[&str]) -> Output {
-        Command::new("python3")
-            .arg("-I")
-            .arg(script())
-            .arg(subcommand)
-            .arg("--root")
-            .arg(self.dir.path())
-            .args(extra)
-            .env("CARGO", self.path("cargo"))
-            .output()
-            .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script().display()))
+        run_script(
+            subcommand,
+            Some(self.dir.path()),
+            Some(&self.path("cargo")),
+            extra,
+        )
     }
 
     fn run(&self, subcommand: &str) -> Output {
@@ -609,6 +627,44 @@ fn check_reds_when_a_build_dependency_member_reaches_the_union_through_a_covered
 }
 
 #[test]
+fn check_names_the_covered_member_a_host_side_member_brings_on_before_it_has_the_union() {
+    let members = vec![
+        member("a", &[UNION]).build_dep("u"),
+        member("u", &["core"]),
+        member("core", &[]),
+        member(UNION, &[]),
+    ];
+    let tree_core = "core v0.1.0 (/fixture/crates/core)|\n";
+    let fixture = Fixture::new(
+        &members,
+        &workspace_building_a_with_u(&["`-- core v0.1.0 (/fixture/crates/core)|"]),
+    )
+    .tree("a", TREE_A_UNION_MEMCHR)
+    .tree("core", tree_core);
+    let out = fixture.check();
+    assert_findings(
+        &out,
+        &[
+            &["UNCOVERED core"],
+            &[
+                "HOST-UNION u",
+                "a -[build]-> u -> core puts covered member core on the host side",
+                "remove u's dependency on core",
+            ],
+        ],
+        "core does not depend on the union yet, but the coverage rule requires it to",
+    );
+    let stdout = stdout_of(&out);
+    assert!(
+        finding_lines(&stdout)
+            .iter()
+            .all(|line| !line.contains(&format!("resolves {UNION}"))),
+        "no path reaches the union yet, so no finding may claim it resolves\n{}",
+        describe(&out)
+    );
+}
+
+#[test]
 fn check_is_green_when_a_build_dependency_member_stays_off_the_union() {
     let members = vec![
         member("a", &[UNION]).build_dep("u"),
@@ -846,12 +902,6 @@ a v0.1.0 (/fixture/crates/a)|
 
 // --- real cargo --------------------------------------------------------------
 
-fn write_file(path: &Path, contents: &str) {
-    let parent = path.parent().expect("a written file has a parent");
-    fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
-    fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
-}
-
 fn path_dep(name: &str) -> String {
     format!("{name} = {{ path = \"../{name}\" }}\n")
 }
@@ -917,14 +967,7 @@ fn real_host_union_workspace(dependent: &str) -> tempfile::TempDir {
 fn check_reds_on_a_host_union_in_a_real_cargo_workspace_whichever_member_sorts_first() {
     for dependent in ["a", "zz"] {
         let workspace = real_host_union_workspace(dependent);
-        let out = Command::new("python3")
-            .arg("-I")
-            .arg(script())
-            .arg("check")
-            .arg("--root")
-            .arg(workspace.path())
-            .output()
-            .unwrap_or_else(|e| panic!("failed to spawn python3 {}: {e}", script().display()));
+        let out = run_script("check", Some(workspace.path()), None, &[]);
         let path = format!("{dependent} -[build]-> u -> core -> workspace-feature-union");
         assert_findings(
             &out,

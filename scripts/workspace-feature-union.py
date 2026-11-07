@@ -31,7 +31,8 @@ Reading a failure:
     UNCOVERED <m>: ...          add `workspace-feature-union.workspace = true`
                                 under [dependencies] in the named manifest.
     HOST-UNION <m>: <path> ...  a normal or build dependency of <m> brings
-                                workspace-feature-union onto the host side,
+                                workspace-feature-union, or a covered member
+                                that must depend on it, onto the host side,
                                 as <path> shows; remove the dependency the
                                 line names from the named manifest.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
@@ -347,13 +348,15 @@ EDGE_NOUN = {Section.NORMAL: "dependency", Section.BUILD: "build-dependency",
 EDGE_ARROW = {Section.NORMAL: " -> ", Section.BUILD: " -[build]-> ", Section.DEV: " -[dev]-> "}
 
 
-def host_entry(member: Member) -> str:
-    """How `member` comes to be compiled for the host."""
-    if member.proc_macro:
-        return f"{member.name} (proc-macro)"
-    if member.build_dependents:
-        return f"{min(member.build_dependents)}{EDGE_ARROW[Section.BUILD]}{member.name}"
-    return member.name
+def path_head(parent: Member) -> str:
+    """The head of a HOST-UNION path: how the edge's parent is reached on the
+    host side, or its bare name when it is covered and its own build edge is
+    what reaches the host."""
+    if parent.proc_macro:
+        return f"{parent.name} (proc-macro)"
+    if parent.build_dependents:
+        return f"{min(parent.build_dependents)}{EDGE_ARROW[Section.BUILD]}{parent.name}"
+    return parent.name
 
 
 def compiled_for_host(parent: Member, edge: Dependency) -> bool:
@@ -361,25 +364,39 @@ def compiled_for_host(parent: Member, edge: Dependency) -> bool:
     return edge.section is not Section.DEV and (parent.host_side or edge.section is Section.BUILD)
 
 
+UNION_ON_HOST = (f"resolves {UNION_CRATE} on the host side, where its target pins would "
+                 f"become host units")
+
+
+def path_tail(ws: Workspace, edge: Dependency) -> str:
+    """The end of a HOST-UNION path from `edge` on, and what it puts on the
+    host side: the union itself, or a covered member, which reaches the union
+    once the coverage rule holds."""
+    child = ws.member(edge.name)
+    if child is None:
+        return f"{edge.name} {UNION_ON_HOST}"
+    if child.depends_on_union:
+        return f"{edge.name}{EDGE_ARROW[Section.NORMAL]}{UNION_CRATE} {UNION_ON_HOST}"
+    return (f"{edge.name} puts covered member {edge.name} on the host side, where the "
+            f"dependency on {UNION_CRATE} it must add would make the union's target pins "
+            f"host units")
+
+
 def host_union_findings(ws: Workspace) -> list[str]:
     """One finding per dependency edge that brings the union, or a covered
-    member (which reaches the union by the coverage rule), onto the host side,
-    read from the workspace's own dependency edges so that cargo tree's print
-    order and its cross-root `(*)` dedupe cannot hide one."""
+    member, onto the host side, read from the workspace's own dependency edges
+    so that cargo tree's print order and its cross-root `(*)` dedupe cannot
+    hide one."""
     brings_union = {m.name for m in ws.covered} | {UNION_CRATE}
     found = []
     for parent in ws.members:
         for edge in sorted(parent.dependencies, key=lambda d: (d.name, d.section.value)):
             if edge.name not in brings_union or not compiled_for_host(parent, edge):
                 continue
-            child = ws.member(edge.name)
-            path = host_entry(parent) + EDGE_ARROW[edge.section] + edge.name
-            if child is not None and child.depends_on_union:
-                path += EDGE_ARROW[Section.NORMAL] + UNION_CRATE
             found.append(
-                f"HOST-UNION {parent.name}: {path} resolves {UNION_CRATE} on the host side, "
-                f"where its target pins would become host units — remove {parent.name}'s "
-                f"{EDGE_NOUN[edge.section]} on {edge.name} from {parent.manifest_path}")
+                f"HOST-UNION {parent.name}: {path_head(parent)}{EDGE_ARROW[edge.section]}"
+                f"{path_tail(ws, edge)} — remove {parent.name}'s {EDGE_NOUN[edge.section]} "
+                f"on {edge.name} from {parent.manifest_path}")
     return found
 
 
