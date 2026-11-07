@@ -9,7 +9,8 @@
 use reify_ast::ParsedModule;
 use reify_compiler::CompiledModule;
 use reify_compiler::import_headers::{
-    ImportPlan, NameRole, NameUse, derive_std_imports, insert_imports, residual_diagnostics,
+    ImportPlan, NameRole, NameUse, RequiredImport, derive_std_imports, insert_imports,
+    residual_diagnostics,
 };
 use reify_core::{DiagnosticCode, ModulePath, Severity};
 
@@ -542,42 +543,124 @@ fn a_diagnostic_the_full_universe_also_raises_is_not_residual() {
     assert!(residual.is_empty(), "{residual:?}");
 }
 
-// ─── m1: declared imports in every form ────────────────────────────────────
+// ─── m1-m5: declared-import coverage by import form ────────────────────────
+
+/// Calls `Bracket` and `Gizmo`, both of std.fake.shapes.
+const BRACKET_AND_GIZMO: &str = "structure def S {\n\
+                                     let b = Bracket()\n\
+                                     let g = Gizmo()\n\
+                                 }\n";
+
+fn missing_for(header: &str, body: &str, universe: &[CompiledModule]) -> Vec<RequiredImport> {
+    let parsed = parse_clean(&format!("{header}{body}"), SUBJECT_PATH);
+    derive_parsed(&parsed, universe)
+        .missing_from(&parsed)
+        .into_iter()
+        .cloned()
+        .collect()
+}
+
+fn required(module: &str, names: Vec<NameUse>) -> RequiredImport {
+    RequiredImport {
+        module: ModulePath::from_dotted(module).expect("valid dotted module path"),
+        names,
+    }
+}
 
 #[test]
-fn missing_from_omits_modules_imported_in_any_form() {
-    let universe = compile_universe(&[FNS, SHAPES, ENUMS, CDEFS, UNITS, MOUNTABLE]);
-    let source = "import std.fake.fns\n\
-                  import std.fake.shapes.Bracket\n\
-                  import std.fake.enums.{Hue}\n\
-                  import std.fake.cdefs as c\n\
-                  import std.fake.units.Furlong as F\n\
-                  structure def S : Mountable {\n\
-                      let a = twice(1.0)\n\
-                      let b = Bracket()\n\
-                      let h = Hue.Red\n\
-                      constraint positive(v: 1.0)\n\
-                      let d = 3furlong\n\
-                  }\n";
-    let parsed = parse_clean(source, SUBJECT_PATH);
-    let plan = derive_parsed(&parsed, &universe);
+fn a_namespace_import_covers_every_name_of_its_module() {
+    let universe = compile_universe(&[SHAPES]);
+    for header in ["import std.fake.shapes\n", "import std.fake.shapes as sh\n"] {
+        assert_eq!(
+            missing_for(header, BRACKET_AND_GIZMO, &universe),
+            vec![],
+            "header:\n{header}"
+        );
+    }
+}
+
+#[test]
+fn an_entity_import_leaves_the_names_it_does_not_bind_missing() {
+    let universe = compile_universe(&[SHAPES]);
+    for header in [
+        "import std.fake.shapes.Bracket\n",
+        "import std.fake.shapes.{Bracket}\n",
+    ] {
+        assert_eq!(
+            missing_for(header, BRACKET_AND_GIZMO, &universe),
+            vec![required(
+                "std.fake.shapes",
+                vec![name_use("Gizmo", NameRole::Callee)]
+            )],
+            "header:\n{header}"
+        );
+    }
+}
+
+#[test]
+fn entity_imports_binding_every_needed_name_cover_the_module() {
+    let universe = compile_universe(&[SHAPES]);
+    for header in [
+        "import std.fake.shapes.{Bracket, Gizmo}\n",
+        "import std.fake.shapes.Bracket\nimport std.fake.shapes.Gizmo\n",
+    ] {
+        assert_eq!(
+            missing_for(header, BRACKET_AND_GIZMO, &universe),
+            vec![],
+            "header:\n{header}"
+        );
+    }
+
+    let universe = compile_universe(&[ENUMS]);
     assert_eq!(
-        dotted_modules(&plan),
-        vec![
-            "std.fake.cdefs",
-            "std.fake.enums",
-            "std.fake.fns",
-            "std.fake.shapes",
-            "std.fake.traits",
-            "std.fake.units",
-        ]
+        missing_for(
+            "import std.fake.enums.{Hue}\n",
+            "structure def S { let h = Hue.Red }\n",
+            &universe
+        ),
+        vec![]
     );
-    let missing: Vec<String> = plan
-        .missing_from(&parsed)
-        .iter()
-        .map(|required| required.module.to_dotted())
-        .collect();
-    assert_eq!(missing, vec!["std.fake.traits"]);
+}
+
+#[test]
+fn an_aliased_entity_import_binds_its_alias_not_the_entity_name() {
+    let universe = compile_universe(&[SHAPES]);
+    assert_eq!(
+        missing_for(
+            "import std.fake.shapes.Bracket as B\n",
+            BRACKET_AND_GIZMO,
+            &universe
+        ),
+        vec![required(
+            "std.fake.shapes",
+            vec![
+                name_use("Bracket", NameRole::Callee),
+                name_use("Gizmo", NameRole::Callee)
+            ]
+        )]
+    );
+}
+
+#[test]
+fn an_entity_import_of_an_enum_does_not_cover_its_variants_written_bare() {
+    let universe = compile_universe(&[ENUMS]);
+    assert_eq!(
+        missing_for(
+            "import std.fake.enums.{Hue}\n",
+            "structure def S {\n\
+                 param n : Int = 1\n\
+                 let k = match n { Red => 1, Green => 2 }\n\
+             }\n",
+            &universe
+        ),
+        vec![required(
+            "std.fake.enums",
+            vec![
+                name_use("Green", NameRole::Variant),
+                name_use("Red", NameRole::Variant)
+            ]
+        )]
+    );
 }
 
 // ─── h1-h5: inserting import lines ─────────────────────────────────────────
