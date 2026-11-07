@@ -99,7 +99,11 @@ grep -E '^ +Compiling ' /tmp/<id>.log | grep -vc ' (/'   # external units
 grep -E '^ +Compiling ' /tmp/<id>.log | grep -c ' (/'    # workspace units
 ```
 
-For `cargo clippy`, count `Checking` lines as well as `Compiling` lines.
+For `cargo clippy`, count `Checking` lines as well as `Compiling` lines, and
+pass the base's arguments, `-- -D warnings` (the clippy leaf in
+`scripts/verify.sh`). Without them `CLIPPY_ARGS` differs from the base's, which
+dirties workspace units: 30 were rebuilt instead of 21 or 22 (see Tree-sitter
+share).
 
 To take several first builds in one lane, snapshot the seeded `target/` before
 the first probe and restore it before each later one. Without the restore,
@@ -127,6 +131,45 @@ The last line deletes the eight gitignored generated sources that a fresh seed
 lacks and the first probe recreates (see the tree-sitter paragraph under
 Measurements). They live outside `target/`, so restoring `target/` does not
 restore their absence. Remove `target/.pristine` after the last probe.
+
+To exclude the tree-sitter share, probe in arm B of the Tree-sitter share
+subsection: the eight sources present and back-dated to 2020-01-01, so the
+build script stays Fresh. Make the copy once, before the first probe:
+
+```bash
+bash scripts/tree-sitter-generate.sh   # about 5 s: tree-sitter generate only, no cargo
+mkdir /tmp/<id>-tsgen
+(cd tree-sitter-reify/src && cp -a parser.c grammar.json node-types.json tree_sitter .grammar_hash.stamp .generated_outputs.stamp /tmp/<id>-tsgen/)
+find /tmp/<id>-tsgen -mindepth 1 -exec touch -h -d 2020-01-01T00:00:00 {} +
+bash scripts/tree-sitter-freshness.sh --print-fingerprint > /tmp/<id>-fp.txt
+for s in target/debug/build/tree-sitter-reify-*/out/tree_sitter_inputs.stamp; do cmp -s "$s" /tmp/<id>-fp.txt && echo "match $s" || echo "DIFF $s"; done
+```
+
+Every stamp must match: that proves the copy holds the bytes the seeded
+archive was compiled from. A DIFF means `grammar.js` or `scanner.c` differs from
+the base's, and arm B would link bytes its sources do not describe; probe at the
+base commit instead (next paragraph). Before every probe, the first included,
+put the copy in place of the `rm -rf` line above:
+`cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
+
+Probing at the base commit gives a zero-delta first build, one with no
+workspace source newer than the seed's base. Find the gen whose `stat -c %y`
+equals `stat -c %y target`, set `B=$(cat <gen>.basecommit)`, and check that
+`find target ! -type d -newer <gen>.basecommit` prints nothing (nothing was
+built since the seed). Then `git diff --name-only $B HEAD > /tmp/<id>-D.lst` and
+`git checkout --detach $B`. The checkout rewrote the paths in that list, so give
+each one that still exists the mtime the seed would have given it at `$B`:
+`touch -h -d 2020-01-01T00:00:00`, except a `.rs` file under `tests/` or
+`benches/` that contains `env!("CARGO_MANIFEST_DIR")`, `env!("OUT_DIR")`,
+`env!("CARGO_TARGET_TMPDIR")` or `env!("CARGO_BIN_EXE_...")`, which the seed's
+relink touches to now (match the pattern on `"/$f"`, so a top-level `tests/`
+path matches too). Then `git diff --name-only $B` must be empty, and the files
+newer than 2020-01-02 outside `target/`, `.git` and `.task` must be those relink
+sources plus incidentals such as `.mcp.json`. Return with
+`git checkout <task branch>`, which rewrites the delta with fresh mtimes, the
+state the seed gives a branch's HEAD. An orchestrator restart runs
+`git rebase main` in the lane and moves a detached HEAD to main's tip; if one
+lands mid-run, repeat the checkout and the re-stamp, and restore `target/`.
 
 ## Measurements
 
@@ -197,14 +240,109 @@ reify-syntax (tree-sitter-reify's only dependent) and, among the nine,
 reify-syntax's normal dependents reify-compiler and reify-test-support: with
 tree-sitter-reify itself, four of the nine. In these probes it does not reach
 reify-ast, reify-config, reify-ir or reify-stdlib, and it reaches reify-expr
-only under `-p reify-expr`, through that package's dev-dependencies.
+only under `-p reify-expr`, through that package's dev-dependencies. That is the
+reach by manifest edges. The next subsection measures it: a first build pays
+only for tree-sitter-reify itself, and the reach shows in the next invocation.
 
-Hypothesis, not isolated by these probes: the workspace units are the sum of
-four contributors and the downstream rebuild each triggers: the tree-sitter
-regeneration above, the seed's `env!()`/build-dir invalidation, the
-reify-test-support change, and workspace-member feature splits (#9825, see
-Limits). The tree-sitter share belongs neither to the union nor to #9825, so a
-measurement of the #9825 share has to separate it out.
+Hypothesis, not isolated by these probes: once the tree-sitter share is taken
+out (next subsection), the workspace units that remain are the sum of two
+contributors and the downstream rebuild each triggers: the seed's
+`env!()`/build-dir invalidation, and workspace-member feature splits (#9825, see
+Limits). A measurement of the #9825 share probes without the tree-sitter share
+(Probe procedure).
+
+### Tree-sitter share (#9862)
+
+Lane `_lane-52`, 2026-11-06 22:52 to 2026-11-07 00:34 UTC. Its `target/` carried
+base `target.gen.625`'s mtime to the nanosecond (`09:31:02.634473980`, built
+under `_merge-verify`, basecommit `35a914623f`), and no file under it was newer
+than the `.basecommit` stamp. The lane's HEAD, `3cee7ab20d`, differs from the
+basecommit in 41 files, among them `crates/reify-core`, so a probe at HEAD would
+rebuild every reify-core dependent in both arms and hide the cascade. The probes
+therefore ran at the basecommit, as in Probing at the base commit: of the 41
+files the checkout rewrote, 32 were re-stamped to 2020-01-01 and 4 `env!()` test
+sources were left at now, and 5 files that exist only at HEAD were gone. The
+lane then matched the seed's model exactly.
+
+Arm A is a fresh lane as it is today: the eight generated sources absent. Arm B
+has them present and back-dated to 2020-01-01, as in the arm B recipe under
+Probe procedure: generated at the basecommit by
+`scripts/tree-sitter-generate.sh` (4.76 s), then
+`scripts/tree-sitter-freshness.sh --print-fingerprint` compared with the
+`out/tree_sitter_inputs.stamp` of the four seeded build-script run dirs that
+hold one. All four stamps are identical to each other and to the fingerprint, so
+arm B links the bytes the base's archive was compiled from. A minus B is the
+tree-sitter share, and B is what remains. Every probe started from the same
+seeded `target/`, restored from a reflink snapshot (90,107 non-directory
+entries, matched before every run); the arm that ran first alternated between
+probes, and each restore took 1:06 to 10:25.
+
+| Probe | HEAD | Base | Units (external + workspace) | Wall | Load avg (start → end) |
+|---|---|---|---|---|---|
+| A: `test -p reify-eval --no-run` | `35a914623f` | gen.625 | **0** + 23 | 3:57.23 | 197/231/194 → 180/184/181 |
+| A, 2nd run: same command, nothing restored | `35a914623f` | gen.625 | **0** + 8 | 1:30.44 | 111/165/175 → 92/146/167 |
+| B: `test -p reify-eval --no-run` | `35a914623f` | gen.625 | **0** + 22 | 3:33.02 | 74/130/157 → 169/144/156 |
+| B, 2nd run: same command, nothing restored | `35a914623f` | gen.625 | **0** + 0 | 0:04.75 | 121/134/152 → 119/134/152 |
+| A: `test -p reify-expr --no-run` | `35a914623f` | gen.625 | **0** + 12 | 1:21.31 | 468/293/202 → 230/262/199 |
+| B: `test -p reify-expr --no-run` | `35a914623f` | gen.625 | **0** + 11 | 1:59.63 | 118/129/141 → 176/143/145 |
+| A: `test -p reify-compiler --no-run` | `35a914623f` | gen.625 | **0** + 17 | 2:00.38 | 82/188/180 → 140/169/173 |
+| B: `test -p reify-compiler --no-run` | `35a914623f` | gen.625 | **0** + 16 | 1:18.75 | 100/174/181 → 77/149/172 |
+| A: `clippy -p reify-eval --all-targets` | `35a914623f` | gen.625 | **0** + 30 | 1:04.43 | 159/213/175 → 104/188/168 |
+| B: `clippy -p reify-eval --all-targets` | `35a914623f` | gen.625 | **0** + 30 | 6:19.62 | 105/116/143 → 95/106/130 |
+| A: `clippy -p reify-eval --all-targets -- -D warnings` | `35a914623f` | gen.625 | **0** + 22 | 0:59.32 | 54/110/142 → 59/102/137 |
+| B: `clippy -p reify-eval --all-targets -- -D warnings` | `35a914623f` | gen.625 | **0** + 21 | 1:43.89 | 317/219/165 → 157/191/160 |
+
+All twelve runs exited 0 and built zero external units. In the three `test`
+probes and in the clippy probe whose arguments match the base's, arm A builds
+exactly one workspace unit more than arm B, `tree-sitter-reify`: 23 against 22,
+12 against 11, 17 against 16, 22 against 21. That unit is the whole first-build
+share. Its cost is the build-script run: in the `-- -D warnings` pair,
+`--timings` gives arm A 4.34 s for the run (`tree-sitter generate`, then the
+`parser.c` compile) and 0.09 s for the check unit, against 0.0 s for both in arm
+B, and reify-syntax's check started 0.01 s after the unit finished. At zero
+delta arm A reproduces the unit counts of all four `post-landing` rows (23, 12,
+17 and 30), and reify-test-support rebuilds in arm B, so the `values.rs`
+difference between the `post-landing` probes' HEAD and their basecommit is not
+needed to explain it.
+
+The second invocation shows the cascade. After arm A's first `-p reify-eval`
+build, the same command with nothing changed compiled 8 workspace units again,
+in 1:30.44: tree-sitter-reify and its dependents reify-syntax, reify-compiler,
+reify-test-support, reify-doc-build, reify-eval, reify-mesh-morph and
+reify-runtime. That is the "one bounded extra run" that `build.rs` names as the
+cost of watching its outputs. Arm B's second invocation compiled nothing, in
+4.75 s. The seven dependents also rebuild in arm B's first build, which is why a
+first build is charged for tree-sitter-reify alone today; once the other
+contributors are gone, it would pay for all eight.
+
+Arm B still builds 22, 11, 16 and 21 workspace units. Seven are common to all
+four arm-B probes (reify-ast, reify-compiler, reify-expr, reify-ir,
+reify-stdlib, reify-syntax and reify-test-support), and 25 distinct units appear
+across them. These are what the seed's `env!()`/build-dir invalidation and
+#9825's workspace-member feature splits must explain; this measurement does not
+attribute them between the two.
+
+The walls compare nothing across arms. The plain clippy pair builds the same 30
+units in both arms, in 1:04.43 and 6:19.62, and the load average at the start of
+the two runs of a pair differs by up to 6x (317 against 54). sccache is on, as
+in the verify env, so a later run of a pair can also hit units an earlier run
+cached; its hit counts were not recorded. The unit counts and the `--timings`
+durations are the result.
+
+The plain `clippy -p reify-eval --all-targets` rows cannot separate the arms:
+both build the same 30 units, tree-sitter-reify included. The base's clippy runs
+with `-- -D warnings` (`scripts/verify.sh`), which sets `CLIPPY_ARGS`, and the
+plain command does not. A re-run of arm B with
+`CARGO_LOG=cargo::core::compiler::fingerprint=info` (4:19.00, 30 units again)
+gives the dirty reason for the tree-sitter-reify build script's compile unit:
+`ChangedEnv { var: "CLIPPY_ARGS", previous:
+Some("-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__"), current: Some("") }`.
+Its run unit and the lib check are dirty only through their dependency. In the
+arm B run itself the generated sources were not regenerated: `parser.c`,
+`grammar.json`, `node-types.json` and both stamps still carried 2020-01-01
+afterwards. The clippy rows above, `after` and `post-landing` included, used the
+plain command, so their 30 workspace units are 8 to 9 more than the 22 and 21
+that the base's arguments leave in arms A and B.
 
 ### Cold build
 
@@ -228,7 +366,24 @@ serde_derive started 63 s after its last dependency finished.
 - **Workspace-member features.** Members' own features (reify-ast `serde`,
   reify-compiler/reify-stdlib `test-support`, kernel `test-fixtures`, ...)
   still differ between `-p` and `--workspace`, so a lane still rebuilds
-  workspace units. That is #9825.
+  workspace units. That is #9825, whose measurement has to subtract the
+  tree-sitter share or probe without it (Probe procedure).
+- **Tree-sitter regeneration.** The eight generated sources are gitignored, so
+  the acquire deletes them, and `build.rs` watches them, so a fresh lane's first
+  build reruns the build script. Measured on `-p reify-eval` (Tree-sitter
+  share): the first build gains one unit, tree-sitter-reify, a 4.34 s
+  build-script run in the clippy pair's `--timings`; the next invocation of the
+  same test command compiles 8 workspace units again, in 1:30.44 against 4.75 s
+  with the sources present, so the second invocation is most of the cost today.
+  Decision: accepted until a ruling. The fix that removes both costs is to
+  restore the content-attested generated sources at acquire, from a snapshot
+  carried in the base gen (#9896). It needs a ruling first, because the seed is
+  documented as source-tree-inert (CLAUDE.md, Warm lanes;
+  `tests/infra/test_seed_warm_lane.sh`, Block X). Not taken: unwatching the
+  outputs in `build.rs` reverses #5629 and #9741, generating into `OUT_DIR`
+  redesigns verify's tree-sitter leaves and the `src/` consumers, and
+  back-dating the outputs in `build.rs` leans on cargo's internal reference
+  time.
 - **Feature selections.** A non-default selection such as
   `-p reify-gui --features gui` is a resolution of its own, and the gate does
   not cover it.
