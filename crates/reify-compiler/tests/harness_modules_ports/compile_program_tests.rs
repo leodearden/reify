@@ -972,3 +972,57 @@ fn entry_follows_imports_only_for_a_followed_user_import() {
         );
     }
 }
+
+fn declared_names(program: &CompiledProgram) -> Vec<&str> {
+    program
+        .entry_declared_templates()
+        .iter()
+        .map(|t| t.name.as_str())
+        .collect()
+}
+
+/// `entry_declared_templates` is the entry's own template list: the I5 pub
+/// merge is excluded, and an entry template that collides with an imported
+/// one is the entry's copy (first-wins).
+#[test]
+fn compile_program_entry_declared_templates_exclude_merged_imports() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write(
+        dir.path(),
+        "parts.ri",
+        "module parts\npub structure def Pulley {\n    param d : Length = 10mm\n}\n",
+    );
+
+    let importing = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nimport parts\nstructure def Rig {\n    sub p = Pulley()\n}\n",
+        &CfgSet::default(),
+    );
+    assert_eq!(declared_names(&importing), vec!["Rig"]);
+    let merged = template_names(&importing.entry);
+    assert!(
+        merged.contains(&"Rig") && merged.contains(&"Pulley"),
+        "the entry's template list must still carry the merge, got {merged:?}"
+    );
+
+    let solo = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nstructure def Rig {\n    param x : Length = 1mm\n}\n",
+        &CfgSet::default(),
+    );
+    assert_eq!(declared_names(&solo), template_names(&solo.entry));
+
+    let colliding = compile_entry(
+        dir.path(),
+        "main",
+        "module main\nimport parts\n\
+         structure def Pulley {\n    param d : Length = 3mm\n}\n\
+         structure def Rig {\n    sub p = Pulley()\n}\n",
+        &CfgSet::default(),
+    );
+    let count = |names: Vec<&str>| names.into_iter().filter(|n| *n == "Pulley").count();
+    assert_eq!(count(declared_names(&colliding)), 1);
+    assert_eq!(count(template_names(&colliding.entry)), 1);
+}
