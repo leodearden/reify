@@ -1,16 +1,13 @@
 //! The tracked-`.ri` parse guard: the corpus check of
 //! `docs/prds/v0_6/syntax-lowering-contract.md` D12 / §9 α (task #9343).
 //!
-//! The guard sweeps the binary's shared listing, which omits the verify-inert
-//! trees (`tracked_corpus::VERIFY_INERT_RI_TREES`, today `docs/`). Every file
-//! there that is not declared in [`MUST_ERROR_RI_FIXTURES`] must have a clean
-//! Rust tree-sitter CST and an empty `reify_syntax::parse(..).errors`, except
-//! undeclared members of [`UNSWEPT_RI_TREES`], which are skipped unread. A
-//! declared file is checked even inside an unswept tree, and must keep
-//! showing its declared fault. A verify-inert path is also skipped at use, and
-//! none may be declared: a hook-gated commit there runs no heavy checks, so a
-//! file this guard read could land green and red every later merge gate (§7
-//! of that PRD). When this guard reds, fix the file in the same diff, or
+//! Every `.ri` in the shared swept listing (`tracked_corpus::swept_ri_paths`,
+//! which omits `tracked_corpus::VERIFY_INERT_RI_TREES`) must have a clean Rust
+//! tree-sitter CST and an empty `reify_syntax::parse(..).errors`. Two kinds of
+//! file are excepted. A file declared in [`MUST_ERROR_RI_FIXTURES`] must keep
+//! its declared fault, wherever it lives. An undeclared member of
+//! [`UNSWEPT_RI_TREES`] is skipped unread. No entry may be declared under a
+//! verify-inert tree. When this guard reds, fix the file in the same diff, or
 //! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
 use std::collections::BTreeSet;
@@ -190,9 +187,8 @@ const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
     },
 ];
 
-/// Declared entries that sit in a verify-inert tree. Such an entry asks the
-/// guard to read a tree whose commits verify never tests; the guard never
-/// reads it, so it would also surface as a stale entry.
+/// Declared entries under a verify-inert tree. The guard never reads such a
+/// file, so its declaration can never be checked.
 fn declared_entries_in_inert_trees(fixtures: &[MustErrorFixture]) -> Vec<&str> {
     fixtures
         .iter()
@@ -201,13 +197,13 @@ fn declared_entries_in_inert_trees(fixtures: &[MustErrorFixture]) -> Vec<&str> {
         .collect()
 }
 
-/// The prefixes of the rows that cover none of `tracked`: stale, so to be
-/// deleted. `tracked` is the swept listing, which omits the verify-inert
-/// trees, so a row placed under one is flagged too.
-fn dead_unswept_rows<'r>(rows: &'r [UnsweptTree], tracked: &[String]) -> Vec<&'r str> {
+/// The prefixes of the rows that cover none of `swept`: stale, so to be
+/// deleted. `swept` omits the verify-inert trees, so a row placed under one is
+/// flagged too.
+fn dead_unswept_rows<'r>(rows: &'r [UnsweptTree], swept: &[String]) -> Vec<&'r str> {
     rows.iter()
         .map(|row| row.prefix)
-        .filter(|prefix| !tracked.iter().any(|rel| rel.starts_with(prefix)))
+        .filter(|prefix| !swept.iter().any(|rel| rel.starts_with(prefix)))
         .collect()
 }
 
@@ -341,8 +337,8 @@ impl fmt::Display for Violation {
                  panic on it"
             ),
             Self::StaleEntry => f.write_str(
-                "declared in MUST_ERROR_RI_FIXTURES but not a tracked .ri; fix or remove the \
-                 entry",
+                "declared in MUST_ERROR_RI_FIXTURES but not in the swept listing (untracked, or \
+                 under a verify-inert tree); fix or remove the entry",
             ),
         }
     }
@@ -655,11 +651,7 @@ fn sweep_skips_an_undeclared_member_of_an_unswept_tree_unread() {
 fn sweep_skips_an_undeclared_member_of_the_docs_tree_unread() {
     let result = sweep(
         &listing(&[UNDECLARED_IN_DOCS_TREE]),
-        |rel| {
-            panic!(
-                "{rel} is in docs/, which verify routes to no heavy checks, and must not be read"
-            )
-        },
+        |rel| panic!("{rel} is under a verify-inert tree and must not be read"),
         observe,
     );
     assert_eq!(
@@ -727,7 +719,7 @@ fn sweep_reports_a_non_string_panic_payload_as_the_workspace_formats_it() {
 
 const SYNTHETIC_DECLARED: &[MustErrorFixture] = &[
     MustErrorFixture {
-        path: "chartered/b.ri",
+        path: "examples/zz_synthetic.ri",
         kind: MustErrorKind::CstFault,
         reason: "synthetic",
     },
@@ -754,13 +746,12 @@ fn declared_entries_in_inert_trees_names_each_offender() {
     assert_eq!(
         declared_entries_in_inert_trees(SYNTHETIC_DECLARED),
         ["docs/zz_section/zz_synthetic.ri"],
-        "a declared entry in an unswept tree is checked on purpose; only one in a \
-         verify-inert tree is an offender"
+        "only a declared entry under a verify-inert tree is an offender"
     );
 }
 
 #[test]
-fn dead_unswept_rows_names_each_row_that_covers_no_tracked_ri() {
+fn dead_unswept_rows_names_each_row_that_covers_no_swept_ri() {
     assert_eq!(
         dead_unswept_rows(SYNTHETIC_UNSWEPT, &listing(&["chartered/zz_synthetic.ri"])),
         ["empty/"],
@@ -868,15 +859,16 @@ fn must_error_and_unswept_tables_are_well_formed() {
     let declared_in_inert_trees = declared_entries_in_inert_trees(MUST_ERROR_RI_FIXTURES);
     assert!(
         declared_in_inert_trees.is_empty(),
-        "verify routes these files' trees to no heavy checks, so the guard never reads them \
-         and cannot check a declaration there; the file must live elsewhere to be declared: \
+        "these entries lie under a VERIFY_INERT_RI_TREES tree, which the guard never reads, so \
+         their declaration cannot be checked; a file must live outside it to be declared: \
          {declared_in_inert_trees:?}"
     );
 
-    let tracked = swept_ri_paths(&workspace_root());
-    let dead = dead_unswept_rows(UNSWEPT_RI_TREES, &tracked);
+    let swept = swept_ri_paths(&workspace_root());
+    let dead = dead_unswept_rows(UNSWEPT_RI_TREES, &swept);
     assert!(
         dead.is_empty(),
-        "these UNSWEPT_RI_TREES rows cover no tracked .ri; delete them: {dead:?}"
+        "these UNSWEPT_RI_TREES rows cover no swept .ri (none tracked, or the row lies under a \
+         verify-inert tree); delete them: {dead:?}"
     );
 }
