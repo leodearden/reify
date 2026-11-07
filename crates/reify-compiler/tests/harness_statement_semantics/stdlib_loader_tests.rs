@@ -381,13 +381,8 @@ fn multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic() {
     }));
 
     let err = result.expect_err("expected panic naming all offending paths");
-    let msg: &str = if let Some(s) = err.downcast_ref::<String>() {
-        s.as_str()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        s
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    };
+    let msg: &str = reify_core::panic_payload_str(err.as_ref())
+        .expect("panic payload was neither String nor &'static str");
 
     // Anchor: confirm the panic originates from the aggregated-violations code
     // path, not a stray panic from elsewhere (e.g. an unwrap() inside the helper).
@@ -899,21 +894,15 @@ structure def S {
 /// Drive `build_stdlib_modules` on `sources` and return the panic message.
 ///
 /// Panics (failing the test) if the build did NOT panic, or if the payload is
-/// neither `String` nor `&'static str`. Downcast idiom mirrors
-/// `multiple_non_bootstrap_modules_with_no_prelude_pragma_all_named_in_panic`
-/// above.
+/// neither `String` nor `&'static str`.
 fn stdlib_build_panic_message(sources: &[(&str, &str)]) -> String {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         stdlib_loader::build_stdlib_modules(sources);
     }));
     let err = result.expect_err("build_stdlib_modules should have panicked, but returned Ok");
-    if let Some(s) = err.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = err.downcast_ref::<&'static str>() {
-        (*s).to_string()
-    } else {
-        panic!("panic payload was neither String nor &'static str");
-    }
+    reify_core::panic_payload_str(err.as_ref())
+        .expect("panic payload was neither String nor &'static str")
+        .to_owned()
 }
 
 /// Assert that building `sources` panics with the NS-P2 collision message, and
@@ -1033,11 +1022,7 @@ fn assert_no_collision_panic(sources: &[(&str, &str)], why: &str) {
         stdlib_loader::build_stdlib_modules(sources);
     }));
     if let Err(err) = result {
-        let msg = err
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| err.downcast_ref::<&'static str>().map(|s| (*s).to_string()))
-            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         panic!("stdlib build should have accepted {why}; got:\n{msg}");
     }
 }
