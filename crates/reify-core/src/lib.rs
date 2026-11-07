@@ -67,7 +67,7 @@ pub use overload::{
     slot_matches_head_tier, slot_matches_wildcard_tier, type_carries_dim_param,
     type_carries_trait_object, type_carries_type_param,
 };
-pub use panic_payload::panic_payload_to_string;
+pub use panic_payload::{panic_payload_str, panic_payload_to_string};
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
 pub use kernel::KernelId;

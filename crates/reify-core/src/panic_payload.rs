@@ -8,17 +8,22 @@
 //! `reify-core` is a dependency-free leaf crate already depended on by both,
 //! so it hosts the single shared copy.
 
+/// The payload's message, if it is a `&str` or `String`; the borrowing
+/// primitive that [`panic_payload_to_string`] formats.
+pub fn panic_payload_str(payload: &(dyn std::any::Any + Send)) -> Option<&str> {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+}
+
 /// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
-/// printable message: try `&str`, then `String`, else fall back to a fixed
+/// printable message: its [`panic_payload_str`] text, else a fixed
 /// placeholder.
 pub fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_string()
-    }
+    panic_payload_str(payload)
+        .unwrap_or("<non-string panic payload>")
+        .to_owned()
 }
 
 #[cfg(test)]

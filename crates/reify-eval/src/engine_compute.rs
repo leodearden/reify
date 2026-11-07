@@ -4690,40 +4690,6 @@ mod tests {
         }
     }
 
-    // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
-    //
-    // `reify_core::panic_payload_to_string` is exercised directly below in
-    // isolation. Its output is also asserted as a substring of the `Failed`
-    // diagnostic message built by tests (a)/(b) above: each of those drives
-    // the exact same `invoke_compute_trampoline` call already used for the
-    // target/"panicked" wording check, so the payload-text assertion lives
-    // alongside it on the same diagnostic rather than in a separate test.
-
-    /// (h) `reify_core::panic_payload_to_string` must extract the payload
-    /// text from both `&str` and `String` panic payloads, and fall back to a
-    /// fixed message for any other payload type.
-    #[test]
-    fn panic_payload_to_string_extracts_str_string_and_falls_back() {
-        let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
-        assert_eq!(
-            reify_core::panic_payload_to_string(str_payload.as_ref()),
-            "boom_str"
-        );
-
-        let string_payload: Box<dyn std::any::Any + Send> =
-            Box::new(String::from("boom_string"));
-        assert_eq!(
-            reify_core::panic_payload_to_string(string_payload.as_ref()),
-            "boom_string"
-        );
-
-        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
-        assert_eq!(
-            reify_core::panic_payload_to_string(other_payload.as_ref()),
-            "<non-string panic payload>"
-        );
-    }
-
     // ── Task #5079 step-5: RED — dispatch_compute_node must share the guard ──
     //
     // `Engine::dispatch_compute_node` (engine_admin.rs) is a SECOND public
