@@ -19,8 +19,9 @@ use reify_core::{
 use reify_eval::{BuildResult, CheckResult, ConstraintCheckEntry};
 use reify_ir::Satisfaction;
 
-/// Deliberately message-only, NOT `super::diagnostic_identity`: assertions
-/// that reused the production key could not observe a change to it.
+/// Deliberately an independent copy of the production key's fields, NOT
+/// `reify_core::DiagnosticIdentity`: assertions that reused the production key
+/// could not observe a change to it.
 fn key(d: &Diagnostic) -> (Severity, Option<DiagnosticCode>, String) {
     (d.severity, d.code, d.message.clone())
 }
@@ -155,8 +156,9 @@ fn purpose_order_keeps_build_only_entries_and_collapses_the_internal_rerun() {
 
 /// Two DISTINCT callouts of the same characteristic are two findings, not
 /// one repeated line: `illegal_modifier_error` names the characteristic in
-/// the message and the location in a label, so their [`DiagKey`]s are equal
-/// and nothing local can tell them from a re-run.  Both must still print.
+/// the message and the location in a label, so their
+/// [`reify_core::DiagnosticIdentity`]s are equal and nothing local can tell
+/// them from a re-run.  Both must still print.
 ///
 /// This is the case a [`dedup_diagnostics`] over the realization's list
 /// silently collapsed to ONE line while the non-geometry arm printed two.
@@ -225,8 +227,9 @@ fn labeled_violation(label: &str) -> Diagnostic {
 /// The [`gdt_illegal_modifier`] problem without the span that saved it:
 /// `gdt_indeterminate_diag` anchors the location in a LABEL and names no
 /// constraint, so two indeterminate geometric `Conforms` sharing a reason
-/// collide on the [`DiagKey`] outright.  Sub-path (c) sends exactly this
-/// list through the self-dedup, so both callouts must survive it.
+/// collide on the [`reify_core::DiagnosticIdentity`] outright.  Sub-path (c)
+/// sends exactly this list through the self-dedup, so both callouts must
+/// survive it.
 ///
 /// Reachable, not hypothetical: `Engine::check` — which `realize_for_check`
 /// seeds the build diagnostics from — runs `measure_gdt_conformance` for

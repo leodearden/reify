@@ -255,9 +255,9 @@ fn check_purpose_gdt_illegal_modifier_on_geometry_module_prints_once() {
 /// `Engine::check` and `cmd_check`'s own fold-in) yield one line; this one pins
 /// that two distinct CALLOUTS yield two. Both must hold at once, and no local
 /// dedup key can separate the two cases — the span is deliberately NOT part of
-/// `DiagKey` (measured: the duplicated `mirror(...)` 'ox' error carries two
-/// different spans for one problem). That is why `cmd_check` withdraws the
-/// realization's copy of the pass wholesale via
+/// `reify_core::DiagnosticIdentity` (measured: the duplicated `mirror(...)`
+/// 'ox' error carries two different spans for one problem). That is why
+/// `cmd_check` withdraws the realization's copy of the pass wholesale via
 /// `strip_diagnostics_reproduced_by` and lets its own run be the single source,
 /// instead of deduping the two runs against each other.
 ///
