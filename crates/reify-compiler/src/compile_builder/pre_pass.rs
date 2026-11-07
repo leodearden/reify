@@ -145,13 +145,12 @@ pub(crate) struct DeclRefs<'a> {
 /// * reserves entity-namespace names for `Field` / `Structure` / `Occurrence`
 ///   / `Constraint` via `ctx.seen_entity_names` (emitting a duplicate-entity
 ///   error via `ctx.diagnostics` on collision — spec §4.2.1 unified entity
-///   namespace), and records each top-level `Structure` name in
-///   `ctx.top_level_structure_def_names`,
+///   namespace), and records each `Structure` name — top-level or nested in a
+///   `Purpose` — in `ctx.local_structure_def_names`,
 /// * and accumulates borrow-slices of `Fn`, `Trait`, `Field`, `Unit`,
 ///   `TypeAlias` decls for later phases into the returned [`DeclRefs`].
 ///
-/// `Import` and `Purpose` are deliberately untouched — they are handled in
-/// the entities phase and the dedicated purpose pass, respectively.
+/// `Import` is deliberately untouched — it is handled in the entities phase.
 pub(crate) fn collect_decl_refs<'a>(
     ctx: &mut CompilationCtx,
     parsed: &'a ParsedModule,
@@ -196,8 +195,7 @@ pub(crate) fn collect_decl_refs<'a>(
             }
             Declaration::Structure(structure) => {
                 if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
-                    ctx.top_level_structure_def_names
-                        .insert(structure.name.clone());
+                    ctx.local_structure_def_names.insert(structure.name.clone());
                 }
             }
             Declaration::Occurrence(occurrence) => {
@@ -216,21 +214,14 @@ pub(crate) fn collect_decl_refs<'a>(
             }
             Declaration::Purpose(p) => {
                 // task 4639: reserve nested structure names in the entity
-                // namespace (spec §4.2.1) for duplicate detection and so they
-                // flow into `structure_names`. Compiled by the Purpose arm in
-                // phase_entities.
-                //
-                // Intentional limitation: a purpose-nested structure's template is
-                // built by the Purpose arm, so a function body referring to one
-                // (e.g. `fn foo(x: InPurpose)`) has a name that resolves via
-                // `structure_names` but — depending on declaration order — may have
-                // no matching template in the fn-body registry, drawing an
-                // unresolved-type error at that function's compile site. This is the
-                // intended behaviour for the v1 ambient-default scope (task 4639):
-                // purpose-nested structures are not referenceable from function
-                // signatures/bodies.
+                // namespace (spec §4.2.1). Compiled by the Purpose arm in
+                // phase_entities; a fn uses one under the same declared-above
+                // rule as a top-level structure def
+                // (`DiagnosticCode::StructureDeclaredAfterFunction`).
                 for s in &p.structures {
-                    ctx.record_or_report_duplicate(&s.name, s.span, "structure");
+                    if ctx.record_or_report_duplicate(&s.name, s.span, "structure") {
+                        ctx.local_structure_def_names.insert(s.name.clone());
+                    }
                 }
             }
             // Import handled in pass 2

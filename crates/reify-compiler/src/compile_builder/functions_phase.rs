@@ -76,7 +76,7 @@ pub(crate) fn phase_fn_signatures(
 ///   `user_fns_so_far` plus every prelude fn they do not shadow, so forward
 ///   references to sibling fns do not resolve.
 ///
-/// A module-local top-level `structure def` (`top_level_structure_def_names`)
+/// A module-local `structure def` (`local_structure_def_names`)
 /// with no template in `templates_so_far` is declared BELOW this fn; using it
 /// draws `StructureDeclaredAfterFunction` rather than a silent fallback.
 ///
@@ -93,12 +93,12 @@ pub(crate) fn compile_function_decl(
     user_fns_so_far: &[CompiledFunction],
     templates_so_far: &[TopologyTemplate],
     prelude: &[&CompiledModule],
-    top_level_structure_def_names: &HashSet<String>,
+    local_structure_def_names: &HashSet<String>,
     declared_callables: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
     let compiled_so_far: HashSet<&str> = templates_so_far.iter().map(|t| t.name.as_str()).collect();
-    let later_declared_structure_names: HashSet<String> = top_level_structure_def_names
+    let later_declared_structure_names: HashSet<String> = local_structure_def_names
         .iter()
         .filter(|name| !compiled_so_far.contains(name.as_str()))
         .cloned()

@@ -276,8 +276,8 @@ pub(crate) struct CompilationScope<'u> {
     /// Set by compile_purpose so that concrete subject types can be validated
     /// against their declared value cells (task-2200). None for entity/function scopes.
     pub(crate) template_registry: Option<&'u HashMap<String, &'u TopologyTemplate>>,
-    /// The module's own top-level `structure def` names declared BELOW the fn
-    /// being compiled (task #5494, PRD stdlib-namespace D-8).
+    /// The module's own `structure def` names (top-level and purpose-nested)
+    /// declared BELOW the fn being compiled (task #5494, PRD stdlib-namespace D-8).
     ///
     /// Free fn bodies and param defaults compile in source order, interleaved
     /// with structure templates, so these structures have no template yet. Using

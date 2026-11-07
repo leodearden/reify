@@ -301,7 +301,7 @@ pub(crate) fn phase_entities(
                     &ctx.functions,
                     &ctx.templates,
                     prelude,
-                    &ctx.top_level_structure_def_names,
+                    &ctx.local_structure_def_names,
                     &declared_callables,
                     &mut ctx.diagnostics,
                 ) {

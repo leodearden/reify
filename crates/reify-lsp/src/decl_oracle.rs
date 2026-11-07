@@ -166,9 +166,8 @@ fn nested_structures(decl: &Declaration) -> &[reify_ast::StructureDef] {
 /// `record_or_report_duplicate(…, "structure")` — so it COLLIDES with a
 /// same-named top-level structure — and `compile_builder::entities_phase`
 /// compiles it into the same `ctx.templates` as a top-level structure, scoping
-/// only AMBIENT-DEFAULT resolution to the purpose. Its one documented
-/// limitation, that a fn body may not see its template depending on declaration
-/// order, is a compile-order gap rather than a visibility rule.
+/// only AMBIENT-DEFAULT resolution to the purpose. A fn uses it exactly like a
+/// top-level structure, under the same declared-above rule.
 ///
 /// SINGLE-LEVEL, by construction and not by choice: the grammar allows
 /// `structure_definition` only one level under `purpose_member`, so there is no
