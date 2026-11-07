@@ -18,6 +18,9 @@ const PLATE: &str = "structure def Plate {
 
 const HEADER: &str = "import std.materials.appearance\nimport std.si_units\n\n";
 
+/// Imports `Finish` alone of std.materials.appearance, leaving PLATE's `Color` uncovered.
+const ENTITY_HEADER: &str = "import std.materials.appearance.Finish\nimport std.si_units\n\n";
+
 /// `same`'s type param `Color` also hides Plate's `Color` from the module-wide import derivation,
 /// leaving an unresolved type, while `MPa` still needs std.si_units: a header for the refused fix
 /// to withhold. If the binders become scope-aware, re-point this at another fixture that leaves a
@@ -197,4 +200,47 @@ fn a_failing_file_does_not_stop_the_files_after_it_being_fixed() {
         describe(&output)
     );
     assert_eq!(fs::read_to_string(&broken).expect("read fixture"), BROKEN);
+}
+
+#[test]
+fn an_entity_import_covers_only_the_name_it_imports() {
+    let dir = tempdir().expect("tempdir");
+    let source = format!("{ENTITY_HEADER}{PLATE}");
+    let file = write_ri(dir.path(), "plate.ri", &source);
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("missing import std.materials.appearance (Color)"),
+        "{}",
+        describe(&output)
+    );
+    assert!(!stdout.contains("Finish"), "{}", describe(&output));
+    assert!(!stdout.contains("std.si_units"), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixture"), source);
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("added import std.materials.appearance (Color)"),
+        "{}",
+        describe(&output)
+    );
+    let fixed = fs::read_to_string(&file).expect("read fixed file");
+    assert_eq!(
+        fixed,
+        format!(
+            "import std.materials.appearance.Finish\nimport std.si_units\n\
+             import std.materials.appearance\n\n{PLATE}"
+        )
+    );
+
+    let output = run_reify(&["fix", "--imports", "--check", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(fs::read_to_string(&file).expect("read fixed file"), fixed);
+
+    let output = run_reify(&["check", &file]);
+    assert!(output.status.success(), "{}", describe(&output));
 }

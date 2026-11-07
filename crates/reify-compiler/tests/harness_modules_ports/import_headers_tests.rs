@@ -727,3 +727,46 @@ fn inserting_is_idempotent() {
     );
     assert_eq!(insert(&once, &["std.fake.c", "std.fake.d"]), once);
 }
+
+#[test]
+fn an_entity_import_does_not_stop_its_module_being_imported_whole() {
+    assert_eq!(
+        insert(
+            "import std.fake.c.Thing\n\nstructure def S {}\n",
+            &["std.fake.c"]
+        ),
+        "import std.fake.c.Thing\nimport std.fake.c\n\nstructure def S {}\n"
+    );
+}
+
+#[test]
+fn an_aliased_module_import_counts_as_imported_whole() {
+    let source = "import std.fake.c as c\n\nstructure def S {}\n";
+    assert_eq!(insert(source, &["std.fake.c"]), source);
+}
+
+// ─── r1: inserting what is missing satisfies missing_from ──────────────────
+
+#[test]
+fn inserting_the_missing_imports_leaves_nothing_missing() {
+    let universe = compile_universe(&[SHAPES]);
+    let source = format!("import std.fake.shapes.Bracket\n\n{BRACKET_AND_GIZMO}");
+    let parsed = parse_clean(&source, SUBJECT_PATH);
+    let missing = derive_parsed(&parsed, &universe).missing_from(&parsed);
+    assert!(
+        !missing.is_empty(),
+        "fixture must start out missing imports"
+    );
+
+    let modules: Vec<ModulePath> = missing
+        .iter()
+        .map(|required| required.module.clone())
+        .collect();
+    let fixed = insert_imports(&source, &parsed, &modules);
+    let reparsed = parse_clean(&fixed, SUBJECT_PATH);
+    assert_eq!(
+        derive_parsed(&reparsed, &universe).missing_from(&reparsed),
+        vec![],
+        "fixed source:\n{fixed}"
+    );
+}
