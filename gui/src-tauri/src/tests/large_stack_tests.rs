@@ -14,20 +14,6 @@ use crate::tests::test_helpers::{
     ANTI_WEDGE, DEEP_RECURSION_DEPTH, deep_recurse, deep_recurse_if_on_thread, post_and_wait,
 };
 
-/// Render a caught panic payload as a string, so a test can assert on the
-/// ORIGINAL message rather than merely on "something panicked" — the latter is
-/// also true when a helper substitutes a failure of its own.
-///
-/// `panic!("literal")` yields a `&'static str` payload while a formatted
-/// `panic!("{x}")` yields a `String`, so both are tried.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| (*s).to_owned())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "<non-string panic payload>".to_owned())
-}
-
 // ── spawn_on_large_stack: fire-and-forget variant (step-3/step-4) ────────────
 
 /// (d) `spawn_on_large_stack` runs the fire-and-forget closure (which delivers
@@ -496,7 +482,7 @@ async fn lsp_lane_is_panic_isolated_and_survives() {
         .expect_err("a panicking LSP-lane job must reach its awaiter")
         .into_panic();
     assert_eq!(
-        panic_message(&*payload),
+        reify_core::panic_payload_to_string(&*payload),
         "lsp boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -656,7 +642,7 @@ async fn lane_dispatch_propagates_the_original_job_panic() {
     );
     let payload = err.into_panic();
     assert_eq!(
-        panic_message(&*payload),
+        reify_core::panic_payload_to_string(&*payload),
         "async boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -796,7 +782,7 @@ async fn submitting_to_your_own_lane_from_a_future_panics_loudly_instead_of_wedg
         err.is_panic(),
         "the awaiting task must have PANICKED, not been cancelled: {err:?}"
     );
-    let message = panic_message(&*err.into_panic());
+    let message = reify_core::panic_payload_to_string(&*err.into_panic());
     assert!(
         message.contains("re-entrant submission"),
         "the panic must name the reentrancy rather than surface as a generic \
@@ -1070,7 +1056,7 @@ async fn a_pool_lane_is_panic_isolated_and_keeps_all_its_consumers() {
         .expect_err("a panicking pool job must reach its awaiter")
         .into_panic();
     assert_eq!(
-        panic_message(&*payload),
+        reify_core::panic_payload_to_string(&*payload),
         "pool boom",
         "the awaiter must receive the JOB's original payload, not a substitute"
     );
@@ -1110,7 +1096,7 @@ async fn submitting_to_your_own_pool_panics_loudly_instead_of_wedging_it() {
         err.is_panic(),
         "the awaiting task must have PANICKED, not been cancelled: {err:?}"
     );
-    let message = panic_message(&*err.into_panic());
+    let message = reify_core::panic_payload_to_string(&*err.into_panic());
     assert!(
         message.contains("re-entrant submission"),
         "the panic must name the reentrancy rather than surface as a generic \

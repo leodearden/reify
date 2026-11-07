@@ -490,7 +490,7 @@ pub(crate) fn post(sender: Option<&JobSender>, job: Job) -> std::io::Result<()> 
         if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
             eprintln!(
                 "Warning: a posted large-stack job panicked: {}",
-                panic_payload_message(&*payload)
+                reify_core::panic_payload_to_string(&*payload)
             );
         }
     });
@@ -504,16 +504,6 @@ pub(crate) fn post(sender: Option<&JobSender>, job: Job) -> std::io::Result<()> 
             .spawn(contained)
             .map(drop),
     }
-}
-
-/// The message a caught panic carried: `panic!("literal")` yields a `&str`
-/// payload, a formatted `panic!` a `String`.
-pub(crate) fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    payload
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("<non-string panic payload>")
 }
 
 /// Submit `fut` to `sender`'s lane and AWAIT its output, releasing the calling
