@@ -5,7 +5,7 @@
 use std::path::Path;
 
 use reify_ir::Satisfaction;
-use tower_lsp::lsp_types::{DiagnosticSeverity, Url};
+use tower_lsp::lsp_types::{DiagnosticSeverity, Range, Url};
 
 use crate::diagnostics::{DiagnosticsResult, EvalState, compute_diagnostics_with_state};
 
@@ -76,4 +76,74 @@ fn missing_import_of_file_backed_entry_is_reported_as_unresolvable() {
         "expected an Error naming the unresolvable `ghost`, got {:?}",
         messages(&result)
     );
+}
+
+/// The published message for a violated constraint, as the pipeline words it.
+fn violation_message(entry: &reify_eval::ConstraintCheckEntry) -> String {
+    match &entry.label {
+        Some(label) => format!("constraint violated: {label}"),
+        None => format!("constraint {} violated", entry.id),
+    }
+}
+
+fn violation_range(result: &DiagnosticsResult, entity: &str) -> Vec<Range> {
+    let check = result.check_result.as_ref().expect("eval ran");
+    let violated: Vec<_> = check
+        .constraint_results
+        .iter()
+        .filter(|e| e.id.entity == entity && e.satisfaction == Satisfaction::Violated)
+        .collect();
+    assert!(
+        !violated.is_empty(),
+        "expected a violated {entity} constraint, got {:?}",
+        check.constraint_results
+    );
+    violated
+        .into_iter()
+        .map(|entry| {
+            let message = violation_message(entry);
+            result
+                .diagnostics
+                .iter()
+                .find(|d| d.message == message)
+                .unwrap_or_else(|| panic!("no published {message:?}, got {:?}", messages(result)))
+                .range
+        })
+        .collect()
+}
+
+/// An imported template's span indexes its own file, so its violation is
+/// published unanchored rather than at an arbitrary spot in the entry.
+#[test]
+fn imported_template_violation_is_not_mislocated_in_the_entry() {
+    let guard = reify_test_support::prefixed_tempdir("reify-lsp-multifile-");
+    std::fs::write(
+        guard.path().join("parts.ri"),
+        "module parts\npub structure def Pulley {\n    param d : Length = 1mm\n    constraint d > 5mm\n}\n",
+    )
+    .expect("write parts.ri");
+    // Padding puts the byte offsets of Pulley's constraint in parts.ri inside
+    // the entry's text, so a mislocated range would be visible, not clamped.
+    let padding = "// padding line\n".repeat(8);
+    let entry = format!(
+        "{padding}module main\nimport parts\nstructure def Rig {{\n    sub p = Pulley()\n    constraint p.d > 5mm\n}}\n"
+    );
+    let rig_constraint_line = entry
+        .lines()
+        .position(|line| line.contains("constraint p.d"))
+        .expect("Rig constraint line") as u32;
+
+    let result = diagnose(guard.path(), &entry);
+
+    for range in violation_range(&result, "Pulley") {
+        assert_eq!(
+            range,
+            Range::default(),
+            "Pulley's violation must be unanchored"
+        );
+    }
+    for range in violation_range(&result, "Rig") {
+        assert_ne!(range, Range::default());
+        assert_eq!(range.start.line, rig_constraint_line);
+    }
 }
