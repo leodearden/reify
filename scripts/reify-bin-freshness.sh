@@ -210,8 +210,12 @@ reify_bin_stamp() {
 #   2. Otherwise, auto-discover the first EXECUTABLE of target/release/reify,
 #      target/debug/reify — lone or not — and require the sidecar to vouch for
 #      it (reify_bin_unvouched_reason). An unvouched candidate is refused
-#      outright, never passed over for the other profile: one sidecar judges
-#      both.
+#      outright, never passed over for the other profile. The sidecar names
+#      no profile: verify.sh writes it after the release build, only when
+#      target/release/reify exists, so it records the RELEASE binary's
+#      provenance. Yet the same stamp also vouches for a lone debug binary
+#      it never described, for example once target/release is removed and
+#      the sidecar is kept.
 #
 # prd-capability-check.py consumes this rule through `resolve` and adds only
 # its own two layers: it takes a non-empty REIFY_BIN verbatim without asking
