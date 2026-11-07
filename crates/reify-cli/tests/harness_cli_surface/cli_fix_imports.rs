@@ -142,7 +142,7 @@ fn fix_refuses_to_write_when_the_derived_imports_leave_a_diagnostic() {
 }
 
 #[test]
-fn fix_refusal_locates_each_residual_in_the_file() {
+fn fix_refusal_locates_the_residual_in_the_file() {
     let dir = tempdir().expect("tempdir");
     let file = write_ri(dir.path(), "plate.ri", TYPE_PARAM_HIDES_COLOR);
     let offset = TYPE_PARAM_HIDES_COLOR
@@ -157,10 +157,16 @@ fn fix_refusal_locates_each_residual_in_the_file() {
     let output = run_reify(&["fix", "--imports", &file]);
     assert!(!output.status.success(), "{}", describe(&output));
     let located = format!("{file}:{line}:{col}: error: ");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let residuals: Vec<&str> = stderr
+        .lines()
+        .filter(|line| !line.contains("not writing"))
+        .collect();
+    let [residual] = residuals.as_slice() else {
+        panic!("expected exactly one residual line\n{}", describe(&output));
+    };
     assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .any(|residual| residual.starts_with(&located) && residual.contains("Color")),
+        residual.starts_with(&located) && residual.contains("Color"),
         "{}",
         describe(&output)
     );

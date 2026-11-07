@@ -2,8 +2,8 @@
 
 use reify_core::{Diagnostic, byte_offset_to_line_col};
 
-/// `path:line:col: severity: message`, or `path: severity: message` when the diagnostic has no
-/// label that starts inside `source`.
+/// `path:line:col: severity: message`, or `path: severity: message` when the diagnostic's first
+/// label is missing or does not start inside `source`.
 pub(crate) fn render_diagnostic_line(path: &str, source: &str, diagnostic: &Diagnostic) -> String {
     let (severity, message) = (diagnostic.severity, &diagnostic.message);
     match primary_position(source, diagnostic) {
@@ -12,11 +12,12 @@ pub(crate) fn render_diagnostic_line(path: &str, source: &str, diagnostic: &Diag
     }
 }
 
-/// The 1-based (line, codepoint column) where the first label starts. `None` without a label or
-/// when that start does not index `source`, which also rules out the prelude sentinel.
+/// The 1-based (line, codepoint column) where the first label starts. `None` without a label, for
+/// the prelude sentinel, or when that start does not index `source`.
 fn primary_position(source: &str, diagnostic: &Diagnostic) -> Option<(usize, usize)> {
-    let start = diagnostic.labels.first()?.span.start as usize;
-    (start <= source.len()).then(|| byte_offset_to_line_col(source, start))
+    let span = &diagnostic.labels.first()?.span;
+    let start = span.start as usize;
+    (!span.is_prelude() && start <= source.len()).then(|| byte_offset_to_line_col(source, start))
 }
 
 #[cfg(test)]
@@ -57,6 +58,23 @@ mod tests {
         assert_eq!(
             render_diagnostic_line("s.ri", source, &diagnostic),
             "s.ri:3:1: error: m"
+        );
+    }
+
+    #[test]
+    fn a_later_label_does_not_position_the_line_when_the_first_cannot() {
+        let source = "a\nb\n";
+        let past_the_end = u32::try_from(source.len() + 1).expect("fits u32");
+        let diagnostic = Diagnostic::error("m")
+            .with_label(DiagnosticLabel::new(
+                SourceSpan::new(past_the_end, past_the_end),
+                "first",
+            ))
+            .with_label(DiagnosticLabel::new(SourceSpan::new(0, 1), "second"));
+
+        assert_eq!(
+            render_diagnostic_line("s.ri", source, &diagnostic),
+            "s.ri: error: m"
         );
     }
 
