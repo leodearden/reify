@@ -12,7 +12,7 @@
 //! that the join is now reported instead of being silently picked. See
 //! `crates/reify-syntax/src/member_continuation.rs` for the normative rule.
 
-use crate::common::tracked_corpus::{tracked_ri_paths, workspace_root};
+use crate::common::tracked_corpus::{swept_ri_paths, workspace_root};
 use reify_core::ModulePath;
 use reify_test_support::{TempDir, prefixed_tempdir};
 use std::path::Path;
@@ -321,7 +321,7 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
     (line, col)
 }
 
-/// THE STANDING GUARD: no TRACKED `.ri` source in this repository may trip
+/// THE STANDING GUARD: no tracked `.ri` outside a verify-inert tree may trip
 /// the member-continuation check.
 ///
 /// A hit here is a genuine finding, and it has exactly two dispositions: the
@@ -366,7 +366,7 @@ fn member_continuation_sweep(root: &Path) -> ContinuationSweep {
         swept: 0,
         hits: Vec::new(),
     };
-    for rel in tracked_ri_paths(root) {
+    for rel in swept_ri_paths(root) {
         let Ok(source) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };

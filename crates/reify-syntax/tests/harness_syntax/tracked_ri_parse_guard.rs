@@ -21,7 +21,7 @@ use reify_core::ModulePath;
 use tree_sitter::Node;
 
 use crate::common::make_ts_parser;
-use crate::common::tracked_corpus::{tracked_ri_paths, workspace_root};
+use crate::common::tracked_corpus::{swept_ri_paths, workspace_root};
 
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -829,7 +829,7 @@ fn expectation_declared_entry_wins_over_an_unswept_tree() {
 #[test]
 fn every_swept_tracked_ri_parses_cleanly_unless_declared_must_error() {
     let root = workspace_root();
-    let files = tracked_ri_paths(&root);
+    let files = swept_ri_paths(&root);
     assert!(
         files.len() > 100,
         "sweep found only {} tracked .ri files under {} — the listing is broken, \
@@ -909,7 +909,7 @@ fn must_error_and_unswept_tables_are_well_formed() {
          live elsewhere to be declared: {declared_in_inert_trees:?}"
     );
 
-    let tracked = tracked_ri_paths(&workspace_root());
+    let tracked = swept_ri_paths(&workspace_root());
     let dead = dead_unswept_rows(UNSWEPT_RI_TREES, &tracked);
     assert!(
         dead.is_empty(),

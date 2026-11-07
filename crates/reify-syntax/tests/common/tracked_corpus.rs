@@ -1,9 +1,32 @@
 //! The repository's tracked `.ri` corpus, as git's index sees it.
 //!
-//! Every repo-wide `.ri` sweep in this test binary lists its inputs here, so
-//! the sweeps agree on what "the corpus" is.
+//! Every repo-wide `.ri` sweep in a binary that includes this module reads
+//! [`swept_ri_paths`], so the sweeps agree on what "the corpus" is, including
+//! that it omits [`VERIFY_INERT_RI_TREES`].
 
 use std::path::{Path, PathBuf};
+
+/// Trees verify's scope classifier routes to no heavy checks
+/// (`scripts/reify_path_attribution.py` `_INERT_GLOBS`). Docs land on `main`
+/// by a hook-gated commit, so a sweep that read a `.ri` here would let such a
+/// commit land green and then red every later merge gate. Recorded on the
+/// guard row of `docs/prds/v0_6/syntax-lowering-contract.md` §7.
+pub const VERIFY_INERT_RI_TREES: &[&str] = &["docs/"];
+
+/// Whether the repo-relative `rel` lies in a [`VERIFY_INERT_RI_TREES`] tree.
+pub fn is_verify_inert(rel: &str) -> bool {
+    VERIFY_INERT_RI_TREES
+        .iter()
+        .any(|tree| rel.starts_with(tree))
+}
+
+/// The corpus every repo-wide sweep reads: [`tracked_ri_paths`] without the
+/// [`is_verify_inert`] paths, still sorted.
+pub fn swept_ri_paths(root: &Path) -> Vec<String> {
+    let mut paths = tracked_ri_paths(root);
+    paths.retain(|rel| !is_verify_inert(rel));
+    paths
+}
 
 /// The workspace root, resolved from this crate's manifest dir
 /// (`<root>/crates/reify-syntax` → up two).
@@ -28,7 +51,7 @@ pub fn workspace_root() -> PathBuf {
 ///
 /// Built through `reify_git_env::command`, so an ambient `GIT_DIR`/
 /// `GIT_WORK_TREE` cannot point this `git -C <root>` at a different repository.
-pub fn tracked_ri_paths(root: &Path) -> Vec<String> {
+fn tracked_ri_paths(root: &Path) -> Vec<String> {
     let output = reify_git_env::command(root)
         .args(["ls-files", "-z", "--", "*.ri"])
         .output()
