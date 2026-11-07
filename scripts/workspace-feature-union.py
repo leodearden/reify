@@ -13,21 +13,28 @@ selection resolves the same variants.
 A side is HOST for build-dependencies, proc-macros and everything below
 them, TARGET otherwise; resolver 2 keeps one feature set per side. A member
 is host-side when it is a build-dependency of another member or a
-proc-macro. The rule, checked by `cargo tree` resolution alone (no compile):
+proc-macro. The rule, checked without compiling anything:
   - every member that is not host-side depends on workspace-feature-union (a
     normal dependency); a host-side member is exempt and is not resolved
     with `-p`, so `-p <host-side member>` stays split;
-  - `cargo tree --workspace` never reaches workspace-feature-union on the host
-    side, where its target pins would become host units;
+  - no host-side member has a normal or build dependency on
+    workspace-feature-union or on a covered member, and no member has a
+    build-dependency on workspace-feature-union, so the union never reaches
+    the host side, where its target pins would become host units. This is
+    read from the members' own `cargo metadata` edges. Optional and
+    platform-specific path dependencies count even when inactive, so the
+    rule errs loud;
   - for every covered member M, each external (name, version, side, features)
     variant of `cargo tree -p M` also occurs in `cargo tree --workspace`.
 
 Reading a failure:
     UNCOVERED <m>: ...          add `workspace-feature-union.workspace = true`
                                 under [dependencies] in the named manifest.
-    HOST-UNION <m>: <path> ...  the path reaches workspace-feature-union on the
-                                host side; remove the dependency of <m> that
-                                the line names, from the named manifest.
+    HOST-UNION <m>: <path> ...  a normal or build dependency of <m> brings
+                                workspace-feature-union, or a covered member
+                                that must depend on it, onto the host side,
+                                as <path> shows; remove the dependency the
+                                line names from the named manifest.
     SPLIT <m> <name> v<ver> (<side>): -p resolves {..}; --workspace resolves {..}
                                 `-p <m>` compiles a variant the base never
                                 builds. Run
@@ -162,16 +169,11 @@ PACKAGE_HEAD = re.compile(
 class TreeNode:
     """A package on the current ancestry path, with the section its children
     are listed under."""
-    name: str
     host: bool
-    proc_macro: bool
     section: Section = Section.NORMAL
 
     def child_is_host(self) -> bool:
-        return self.host or self.proc_macro or self.section is Section.BUILD
-
-    def label(self) -> str:
-        return f"{self.name} (proc-macro)" if self.proc_macro else self.name
+        return self.host or self.section is Section.BUILD
 
 
 @dataclass(frozen=True)
@@ -207,22 +209,10 @@ def parse_package(body: str, where: str) -> TreePackage:
                        features=frozenset(f for f in features.split(",") if f))
 
 
-Ancestry = tuple[TreeNode, ...]
-
-
-@dataclass(frozen=True)
-class Tree:
-    """A parsed `cargo tree`: every registry package variant, and the ancestry
-    of every host-side occurrence of the union crate."""
-    variants: frozenset[Variant]
-    host_unions: tuple[Ancestry, ...]
-
-
-def parse_tree(text: str, source: str) -> Tree:
-    """`cargo tree -f '{p}|{f}' --charset ascii` output, each package
-    attributed to the side its ancestry puts it on."""
+def parse_tree(text: str, source: str) -> frozenset[Variant]:
+    """Every registry package variant in `cargo tree -f '{p}|{f}' --charset
+    ascii` output, attributed to the side its ancestry puts it on."""
     variants: set[Variant] = set()
-    host_unions: list[Ancestry] = []
     stack: list[TreeNode] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if not line.strip():
@@ -244,16 +234,15 @@ def parse_tree(text: str, source: str) -> Tree:
         package = parse_package(body, where)
         host = package.proc_macro or (depth > 0 and stack[depth - 1].child_is_host())
         del stack[depth:]
-        stack.append(TreeNode(name=package.name, host=host, proc_macro=package.proc_macro))
+        stack.append(TreeNode(host=host))
         if not package.path_source:
             side = Side.HOST if host else Side.TARGET
             variants.add(variant(package.name, package.version, side, package.features))
-        elif package.name == UNION_CRATE and host:
-            host_unions.append(tuple(stack))
-    return Tree(variants=frozenset(variants), host_unions=tuple(host_unions))
+    return frozenset(variants)
 
 
-def resolve(root: Path, mode: LockMode, host: str, selection: Sequence[str]) -> Tree:
+def resolve(root: Path, mode: LockMode, host: str,
+            selection: Sequence[str]) -> frozenset[Variant]:
     args = ["tree", mode.value, *selection, "-e", "normal,build,dev", "-f", "{p}|{f}",
             "--charset", "ascii", "--target", host]
     return parse_tree(cargo(root, args), f"`cargo tree {' '.join(selection)}`")
@@ -262,12 +251,23 @@ def resolve(root: Path, mode: LockMode, host: str, selection: Sequence[str]) -> 
 # --- cargo metadata ---------------------------------------------------------
 
 @dataclass(frozen=True)
+class Dependency:
+    """One dependency edge of a member, keyed by package name."""
+    name: str
+    section: Section
+
+
+@dataclass(frozen=True)
 class Member:
     name: str
     manifest_path: str
-    depends_on_union: bool
+    dependencies: frozenset[Dependency]
     build_dependents: frozenset[str]
     proc_macro: bool
+
+    @property
+    def depends_on_union(self) -> bool:
+        return Dependency(UNION_CRATE, Section.NORMAL) in self.dependencies
 
     @property
     def host_side(self) -> bool:
@@ -285,11 +285,22 @@ class Workspace:
         """The members that must depend on the union crate."""
         return tuple(m for m in self.members if not m.host_side)
 
-    def manifest_of(self, name: str) -> str | None:
-        return next((m.manifest_path for m in self.members if m.name == name), None)
+    def member(self, name: str) -> Member | None:
+        return next((m for m in self.members if m.name == name), None)
 
 
-DEPENDENCY_KINDS = frozenset({None, "build", "dev"})
+DEPENDENCY_SECTIONS = {None: Section.NORMAL, "build": Section.BUILD, "dev": Section.DEV}
+
+
+def dependencies_of(package: dict, source: str) -> frozenset[Dependency]:
+    edges = set()
+    for dependency in package["dependencies"]:
+        section = DEPENDENCY_SECTIONS.get(dependency["kind"])
+        if section is None:
+            raise InputError(f"{source}: {package['name']} -> {dependency['name']}: "
+                             f"unknown dependency kind {dependency['kind']!r}")
+        edges.add(Dependency(dependency["name"], section))
+    return frozenset(edges)
 
 
 def workspace_of(metadata: object) -> Workspace:
@@ -297,21 +308,14 @@ def workspace_of(metadata: object) -> Workspace:
     try:
         member_ids = frozenset(metadata["workspace_members"])
         packages = [p for p in metadata["packages"] if p["id"] in member_ids]
-        names = frozenset(p["name"] for p in packages)
-        for package in packages:
-            for dependency in package["dependencies"]:
-                if dependency["kind"] not in DEPENDENCY_KINDS:
-                    raise InputError(f"{source}: {package['name']} -> {dependency['name']}: "
-                                     f"unknown dependency kind {dependency['kind']!r}")
+        edges = {p["name"]: dependencies_of(p, source) for p in packages}
         build_dependents = {
-            name: frozenset(p["name"] for p in packages
-                            for d in p["dependencies"]
-                            if d["kind"] == "build" and d["name"] == name)
-            for name in names}
+            name: frozenset(dependent for dependent, theirs in edges.items()
+                            if Dependency(name, Section.BUILD) in theirs)
+            for name in edges}
         members = tuple(sorted(
             (Member(name=p["name"], manifest_path=p["manifest_path"],
-                    depends_on_union=any(d["name"] == UNION_CRATE and d["kind"] is None
-                                         for d in p["dependencies"]),
+                    dependencies=edges[p["name"]],
                     build_dependents=build_dependents[p["name"]],
                     proc_macro=any("proc-macro" in t["kind"] for t in p["targets"]))
              for p in packages if p["name"] != UNION_CRATE),
@@ -344,25 +348,56 @@ EDGE_NOUN = {Section.NORMAL: "dependency", Section.BUILD: "build-dependency",
 EDGE_ARROW = {Section.NORMAL: " -> ", Section.BUILD: " -[build]-> ", Section.DEV: " -[dev]-> "}
 
 
-def host_union_findings(tree: Tree, ws: Workspace) -> list[str]:
+def path_head(parent: Member) -> str:
+    """The head of a HOST-UNION path: how the edge's parent is reached on the
+    host side, or its bare name when it is covered and its own build edge is
+    what reaches the host."""
+    if parent.proc_macro:
+        return f"{parent.name} (proc-macro)"
+    if parent.build_dependents:
+        return f"{min(parent.build_dependents)}{EDGE_ARROW[Section.BUILD]}{parent.name}"
+    return parent.name
+
+
+def compiled_for_host(parent: Member, edge: Dependency) -> bool:
+    """Whether building `parent` as a dependency compiles `edge` for the host."""
+    return edge.section is not Section.DEV and (parent.host_side or edge.section is Section.BUILD)
+
+
+UNION_ON_HOST = (f"resolves {UNION_CRATE} on the host side, where its target pins would "
+                 f"become host units")
+
+
+def path_tail(ws: Workspace, edge: Dependency) -> str:
+    """The end of a HOST-UNION path from `edge` on, and what it puts on the
+    host side: the union itself, or a covered member, which reaches the union
+    once the coverage rule holds."""
+    child = ws.member(edge.name)
+    if child is None:
+        return f"{edge.name} {UNION_ON_HOST}"
+    if child.depends_on_union:
+        return f"{edge.name}{EDGE_ARROW[Section.NORMAL]}{UNION_CRATE} {UNION_ON_HOST}"
+    return (f"{edge.name} puts covered member {edge.name} on the host side, where the "
+            f"dependency on {UNION_CRATE} it must add would make the union's target pins "
+            f"host units")
+
+
+def host_union_findings(ws: Workspace) -> list[str]:
     """One finding per dependency edge that brings the union, or a covered
-    member (which reaches the union by the coverage rule), onto the host
-    side; the first path through each edge is quoted."""
+    member, onto the host side, read from the workspace's own dependency edges
+    so that cargo tree's print order and its cross-root `(*)` dedupe cannot
+    hide one."""
     brings_union = {m.name for m in ws.covered} | {UNION_CRATE}
-    by_edge: dict[tuple[str, str], str] = {}
-    for ancestry in tree.host_unions:
-        at = next(i for i, node in enumerate(ancestry[1:])
-                  if node.host and node.name in brings_union)
-        parent, child = ancestry[at], ancestry[at + 1]
-        path = "".join(node.label() + EDGE_ARROW[node.section] for node in ancestry[:-1])
-        manifest = ws.manifest_of(parent.name)
-        by_edge.setdefault(
-            (parent.name, child.name),
-            f"HOST-UNION {parent.name}: {path}{ancestry[-1].label()} resolves {UNION_CRATE} "
-            f"on the host side, where its target pins would become host units — remove "
-            f"{parent.name}'s {EDGE_NOUN[parent.section]} on {child.name}"
-            + (f" from {manifest}" if manifest else ""))
-    return [by_edge[edge] for edge in sorted(by_edge)]
+    found = []
+    for parent in ws.members:
+        for edge in sorted(parent.dependencies, key=lambda d: (d.name, d.section.value)):
+            if edge.name not in brings_union or not compiled_for_host(parent, edge):
+                continue
+            found.append(
+                f"HOST-UNION {parent.name}: {path_head(parent)}{EDGE_ARROW[edge.section]}"
+                f"{path_tail(ws, edge)} — remove {parent.name}'s {EDGE_NOUN[edge.section]} "
+                f"on {edge.name} from {parent.manifest_path}")
+    return found
 
 
 @dataclass(frozen=True)
@@ -390,17 +425,17 @@ def features_by_key(variants: frozenset[Variant]) -> dict[VariantKey, tuple[froz
 
 @dataclass(frozen=True)
 class Resolution:
-    workspace: Tree
+    workspace: frozenset[Variant]
     splits: tuple[Split, ...]
 
 
 def resolve_splits(root: Path, mode: LockMode, host: str, ws: Workspace) -> Resolution:
     workspace = resolve(root, mode, host, ["--workspace"])
-    in_workspace = features_by_key(workspace.variants)
+    in_workspace = features_by_key(workspace)
     found = []
     for member in ws.covered:
-        selected = resolve(root, mode, host, ["-p", member.name]).variants
-        for v in sorted(selected - workspace.variants,
+        selected = resolve(root, mode, host, ["-p", member.name])
+        for v in sorted(selected - workspace,
                         key=lambda v: (v.key.sort_key(), sorted(v.features))):
             found.append(Split(member.name, v, in_workspace.get(v.key, ())))
     return Resolution(workspace=workspace, splits=tuple(found))
@@ -496,7 +531,7 @@ def grown(pins: Pins, resolution: Resolution) -> Pins:
     """`pins` with every split key's features widened to the union of the
     workspace's variants of that key; a key the workspace never builds on that
     side stays unpinned."""
-    in_workspace = features_by_key(resolution.workspace.variants)
+    in_workspace = features_by_key(resolution.workspace)
     result = dict(pins)
     for split in resolution.splits:
         key = split.variant.key
@@ -518,8 +553,7 @@ def run_check(root: Path) -> Verdict:
     ws = read_workspace(root, LockMode.FROZEN)
     resolution = resolve_splits(root, LockMode.FROZEN, host_triple(root), ws)
     found = resolution.splits
-    lines = [*coverage_findings(ws), *host_union_findings(resolution.workspace, ws),
-             *map(str, found)]
+    lines = [*coverage_findings(ws), *host_union_findings(ws), *map(str, found)]
     if lines:
         return fail(lines, *([GENERATE_REMEDY] if found else []))
     print(f"workspace-feature-union: OK ({len(ws.covered)} members resolve every external "
@@ -564,8 +598,7 @@ def run_generate(root: Path, max_iterations: int) -> Verdict:
 
 def converge(root: Path, mode: LockMode, host: str, ws: Workspace, manifest: UnionManifest,
              max_iterations: int) -> Verdict:
-    refusals = [*coverage_findings(ws),
-                *host_union_findings(resolve(root, mode, host, ["--workspace"]), ws)]
+    refusals = [*coverage_findings(ws), *host_union_findings(ws)]
     if refusals:
         return fail(refusals, "generate writes nothing until the coverage rule holds")
     pins: Pins = {}
