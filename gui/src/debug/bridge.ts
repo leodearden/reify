@@ -177,7 +177,6 @@ export const TYPE_GUARDED_RESOLVER_TOOLS = [
 
 type CommandHandler = (params: Record<string, unknown>) => unknown | Promise<unknown>;
 
-/** Returns true iff v is a 3-element array of finite numbers. */
 /** The launcher's two roots, shared by store_state and wait_for so they cannot disagree. */
 function launcherRoots({ editor, launcher }: DebugStores) {
   return {
@@ -186,6 +185,7 @@ function launcherRoots({ editor, launcher }: DebugStores) {
   };
 }
 
+/** Returns true iff v is a 3-element array of finite numbers. */
 function validVec3(v: unknown): v is [number, number, number] {
   return (
     Array.isArray(v) &&

@@ -22,10 +22,9 @@ structure def Flange {
 ";
 
 /// The starter source for a new `<stem>.ri`, opened by `module <stem>` when the
-/// parser accepts that declaration for a file of that stem. A stem that cannot
-/// be declared (a hyphenated name, a keyword) gets the body alone, which costs
-/// only a `W_MODULE_DECL_MISSING` warning where a bad module line would be an
-/// error.
+/// parser accepts that declaration for a file of that stem. A stem it does not
+/// accept gets the body alone, which costs only a `W_MODULE_DECL_MISSING`
+/// warning where a bad module line would be an error.
 pub fn new_file_template(stem: &str) -> String {
     let declared = format!("module {stem}\n\n{STARTER_BODY}");
     if declares_cleanly(&declared, stem) {
