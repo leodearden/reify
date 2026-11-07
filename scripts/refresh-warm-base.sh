@@ -40,7 +40,7 @@
 #      tracked changes), --landed-commit <sha> is absent / mismatched vs HEAD,
 #      or <sha> is not an ancestor of refs/heads/main, or the advancing target's
 #      reify-verify-attempt.json records a built tree other than <sha>^{tree}
-#      (compared by tree, not commit; no sidecar = no check).
+#      (compared by tree, not commit; no sidecar = no check, with a [warn]).
 #      Fail-closed: no swap on refusal.
 #   2. Symlink-gen staging: build <base_dir>.gen.<N>.partial via
 #      cp -a --reflink=always (fail-closed — P2), rename to <base_dir>.gen.<N>.
@@ -103,6 +103,7 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ── log helpers (all write to stderr) ─────────────────────────────────────────
 info()  { printf '\033[1;34m[info]\033[0m  %s\n' "$*" >&2; }
 ok()    { printf '\033[1;32m[ok]\033[0m    %s\n' "$*" >&2; }
+warn()  { printf '\033[1;33m[warn]\033[0m  %s\n' "$*" >&2; }
 err()   { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
 
 # ── usage ──────────────────────────────────────────────────────────────────────
@@ -268,7 +269,8 @@ BASE_DIR="$(cd "$(dirname "$BASE_DIR")" && pwd)/$(basename "$BASE_DIR")"
 #   6. Refuse if $LANDED_REF does not resolve, or the asserted sha is not an
 #      ancestor of it (committed-but-unlanded work)
 #   7. Refuse if <advancing>/reify-verify-attempt.json exists and its tree_oid is
-#      not byte-equal to <sha>^{tree} (target built from another tree)
+#      not byte-equal to <sha>^{tree} (target built from another tree); warn and
+#      proceed when it does not exist
 _prov_wt="$(dirname "$ADVANCING_DIR")"
 if ! git -C "$_prov_wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     err "Provenance guard: <advancing_target_dir> is not inside a git worktree: $ADVANCING_DIR"
@@ -354,7 +356,12 @@ _assert_built_tree_is_landed_tree() {
         err "The tree the advancing target was built from cannot be checked. Refusing to swap (fail-closed)."
         exit 1
     fi
-    [ -e "$sidecar" ] || return 0
+    if [ ! -e "$sidecar" ]; then
+        warn "Provenance guard: no build-provenance sidecar at $sidecar"
+        warn "  No merge-role verify stamped this target, so the tree it was built from"
+        warn "  cannot be checked against --landed-commit. Proceeding with the refresh."
+        return 0
+    fi
     built="$(sed -n 's/.*"tree_oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$sidecar" 2>/dev/null || true)"
     built="${built%%$'\n'*}"
     [ "$built" = "$landed_tree" ] && return 0
