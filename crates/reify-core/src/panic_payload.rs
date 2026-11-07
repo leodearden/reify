@@ -20,3 +20,47 @@ pub fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
         "<non-string panic payload>".to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_payload_str_reads_a_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
+        assert_eq!(panic_payload_str(payload.as_ref()), Some("boom_str"));
+    }
+
+    #[test]
+    fn panic_payload_str_reads_a_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("boom_string"));
+        assert_eq!(panic_payload_str(payload.as_ref()), Some("boom_string"));
+    }
+
+    #[test]
+    fn panic_payload_str_is_none_for_a_non_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
+        assert_eq!(panic_payload_str(payload.as_ref()), None);
+    }
+
+    /// `panic_payload_to_string` must extract the payload text from both
+    /// `&str` and `String` panic payloads, and fall back to a fixed message
+    /// for any other payload type.
+    #[test]
+    fn panic_payload_to_string_extracts_str_string_and_falls_back() {
+        let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
+        assert_eq!(panic_payload_to_string(str_payload.as_ref()), "boom_str");
+
+        let string_payload: Box<dyn std::any::Any + Send> = Box::new(String::from("boom_string"));
+        assert_eq!(
+            panic_payload_to_string(string_payload.as_ref()),
+            "boom_string"
+        );
+
+        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(
+            panic_payload_to_string(other_payload.as_ref()),
+            "<non-string panic payload>"
+        );
+    }
+}
