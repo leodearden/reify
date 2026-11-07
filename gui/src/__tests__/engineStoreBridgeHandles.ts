@@ -89,7 +89,8 @@ export const mockOnEvalGeneration = vi.mocked(onEvalGeneration);
  * Clears every mock's call history and installs the default no-op unlisten
  * resolution on the channels listed below. It does NOT undo a test's
  * mockImplementation on a channel without a default here (the seven core
- * channels), so a test that subscribes stubs those itself.
+ * channels and onFeaConvergenceChanged), so a test that subscribes stubs
+ * those itself.
  */
 export function primeEngineStoreBridgeMocks(): void {
   vi.clearAllMocks();

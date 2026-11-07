@@ -1,5 +1,5 @@
-// The '../bridge' mock module every engineStore test file installs with
-// `vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock())`;
+// The '../bridge' mock module every engineStore harness consumer installs with
+// the vi.mock line spelled out in INSTALL_SHARED_BRIDGE_MOCK (engineStoreBridgeHandles.ts);
 // it runs inside that mock's own resolution, so it must never runtime-import '../bridge'.
 import { vi } from 'vitest';
 import type * as Bridge from '../bridge';
