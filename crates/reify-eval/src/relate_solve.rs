@@ -3388,9 +3388,6 @@ structure PairSearchScope {
 
     /// A pair that merely ran out of budget proves nothing; only a pair whose own
     /// solve is CERTIFIED infeasible is the minimal conflict.
-    ///
-    /// The stalled-pair half of that rule is unpinned: no smooth relate fixture
-    /// stalls reliably, and a pair's outcome cannot be injected into the search.
     #[test]
     fn a_budget_starved_feasible_pair_is_not_blamed_as_the_conflict() {
         with_failure_context(STARVED_BUDGET, |context| {
