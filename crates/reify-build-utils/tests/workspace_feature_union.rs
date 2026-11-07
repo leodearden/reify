@@ -942,15 +942,17 @@ a v0.1.0 (/fixture/crates/a)|
 // --- member features ---------------------------------------------------------
 
 /// `--workspace` and `-p c` resolve member b with `test-support`; `-p a` and
-/// `-p d` resolve it without.
-fn member_split_fixture() -> Fixture {
-    let members = vec![
+/// `-p d` resolve it without. Each of `uncovered` joins as a member that
+/// depends on nothing, the union crate included.
+fn member_split_fixture(uncovered: &[&'static str]) -> Fixture {
+    let mut members = vec![
         member("a", &[UNION]),
         member("b", &[UNION]),
         member("c", &[UNION]),
         member("d", &[UNION]),
         member(UNION, &[]),
     ];
+    members.extend(uncovered.iter().map(|name| member(name, &[])));
     let root_with_b = |name: &str, b_features: &str| {
         format!(
             "{name} v0.1.0 (/fixture/crates/{name})|\n\
@@ -958,36 +960,66 @@ fn member_split_fixture() -> Fixture {
              `-- b v0.1.0 (/fixture/crates/b)|{b_features}\n"
         )
     };
+    let bare_root = |name: &str| format!("{name} v0.1.0 (/fixture/crates/{name})|\n");
     let tree_b = "b v0.1.0 (/fixture/crates/b)|test-support\n";
-    let workspace = workspace_of(&[
-        &root_with_b("a", "test-support"),
-        tree_b,
-        &root_with_b("c", "test-support"),
-        &root_with_b("d", "test-support"),
-        TREE_UNION,
-    ]);
-    Fixture::new(&members, &workspace)
+    let mut roots = vec![
+        root_with_b("a", "test-support"),
+        tree_b.to_string(),
+        root_with_b("c", "test-support"),
+        root_with_b("d", "test-support"),
+        TREE_UNION.to_string(),
+    ];
+    roots.extend(uncovered.iter().map(|name| bare_root(name)));
+    let roots: Vec<&str> = roots.iter().map(String::as_str).collect();
+    let fixture = Fixture::new(&members, &workspace_of(&roots))
         .tree("a", &root_with_b("a", ""))
         .tree("b", tree_b)
         .tree("c", &root_with_b("c", "test-support"))
-        .tree("d", &root_with_b("d", ""))
+        .tree("d", &root_with_b("d", ""));
+    uncovered.iter().fold(fixture, |fixture, name| {
+        fixture.tree(name, &bare_root(name))
+    })
+}
+
+const MEMBER_SPLIT_B: &str = "MEMBER-SPLIT b v0.1.0 (target): -p resolves {} under a, d; \
+                              --workspace resolves {test-support}";
+
+fn member_split_lines(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter(|line| line.starts_with("MEMBER-SPLIT "))
+        .collect()
 }
 
 #[test]
 fn check_reports_a_member_feature_split_as_advisory_naming_the_selections_that_resolve_it() {
-    let out = member_split_fixture().check();
+    let out = member_split_fixture(&[]).check();
     assert_green(&out, "a member feature split is advisory, never a finding");
-    let stdout = stdout_of(&out);
-    let advisories: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("MEMBER-SPLIT "))
-        .collect();
     assert_eq!(
-        advisories,
-        ["MEMBER-SPLIT b v0.1.0 (target): -p resolves {} under a, d; \
-          --workspace resolves {test-support}"],
+        member_split_lines(&stdout_of(&out)),
+        [MEMBER_SPLIT_B],
         "one advisory line for b, naming only the selections that resolve it unlike \
          --workspace\n{}",
+        describe(&out)
+    );
+}
+
+/// The serde gate accepts a failing check, so it holds only while a failing
+/// check still prints every advisory line.
+#[test]
+fn check_reports_a_member_feature_split_on_a_failing_check_without_counting_it_as_a_finding() {
+    let fixture = member_split_fixture(&["e"]);
+    let manifest = fixture.manifest("e");
+    let out = fixture.check();
+    assert_findings(
+        &out,
+        &[&["UNCOVERED e", UNION, &manifest]],
+        "member e does not depend on the union crate, and b's split is no finding",
+    );
+    assert_eq!(
+        member_split_lines(&stdout_of(&out)),
+        [MEMBER_SPLIT_B],
+        "a failing check still prints b's advisory line\n{}",
         describe(&out)
     );
 }
@@ -1399,7 +1431,7 @@ a v0.1.0 (/fixture/crates/a)|
 
 #[test]
 fn generate_never_pins_a_workspace_member() {
-    let fixture = member_split_fixture().with_union_manifest(&empty_union_manifest());
+    let fixture = member_split_fixture(&[]).with_union_manifest(&empty_union_manifest());
     let out = fixture.generate();
     assert_exit(
         &out,
