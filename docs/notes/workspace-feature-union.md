@@ -160,23 +160,33 @@ find target -mindepth 1 -maxdepth 1 ! -name .pristine -exec rm -rf {} +
 cp -a --reflink=always "$S"/. target/
 check; echo "restored-matches rc=$?"   # must be 0 before probing
 git clean -Xfd -- tree-sitter-reify/src
+git status --porcelain --untracked-files=normal --ignored -- tree-sitter-reify/src   # must print nothing: only unmodified tracked files remain
 ```
 
-The last line deletes the gitignored generated sources under
+The `git clean` line deletes the gitignored generated sources under
 `tree-sitter-reify/src`, which a fresh seed lacks and the first probe recreates
 (see the tree-sitter paragraph under Measurements). It names no files. `-X`
-removes only ignored files, so the set is whatever the root `.gitignore`'s
-"Tree-sitter generated" block lists, and the acquire's
+removes only ignored files, so the set is whatever the ignore rules match
+there: today the root `.gitignore`'s "Tree-sitter generated" block, plus the
+`*.o` rule in `tree-sitter-reify/.gitignore`. The acquire's
 `git clean -xfd -e target` deletes those same files. A new output of
-`tree-sitter generate` is covered as soon as that block lists it. The files
-live outside `target/`, so restoring `target/` does not restore their absence,
-and the listing check does not see them either. Remove `target/.pristine` after
-the last probe.
+`tree-sitter generate` is covered as soon as that block lists it.
+
+The generated sources live outside `target/`, so restoring `target/` does not
+restore their absence, and the listing check does not see them. The
+`git status` line does. It prints nothing only when the directory holds nothing
+but unmodified tracked files, which is what a fresh seed has: `??` marks an
+untracked file that no ignore rule matches, `!!` an ignored file that is still
+there, and `M` a modified tracked file. `-X` leaves a `??` file alone, but the
+acquire's `-x` deletes it. A new `tree-sitter generate` output that the block
+does not list yet is one. `--untracked-files=normal` stops a
+`status.showUntrackedFiles=no` in user config from hiding the `??` lines.
+Remove `target/.pristine` after the last probe.
 
 To exclude the tree-sitter share, probe in arm B of the Tree-sitter share
 subsection: the generated sources present and back-dated to 2020-01-01, so the
 build script stays Fresh. Make the copy once, before the first probe. It holds
-the same files the reset line removes, listed from `.gitignore`:
+the same files the reset line removes, chosen by the same ignore rules:
 
 ```bash
 bash scripts/tree-sitter-generate.sh   # about 5 s: tree-sitter generate only, no cargo
@@ -196,7 +206,8 @@ base commit cures the first two: remove `/tmp/<id>-tsgen` and repeat this block
 after the checkout. A DIFF that survives that points to the CLI, and then the
 copy cannot be proven identical to the base's inputs, so arm B is not valid in
 this lane. Before every probe, the first included, put the copy in place of the
-`git clean` line above: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
+`git clean` and `git status` lines above, since `--ignored` would list the
+copy: `cp -a /tmp/<id>-tsgen/. tree-sitter-reify/src/`.
 
 ## Measurements
 
