@@ -25,6 +25,7 @@ import { createSelectionStore } from '../stores/selectionStore';
 import { createEngineStore } from '../stores/engineStore';
 import { createLayoutStore } from '../stores/layoutStore';
 import { createViewportDisplayStore } from '../stores/viewportDisplayStore';
+import { createLauncherStore } from '../stores/launcherStore';
 import { makeViewStateStoreMock } from './debugBridgeTestHelpers';
 import { initDebugBridge } from '../debug/bridge';
 import { Editor } from '../editor/Editor';
@@ -617,6 +618,7 @@ export async function setupBridgeHarness(): Promise<HarnessSetup> {
       viewState,
       layout: layoutStore,
       viewportDisplay: createViewportDisplayStore(),
+      launcher: createLauncherStore(),
     };
   });
 

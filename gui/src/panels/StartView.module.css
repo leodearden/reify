@@ -1,0 +1,122 @@
+/* Covers the whole window, above the menu bar (100) and below the toasts (200). */
+.startView {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: var(--reify-background, #1e1e2e);
+  color: var(--reify-text, #cdd6f4);
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: min(560px, 100% - 32px);
+  padding: 24px;
+  background: var(--reify-surface0, #313244);
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 8px;
+}
+
+.title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.heading {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--reify-text-muted, #a6adc8);
+}
+
+.row,
+.modes {
+  display: flex;
+  gap: 8px;
+}
+
+.button,
+.modeButton,
+.recentItem {
+  padding: 5px 12px;
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 4px;
+  background: var(--reify-surface1, #45475a);
+  color: var(--reify-text, #cdd6f4);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.button:hover,
+.modeButton:hover,
+.recentItem:hover {
+  background: var(--reify-surface-hover, #585b70);
+}
+
+.modeButton[aria-pressed='true'] {
+  background: var(--reify-accent, #89b4fa);
+  border-color: var(--reify-accent, #89b4fa);
+  color: var(--reify-background, #1e1e2e);
+  font-weight: 500;
+}
+
+.pathLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--reify-text-muted, #a6adc8);
+}
+
+.pathInput {
+  padding: 5px 8px;
+  border: 1px solid var(--reify-border, #45475a);
+  border-radius: 4px;
+  background: var(--reify-background, #1e1e2e);
+  color: var(--reify-text, #cdd6f4);
+  font-family: var(--reify-font-mono, monospace);
+  font-size: 13px;
+}
+
+.recent {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recentItem {
+  width: 100%;
+  text-align: left;
+  font-family: var(--reify-font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--reify-text-muted, #a6adc8);
+}
+
+.error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--reify-error, #f38ba8);
+}
