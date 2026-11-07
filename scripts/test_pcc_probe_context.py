@@ -60,10 +60,6 @@ class TestFromEnvironment(unittest.TestCase):
     def test_empty_reify_bin_falls_through_to_path(self):
         self.assertEqual(self._ctx({"REIFY_BIN": ""}).reify_bin, "reify")
 
-    def test_empty_reify_bin_falls_through_to_the_fixture_binary(self):
-        debug = write_profile_binary(self.root, "target/debug/reify")
-        self.assertEqual(self._ctx({"REIFY_BIN": ""}).reify_bin, debug)
-
     def test_cache_home_override_is_read_and_empty_counts_as_unset(self):
         # The operator-facing name, written as a literal: it is the documented
         # contract in .claude/skills/prd/references/grammar-gate.md.
@@ -71,14 +67,6 @@ class TestFromEnvironment(unittest.TestCase):
             self._ctx({"REIFY_TS_CACHE_HOME": "/x/cache"}).cache_home_override, "/x/cache"
         )
         self.assertIsNone(self._ctx({"REIFY_TS_CACHE_HOME": ""}).cache_home_override)
-
-    def test_a_lone_executable_profile_binary_is_picked(self):
-        for relpath in ("target/debug/reify", "target/release/reify"):
-            with self.subTest(binary=relpath), tempfile.TemporaryDirectory() as tmp:
-                path = write_profile_binary(tmp, relpath)
-                ctx = pcc.ProbeContext.from_environment(environ={}, repo_root=tmp)
-                self.assertEqual(ctx.reify_bin, path)
-                self.assertTrue(os.path.isabs(ctx.reify_bin))
 
     def test_a_non_executable_profile_binary_is_not_picked(self):
         write_profile_binary(self.root, "target/release/reify", mode=0o644)
@@ -198,14 +186,35 @@ class TestReifyBinaryTrust(unittest.TestCase):
         self.assertIn(head, ctx.reify_bin_refusal)
 
     def test_outside_a_git_checkout_the_trust_home_fails_open(self):
-        """The home's documented fail-open: with no HEAD there is no tree to compare."""
-        with tempfile.TemporaryDirectory(prefix="pcc_trust_nongit_") as root:
+        """The home's documented fail-open: with no HEAD there is no tree to compare.
+
+        The ceiling bounds git's walk-up, so root is outside any checkout
+        wherever TMPDIR sits, and nesting it under one makes that bound
+        load-bearing on every run.
+        """
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_nongit_") as outer:
+            make_git_fixture_repo(outer)
+            root = os.path.join(outer, "nongit")
             release = write_profile_binary(root, "target/release/reify")
             write_profile_binary(root, "target/debug/reify")
             write_bin_sidecar(root, "0" * 40 + "\n")
-            ctx = pcc.ProbeContext.from_environment(environ=trust_environ(), repo_root=root)
+            environ = trust_environ(GIT_CEILING_DIRECTORIES=os.path.realpath(outer))
+            ctx = pcc.ProbeContext.from_environment(environ=environ, repo_root=root)
             self.assertEqual(ctx.reify_bin, release, ctx.reify_bin_refusal)
             self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_a_ceiling_cannot_hide_the_checkout_root_from_the_trust_home(self):
+        """A caller's ceiling bounds discovery above repo_root; it never makes a checkout fail open."""
+        self._both_binaries(newer="release")
+        stale = "0" * 40
+        self._sidecar(stale + "\n")
+        toplevel = os.path.realpath(self.root)
+        for ceiling in (toplevel, os.path.dirname(toplevel)):
+            with self.subTest(ceiling=ceiling):
+                ctx = self._ctx(GIT_CEILING_DIRECTORIES=ceiling)
+                self.assertIsNone(ctx.reify_bin)
+                self.assertIn(stale, ctx.reify_bin_refusal)
+                self.assertIn(self.head, ctx.reify_bin_refusal)
 
     def test_an_unconsultable_trust_home_refuses(self):
         """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
@@ -252,7 +261,15 @@ class TestReifyBinaryTrust(unittest.TestCase):
             with self.subTest(binary=relpath):
                 path, ctx = self._lone_binary_ctx(relpath, lambda head: head + "\n")
                 self.assertEqual(ctx.reify_bin, path, ctx.reify_bin_refusal)
+                self.assertTrue(os.path.isabs(ctx.reify_bin))
                 self.assertIsNone(ctx.reify_bin_refusal)
+
+    def test_an_empty_reify_bin_falls_through_to_a_vouched_binary(self):
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        ctx = self._ctx(REIFY_BIN="")
+        self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+        self.assertIsNone(ctx.reify_bin_refusal)
 
     def test_no_binary_falls_back_to_path(self):
         self.assertEqual(self._ctx().reify_bin, "reify")
