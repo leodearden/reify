@@ -16,7 +16,8 @@
 # shared with the five sibling e2e smoke runners.  Read that file for the
 # lifecycle contract, including the readiness-race fix (design decision 5,
 # task 4456 step-5) and why the bash-side readiness gate and the driver's shared
-# waitForServer (debugServerEndpoint.mjs, 60 s default) are both intentional (design decision 2, task 4456).
+# waitForServer (debugServerEndpoint.mjs, SERVER_READY_TIMEOUT_MS) are both
+# intentional (design decision 2, task 4456).
 # It replaces the copy this runner used to carry (task 5596).
 
 set -euo pipefail

@@ -42,12 +42,13 @@
 #      with a kill -0 liveness check on each iteration — abort early if the
 #      launcher dies rather than waiting the full budget.
 #   7. Run `node <driver>`.
-#      Note: each driver runs the shared waitForServer from
-#      debugServerEndpoint.mjs (60 s default) — that poll passes instantly
-#      because step 6 already confirmed the server is ready.  Both readiness
-#      gates are intentional and serve distinct purposes:
+#      Note: each driver calls the shared waitForServer from
+#      debugServerEndpoint.mjs (timeout SERVER_READY_TIMEOUT_MS) — that poll
+#      passes instantly because step 6 already confirmed the server is ready.
+#      Both readiness gates are intentional and serve distinct purposes:
 #      step 6 polls with a kill -0 liveness check (bash-side, driver-agnostic);
-#      the driver's waitForServer is part of its own unchanged contract.
+#      the driver's waitForServer call is part of the driver's contract,
+#      independent of how it is launched.
 #      Do NOT remove one believing the other is dead code.
 #   8. SIGTERM the launcher so its trap reaps both vite and reify-gui, then exit
 #      with the driver's exit code.
