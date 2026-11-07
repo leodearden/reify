@@ -121,7 +121,8 @@ class PassSpec:
     """What one test pass runs: the facts that vary from pass to pass.
 
     The gui-feature pass never carries a filter: one would narrow away the
-    gui-gated tests it exists to run.
+    gui-gated tests it exists to run. A pass of a recording kind carries no
+    guard, because its step's one gate path is the recorder's.
     """
 
     kind: PassKind
@@ -139,6 +140,12 @@ class PassSpec:
             raise ValueError(
                 f"PassSpec: the gui-feature pass carries no filter (heavy={self.heavy.value}, "
                 f"retry_ids={self.retry_ids!r})"
+            )
+        if self.guard is not None and self.kind.records:
+            raise ValueError(
+                f"PassSpec: a {self.kind.value} pass records its failing ids, so it carries no "
+                f"guard: its step names one gate path, which {CONFIRM_RECORDER} and "
+                f"{self.guard.setup.path} would both claim"
             )
 
 
