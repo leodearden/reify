@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
-use crate::args::{PurposeActivation, parse_purpose_flag, split_cfg_args};
+use crate::args::{PurposeActivation, parse_purpose_flag, split_cfg_args_or_usage};
 use crate::check_verdict::{
     check_gating_error, dedup_diagnostics, drop_falsified_indeterminate_diagnostics,
     merge_build_diagnostics, merge_post_build_verdicts, strip_diagnostics_reproduced_by,
@@ -36,13 +36,9 @@ use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
 /// measures them), which owns triaging them — never by adding allowlist
 /// entries.
 pub(crate) fn cmd_check(args: &[String]) -> ExitCode {
-    let (cfg, rest) = match split_cfg_args(args) {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, CHECK_USAGE) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            eprintln!("{}", CHECK_USAGE);
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let args = rest.as_slice();
     // Flag walk modeled on cmd_doc/cmd_gui: explicit handling of known flags

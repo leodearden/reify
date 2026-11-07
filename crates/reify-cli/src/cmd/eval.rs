@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 
-use crate::args::split_cfg_args;
+use crate::args::split_cfg_args_or_usage;
 use crate::check_verdict::has_error_diagnostic;
 use crate::constraint_report::format_undef_cause;
 use crate::help::EVAL_USAGE;
@@ -54,13 +54,9 @@ use crate::{configured_eval_engine, parse_and_compile_with_cfg};
 /// Non-geometry modules use the existing
 /// `Engine::new(None) + eval()` path unchanged.
 pub(crate) fn cmd_eval(args: &[String]) -> ExitCode {
-    let (cfg, rest) = match split_cfg_args(args) {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, EVAL_USAGE) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("Error: {e}");
-            eprintln!("{EVAL_USAGE}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     };
     let args = rest.as_slice();
     // Parse args: walk the list to extract --explain-undef, --verbose,

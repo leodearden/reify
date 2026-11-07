@@ -143,7 +143,7 @@ fn parse_cfg_flag(value: &str) -> Result<CfgArg, String> {
 /// Per PRD §4 D-2, `target` is host-defaulted and overridable ONLY by an explicit
 /// `--cfg target=<v>`; bare flags and non-`target` key/values never clear it, so
 /// passing a feature flag cannot silently disable platform gating.
-pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
+fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
     let mut cfg = CfgSet::host_default();
     for value in values {
         match parse_cfg_flag(value)? {
@@ -161,11 +161,11 @@ pub(crate) fn build_cfg_set(values: &[String]) -> Result<CfgSet, String> {
     Ok(cfg)
 }
 
-/// The single home of the `--cfg` argv grammar for every program-compiling
-/// subcommand: `--cfg` is repeatable, position-free, and always consumes the
-/// next token as its value; returns the active [`CfgSet`] and the remaining
-/// args in order.
-pub(crate) fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), String> {
+/// The `--cfg` argv grammar: `--cfg` is repeatable, position-free, and always
+/// consumes the next token as its value. The inline `--cfg=<v>` spelling is
+/// refused rather than passed through, so no command can mistake it for an
+/// ignorable flag. Returns the active [`CfgSet`] and the remaining args in order.
+fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), String> {
     let mut values: Vec<String> = Vec::new();
     let mut rest: Vec<String> = Vec::new();
     let mut tokens = args.iter();
@@ -173,12 +173,32 @@ pub(crate) fn split_cfg_args(args: &[String]) -> Result<(CfgSet, Vec<String>), S
         if token == "--cfg" {
             let value = tokens.next().ok_or("--cfg requires a value")?;
             values.push(value.clone());
+        } else if token.starts_with("--cfg=") {
+            return Err(format!(
+                "--cfg takes its value as the next argument (`--cfg <key=value|flag>`), got '{token}'"
+            ));
         } else {
             rest.push(token.clone());
         }
     }
     let cfg = build_cfg_set(&values)?;
     Ok((cfg, rest))
+}
+
+/// The single entry point to the `--cfg` argv grammar for every
+/// program-compiling subcommand: extracts the `--cfg` pairs via
+/// [`split_cfg_args`]. On a malformed `--cfg` it prints the `Error:` line and
+/// then `usage` to stderr and returns `Err(ExitCode::FAILURE)`, which callers
+/// `return` directly (the [`parse_single_file_arg`] contract).
+pub(crate) fn split_cfg_args_or_usage(
+    args: &[String],
+    usage: &str,
+) -> Result<(CfgSet, Vec<String>), ExitCode> {
+    split_cfg_args(args).map_err(|e| {
+        eprintln!("Error: {e}");
+        eprintln!("{usage}");
+        ExitCode::FAILURE
+    })
 }
 
 /// Parse a single required file-path positional, rejecting unknown `--`-prefixed flags
@@ -413,6 +433,26 @@ mod tests {
         let (cfg, rest) =
             split_cfg_args(&strings(&["--cfg", "--strict", "f.ri"])).expect("flag-shaped value");
         assert!(cfg.flags.contains("--strict"));
+        assert_eq!(rest, strings(&["f.ri"]));
+    }
+
+    #[test]
+    fn split_cfg_args_refuses_the_inline_equals_spelling() {
+        for token in ["--cfg=target=wasm", "--cfg="] {
+            let err = split_cfg_args(&strings(&[token, "f.ri"])).expect_err("inline --cfg=");
+            assert!(err.contains("next argument"), "{token}: got: {err}");
+        }
+    }
+
+    #[test]
+    fn split_cfg_args_or_usage_maps_a_grammar_error_to_failure() {
+        assert_eq!(
+            split_cfg_args_or_usage(&strings(&["f.ri", "--cfg"]), "usage").err(),
+            Some(ExitCode::FAILURE),
+        );
+        let (cfg, rest) = split_cfg_args_or_usage(&strings(&["--cfg", "feat", "f.ri"]), "usage")
+            .expect("valid --cfg");
+        assert!(cfg.flags.contains("feat"));
         assert_eq!(rest, strings(&["f.ri"]));
     }
 }
