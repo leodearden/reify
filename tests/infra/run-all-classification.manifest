@@ -188,6 +188,7 @@ test_queue_db_gitignored.sh pool
 test_reconciliation_db_gitignored.sh pool
 test_reference_transaction_gate.sh pool
 test_refresh_warm_base.sh pool
+test_refresh_warm_base_built_tree.sh pool
 test_reify_audit_freshness.sh pool
 # test_reify_audit_pdiag_budget_skip.sh and test_reify_audit_pdiag_vacuity.sh
 # both NEST test_reify_audit_pdiag.sh, which is intra-run-serial above — but
