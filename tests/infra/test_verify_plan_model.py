@@ -9,15 +9,7 @@ The plan-parity members (test_verify_plan_parity*.py) compare whole plans
 through the CLI and never import reify_verify. What is out of their reach is
 here:
 
-- the invariants: a step's command record must suit its kind, an emitter must
-  declare every gate path its steps name, PlanInputs holds a test region
-  exactly when the plan has one, a record rendered inside quotes refuses
-  that quote, the slot-closed wrapper holds one test pass, a recording role
-  and a recording runner both run --no-fail-fast, a recording role may still
-  run the gui-feature pass, which records nothing, the gui-feature pass is
-  never filtered nor recorded, and a runner states its nextest/cargo-test arm,
-  the fallback holding no config nor confirm and a config-less nextest runner
-  refusing to emit;
+- the invariants, each stated by the test class that pins it;
 - the region's refusal of a quote-bearing path knob for every path it
   renders, of which B1 asserts one (the attempt sidecar), and the retry
   subset's own lines;
@@ -612,6 +604,16 @@ class TestPassInvariants(unittest.TestCase):
         for part in ("PassSpec", CONFIRM_RECORDER, guard.setup.path):
             self.assertIn(part, message)
         PassSpec(PassKind.GUI_FEATURE, Profile.DEBUG, GUI_CRATE, "30m", features=("gui",), guard=guard)
+
+    def test_emitting_a_guarded_recorded_pass_is_refused_even_past_a_loosened_spec(self):
+        guard = gatepaths.GUI_CRATE_GUARD
+        with mock.patch.object(PassSpec, "__post_init__", lambda self: None):
+            spec = PassSpec(PassKind.PROFILE, Profile.DEBUG, Workspace(), "60m", guard=guard)
+        with self.assertRaises(ValueError) as raised:
+            nextest.emit_pass(spec, recording_runner())
+        message = str(raised.exception)
+        for part in ("emit_pass", CONFIRM_RECORDER, guard.setup.path):
+            self.assertIn(part, message)
 
     def test_only_a_profile_pass_records(self):
         runner = recording_runner()

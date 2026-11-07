@@ -141,12 +141,17 @@ class PassSpec:
                 f"PassSpec: the gui-feature pass carries no filter (heavy={self.heavy.value}, "
                 f"retry_ids={self.retry_ids!r})"
             )
-        if self.guard is not None and self.kind.records:
-            raise ValueError(
-                f"PassSpec: a {self.kind.value} pass records its failing ids, so it carries no "
-                f"guard: its step names one gate path, which {CONFIRM_RECORDER} and "
-                f"{self.guard.setup.path} would both claim"
-            )
+        recorder = CONFIRM_RECORDER if self.kind.records else None
+        _refuse_guarded_recording(f"PassSpec(kind={self.kind.value})", recorder, self.guard)
+
+
+def _refuse_guarded_recording(owner: str, recorder: str | None, guard: CrateGuard | None) -> None:
+    """A step names one gate path, so a guard may not take the one a recorded pass gives its recorder."""
+    if recorder is not None and guard is not None:
+        raise ValueError(
+            f"{owner}: a pass that records its failing ids carries no guard: its step names one "
+            f"gate path, which {recorder} and {guard.setup.path} would both claim"
+        )
 
 
 @dataclass(frozen=True)
@@ -202,8 +207,7 @@ class TestRunner:
 
     nextest says whether cargo-nextest or the cargo-test fallback runs the
     passes; config is the file every nextest pass names, None when no pass
-    will name one. A recording run keeps going past a failure, so the manifest it records
-    lists every failing test, not only the first (bash's write gate).
+    will name one.
     """
 
     prio: str
@@ -231,8 +235,9 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
 
     A nextest pass names the runner's config, so a nextest runner holding none
     is refused. A recording runner wraps a nextest pass of a recording kind in
-    the confirm recorder; the cargo-test fallback records nothing. The pass
-    runs without the semaphore slot's descriptor.
+    the confirm recorder, whose gate path no guard may then take; the
+    cargo-test fallback records nothing. The pass runs without the semaphore
+    slot's descriptor.
     """
     release = bool(PROFILE_TABLE[spec.profile].cargo_release_flag)
     gate_path = None
@@ -258,6 +263,8 @@ def emit_pass(spec: PassSpec, runner: TestRunner) -> Step:
             gate_path = CONFIRM_RECORDER
     guard_file = None
     if spec.guard is not None:
+        owner = f"emit_pass(kind={spec.kind.value}, profile={spec.profile.value})"
+        _refuse_guarded_recording(owner, gate_path, spec.guard)
         run = spec.guard.around(run)
         gate_path, guard_file = spec.guard.setup.path, spec.guard.manifest
     phase = _phase(spec, nextest=runner.nextest)
