@@ -17,123 +17,36 @@ import type {
 } from '../types';
 import type { KernelStatus } from '../bridge';
 
-// Mock the bridge module
-vi.mock('../bridge', () => ({
-  onMeshUpdate: vi.fn(),
-  onValueUpdate: vi.fn(),
-  onConstraintUpdate: vi.fn(),
-  onEvaluationStatus: vi.fn(),
-  onMeshRemoved: vi.fn(),
-  onValueRemoved: vi.fn(),
-  onConstraintRemoved: vi.fn(),
-  onTessellationDiagnostics: vi.fn(),
-  onCompileDiagnostics: vi.fn(),
-  onKernelStatus: vi.fn(),
-  onAutoResolveStart: vi.fn(),
-  onAutoResolveIteration: vi.fn(),
-  onAutoResolveComplete: vi.fn(),
-  onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
-  cancelSolve: vi.fn(() => Promise.resolve()),
-  onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
-  onFeaConvergenceChanged: vi.fn(() => Promise.resolve(() => {})),
-  onTensegrityWiresUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onTensegritySurfacesUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onDisplayAppearanceUpdate: vi.fn(() => Promise.resolve(() => {})),
-  onEvalGeneration: vi.fn(() => Promise.resolve(() => {})),
-}));
+vi.mock('../bridge', async () => (await import('./engineStoreBridgeMockFactory')).engineStoreBridgeMock());
 
 import {
-  onMeshUpdate,
-  onValueUpdate,
-  onConstraintUpdate,
-  onEvaluationStatus,
-  onMeshRemoved,
-  onValueRemoved,
-  onConstraintRemoved,
-  onTessellationDiagnostics,
-  onCompileDiagnostics,
-  onAutoResolveStart,
-  onAutoResolveIteration,
-  onAutoResolveComplete,
-  onSolverProgress,
-  cancelSolve,
-  onFeaDiagnosticsChanged,
-  onFeaConvergenceChanged,
-  onTensegrityWiresUpdate,
-  onTensegritySurfacesUpdate,
-  onDisplayPanesUpdate,
-  onDisplayAppearanceUpdate,
-  onEvalGeneration,
-} from '../bridge';
+  mockOnMeshUpdate,
+  mockOnValueUpdate,
+  mockOnConstraintUpdate,
+  mockOnEvaluationStatus,
+  mockOnMeshRemoved,
+  mockOnValueRemoved,
+  mockOnConstraintRemoved,
+  mockOnTessellationDiagnostics,
+  mockOnCompileDiagnostics,
+  mockOnFeaDiagnosticsChanged,
+  mockOnFeaConvergenceChanged,
+  mockOnAutoResolveStart,
+  mockOnAutoResolveIteration,
+  mockOnAutoResolveComplete,
+  mockOnSolverProgress,
+  mockCancelSolve,
+  mockOnTensegrityWiresUpdate,
+  mockOnTensegritySurfacesUpdate,
+  mockOnDisplayPanesUpdate,
+  mockOnDisplayAppearanceUpdate,
+  mockOnEvalGeneration,
+  primeEngineStoreBridgeMocks,
+} from './engineStoreBridgeHandles';
+import { sampleMesh, sampleValue, sampleConstraint, sampleIteration } from './engineStoreFixtures';
 import { createEngineStore } from '../stores/engineStore';
 
-const mockOnMeshUpdate = vi.mocked(onMeshUpdate);
-const mockOnValueUpdate = vi.mocked(onValueUpdate);
-const mockOnConstraintUpdate = vi.mocked(onConstraintUpdate);
-const mockOnEvaluationStatus = vi.mocked(onEvaluationStatus);
-const mockOnMeshRemoved = vi.mocked(onMeshRemoved);
-const mockOnValueRemoved = vi.mocked(onValueRemoved);
-const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
-const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
-const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
-const mockOnFeaDiagnosticsChanged = vi.mocked(onFeaDiagnosticsChanged);
-const mockOnFeaConvergenceChanged = vi.mocked(onFeaConvergenceChanged);
-const mockOnAutoResolveStart = vi.mocked(onAutoResolveStart);
-const mockOnAutoResolveIteration = vi.mocked(onAutoResolveIteration);
-const mockOnAutoResolveComplete = vi.mocked(onAutoResolveComplete);
-const mockOnSolverProgress = vi.mocked(onSolverProgress);
-const mockCancelSolve = vi.mocked(cancelSolve);
-const mockOnTensegrityWiresUpdate = vi.mocked(onTensegrityWiresUpdate);
-const mockOnTensegritySurfacesUpdate = vi.mocked(onTensegritySurfacesUpdate);
-const mockOnDisplayPanesUpdate = vi.mocked(onDisplayPanesUpdate);
-const mockOnDisplayAppearanceUpdate = vi.mocked(onDisplayAppearanceUpdate);
-const mockOnEvalGeneration = vi.mocked(onEvalGeneration);
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  // Default: all subscriptions succeed with a no-op unlisten function.
-  // Tests that need specific behaviour can override individual mocks.
-  mockOnTessellationDiagnostics.mockResolvedValue(vi.fn());
-  mockOnCompileDiagnostics.mockResolvedValue(vi.fn());
-  mockOnFeaDiagnosticsChanged.mockResolvedValue(vi.fn());
-  mockOnAutoResolveStart.mockResolvedValue(vi.fn());
-  mockOnAutoResolveIteration.mockResolvedValue(vi.fn());
-  mockOnAutoResolveComplete.mockResolvedValue(vi.fn());
-  mockOnSolverProgress.mockResolvedValue(vi.fn());
-  mockCancelSolve.mockResolvedValue(undefined);
-  mockOnTensegrityWiresUpdate.mockResolvedValue(vi.fn());
-  mockOnTensegritySurfacesUpdate.mockResolvedValue(vi.fn());
-  mockOnDisplayPanesUpdate.mockResolvedValue(vi.fn());
-  mockOnDisplayAppearanceUpdate.mockResolvedValue(vi.fn());
-  mockOnEvalGeneration.mockResolvedValue(vi.fn());
-});
-
-const sampleMesh: MeshData = {
-  entity_path: 'Bracket.body',
-  vertices: new Float32Array([0, 1, 2, 3, 4, 5]),
-  indices: new Uint32Array([0, 1, 2]),
-  normals: new Float32Array([0, 0, 1, 0, 0, 1]),
-};
-
-const sampleValue: ValueData = {
-  cell_id: 'cell_001',
-  name: 'width',
-  value: '50.0',
-  unit: 'mm',
-  determinacy: 'determined',
-  entity_path: 'Bracket.width',
-  kind: 'Param',
-  freshness: 'final',
-};
-
-const sampleConstraint: ConstraintData = {
-  node_id: 'constraint_001',
-  expression: 'width > 10',
-  status: 'satisfied',
-  label: null,
-  parameter_ids: ['cell_001'],
-};
+beforeEach(primeEngineStoreBridgeMocks);
 
 describe('engineStore', () => {
   it('has empty initial state with idle evalStatus', () => {
@@ -1014,34 +927,6 @@ describe('engineStore freshness pass-through', () => {
     });
   });
 });
-
-// One canonical auto-resolve iteration fixture, shared by every autoResolve
-// describe below. Previously each block re-declared this same 14-line literal;
-// drift between the copies would have silently stopped the deferred-reset and
-// driving-metric tests from exercising the canonical-metric interaction they
-// are named for.
-//
-// Treat as READ-ONLY: tests spread it (`{ ...sampleIteration, iteration: 2 }`)
-// rather than mutating it, so the single instance is safe to share across
-// stores. Do not `Object.freeze` it — Solid's `createStore` defines a `$PROXY`
-// property on any object it wraps, which throws on a frozen target.
-const sampleIteration = {
-  iteration: 1,
-  parameters: {
-    'Bracket.thickness': { value: 4.2, unit: 'mm', display: '4.2mm' },
-  },
-  constraints: {
-    max_von_mises: {
-      name: 'max_von_mises',
-      value: 180,
-      unit: 'MPa',
-      target_upper: 200,
-      satisfied: true,
-    },
-  },
-  driving_metric: 'max_von_mises',
-  driving_metric_value: 180,
-};
 
 describe('engineStore autoResolve loop state', () => {
   it('(a) initial state.autoResolve equals { active: false, iterations: [] }', () => {
