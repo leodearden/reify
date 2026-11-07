@@ -92,7 +92,7 @@ fn point_xyz(v: &Value) -> [f64; 3] {
 /// into `[x, y, z]`.
 fn dir_xyz(v: &Value) -> [f64; 3] {
     match v {
-        Value::Direction { x, y, z } => [*x, *y, *z],
+        Value::Direction(u) => u.components(),
         Value::Vector(comps) if comps.len() == 3 => [
             comps[0].as_f64().expect("dir component 0 numeric"),
             comps[1].as_f64().expect("dir component 1 numeric"),

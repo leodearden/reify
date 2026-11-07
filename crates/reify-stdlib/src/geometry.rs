@@ -1487,13 +1487,10 @@ fn decode_plane(v: &Value) -> Option<([f64; 3], DimensionVector, [f64; 3])> {
     Some((o, o_dim, n))
 }
 
-/// Decode a `Value::Direction` into [x,y,z]; `None` for any other value or a
-/// non-finite component.
+/// Decode a `Value::Direction` into [x,y,z]; `None` for any other value.
 fn decode_direction(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Direction { x, y, z } if x.is_finite() && y.is_finite() && z.is_finite() => {
-            Some([*x, *y, *z])
-        }
+        Value::Direction(u) => Some(u.components()),
         _ => None,
     }
 }
@@ -2581,6 +2578,12 @@ mod tests {
     use crate::eval_builtin;
     use reify_core::DimensionVector;
     use reify_ir::Value;
+
+    fn unit_dir(x: f64, y: f64, z: f64) -> Value {
+        Value::Direction(
+            reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
+        )
+    }
 
     // --- Determinacy predicate stubs (step-7) ---
 
@@ -4447,16 +4450,8 @@ mod tests {
     fn frame_at_with_x_and_z_returns_identity_frame() {
         // frame_at((0,0,0), dir(1,0,0), dir(0,0,1)) → Frame origin (0,0,0), identity basis
         let o = point3_len(0.0, 0.0, 0.0);
-        let xdir = Value::Direction {
-            x: 1.0,
-            y: 0.0,
-            z: 0.0,
-        };
-        let zdir = Value::Direction {
-            x: 0.0,
-            y: 0.0,
-            z: 1.0,
-        };
+        let xdir = unit_dir(1.0, 0.0, 0.0);
+        let zdir = unit_dir(0.0, 0.0, 1.0);
         let result = eval_builtin("frame_at", &[o, xdir, zdir]);
         match result {
             Value::Frame { origin, basis } => {
@@ -4555,18 +4550,7 @@ mod tests {
     /// The +x / +z `Value::Direction` pair every `frame_at` row below passes.
     /// Well-formed on purpose: the only thing under test is the ORIGIN.
     fn unit_x_z_directions() -> (Value, Value) {
-        (
-            Value::Direction {
-                x: 1.0,
-                y: 0.0,
-                z: 0.0,
-            },
-            Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            },
-        )
+        (unit_dir(1.0, 0.0, 0.0), unit_dir(0.0, 0.0, 1.0))
     }
 
     /// FLIPPING THIS ROW IS THE FIX, NOT A REGRESSION — `midplane`'s half of η.
@@ -4766,7 +4750,7 @@ mod tests {
     /// This is the regression guard for `examples/geometric_relations/`
     /// `construction_datum.ri`, the only real `.ri` call site of this builtin:
     /// its `top_plane` is kernel-realized and MEASURES as
-    /// `plane(point(… m), direction(0, 0, 1))`. Narrowing `decode_plane`'s dual
+    /// `plane(point(… m), dir(0, 0, 1))`. Narrowing `decode_plane`'s dual
     /// normal acceptance while adding the LENGTH gate would break the shipped
     /// example and its OCCT-gated e2e test while the rest of this suite stayed
     /// green.
@@ -4774,11 +4758,7 @@ mod tests {
     fn offset_accepts_a_plane_whose_normal_is_a_direction() {
         let realized = Value::Plane {
             origin: Box::new(point3_len(0.0, 0.0, 0.005)),
-            normal: Box::new(Value::Direction {
-                x: 0.0,
-                y: 0.0,
-                z: 1.0,
-            }),
+            normal: Box::new(unit_dir(0.0, 0.0, 1.0)),
         };
         let result = eval_builtin("offset", &[realized, Value::length(0.003)]);
         let Value::Plane { origin, .. } = result else {

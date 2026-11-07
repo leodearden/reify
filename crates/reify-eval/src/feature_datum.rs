@@ -32,7 +32,7 @@
 
 use crate::sweep_classifier::SweptKind;
 use reify_core::{Diagnostic, DiagnosticCode};
-use reify_ir::{EdgeCurveKind, GeometryHandleId, GeometryKernel, GeometryQuery, Value};
+use reify_ir::{EdgeCurveKind, GeometryHandleId, GeometryKernel, GeometryQuery, UnitVec3, Value};
 
 /// SI-metre fallback length scale used to convert the linear dedup tolerance
 /// into a scale-aware angular tolerance (design §2.3:
@@ -531,13 +531,10 @@ fn point_value(p: [f64; 3]) -> Value {
     ])
 }
 
-/// A `Value::Direction` from inline `[f64; 3]` components.
+/// A `Value::Direction` from `[f64; 3]` components, or `Undef` if they have no
+/// unit direction (the projection's degenerate→Undef convention).
 fn direction_value(d: [f64; 3]) -> Value {
-    Value::Direction {
-        x: d[0],
-        y: d[1],
-        z: d[2],
-    }
+    UnitVec3::from_vector(d).map_or(Value::Undef, Value::Direction)
 }
 
 /// Convert a kernel-returned analytic-datum [`Value`] (as composed by the OCCT
@@ -559,8 +556,8 @@ fn datum_from_value(v: &Value) -> Option<Datum> {
         Value::Point(_) => Some(Datum::Point {
             position: point3_from_value(v)?,
         }),
-        Value::Direction { x, y, z } => Some(Datum::Direction {
-            direction: [*x, *y, *z],
+        Value::Direction(u) => Some(Datum::Direction {
+            direction: u.components(),
         }),
         _ => None,
     }
@@ -577,11 +574,11 @@ fn point3_from_value(v: &Value) -> Option<[f64; 3]> {
     }
 }
 
-/// Extract `[f64; 3]` components from a `Value::Direction` (inline floats) or,
-/// defensively, a 3-component `Value::Vector` / `Value::Point`.
+/// Extract `[f64; 3]` components from a `Value::Direction` or, defensively, a
+/// 3-component `Value::Vector` / `Value::Point`.
 fn vec3_from_value(v: &Value) -> Option<[f64; 3]> {
     match v {
-        Value::Direction { x, y, z } => Some([*x, *y, *z]),
+        Value::Direction(u) => Some(u.components()),
         Value::Vector(c) | Value::Point(c) if c.len() == 3 => {
             Some([c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?])
         }

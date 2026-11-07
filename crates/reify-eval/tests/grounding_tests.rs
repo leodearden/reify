@@ -111,7 +111,7 @@ fn self_unit_axes_are_directions() {
     ] {
         let v = eval_cell(SELF_DATUM_SRC, member);
         match v {
-            Value::Direction { x, y, z } => approx3([x, y, z], expected),
+            Value::Direction(u) => approx3(u.components(), expected),
             other => panic!("expected Value::Direction for `{member}`, got {other:?}"),
         }
     }

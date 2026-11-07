@@ -293,7 +293,7 @@ pub(crate) fn field_vec3(data: &StructureInstanceData, key: &str) -> Option<[f64
         Some(Value::Vector(c) | Value::Point(c)) if c.len() == 3 => {
             [c[0].as_f64()?, c[1].as_f64()?, c[2].as_f64()?]
         }
-        Some(Value::Direction { x, y, z }) => [*x, *y, *z],
+        Some(Value::Direction(u)) => u.components(),
         _ => return None,
     };
     v.iter().all(|c| c.is_finite()).then_some(v)

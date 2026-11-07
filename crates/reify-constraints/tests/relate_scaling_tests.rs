@@ -454,7 +454,9 @@ fn z_plane_at(x: f64, y: f64, z: f64) -> Value {
 }
 
 fn direction(x: f64, y: f64, z: f64) -> Value {
-    Value::Direction { x, y, z }
+    Value::Direction(
+        reify_ir::UnitVec3::from_vector([x, y, z]).expect("test direction is non-degenerate"),
+    )
 }
 
 fn translated(translation: [f64; 3]) -> Pose {

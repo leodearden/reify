@@ -37,6 +37,11 @@ use reify_test_support::MockGeometryKernel;
 /// Build a `Value::Axis` from an origin point and a (possibly non-unit)
 /// direction, mirroring what the OCCT kernel's `EdgeAnalyticDatum` dispatch
 /// composes for a circle / line edge.
+/// A `Value::Direction` built through its only constructor.
+fn unit_dir(v: [f64; 3]) -> Value {
+    Value::Direction(reify_ir::UnitVec3::from_vector(v).expect("test direction is non-degenerate"))
+}
+
 fn axis_value(origin: [f64; 3], dir: [f64; 3]) -> Value {
     Value::Axis {
         origin: Box::new(Value::Point(vec![
@@ -44,11 +49,7 @@ fn axis_value(origin: [f64; 3], dir: [f64; 3]) -> Value {
             Value::length(origin[1]),
             Value::length(origin[2]),
         ])),
-        direction: Box::new(Value::Direction {
-            x: dir[0],
-            y: dir[1],
-            z: dir[2],
-        }),
+        direction: Box::new(unit_dir(dir)),
     }
 }
 
@@ -61,11 +62,7 @@ fn plane_value(origin: [f64; 3], normal: [f64; 3]) -> Value {
             Value::length(origin[1]),
             Value::length(origin[2]),
         ])),
-        normal: Box::new(Value::Direction {
-            x: normal[0],
-            y: normal[1],
-            z: normal[2],
-        }),
+        normal: Box::new(unit_dir(normal)),
     }
 }
 
@@ -315,7 +312,7 @@ fn assert_value_axis_is_z_line(v: &Value) {
                 other => panic!("axis origin must be a 3-component Point, got {other:?}"),
             };
             let d = match direction.as_ref() {
-                Value::Direction { x, y, z } => [*x, *y, *z],
+                Value::Direction(u) => u.components(),
                 other => panic!("axis direction must be a Direction, got {other:?}"),
             };
             assert!(
@@ -535,7 +532,7 @@ fn feature_datum_axis_example_resolves_to_single_revolution_axis() {
                 other => panic!("axis origin must be a 3-component Point, got {other:?}"),
             };
             let d = match direction.as_ref() {
-                Value::Direction { x, y, z } => [*x, *y, *z],
+                Value::Direction(u) => u.components(),
                 other => panic!("axis direction must be a Direction, got {other:?}"),
             };
             // Direction parallel to ±Y (sign-insensitive coaxiality).
