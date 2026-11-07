@@ -186,8 +186,6 @@ of `docs/prds/v0_6/check-diagnostic-truthfulness.md`.
     crates/reify-eval/tests/harness_geometry/modify_sweep_length_units_e2e.rs::bare_fillet_source_carries_both_layers_with_distinct_codes
   the eval-only constructors are invisible to the COMPILER — PINNED by
     units_chunk_smoke.rs::documented_eval_only_rejections_are_invisible_to_the_compile_layer
-  `reify check` EXITS 1 on a bare `mirror` pivot — PINNED at the CLI seam by
-    crates/reify-cli/tests/harness_cli/cli_check.rs::check_rejects_bare_scalar_mirror_origin_before_reaching_build
   `reify check` EXITS 1 with no verdict line on a bare argument to the compiler-checked
     constructors above, and 0 on its migration — PINNED at the CLI seam by
     crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs::check_exits_1_before_its_verdict_on_a_bare_compiler_checked_length

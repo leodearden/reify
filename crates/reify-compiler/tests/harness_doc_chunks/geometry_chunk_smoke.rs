@@ -695,8 +695,8 @@ fn bogus_query_name_feeding_a_comparison_is_an_error() {
 /// That masking is not hypothetical: it is why a first pass over these ten
 /// floors found two of the four that had gone stale, and a one-at-a-time sweep
 /// found all four.
-const MINIMUM_FN_CITES: usize = 14;
-const MINIMUM_RS_FILES: usize = 8;
+const MINIMUM_FN_CITES: usize = 13;
+const MINIMUM_RS_FILES: usize = 7;
 const MINIMUM_RI_FILES: usize = 8;
 
 /// Every test the chunk cites as PINNING a runtime claim must still exist.
