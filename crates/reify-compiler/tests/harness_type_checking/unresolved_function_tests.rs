@@ -892,8 +892,8 @@ fn struct_constructor_in_a_regular_fn_body_is_never_unresolved_in_either_order()
 }
 
 /// Control (d): a trait static fn calling a FORWARD-declared top-level `fn` is
-/// ALREADY clean — `traits_phase` runs after `functions_phase`, so by then
-/// `ctx.functions` is complete.
+/// ALREADY clean — `traits_phase` runs after `phase_fn_signatures`, so by then
+/// every declared fn is in the call table (as a signature stub).
 ///
 /// Written down because the obvious generalisation from route (3) is that this
 /// warns too. Measured: it does not. Pinning a bug that never existed would
@@ -910,7 +910,7 @@ fn trait_static_fn_calling_a_forward_declared_fn_stays_clean() {
     assert_eq!(
         unresolved_function_diags(&module).len(),
         0,
-        "`ctx.functions` is complete by the time traits_phase runs; got {:?}",
+        "every declared fn is in the call table by the time traits_phase runs; got {:?}",
         unresolved_function_diags(&module)
             .iter()
             .map(|d| &d.message)
@@ -1211,8 +1211,8 @@ fn genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns() {
 }
 
 /// Control (j): an assoc-fn body calling a declared top-level `fn` is ALREADY
-/// clean — conformance runs after `phase_functions`, so `resolution_functions`
-/// is complete and the call RESOLVES rather than reaching the fallback.
+/// clean — conformance runs after `phase_fn_signatures`, so `resolution_functions`
+/// holds every declared fn and the call RESOLVES rather than reaching the fallback.
 ///
 /// This is the falsifiable half of route (4)'s fix: it populates only the
 /// STRUCTURE half of `declared_callable_names` at the assoc-fn sites, and this

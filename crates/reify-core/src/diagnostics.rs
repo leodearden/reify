@@ -546,8 +546,8 @@ pub enum DiagnosticCode {
     /// sees the offending declaration, not a downstream consumer.
     ///
     /// Fired at two sites: (1) structure-body let (entity.rs ~1916) and (2) port-member
-    /// let (entity.rs ~2810). NOT fired at the skeleton/ctor-lowering let (throwaway_diags)
-    /// or at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+    /// let (entity.rs ~2810). NOT fired at trait-default-injected lets (those use
+    /// `TypeMismatchForTraitMember`).
     ///
     /// The PRD-prose mnemonic for this code is `E_LET_ANNOTATION_TYPE_MISMATCH`.
     LetAnnotationTypeMismatch,
@@ -4134,7 +4134,7 @@ pub enum DiagnosticCode {
     /// `visibility == Visibility::Private`, or a port with `is_priv == true`.
     /// The guard fires on the external member-access paths — the StructureRef /
     /// TraitObject dot-access branch, the function-body member-access path (via
-    /// the skeleton template), and the purpose-subject branch; `self.<member>`
+    /// the structure's authoritative template), and the purpose-subject branch; `self.<member>`
     /// and bare-name references inside the defining structure body are resolved
     /// by an earlier branch and are exempt.
     ///

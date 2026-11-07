@@ -160,8 +160,9 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// # Why the fallback needs it
     ///
-    /// `phase_functions` compiles each `fn` body against the user fns so far plus
-    /// the prelude (σ #8393), a table still grown in source order, so a call to a
+    /// The unified source-order pass in `phase_entities` compiles each `fn` body
+    /// against the user fns so far plus the prelude (σ #8393), a table grown in
+    /// source order, so a call to a
     /// later-declared sibling — or either half of a mutually-referential pair,
     /// which no reordering can fix — reaches the fallback with a name the module
     /// plainly declares. Entity bodies do not have that problem: they compile
@@ -175,7 +176,7 @@ pub(crate) struct CompilationScope<'u> {
     ///
     /// It binds NO values — an entry here does not put the name in `names` and
     /// cannot make a forward reference resolve. It only withholds a diagnostic.
-    /// Forward references still do not resolve; that is `phase_functions`'s
+    /// Forward references still do not resolve; that is the source-order pass's
     /// documented contract and #6014's business.
     ///
     /// # Shape

@@ -97,7 +97,7 @@ pub(crate) fn phase_entities(
     // The module-local `enum N` shadowing rule that reinterprets a name in this
     // set as `Type::Enum` (task #5429) is NOT installed here: it is installed once
     // for the whole phase sequence in `compile_with_prelude_context_checked_with_config`,
-    // because `phase_functions`/`phase_traits` run earlier and must agree with this
+    // because `phase_fn_signatures`/`phase_traits` run earlier and must agree with this
     // phase on what the name means (esc-5429-1). See
     // `enums_phase::build_local_enum_shadow_set`.
     //

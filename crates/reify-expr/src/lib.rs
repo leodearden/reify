@@ -2542,18 +2542,9 @@ fn invoke_solve_elastic_static(args: &[Value], ctx: &EvalContext) -> Value {
     // loop in a single place).
     let result = eval_compiled_function_with_values(func, args, ctx);
     if result.is_undef() {
-        // The contract body `ElasticResult()` compiles as
-        // `CompiledExprKind::FunctionCall` (not `StructureInstanceCtor`) because
-        // `ElasticResult` is declared in the same module as `solve_elastic_static`,
-        // and `phase_functions` only builds the template registry from the prelude
-        // (modules *before* `solver_elastic.ri`) when compiling function bodies.
-        // `ElasticResult` is absent from that prelude registry, so the
-        // ctor-lowering path never fires and the call is emitted as `FunctionCall`,
-        // which `eval_builtin` does not recognise → Undef.
-        //
-        // Synthesise the intended `Value::StructureInstance` fallback so callers in
-        // non-trampoline contexts (e.g. `make_simple_engine()`) receive a non-Undef
-        // placeholder — consistent with the docstring's contract-body-fallback
+        // The contract body yielded Undef. Synthesise the intended
+        // `Value::StructureInstance` fallback so callers in non-trampoline
+        // contexts (e.g. `make_simple_engine()`) receive a non-Undef placeholder — consistent with the docstring's contract-body-fallback
         // description.  The real ElasticResult (with displacement, stress, etc.) is
         // produced by the `@optimized` trampoline in engine_eval.rs; the simple
         // StructureInstance here is only the stub path.

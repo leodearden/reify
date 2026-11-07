@@ -3190,9 +3190,7 @@ fn compile_expr_guarded_with_expected_inner(
                 //     emitted no cell at all, so this exclusion was vacuous — see the stale
                 //     comment this replaces). Eagerly materializing a geometry cell here would
                 //     shift `StructureInstanceCtor` cache identity beyond γ's ratified
-                //     value-cell shape change and diverge this (authoritative) phase from the
-                //     phase_functions skeleton builder, which still excludes geometry lets —
-                //     the exact cross-path ctor-lets inconsistency task 4342 exists to prevent.
+                //     value-cell shape change.
                 //     Mirrors β's `cell_type != Type::Geometry` compute-value_inputs exclusion
                 //     (engine_eval.rs:262).
                 let lets: Vec<(String, CompiledExpr)> = template

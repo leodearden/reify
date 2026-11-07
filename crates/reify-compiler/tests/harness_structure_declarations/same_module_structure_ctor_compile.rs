@@ -329,14 +329,6 @@ structure App {
     );
 }
 
-// Deleted with the mirror (task 5494): `skeleton_pass_produces_no_spurious_-
-// parametric_alias_info_diagnostics`. Its rationale was skeleton-internal — it
-// guarded a `TypeAliasRegistry` clone the mirror was believed to take before
-// resolving param types — and was already stale (the mirror read the registry
-// read-only, no clone). The Info machinery it pinned the absence of was retired
-// by task 4792, which owns that guarantee now. There is no second alias-resolution
-// path left for a fn-body ctor to drift from, so the test has no subject.
-
 // ─── task-4342 step-3b: fn-returned struct carries its template's lets ─────────
 
 const TOL_SRC: &str = r#"

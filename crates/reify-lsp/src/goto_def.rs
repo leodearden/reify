@@ -1183,10 +1183,9 @@ mod tests {
         //   `ctx.templates` as a top-level structure. The only thing scoped to
         //   the purpose is AMBIENT-DEFAULT resolution, via `Some(p.name)`
         //   (DD6 innermost-wins).
-        // - The one documented limitation (pre_pass.rs, same arm) is that
-        //   `structure_refs` omits them, so `phase_functions` builds no
-        //   signature skeleton. That is a SKELETON gap, not a name-visibility
-        //   rule.
+        // - The one documented limitation (pre_pass.rs, same arm) is that a fn
+        //   body may not see its template, depending on declaration order. That
+        //   is a COMPILE-ORDER gap, not a name-visibility rule.
         //
         // A module-level name is file-wide navigable, so goto-def resolves it
         // from anywhere in the file — and navigation is read-only, where a

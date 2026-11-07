@@ -929,8 +929,7 @@ fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
 /// to avoid false positives on geometry/trait/structure-ref params.
 ///
 /// Called at the two authoritative param-with-default sites (top-level structure-param
-/// arm and port-member param arm).  NOT called at the ctor-lowering mirror pass
-/// (~entity.rs:4129-4161) which writes into `throwaway_diags` by design.
+/// arm and port-member param arm).
 ///
 /// `has_explicit_type` must be `param.type_expr.is_some()` at the call site.
 /// For an untyped param the compiler assigns a dimensionless-scalar inference
@@ -1035,8 +1034,7 @@ fn check_param_default_type(
 /// 1. structure-body let (entity.rs ~1916, after `fixup_option_none_for_let`)
 /// 2. port-member let (entity.rs ~2810, after `fixup_option_none_for_let`)
 ///
-/// NOT called at the skeleton/ctor-lowering let (`throwaway_diags`) or at
-/// trait-default-injected lets (those use `TypeMismatchForTraitMember`).
+/// NOT called at trait-default-injected lets (those use `TypeMismatchForTraitMember`).
 ///
 /// Engaged only when the let annotation resolves successfully (`expected_ty = Some`),
 /// so unresolved annotations (`let a : Bogus = 5`) remain silently tolerated.

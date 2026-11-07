@@ -644,7 +644,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // tests/harness_langcore/enum_ctor_param_binding_tests.rs.
     //
     // WHOLE-MODULE RAII binding, deliberately not per-phase. Every phase below that
-    // lowers a declared type name must agree on what `Fit` means: `phase_functions`
+    // lowers a declared type name must agree on what `Fit` means: `phase_fn_signatures`
     // and `phase_traits` run BEFORE `phase_entities`, so scoping this to
     // `phase_entities` alone made a trait requirement / fn signature param keep
     // `Type::StructureRef("Fit")` while the conforming structure's param became
@@ -740,7 +740,7 @@ pub fn compile_with_prelude_context_checked_with_config(
     // Function param defaults and bodies are compiled by `phase_entities`,
     // interleaved with entity templates in declaration order, so a fn body
     // constructing a same-module structure gets that structure's AUTHORITATIVE
-    // template. There is no separate `phase_functions` and no skeleton mirror.
+    // template (PRD stdlib-namespace D-8).
     compile_builder::functions_phase::phase_fn_signatures(
         &mut compile_ctx,
         prelude_refs,

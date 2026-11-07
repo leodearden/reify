@@ -17,8 +17,8 @@ use reify_test_support::{compile_source, compile_source_with_stdlib};
 /// `Type::StructureRef("MyS")` with zero Error diagnostics.
 ///
 /// Pins that the two-pass fix makes locally-defined structure names visible to
-/// `compile_function` (they live in `ctx.seen_entity_names` after the pre-pass,
-/// which is available before `phase_functions` runs).
+/// `resolve_fn_signature` (they live in `ctx.seen_entity_names` after the pre-pass,
+/// which is available before `phase_fn_signatures` runs).
 #[test]
 fn fn_signature_resolves_local_structure_name() {
     let source = r#"
@@ -235,7 +235,7 @@ fn fn_signature_resolves_solid_builtin_alias() {
     );
 }
 
-/// Both `phase_functions` (fn signature) and `phase_traits` (structure
+/// Both `phase_fn_signatures` (fn signature) and `phase_traits` (structure
 /// conformance check) work correctly together after the DRY refactor in
 /// step-2 (g), where `phase_traits` was changed to read the pre-computed
 /// ctx name sets instead of rebuilding local copies.
@@ -243,7 +243,7 @@ fn fn_signature_resolves_solid_builtin_alias() {
 /// Source contains a fn whose parameter type is a stdlib trait name AND a
 /// local structure that refines that same trait.  The test pins that both
 /// phases integrate without producing Error diagnostics:
-/// - `phase_functions` resolves `MaterialSpec` in the fn signature (reads
+/// - `phase_fn_signatures` resolves `MaterialSpec` in the fn signature (reads
 ///   `ctx.resolution_trait_names`).
 /// - `phase_traits` compiles the `MyMat : MaterialSpec` conformance
 ///   relationship via `build_trait_registry` (reads
@@ -276,7 +276,7 @@ fn phase_traits_consumes_shared_names_no_regression() {
         .collect();
     assert!(
         errors.is_empty(),
-        "expected zero Error diagnostics — both phase_functions (fn sig) and \
+        "expected zero Error diagnostics — both phase_fn_signatures (fn sig) and \
          phase_traits (structure conformance) must read the shared name sets correctly; \
          got: {:?}",
         errors

@@ -2,7 +2,8 @@
 //! Tests for `crates/reify-compiler/stdlib/flexures.ri` —
 //! `std.flexures` module: `RotationalStiffness` alias, `FlexureCompliance`
 //! structure_def, and the `flexure_compliance(joint)` accessor stdlib fn —
-//! all in a single module, enabled by the skeleton pre-pass (task 3895).
+//! all in a single module, the structure_def declared above the accessor
+//! (source-order fn compilation, PRD stdlib-namespace D-8).
 //!
 //! Observable signal for PRD §11 Phase 1 label β
 //! (docs/prds/v0_3/compliant-joints-flexures.md). Per the PRD, this file

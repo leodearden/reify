@@ -291,8 +291,7 @@ pub(crate) fn resolve_fn_signature(
 /// against, so a structure-def constructor call — e.g. `Widget()` — lowers to
 /// `CompiledExprKind::StructureInstanceCtor` rather than a generic
 /// `FunctionCall`.  It carries prelude structure_defs (esc-3851-32) plus the
-/// module's own AUTHORITATIVE structure templates built so far (task 5494);
-/// there is no mirror/skeleton template registry any more.
+/// module's own AUTHORITATIVE structure templates built so far (task 5494).
 ///
 /// `functions` is the call-resolution table for the defaults and the body.
 /// `declared_callable_names` is the module's order-independent callable
@@ -793,9 +792,10 @@ pub(crate) fn compile_assoc_function(
 
     // Only the STRUCTURE half of the callable vocabulary here — see
     // `CompilationScope::declared_callable_names`. The absent fn half is a
-    // decision, not an omission: conformance runs after `phase_functions`, so
-    // the `functions` table these bodies resolve against is already COMPLETE
-    // and a call to any declared fn resolves instead of falling through.
+    // decision, not an omission: conformance runs after `phase_fn_signatures`,
+    // so the `functions` table these bodies resolve against already holds every
+    // declared fn (at least as a signature stub) and a call to any declared fn
+    // resolves instead of falling through.
     // Pinned from both sides by `assoc_fn_calling_a_declared_fn_stays_clean`
     // and `genuinely_undeclared_callee_in_an_assoc_fn_body_still_warns`.
     //

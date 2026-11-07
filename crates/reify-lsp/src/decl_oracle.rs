@@ -167,8 +167,8 @@ fn nested_structures(decl: &Declaration) -> &[reify_ast::StructureDef] {
 /// same-named top-level structure — and `compile_builder::entities_phase`
 /// compiles it into the same `ctx.templates` as a top-level structure, scoping
 /// only AMBIENT-DEFAULT resolution to the purpose. Its one documented
-/// limitation, that `structure_refs` omits them so no function-signature
-/// skeleton is built, is a skeleton gap rather than a visibility rule.
+/// limitation, that a fn body may not see its template depending on declaration
+/// order, is a compile-order gap rather than a visibility rule.
 ///
 /// SINGLE-LEVEL, by construction and not by choice: the grammar allows
 /// `structure_definition` only one level under `purpose_member`, so there is no
