@@ -2,6 +2,8 @@
 //! each file needs, as derived by `reify_compiler::import_headers`.
 
 use std::collections::BTreeSet;
+use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 use reify_compiler::import_headers::{self, RequiredImport};
@@ -101,7 +103,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         .map(|required| required.module.clone())
         .collect();
     let fixed = import_headers::insert_imports(&source, &parsed, &modules);
-    if let Err(e) = std::fs::write(path, fixed) {
+    if let Err(e) = replace_atomically(Path::new(path), &fixed) {
         eprintln!("Error writing {path}: {e}");
         return false;
     }
@@ -109,6 +111,27 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
         println!("{path}: added import {}", describe(required));
     }
     true
+}
+
+/// Writes a sibling temp file and renames it over `path`'s target, so a failure leaves the
+/// original intact.
+fn replace_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
+    let target = std::fs::canonicalize(path)?;
+    let dir = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", target.display()),
+        )
+    })?;
+    let permissions = std::fs::metadata(&target)?.permissions();
+    let mut temp = tempfile::Builder::new()
+        .prefix(".reify-fix.")
+        .tempfile_in(dir)?;
+    temp.write_all(contents.as_bytes())?;
+    temp.as_file().set_permissions(permissions)?;
+    temp.as_file().sync_all()?;
+    temp.persist(&target).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// `std.x.y (A, B)`: the module and the names that need it.
