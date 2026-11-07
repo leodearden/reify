@@ -257,6 +257,13 @@ Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf*
 - **Grammar-fixture (anti-mismatch).** Reuse the G3 grammar gate (`references/grammar-gate.md`): each novel syntax fragment is a committed `.ri` fixture that `tree-sitter parse --quiet` accepts with 0 ERROR nodes, OR names an upstream grammar-producer task (e.g. DCE `3936`). Cite the fixture path as manifest evidence.
 - **Numeric floor.** The G6 domain hazards (P1-tet bending lock, Dirichlet `k≈0.67–0.70`, spline end-conditions, Duhamel `O((ΩΔt)²)`, eigensolver conditioning) are the floors; assert `bound > floor`.
 
+**Worked precedent corpus** (the manifest's cautionary set — 2026-05-30 premise-review, report at `.orchestrator-scratch/v0_6-premise-review-report-2026-05-30.md`). Each is a binding the manifest would have FAILED *before* dispatch:
+- `field-population`: esc-2962-33 (`ElasticResult.{stress,displacement}` = `Undef`), §3-C / task 3823 (`ModalResult.shape` Φ = `Undef`), task 3015 (superposition `linear_combine` over `Undef` fields).
+- `producer-absent` / wrong-layer: esc-3005-32 (cache-reuse capability lives in reify-eval, not the task's reify-expr/reify-stdlib scope), esc-2929-40 (per-Support source-span provenance absent from value model + ComputeFn signature).
+- `declared-only` / `test-only`: esc-3845-77 (bind/couple/prismatic are bare `eval_builtin`s, no compiler signature), esc-3607-59 (no on-disk geometry persistence; RealizationCache is in-memory per-Engine).
+- grammar / substrate: esc-2998-47 (ConvergenceStatus payload enum — resolved by **gating on the DCE cluster `3946`**, which adds named-field payload variants, rather than a C-style re-spec), the C-06 grammar-fiction precedents.
+- `bound≤floor`: esc-3821-44 (Duhamel `1e-9` ≪ `O((ΩΔt)²)≈2e-3` floor), esc-3453 buckling (`5%` < `9–10%` bending lock → 4066).
+
 **The `.yaml` sidecar's schema is strict — validate it before `commit_planning` and after every later hand edit.** In dark-factory's schema module `shared/src/shared/capability_manifest.py` (the models plus the `load_capability_manifest` loader) every model forbids extra keys (`extra='forbid'`), so ONE undeclared key fails the WHOLE document — the legibility-census sighting behind #9855 was `tasks.7.capabilities.0.note  Extra inputs are not permitted [type=extra_forbidden]`. Allowed keys, as of dark-factory `e7d86f7533` (2026-10-26) — **the loader wins over this list**:
 - the document, `CapabilityManifestDoc`: `prd`, `schema_version` (the literal `1`), `tasks`, `signal_leaves`;
 - a task block, `ManifestTask`: `label`, `task_id`, `external_task_id`, `title`, `note`, `capabilities`;
@@ -274,13 +281,6 @@ Validate with the schema's own loader — no output and exit 0 means the sidecar
 Run it at both times. `commit_planning` is fail-soft on a sidecar that fails to load: it reports the error in its `manifest_stamping` result, stamps no `task_id`, copies no `delivered_checks` and does not block the batch, so the batch's dispatch gate is disarmed unless you read that report (dark-factory `fused-memory/src/fused_memory/server/manifest_stamping.py`). And nothing re-validates a sidecar's schema after it lands, so a hand edit during a later correction is where breakage goes unseen.
 
 **Measured 2026-11-07** (dated context, not a live claim): 5 of the 88 committed `*.capability-manifest.yaml` failed to load — four from a free-text annotation appended to `verdict`, one from an undeclared task-level `status` key.
-
-**Worked precedent corpus** (the manifest's cautionary set — 2026-05-30 premise-review, report at `.orchestrator-scratch/v0_6-premise-review-report-2026-05-30.md`). Each is a binding the manifest would have FAILED *before* dispatch:
-- `field-population`: esc-2962-33 (`ElasticResult.{stress,displacement}` = `Undef`), §3-C / task 3823 (`ModalResult.shape` Φ = `Undef`), task 3015 (superposition `linear_combine` over `Undef` fields).
-- `producer-absent` / wrong-layer: esc-3005-32 (cache-reuse capability lives in reify-eval, not the task's reify-expr/reify-stdlib scope), esc-2929-40 (per-Support source-span provenance absent from value model + ComputeFn signature).
-- `declared-only` / `test-only`: esc-3845-77 (bind/couple/prismatic are bare `eval_builtin`s, no compiler signature), esc-3607-59 (no on-disk geometry persistence; RealizationCache is in-memory per-Engine).
-- grammar / substrate: esc-2998-47 (ConvergenceStatus payload enum — resolved by **gating on the DCE cluster `3946`**, which adds named-field payload variants, rather than a C-style re-spec), the C-06 grammar-fiction precedents.
-- `bound≤floor`: esc-3821-44 (Duhamel `1e-9` ≪ `O((ΩΔt)²)≈2e-3` floor), esc-3453 buckling (`5%` < `9–10%` bending lock → 4066).
 
 **Scoping an `expect: absent` check — bind it to the construct, not the bare token.**
 1. Scope an `absent` pattern to the CONSTRUCT that would carry the defect, never to the bare token. A bare-token grep cannot distinguish code from a comment, and it also forbids legitimate unrelated uses of the token elsewhere in the same file. The collision is likely, not exotic: the clearest way to document "we stopped depending on X" is to write X's name, so the fix and the check race each other.
