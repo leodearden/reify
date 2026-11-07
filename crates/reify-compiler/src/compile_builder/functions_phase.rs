@@ -82,6 +82,10 @@ pub(crate) fn phase_fn_signatures(
 ///   `user_fns_so_far` plus every prelude fn they do not shadow, so forward
 ///   references to sibling fns do not resolve.
 ///
+/// A module-local top-level `structure def` (`top_level_structure_def_names`)
+/// with no template in `templates_so_far` is declared BELOW this fn; using it
+/// draws `StructureDeclaredAfterFunction` rather than a silent fallback.
+///
 /// `declared_callables` is the module's order-independent callable vocabulary
 /// (task #5371), built once per pass by the caller.
 ///
@@ -95,10 +99,16 @@ pub(crate) fn compile_function_decl(
     user_fns_so_far: &[CompiledFunction],
     templates_so_far: &[TopologyTemplate],
     prelude: &[&CompiledModule],
-    local_structure_names: &HashSet<String>,
+    top_level_structure_def_names: &HashSet<String>,
     declared_callables: &HashSet<String>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<CompiledFunction> {
+    let compiled_so_far: HashSet<&str> = templates_so_far.iter().map(|t| t.name.as_str()).collect();
+    let later_declared_structure_names: HashSet<String> = top_level_structure_def_names
+        .iter()
+        .filter(|name| !compiled_so_far.contains(name.as_str()))
+        .cloned()
+        .collect();
     let functions = build_resolution_functions(user_fns_so_far, prelude);
     let template_registry: HashMap<String, &TopologyTemplate> =
         name_env::ctor_template_registry(templates_so_far, prelude);
@@ -107,7 +117,7 @@ pub(crate) fn compile_function_decl(
         sig,
         enum_defs,
         &functions,
-        local_structure_names,
+        Some(&later_declared_structure_names),
         declared_callables,
         Some(&template_registry),
         diagnostics,

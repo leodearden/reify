@@ -145,7 +145,8 @@ pub(crate) struct DeclRefs<'a> {
 /// * reserves entity-namespace names for `Field` / `Structure` / `Occurrence`
 ///   / `Constraint` via `ctx.seen_entity_names` (emitting a duplicate-entity
 ///   error via `ctx.diagnostics` on collision — spec §4.2.1 unified entity
-///   namespace),
+///   namespace), and records each top-level `Structure` name in
+///   `ctx.top_level_structure_def_names`,
 /// * and accumulates borrow-slices of `Fn`, `Trait`, `Field`, `Unit`,
 ///   `TypeAlias` decls for later phases into the returned [`DeclRefs`].
 ///
@@ -194,7 +195,10 @@ pub(crate) fn collect_decl_refs<'a>(
                 }
             }
             Declaration::Structure(structure) => {
-                ctx.record_or_report_duplicate(&structure.name, structure.span, "structure");
+                if ctx.record_or_report_duplicate(&structure.name, structure.span, "structure") {
+                    ctx.top_level_structure_def_names
+                        .insert(structure.name.clone());
+                }
             }
             Declaration::Occurrence(occurrence) => {
                 ctx.record_or_report_duplicate(&occurrence.name, occurrence.span, "occurrence");

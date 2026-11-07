@@ -307,7 +307,7 @@ pub(crate) fn compile_function_with_signature(
     sig: &FnSignature,
     enum_defs: &[reify_ir::EnumDef],
     functions: &[CompiledFunction],
-    structure_names: &HashSet<String>,
+    later_declared_structure_names: Option<&HashSet<String>>,
     declared_callable_names: &HashSet<String>,
     template_registry: Option<&HashMap<String, &TopologyTemplate>>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -328,10 +328,11 @@ pub(crate) fn compile_function_with_signature(
     if let Some(reg) = template_registry {
         neutral_scope.set_template_registry(reg);
     }
-    // task 5494: lets the ctor-lowering site tell "not a structure" from "a
-    // same-module structure declared BELOW this fn" and report the latter as an
-    // ordering error instead of silently degrading to a generic FunctionCall.
-    neutral_scope.set_local_structure_names(structure_names);
+    // task 5494: a default using a same-module structure declared BELOW this fn
+    // is reported as an ordering error, never silently degraded.
+    if let Some(names) = later_declared_structure_names {
+        neutral_scope.set_later_declared_structure_names(names);
+    }
     // Neutral for VALUE bindings, not for the module's declared vocabulary: a
     // default like `= helper(1.0)` compiles against the same partially-grown
     // `functions` table as the body below, so it must be answered the same way.
@@ -399,7 +400,9 @@ pub(crate) fn compile_function_with_signature(
     if let Some(reg) = template_registry {
         scope.set_template_registry(reg);
     }
-    scope.set_local_structure_names(structure_names);
+    if let Some(names) = later_declared_structure_names {
+        scope.set_later_declared_structure_names(names);
+    }
     // The module's declared callable vocabulary — see
     // `CompilationScope::declared_callable_names` for why this body needs it.
     // Borrowed, never merged here: the caller builds it once per pass.
@@ -528,7 +531,9 @@ pub(crate) fn compile_function(
         &sig,
         enum_defs,
         functions,
-        structure_names,
+        // Trait-static and assoc fns are not in the source-order pass, so the
+        // declaration-order rule does not apply to them (#5371's ruling).
+        None,
         declared_callable_names,
         prelude_template_registry,
         diagnostics,

@@ -4926,6 +4926,21 @@ pub enum DiagnosticCode {
     ///
     /// Severity: Error.
     ImportedModuleParseError,
+    /// Origin: `crates/reify-compiler/src/expr.rs::later_declared_structure_error`
+    /// (task #5494, PRD stdlib-namespace D-8).
+    ///
+    /// Emitted at COMPILE time when a free fn's body or param default uses the
+    /// template of a module-local `structure def` that is declared BELOW the fn
+    /// — by constructing it (`Foo()`) or by member access on a param typed as it
+    /// (`m.x`). Fn bodies compile in source order, interleaved with structure
+    /// templates, so a fn may use a same-module structure's template only if the
+    /// `structure def` is declared above the fn. The fix-it is to move it.
+    ///
+    /// Canonical message: `"structure '<Name>' is declared after this function;
+    /// move `structure def <Name>` above it"`.
+    ///
+    /// Severity: Error.
+    StructureDeclaredAfterFunction,
 }
 
 /// A diagnostic message with location and optional labels.

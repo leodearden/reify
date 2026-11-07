@@ -120,8 +120,15 @@ pub(crate) struct CompilationCtx {
     /// `names_phase::build_resolution_names` BEFORE `phase_fn_signatures` so
     /// fn-signature type resolution can resolve structure names to
     /// `Type::StructureRef`. Consumed by `phase_fn_signatures`, `phase_traits`,
-    /// and (as `local_structure_names`) the unified pass in `phase_entities`.
+    /// and `phase_entities`.
     pub(crate) resolution_structure_names: HashSet<String>,
+    /// The module's own TOP-LEVEL `structure def` names (first definition only;
+    /// purpose-nested structures and occurrences excluded). Recorded by
+    /// `pre_pass::collect_decl_refs`. The fn-body declaration-order rule
+    /// (task #5494) is keyed on this set: unlike `resolution_structure_names` it
+    /// holds no prelude or occurrence names, which never enter the ctor view the
+    /// way a local structure does.
+    pub(crate) top_level_structure_def_names: HashSet<String>,
     /// Names this module DECLARES as functions: every local `fn` declaration +
     /// every prelude function. Populated by `names_phase::build_resolution_names`
     /// BEFORE `phase_fn_signatures`; consumed by both the unified pass in
@@ -172,6 +179,7 @@ impl CompilationCtx {
             resolution_functions: Vec::new(),
             resolution_trait_names: HashSet::new(),
             resolution_structure_names: HashSet::new(),
+            top_level_structure_def_names: HashSet::new(),
             declared_fn_names: HashSet::new(),
         }
     }

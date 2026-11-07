@@ -2823,43 +2823,12 @@ fn compile_expr_guarded_with_expected_inner(
 
             // ── task 5494: same-module structure declared BELOW this fn ─────
             //
-            // Fn bodies and fn param defaults are compiled in source order,
-            // interleaved with entity templates, so `scope.template_registry`
-            // holds only the structures declared ABOVE this function — the same
-            // no-forward-reference rule `compile_entity` already obeys for
-            // entity → entity references. A `Foo()` call whose name IS a
-            // same-module `structure def` but has no template yet is therefore a
-            // DECLARATION-ORDER error, and must be reported as one.
-            //
-            // Without this branch the call falls through the ordinary
-            // function-call ladder and lands on the zero-arg return-type
-            // fallback below, which merely WARNS ("cannot infer return type of
-            // zero-arg function 'Foo', defaulting to Real") and lowers a generic
-            // `FunctionCall`. The module then compiles with zero errors while
-            // the function silently returns a `Real` instead of a `Foo` — the
-            // silent divergence PRD `stdlib-namespace.md` boundary #5 forbids.
-            //
-            // Guarded on `local_structure_names` being set, so only fn scopes
-            // opt in; entity scopes leave it `None` and keep their own
-            // forward-reference reporting.
-            if scope
-                .local_structure_names
-                .is_some_and(|names| names.contains(name.as_str()))
-                && !scope
-                    .template_registry
-                    .is_some_and(|registry| registry.contains_key(name.as_str()))
-            {
-                return make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(format!(
-                        "structure '{name}' is declared after this function; \
-                         move `structure def {name}` above it"
-                    ))
-                    .with_label(DiagnosticLabel::new(
-                        expr.span,
-                        "structure declared later in the file",
-                    )),
-                );
+            // Without this check the call falls through the ordinary
+            // function-call ladder to the zero-arg return-type fallback, which
+            // merely WARNS and lowers a generic `FunctionCall`: the function
+            // would silently return a `Real` instead of a `Foo`.
+            if let Some(diagnostic) = later_declared_structure_error(scope, name, expr.span) {
+                return make_poison_literal(diagnostics, diagnostic);
             }
 
             // ── task 3540 (SIR-α): structure-instance ctor lowering ─────────
@@ -7057,6 +7026,32 @@ fn member_access_aggregation_or_unsupported(
         )
     }
 }
+/// The fn-body declaration-order rule (task #5494, PRD stdlib-namespace D-8).
+///
+/// A free fn's body and param defaults compile in source order, interleaved
+/// with structure templates, so they may use a module-local `structure def`'s
+/// template — by constructor or by member access — only if it is declared
+/// ABOVE the fn. `Some` names the violation when `name` is in the scope's
+/// `later_declared_structure_names`; `None` for every other name, and always
+/// for scopes that do not set that field (entity, trait-static, assoc-fn).
+fn later_declared_structure_error(
+    scope: &CompilationScope,
+    name: &str,
+    span: reify_core::SourceSpan,
+) -> Option<Diagnostic> {
+    let declared_later = scope
+        .later_declared_structure_names
+        .is_some_and(|names| names.contains(name));
+    declared_later.then(|| {
+        Diagnostic::error(format!(
+            "structure '{name}' is declared after this function; \
+             move `structure def {name}` above it"
+        ))
+        .with_code(DiagnosticCode::StructureDeclaredAfterFunction)
+        .with_label(DiagnosticLabel::new(span, "structure declared later in the file"))
+    })
+}
+
 // ── compiler-type-hygiene ε1 step-4: named per-kind handlers ───────────────
 
 /// `<receiver>.<member>` where the receiver's static type is
@@ -7287,6 +7282,15 @@ fn member_access_on_structure_like(
         && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
             &compiled_obj.result_type
     {
+        // task 5494: a fn-body receiver typed as a same-module structure declared
+        // BELOW the fn has no template yet. Checked BEFORE the permissive
+        // registry-miss fallback and the datum/priv branches below, so a `priv`
+        // member of a later-declared structure is never silently readable.
+        if matches!(&compiled_obj.result_type, Type::StructureRef(_))
+            && let Some(diagnostic) = later_declared_structure_error(scope, struct_name, span)
+        {
+            return make_poison_literal(diagnostics, diagnostic);
+        }
         // Split the lookup so we can distinguish "member present", "struct unknown",
         // and "struct known but member absent" (ds-sentinel L4, task #4649).
         let template = scope
