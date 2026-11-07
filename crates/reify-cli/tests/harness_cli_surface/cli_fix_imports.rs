@@ -142,6 +142,35 @@ fn fix_refuses_to_write_when_the_derived_imports_leave_a_diagnostic() {
 }
 
 #[test]
+fn fix_refusal_locates_each_residual_in_the_file() {
+    let dir = tempdir().expect("tempdir");
+    let file = write_ri(dir.path(), "plate.ri", TYPE_PARAM_HIDES_COLOR);
+    let offset = TYPE_PARAM_HIDES_COLOR
+        .find("tint : Color")
+        .expect("fixture declares tint")
+        + "tint : ".len();
+    let before = &TYPE_PARAM_HIDES_COLOR[..offset];
+    let line = before.matches('\n').count() + 1;
+    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    let col = before[line_start..].chars().count() + 1;
+
+    let output = run_reify(&["fix", "--imports", &file]);
+    assert!(!output.status.success(), "{}", describe(&output));
+    let located = format!("{file}:{line}:{col}: error: ");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|residual| residual.starts_with(&located) && residual.contains("Color")),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(&file).expect("read fixture"),
+        TYPE_PARAM_HIDES_COLOR
+    );
+}
+
+#[test]
 fn a_parse_error_fails_the_file_and_leaves_it_alone() {
     let dir = tempdir().expect("tempdir");
     let file = write_ri(dir.path(), "broken.ri", BROKEN);
