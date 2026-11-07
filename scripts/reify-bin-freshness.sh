@@ -36,10 +36,12 @@
 # A missing binary, a missing sidecar, or a sidecar/HEAD mismatch all mean the
 # binary's provenance relative to the CURRENT tree is unproven — treated as
 # STALE. Callers must map staleness to a clean SKIP (never a verdict), matching
-# the existing toolchain-not-built guard pattern. A non-git repo_root fails
-# OPEN (treated as fresh) so edge/CI/unit-test-fixture invocations that aren't
-# inside a git checkout are not incorrectly blocked — mirrors
-# reify-audit-freshness.sh's fail-open precedent.
+# the existing toolchain-not-built guard pattern. A repo_root in which git
+# finds no repository at all fails OPEN (treated as fresh) so
+# edge/CI/unit-test-fixture invocations that aren't inside a git checkout are
+# not incorrectly blocked — mirrors reify-audit-freshness.sh's fail-open
+# precedent. Inside a checkout, a HEAD git cannot read (unborn, corrupt ref,
+# lost worktree gitdir, dubious ownership, no git on PATH) is STALE too.
 #
 # USAGE
 # -----
@@ -69,25 +71,41 @@ REIFY_BIN_TRUSTED=0
 REIFY_BIN_UNVOUCHED=1
 REIFY_BIN_NOT_BUILT=2
 
-# reify_bin_head_sha [repo_root]
+# _reify_bin_git <repo_root> <git args...>
 #
-# Prints the current HEAD commit SHA of repo_root. Prints nothing (empty
-# string) when repo_root is not a git repo or has no HEAD. Every exported GIT_*
-# variable except GIT_CEILING_DIRECTORIES is dropped first, so `-C repo_root`
-# alone decides the repository: under a hook GIT_DIR is exported and would
-# answer for another one. The ceiling is kept because it can only stop
-# discovery short of a repository: it never redirects discovery, and it never
-# hides repo_root itself, which git always checks. That lets a caller bound
-# the walk-up for a non-git repo_root.
-reify_bin_head_sha() {
-    local repo_root="${1:-$PWD}"
+# Runs git on repo_root in the C locale, so its messages are never translated.
+# Every exported GIT_* variable except GIT_CEILING_DIRECTORIES is dropped
+# first, so `-C repo_root` alone decides the repository: under a hook GIT_DIR
+# is exported and would answer for another one. The ceiling is kept because it
+# can only stop discovery short of a repository: it never redirects discovery,
+# and it never hides repo_root itself, which git always checks. That lets a
+# caller bound the walk-up for a non-git repo_root.
+_reify_bin_git() {
+    local repo_root="$1"
+    shift
     (
         for v in $(compgen -e GIT_); do
             [ "$v" = GIT_CEILING_DIRECTORIES ] || unset "$v"
         done
-        git -C "$repo_root" rev-parse --verify HEAD 2>/dev/null
-    ) || true
+        LC_ALL=C git -C "$repo_root" "$@"
+    )
 }
+
+# reify_bin_head_sha [repo_root]
+#
+# Prints the current HEAD commit SHA of repo_root. Prints nothing (empty
+# string) when git cannot answer: repo_root is not a git repo, or its HEAD
+# cannot be read.
+reify_bin_head_sha() {
+    _reify_bin_git "${1:-$PWD}" rev-parse --verify HEAD 2>/dev/null || true
+}
+
+# What git prints, in the C locale, when discovery finds no repository at all:
+# from a plain directory, under a ceiling, or at a filesystem boundary. A lost
+# linked-worktree gitdir prints "not a git repository: <gitdir>" instead, and
+# an unborn HEAD, a corrupt ref, dubious ownership or a missing git print
+# something else again.
+_REIFY_BIN_NO_REPOSITORY='not a git repository (or any '
 
 # reify_bin_recorded_sha [repo_root]
 #
@@ -104,18 +122,24 @@ reify_bin_recorded_sha() {
 # reify_bin_unvouched_reason [repo_root]
 #
 # The one SHA comparison. Prints why target/.reify-bin-sha does not vouch for
-# repo_root's build — it is absent, or it records a SHA that is not HEAD —
-# and prints nothing when it does. Also prints nothing when repo_root's HEAD
-# is undeterminable (non-git repo_root): fail-open, since without a tree to
-# compare against cross-candidate contamination cannot be proven, and this is
-# a legitimate edge/CI/fixture invocation.
+# repo_root's build — it is absent, it records a SHA that is not HEAD, or
+# git cannot read HEAD — and prints nothing when it does. Also prints nothing
+# when git finds no repository at repo_root at all: fail-open, since without
+# a tree to compare against cross-candidate contamination cannot be proven,
+# and this is a legitimate edge/CI/fixture invocation. Any other git failure
+# inside a checkout leaves HEAD unproven, so it is a reason, never fail-open.
 reify_bin_unvouched_reason() {
     local repo_root="${1:-$PWD}"
     local sidecar="$repo_root/target/.reify-bin-sha"
 
-    local head
+    local head git_error
     head=$(reify_bin_head_sha "$repo_root")
     if [ -z "$head" ]; then
+        git_error=$(_reify_bin_git "$repo_root" rev-parse --verify HEAD 2>&1 >/dev/null) || true
+        case "$git_error" in
+            *"$_REIFY_BIN_NO_REPOSITORY"*) return 0 ;;
+        esac
+        printf "%s's HEAD is undeterminable (%s)\n" "$repo_root" "${git_error%%$'\n'*}"
         return 0
     fi
 
@@ -135,7 +159,7 @@ reify_bin_unvouched_reason() {
 #
 # Returns 0 (stale — provenance unproven) when the binary is missing or
 # reify_bin_unvouched_reason names a reason. Returns 1 (fresh) otherwise:
-# the sidecar names HEAD, or HEAD is undeterminable (fail-open).
+# the sidecar names HEAD, or git finds no repository at all (fail-open).
 reify_bin_is_stale() {
     local bin="$1"
     local repo_root="${2:-$PWD}"

@@ -13,6 +13,7 @@ tests/infra/test_prd_capability_check.sh.
 
 import dataclasses
 import os
+import shutil
 import tempfile
 import unittest
 
@@ -138,9 +139,6 @@ class TestReifyBinaryTrust(unittest.TestCase):
     def _sidecar(self, text):
         write_bin_sidecar(self.root, text)
 
-    def _head(self):
-        return self.head
-
     def test_two_unvouched_binaries_are_refused_whichever_is_newer(self):
         for newer in ("debug", "release"):
             with self.subTest(newer=newer):
@@ -153,7 +151,7 @@ class TestReifyBinaryTrust(unittest.TestCase):
 
     def test_a_sidecar_naming_head_vouches_for_the_release_binary(self):
         release, _ = self._both_binaries(newer="debug")
-        self._sidecar(self._head() + "\n")
+        self._sidecar(self.head + "\n")
         ctx = self._ctx()
         self.assertEqual(ctx.reify_bin, release)
         self.assertIsNone(ctx.reify_bin_refusal)
@@ -165,7 +163,7 @@ class TestReifyBinaryTrust(unittest.TestCase):
         that repository's HEAD, and a nonexistent one with no HEAD at all.
         """
         release, _ = self._both_binaries(newer="debug")
-        self._sidecar(self._head() + "\n")
+        self._sidecar(self.head + "\n")
         with tempfile.TemporaryDirectory(prefix="pcc_trust_other_") as other:
             git(other, "init", "-q")
             git(other, "commit", "-q", "--allow-empty", "-m", "another repository")
@@ -177,13 +175,12 @@ class TestReifyBinaryTrust(unittest.TestCase):
 
     def test_a_stale_sidecar_is_refused_naming_both_shas(self):
         self._both_binaries(newer="release")
-        head = self._head()
         stale = "0" * 40
         self._sidecar(stale + "\n")
         ctx = self._ctx()
         self.assertIsNone(ctx.reify_bin)
         self.assertIn(stale, ctx.reify_bin_refusal)
-        self.assertIn(head, ctx.reify_bin_refusal)
+        self.assertIn(self.head, ctx.reify_bin_refusal)
 
     def test_outside_a_git_checkout_the_trust_home_fails_open(self):
         """The home's documented fail-open: with no HEAD there is no tree to compare.
@@ -215,6 +212,32 @@ class TestReifyBinaryTrust(unittest.TestCase):
                 self.assertIsNone(ctx.reify_bin)
                 self.assertIn(stale, ctx.reify_bin_refusal)
                 self.assertIn(self.head, ctx.reify_bin_refusal)
+
+    def test_a_checkout_whose_head_git_cannot_read_is_refused(self):
+        """Only git finding no repository at all fails open; every other git failure refuses.
+
+        A pruned linked worktree is the boundary case: git reports it as
+        "not a git repository" too, naming the gitdir it lost.
+        """
+        def unborn_head(tmp):
+            git(tmp, "init", "-q", "checkout")
+
+        def pruned_linked_worktree(tmp):
+            git(self.root, "worktree", "add", "-q", "--detach", os.path.join(tmp, "checkout"))
+            shutil.rmtree(os.path.join(self.root, ".git", "worktrees"))
+            write_bin_sidecar(os.path.join(tmp, "checkout"), self.head + "\n")
+
+        for make_checkout in (unborn_head, pruned_linked_worktree):
+            with self.subTest(checkout=make_checkout.__name__), \
+                    tempfile.TemporaryDirectory(prefix="pcc_trust_headless_") as tmp:
+                make_checkout(tmp)
+                root = os.path.join(tmp, "checkout")
+                path = write_profile_binary(root, "target/debug/reify")
+                ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
+                                                        repo_root=root)
+                self.assertIsNone(ctx.reify_bin)
+                self.assertIn(path, ctx.reify_bin_refusal)
+                self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
 
     def test_an_unconsultable_trust_home_refuses(self):
         """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
