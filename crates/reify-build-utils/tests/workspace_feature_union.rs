@@ -7,6 +7,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 fn workspace_root() -> PathBuf {
     // The runtime variable, not `env!`: a warm-lane test binary can be reused
@@ -137,17 +138,55 @@ fn assert_input_error(out: &Output, needles: &[&str], context: &str) {
 
 // --- the real workspace ------------------------------------------------------
 
-/// The gate: the real workspace, resolved with the inherited environment so
-/// the verify env's CARGO and CARGO_HOME reach cargo. On failure the full
-/// output carries every SPLIT/UNCOVERED line and the remedy.
+/// One `check` of the real workspace (about 38 `cargo tree` runs), shared by
+/// every real-workspace test and resolved with the inherited environment so
+/// the verify env's CARGO and CARGO_HOME reach cargo.
+fn real_check() -> &'static Output {
+    static CHECK: OnceLock<Output> = OnceLock::new();
+    CHECK.get_or_init(|| run_script("check", None, None, &[]))
+}
+
+/// The gate. On failure the full output carries every SPLIT/UNCOVERED line
+/// and the remedy.
 #[test]
 fn real_workspace_resolves_every_member_like_the_workspace() {
-    let out = run_script("check", None, None, &[]);
+    let out = real_check();
     assert!(
         out.status.success(),
         "a member resolves an external package unlike --workspace; \
          docs/notes/workspace-feature-union.md explains the remedy\n{}",
-        describe(&out)
+        describe(out)
+    );
+}
+
+/// Every shipped binary builds these with serde, so no `-p` selection may
+/// build them without it.
+const SERDE_VOCABULARY_CRATES: [&str; 3] = ["reify-core", "reify-ast", "reify-ir"];
+
+#[test]
+fn real_workspace_resolves_the_serde_vocabulary_crates_like_the_workspace() {
+    let out = real_check();
+    assert!(
+        matches!(out.status.code(), Some(0 | 1)),
+        "check must reach a verdict for its MEMBER-SPLIT lines to mean anything\n{}",
+        describe(out)
+    );
+    let stdout = stdout_of(out);
+    let offending: Vec<&str> = stdout
+        .lines()
+        .filter(|line| {
+            SERDE_VOCABULARY_CRATES
+                .iter()
+                .any(|name| line.starts_with(&format!("MEMBER-SPLIT {name} v")))
+        })
+        .collect();
+    assert!(
+        offending.is_empty(),
+        "a -p selection builds a serde vocabulary crate unlike --workspace; a feature every \
+         shipped binary enables is default-on, or is not a feature — see \
+         docs/notes/workspace-feature-union.md, \"Member features\"\n{}\n{}",
+        offending.join("\n"),
+        describe(out)
     );
 }
 
