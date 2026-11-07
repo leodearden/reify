@@ -10786,12 +10786,7 @@ impl Engine {
                     let val = match panic_result {
                         Ok(v) => v,
                         Err(payload) => {
-                            let msg = payload
-                                .downcast_ref::<String>()
-                                .map(|s| s.as_str())
-                                .or_else(|| payload.downcast_ref::<&str>().copied())
-                                .unwrap_or("<non-string panic>")
-                                .to_string();
+                            let msg = reify_core::panic_payload_to_string(payload.as_ref());
                             let error = ErrorRef::new(msg);
                             let trace = take_trace(
                                 &mut combined_traces,
@@ -11920,15 +11915,7 @@ impl Engine {
             let val = match panic_result {
                 Ok(v) => v,
                 Err(payload) => {
-                    // Downcast the panic payload to a string message — same
-                    // pattern as `invariant_tests::panics_on_unrepresentable_cell_types`
-                    // (engine_eval.rs:2098-2107).
-                    let msg = payload
-                        .downcast_ref::<String>()
-                        .map(|s| s.as_str())
-                        .or_else(|| payload.downcast_ref::<&str>().copied())
-                        .unwrap_or("<non-string panic>")
-                        .to_string();
+                    let msg = reify_core::panic_payload_to_string(payload.as_ref());
                     let error = ErrorRef::new(msg);
                     // Ensure the cache entry exists so `mark_failed` can flip
                     // its freshness in place. We write a stub Undef result so
