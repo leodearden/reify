@@ -4,6 +4,8 @@
 
 use std::path::Path;
 
+use reify_constraints::SimpleConstraintChecker;
+use reify_core::ModulePath;
 use reify_ir::Satisfaction;
 use tower_lsp::lsp_types::{DiagnosticSeverity, Range, Url};
 
@@ -146,4 +148,62 @@ fn imported_template_violation_is_not_mislocated_in_the_entry() {
         assert_ne!(range, Range::default());
         assert_eq!(range.start.line, rig_constraint_line);
     }
+}
+
+fn rig_satisfaction(result: &DiagnosticsResult) -> Satisfaction {
+    let check = result.check_result.as_ref().expect("eval ran");
+    check
+        .constraint_results
+        .iter()
+        .find(|e| e.id.entity == "Rig")
+        .unwrap_or_else(|| panic!("no Rig constraint, got {:?}", check.constraint_results))
+        .satisfaction
+}
+
+/// The warm-eval path is taken only when the document's eval-cache key is
+/// unchanged, so an import edited on disk must change the key even when the
+/// entry's text does not.
+#[test]
+fn editing_an_import_with_unchanged_entry_text_re_evaluates() {
+    let guard = reify_test_support::prefixed_tempdir("reify-lsp-multifile-");
+    let parts = guard.path().join("parts.ri");
+    std::fs::write(&parts, PULLEY_10MM).expect("write parts.ri");
+    let entry = "module main\nimport parts\nstructure def Rig {\n    sub p = Pulley()\n    constraint p.d > 5mm\n}\n";
+    let uri = entry_uri(guard.path());
+    let mut state = EvalState::new();
+
+    let before = compute_diagnostics_with_state(&mut state, entry, &uri);
+    let key_before = state.last_content_hash();
+    assert!(
+        !messages(&before).iter().any(|m| m.contains("violated")),
+        "a 10mm pulley satisfies the Rig constraint, got {:?}",
+        messages(&before)
+    );
+
+    std::fs::write(
+        &parts,
+        "module parts\npub structure def Pulley {\n    param d : Length = 1mm\n}\n",
+    )
+    .expect("rewrite parts.ri");
+    let after = compute_diagnostics_with_state(&mut state, entry, &uri);
+
+    assert_eq!(rig_satisfaction(&after), Satisfaction::Violated);
+    assert_eq!(violation_range(&after, "Rig").len(), 1);
+    assert_ne!(state.last_content_hash(), key_before);
+}
+
+#[test]
+fn an_import_free_document_keeps_the_module_content_hash_as_its_key() {
+    let guard = reify_test_support::prefixed_tempdir("reify-lsp-multifile-");
+    let source = "module solo\nstructure def Plate {\n    param w : Length = 10mm\n}\n";
+    let uri = Url::from_file_path(guard.path().join("solo.ri")).expect("absolute path");
+    let mut state = EvalState::new();
+
+    compute_diagnostics_with_state(&mut state, source, &uri);
+
+    let single_file = reify_compiler::compile_with_stdlib_checked(
+        &reify_compiler::parse_with_stdlib(source, ModulePath::single("solo")),
+        &SimpleConstraintChecker,
+    );
+    assert_eq!(state.last_content_hash(), Some(single_file.content_hash));
 }
