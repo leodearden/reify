@@ -5611,6 +5611,15 @@ mod tests {
         assert_eq!(s, "\"DimensionedArgRejected\"");
     }
 
+    // --- DegenerateDirection tests (direction-typing α) ---
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn degenerate_direction_serde_pascal_case() {
+        let s = serde_json::to_string(&DiagnosticCode::DegenerateDirection).unwrap();
+        assert_eq!(s, "\"DegenerateDirection\"");
+    }
+
     // --- GeometryUnbounded tests (geometry-traits task 2312) ---
     // Pairs with the conformance-walker producer in
     // `crates/reify-compiler/src/conformance/mod.rs` for the call-site
