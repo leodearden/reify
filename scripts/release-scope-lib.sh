@@ -173,8 +173,11 @@ release_sensitive_set() {
 #
 # Fail-wide/fail-open ladder (§5.1): the ALL sentinel (C4 global / C5 unmappable)
 # and an unreadable declared set both resolve to REQUIRED; only a provably
-# delta-clean affected set returns SKIPPABLE. Always safe under `set -euo pipefail`
-# (affected_crates always returns 0; grep non-matches are consumed by `if`).
+# delta-clean affected set returns SKIPPABLE. Safe under `set -euo pipefail`:
+# affected_crates always returns 0, grep non-matches are consumed by `if`, and no
+# condition tests a `producer | grep -q` pipeline — each grep reads a captured
+# string through a here-string, so its status is its own answer and never a
+# producer's SIGPIPE.
 release_delta_requires_pass() {
     local affected
     if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
@@ -186,8 +189,10 @@ release_delta_requires_pass() {
     fi
 
     # Fail-wide: an ALL sentinel anywhere in the (word-split) affected set forces RUN.
+    local _words
     # shellcheck disable=SC2086
-    if printf '%s\n' $affected | grep -qxF ALL; then
+    _words="$(printf '%s\n' $affected)"
+    if grep -qxF -- ALL <<<"$_words"; then
         return 0
     fi
 
@@ -200,7 +205,7 @@ release_delta_requires_pass() {
     local _c
     # shellcheck disable=SC2086
     for _c in $affected; do
-        if printf '%s\n' "$declared" | grep -qxF "$_c"; then
+        if grep -qxF -- "$_c" <<<"$declared"; then
             return 0
         fi
     done

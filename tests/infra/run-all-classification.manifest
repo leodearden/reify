@@ -275,7 +275,11 @@ test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
 test_verify_plan_model.sh pool
 test_verify_plan_parity.sh pool
+test_verify_plan_parity_all.sh pool
 test_verify_plan_parity_lint.sh pool
+test_verify_plan_parity_region.sh pool
+test_verify_plan_parity_retry.sh pool
+test_verify_plan_parity_test.sh pool
 test_verify_plan_parity_typecheck.sh pool
 test_verify_policy.sh pool
 test_verify_release_delta_skip.sh pool
