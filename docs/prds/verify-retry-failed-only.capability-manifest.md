@@ -16,7 +16,7 @@ are dark-factory-side; no DF commit is claimed for them, because none was ever r
 |---|---|---|
 | `emit_nextest_pass` / nextest `-E` selector construction | **exists** | `scripts/verify.sh:1138` (`emit_nextest_pass`), command build `:1161`; `-E` support is the nextest-plan feature (`:1078` refuses cargo-test fallback precisely because it lacks `-E`) |
 | run_all Phase-2.5 serial per-member retry + FLAKY ledger | **exists** | `tests/infra/run_all.sh` `REIFY_RUN_ALL_FLAKY_LEDGER` + `=== FLAKY (passed on serial retry) ===` Phase-2.5 emission (~:1030-1049 neighborhood) |
-| `gui-test.sh -- <specs>` forwards to `vitest run` | **exists** | `scripts/gui-test.sh` usage text "`-- <vitest args>` forward … to `vitest run`" and its call to `scripts/gui-vitest-run.sh`, which forwards to `npm test --` in `run_vitest()`; `scripts/verify.sh` gui block (`gui_inner`) invokes `../scripts/gui-vitest-run.sh` |
+| `gui-test.sh -- <specs>` forwards to `vitest run` | **exists** | `scripts/gui-test.sh:8,42,90` (forward args after `--`); verify.sh gui block runs `npm test` `:1346` — Since #7630 (landed 2026-09-17, after this re-verification) the path is `scripts/gui-test.sh` → `scripts/gui-vitest-run.sh` `run_vitest()` (`npm test --`), and the verify.sh gui block (`gui_inner`) invokes `../scripts/gui-vitest-run.sh`; symbol pointers, not re-verified line anchors. |
 | clock-stop marker emitter family (honest-marker precedent) | **exists** | `scripts/verify.sh:178-196` `@@REIFY_CLOCK_STOP@@`/`@@SEMAPHORE_ACQUIRE@@` via `scripts/lib_clock_stop.sh` — the `@@REIFY_RETRY_SCOPE@@` marker joins this family |
 | sidecar survives reseed under `git clean -xfd -e target` | **exists** | CLAUDE.md warm-lane invariant (lanes seeded tracked-files-only + `git clean -xfd -e target`) |
 | nextest exact-name filterset `test(=<exact>)` runs exactly named tests | **exists** | author-time live verify (2-of-6 subset ran); §3 |
@@ -49,7 +49,7 @@ are dark-factory-side; no DF commit is claimed for them, because none was ever r
 
 | Check | Verdict | Evidence |
 |---|---|---|
-| Substrate seam exists (G3) | **PASS** | `gui-test.sh -- <specs>` forwards to `vitest run`; verify.sh gui block runs `../scripts/gui-vitest-run.sh` (`npm test --`, table above). `REIFY_GUI_RETRY_SPECS` is the leaf's new forwarding. |
+| Substrate seam exists (G3) | **PASS** | `gui-test.sh -- <specs>` forwards to `vitest run`; verify.sh gui block runs `npm test` (table above). `REIFY_GUI_RETRY_SPECS` is the leaf's new forwarding. Since #7630 that `npm test` call lives in `scripts/gui-vitest-run.sh` `run_vitest()` (see the G3 table row above); the verdict was rendered on the direct call. |
 | Anti-orphan / wired | **PASS** | Consumed by δ (B5) + DF `verify_env` (D2). |
 | Soundness (G6) | **PASS** | gui vitest runs to completion ⇒ subset = {failed spec files} complete by construction. |
 | Spec-path-form agreement (open tactical Q) | **PASS (settled in-leaf)** | §11 open Q — confirm the failed-spec path form DF parses matches `gui-test.sh`'s expected spec-path form; a tactical confirmation inside the leaf, not a substrate gap. |
