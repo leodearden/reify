@@ -977,3 +977,127 @@ fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
         );
     }
 }
+
+// ─── purpose-nested structures obey the same declared-above rule ──────────────
+
+/// A `structure def` nested in a `purpose` reaches a fn body's ctor view through
+/// the same authoritative templates as a top-level one, so it obeys the same
+/// declared-above rule. Declared BELOW the fn it must draw the ordering Error,
+/// never a silent `Undef`.
+#[test]
+fn fn_body_ctor_of_later_declared_purpose_nested_structure_reports_ordering_error() {
+    let src = r#"
+module test.fwd_purpose
+pub fn mk() -> InP { InP() }
+purpose Explore() {
+    structure def InP { param a : Real = 1.0 }
+}
+structure App { let t = mk() }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let ordering: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction)
+        })
+        .collect();
+    assert!(
+        !ordering.is_empty(),
+        "constructing a later-declared purpose-nested structure must draw the \
+         ordering Error; all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+    assert!(
+        ordering.iter().any(|d| d.message.contains("InP")),
+        "the ordering error must name the structure; got: {:#?}",
+        diag_lines(&module)
+    );
+}
+
+/// Member access on a param typed as a purpose-nested structure declared BELOW
+/// the fn has no template to priv-gate against, exactly like the top-level case
+/// in `fn_body_member_access_on_later_declared_structure_reports_ordering_error`.
+#[test]
+fn fn_body_priv_member_access_on_later_declared_purpose_nested_structure_reports_ordering_error()
+{
+    let src = r#"
+module test.fwd_purpose_guard
+pub fn leak(m : InP) -> Length { m.g }
+purpose Explore() {
+    structure def InP {
+        param active : Bool = true
+        where active {
+            priv param g : Length = 5mm
+        }
+    }
+}
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let ordering: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Error
+                && d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction)
+        })
+        .collect();
+    assert!(
+        !ordering.is_empty(),
+        "member access on a later-declared purpose-nested structure must draw \
+         the ordering Error, never the permissive fallback; all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+    assert!(
+        ordering.iter().any(|d| d.message.contains("InP")),
+        "the ordering error must name the structure; got: {:#?}",
+        diag_lines(&module)
+    );
+}
+
+/// Guard: a purpose-nested structure declared ABOVE the fn is constructible from
+/// its body and evaluates to the structure's real defaults.
+#[test]
+fn fn_body_ctor_of_earlier_declared_purpose_nested_structure_evaluates() {
+    let src = r#"
+module test.purpose_above
+purpose Explore() {
+    structure def InP { param a : Real = 1.0 }
+}
+pub fn mk() -> InP { InP() }
+structure App { let t = mk() }
+"#;
+    let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "a purpose-nested structure declared above the fn must compile clean; \
+         all diagnostics: {:#?}",
+        diag_lines(&module)
+    );
+    assert!(
+        ordering_diags(&module).is_empty(),
+        "no declaration-order diagnostic for a structure declared above; got: {:#?}",
+        diag_lines(&module)
+    );
+
+    let result = eval_source_with_stdlib(src);
+    reify_test_support::assert_no_eval_errors(&result);
+    let t = reify_test_support::cell_value(&result, "App", "t");
+    let data = match &t {
+        Value::StructureInstance(data) => data,
+        other => panic!("App.t should be Value::StructureInstance; got: {other:?}"),
+    };
+    assert_eq!(data.type_name, "InP", "App.t type_name; got: {}", data.type_name);
+    assert_eq!(
+        data.fields.get(&"a".to_string()),
+        Some(&Value::Real(1.0)),
+        "App.t.a should be InP's default Real(1.0); got fields: {:?}",
+        data.fields
+    );
+}
