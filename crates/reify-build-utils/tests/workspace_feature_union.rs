@@ -900,6 +900,59 @@ a v0.1.0 (/fixture/crates/a)|
     );
 }
 
+// --- member features ---------------------------------------------------------
+
+/// `--workspace` and `-p c` resolve member b with `test-support`; `-p a` and
+/// `-p d` resolve it without.
+fn member_split_fixture() -> Fixture {
+    let members = vec![
+        member("a", &[UNION]),
+        member("b", &[UNION]),
+        member("c", &[UNION]),
+        member("d", &[UNION]),
+        member(UNION, &[]),
+    ];
+    let root_with_b = |name: &str, b_features: &str| {
+        format!(
+            "{name} v0.1.0 (/fixture/crates/{name})|\n\
+             |-- {UNION_NODE}\n\
+             `-- b v0.1.0 (/fixture/crates/b)|{b_features}\n"
+        )
+    };
+    let tree_b = "b v0.1.0 (/fixture/crates/b)|test-support\n";
+    let workspace = workspace_of(&[
+        &root_with_b("a", "test-support"),
+        tree_b,
+        &root_with_b("c", "test-support"),
+        &root_with_b("d", "test-support"),
+        TREE_UNION,
+    ]);
+    Fixture::new(&members, &workspace)
+        .tree("a", &root_with_b("a", ""))
+        .tree("b", tree_b)
+        .tree("c", &root_with_b("c", "test-support"))
+        .tree("d", &root_with_b("d", ""))
+}
+
+#[test]
+fn check_reports_a_member_feature_split_as_advisory_naming_the_selections_that_resolve_it() {
+    let out = member_split_fixture().check();
+    assert_green(&out, "a member feature split is advisory, never a finding");
+    let stdout = stdout_of(&out);
+    let advisories: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("MEMBER-SPLIT "))
+        .collect();
+    assert_eq!(
+        advisories,
+        ["MEMBER-SPLIT b v0.1.0 (target): -p resolves {} under a, d; \
+          --workspace resolves {test-support}"],
+        "one advisory line for b, naming only the selections that resolve it unlike \
+         --workspace\n{}",
+        describe(&out)
+    );
+}
+
 // --- real cargo --------------------------------------------------------------
 
 fn path_dep(name: &str) -> String {
@@ -1302,6 +1355,27 @@ a v0.1.0 (/fixture/crates/a)|
         &out,
         &[&["SPLIT a ", "syn v2.0.0", "(host)", "no host variant"]],
         "--workspace builds syn on the target side only",
+    );
+}
+
+#[test]
+fn generate_never_pins_a_workspace_member() {
+    let fixture = member_split_fixture().with_union_manifest(&empty_union_manifest());
+    let out = fixture.generate();
+    assert_exit(
+        &out,
+        0,
+        "a member feature split leaves no registry split to pin",
+    );
+    let text = fixture.union_manifest();
+    assert_region_only_rewritten(&text);
+    assert!(
+        parse_toml(&text, "the rewritten union manifest")
+            .get("target")
+            .is_none(),
+        "a member variant must never become a pin: the union depending on a member is a \
+         cycle\n{text}\n{}",
+        describe(&out)
     );
 }
 
