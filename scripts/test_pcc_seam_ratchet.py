@@ -303,7 +303,7 @@ _SAMPLE = "\n".join((
     "require(test, runner={alpha}.run_probe)",
     "sys.modules['{module}'] = {alpha}",
     "other = sys.modules['os']",
-    "table = registry['{module}']",
+    "table = cache['{module}']",
     "from _pcc_test_support import {alpha}",
     "from _pcc_test_support import {alpha} as {alpha}",
     "from _pdv_test_support import load_pcc",
