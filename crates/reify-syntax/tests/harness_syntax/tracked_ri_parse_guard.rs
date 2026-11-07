@@ -1,16 +1,17 @@
 //! The tracked-`.ri` parse guard: the corpus check of
 //! `docs/prds/v0_6/syntax-lowering-contract.md` D12 / §9 α (task #9343).
 //!
-//! Every tracked `.ri` that is not declared in [`MUST_ERROR_RI_FIXTURES`]
-//! must have a clean Rust tree-sitter CST and an empty
-//! `reify_syntax::parse(..).errors`, outside the trees in
-//! [`UNSWEPT_RI_TREES`], whose undeclared members are skipped unread. A
-//! declared file is checked wherever it lives and must keep showing its
-//! declared fault, but none may be declared in a tree verify treats as inert
-//! (`docs/`): a hook-gated commit there runs no heavy checks, so a file this
-//! guard read could land green and red every later merge gate (§7 of that
-//! PRD). When this guard reds, fix the file in the same diff, or declare it
-//! in [`MUST_ERROR_RI_FIXTURES`] with a reason.
+//! The guard sweeps the binary's shared listing, which omits the verify-inert
+//! trees (`tracked_corpus::VERIFY_INERT_RI_TREES`, today `docs/`). Every file
+//! there that is not declared in [`MUST_ERROR_RI_FIXTURES`] must have a clean
+//! Rust tree-sitter CST and an empty `reify_syntax::parse(..).errors`, except
+//! undeclared members of [`UNSWEPT_RI_TREES`], which are skipped unread. A
+//! declared file is checked even inside an unswept tree, and must keep
+//! showing its declared fault. A verify-inert path is also skipped at use, and
+//! none may be declared: a hook-gated commit there runs no heavy checks, so a
+//! file this guard read could land green and red every later merge gate (§7
+//! of that PRD). When this guard reds, fix the file in the same diff, or
+//! declare it in [`MUST_ERROR_RI_FIXTURES`] with a reason.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -21,7 +22,7 @@ use reify_core::ModulePath;
 use tree_sitter::Node;
 
 use crate::common::make_ts_parser;
-use crate::common::tracked_corpus::{swept_ri_paths, workspace_root};
+use crate::common::tracked_corpus::{is_verify_inert, swept_ri_paths, workspace_root};
 
 /// How a declared must-error fixture is expected to fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,72 +168,44 @@ const MUST_ERROR_RI_FIXTURES: &[MustErrorFixture] = &[
     },
 ];
 
-/// Why a tree is in [`UNSWEPT_RI_TREES`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UnsweptBasis {
-    /// Chartered inputs that need not parse: declared members are still
-    /// checked, and the row must cover a tracked `.ri`.
-    Charter,
-    /// verify routes every path in the tree to no heavy checks: nothing in it
-    /// may be declared, and the row stands while the tree holds no `.ri`.
-    InertToVerify,
-}
-
 /// A tracked tree whose UNDECLARED members the guard skips unread.
 struct UnsweptTree {
     prefix: &'static str,
     reason: &'static str,
-    basis: UnsweptBasis,
 }
 
-/// The trees the guard does not sweep, each typed by why. Recorded on the
-/// guard row of `docs/prds/v0_6/syntax-lowering-contract.md` §7.
+/// The trees of chartered inputs that need not parse, each with its reason.
+/// Recorded on the guard row of `docs/prds/v0_6/syntax-lowering-contract.md`
+/// §7.
 const UNSWEPT_RI_TREES: &[UnsweptTree] = &[
     UnsweptTree {
         prefix: "tests/prd-gate/fixtures/", // pg-drift-dir:allow — an exclusion, not a walk: undeclared members are skipped unread, so adding a fixture stays inert
         reason: "chartered probe inputs that need not parse (tests/prd-gate/README.md); \
                  declared members are still checked",
-        basis: UnsweptBasis::Charter,
     },
     UnsweptTree {
         prefix: "crates/reify-spec-conformance/fixtures/",
         reason: "chartered must-reject residents of the spec-conformance corpus (that tree's \
                  README.md); declared members are still checked",
-        basis: UnsweptBasis::Charter,
-    },
-    UnsweptTree {
-        prefix: "docs/",
-        reason: "verify routes every docs/ path to no heavy checks and docs land on main by a \
-                 hook-gated commit, so a docs .ri read here could red every later merge gate \
-                 (docs/prds/v0_6/syntax-lowering-contract.md §7)",
-        basis: UnsweptBasis::InertToVerify,
     },
 ];
 
-/// Declared entries that sit in an inert tree. A declared file is read
-/// wherever it lives, so such an entry would have the guard read a tree whose
-/// commits verify never tests.
-fn declared_entries_in_inert_trees<'f>(
-    fixtures: &'f [MustErrorFixture],
-    rows: &[UnsweptTree],
-) -> Vec<&'f str> {
+/// Declared entries that sit in a verify-inert tree. Such an entry asks the
+/// guard to read a tree whose commits verify never tests; the guard never
+/// reads it, so it would also surface as a stale entry.
+fn declared_entries_in_inert_trees(fixtures: &[MustErrorFixture]) -> Vec<&str> {
     fixtures
         .iter()
         .map(|fixture| fixture.path)
-        .filter(|path| {
-            rows.iter()
-                .filter(|row| row.basis == UnsweptBasis::InertToVerify)
-                .any(|row| path.starts_with(row.prefix))
-        })
+        .filter(|path| is_verify_inert(path))
         .collect()
 }
 
-/// The prefixes of the `Charter` rows that cover none of `tracked`: stale, so
-/// to be deleted. An `InertToVerify` row is a routing fact about its tree and
-/// stands while the tree holds no `.ri`.
+/// The prefixes of the rows that cover none of `tracked`: stale, so to be
+/// deleted. `tracked` is the swept listing, which omits the verify-inert
+/// trees, so a row placed under one is flagged too.
 fn dead_unswept_rows<'r>(rows: &'r [UnsweptTree], tracked: &[String]) -> Vec<&'r str> {
     rows.iter()
-        .filter(|row| row.basis == UnsweptBasis::Charter)
         .map(|row| row.prefix)
         .filter(|prefix| !tracked.iter().any(|rel| rel.starts_with(prefix)))
         .collect()
@@ -246,9 +219,12 @@ enum Expectation {
     Unswept,
 }
 
-/// A declared entry wins over an unswept tree, so every declared file is
-/// checked wherever it lives.
+/// A path in a verify-inert tree is never read, declared or not. Otherwise a
+/// declared entry wins over an unswept tree, so it is checked even there.
 fn expectation(path: &str) -> Expectation {
+    if is_verify_inert(path) {
+        return Expectation::Unswept;
+    }
     if let Some(fixture) = MUST_ERROR_RI_FIXTURES.iter().find(|f| f.path == path) {
         return Expectation::MustError(fixture.kind);
     }
@@ -889,13 +865,12 @@ fn must_error_and_unswept_tables_are_well_formed() {
          tree: {unterminated:?}"
     );
 
-    let declared_in_inert_trees =
-        declared_entries_in_inert_trees(MUST_ERROR_RI_FIXTURES, UNSWEPT_RI_TREES);
+    let declared_in_inert_trees = declared_entries_in_inert_trees(MUST_ERROR_RI_FIXTURES);
     assert!(
         declared_in_inert_trees.is_empty(),
-        "verify routes these files' trees to no heavy checks, so a declared entry would have \
-         the guard read them and a hook-gated commit could red a merge gate; the file must \
-         live elsewhere to be declared: {declared_in_inert_trees:?}"
+        "verify routes these files' trees to no heavy checks, so the guard never reads them \
+         and cannot check a declaration there; the file must live elsewhere to be declared: \
+         {declared_in_inert_trees:?}"
     );
 
     let tracked = swept_ri_paths(&workspace_root());
