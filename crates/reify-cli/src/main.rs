@@ -35,6 +35,7 @@ mod check_verdict;
 mod cmd;
 mod constraint_report;
 mod dev;
+mod diagnostic_line;
 mod help;
 mod module_capabilities;
 mod sigpipe;
