@@ -1,3 +1,84 @@
+//! A finite, dimensionless, unit, signed 3-vector whose only constructor
+//! normalises (docs/prds/v0_6/direction-typing.md §5 C2). The type is
+//! Value-free: the `&Value` readers live in `direction_decode`, which keeps this
+//! module a leaf of reify-ir's module graph (INV-ARCH-1).
+
+use std::fmt;
+
+use reify_core::direction::DIRECTION_DEGENERACY_FLOOR;
+
+/// One divide leaves the magnitude within 1.5 ulp of 1, inside this band, so
+/// `from_vector`'s output is a fixed point of `from_vector`.
+const UNIT_FAST_PATH_TOLERANCE: f64 = 4.0 * f64::EPSILON;
+
+/// A unit direction. The invariant — every component finite, magnitude 1 to
+/// within 4 ulp, no `-0.0` — holds because `from_vector` is the only
+/// constructor; under it, derived numeric `==` coincides with bit identity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnitVec3([f64; 3]);
+
+/// Why a vector has no unit direction.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DirectionFault {
+    Degenerate { magnitude: f64 },
+    NonFinite,
+}
+
+impl fmt::Display for DirectionFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DirectionFault::Degenerate { magnitude } => write!(
+                f,
+                "direction has magnitude {magnitude:e}, at or below the degeneracy floor \
+                 {DIRECTION_DEGENERACY_FLOOR:e}"
+            ),
+            DirectionFault::NonFinite => write!(f, "direction has a non-finite component"),
+        }
+    }
+}
+
+impl std::error::Error for DirectionFault {}
+
+impl UnitVec3 {
+    pub fn from_vector(v: [f64; 3]) -> Result<UnitVec3, DirectionFault> {
+        if v.iter().any(|c| !c.is_finite()) {
+            return Err(DirectionFault::NonFinite);
+        }
+        let mut v = v;
+        let mut mag = magnitude(v);
+        if mag.is_infinite() {
+            let max_abs = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
+            v = v.map(|c| c / max_abs);
+            mag = magnitude(v);
+        }
+        if mag <= DIRECTION_DEGENERACY_FLOOR {
+            return Err(DirectionFault::Degenerate { magnitude: mag });
+        }
+        if (mag - 1.0).abs() <= UNIT_FAST_PATH_TOLERANCE {
+            return Ok(UnitVec3(canonical(v)));
+        }
+        Ok(UnitVec3(canonical(v.map(|c| c / mag))))
+    }
+
+    /// Exact: negation leaves every squared term bitwise unchanged.
+    pub fn negated(&self) -> UnitVec3 {
+        UnitVec3(canonical(self.0.map(|c| -c)))
+    }
+
+    pub fn components(&self) -> [f64; 3] {
+        self.0
+    }
+}
+
+fn magnitude([x, y, z]: [f64; 3]) -> f64 {
+    (x * x + y * y + z * z).sqrt()
+}
+
+/// Maps `-0.0` to `+0.0` and leaves every other value unchanged.
+fn canonical(v: [f64; 3]) -> [f64; 3] {
+    v.map(|c| c + 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,7 +259,10 @@ mod tests {
         let minus_z = unit([0.0, 0.0, 1.0]).negated();
         assert_eq!(bits(minus_z), bits(unit([0.0, 0.0, -1.0])));
         assert!(
-            minus_z.components().iter().all(|c| c.to_bits() != (-0.0f64).to_bits()),
+            minus_z
+                .components()
+                .iter()
+                .all(|c| c.to_bits() != (-0.0f64).to_bits()),
             "negated() must not leave a -0.0 slot: {:?}",
             minus_z.components()
         );
@@ -191,7 +275,11 @@ mod tests {
         for v in seeded_sample().into_iter().take(1000) {
             let u = unit(v);
             assert_eq!(bits(u.negated().negated()), bits(u), "{v:?}");
-            assert_eq!(bits(unit(u.negated().components())), bits(u.negated()), "{v:?}");
+            assert_eq!(
+                bits(unit(u.negated().components())),
+                bits(u.negated()),
+                "{v:?}"
+            );
         }
     }
 
@@ -201,7 +289,10 @@ mod tests {
         let DirectionFault::Degenerate { magnitude } = fault else {
             panic!("expected Degenerate, got {fault:?}");
         };
-        assert!((magnitude - 1e-13).abs() <= 1e-25, "magnitude {magnitude:e}");
+        assert!(
+            (magnitude - 1e-13).abs() <= 1e-25,
+            "magnitude {magnitude:e}"
+        );
 
         let message = fault.to_string();
         assert!(message.contains(&format!("{magnitude:e}")), "{message}");
