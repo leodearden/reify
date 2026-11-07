@@ -646,6 +646,10 @@ fn solve_result_adapter_reports_a_non_finite_evaluation_as_no_progress() {
     let fixture = nan_anchor_beside_a_seated_concentric();
     let outcome = outcome_of(&fixture, SolveBudget::default());
     let cause = failure_of(&outcome).clone();
+    assert!(
+        matches!(cause, SolveFailureCause::NonFinite(_)),
+        "the fixture must end non-finite: {cause:?}"
+    );
     match outcome.into_solve_result(&fixture.1) {
         SolveResult::NoProgress { reason } => {
             assert!(
