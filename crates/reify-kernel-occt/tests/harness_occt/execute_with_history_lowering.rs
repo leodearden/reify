@@ -244,11 +244,11 @@ fn armed_tripwire_panics_on_history_path_with_canonical_message() {
         let Err(payload) = outcome else {
             panic!("armed bare Real at {op:?} did not panic");
         };
-        let Ok(message) = payload.downcast::<String>() else {
-            panic!("{op:?} panicked with a non-String payload");
+        let Some(message) = reify_core::panic_payload_str(payload.as_ref()) else {
+            panic!("{op:?} panicked with a non-string payload");
         };
         assert_eq!(
-            *message,
+            message,
             reify_ir::non_length_kernel_field_message(op.kind_name(), field, "Real")
         );
     }
