@@ -6,14 +6,20 @@ use reify_constraints::SimpleConstraintChecker;
 use reify_core::Severity;
 use reify_ir::ExportFormat;
 
+use crate::args::split_cfg_args_or_usage;
 use crate::artifact_triangles::{stl_triangle_count, threemf_triangle_count};
 use crate::check_verdict::{ConstraintOutcome, build_is_success, has_error_diagnostic};
 use crate::constraint_report::report_eval_output;
 use crate::help::BUILD_USAGE;
 use crate::module_capabilities::module_has_isosurface;
-use crate::{configured_check_build_engine, parse_and_compile};
+use crate::{configured_check_build_engine, parse_and_compile_with_cfg};
 
 pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
+    let (cfg, rest) = match split_cfg_args_or_usage(args, BUILD_USAGE) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let args = rest.as_slice();
     if args.is_empty() {
         eprintln!("{BUILD_USAGE}");
         return ExitCode::FAILURE;
@@ -91,7 +97,7 @@ pub(crate) fn cmd_build(args: &[String]) -> ExitCode {
         }
     }
 
-    let compiled = match parse_and_compile(file) {
+    let compiled = match parse_and_compile_with_cfg(file, &cfg) {
         Ok(c) => c,
         Err(code) => return code,
     };

@@ -101,6 +101,8 @@ mod cli_doc;
 mod cli_eval_annotation_after_valued_member;
 #[path = "harness_cli/cli_eval_auto_resolve.rs"]
 mod cli_eval_auto_resolve;
+#[path = "harness_cli/cli_eval_build_multi_file.rs"]
+mod cli_eval_build_multi_file;
 #[path = "harness_cli/cli_eval_data_carrying_enum.rs"]
 mod cli_eval_data_carrying_enum;
 #[path = "harness_cli/cli_eval_datum_units.rs"]
