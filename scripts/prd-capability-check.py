@@ -262,7 +262,10 @@ def _resolve_reify_bin(
     error for the probe to report.  Otherwise scripts/reify-bin-freshness.sh
     decides: a vouched-for profile binary is used, nothing built means "reify"
     on PATH, and a built but unvouched binary is refused.  A home that cannot
-    be consulted refuses too: an unprovable trust answer is never "trusted".
+    be consulted refuses too: an unprovable trust answer is never "trusted",
+    and neither is a TRUSTED answer that is not one absolute-path line.
+    BASH_ENV is withheld from the home: bash would run it first, and anything
+    it prints would join the answer.
     """
     env_bin = environ.get("REIFY_BIN")
     if env_bin:
@@ -273,21 +276,22 @@ def _resolve_reify_bin(
             ["bash", _TRUST_HOME, "resolve", repo_root],
             capture_output=True,
             text=True,
-            env=dict(environ),
+            env={k: v for k, v in environ.items() if k != "BASH_ENV"},
             check=False,
         )
     except OSError as exc:
         return None, _reify_bin_refusal(f"{_TRUST_HOME} could not be run ({exc})")
-    answer = proc.stdout.strip()
-    if proc.returncode == _TrustVerdict.TRUSTED and answer:
-        return answer, None
+    lines = proc.stdout.splitlines()
+    if (proc.returncode == _TrustVerdict.TRUSTED and len(lines) == 1
+            and os.path.isabs(lines[0])):
+        return lines[0], None
     if proc.returncode == _TrustVerdict.NOT_BUILT:
         return "reify", None  # expect it on PATH
     if proc.returncode == _TrustVerdict.UNVOUCHED:
-        return None, _reify_bin_refusal(answer)
+        return None, _reify_bin_refusal(proc.stdout.strip())
     return None, _reify_bin_refusal(
-        f"`{_TRUST_HOME} resolve` gave no verdict (exit {proc.returncode}, "
-        f"stdout {answer!r}, stderr {proc.stderr.strip()!r})"
+        f"`{_TRUST_HOME} resolve` gave no readable verdict (exit {proc.returncode}, "
+        f"stdout {proc.stdout!r}, stderr {proc.stderr.strip()!r})"
     )
 
 

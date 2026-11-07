@@ -239,6 +239,29 @@ class TestReifyBinaryTrust(unittest.TestCase):
                 self.assertIn(path, ctx.reify_bin_refusal)
                 self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
 
+    def test_a_caller_bash_env_does_not_reach_the_trust_home(self):
+        """bash runs BASH_ENV before the home, and what it prints would join the answer."""
+        debug = write_profile_binary(self.root, "target/debug/reify")
+        self._sidecar(self.head + "\n")
+        bash_env = os.path.join(self.root, "bash_env.sh")
+        with open(bash_env, "w") as fh:
+            fh.write("echo noise-from-bash-env\n")
+        ctx = self._ctx(BASH_ENV=bash_env)
+        self.assertEqual(ctx.reify_bin, debug, ctx.reify_bin_refusal)
+
+    def test_a_trusted_answer_that_is_not_one_absolute_path_is_refused(self):
+        """The home answers in one stdout line; a root holding a newline makes it two."""
+        with tempfile.TemporaryDirectory(prefix="pcc_trust_") as tmp:
+            root = os.path.join(tmp, "two\nlines")
+            os.makedirs(root)
+            write_bin_sidecar(root, make_git_fixture_repo(root) + "\n")
+            write_profile_binary(root, "target/release/reify")
+            ctx = pcc.ProbeContext.from_environment(environ=trust_environ(),
+                                                    repo_root=root)
+            self.assertIsNone(ctx.reify_bin)
+            self.assertIn("reify-bin-freshness.sh", ctx.reify_bin_refusal)
+            self.assertIn("REIFY_BIN", ctx.reify_bin_refusal)
+
     def test_an_unconsultable_trust_home_refuses(self):
         """No `bash` can launch on this PATH, so the trust answer is unprovable: refuse."""
         write_profile_binary(self.root, "target/release/reify")
