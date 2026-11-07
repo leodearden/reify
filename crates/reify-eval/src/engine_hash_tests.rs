@@ -114,9 +114,8 @@ fn engine_version_hash_for_panics_naming_the_first_missing_contributor() {
     let payload = std::panic::catch_unwind(|| engine_version_hash_for(tmp.path()))
         .err()
         .expect("a manifest dir with no contributors must panic");
-    let message = payload
-        .downcast_ref::<String>()
-        .expect("the panic carries a formatted message");
+    let message =
+        reify_core::panic_payload_str(payload.as_ref()).expect("the panic carries a message");
     let expected = format!("ENGINE_VERSION_HASH contributor not found: {first} (");
     assert!(
         message.contains(&expected),

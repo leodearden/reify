@@ -12136,11 +12136,7 @@ mod invariant_tests {
             }));
             assert!(result.is_err(), "expected panic but helper returned Ok");
             let err = result.unwrap_err();
-            let msg = err
-                .downcast_ref::<String>()
-                .map(|s| s.as_str())
-                .or_else(|| err.downcast_ref::<&str>().copied())
-                .unwrap_or("<non-string panic>");
+            let msg = reify_core::panic_payload_to_string(err.as_ref());
             assert!(
                 msg.starts_with(&format!("{}:", super::ASSERT_MSG_PREFIX)),
                 "panic message did not start with {:?} followed by colon: {msg}",

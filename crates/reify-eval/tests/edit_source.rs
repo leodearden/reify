@@ -3744,11 +3744,7 @@ fn edit_source_panics_on_unrepresentable_cell_type() {
             "expected edit_source to panic on unrepresentable cell_type but it returned normally",
         );
         let err = result.unwrap_err();
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("<non-string panic>");
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains(reify_eval::ASSERT_MSG_PREFIX),
             "panic message did not contain expected substring {:?}: {msg}",
