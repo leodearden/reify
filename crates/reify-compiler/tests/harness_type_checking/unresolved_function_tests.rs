@@ -754,7 +754,7 @@ fn mutually_referential_fn_pair_is_not_unresolved() {
 /// for `compile_function`'s `prelude_template_registry` ("v1: no prelude
 /// template registry for static fn bodies"), so the constructor is never
 /// claimed and rides the fallback. Control (c) pins that the SAME call from a
-/// regular fn body is already clean, which is what confines this route to the
+/// regular fn body never rides it, which is what confines this route to the
 /// trait-static site.
 #[test]
 fn struct_constructor_in_a_trait_static_fn_body_is_not_unresolved() {
@@ -828,20 +828,27 @@ fn genuinely_undeclared_callee_in_a_fn_body_still_warns() {
     );
 }
 
-/// Control (c): a struct constructor from a REGULAR fn body is clean in BOTH
-/// declaration orders — `functions_phase` passes `Some(&merged_registry)`.
+/// Control (c): a struct constructor from a REGULAR fn body never rides the
+/// unresolved-function fallback, in EITHER declaration order — a free fn body
+/// compiles against the module's structure templates (task 5494).
+///
+/// Structure first, the constructor RESOLVES (a bad field still raises
+/// E_CTOR_UNKNOWN_FIELD). Fn first, the structure has no template yet, so the
+/// call draws the coded declaration-order Error instead — loud, and still not
+/// an unresolved-function warning.
 ///
 /// This is what confines route (3) to `traits_phase`'s `None`. A fix that
 /// needs to widen past that site has misdiagnosed the cause.
 #[test]
-fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
-    for (order, source) in [
+fn struct_constructor_in_a_regular_fn_body_is_never_unresolved_in_either_order() {
+    for (order, source, expected_code) in [
         (
             "structure first",
             r#"
             structure Widget { let w: Length = 1mm }
             pub fn make() -> Real { let x = Widget(w: 2mm); 1.0 }
         "#,
+            reify_core::DiagnosticCode::CtorUnknownField,
         ),
         (
             "fn first",
@@ -849,30 +856,32 @@ fn struct_constructor_in_a_regular_fn_body_stays_clean_in_both_orders() {
             pub fn make() -> Real { let x = Widget(w: 2mm); 1.0 }
             structure Widget { let w: Length = 1mm }
         "#,
+            reify_core::DiagnosticCode::StructureDeclaredAfterFunction,
         ),
     ] {
         let module = compile_source_with_stdlib(source);
         assert_eq!(
             unresolved_function_diags(&module).len(),
             0,
-            "{order}: constructor calls from a regular fn body resolve via the \
-             merged template registry; got {:?}",
+            "{order}: constructor calls from a regular fn body never ride the \
+             unresolved fallback; got {:?}",
             unresolved_function_diags(&module)
                 .iter()
                 .map(|d| &d.message)
                 .collect::<Vec<_>>()
         );
 
-        // Silence is not enough: prove the constructor is RESOLVED here, not
-        // merely un-warned. A genuinely wrong field name must still be caught,
-        // which only a resolved `StructureInstanceCtor` can do.
+        // Silence is not enough: prove the constructor is CLAIMED here, not
+        // merely un-warned. Structure first, a genuinely wrong field name must
+        // still be caught, which only a resolved `StructureInstanceCtor` can do;
+        // fn first, the ordering rule is what claims it.
         let wrong_field = compile_source_with_stdlib(&source.replace("w: 2mm", "nope: 2mm"));
         assert!(
             wrong_field
                 .diagnostics
                 .iter()
-                .any(|d| d.code == Some(reify_core::DiagnosticCode::CtorUnknownField)),
-            "{order}: a bad field name must still raise E_CTOR_UNKNOWN_FIELD; got {:?}",
+                .any(|d| d.code == Some(expected_code)),
+            "{order}: expected {expected_code:?}; got {:?}",
             wrong_field
                 .diagnostics
                 .iter()
