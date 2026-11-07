@@ -3137,9 +3137,9 @@ mod tests_driving_set_failure {
     use super::test_datums::{axis_v, plane_v, realized};
     use super::{
         FailureContext, FrameUnknown, Pose, RealizedDatums, RelateScope, RelateTolerance,
-        RelationPartition, SolveBudget, build_relation_instances, collect_relate_scope,
-        failure_diagnostic, minimal_infeasible_subset, partition_driving_set, solve_frame_outcome,
-        solve_relate_scope_within, solve_scaling,
+        RelationInstance, RelationPartition, SolveBudget, build_relation_instances,
+        collect_relate_scope, failure_diagnostic, minimal_infeasible_subset, partition_driving_set,
+        solve_frame_outcome, solve_relate_scope_within, solve_scaling,
     };
 
     const SOURCE: &str = r#"
@@ -3175,6 +3175,9 @@ structure PairSearchScope {
 
     /// The anchor offset, in metres.
     const C: f64 = 0.002;
+
+    /// The budget the pair search runs under, which allows no trial step.
+    const STARVED_BUDGET: SolveBudget = SolveBudget { max_iterations: 0 };
 
     /// The `PairSearchScope` datums.
     ///
@@ -3244,6 +3247,56 @@ structure PairSearchScope {
             budget,
         };
         f(&context)
+    }
+
+    /// `with_failure_context` hands its callers the context
+    /// `solve_relate_scope_within` builds: production's driving-set solve fails
+    /// with the same cause, and production renders it to the same single message.
+    #[test]
+    fn the_hand_built_failure_context_is_the_one_production_builds() {
+        with_failure_context(STARVED_BUDGET, |context| {
+            let driving: Vec<RelationInstance> = context
+                .partition
+                .driving
+                .iter()
+                .map(|&i| context.built.instances[i].clone())
+                .collect();
+            let outcome = solve_frame_outcome(
+                &driving,
+                context.unknown,
+                context.seed,
+                context.scaling,
+                context.budget,
+            );
+            let Err(cause @ SolveFailureCause::Infeasible(_)) = &outcome.result else {
+                panic!(
+                    "a certified failure is required: only it is rendered through the \
+                     conflict search, which reads every context field: {outcome:?}"
+                );
+            };
+
+            let production = solve_relate_scope_within(
+                context.built.scope,
+                &pair_search_datums(),
+                context.budget,
+            );
+            assert_eq!(
+                production.failure.as_ref(),
+                Some(cause),
+                "production's own driving-set solve fails the same way: {production:?}"
+            );
+            let rendered = failure_diagnostic(cause, context);
+            let messages: Vec<&str> = production
+                .diagnostics
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+            assert_eq!(
+                messages,
+                [rendered.message.as_str()],
+                "production renders its failure from this same context"
+            );
+        });
     }
 
     /// A stall is rendered with the cause's own figures and coded by the cause,
