@@ -50,9 +50,11 @@ fn dotted_modules(plan: &ImportPlan) -> Vec<String> {
     plan.modules().iter().map(ModulePath::to_dotted).collect()
 }
 
+/// An import-free module is missing every derived module, so `missing_from` yields the whole plan.
 fn names_needing(plan: &ImportPlan, module: &str) -> Vec<NameUse> {
-    plan.required()
-        .iter()
+    let imports_nothing = parse_clean("structure def S {}\n", SUBJECT_PATH);
+    plan.missing_from(&imports_nothing)
+        .into_iter()
         .find(|required| required.module.to_dotted() == module)
         .unwrap_or_else(|| panic!("plan has no entry for {module}: {:?}", dotted_modules(plan)))
         .names
