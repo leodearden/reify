@@ -7,6 +7,7 @@ use std::process::ExitCode;
 use reify_compiler::import_headers::{self, RequiredImport};
 use reify_core::ModulePath;
 
+use crate::diagnostic_line::render_diagnostic_line;
 use crate::help::FIX_USAGE;
 
 struct FixArgs<'a> {
@@ -80,7 +81,7 @@ fn fix_imports(path: &str, check_only: bool) -> bool {
              not writing"
         );
         for diagnostic in &residual {
-            eprintln!("  {}: {}", diagnostic.severity, diagnostic.message);
+            eprintln!("{}", render_diagnostic_line(path, &source, diagnostic));
         }
         return false;
     }
