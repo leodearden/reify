@@ -833,6 +833,13 @@ structure def Thing { param a : Real = 1.0 }
             .collect::<Vec<_>>()
     );
 
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::StructureDeclaredAfterFunction),
+        "the ordering error must carry its dedicated code; got: {:?}",
+        errors[0]
+    );
+
     let msg = &errors[0].message;
     assert!(
         msg.contains("Thing"),
@@ -852,6 +859,129 @@ structure def Thing { param a : Real = 1.0 }
         panic!(
             "`make_it` must not lower to StructureInstanceCtor{{{type_name}}} — \
              `Thing`'s template does not exist yet at this point in the source"
+        );
+    }
+}
+
+/// Diagnostics carrying the declaration-order code — or the ordering message,
+/// so a code-less regression of the same lie is caught too.
+fn ordering_diags(module: &reify_compiler::CompiledModule) -> Vec<&Diagnostic> {
+    module
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction)
+                || d.message.contains("is declared after this function")
+        })
+        .collect()
+}
+
+fn diag_lines(module: &reify_compiler::CompiledModule) -> Vec<String> {
+    module
+        .diagnostics
+        .iter()
+        .map(|d| format!("[{:?}] {:?} {}", d.severity, d.code, d.message))
+        .collect()
+}
+
+/// Boundary #5 for MEMBER ACCESS: a fn body reading a member of a param typed as
+/// a same-module structure declared BELOW the fn has no template to check the
+/// member against. Without an ordering diagnostic the access takes the
+/// permissive registry-miss fallback, and a `priv` port or guarded member is
+/// silently NOT priv-gated (#5222's gate reopens for this ordering). The rule is
+/// the ctor rule: a fn may use a same-module structure's template only if the
+/// `structure def` is declared above it.
+#[test]
+fn fn_body_member_access_on_later_declared_structure_reports_ordering_error() {
+    for (host, src) in [
+        (
+            "PortHost",
+            r#"
+module test.fwd_port
+trait Iface {}
+pub fn leak(m : PortHost) -> Length { m.secret.main }
+structure def PortHost {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+}
+"#,
+        ),
+        (
+            "GuardHost",
+            r#"
+module test.fwd_guard
+pub fn leak(m : GuardHost) -> Length { m.g }
+structure def GuardHost {
+    param active : Bool = true
+    where active {
+        priv param g : Length = 5mm
+    }
+}
+"#,
+        ),
+    ] {
+        let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+        let ordering: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Severity::Error
+                    && d.code == Some(DiagnosticCode::StructureDeclaredAfterFunction)
+            })
+            .collect();
+        assert!(
+            !ordering.is_empty(),
+            "{host}: member access on a later-declared same-module structure must \
+             draw the ordering Error, never the permissive fallback; all \
+             diagnostics: {:#?}",
+            diag_lines(&module)
+        );
+        assert!(
+            ordering.iter().any(|d| d.message.contains(host)),
+            "{host}: the ordering error must name the structure; got: {:#?}",
+            diag_lines(&module)
+        );
+    }
+}
+
+/// The ordering rule is about module-local `structure def`s only. A same-module
+/// OCCURRENCE and a prelude occurrence or structure never enter the ctor view
+/// the way a local structure does, so calling one from a fn body must not draw a
+/// message claiming "structure 'X' is declared after this function" — that
+/// message would lie. Only the absence of the ordering diagnostic is pinned:
+/// whatever else these calls produce is not this rule's business.
+#[test]
+fn fn_body_call_of_non_structure_def_name_draws_no_ordering_error() {
+    for (what, src) in [
+        (
+            "same-module occurrence declared below the fn",
+            "module t.occ_below\n\
+             pub fn f() -> Real { let o = Op(); 1.0 }\n\
+             occurrence def Op { param p : Real = 0 }\n",
+        ),
+        (
+            "same-module occurrence declared above the fn",
+            "module t.occ_above\n\
+             occurrence def Op { param p : Real = 0 }\n\
+             pub fn f() -> Real { let o = Op(); 1.0 }\n",
+        ),
+        (
+            "prelude occurrence",
+            "module t.prelude_occ\n\
+             pub fn g() -> Real { let x = STLOutput(); 1.0 }\n",
+        ),
+        (
+            "prelude structure",
+            "module t.prelude_struct\n\
+             pub fn g() -> Real { let x = MaterialFrame(); 1.0 }\n",
+        ),
+    ] {
+        let module = reify_test_support::helpers::compile_source_with_stdlib(src);
+        assert!(
+            ordering_diags(&module).is_empty(),
+            "{what}: must draw no declaration-order diagnostic; all diagnostics: {:#?}",
+            diag_lines(&module)
         );
     }
 }
