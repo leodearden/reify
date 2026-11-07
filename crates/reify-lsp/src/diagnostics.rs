@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, ModulePath, SourceSpan, ValueCellId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, ModulePath, ValueCellId,
     VersionId,
 };
 use reify_ir::{Freshness, Satisfaction};
@@ -13,6 +13,8 @@ use crate::decl_oracle::module_name_from_uri;
 use crate::convert;
 
 mod document_compile;
+
+use document_compile::CompiledDocument;
 
 /// The eval/check-pass containment guard shared by both LSP production
 /// entry points — see [`eval_guard`] for the hazard it contains and why it is
@@ -363,12 +365,17 @@ pub fn compute_diagnostics_with_state(
         }
     };
 
-    // Build constraint span lookup map from compiled module
-    let constraint_spans: HashMap<ConstraintNodeId, SourceSpan> = compiled
+    let constraint_ranges: HashMap<ConstraintNodeId, lsp_types::Range> = compiled
         .templates
         .iter()
-        .flat_map(|t| t.constraints.iter())
-        .map(|c| (c.id.clone(), c.span))
+        .enumerate()
+        .flat_map(|(index, t)| t.constraints.iter().map(move |c| (index, c)))
+        .map(|(index, c)| {
+            (
+                c.id.clone(),
+                document.template_span_range(source, index, c.span),
+            )
+        })
         .collect();
 
     // Convert non-constraint eval diagnostics from check result.
@@ -454,9 +461,9 @@ pub fn compute_diagnostics_with_state(
     for entry in &check_result.constraint_results {
         if entry.satisfaction == Satisfaction::Violated {
             let msg = constraint_violated_message(entry);
-            let span_lookup = constraint_spans.get(&entry.id);
-            let range = span_lookup
-                .map(|span| convert::span_to_range(source, *span))
+            let range = constraint_ranges
+                .get(&entry.id)
+                .copied()
                 .unwrap_or_default();
             diagnostics.push(lsp_types::Diagnostic {
                 range,
@@ -470,11 +477,11 @@ pub fn compute_diagnostics_with_state(
 
     diagnostics.extend(fea_not_evaluated_hints(
         &state.engine,
-        compiled,
+        &document,
         &check_result,
         source,
     ));
-    diagnostics.extend(freshness_diagnostics(&state.engine, compiled, source));
+    diagnostics.extend(freshness_diagnostics(&state.engine, &document, source));
 
     // Record the content hash so the next call can choose incremental vs cold-start.
     state.last_content_hash = Some(compiled.content_hash);
@@ -509,7 +516,7 @@ pub fn compute_diagnostics_with_state(
 /// fields, no keystroke-time solve.
 fn fea_not_evaluated_hints(
     engine: &reify_eval::Engine,
-    compiled: &reify_compiler::CompiledModule,
+    document: &CompiledDocument,
     check_result: &reify_eval::CheckResult,
     source: &str,
 ) -> Vec<lsp_types::Diagnostic> {
@@ -552,6 +559,7 @@ fn fea_not_evaluated_hints(
         return Vec::new();
     }
 
+    let compiled = document.module();
     let value_cell_exprs: HashMap<ValueCellId, _> = compiled
         .templates
         .iter()
@@ -561,8 +569,8 @@ fn fea_not_evaluated_hints(
     let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
         .templates
         .iter()
-        .flat_map(|t| t.constraints.iter())
-        .map(|c| (&c.id, c))
+        .enumerate()
+        .flat_map(|(index, t)| t.constraints.iter().map(move |c| (&c.id, (index, c))))
         .collect();
     // Precompute name -> "names an unregistered @optimized compute
     // target" once per document, instead of re-scanning all visible
@@ -615,7 +623,7 @@ fn fea_not_evaluated_hints(
         if entry.satisfaction != Satisfaction::Indeterminate {
             continue;
         }
-        let Some(constraint) = compiled_constraints.get(&entry.id) else {
+        let Some(&(template_index, constraint)) = compiled_constraints.get(&entry.id) else {
             continue;
         };
         if !constraint_depends_on_unregistered_optimized_compute(
@@ -626,7 +634,7 @@ fn fea_not_evaluated_hints(
             continue;
         }
         hints.push(lsp_types::Diagnostic {
-            range: convert::span_to_range(source, constraint.span),
+            range: document.template_span_range(source, template_index, constraint.span),
             severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
             code: Some(lsp_types::NumberOrString::String(
                 FEA_NOT_EVALUATED_CODE.to_string(),
@@ -656,7 +664,7 @@ fn fea_not_evaluated_hints(
 /// regression test `constraint_violation_does_not_produce_computation_failed` pins this.
 fn freshness_diagnostics(
     engine: &reify_eval::Engine,
-    compiled: &reify_compiler::CompiledModule,
+    document: &CompiledDocument,
     source: &str,
 ) -> Vec<lsp_types::Diagnostic> {
     // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
@@ -664,11 +672,11 @@ fn freshness_diagnostics(
     // Using a HashMap would yield entries in unstable order, causing flapping in
     // snapshot tests and non-deterministic output for the user.
     let mut diagnostics = Vec::new();
-    for template in &compiled.templates {
+    for (template_index, template) in document.module().templates.iter().enumerate() {
         for vc in &template.value_cells {
             match engine.freshness(&reify_eval::cache::NodeId::Value(vc.id.clone())) {
                 Freshness::Failed { error } => {
-                    let range = convert::span_to_range(source, vc.span);
+                    let range = document.template_span_range(source, template_index, vc.span);
                     diagnostics.push(lsp_types::Diagnostic {
                         range,
                         severity: Some(lsp_types::DiagnosticSeverity::ERROR),
@@ -681,7 +689,7 @@ fn freshness_diagnostics(
                     });
                 }
                 Freshness::Pending { .. } => {
-                    let range = convert::span_to_range(source, vc.span);
+                    let range = document.template_span_range(source, template_index, vc.span);
                     // O(1) HashMap lookup on NodeCache::pending_cause. When the
                     // cause is present we embed it in the message so the user sees
                     // which upstream cell failed. Falls back to the historic static
@@ -2457,22 +2465,22 @@ structure S {
     fn build_engine_with_failed_cell(
         source: &str,
         cell_id: ValueCellId,
-    ) -> (reify_eval::Engine, reify_compiler::CompiledModule) {
+    ) -> (reify_eval::Engine, CompiledDocument) {
         let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let document = CompiledDocument::single_file(compile_like_production(&parsed));
 
         let checker = SimpleConstraintChecker;
         let mut engine = reify_eval::Engine::new(reify_eval::SolverPosture::SolverFree, Box::new(checker), None);
 
         // Pass 1: cold eval — initialises the cache (all cells → Final).
-        let _ = engine.eval(&compiled);
+        let _ = engine.eval(document.module());
 
         // Inject forced panic and run a second full eval.
         engine.set_panic_on_eval(cell_id);
-        let _ = engine.eval(&compiled);
+        let _ = engine.eval(document.module());
         // After pass 2: `cell_id` is Failed; its dependents are Pending.
 
-        (engine, compiled)
+        (engine, document)
     }
 
     /// (a) [`freshness_diagnostics`] must emit an ERROR diagnostic with
@@ -2484,9 +2492,9 @@ structure S {
         // Force `Bracket.volume` (the only `let` in bracket_source) to fail.
         let volume_id = ValueCellId::new("Bracket", "volume");
         let source = reify_test_support::bracket_source();
-        let (engine, compiled) = build_engine_with_failed_cell(source, volume_id.clone());
+        let (engine, document) = build_engine_with_failed_cell(source, volume_id.clone());
 
-        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
+        let diagnostics = freshness_diagnostics(&engine, &document, source);
 
         let failed_diags: Vec<_> = diagnostics
             .iter()
@@ -2509,7 +2517,8 @@ structure S {
         // read off the compiled module rather than hardcoded (a line number
         // would drift if bracket_source changes, and stdlib templates may add
         // extra let cells in the future).
-        let volume_span = compiled
+        let volume_span = document
+            .module()
             .templates
             .iter()
             .flat_map(|t| t.value_cells.iter())
@@ -2555,9 +2564,9 @@ structure S {
         // Forcing S.base (a let) to fail makes S.derived Pending (arch §9.2).
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
-        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
+        let (engine, document) = build_engine_with_failed_cell(source, base_id);
 
-        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
+        let diagnostics = freshness_diagnostics(&engine, &document, source);
 
         let pending_diags: Vec<_> = diagnostics
             .iter()
@@ -2606,9 +2615,9 @@ structure S {
         // Same let-chain source and setup as the sibling pending-diagnostic test.
         let source = "structure S {\n    let base = 1.0\n    let derived = base + 1.0\n}";
         let base_id = ValueCellId::new("S", "base");
-        let (engine, compiled) = build_engine_with_failed_cell(source, base_id);
+        let (engine, document) = build_engine_with_failed_cell(source, base_id);
 
-        let diagnostics = freshness_diagnostics(&engine, &compiled, source);
+        let diagnostics = freshness_diagnostics(&engine, &document, source);
 
         let pending_diags: Vec<_> = diagnostics
             .iter()
@@ -3485,24 +3494,25 @@ structure S {
         }
 
         let parsed = reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
-        let compiled = compile_like_production(&parsed);
+        let document = CompiledDocument::single_file(compile_like_production(&parsed));
+        let compiled = document.module();
         let mut engine = reify_eval::Engine::new(
             reify_eval::SolverPosture::SolverFree,
             Box::new(SimpleConstraintChecker),
             None,
         );
-        let _ = engine.eval(&compiled);
+        let _ = engine.eval(compiled);
 
         // Positive control: the same engine and module, target still
         // unregistered, DO produce hints — so the empty result below is the
         // registration's doing, not a fixture that never hints.
         let unregistered_check_result = engine
-            .check_snapshot(&compiled)
+            .check_snapshot(compiled)
             .expect("the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval");
         assert!(
             !fea_not_evaluated_hints(
                 &engine,
-                &compiled,
+                &document,
                 &unregistered_check_result,
                 FEA_BEARING_SRC
             )
@@ -3515,9 +3525,9 @@ structure S {
             "solver::elastic_static",
             undef_result_fn as reify_eval::ComputeFn,
         );
-        let _ = engine.eval_cached(&compiled, VersionId(2));
+        let _ = engine.eval_cached(compiled, VersionId(2));
 
-        let check_result = engine.check_snapshot(&compiled).expect(
+        let check_result = engine.check_snapshot(compiled).expect(
             "the engine should hold a snapshot for FEA_BEARING_SRC immediately after eval_cached",
         );
         let indeterminate_count = check_result
@@ -3537,7 +3547,7 @@ structure S {
             check_result.constraint_results
         );
 
-        let hints = fea_not_evaluated_hints(&engine, &compiled, &check_result, FEA_BEARING_SRC);
+        let hints = fea_not_evaluated_hints(&engine, &document, &check_result, FEA_BEARING_SRC);
         assert!(
             hints.is_empty(),
             "no FEA \"not evaluated in editor\" hint should fire once \

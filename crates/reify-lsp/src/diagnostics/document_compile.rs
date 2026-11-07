@@ -9,20 +9,44 @@ use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_compiler::program;
 use reify_constraints::SimpleConstraintChecker;
-use tower_lsp::lsp_types::Url;
+use reify_core::SourceSpan;
+use tower_lsp::lsp_types::{Range, Url};
+
+use crate::convert;
 
 /// A compiled document, immutable once built.
 pub(super) struct CompiledDocument {
     module: CompiledModule,
+    /// How many of `module.templates`, from the front, the document declares;
+    /// the rest are imported, and their spans index another file.
+    declared_templates: usize,
 }
 
 impl CompiledDocument {
     pub(super) fn single_file(module: CompiledModule) -> Self {
-        Self { module }
+        Self {
+            declared_templates: module.templates.len(),
+            module,
+        }
     }
 
     pub(super) fn module(&self) -> &CompiledModule {
         &self.module
+    }
+
+    /// The range of `span`, a span of `module().templates[template_index]`, in
+    /// `source`; `Range::default()` when that template is imported.
+    pub(super) fn template_span_range(
+        &self,
+        source: &str,
+        template_index: usize,
+        span: SourceSpan,
+    ) -> Range {
+        if template_index < self.declared_templates {
+            convert::span_to_range(source, span)
+        } else {
+            Range::default()
+        }
     }
 }
 
@@ -44,6 +68,7 @@ pub(super) fn compile_document(
                 &SimpleConstraintChecker,
             );
             CompiledDocument {
+                declared_templates: compiled.entry_declared_templates().len(),
                 module: compiled.entry,
             }
         }
@@ -63,11 +88,9 @@ fn entry_dir_resolver(entry_path: &Path) -> ModuleResolver {
 
 #[cfg(test)]
 mod tests {
-    use reify_core::{DiagnosticCode, ModulePath, Severity, SourceSpan};
-    use tower_lsp::lsp_types::Range;
+    use reify_core::{DiagnosticCode, ModulePath, Severity};
 
     use super::*;
-    use crate::convert;
 
     type DiagShape = (Severity, Option<DiagnosticCode>, String, Vec<SourceSpan>);
 
