@@ -325,6 +325,26 @@ fn a_stationary_crest_is_left_not_certified_infeasible() {
     assert!(max_abs(&Crest.residual(&run.x)) <= 1.0, "{run:?}");
 }
 
+/// At the crest the descent probe finds descent, but with no iteration left to
+/// take it the run reports `BudgetExhausted`, never the certificate the
+/// stationarity test alone would issue.
+#[test]
+fn a_stationary_crest_with_no_budget_left_is_exhausted_not_certified() {
+    let run = solve(&Crest, &[0.0], SolveBudget { max_iterations: 0 }, RANK);
+    let Err(SolveFailureCause::BudgetExhausted(exhaustion)) = &run.outcome else {
+        panic!("expected budget exhaustion, got {run:?}");
+    };
+    assert_eq!(exhaustion.iterations, 0, "{exhaustion:?}");
+    assert_eq!(exhaustion.budget, 0, "{exhaustion:?}");
+    assert!(exhaustion.step_norms.is_empty(), "{exhaustion:?}");
+    assert!(
+        (exhaustion.max_scaled_residual - 100.0).abs() <= 1e-9,
+        "the crest's residual is 100·cos 0; {exhaustion:?}"
+    );
+    assert_eq!(run.iterations, 0, "{run:?}");
+    assert_eq!(run.x, vec![0.0], "the probe point was not taken; {run:?}");
+}
+
 /// A problem undefined at every point: one row evaluates to NaN. `NaN ≤ 1` is
 /// false, but a NaN folded through `f64::max` vanishes, so this pins that the
 /// run cannot read it as converged.

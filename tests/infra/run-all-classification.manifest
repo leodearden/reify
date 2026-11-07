@@ -90,6 +90,7 @@ test_cargo_incremental_lane_decision.sh pool
 test_cargo_test_tally.sh pool
 test_check_event_inventory.sh pool
 test_cited_test_paths_resolve.sh pool
+test_compiler_decl_pass_ratchets.sh pool
 test_compiler_namespace_ratchet.sh pool
 test_compute_trampoline_registration_wired.sh pool
 test_copy_list_preflight.sh pool
@@ -227,6 +228,7 @@ test_run_all_tiering.sh pool
 test_run_all_timing.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
+test_rust_construct_ratchet.sh pool
 test_rust_production_view_lib.sh pool
 test_sandbox_cache_writability_seam.sh pool
 test_scope_boundary.sh pool
@@ -273,7 +275,11 @@ test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
 test_verify_plan_model.sh pool
 test_verify_plan_parity.sh pool
+test_verify_plan_parity_all.sh pool
 test_verify_plan_parity_lint.sh pool
+test_verify_plan_parity_region.sh pool
+test_verify_plan_parity_retry.sh pool
+test_verify_plan_parity_test.sh pool
 test_verify_plan_parity_typecheck.sh pool
 test_verify_policy.sh pool
 test_verify_release_delta_skip.sh pool

@@ -71,7 +71,7 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
     mode = invocation.scope
     widened = None
     notices = []
-    if mode is not Scope.ALL and _merge_in_progress(repo_root, env):
+    if mode is not Scope.ALL and merge_in_progress(repo_root, env):
         notices.append(MERGE_HEAD_NOTICE)
         mode, widened = Scope.ALL, Widening.MERGE_IN_PROGRESS
     if mode is not Scope.ALL and ROLE_TABLE[invocation.role].force_scope_all:
@@ -91,7 +91,7 @@ def resolve_scope(invocation: Invocation, repo_root: Path, env: Mapping[str, str
     return ResolvedScope(mode, merge_base, widened, tuple(notices))
 
 
-def _merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
+def merge_in_progress(repo_root: Path, env: Mapping[str, str]) -> bool:
     """A MERGE_HEAD file exists; a relative git path is resolved against repo_root, never the cwd."""
     found = gitcall.run(repo_root, env, "rev-parse", "--git-path", "MERGE_HEAD")
     if found.returncode != 0 or not found.lines:

@@ -152,8 +152,8 @@ fn bin_input_hash(bin: &Path) -> String {
 ///
 /// The rename-window race proper is owned in-process, where it can be forced,
 /// by `concurrent_write_entry_calls_for_same_input_both_succeed_and_final_read_entry_decodes_to_original_value`
-/// (`crates/reify-eval/src/persistent_cache.rs:3153`, cited from the
-/// `write_entry` docs at :786). The two tests are complements: that one pins
+/// (in `crates/reify-eval/src/persistent_cache.rs`'s `mod tests`, cited from
+/// `write_entry`'s rustdoc). The two tests are complements: that one pins
 /// the collision, this one pins that two real processes can share a cache root
 /// without corrupting it.
 #[test]

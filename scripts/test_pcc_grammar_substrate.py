@@ -26,13 +26,20 @@ from _pcc_test_support import (
     _CACHE_DENIED_STDERR,
     _SCRIPTS_DIR,
     _compute_grammar_e2e_status,
-    _patch_parser_c,
     _ts_stub_cache_denied,
     _ts_stub_clean,
     _ts_stub_hangs,
     _ts_stub_not_executable,
     _write_ts_stub,
+    make_fixture_repo,
+    probe_context,
+    recording_runner,
 )
+
+
+# Any committed fixture serves the bound/launch cases below: they probe the
+# runner, never whether this fixture parses.
+_COMMITTED_FIXTURE = "tests/prd-gate/fixtures/arrow_type.ri"
 
 
 # ---------------------------------------------------------------------------
@@ -48,20 +55,26 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
     HARNESS_ERROR this task removes.  The house rule
     (tests/infra/test_prd_gate_corpus.sh:52-60) is that a toolchain which cannot
     be interrogated is a clean SKIP, so these hold the guard to it for ANY
-    exception.  Tested through the UN-memoized function, so each case observes
-    its own patches.
+    exception.  Tested through the UN-memoized function, handed a fixture-repo
+    ctx and a fake runner, so each case observes only what it set up.
     """
 
-    # Shares _pcc_test_support._patch_parser_c() with TestMain's CLI tests
-    # (test_pcc_main.py).
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_e2e_guard_")
+        self.addCleanup(self._tmp.cleanup)
+
+    def _ctx(self, parser_c):
+        return probe_context(
+            repo_root=make_fixture_repo(self._tmp.name, parser_c=parser_c),
+            cache_home_override=os.path.join(self._tmp.name, "cache"),
+        )
 
     def test_substrate_probe_exception_degrades_to_unavailable(self):
         """(a) ANY exception from the substrate probe → unavailable, never propagated."""
-        with _patch_parser_c(True), \
-             unittest.mock.patch.object(
-                 pcc, "grammar_substrate_usable",
-                 side_effect=RuntimeError("boom")):
-            available, reason = _compute_grammar_e2e_status()
+        def runner(probe, ctx, timeout=None):
+            raise RuntimeError("boom")
+
+        available, reason = _compute_grammar_e2e_status(self._ctx(parser_c=True), runner)
         self.assertFalse(
             available,
             "a substrate that cannot be interrogated must degrade to 'skip the "
@@ -79,27 +92,30 @@ class TestGrammarAvailabilityGuard(unittest.TestCase):
         The hardening must not silently disable the e2e on a healthy lane; that
         would be a coverage loss disguised as a fix.
         """
-        with _patch_parser_c(True), \
-             unittest.mock.patch.object(
-                 pcc, "grammar_substrate_usable", return_value=(True, "")):
-            available, _ = _compute_grammar_e2e_status()
+        def runner(probe, ctx, timeout=None):
+            return pcc.ProbeRun(0, "", "")
+
+        available, _ = _compute_grammar_e2e_status(self._ctx(parser_c=True), runner)
         self.assertTrue(available)
 
     def test_missing_parser_c_short_circuits_without_probing(self):
         """(c) No parser.c → unavailable, and the substrate is never probed.
 
         Pins the existing cheap short-circuit: a lane that never generated the
-        grammar must pay no subprocess.  Asserted via call_count so a refactor
-        cannot quietly reorder the conjunction.
+        grammar must pay no subprocess.  Asserted on the runner's calls so a
+        refactor cannot quietly reorder the conjunction.
         """
-        probe = unittest.mock.Mock(return_value=(True, ""))
-        with _patch_parser_c(False), \
-             unittest.mock.patch.object(pcc, "grammar_substrate_usable", probe):
-            available, reason = _compute_grammar_e2e_status()
+        calls = []
+
+        def runner(probe, ctx, timeout=None):
+            calls.append(probe)
+            return pcc.ProbeRun(0, "", "")
+
+        available, reason = _compute_grammar_e2e_status(self._ctx(parser_c=False), runner)
         self.assertFalse(available)
         self.assertEqual(
-            probe.call_count, 0,
-            "isfile(parser.c) must short-circuit before any subprocess is spent",
+            calls, [],
+            "grammar_generated() must short-circuit before any subprocess is spent",
         )
         self.assertIn("parser.c", reason, "the skip message must name what is missing")
 
@@ -407,8 +423,8 @@ def _ts_stub_forks_grandchild(
 class TestGrammarSubstrateUsable(unittest.TestCase):
     """Pins pcc.grammar_substrate_usable() -> (bool, reason).
 
-    Shared rationale.  Every case is driven by a TREE_SITTER_BIN stub, never by
-    ambient sandbox state — load-bearing, not tidiness: whether
+    Shared rationale.  Every case is driven by a ctx.tree_sitter_bin stub, never
+    by ambient sandbox state — load-bearing, not tidiness: whether
     ~/.cache/tree-sitter/lock is writable depends on which agent role runs the
     suite, so an ambient-conditioned test would flip RED/GREEN by role and could
     not be turned green by the role that has to fix it.
@@ -433,9 +449,8 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         return _ts_stub_not_executable(self._tmpdir)
 
     @staticmethod
-    def _call(stub):
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            return pcc.grammar_substrate_usable()
+    def _call(stub, **fields):
+        return pcc.grammar_substrate_usable(probe_context(tree_sitter_bin=stub, **fields))
 
     # ── (a) cache denial → unusable, with an actionable reason ────────────────
 
@@ -470,7 +485,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
     # ── (d) missing CLI → unusable ────────────────────────────────────────────
 
     def test_missing_cli_is_unusable_with_reason(self):
-        """TREE_SITTER_BIN pointing at nothing → (False, reason) naming the CLI.
+        """A tree_sitter_bin pointing at nothing → (False, reason) naming the CLI.
 
         run_probe() types the FileNotFoundError as a LAUNCH harness failure, so
         this arrives as the same (False, reason) as the denial and must be
@@ -488,31 +503,14 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
 
         A missing grammar cwd raises the same FileNotFoundError as a missing CLI,
         so both are LAUNCH failures.  Only the errno detail distinguishes them,
-        and it must survive into the SKIP line.
+        and it must survive into the SKIP line.  The absent-grammar-dir half is
+        TestGrammarSeamsTakeContext.test_an_absent_grammar_dir_under_the_ctx_root_is_named.
         """
         missing = os.path.join(self._tmpdir, "definitely-not-here")
         _, cli_reason = self._call(missing)
         self.assertIn(
             missing, cli_reason,
             "the errno detail naming the missing CLI must reach the reason",
-        )
-
-        # Same failure kind, different subsystem: an absent grammar directory.
-        # The CLI here is a perfectly good stub, so only the cwd can fail.
-        bad_root = os.path.join(self._tmpdir, "no-repo")
-        with unittest.mock.patch.object(
-            pcc, "_find_repo_root", return_value=bad_root
-        ):
-            usable, cwd_reason = self._call(self._clean_stub())
-        self.assertFalse(usable, "an absent grammar directory is an unusable substrate")
-        self.assertIn(
-            os.path.join(bad_root, "tree-sitter-reify"), cwd_reason,
-            "an absent grammar directory must be attributable from the reason, "
-            "not silently reported as a missing CLI.  Asserted on the CONCRETE "
-            "path, because the reason's static sentence names "
-            "'tree-sitter-reify' for every launch failure — including the "
-            "missing-CLI case above — so a substring assertion on that alone "
-            "would still pass with the errno detail dropped entirely",
         )
 
 
@@ -531,7 +529,7 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         test_launch_failure_reason_carries_the_offending_path documents, inverted.
         """
         # The clean stub deliberately, not the echo-cache one: its own path
-        # reaches the reason via _resolve_tree_sitter_bin() and a name carrying
+        # reaches the reason via ctx.tree_sitter_bin and a name carrying
         # "cache" would satisfy the assertion below by itself.
         stub = self._clean_stub()
         self.assertNotIn("cache", stub.lower(), "the stub path must be neutral")
@@ -539,14 +537,13 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             "cache", self._tmpdir.lower(), "the tempdir path must be neutral"
         )
 
+        ctx = probe_context(tree_sitter_bin=stub)
         with unittest.mock.patch.object(tempfile, "tempdir", self._tmpdir):
-            with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-                os.environ.pop(pcc._CACHE_HOME_OVERRIDE_ENV, None)
-                wedged = pcc._grammar_cache_home(pcc._find_repo_root())
-                shutil.rmtree(wedged, ignore_errors=True)
-                with open(wedged, "w") as f:
-                    f.write("x")
-                usable, reason = pcc.grammar_substrate_usable()
+            wedged = pcc.grammar_cache_home(ctx)
+            shutil.rmtree(wedged, ignore_errors=True)
+            with open(wedged, "w") as f:
+                f.write("x")
+            usable, reason = pcc.grammar_substrate_usable(ctx)
 
         self.assertFalse(usable, "a wedged grammar cache is an unusable substrate")
         self.assertIn(
@@ -593,14 +590,13 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         structurally could not block.  Unbounded, a tree-sitter wedged on the very
         grammar lock this task is about would hang the suite rather than skip one
         test, and the exception-swallowing guard cannot help — a hang raises
-        nothing.  Bounded to 0.4s here; production uses
-        _SUBSTRATE_PROBE_TIMEOUT_S, generous for cold-cache compiles.
+        nothing.  Bounded to 0.4s here; production uses the ProbeContext
+        default, generous for cold-cache compiles.
         """
         stub = _ts_stub_hangs(self._tmpdir)
-        with unittest.mock.patch.object(pcc, "_SUBSTRATE_PROBE_TIMEOUT_S", 0.4):
-            started = time.monotonic()
-            usable, reason = self._call(stub)
-            elapsed = time.monotonic() - started
+        started = time.monotonic()
+        usable, reason = self._call(stub, substrate_timeout_s=0.4)
+        elapsed = time.monotonic() - started
         self.assertFalse(usable, "a tree-sitter that will not answer is unusable")
         self.assertLess(
             elapsed, 10.0,
@@ -618,18 +614,16 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         records were not classified, an exit 124 would fall through observe()'s
         grammar branch as an ordinary non-zero exit.
         """
-        with unittest.mock.patch.dict(
-            os.environ, {"TREE_SITTER_BIN": _ts_stub_hangs(self._tmpdir)}
-        ):
-            run = pcc.run_probe(
-                pcc.Probe(
-                    capability="wedged",
-                    probe_kind="grammar",
-                    fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
-                    expected={"observation": "present", "match": {}},
-                ),
-                timeout=0.4,
-            )
+        run = pcc.run_probe(
+            pcc.Probe(
+                capability="wedged",
+                probe_kind="grammar",
+                fixture=_COMMITTED_FIXTURE,
+                expected={"observation": "present", "match": {}},
+            ),
+            probe_context(tree_sitter_bin=_ts_stub_hangs(self._tmpdir)),
+            timeout=0.4,
+        )
         self.assertEqual(run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT)
         self.assertEqual(
             pcc.observe("grammar", run, {}), pcc.Observation.HARNESS_ERROR,
@@ -651,11 +645,10 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         probe = pcc.Probe(
             capability="wedged with a grandchild",
             probe_kind="grammar",
-            fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+            fixture=_COMMITTED_FIXTURE,
             expected={"observation": "present", "match": {}},
         )
-        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": stub}):
-            run = pcc.run_probe(probe, timeout=0.6)
+        run = pcc.run_probe(probe, probe_context(tree_sitter_bin=stub), timeout=0.6)
         self.assertEqual(
             run.harness_failure.kind, pcc.HarnessFailureKind.TIMEOUT,
             "precondition: the stub must have outlasted the bound",
@@ -689,11 +682,11 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
         probe = pcc.Probe(
             capability="unbounded",
             probe_kind="grammar",
-            fixture=pcc._SUBSTRATE_PROBE_FIXTURE,
+            fixture=_COMMITTED_FIXTURE,
             expected={"observation": "present", "match": {}},
         )
         with unittest.mock.patch.object(subprocess, "run", side_effect=fake_run):
-            pcc.run_probe(probe)
+            pcc.run_probe(probe, probe_context())
         # Assert the launch HAPPENED before asserting what it was passed: read
         # through .get() with a None default, this passes vacuously if
         # subprocess.run is never reached at all (build_command raising, or a
@@ -719,6 +712,76 @@ class TestGrammarSubstrateUsable(unittest.TestCase):
             usable, reason = self._call(stub)
             self.assertIsInstance(usable, bool)
             self.assertIsInstance(reason, str)
+
+
+class TestGrammarSeamsTakeContext(unittest.TestCase):
+    """The grammar layer reads the repo root, the CLI and the bound off ctx.
+
+    grammar_substrate_usable() runs its one probe through the runner it is
+    given, so what it asks for is observed on a fake rather than patched in.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="pcc_grammar_seam_")
+        self.tmp = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _failed_run(kind, detail):
+        return pcc.ProbeRun(127, "", "", harness_failure=pcc.HarnessFailure(kind, detail))
+
+    def test_grammar_generated_looks_under_the_ctx_repo_root(self):
+        for generated in (True, False):
+            with self.subTest(parser_c=generated), \
+                 tempfile.TemporaryDirectory(dir=self.tmp) as root:
+                ctx = probe_context(repo_root=make_fixture_repo(root, parser_c=generated))
+                self.assertEqual(
+                    pcc.grammar_generated(ctx),
+                    (generated, os.path.join(root, "tree-sitter-reify", "src", "parser.c")),
+                )
+
+    def test_the_substrate_probe_runs_once_through_the_runner_under_the_ctx_bound(self):
+        ctx = probe_context(substrate_timeout_s=0.4)
+        runner, calls = recording_runner(pcc.ProbeRun(0, "", ""))
+        self.assertEqual(pcc.grammar_substrate_usable(ctx, runner=runner), (True, ""))
+        self.assertEqual(len(calls), 1)
+        probe, called_ctx, timeout = calls[0]
+        self.assertEqual(probe.probe_kind, pcc.ProbeKind.GRAMMAR)
+        self.assertIs(called_ctx, ctx)
+        self.assertEqual(timeout, ctx.substrate_timeout_s)
+
+    def test_a_timeout_reason_names_the_ctx_bound(self):
+        ctx = probe_context(substrate_timeout_s=0.4)
+        runner, _ = recording_runner(
+            self._failed_run(pcc.HarnessFailureKind.TIMEOUT, "timed out after 0.4 seconds")
+        )
+        usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner)
+        self.assertFalse(usable)
+        self.assertIn("0.4s", reason)
+
+    def test_a_launch_reason_names_the_ctx_binary_not_the_environment(self):
+        ctx = probe_context(tree_sitter_bin="/ctx/ts")
+        runner, _ = recording_runner(
+            self._failed_run(pcc.HarnessFailureKind.LAUNCH, "[Errno 2] No such file")
+        )
+        with unittest.mock.patch.dict(os.environ, {"TREE_SITTER_BIN": "/env/ts"}):
+            usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner)
+        self.assertFalse(usable)
+        self.assertIn("/ctx/ts", reason)
+        self.assertNotIn("/env/ts", reason)
+
+    def test_an_absent_grammar_dir_under_the_ctx_root_is_named(self):
+        """The real runner, a good CLI and a root with no tree-sitter-reify/."""
+        ctx = probe_context(
+            repo_root=self.tmp,
+            tree_sitter_bin=_ts_stub_clean(self.tmp),
+            cache_home_override=os.path.join(self.tmp, "cache"),
+        )
+        usable, reason = pcc.grammar_substrate_usable(ctx)
+        self.assertFalse(usable, "an absent grammar directory is an unusable substrate")
+        self.assertIn(os.path.join(self.tmp, "tree-sitter-reify"), reason)
 
 
 if __name__ == "__main__":

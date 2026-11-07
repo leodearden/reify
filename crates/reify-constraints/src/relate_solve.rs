@@ -374,8 +374,9 @@ impl FrameSolveOutcome {
     ///   freedom) and `unknown` is strict `auto`.
     /// - [`SolveResult::Infeasible`] — the driving relations are certified
     ///   mutually inconsistent; one diagnostic coded [`SolveFailureCause::code`].
-    /// - [`SolveResult::NoProgress`] — the budget ran out or the step stalled; the
-    ///   reason renders the cause.
+    /// - [`SolveResult::NoProgress`] — every other [`SolveFailureCause`] (e.g. the
+    ///   budget ran out, the step stalled, or a residual or Jacobian entry evaluated
+    ///   non-finite); the reason renders the cause.
     // G-allow: SolveResult adapter (strict/auto(free) uniqueness, PRD §7.1 step 3) owned by #6677, whose registry routing of relate-solve consumes it; no production caller until #6677 lands
     pub fn into_solve_result(self, unknown: &FrameUnknown) -> SolveResult {
         match self.result {

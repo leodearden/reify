@@ -32,6 +32,8 @@ fn run_tree_sitter_generate() {
 /// Headers come from a sorted `read_dir` rather than a hardcoded
 /// alloc.h/array.h/parser.h list: a hardcoded list is exactly how this defect
 /// class recurs (someone adds a header, nothing watches it). See `#5629`.
+///
+/// Reads the disk at call time, so call it after generation.
 fn compilation_inputs() -> Vec<String> {
     let mut headers: Vec<String> = Vec::new();
     if let Ok(entries) = std::fs::read_dir("src/tree_sitter") {
@@ -139,53 +141,12 @@ fn main() {
     let parser_path = src_dir.join("parser.c");
     let grammar_path = std::path::Path::new("grammar.js");
 
-    // Declare every input cargo must watch. Two halves, for two different reasons
-    // (`#5629`, esc-5392-1):
-    //
-    //   src/parser.c IS watched, since `#6992`. This build script WRITES it, and
-    //   the old exclusion cited the resulting "double execution" — but that cost
-    //   is BOUNDED and CONVERGENT, not a loop: cargo re-runs this script once
-    //   because parser.c is newer than its recorded reference, that run finds
-    //   both shell stamps current and writes nothing, and the run after it is
-    //   clean. One extra `cc::Build::compile` after a grammar change is a build
-    //   you were going to pay for anyway. (Pinned by
-    //   `test_gating_predicates_converge_after_one_regeneration`.)
-    //
-    //   What it buys is the reverse direction, which the exclusion left wide
-    //   open: cargo narrows a build script's watch set to EXACTLY the emitted
-    //   rerun-if-changed list, so an UNWATCHED parser.c could be deleted (the
-    //   `git clean -xfd -e target` every lane acquire runs) or CoW-replaced with
-    //   a copy from a different base, with grammar.js untouched — and cargo had
-    //   no reason to re-run this script at all. The previously-built
-    //   libtree_sitter_reify.a stayed linked and the change was never under test.
-    //
-    //   src/scanner.c and src/tree_sitter/*.h ARE watched. This build script never
-    //   writes them, so the double-execution objection does not apply — and before
-    //   this change they were watched by NOTHING. `cargo:rerun-if-changed=grammar.js`
-    //   was the only directive emitted, and the `cc` crate emits none of its own
-    //   (task #5784 verified this against the vendored cc-1.2.62: zero
-    //   `rerun-if-changed` occurrences in its sources), and cargo narrows a build
-    //   script's watch set to EXACTLY the emitted `rerun-if-changed` list.
-    //   The consequence was a false GREEN: an edit confined to src/scanner.c gave
-    //   cargo no reason to re-run this script, so cc::Build::compile was never
-    //   re-invoked, the previously-built libtree_sitter_reify.a stayed linked, and
-    //   the external-scanner change was simply never under test.
-    //
-    // Task #5784 fixed the scanner.c half of that with a single hardcoded
-    // `cargo:rerun-if-changed=src/scanner.c` line. This loop SUBSUMES it: it
-    // derives the watch set from `compilation_inputs()` — the same single
-    // enumeration the stamp writer uses — so it covers src/scanner.c AND every
-    // tracked src/tree_sitter/*.h, and a header added later is watched
-    // automatically rather than silently unwatched (which is exactly how this
-    // defect class recurs).
+    // The compiled inputs are watched too, after generation (below).
     println!("cargo:rerun-if-changed=grammar.js");
     // The shared staleness logic is `include!`d, not a separate crate, so
     // cargo does not learn about it from the module graph — it must be
     // declared here or an edit to the predicates never re-runs them.
     println!("cargo:rerun-if-changed=build_support.rs");
-    for rel in compilation_inputs() {
-        println!("cargo:rerun-if-changed={}", rel);
-    }
 
     // Auto-generate from grammar.js when missing or stale.
     let output_paths: Vec<std::path::PathBuf> =
@@ -263,6 +224,21 @@ fn main() {
         // subsequent build-script invocations will hit the fast path in
         // `needs_generate` and skip everything.
         write_out_dir_grammar_stamp(&stamp_path, &grammar_hash);
+    }
+
+    // Watch every compiled input (`#5629`, esc-5392-1). cargo narrows a build
+    // script's watch set to EXACTLY the emitted rerun-if-changed list, and `cc`
+    // emits none (task #5784), so an unwatched input can be edited or deleted
+    // with no rerun while the old libtree_sitter_reify.a stays linked.
+    //
+    // That includes src/parser.c and src/tree_sitter/*.h, which the generate
+    // above writes (the headers are untracked since #9741). Watching an output
+    // costs one bounded extra run after a regeneration
+    // (test_gating_predicates_converge_after_one_regeneration) and buys a
+    // rebuild when one is deleted. Emitted AFTER generation so a fresh clone's
+    // headers are in the set (test_build_rs_restores_deleted_generated_headers).
+    for rel in compilation_inputs() {
+        println!("cargo:rerun-if-changed={}", rel);
     }
 
     let mut c_config = cc::Build::new();

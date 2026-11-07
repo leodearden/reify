@@ -90,32 +90,32 @@
 //! - Structured tet meshes are generated procedurally (no Gmsh) for
 //!   controlled, repeatable mesh resolution within narrow tolerance bands.
 //!   Established pattern: `tests/shell_benchmarks.rs`.
-//! - Solve pipeline: `element_stiffness` → `assemble_global_stiffness` →
-//!   `apply_dirichlet_row_elimination` → loads → `solve_cg(Deterministic)`.
+//! - Solve pipeline: each element kind's own assembly fn feeds fea_harness's
+//!   shared `rhs_from_point_loads` + `solve_displacement` tail.
 //! - Stress validation reuses the kernel's `element_stress_p1` /
 //!   `element_stress_p2` (per-element constant Cauchy tensor) and
 //!   `recover_nodal_stress_p1` (volume-weighted nodal averaging, documented as
 //!   connectivity-shape agnostic).
 
+use faer::sparse::SparseRowMat;
 use reify_solver_elastic::{
     AssemblyElement, AssemblyMode, ElementOrder, ElementStiffness,
     assemble_global_stiffness,
-    apply_dirichlet_row_elimination,
     DirichletBc, FaceOrder, IsotropicElastic,
     StressElement, element_stress_p1, element_stress_p2,
     recover_nodal_stress_p1, tet_volume_p1,
     element_stiffness_hex_p1, element_stiffness_wedge_p1,
     HexP1, ReferenceCoord, ReferenceElement,
     apply_traction_load,
-    solve_cg, CgSolverOptions, SolverMode, CgResult,
+    CgSolverOptions,
 };
 
 #[path = "common/fea_harness.rs"]
 mod fea_harness;
 use fea_harness::{
-    box_p1_mesh, dedup_bcs, dirichlet_fix_face, dirichlet_prescribe_boundary_field,
+    box_p1_mesh, dirichlet_fix_face, dirichlet_prescribe_boundary_field,
     distributed_tip_load, end_face_nodes, gather_u_p1, kuhn_split_hex_to_six_tets,
-    solve_p1_pipeline, von_mises_of_tensor,
+    rhs_from_point_loads, solve_displacement, solve_p1_pipeline, von_mises_of_tensor,
 };
 
 // ─── cantilever fixtures and local helpers ──────────────────────────────────
@@ -283,21 +283,14 @@ fn add_edge_midpoint_nodes(
     (p2_nodes, p2_conns)
 }
 
-/// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system.
-///
-/// `opts` controls the CG solver's convergence criterion and iteration cap.
-/// For slender or otherwise ill-conditioned problems, pass a raised `max_iter`.
-fn solve_p2_pipeline_with_opts(
+/// Assemble the global stiffness matrix of a P2 tetrahedral mesh, in
+/// `AssemblyMode::Deterministic`; the P2 counterpart of
+/// [`fea_harness::assemble_p1_stiffness`].
+fn assemble_p2_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-    opts: CgSolverOptions,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -317,25 +310,26 @@ fn solve_p2_pipeline_with_opts(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads {
-        f[dof] += val;
-    }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let max_iter = opts.max_iter;
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_p2_pipeline_with_opts: CG did not converge after {} iterations (cap={})",
-        result.iterations,
-        max_iter,
-    );
-    result.u().to_vec()
+/// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system:
+/// [`rhs_from_point_loads`] and [`assemble_p2_stiffness`] fed to
+/// [`solve_displacement`].
+///
+/// `opts` controls the CG solver's convergence criterion and iteration cap.
+/// For slender or otherwise ill-conditioned problems, pass a raised `max_iter`.
+#[track_caller]
+fn solve_p2_pipeline_with_opts(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 10]],
+    bcs: Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+    opts: CgSolverOptions,
+) -> Vec<f64> {
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(assemble_p2_stiffness(nodes, conns, mat), &f, bcs, opts)
 }
 
 /// Assemble, apply BCs, and CG-solve a P2 tetrahedral FEA system using the
@@ -343,10 +337,11 @@ fn solve_p2_pipeline_with_opts(
 ///
 /// For slender or otherwise ill-conditioned problems use
 /// [`solve_p2_pipeline_with_opts`] with a raised `max_iter`.
+#[track_caller]
 fn solve_p2_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 10]],
-    bcs: &mut Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
@@ -397,10 +392,10 @@ fn cantilever_beam_p1_tip_deflection_within_5pct_of_timoshenko() {
 
     let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
 
-    let (nodes, conns, mut bcs, end) = cantilever_clamped_p1(L, H, B, NX, NY, NZ);
+    let (nodes, conns, bcs, end) = cantilever_clamped_p1(L, H, B, NX, NY, NZ);
     let n_nodes = nodes.len();
     let loads = distributed_tip_load(&end, F);
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
 
     let tip_disp = mean_tip_deflection(&u, &end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
@@ -447,10 +442,10 @@ fn cantilever_beam_p2_tip_deflection_within_3pct_of_timoshenko() {
 
     let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
 
-    let (p2_nodes, p2_conns, mut bcs, end) = cantilever_clamped_p2(L, H, B, NX, NY, NZ);
+    let (p2_nodes, p2_conns, bcs, end) = cantilever_clamped_p2(L, H, B, NX, NY, NZ);
     let n_nodes = p2_nodes.len();
     let loads = distributed_tip_load(&end, F);
-    let u = solve_p2_pipeline(&p2_nodes, &p2_conns, &mut bcs, &loads, &mat);
+    let u = solve_p2_pipeline(&p2_nodes, &p2_conns, bcs, &loads, &mat);
 
     let tip_disp = mean_tip_deflection(&u, &end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
@@ -485,9 +480,9 @@ fn simple_shear_uniform_stress_p1_within_1pct() {
     let (nodes, conns) = box_p1_mesh(1.0, 1.0, 1.0, N, N, N);
     let tol = 0.25 / N as f64; // < half the 1/N spacing
     let field = |p: [f64; 3]| [GAMMA * p[1], 0.0, 0.0];
-    let mut bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, tol, field);
+    let bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, tol, field);
 
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &[], &mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &[], &mat);
 
     let expected_sxy = g * GAMMA;
     let expected_vm = 3.0_f64.sqrt() * expected_sxy;
@@ -518,9 +513,9 @@ fn simple_shear_uniform_stress_p2_within_1pct() {
     let (nodes, conns) = add_edge_midpoint_nodes(&corner_nodes, &p1_conns);
     let tol = 0.25 / N as f64;
     let field = |p: [f64; 3]| [GAMMA * p[1], 0.0, 0.0];
-    let mut bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, tol, field);
+    let bcs = dirichlet_prescribe_boundary_field(&nodes, 1.0, 1.0, 1.0, tol, field);
 
-    let u = solve_p2_pipeline(&nodes, &conns, &mut bcs, &[], &mat);
+    let u = solve_p2_pipeline(&nodes, &conns, bcs, &[], &mat);
 
     let expected_sxy = g * GAMMA;
     let expected_vm = 3.0_f64.sqrt() * expected_sxy;
@@ -591,17 +586,17 @@ fn cantilever_faithful_convergence_study() {
     println!("L/H=2 Timoshenko ref: {delta_ref:.6}");
 
     for &(nx, ny, nz) in &[(12usize, 12usize, 4usize), (16, 16, 6), (20, 20, 6), (24, 24, 8)] {
-        let (nodes, conns, mut bcs, end) = cantilever_clamped_p1(l, h, b, nx, ny, nz);
+        let (nodes, conns, bcs, end) = cantilever_clamped_p1(l, h, b, nx, ny, nz);
         let loads = distributed_tip_load(&end, f);
-        let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+        let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
         let d = mean_tip_deflection(&u, &end);
         let err = (d - delta_ref).abs() / delta_ref * 100.0;
         println!("P1 {nx}×{ny}×{nz}: δ={d:.6} err={err:.2}% n_nodes={}", nodes.len());
     }
     // P2 only at the CG-convergent 12×12×4 mesh.
-    let (p2n, p2c, mut p2b, end) = cantilever_clamped_p2(l, h, b, 12, 12, 4);
+    let (p2n, p2c, p2b, end) = cantilever_clamped_p2(l, h, b, 12, 12, 4);
     let loads = distributed_tip_load(&end, f);
-    let u = solve_p2_pipeline(&p2n, &p2c, &mut p2b, &loads, &mat);
+    let u = solve_p2_pipeline(&p2n, &p2c, p2b, &loads, &mat);
     let d = mean_tip_deflection(&u, &end);
     println!(
         "P2 12×12×4: δ={d:.6} err={:.2}% (reference-limited ~2%)",
@@ -712,9 +707,9 @@ fn boussinesq_subsurface_sigma_z_p1_within_10pct() {
     let (cx, cy) = (SIDE / 2.0, SIDE / 2.0);
 
     let load_node = find_node_at(&nodes, [cx, cy, 0.0], 0.4 * h);
-    let mut bcs = dirichlet_fix_face(&nodes, 2, SIDE, 0.5 * h);
+    let bcs = dirichlet_fix_face(&nodes, 2, SIDE, 0.5 * h);
     let loads = vec![(load_node * 3 + 2, P)]; // +z, into the half-space
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
     let sigma = recover_nodal_p1(&nodes, &conns, &u, &mat);
 
     let (fe, an) = boussinesq_ring(&nodes, &sigma, [cx, cy], 2.0 * h, 5.0 * h, P, 0.5 * h);
@@ -746,9 +741,9 @@ fn boussinesq_subsurface_sigma_z_p2_within_10pct() {
     let (cx, cy) = (SIDE / 2.0, SIDE / 2.0);
 
     let load_node = find_node_at(&nodes, [cx, cy, 0.0], 0.4 * h);
-    let mut bcs = dirichlet_fix_face(&nodes, 2, SIDE, 0.5 * h);
+    let bcs = dirichlet_fix_face(&nodes, 2, SIDE, 0.5 * h);
     let loads = vec![(load_node * 3 + 2, P)];
-    let u = solve_p2_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_p2_pipeline(&nodes, &conns, bcs, &loads, &mat);
     let sigma = recover_nodal_p2(&nodes, &conns, &u, &mat);
 
     let (fe, an) = boussinesq_ring(&nodes, &sigma, [cx, cy], 2.0 * h, 3.0 * h, P, 0.5 * h);
@@ -1044,9 +1039,9 @@ fn cylinder_p1_solve_and_recover(
     p_i: f64, mat: &IsotropicElastic, tol_geom: f64,
 ) -> (Vec<[f64; 3]>, Vec<[[f64; 3]; 3]>, f64) {
     let (nodes, conns, inner_faces) = annular_p1_mesh(a, b, l, nr, ntheta, nz);
-    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
+    let bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
     let loads = inner_pressure_loads(&inner_faces, &nodes, p_i);
-    let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+    let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
     let sigma = recover_nodal_p1(&nodes, &conns, &u, mat);
     let max_vm = nodes.iter().enumerate()
         .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
@@ -1232,11 +1227,11 @@ fn cantilever_beam_p2_tip_deflection_slender_within_1pct_of_timoshenko() {
 
     let mat = IsotropicElastic { youngs_modulus: 1.0, poisson_ratio: 0.3 };
 
-    let (p2_nodes, p2_conns, mut bcs, end) = cantilever_clamped_p2(L, H, B, NX, NY, NZ);
+    let (p2_nodes, p2_conns, bcs, end) = cantilever_clamped_p2(L, H, B, NX, NY, NZ);
     let n_nodes = p2_nodes.len();
     let loads = distributed_tip_load(&end, F);
     let u = solve_p2_pipeline_with_opts(
-        &p2_nodes, &p2_conns, &mut bcs, &loads, &mat,
+        &p2_nodes, &p2_conns, bcs, &loads, &mat,
         // Slender beams are ill-conditioned (cond ∝ (L/H)²); 20 000 iterations
         // provides the head-room the default-1000 cap lacks at L/H=15.
         // Tolerance stays at 1e-8 (same convergence criterion, only budget grows).
@@ -1320,7 +1315,7 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
     let p2_inner = p2_inner_faces(&p1_inner_faces, &p2_nodes);
 
     // Symmetry + plane-strain BCs on the P2 mesh
-    let mut bcs = annular_symmetry_plane_strain_bcs(&p2_nodes, L, tol_geom);
+    let bcs = annular_symmetry_plane_strain_bcs(&p2_nodes, L, tol_geom);
 
     // Assemble inner-pressure loads via the P2 helper
     let loads = inner_pressure_loads_p2(&p2_inner, &p2_nodes, P_I);
@@ -1329,7 +1324,7 @@ fn thick_walled_cylinder_p2_max_von_mises_within_2pct_of_lame() {
     // use a raised cap. Cylinder is well-conditioned (b/a=2, no slenderness),
     // so 5000 iterations provides the required head-room.
     let u = solve_p2_pipeline_with_opts(
-        &p2_nodes, &p2_conns, &mut bcs, &loads, &mat,
+        &p2_nodes, &p2_conns, bcs, &loads, &mat,
         CgSolverOptions { tolerance: 1e-8, max_iter: 5_000 },
     );
 
@@ -1431,20 +1426,13 @@ fn gather_u_hex(u: &[f64], conn: &[usize; 8]) -> [f64; 24] {
     ue
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 hexahedral FEA system.
-///
-/// Mirrors [`solve_p1_pipeline`] exactly but uses `element_stiffness_hex_p1`
-/// (24×24) and 8-node connectivity stride.
-fn solve_hex_p1_pipeline(
+/// Assemble the global stiffness matrix of a P1 hexahedral mesh
+/// (`element_stiffness_hex_p1`, 24×24) in `AssemblyMode::Deterministic`.
+fn assemble_hex_p1_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 8]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -1465,22 +1453,27 @@ fn solve_hex_p1_pipeline(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads { f[dof] += val; }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_hex_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
-    );
-    result.u().to_vec()
+/// Assemble, apply BCs, and CG-solve a P1 hexahedral FEA system:
+/// [`rhs_from_point_loads`] and [`assemble_hex_p1_stiffness`] fed to
+/// [`solve_displacement`] with the crate-default `CgSolverOptions`.
+#[track_caller]
+fn solve_hex_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 8]],
+    bcs: Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(
+        assemble_hex_p1_stiffness(nodes, conns, mat),
+        &f,
+        bcs,
+        CgSolverOptions::default(),
+    )
 }
 
 // ─── wedge P1 mesh builder and solve pipeline ────────────────────────────────
@@ -1529,20 +1522,13 @@ fn box_wedge_mesh(
     (nodes, connectivity)
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 wedge (triangular prism) FEA system.
-///
-/// Mirrors [`solve_hex_p1_pipeline`] exactly but uses `element_stiffness_wedge_p1`
-/// (18×18) and 6-node connectivity stride.
-fn solve_wedge_p1_pipeline(
+/// Assemble the global stiffness matrix of a P1 wedge (triangular prism) mesh
+/// (`element_stiffness_wedge_p1`, 18×18) in `AssemblyMode::Deterministic`.
+fn assemble_wedge_p1_stiffness(
     nodes: &[[f64; 3]],
     conns: &[[usize; 6]],
-    bcs: &mut Vec<DirichletBc>,
-    point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
-) -> Vec<f64> {
-    let n_nodes = nodes.len();
-    let ndof = 3 * n_nodes;
-
+) -> SparseRowMat<usize, f64> {
     let ke_list: Vec<ElementStiffness> = conns
         .iter()
         .map(|conn| {
@@ -1563,22 +1549,27 @@ fn solve_wedge_p1_pipeline(
         })
         .collect();
 
-    let mut k = assemble_global_stiffness(n_nodes, &elements, AssemblyMode::Deterministic);
+    assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
+}
 
-    let mut f = vec![0.0_f64; ndof];
-    for &(dof, val) in point_loads { f[dof] += val; }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_wedge_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
-    );
-    result.u().to_vec()
+/// Assemble, apply BCs, and CG-solve a P1 wedge (triangular prism) FEA system:
+/// [`rhs_from_point_loads`] and [`assemble_wedge_p1_stiffness`] fed to
+/// [`solve_displacement`] with the crate-default `CgSolverOptions`.
+#[track_caller]
+fn solve_wedge_p1_pipeline(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 6]],
+    bcs: Vec<DirichletBc>,
+    point_loads: &[(usize, f64)],
+    mat: &IsotropicElastic,
+) -> Vec<f64> {
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(
+        assemble_wedge_p1_stiffness(nodes, conns, mat),
+        &f,
+        bcs,
+        CgSolverOptions::default(),
+    )
 }
 
 // ─── convergence comparison: hex vs tet at equal DOF ─────────────────────────
@@ -1611,20 +1602,20 @@ fn cantilever_dof_error_curve(
             ElementKind::Hex => {
                 let (nodes, conns) = box_hex_mesh(l, h, b, nx, ny, nz);
                 let n = nodes.len();
-                let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+                let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
                 let end = end_face_nodes(&nodes, l, tol_x);
                 let loads = distributed_tip_load(&end, f_mag);
-                let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let u = solve_hex_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
                 let d = mean_tip_deflection(&u, &end);
                 ((d - delta_ref).abs() / delta_ref, n)
             }
             ElementKind::Tet => {
                 let (nodes, conns) = box_p1_mesh(l, h, b, nx, ny, nz);
                 let n = nodes.len();
-                let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+                let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
                 let end = end_face_nodes(&nodes, l, tol_x);
                 let loads = distributed_tip_load(&end, f_mag);
-                let u = solve_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let u = solve_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
                 let d = mean_tip_deflection(&u, &end);
                 ((d - delta_ref).abs() / delta_ref, n)
             }
@@ -2009,10 +2000,10 @@ fn cylinder_hex_dof_error_curve(
                 let (nodes, conns, inner_quad_faces) =
                     annular_hex_mesh(a, b, l, nr, ntheta, nz);
                 let n = nodes.len();
-                let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
+                let bcs = annular_symmetry_plane_strain_bcs(&nodes, l, tol_geom);
                 let loads =
                     inner_pressure_loads_core(&inner_quad_faces, &nodes, p_i, FaceOrder::P1Quad);
-                let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, mat);
+                let u = solve_hex_p1_pipeline(&nodes, &conns, bcs, &loads, mat);
                 let sigma = recover_nodal_hex(n, &nodes, &conns, &u, mat);
                 let max_vm = nodes.iter().enumerate()
                     .filter(|(_, p)| ((p[0]*p[0]+p[1]*p[1]).sqrt() - a).abs() < tol_geom)
@@ -2131,9 +2122,9 @@ fn thick_walled_cylinder_hex_p1_max_von_mises_within_5pct_of_lame() {
     let (nodes, conns, inner_quad_faces) = annular_hex_mesh(A, B, L, NR, NTHETA, NZ);
     let n_nodes = nodes.len();
 
-    let mut bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
+    let bcs = annular_symmetry_plane_strain_bcs(&nodes, L, tol_geom);
     let loads = inner_pressure_loads_core(&inner_quad_faces, &nodes, P_I, FaceOrder::P1Quad);
-    let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_hex_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
 
     let sigma = recover_nodal_hex(n_nodes, &nodes, &conns, &u, &mat);
     let lame_ref = lame_von_mises(A, A, B, P_I, NU);
@@ -2174,10 +2165,10 @@ fn cantilever_beam_wedge_p1_tip_deflection_within_tol_of_timoshenko() {
 
     let (nodes, conns) = box_wedge_mesh(L, H, B, NX, NY, NZ);
     let tol_x = 0.5 * L / NX as f64;
-    let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
     let end = end_face_nodes(&nodes, L, tol_x);
     let loads = distributed_tip_load(&end, F);
-    let u = solve_wedge_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_wedge_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
 
     let tip_disp = mean_tip_deflection(&u, &end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);
@@ -2211,10 +2202,10 @@ fn cantilever_beam_hex_p1_tip_deflection_within_5pct_of_timoshenko() {
 
     let (nodes, conns) = box_hex_mesh(L, H, B, NX, NY, NZ);
     let tol_x = 0.5 * L / NX as f64;
-    let mut bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
+    let bcs = dirichlet_fix_face(&nodes, 0, 0.0, tol_x);
     let end = end_face_nodes(&nodes, L, tol_x);
     let loads = distributed_tip_load(&end, F);
-    let u = solve_hex_p1_pipeline(&nodes, &conns, &mut bcs, &loads, &mat);
+    let u = solve_hex_p1_pipeline(&nodes, &conns, bcs, &loads, &mat);
 
     let tip_disp = mean_tip_deflection(&u, &end);
     let delta_ref = timoshenko_tip_deflection(F, L, H, B, &mat);

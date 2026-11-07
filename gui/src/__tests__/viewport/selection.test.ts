@@ -199,6 +199,10 @@ vi.mock('three-mesh-bvh', () => ({
 import { createSelection } from '../../viewport/selection';
 import { THEME_TOKENS } from '../../theme';
 import {
+  EDGES_OVERLAY_RENDER_ORDER,
+  SELECTION_OUTLINE_RENDER_ORDER,
+} from '../../viewport/renderOrder';
+import {
   Scene,
   PerspectiveCamera,
   Mesh,
@@ -462,6 +466,19 @@ describe('createSelection', () => {
       expect(addedObj.geometry.sourceGeometry).toBe(meshA.geometry);
       // Verify it's an EdgesGeometry instance (has thresholdAngle property)
       expect('thresholdAngle' in addedObj.geometry).toBe(true);
+    });
+
+    it('the selection outline draws on its own tier, above the edges overlay, keeping its colour', () => {
+      const meshA = createMockMesh('A');
+      const meshMap = new Map([['A', meshA]]);
+      const { selection } = setup(meshMap);
+
+      selection.setSelected('A');
+
+      const outline = mockSceneAdd.mock.calls[0][0];
+      expect(outline.renderOrder).toBe(SELECTION_OUTLINE_RENDER_ORDER);
+      expect(outline.renderOrder).toBeGreaterThan(EDGES_OVERLAY_RENDER_ORDER);
+      expect(outline.material.color).toBe(THEME_TOKENS.selection);
     });
 
     it('changing selection disposes previous wireframe material', () => {

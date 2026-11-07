@@ -1,9 +1,8 @@
 //! Shared test helpers.
 //!
-//! Most of this module is the `eval-helpers`-gated pipeline for parsing,
-//! compiling, and evaluating Reify source in tests. Alongside it sits one
-//! un-gated helper that needs no engine: [`collect_value_ref_members`], which
-//! inspects an already-compiled expression.
+//! Helpers that need an evaluation engine are gated behind the
+//! `eval-helpers` feature. The rest are un-gated: compiling source, filtering
+//! and asserting on diagnostics, and inspecting compiled output.
 
 use reify_compiler::TopologyTemplate;
 use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
@@ -373,26 +372,29 @@ pub fn error_diags(diags: &[Diagnostic]) -> Vec<&Diagnostic> {
         .collect()
 }
 
-/// Every `Underdetermined`-coded diagnostic in the slice, matched on the
-/// STRUCTURED code rather than by substring on the rendered
-/// `W_UNDERDETERMINED` text — which is the property that makes this worth
-/// having over an ad-hoc `.contains()`, since the rendered wording is free to
-/// change.
+/// Every diagnostic in the slice carrying `code`, in input order.
 ///
-/// Deliberately severity-BLIND, UNLIKE its neighbours [`collect_errors`] and
-/// [`error_diags`]: a diagnostic carrying the code is returned whatever its
-/// severity. `W_UNDERDETERMINED` is a warning today, so adding a severity
-/// filter here to match the neighbours would silently change what the call
-/// sites detect without going red at the ones that merely count. Pinned by
-/// `underdetermined_diags_is_severity_blind`.
+/// Matches on the structured CODE, never on message text: a coded
+/// diagnostic's message is explicitly not a stable contract, so a text match
+/// would break on rewording rather than on behaviour.
 ///
-/// Input order is preserved; call sites read the result positionally
-/// (task #6524).
-pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+/// Severity-blind, unlike [`collect_errors`] and [`error_diags`].
+pub fn diags_with_code(diagnostics: &[Diagnostic], code: DiagnosticCode) -> Vec<&Diagnostic> {
     diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::Underdetermined))
+        .filter(|d| d.code == Some(code))
         .collect()
+}
+
+/// [`diags_with_code`] specialised to `Underdetermined`.
+///
+/// `W_UNDERDETERMINED` is a warning today, so a severity filter added here
+/// would silently change what the call sites detect without going red at the
+/// ones that merely count. Pinned by `underdetermined_diags_is_severity_blind`.
+///
+/// Call sites read the result positionally (task #6524).
+pub fn underdetermined_diags(diagnostics: &[Diagnostic]) -> Vec<&Diagnostic> {
+    diags_with_code(diagnostics, DiagnosticCode::Underdetermined)
 }
 
 /// Return only the `Severity::Error` diagnostics from a compiled module.
@@ -660,18 +662,20 @@ pub fn named_length_argument(message: &str) -> Option<&str> {
 /// default emits an unavoidable unrelated `unknown variant` error, so no
 /// count-based assertion can be written against it at all.
 ///
-/// Severity is filtered FIRST: a Warning carrying `code` does not satisfy this.
+/// Only Error severity counts: a Warning carrying `code` does not satisfy this.
 ///
 /// # Panics
 /// Panics if no Error-severity diagnostic carries `code`. The panic message
 /// includes `context` and the errors that *were* observed.
 #[track_caller]
 pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
-    let errors = collect_errors(diagnostics);
     assert!(
-        errors.iter().any(|d| d.code == Some(code)),
+        diags_with_code(diagnostics, code)
+            .iter()
+            .any(|d| d.severity == Severity::Error),
         "{context}: expected an Error-severity diagnostic with \
-         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}"
+         DiagnosticCode::{code:?}, but none was present; observed errors: {errors:?}",
+        errors = collect_errors(diagnostics),
     );
 }
 
@@ -691,8 +695,10 @@ pub fn assert_error_code_present(diagnostics: &[Diagnostic], code: DiagnosticCod
 /// includes `context` and the offending diagnostics.
 #[track_caller]
 pub fn assert_error_code_absent(diagnostics: &[Diagnostic], code: DiagnosticCode, context: &str) {
-    let errors = collect_errors(diagnostics);
-    let matching: Vec<_> = errors.iter().filter(|d| d.code == Some(code)).collect();
+    let matching: Vec<_> = diags_with_code(diagnostics, code)
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     assert!(
         matching.is_empty(),
         "{context}: expected no Error-severity diagnostic with \
@@ -2467,7 +2473,7 @@ mod tests {
         );
     }
 
-    /// `assert_error_code_present` filters to `Severity::Error` FIRST: a
+    /// Only `Severity::Error` counts for `assert_error_code_present`: a
     /// Warning carrying the code does not satisfy it.
     #[test]
     #[should_panic(expected = "DimensionMismatch")]
@@ -2535,11 +2541,52 @@ mod tests {
         assert!(message.contains("unrelated noise"), "{message}");
     }
 
+    // ── diags_with_code ───────────────────────────────────────────────────
+    //
+    // The generic code-keyed filter `underdetermined_diags` specialises.
+    // These cases use `UnresolvedFunction` so they prove the helper is generic
+    // over `code` rather than restating the `Underdetermined` cases below.
+
+    /// Only diagnostics carrying the requested code come back, in input order.
+    /// Another code is excluded, and so is a CODELESS (`code: None`)
+    /// diagnostic.
+    #[test]
+    fn diags_with_code_selects_only_the_requested_code_in_input_order() {
+        let diags = vec![
+            Diagnostic::warning("first").with_code(DiagnosticCode::UnresolvedFunction),
+            Diagnostic::error("unresolved name").with_code(DiagnosticCode::UnresolvedName),
+            Diagnostic::warning("codeless noise"),
+            Diagnostic::warning("second").with_code(DiagnosticCode::UnresolvedFunction),
+        ];
+        let messages: Vec<&str> =
+            super::diags_with_code(&diags, DiagnosticCode::UnresolvedFunction)
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect();
+        assert_eq!(messages, vec!["first", "second"]);
+    }
+
+    /// The filter is severity-BLIND: an Error carrying the code is returned
+    /// just as a Warning is.
+    #[test]
+    fn diags_with_code_is_severity_blind() {
+        let diags = vec![
+            Diagnostic::error("escalated").with_code(DiagnosticCode::UnresolvedFunction),
+            Diagnostic::warning("plain").with_code(DiagnosticCode::UnresolvedFunction),
+        ];
+        let selected = super::diags_with_code(&diags, DiagnosticCode::UnresolvedFunction);
+        assert_eq!(
+            selected.len(),
+            2,
+            "both severities must be returned — this filter is code-keyed \
+             only; got {selected:#?}",
+        );
+    }
+
     // ── underdetermined_diags ─────────────────────────────────────────────
     //
-    // Task #6524. Unlike its neighbours `collect_errors` / `error_diags`,
-    // this one filters on the structured CODE alone and is severity-blind.
-    // The cases below pin that difference, which every call site depends on.
+    // Task #6524. The cases below pin the `Underdetermined` specialisation of
+    // `diags_with_code`, whose call sites depend on its severity-blindness.
 
     /// Only `Underdetermined`-coded diagnostics come back. An unrelated code
     /// is excluded, and so is a CODELESS (`code: None`) diagnostic — the
@@ -2557,14 +2604,7 @@ mod tests {
         assert_eq!(under[0].message, "auto `bore` is not pinned");
     }
 
-    /// The filter is severity-BLIND: an Error carrying the code is returned
-    /// just as a Warning is.
-    ///
-    /// This helper lands directly beside `collect_errors` / `error_diags`,
-    /// which DO filter `Severity::Error`, so a future editor harmonising the
-    /// neighbours could add one here — silently changing what the call sites
-    /// detect. `W_UNDERDETERMINED` is a warning today, so such a change would
-    /// not even go red at the sites that merely count it.
+    /// An Error carrying the code is returned just as a Warning is.
     #[test]
     fn underdetermined_diags_is_severity_blind() {
         let diags = vec![
@@ -2603,8 +2643,8 @@ mod tests {
     // try_get_value_cell_in_template's rustdoc. The not-found panic's
     // available-cells list and the defaultless-cell pass-through are pinned
     // once, on get_value_cell_in_template, which owns them. The ambiguity
-    // abort is pinned once too, on try_get_value_cell_in_template, which
-    // raises it.
+    // abort and the own-cell tie-break are pinned once too, on
+    // try_get_value_cell_in_template, which raises and applies them.
 
     /// Shared fixture: two templates both declare `w` with different values, so a
     /// wrong-template resolution is observable in the assertion.
@@ -2696,34 +2736,6 @@ mod tests {
         crate::builders::CompiledModuleBuilder::new(ModulePath::single("test"))
             .template(template)
             .build()
-    }
-
-    /// `sub v` precedes the parent's own `let area`, so the scoped cell is first in
-    /// `value_cells` and a first-match resolver would pick the wrong one.
-    const MANIFOLD_OWN_AND_SCOPED_AREA: &str = r#"
-        structure def Vent { param area : Length = 1mm }
-        structure def Manifold {
-            sub v : Vent { area = auto }
-            let area = 2mm
-        }
-    "#;
-
-    /// The module route to the same resolution as
-    /// `test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell`
-    /// (`get_let_expr_in` and `get_let_expr` reach it through this function): a
-    /// scoped sub cell colliding with the template's own cell resolves to the
-    /// own cell.
-    #[test]
-    fn test_get_value_cell_in_prefers_templates_own_cell_over_scoped_sub_cell() {
-        use reify_core::ValueCellId;
-
-        let module = super::compile_source(MANIFOLD_OWN_AND_SCOPED_AREA);
-        super::assert_no_diagnostics(&module.diagnostics, "Vent/Manifold fixture");
-
-        let cell = super::get_value_cell_in(&module, "Manifold", "area");
-
-        assert_eq!(cell.id, ValueCellId::new("Manifold", "area"));
-        assert_eq!(cell.kind, reify_compiler::ValueCellKind::Let);
     }
 
     // ── get_value_cell ────────────────────────────────────────────────────
@@ -2935,6 +2947,58 @@ mod tests {
         let _ = super::try_get_value_cell_in_template(&template, "x");
     }
 
+    /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
+    /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
+    /// returned declaration IS that cell, not the scoped one (which is
+    /// defaultless) and not whichever cell comes first.
+    ///
+    /// The precondition pins the shape of the collision (`sub v` precedes the
+    /// parent's own `let area`), so the test cannot pass vacuously or by
+    /// first-match resolution.
+    #[test]
+    fn test_try_get_value_cell_in_template_prefers_templates_own_cell_over_scoped_sub_cell() {
+        use reify_core::ValueCellId;
+
+        let source = r#"
+            structure def Vent { param area : Length = 1mm }
+            structure def Manifold {
+                sub v : Vent { area = auto }
+                let area = 2mm
+            }
+        "#;
+        let (template, diags) = super::compile_template(source, "Manifold");
+        super::assert_no_diagnostics(&diags, "Vent/Manifold fixture");
+
+        let colliding_ids: Vec<ValueCellId> = template
+            .value_cells
+            .iter()
+            .filter(|vc| vc.id.member == "area")
+            .map(|vc| vc.id.clone())
+            .collect();
+        assert_eq!(
+            colliding_ids,
+            vec![
+                ValueCellId::new("Manifold.v", "area"),
+                ValueCellId::new("Manifold", "area"),
+            ],
+            "precondition: the scoped cell must collide with, and precede, the own cell"
+        );
+        let own_cell = template
+            .value_cells
+            .iter()
+            .find(|vc| vc.id == ValueCellId::new("Manifold", "area"))
+            .expect("Manifold's own 'area' cell");
+
+        let cell = super::try_get_value_cell_in_template(&template, "area")
+            .expect("Manifold declares 'area'");
+
+        assert!(
+            std::ptr::eq(cell, own_cell),
+            "expected Manifold's own 'area' cell, got {:?}",
+            cell.id
+        );
+    }
+
     // ── get_let_expr_in_template ────────────────────────────────────────────
     // Not-found is pinned on get_value_cell_in_template and get_let_expr_in,
     // has-no-default on get_let_expr_in; see the get_value_cell_in header.
@@ -2956,51 +3020,6 @@ mod tests {
             reify_core::Type::dimensionless_scalar(),
             "expected result_type == Type::dimensionless_scalar() for Alpha.v, got {:?}",
             expr.result_type
-        );
-    }
-
-    /// A scoped sub cell (`Manifold.v.area`) colliding with the template's own
-    /// cell (`Manifold.area`) on member `area` resolves to the own cell: the
-    /// returned expression IS that cell's `default_expr`, not the scoped cell's
-    /// (which is defaultless) and not whichever cell comes first.
-    ///
-    /// The precondition pins the shape of the collision, so the test cannot
-    /// pass vacuously or by first-match resolution.
-    #[test]
-    fn test_get_let_expr_in_template_prefers_templates_own_cell_over_scoped_sub_cell() {
-        use reify_core::ValueCellId;
-
-        let (template, diags) = super::compile_template(MANIFOLD_OWN_AND_SCOPED_AREA, "Manifold");
-        super::assert_no_diagnostics(&diags, "Vent/Manifold fixture");
-
-        let colliding_ids: Vec<ValueCellId> = template
-            .value_cells
-            .iter()
-            .filter(|vc| vc.id.member == "area")
-            .map(|vc| vc.id.clone())
-            .collect();
-        assert_eq!(
-            colliding_ids,
-            vec![
-                ValueCellId::new("Manifold.v", "area"),
-                ValueCellId::new("Manifold", "area"),
-            ],
-            "precondition: the scoped cell must collide with, and precede, the own cell"
-        );
-        let own_default = template
-            .value_cells
-            .iter()
-            .find(|vc| vc.id == ValueCellId::new("Manifold", "area"))
-            .expect("Manifold's own 'area' cell")
-            .default_expr
-            .as_ref()
-            .expect("Manifold's own 'area' is a `let`, so it carries a default expr");
-
-        let expr = super::get_let_expr_in_template(&template, "area");
-
-        assert!(
-            std::ptr::eq(expr, own_default),
-            "expected Manifold's own 'area' default expr, got {expr:?}"
         );
     }
 

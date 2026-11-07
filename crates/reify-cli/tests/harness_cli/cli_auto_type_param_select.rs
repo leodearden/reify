@@ -41,7 +41,8 @@ fn check_bearing_constraint_select_real_checker_exits_success() {
          selected the unique survivor ThinSeal; got stderr: {stderr}"
     );
     // No compile-time error for AutoTypeParamAmbiguous means the binary's
-    // compile_entry_with_stdlib_cfg_checked call at main.rs used the real checker.
+    // program::compile_program_with_parsed_entry call at main.rs used the real
+    // checker.
     assert!(
         !stderr.contains("error: auto type parameter"),
         "stderr must NOT contain an auto-type-param error under the real checker; \

@@ -188,6 +188,27 @@ provision_fixture_parser_c() {
     fi
 }
 
+provision_fixture_headers() {
+    # Usage: provision_fixture_headers <dest-dir> || return 1
+    #
+    # provision_fixture_parser_c's sibling, for the same reason: since #9741
+    # src/tree_sitter/*.h are untracked generate outputs, absent in a fresh lane
+    # until something generates them, and these fixtures are fingerprinted,
+    # never compiled.
+    local dest="$1" h copied=0
+    mkdir -p "$dest" || return 1
+    for h in "$TS_DIR"/src/tree_sitter/*.h; do
+        [ -f "$h" ] || continue
+        cp "$h" "$dest/" || return 1
+        copied=1
+    done
+    [ "$copied" -eq 0 ] || return 0
+    for h in alloc.h array.h parser.h; do
+        printf '/* placeholder %s — fixture is fingerprinted, never compiled */\n' "$h" \
+            > "$dest/$h" || return 1
+    done
+}
+
 # --- Guard Helper ---
 # run_guarded_cargo_check [--skip-on-unresolved] <out_file> <cmd...>
 # Runs <cmd...>, capturing combined stdout+stderr to <out_file>.
@@ -282,19 +303,14 @@ ts_mtime() {
 
 # ts_watched_files <ts_dir>
 #
-# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c +
-# src/tree_sitter/*.h — i.e. what build.rs declares via rerun-if-changed.
-# src/parser.c is deliberately excluded, and stays excluded after `#6992` made
-# build.rs WATCH it: this models what `ensure` may force-TOUCH, which is a
-# narrower set than what cargo watches (see ts_watched_inputs in
-# scripts/tree-sitter-freshness.sh for why a build-script output must not enter
-# a force set).
+# The EXACT set `ensure` is allowed to touch: grammar.js + src/scanner.c.
+# The generate outputs (src/parser.c, src/tree_sitter/*.h) are deliberately
+# excluded although build.rs WATCHES them: this models what `ensure` may
+# force-TOUCH, which is a narrower set than what cargo watches (see
+# ts_watched_inputs in scripts/tree-sitter-freshness.sh for why a build-script
+# output must not enter a force set).
 ts_watched_files() {
-    local ts="$1" h
-    printf '%s\n' "$ts/grammar.js" "$ts/src/scanner.c"
-    for h in "$ts"/src/tree_sitter/*.h; do
-        [ -f "$h" ] && printf '%s\n' "$h"
-    done
+    printf '%s\n' "$1/grammar.js" "$1/src/scanner.c"
 }
 
 # ts_witness_value <ts_dir>
@@ -834,6 +850,58 @@ test_generated_files_not_tracked() {
     done
 }
 
+test_generate_outputs_are_untracked_and_ignored() {
+    # Every file the real script and CLI write under src/ must be untracked AND
+    # ignored, or a generate dirties the checkout. The set is whatever a real
+    # generate wrote into an empty src/, so a header a future CLI adds is covered.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local src="$fix/tree-sitter-reify/src"
+    local -a written=()
+    local f
+    while IFS= read -r f; do
+        written+=("${f#"$src"/}")
+    done < <(find "$src" -type f | LC_ALL=C sort)
+
+    local saw_parser=0 saw_header=0
+    for f in "${written[@]}"; do
+        case "$f" in
+            parser.c) saw_parser=1 ;;
+            tree_sitter/*.h) saw_header=1 ;;
+        esac
+    done
+    if [ "$saw_parser" -eq 0 ] || [ "$saw_header" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: generate wrote no parser.c or no tree_sitter/*.h, so this"
+        echo "  test would be vacuous. Written: ${written[*]}"
+        return 1
+    fi
+
+    local rel tracked=() unignored=()
+    for f in "${written[@]}"; do
+        rel="tree-sitter-reify/src/$f"
+        if git -C "$REPO_ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+            tracked+=("$rel")
+        fi
+        if ! git -C "$REPO_ROOT" check-ignore -q -- "$rel"; then
+            unignored+=("$rel")
+        fi
+    done
+    if [ "${#tracked[@]}" -gt 0 ] || [ "${#unignored[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: tree-sitter generate writes files git owns, so it dirties"
+        echo "  the checkout whenever the CLI's bytes differ from the committed ones."
+        [ "${#tracked[@]}" -eq 0 ] || echo "  tracked:     ${tracked[*]}"
+        [ "${#unignored[@]}" -eq 0 ] || echo "  not ignored: ${unignored[*]}"
+        return 1
+    fi
+}
+
 test_orchestrator_includes_generation() {
     # Since task 3766 the orchestrator runs scripts/verify.sh, so each verify
     # action's plan (not dark-factory-orchestrator.yaml literals) must include tree-sitter
@@ -1072,19 +1140,30 @@ test_freshness_script_lists_all_compiled_inputs() {
     # `--list-inputs` is the single source of truth for the C-compilation input set
     # (everything build.rs hands to cc::Build, plus the headers they include).
     #
-    # The expectation is DERIVED from `git ls-files` rather than restated inline, so
-    # that adding a fourth header — or a second .c to c_config — without wiring it
-    # into the freshness input set fails loudly HERE instead of silently
-    # under-covering.  That silent under-coverage is precisely how this defect class
-    # (src/scanner.c watched by nothing) came to exist in the first place.
+    # The headers are untracked generate outputs since #9741, so the expectation
+    # comes from a hermetic TS dir whose header set is fixed by construction. Its
+    # non-standard zz_extra.h pins that the set is a GLOB, not a hardcoded list:
+    # a hardcoded list is how this defect class (src/scanner.c watched by
+    # nothing) came to exist in the first place.
     assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    local ts
+    ts=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$ts'")
+    mkdir -p "$ts/src/tree_sitter" || return 1
+    local h
+    local -a headers=(alloc.h array.h parser.h zz_extra.h)   # LC_ALL=C order
+    for h in "${headers[@]}"; do
+        printf '/* fixture */\n' > "$ts/src/tree_sitter/$h" || return 1
+    done
 
     # Run from a directory that is NOT the repo root: the script must resolve its
     # own paths from ${BASH_SOURCE[0]}, never from $PWD.  verify.sh invokes plan
     # leaves from the repo root, but the infra tests and a human debugging a merge
     # lane do not.
     local out rc=0
-    out=$(cd /tmp && bash "$FRESHNESS_SCRIPT" --list-inputs 2>&1) || rc=$?
+    out=$(cd /tmp && REIFY_TS_FRESHNESS_TS_DIR="$ts" \
+        bash "$FRESHNESS_SCRIPT" --list-inputs 2>&1) || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo ""
         echo "  ASSERTION FAILED: '--list-inputs' exited $rc (expected 0) when run from /tmp"
@@ -1094,20 +1173,11 @@ test_freshness_script_lists_all_compiled_inputs() {
         return 1
     fi
 
-    local headers expected
-    headers=$(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h' \
-        | sed 's|^tree-sitter-reify/||' | LC_ALL=C sort)
-    if [ -z "$headers" ]; then
-        echo ""
-        echo "  ASSERTION FAILED: git ls-files found no tracked tree-sitter-reify/src/tree_sitter/*.h"
-        echo "  The expectation is derived from git; an empty derivation would make this"
-        echo "  test vacuous, so it is a hard failure rather than a skip."
-        return 1
-    fi
-    # src/parser.c is generated+gitignored (hence not from git ls-files) but IS
-    # compiled by c_config, so it belongs in the fingerprint even though it is
-    # deliberately NOT in the rerun-if-changed watch set.
-    expected=$(printf 'src/parser.c\nsrc/scanner.c\n%s\n' "$headers")
+    # src/parser.c and the headers are generate outputs, but their bytes are
+    # compiled into the archive, so they belong in the fingerprint.
+    local expected
+    expected=$(printf '%s\n' src/parser.c src/scanner.c \
+        "${headers[@]/#/src/tree_sitter/}")
 
     if [ "$out" != "$expected" ]; then
         echo ""
@@ -1578,7 +1648,7 @@ test_freshness_ensure_forces_and_is_idempotent() {
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
     provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
-    cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
+    provision_fixture_headers "$ts/src/tree_sitter" || return 1
 
     # Model the warm-lane bulk stamp: seed-warm-lane.sh sets every non-target/,
     # non-.git file to 2020-01-01T00:00:00 (measured by task #5630), which is what
@@ -2018,6 +2088,66 @@ test_freshness_ensure_forces_and_is_idempotent() {
     fi
 }
 
+test_freshness_ensure_never_touches_generate_outputs() {
+    # A force set must hold no build-script output (ts_watched_inputs): touching
+    # one risks a touch/regenerate loop and moves the ledger's mtime witness on
+    # every regeneration. src/parser.c and, since #9741, src/tree_sitter/*.h are
+    # outputs of the generate the build script runs.
+    assert_file_exists "$FRESHNESS_SCRIPT" || return 1
+
+    if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+        echo "  SKIP: no sha256sum/shasum on PATH — the guard degrades to UNAVAILABLE here"
+        return 0
+    fi
+
+    local tmp
+    tmp=$(mktemp -d)
+    CLEANUP_ACTIONS+=("rm -rf '$tmp'")
+
+    local ts="$tmp/ts"
+    mkdir -p "$ts/src" || return 1
+    cp "$TS_DIR/grammar.js"    "$ts/grammar.js" || return 1
+    cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c" || return 1
+    provision_fixture_parser_c "$ts/src/parser.c" || return 1
+    provision_fixture_headers "$ts/src/tree_sitter" || return 1
+
+    local OLD='2020-01-01T00:00:00' f
+    find "$ts" -type f -exec touch -d "$OLD" {} + || return 1
+    local old_epoch
+    old_epoch=$(ts_mtime "$ts/grammar.js")
+
+    local fp altered
+    fp=$(REIFY_TS_FRESHNESS_TS_DIR="$ts" bash "$FRESHNESS_SCRIPT" --print-fingerprint)
+    if [ "${fp:0:1}" = "0" ]; then altered="1${fp:1}"; else altered="0${fp:1}"; fi
+    mk_ts_fixture "$tmp/target" "tree-sitter-reify-deadbeef09" "$altered"
+
+    run_ts_freshness ensure "$tmp/target" "$ts"
+    if [ "$TS_FRESHNESS_RC" -ne 0 ] || [[ "$TS_FRESHNESS_OUT" != *"forcing rebuild"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure on a STALE fixture must force (rc=$TS_FRESHNESS_RC)"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+    if [ $(( $(date +%s) - $(ts_mtime "$ts/grammar.js") )) -gt 300 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: grammar.js was not touched, so no force happened and the"
+        echo "  check below would be vacuous."
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+
+    local -a touched=()
+    for f in "$ts"/src/parser.c "$ts"/src/tree_sitter/*.h; do
+        [ "$(ts_mtime "$f")" = "$old_epoch" ] || touched+=("${f#"$ts"/}")
+    done
+    if [ "${#touched[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: ensure force-touched generate outputs: ${touched[*]}"
+        echo "$TS_FRESHNESS_OUT"
+        return 1
+    fi
+}
+
 test_freshness_target_dir_override_is_a_clean_noop() {
     # REIFY_TS_FRESHNESS_TARGET_DIR pointed at an EMPTY tree must make BOTH modes
     # clean no-ops (exit 0) that leave the real worktree untouched.
@@ -2272,19 +2402,26 @@ test_build_rs_watches_all_compiled_inputs() {
         return 1
     fi
 
-    # Every TRACKED header, derived from git rather than hardcoded so a new
-    # header cannot silently escape the watch set.
-    local h rel
-    while IFS= read -r h; do
-        [ -n "$h" ] || continue
-        rel="${h#tree-sitter-reify/}"
+    # Every header the build compiled, read from disk rather than hardcoded so a
+    # new header cannot silently escape the watch set.
+    local h rel n_headers=0
+    for h in "$TS_DIR"/src/tree_sitter/*.h; do
+        [ -f "$h" ] || continue
+        n_headers=$((n_headers + 1))
+        rel="src/tree_sitter/${h##*/}"
         if [[ "$directives" != *"cargo:rerun-if-changed=$rel"* ]]; then
             echo ""
             echo "  ASSERTION FAILED: no 'cargo:rerun-if-changed=$rel' in $run_dir/output"
             echo "  The header set must be enumerated by glob on both sides, not hardcoded."
             return 1
         fi
-    done < <(cd "$REPO_ROOT" && git ls-files 'tree-sitter-reify/src/tree_sitter/*.h')
+    done
+    if [ "$n_headers" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: no src/tree_sitter/*.h after a successful cargo check —"
+        echo "  the build must have generated the headers parser.c includes."
+        return 1
+    fi
 
     # src/parser.c MUST be watched, since task #6992 — the exact inverse of the
     # pin this block used to carry. build.rs writes it, and the old exclusion
@@ -3221,7 +3358,7 @@ test_freshness_refuses_partial_fingerprint_on_unhashable_input() {
     cp "$TS_DIR/grammar.js"    "$ts/grammar.js"
     provision_fixture_parser_c "$ts/src/parser.c" || return 1
     cp "$TS_DIR/src/scanner.c" "$ts/src/scanner.c"
-    cp "$TS_DIR"/src/tree_sitter/*.h "$ts/src/tree_sitter/"
+    provision_fixture_headers "$ts/src/tree_sitter" || return 1
 
     # scanner.c is the sharpest choice: it is the hand-written input whose
     # staleness this task exists to close, so a false verdict about it is the
@@ -3408,6 +3545,105 @@ test_generate_regenerates_when_parser_c_is_corrupt() {
         echo "  after re-run: $after"
         return 1
     fi
+}
+
+test_generate_regenerates_when_a_header_is_missing() {
+    # The transition state #9741 creates: git deletes the formerly tracked
+    # src/tree_sitter/*.h on update while parser.c and both stamps survive and
+    # still attest. A run WITHOUT --force must regenerate, or scanner.c and
+    # parser.c fail to compile against the missing headers.
+    #
+    # The header set comes from what the real CLI wrote, not from the script's
+    # own list, so a CLI that adds a header the script does not know turns this red.
+    require_tree_sitter_cli || return 0
+
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+    assert_cmd_success "baseline generate" \
+        bash "$fix/scripts/tree-sitter-generate.sh" --force || return 1
+
+    local hdr_dir="$fix/tree-sitter-reify/src/tree_sitter"
+    local -a headers=()
+    local h
+    for h in "$hdr_dir"/*.h; do
+        [ -f "$h" ] && headers+=("${h##*/}")
+    done
+    if [ "${#headers[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: the baseline generate wrote no src/tree_sitter/*.h"
+        return 1
+    fi
+
+    local victim out
+    for victim in "${headers[@]/#/$hdr_dir/}" "$hdr_dir"; do
+        rm -rf "$victim"
+        out=$(bash "$fix/scripts/tree-sitter-generate.sh" 2>&1) || {
+            echo ""
+            echo "  ASSERTION FAILED: re-run after removing ${victim#"$fix"/} exited non-zero"
+            echo "$out"
+            return 1
+        }
+        if grep -q "up to date" <<< "$out" || ! grep -q "generated parser files" <<< "$out"; then
+            echo ""
+            echo "  ASSERTION FAILED: script did not regenerate with ${victim#"$fix"/} missing"
+            echo "  Both stamps still attest grammar.js and the grammar outputs, so only an"
+            echo "  existence check on the generated headers can see this."
+            echo "$out"
+            return 1
+        fi
+        for h in "${headers[@]}"; do
+            if [ ! -f "$hdr_dir/$h" ]; then
+                echo ""
+                echo "  ASSERTION FAILED: src/tree_sitter/$h absent after the regeneration that"
+                echo "  followed removing ${victim#"$fix"/}"
+                return 1
+            fi
+        done
+    done
+}
+
+test_generate_refuses_to_stamp_when_the_cli_writes_no_header() {
+    # The post-generate check's header arm. A real CLI always writes the
+    # headers, so only a stub that exits 0 having written the three grammar
+    # outputs alone reaches it — the shape a CLI that stops writing a header
+    # would leave. Stamping that tree would report success and then regenerate
+    # on every later run, since the headers stay missing.
+    local fix
+    fix=$(mk_ts_generate_fixture) || return 1
+
+    local stubdir
+    stubdir=$(mktemp -d) || return 1
+    CLEANUP_ACTIONS+=("rm -rf '$stubdir'")
+    cat > "$stubdir/tree-sitter" <<'STUB'
+#!/bin/sh
+touch src/parser.c src/grammar.json src/node-types.json
+exit 0
+STUB
+    chmod +x "$stubdir/tree-sitter"
+
+    local err rc=0
+    err=$( export PATH="$stubdir:$PATH"
+           bash "$fix/scripts/tree-sitter-generate.sh" --force 2>&1 >/dev/null ) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: generate script exited 0 though the CLI wrote no header"
+        return 1
+    fi
+    if ! grep -q "did not produce src/tree_sitter/" <<< "$err"; then
+        echo ""
+        echo "  ASSERTION FAILED: the failure does not name the missing src/tree_sitter/ header"
+        echo "$err"
+        return 1
+    fi
+
+    local st
+    for st in "$(ts_generate_grammar_stamp "$fix")" "$(ts_generate_outputs_stamp "$fix")"; do
+        if [ -f "$st" ]; then
+            echo ""
+            echo "  ASSERTION FAILED: $st written over a tree missing its headers"
+            return 1
+        fi
+    done
 }
 
 test_generate_failure_leaves_no_stamp_vouching_for_deleted_outputs() {
@@ -3907,6 +4143,76 @@ test_build_rs_restores_a_deleted_parser_c() {
         echo "  actual:   $after"
         return 1
     fi
+}
+
+test_build_rs_restores_deleted_generated_headers() {
+    # The fresh-clone shape since #9741: src/tree_sitter/*.h are untracked
+    # generate outputs, so the fixture ships none and the first build's real
+    # generate creates them. Deleting them afterwards — what git does to a
+    # checkout updating past the untracking commit — must re-run the build
+    # script, which must regenerate them.
+    #
+    # One header at a time, then the whole directory, as
+    # test_generate_regenerates_when_a_header_is_missing does for the shell
+    # twin: with the directory gone any one surviving GENERATED_HEADERS entry
+    # forces the regeneration, so only a lone deletion pins each entry of the
+    # Rust list against what the real CLI wrote.
+    require_tree_sitter_cli || return 0
+
+    local va
+    va=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$va'")
+    ts_write_grammar_variant "$va" a
+
+    local fix
+    fix=$(mk_ts_build_fixture "$va") || return 1
+
+    local cargo_out guard_rc=0
+    cargo_out=$(mktemp); CLEANUP_ACTIONS+=("rm -f '$cargo_out'")
+    run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
+        cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+    if [ "$guard_rc" -eq 2 ]; then return 0; fi
+    if [ "$guard_rc" -ne 0 ]; then return 1; fi
+
+    local -a headers=()
+    local h
+    for h in "$fix"/src/tree_sitter/*.h; do
+        [ -f "$h" ] && headers+=("${h##*/}")
+    done
+    if [ "${#headers[@]}" -eq 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: a successful build left no src/tree_sitter/*.h —"
+        echo "  the generate it ran must have written the headers parser.c includes."
+        return 1
+    fi
+
+    local hdr_dir="$fix/src/tree_sitter" victim
+    local -a gone
+    for victim in "${headers[@]/#/$hdr_dir/}" "$hdr_dir"; do
+        # grammar.js and parser.c untouched and stamped 2020; only the victim goes.
+        ts_normalize_lane_mtimes "$fix"
+        rm -rf "$victim"
+
+        guard_rc=0
+        run_guarded_cargo_check --skip-on-unresolved "$cargo_out" timeout 300 \
+            cargo build --offline --manifest-path "$fix/Cargo.toml" || guard_rc=$?
+        if [ "$guard_rc" -eq 2 ]; then return 0; fi
+        if [ "$guard_rc" -ne 0 ]; then
+            echo "  (the build that failed followed removing ${victim#"$fix"/})"
+            return 1
+        fi
+
+        gone=()
+        for h in "${headers[@]}"; do
+            [ -f "$hdr_dir/$h" ] || gone+=("$h")
+        done
+        if [ "${#gone[@]}" -gt 0 ]; then
+            echo ""
+            echo "  ASSERTION FAILED: after removing ${victim#"$fix"/}, cargo reported success"
+            echo "  while the headers the archive compiles against are gone: ${gone[*]}"
+            echo "  The deletion re-ran nothing, so the previously-built archive stayed linked."
+            return 1
+        fi
+    done
 }
 
 # --- Main ---

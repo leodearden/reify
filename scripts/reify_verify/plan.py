@@ -1,4 +1,4 @@
-"""plan — the typed verify plan: its steps, their kinds and phases, and its header (PRD D2).
+"""plan — the typed verify plan, or the refusal to plan: its steps, their kinds and phases, and its header (PRD D2).
 
 Records only. build composes a Plan, and render is the one producer of its
 text and JSON projections. A step's kind decides how the executor runs it
@@ -9,11 +9,16 @@ records each kind may hold, checked whenever a Step is built.
 The environment section's lines are records here too (EnvLine); environment
 builds them, so it imports this module, never the other way round.
 
-A record whose text render puts inside single quotes refuses a single quote,
-since the rendered shell line would otherwise break.
+A record whose text render puts inside single (or double) quotes refuses that
+quote, since the rendered shell line would otherwise break. A record that
+renders an operator's knob value names that quote as a class constant, so the
+resolver that reads the knob refuses the value with unquotable_knob before any
+record is built.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import ClassVar
 from enum import Enum
 from types import MappingProxyType
 
@@ -59,11 +64,21 @@ class JobserverUnset:
 EnvLine = CargoEnvSourced | CargoEnvMissing | Exported | JobserverUnset
 
 
-def _refuse_single_quote(record: str, field: str, text: str | None) -> None:
-    if text is not None and "'" in text:
+SINGLE_QUOTE = "'"
+DOUBLE_QUOTE = '"'
+QUOTE_NAMES = MappingProxyType({SINGLE_QUOTE: "single", DOUBLE_QUOTE: "double"})
+
+
+def _refuse_quote(record: str, field: str, text: str | None, quote: str) -> None:
+    if text is not None and quote in text:
         raise ValueError(
-            f"{record}: {field} renders inside single quotes, so it cannot hold one ({text!r})"
+            f"{record}: {field} renders inside {QUOTE_NAMES[quote]} quotes, so it cannot hold one "
+            f"({text!r})"
         )
+
+
+def _refuse_single_quote(record: str, field: str, text: str | None) -> None:
+    _refuse_quote(record, field, text, SINGLE_QUOTE)
 
 
 class Execution(Enum):
@@ -255,6 +270,144 @@ class InfraLeafLoop:
     unset: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class NextestFlags:
+    """A nextest pass's flags: its one filter expression, --no-fail-fast and --test-threads.
+
+    Without retry ids the heavy filter, when the partition applies one, is
+    double-quoted; with them it joins the ids' expression inside
+    RETRY_ID_QUOTE, so it refuses both quotes there.
+    """
+
+    RETRY_ID_QUOTE: ClassVar[str] = SINGLE_QUOTE
+
+    heavy: HeavyPartition
+    heavy_filter: str
+    no_fail_fast: bool
+    test_threads: int | None
+    retry_ids: tuple[str, ...]
+
+    def __post_init__(self):
+        _refuse_quote("NextestFlags", "heavy_filter", self.heavy_filter, DOUBLE_QUOTE)
+        if self.retry_ids and self.heavy is not HeavyPartition.INCLUDED:
+            _refuse_quote("NextestFlags", "heavy_filter", self.heavy_filter, self.RETRY_ID_QUOTE)
+        for test_id in self.retry_ids:
+            _refuse_quote("NextestFlags", "retry_ids", test_id, self.RETRY_ID_QUOTE)
+
+
+@dataclass(frozen=True)
+class NextestRun:
+    """`timeout <wall> <prio>cargo nextest run <selector>[ --release][ --features f]<flags> --config-file <path>`."""
+
+    selector: Selector
+    release: bool
+    features: tuple[str, ...]
+    wall: str
+    prio: str
+    flags: NextestFlags
+    config_file: str
+
+
+@dataclass(frozen=True)
+class CargoTestRun:
+    """Without nextest: `timeout <wall> <prio>cargo test <selector>[ --release][ --features f] -- --test-threads=N`."""
+
+    selector: Selector
+    release: bool
+    features: tuple[str, ...]
+    wall: str
+    prio: str
+    test_threads: int
+
+
+CONFIRM_RECORDER = "scripts/confirm-failed-manifest.sh"
+
+
+@dataclass(frozen=True)
+class ConfirmRecorded:
+    """`( <run>; CONFIRM_RECORDER records the failing ids for --confirm-failed; exit with the run's status )`.
+
+    The recorder's paths render inside PATH_QUOTE.
+    """
+
+    PATH_QUOTE: ClassVar[str] = DOUBLE_QUOTE
+
+    run: NextestRun
+    junit: str
+    manifest: str
+    sidecar: str
+    profile: Profile
+
+    def __post_init__(self):
+        for field in ("junit", "manifest", "sidecar"):
+            _refuse_quote("ConfirmRecorded", field, getattr(self, field), self.PATH_QUOTE)
+
+
+TEST_PASSES = (NextestRun, CargoTestRun, ConfirmRecorded)
+TestPass = NextestRun | CargoTestRun | ConfirmRecorded
+
+
+def _is_guarded_test_pass(command) -> bool:
+    """`if test -f <manifest>; then <script> && … && <test pass>; fi`: a test pass behind its crate's guard."""
+    match command:
+        case Guarded(body=Chain(parts=(*setup, run))):
+            return isinstance(run, TEST_PASSES) and all(isinstance(part, Script) for part in setup)
+    return False
+
+
+@dataclass(frozen=True)
+class SlotFdClosed:
+    """`<body> 9<&-`: the test pass runs without the semaphore slot's descriptor.
+
+    The body is one test pass, bare or behind its crate's guard: a CARGO step
+    admits this record, so it must not carry any other command past that check.
+    """
+
+    body: "TestPass | Guarded"
+
+    def __post_init__(self):
+        if not (isinstance(self.body, TEST_PASSES) or _is_guarded_test_pass(self.body)):
+            raise ValueError(
+                f"SlotFdClosed: the body is one test pass, bare or guarded, not {self.body!r}"
+            )
+
+
+@dataclass(frozen=True)
+class Marker:
+    """`echo '<text>'`: a line the plan's run prints in a pass's place."""
+
+    text: str
+
+    def __post_init__(self):
+        _refuse_single_quote("Marker", "text", self.text)
+
+
+@dataclass(frozen=True)
+class AttemptStamp:
+    """The attempt sidecar: the tree a run built from, its profiles and the time, written to `path`.
+
+    The path renders inside PATH_QUOTE.
+    """
+
+    PATH_QUOTE: ClassVar[str] = DOUBLE_QUOTE
+
+    path: str
+    profiles: tuple[Profile, ...]
+
+    def __post_init__(self):
+        _refuse_quote("AttemptStamp", "path", self.path, self.PATH_QUOTE)
+
+
+@dataclass(frozen=True)
+class SemaphoreAcquire:
+    """The main shell takes a test-run slot; the test passes run while it holds it."""
+
+
+@dataclass(frozen=True)
+class SemaphoreRelease:
+    """The main shell gives the test-run slot back."""
+
+
 Command = (
     Script
     | Cargo
@@ -266,15 +419,23 @@ Command = (
     | HeadStamp
     | ArtifactAssertion
     | InfraLeafLoop
+    | NextestRun
+    | CargoTestRun
+    | ConfirmRecorded
+    | SlotFdClosed
+    | Marker
+    | AttemptStamp
+    | SemaphoreAcquire
+    | SemaphoreRelease
 )
 
 KIND_COMMANDS = MappingProxyType(
     {
-        StepKind.CARGO: (Cargo, Guarded),
+        StepKind.CARGO: (Cargo, Guarded, SlotFdClosed),
         StepKind.TOOL: (Script, Guarded, NodeProject, InfraLeafLoop),
-        StepKind.BUILTIN: (ArtifactAssertion,),
+        StepKind.BUILTIN: (ArtifactAssertion, Marker),
         StepKind.MAIN_SHELL: (NodeLaneStart, NodeLaneJoin),
-        StepKind.SENTINEL: (),
+        StepKind.SENTINEL: (SemaphoreAcquire, SemaphoreRelease),
     }
 )
 
@@ -332,3 +493,29 @@ class Plan:
     heavy_partition: HeavyPartition | None
     environment: tuple[EnvLine, ...] = ()
     steps: tuple[Step, ...] = ()
+
+
+@dataclass(frozen=True)
+class Refused:
+    """The refusal to plan: the lines bash would print instead of a plan, and its exit code."""
+
+    lines: tuple[str, ...]
+    exit_code: int
+
+
+def unquotable_knob(values: Iterable[tuple[str, str]], quote: str) -> Refused | None:
+    """The refusal for the first (knob name, value) whose value holds `quote`, which its step renders it inside.
+
+    bash would print the broken line; the plan refuses it instead, exit 1.
+    """
+    for name, value in values:
+        if quote in value:
+            return Refused(
+                (
+                    f"verify.sh: ERROR — {name}={value} holds a {QUOTE_NAMES[quote]} quote, and the "
+                    f"plan renders it inside {QUOTE_NAMES[quote]} quotes; refusing to plan a broken "
+                    "command line",
+                ),
+                1,
+            )
+    return None

@@ -8,25 +8,33 @@
 //! For every `BindingKind::EvalBuiltin` row in `reify_builtins::rows()`:
 //!
 //! ```text
-//! representative args  ->  reify_stdlib::eval_builtin(row.name, &args)  ->  Value
+//! representative args  ->  reify_expr::eval_expr(`row.name(args…)`)  ->  Value
 //!                                                                          |
 //!                      crate::value_type_kind_matches(value, declared, None)
 //!                                                                          |
 //!            declared = row.result.resolve(&arg types)                  verdict
 //! ```
 //!
-//! The registry's `result` column is a STATIC claim; `eval_builtin` is the
-//! RUNTIME answer. Everything α's own tests pin is one side or the other — the
-//! row table is checked for internal consistency, and the eval kernels are
+//! The registry's `result` column is a STATIC claim; reify-expr's evaluator,
+//! running the call exactly as the engine would, is the RUNTIME answer (see
+//! [`evaluate_call`]). Everything α's own tests pin is one side or the other —
+//! the row table is checked for internal consistency, and the eval kernels are
 //! checked value-for-value against their legacy string path. Neither closes the
 //! residue PRD decision 12 names: **a buggy eval body returning the wrong
 //! kind**, which is invisible to a table-only test and invisible to a
 //! value-only test whose expectation was authored from the same buggy body.
 //! This module is the join — the only place the two sides meet under execution
-//! — but it is a join over the argument shapes it actually probes, and not
-//! every shape a row declares is reachable through the `eval_builtin` path.
-//! Read "What this harness cannot see" below before treating a green sweep as
-//! closing decision 12 for a whole row.
+//! — but it is a join over the argument shapes it actually probes. Read "What
+//! this harness cannot see" below before treating a green sweep as closing
+//! decision 12 for a whole row.
+//!
+//! A probe whose declared type is a `Type::Field` is compared twice (see
+//! [`probe_legs`]): the call's result against the declared Field, then one
+//! sample of that result, taken through reify-expr's `sample` intercept,
+//! against the declared codomain — both by the same oracle. The first leg
+//! alone cannot tell the analysis rows' Field claims apart, because the oracle
+//! maps a `Value::Field` onto ANY `Type::Field` and those claims differ only in
+//! codomain.
 //!
 //! Membership is DERIVED, never declared: no builtin name, id, or count is
 //! restated here. A τ migration that adds rows is swept with no edit to this
@@ -57,9 +65,9 @@
 //!    This module is hooked immediately after it so the two registry guards
 //!    read as siblings.
 //! 3. **No new production dependency edge.** reify-eval already normal-deps
-//!    both reify-compiler and reify-stdlib; reify-builtins is a DEV-dep only
-//!    (`crates/reify-eval/Cargo.toml`), so `cargo tree -e no-dev -p reify-eval`
-//!    is unchanged and `engine_hash_closure.txt` needed no edit.
+//!    reify-compiler, reify-expr and reify-stdlib; reify-builtins is a DEV-dep
+//!    only (`crates/reify-eval/Cargo.toml`), so `cargo tree -e no-dev -p
+//!    reify-eval` is unchanged and `engine_hash_closure.txt` needed no edit.
 //! 4. **It creates no new gate artifact.** An in-crate `#[cfg(test)] mod` is
 //!    neither a `crates/*/tests/*.rs` integration binary nor a
 //!    `tests/infra/test_*.sh` script, so it fires neither the overlay rule's
@@ -105,29 +113,44 @@
 //! Stated so the claims above are read at their real width, and so the next τ
 //! author does not assume a gap here is covered.
 //!
-//! **The `Type::Field` branch of the `ArgAware` resolvers is not parity-checked
-//! here, and structurally cannot be.** `reduce_tensor_arg`
-//! (`crates/reify-builtins/src/resolvers.rs`) has two branches — a `Type::Field`
-//! arm added by #6577 and a concrete fall-through — so `von_mises`, `max_shear`,
-//! `principal_stresses` and `safety_factor` each declare a `Field<D, ..>` result
-//! for a Field argument. Every probe in this module is concrete, and a Field
-//! probe cannot be added: `reify_stdlib::eval_builtin` has no Field handling at
-//! all. The lazy wrap that produces a `Value::Field` is `wrap_tensor_field` in
-//! `crates/reify-expr/src/analysis.rs`, reached through reify-expr's evaluator
-//! ladder and not through the `eval_builtin` path this harness executes — so a
-//! Field probe here would evaluate to `Value::Undef` and read `Vacuous`,
-//! certifying nothing.
+//! - **The oracle is kind-level.** [`crate::value_type_kind_matches`] compares
+//!   a value's outer KIND against a type. Dimensions and inner element types
+//!   are not compared, for concrete and Field shapes alike: a kernel answering
+//!   `Scalar<LENGTH>` where `Scalar<PRESSURE>` is declared, a list of the
+//!   wrong element type, or a `Value::Point` of the wrong length against a
+//!   `Type::Point` domain (a 2-D sample point for a `Point3<Length>` Field,
+//!   say) reads `Matches` — on the probe checks as on the verdict.
+//! - **A Field result is sampled at one point.** The Sample leg (see
+//!   [`probe_legs`]) executes the declared codomain at a single point of the
+//!   domain, so a codomain that held there and changed kind elsewhere would not
+//!   be seen.
+//! - **Only the two backings `tensor_backing` admits are probed** — Callable
+//!   (an `Analytical` lambda) and Grid (a `Sampled` grid), in
+//!   `crates/reify-expr/src/analysis.rs`. reify-expr declines a field with any
+//!   other backing (an `Imported` one, say), the call evaluates to
+//!   `Value::Undef`, and the probe would read `Vacuous`. The resolvers work on
+//!   types and cannot see a backing, the asymmetry `field_tensor_arg`
+//!   (`crates/reify-builtins/src/resolvers.rs`) documents. The two backings
+//!   also check different things: the Callable backing samples through the
+//!   pointwise builtin, so its sample's kind does not depend on the codomain
+//!   label reify-expr writes on the wrapper, while the Grid backing wraps its
+//!   interpolated values per that label — so only the Grid probe joins the
+//!   label against the registry (mutation Leg 5 below).
+//! - **The call is stamped with the type it is judged against.**
+//!   [`evaluate_call`] gives the call the row's DECLARED type as its
+//!   `result_type`, as the compiler does in production. A row whose reify-expr
+//!   arm reads `result_type` must be compared against an independently stamped
+//!   type, or ledgered.
+//! - **The residue is closed only for rows whose probes exist.** PRD §3
+//!   decision 12's residue is closed for the `Type::Field` branch of
+//!   `reduce_tensor_arg` (`von_mises`, `max_shear`, `principal_stresses`,
+//!   `safety_factor`) because [`representative_probes`] registers a Callable
+//!   and a Grid Field probe for each, beside the concrete one. A later
+//!   resolver branch is covered only once its shape is registered there too.
 //!
-//! The residue PRD §3 decision 12 names therefore remains OPEN for the Field
-//! half of those four rows, and closing it is reify-expr's to do, not ψ's.
-//! [`representative_probes`] returns a LIST precisely so that a leaf which
-//! routes Field evaluation through this path can register a Field shape
-//! alongside the concrete one rather than replacing it.
-//!
-//! The resolvers' own `Type`-level Field contract IS covered — by
-//! `reify_builtins::resolvers`' unit tests, ported from #6577 — but that is a
-//! type-algebra test on one side of the pair, which is exactly the kind of
-//! one-sided check this module exists to join.
+//! The resolvers' own `Type`-level Field contract is also pinned by
+//! `reify_builtins::resolvers`' unit tests, ported from #6577 — a type-algebra
+//! test on one side of the pair, which this module joins to execution.
 //!
 //! # Vocabulary
 //!
@@ -143,11 +166,11 @@
 //! # Mutation recipe — the proof these guards are not vacuously true
 //!
 //! Each leg below was OBSERVED by temporary mutate-run-revert, never guessed
-//! (task 6013 ψ step 11, re-confirmed at the amendment pass). **No mutating
-//! test is committed**, here or anywhere: a committed mutation asserts the bug,
-//! not the contract. The permanent guards are the tests in this module; this
-//! recipe is how you re-confirm each one still fires when a τ migration makes
-//! you doubt it.
+//! (task 6013 ψ step 11, re-confirmed at the amendment pass; Legs 4–6 added
+//! by #7563 for the Field half). **No mutating test is committed**, here or
+//! anywhere: a committed mutation asserts the bug, not the contract. The
+//! permanent guards are the tests in this module; this recipe is how you
+//! re-confirm each one still fires when a τ migration makes you doubt it.
 //!
 //! Only the EDIT and the expected verdict CLASS are recorded. The observed
 //! failure text is deliberately NOT transcribed here: it carries run-specific
@@ -175,25 +198,53 @@
 //! the declared type untouched. Revert the kernel.
 //!
 //! **Leg 3 — the vacuity arm is live, and the probe guard is its second
-//! signal.** In THIS file, split [`representative_probes`]' shared
-//! `ParseLength | ParseLengthR` arm and give `ParseLength` an argument-less
-//! probe (`vec![vec![]]`). The kernel's arity guard yields `Value::Undef` and
-//! TWO tests go RED: the sweep reports `ParseLength` UNLEDGERED at verdict
-//! `Vacuous`, and `representative_probes_are_well_formed_for_every_row` fails
-//! its check (a). That pair is the intended double signal — the second says the
-//! fault is in THIS file rather than in the row, which is exactly the
+//! signal.** In the child module `registry_parity_tests/probes.rs`, split
+//! [`representative_probes`]' shared `ParseLength | ParseLengthR` arm and give
+//! `ParseLength` an argument-less probe (`vec![Probe::concrete(vec![])]`;
+//! `Probe::concrete` is private to that module, where the edit is made). The
+//! kernel's arity guard yields `Value::Undef` and TWO tests go RED: the sweep
+//! reports `ParseLength` UNLEDGERED at verdict `Vacuous`, and
+//! `representative_probes_are_well_formed_for_every_row` fails its check (a).
+//! That pair is the intended double signal — the second says the fault is in
+//! the harness's probe data rather than in the row, which is exactly the
 //! misattribution it exists to prevent. Revert the arm.
 //!
-//! Legs 1 and 2 each transiently edit another crate, so `git status` must be
-//! clean of `registry.rs` and `parse.rs` before anything is committed.
+//! **Leg 4 — the eval side reduces a Field eagerly** (the Call leg). In
+//! `crates/reify-expr/src/analysis.rs`, make `compute_max_shear` return
+//! `Value::Real(0.0)` instead of the `wrap_tensor_field` wrapper. Expect the
+//! sweep RED with `MaxShear` UNLEDGERED at verdict `Diverges`, at a Field
+//! probe's Call leg. Revert the function.
+//!
+//! **Leg 5 — reify-expr writes the wrong codomain label** (the Grid probe's
+//! Sample leg). In the same file, set `compute_principal_stresses`'
+//! `result_codomain` to the bare scalar type instead of `Type::List(..)`.
+//! Expect the sweep RED with `PrincipalStresses` at verdict `Diverges` at the
+//! GRID probe's Sample leg, while its Callable probe's legs still match — the
+//! split that shows the two backings check different things. Revert the line.
+//!
+//! **Leg 6 — the resolver claims an eager result for a Field** (the #6577 bug
+//! class). In `crates/reify-builtins/src/resolvers.rs`, make
+//! `reduce_tensor_arg`'s Field branch return `Some(codomain(dim))`. Expect the
+//! sweep RED with all four analysis rows at verdict `Diverges` at a Field
+//! probe's Call leg. `representative_probes_are_well_formed_for_every_row`'s
+//! check (e) and the premise of
+//! `a_field_probe_is_compared_at_its_call_and_at_a_sample_of_its_result` go RED
+//! with it, since the probes name sample points for a type that is no longer a
+//! Field. Revert the branch.
+//!
+//! Legs 1, 2, 4, 5 and 6 each transiently edit another crate, so `git status`
+//! must be clean of `registry.rs`, `parse.rs`, reify-expr's `analysis.rs` and
+//! reify-builtins' `resolvers.rs` before anything is committed.
 
 use std::collections::HashSet;
 
 use reify_builtins::{BindingKind, BuiltinId, BuiltinRow, EvalBuiltinId, rows_bound_by};
-use reify_core::{DimensionVector, Type};
-use reify_ir::Value;
-use reify_test_support::values::uniaxial_stress_tensor;
+use reify_core::Type;
+use reify_ir::{CompiledExpr, Value, ValueMap};
 use strum::{EnumCount, IntoEnumIterator};
+
+mod probes;
+use probes::{Probe, representative_probes};
 
 // ── the verdict vocabulary ──────────────────────────────────────────────────
 
@@ -223,9 +274,9 @@ impl ParityVerdict {
     ///
     /// A row swept at several probes is only as certified as its WEAKEST probe
     /// — one shape that matches says nothing about a shape that was never
-    /// really compared — so [`worst_probe`] reports a row's most severe probe,
-    /// and a row with one `Vacuous` shape needs a ledger entry even when its
-    /// other shapes match.
+    /// really compared — so [`worst_outcome`] reports a row's most severe
+    /// probe leg, and a row with one `Vacuous` shape needs a ledger entry even
+    /// when its other shapes match.
     ///
     /// Spelled as an explicit rank rather than a derived `Ord`, which would
     /// silently rebind this ordering to the variants' declaration order.
@@ -378,149 +429,6 @@ fn sweep_covers_every_eval_builtin_row() {
     );
 }
 
-// ── representative arguments: compile-forced, one arm per row ───────────────
-
-/// A yield strength for `safety_factor`'s second argument, chosen non-zero so
-/// the ratio is finite and `sanitize_value` does not intervene.
-const YIELD_PA: f64 = 250e6;
-
-/// The static type of [`uniaxial_stress_tensor`]'s PRESSURE result.
-///
-/// `quantity` is a real `Scalar<PRESSURE>` rather than a bare placeholder
-/// because the analysis resolvers read arg0's quantity out of exactly this
-/// field (`resolvers::tensor_quantity`, `crates/reify-builtins/src/resolvers.rs`)
-/// and DEFAULT TO `DIMENSIONLESS` when they cannot find one. A placeholder here
-/// would silently route every analysis row through `scalar_or_real`'s
-/// dimensionless branch and compare the executed `Scalar<PRESSURE>` against a
-/// declared dimensionless type — still a `Matches` at kind level, so the
-/// mis-shaped probe would never be noticed while making the row's real
-/// signature unobserved.
-fn pressure_tensor_type() -> Type {
-    Type::Tensor {
-        rank: 2,
-        n: 3,
-        quantity: Box::new(Type::Scalar {
-            dimension: DimensionVector::PRESSURE,
-        }),
-    }
-}
-
-/// One probe of one row: the `(value, static type)` pair for each ARGUMENT of a
-/// single call.
-///
-/// Paired rather than two parallel lists so "same length" and "describes the
-/// same argument" are unrepresentable-when-wrong instead of asserted at runtime
-/// (house heuristic 10 — enforce an invariant in the type wherever the type can
-/// carry it). The two halves are unzipped at the two call sites, because
-/// `ResultSpec::ArgAware` resolves from `&[Type]` while `eval_builtin` takes
-/// `&[Value]`; the pairing is what guarantees those two views describe the same
-/// arguments.
-type Probe = Vec<(Value, Type)>;
-
-/// The one-argument concrete-tensor probe the analysis reductions share.
-fn concrete_tensor_probe() -> Probe {
-    vec![(uniaxial_stress_tensor(), pressure_tensor_type())]
-}
-
-/// Every probe one row is swept at.
-///
-/// # Why a LIST of probes, not one
-///
-/// A row can have more than one argument SHAPE whose result type its resolver
-/// answers differently, and one probe per row can only ever check one of them.
-/// Four of α's seven rows are `ResultSpec::ArgAware` over `reduce_tensor_arg`
-/// (`crates/reify-builtins/src/resolvers.rs`), which has two branches — a
-/// `Type::Field` arm added by #6577 and the concrete fall-through — and only
-/// the concrete branch is probed here. Returning a list means a τ row registers
-/// its Field shape ALONGSIDE its concrete one rather than replacing it, instead
-/// of the one-shape-per-row ceiling being frozen in by the signature. See the
-/// module header's "What this harness cannot see" for why that Field probe
-/// cannot be written today.
-///
-/// # Why an exhaustive `match` with no `_` arm
-///
-/// This is the mechanism that makes PRD §9's "grows per τ" true on the
-/// ARGUMENT side, the half [`eval_builtin_rows`] cannot cover. Membership is
-/// genuinely automatic; argument DATA is not, so completeness is enforced by
-/// the compiler instead: a τ migration that registers a row mints a variant in
-/// `EvalBuiltinId` and stops reify-eval's test build with
-///
-/// ```text
-/// error[E0004]: non-exhaustive patterns: `EvalBuiltinId::<NewRow>` not covered
-/// ```
-///
-/// until representative args exist. That is the same forcing function
-/// `reify_stdlib::registry_dispatch::dispatch`
-/// (`crates/reify-stdlib/src/registry_dispatch.rs`) uses for I-REG-2, and
-/// it is strictly better than a test that must remember to complain. **Adding a
-/// `_` arm here deletes the property.**
-///
-/// A name-keyed `HashMap` was rejected for the opposite property: an unmatched
-/// new row would fall through to a default, be swept with degenerate args,
-/// yield `Value::Undef`, and read as a vacuous green — the precise hollowing-out
-/// this module exists to prevent.
-///
-/// # Why the arguments are not derived from `arg_slots`
-///
-/// Slot-driven synthesis is **impossible today, not merely unchosen**. Every
-/// seed row declares `arg_slots: [Any]` / `[Any, Any]`, and `ArgSlot` has
-/// exactly one variant — `Any`, "no constraint on this slot"
-/// (`crates/reify-builtins/src/row.rs`) — which carries no shape to
-/// synthesize from. Nor could the registry supply a `Value`: by PRD decision 3
-/// reify-builtins depends on `reify-core` only and holds no `Value` at all,
-/// structurally locked by its own `tests/dag_invariant.rs`. The richer slot
-/// vocabulary (dimension checks, `SameDimensionAs(slot)`) arrives in τ-numeric;
-/// when it does, part of this function can become a derivation.
-///
-/// Every probe returned here is self-validated by
-/// [`representative_probes_are_well_formed_for_every_row`], so a mis-built
-/// probe fails AT THE PROBE rather than being misattributed to the row under
-/// test.
-fn representative_probes(id: EvalBuiltinId) -> Vec<Probe> {
-    // NO `_` ARM. See the doc-comment: its absence is the I-REG-2-shaped
-    // forcing function that makes a τ row without representative args a BUILD
-    // failure rather than a silent vacuous pass.
-    match id {
-        // `parse::parse_length` matches on `Value::String` and returns
-        // `Value::Undef` for any other argument kind.
-        EvalBuiltinId::ParseLength | EvalBuiltinId::ParseLengthR => {
-            vec![vec![(Value::String("12mm".to_string()), Type::String)]]
-        }
-
-        // `analysis::{von_mises, max_shear}` read a 3×3 window through
-        // `matrix_components_f64` and reduce it to a scalar carrying the
-        // element dimension.
-        EvalBuiltinId::VonMises | EvalBuiltinId::MaxShear => vec![concrete_tensor_probe()],
-
-        // `analysis::principal_stresses` needs the same 3×3 window; it returns
-        // the three eigenvalues as a `Value::List`.
-        EvalBuiltinId::PrincipalStresses => vec![concrete_tensor_probe()],
-
-        // `analysis::safety_factor` is `binary(tensor, yield)`: arg0 is the
-        // same 3×3 window, arg1 must answer `as_f64` or the kernel returns
-        // `Value::Undef`. The ratio cancels, so the result is a bare
-        // `Value::Real` whatever dimension arg1 carries.
-        EvalBuiltinId::SafetyFactor => vec![vec![
-            (uniaxial_stress_tensor(), pressure_tensor_type()),
-            (
-                Value::Scalar {
-                    si_value: YIELD_PA,
-                    dimension: DimensionVector::PRESSURE,
-                },
-                Type::Scalar {
-                    dimension: DimensionVector::PRESSURE,
-                },
-            ),
-        ]],
-
-        // `analysis::stress_invariants` returns `Value::Undef` for ANYTHING
-        // but a 3×3 tensor (`crates/reify-stdlib/src/analysis.rs`) — the
-        // strictest shape requirement among the seeds, and the one that makes
-        // a degenerate probe here read as a vacuous pass.
-        EvalBuiltinId::StressInvariants => vec![concrete_tensor_probe()],
-    }
-}
-
 // ── the three-way verdict, unit-pinned arm by arm ───────────────────────────
 
 /// A non-`Undef` value whose kind the matcher accepts for its declared type is
@@ -571,6 +479,7 @@ fn classify_undef_is_vacuous_for_every_declared_type() {
         Type::dimensionless_scalar(),
         Type::List(Box::new(Type::dimensionless_scalar())),
         Type::StructureRef("StressInvariants".to_string()),
+        Type::point3(Type::length()),
     ] {
         assert_eq!(
             classify(&Value::Undef, &declared),
@@ -620,7 +529,42 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 
 // ── the probe itself must be well-formed before it can blame a row ──────────
 
-/// Every probe must be well-formed for the row it probes, checked four ways —
+/// Whether a probe's `value` is well-formed for the `ty` it is paired with:
+/// exactly when the verdict would classify the pair [`ParityVerdict::Matches`].
+/// The two sentinels the verdict reads as `Vacuous` — `Value::Undef` and a
+/// `Type::Error` slot — therefore fail at the probe rather than being blamed on
+/// the row.
+fn matches_non_vacuously(value: &Value, ty: &Type) -> bool {
+    classify(value, ty) == ParityVerdict::Matches
+}
+
+/// The first argument of `probe`, by slot, whose value is not well-formed for
+/// the type the probe pairs it with.
+fn first_ill_formed_argument(probe: &Probe) -> Option<(usize, &(Value, Type))> {
+    probe
+        .args
+        .iter()
+        .enumerate()
+        .find(|(_, (value, ty))| !matches_non_vacuously(value, ty))
+}
+
+/// `probe`'s sample point with the domain it falls short of, when `declared` is
+/// a `Type::Field` and the point is not well-formed for that domain. A
+/// `Type::Error` domain accepts every point and so certifies none: it is
+/// reported too.
+fn ill_formed_sample_point<'a>(
+    probe: &'a Probe,
+    declared: &'a Type,
+) -> Option<(&'a Value, &'a Type)> {
+    match (&probe.sample_at, declared) {
+        (Some(point), Type::Field { domain, .. }) if !matches_non_vacuously(point, domain) => {
+            Some((point, domain))
+        }
+        _ => None,
+    }
+}
+
+/// Every probe must be well-formed for the row it probes, checked five ways —
 /// and every row must have at least one.
 ///
 /// This test exists so that a defective probe fails AT THE PROBE instead of
@@ -629,11 +573,11 @@ fn classify_against_the_error_type_is_vacuous_even_for_a_real_value() {
 /// the kernel, the kernel's own guard yields `Value::Undef`, and the sweep
 /// reports the row `Vacuous` for a reason that has nothing to do with the row's
 /// signature. The harness would then be accusing the registry of a fault in
-/// this file.
+/// `registry_parity_tests/probes.rs`.
 ///
 /// The "same number of values as types" check this test used to open with is
-/// gone, deliberately: [`Probe`] is a list of PAIRS, so that invariant is now
-/// carried by the type and cannot be violated.
+/// gone, deliberately: [`Probe::args`] is a list of PAIRS, so that invariant
+/// is now carried by the type and cannot be violated.
 #[test]
 fn representative_probes_are_well_formed_for_every_row() {
     for (id, row) in eval_builtin_rows() {
@@ -655,29 +599,31 @@ fn representative_probes_are_well_formed_for_every_row() {
             // return Value::Undef on the wrong argc, so a mis-counted probe
             // reads as Vacuous with no bearing on the row.
             assert!(
-                row.arity.matches(probe.len()),
+                row.arity.matches(probe.args.len()),
                 "{at}: {} argument(s) do not match the row's declared arity \
                  {:?} — the kernel would short-circuit to Value::Undef and \
-                 the sweep would blame the row for this file's mistake",
-                probe.len(),
+                 the sweep would blame the row for a mistake in \
+                 registry_parity_tests/probes.rs",
+                probe.args.len(),
                 row.arity
             );
 
             // (b) one probe argument per declared slot.
             assert_eq!(
-                probe.len(),
+                probe.args.len(),
                 row.arg_slots.len(),
                 "{at}: {} argument(s) against {} declared arg_slots",
-                probe.len(),
+                probe.args.len(),
                 row.arg_slots.len()
             );
 
-            // (c) each pair is internally consistent under the SAME oracle the
-            // verdict uses, so a value typed as something it is not cannot
-            // make a row look like it diverges.
-            for (slot, (value, ty)) in probe.iter().enumerate() {
-                assert!(
-                    crate::value_type_kind_matches(value, ty, None),
+            // (c) each pair is internally consistent under the verdict's own
+            // rule (`matches_non_vacuously`, i.e. `classify`): a value typed as
+            // something it is not cannot make a row look like it diverges, and
+            // an Undef argument is rejected here instead of being blamed on the
+            // row as Vacuous.
+            if let Some((slot, (value, ty))) = first_ill_formed_argument(probe) {
+                panic!(
                     "{at}: argument {slot} is mis-paired — its Value does not \
                      satisfy the Type this probe claims for it ({value:?} vs \
                      {ty:?})"
@@ -688,72 +634,288 @@ fn representative_probes_are_well_formed_for_every_row() {
             // An ArgAware resolver answering None means the probe is
             // mis-shaped for the row, which would otherwise surface as an
             // unexplained skip.
-            let types: Vec<Type> = probe.iter().map(|(_, ty)| ty.clone()).collect();
-            assert!(
-                row.result.resolve(&types).is_some(),
-                "{at}: the row's ResultSpec declined these arg types \
-                 {types:?}, so this probe cannot produce a declared type to \
-                 compare against"
+            let types = probe.arg_types();
+            let declared = row.result.resolve(&types).unwrap_or_else(|| {
+                panic!(
+                    "{at}: the row's ResultSpec declined these arg types \
+                     {types:?}, so this probe cannot produce a declared type \
+                     to compare against"
+                )
+            });
+
+            // (e) a sample point exactly when the declared type is a Field.
+            // A Field-shaped probe with no point would leave its codomain
+            // claim unexecuted, and a point on any other probe names a Sample
+            // leg that can never run.
+            let declares_field = matches!(declared, Type::Field { .. });
+            assert_eq!(
+                probe.sample_at.is_some(),
+                declares_field,
+                "{at}: the probe {} a sample point but the row's resolver \
+                 answers {declared:?} — a probe names a sample point exactly \
+                 when its declared type is a Type::Field",
+                if probe.sample_at.is_some() {
+                    "names"
+                } else {
+                    "names no"
+                }
             );
+
+            // ...and that point satisfies the declared Field's domain, under the
+            // same rule as (c). A point of the wrong kind, or a Value::Undef
+            // one, would make `sample` yield Value::Undef, and the sweep would
+            // report the row Vacuous for a fault in
+            // `registry_parity_tests/probes.rs` — so it is caught here, not at
+            // the Sample leg.
+            if let Some((point, domain)) = ill_formed_sample_point(probe, &declared) {
+                assert!(
+                    !domain.is_error(),
+                    "{at}: the declared Field's domain is Type::Error \
+                     ({declared:?}), which accepts every point, so the probe's \
+                     sample point ({point:?}) cannot be certified against it — \
+                     the fault is in the row's resolver, or in a Field type a \
+                     probe argument hands it, not in the point"
+                );
+                panic!(
+                    "{at}: the probe's sample point is mis-built — it does not \
+                     satisfy the declared Field's domain ({point:?} vs \
+                     {domain:?}), so its Sample leg would read Vacuous and \
+                     blame the row for a fault in \
+                     registry_parity_tests/probes.rs"
+                );
+            }
         }
     }
 }
 
-/// A row's reported probe is its MOST SEVERE one, ties broken to the first.
+/// An argument the verdict would read `Vacuous` — a `Value::Undef`, or a value
+/// typed `Type::Error` — is rejected AT THE PROBE, not found by the sweep and
+/// blamed on the row.
 ///
-/// Driven over synthetic [`ProbeOutcome`]s rather than real rows, in the same
-/// dialect as the synthetic-table adjudication tests below and for the same
-/// reason: every α row registers exactly ONE probe, so the aggregation rule
-/// would otherwise be unobservable — a rule that silently reported the row's
-/// BEST probe would pass the whole suite today and hollow the harness out the
-/// moment a τ row registered a second shape.
+/// Drives [`first_ill_formed_argument`], the helper behind the sweep's check
+/// (c), over synthetic probes, in the dialect of
+/// [`classify_undef_is_vacuous_for_every_declared_type`]: every real probe is
+/// well-formed, so the rule is otherwise unobservable. The raw
+/// `crate::value_type_kind_matches` accepts both rejected pairs (the premises of
+/// the two `classify_*` tests above), so a check built on it would let them
+/// through.
 #[test]
-fn worst_probe_reports_the_most_severe_and_breaks_ties_to_the_first() {
-    let outcome = |index, verdict| ProbeOutcome {
-        index,
+fn a_probe_argument_that_would_read_vacuous_is_rejected_at_the_probe() {
+    let rejected_slot = |args: Vec<(Value, Type)>| {
+        let probe = Probe {
+            args,
+            sample_at: None,
+        };
+        first_ill_formed_argument(&probe).map(|(slot, _)| slot)
+    };
+    let text = || Value::String("12mm".to_string());
+
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::String)]),
+        None,
+        "control: a pair the verdict classifies Matches passes, so the \
+         rejections below are the rule's and not a blanket refusal"
+    );
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::String), (Value::Undef, Type::String)]),
+        Some(1),
+        "a Value::Undef argument must be rejected at the probe, at its own \
+         slot: the kernel would answer Undef, so the Call leg would read \
+         Vacuous and blame the row for the probe's fault"
+    );
+    assert_eq!(
+        rejected_slot(vec![(text(), Type::Error)]),
+        Some(0),
+        "a Type::Error slot accepts any value, so it never shows the \
+         argument's Value consistent with the Type the resolver reads: the \
+         pair must be rejected at the probe"
+    );
+}
+
+/// A sample point the verdict would read `Vacuous` against the declared Field's
+/// domain — a `Value::Undef`, or any point against a `Type::Error` domain — is
+/// rejected AT THE PROBE, not found by the sweep and blamed on the row.
+///
+/// Drives [`ill_formed_sample_point`], the helper behind the sweep's
+/// sample-point check, over synthetic probes, as
+/// [`a_probe_argument_that_would_read_vacuous_is_rejected_at_the_probe`] does for
+/// check (c).
+#[test]
+fn a_probe_sample_point_that_would_read_vacuous_is_rejected_at_the_probe() {
+    let ill_formed = |point: Value, domain: Type| {
+        let declared = Type::Field {
+            domain: Box::new(domain),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        };
+        let probe = Probe {
+            args: vec![],
+            sample_at: Some(point),
+        };
+        ill_formed_sample_point(&probe, &declared).is_some()
+    };
+    let point = || Value::Point(vec![Value::length(0.5); 3]);
+    let domain = || Type::point3(Type::length());
+
+    assert!(
+        !ill_formed(point(), domain()),
+        "control: a point the verdict classifies Matches passes, so the \
+         rejections below are the rule's and not a blanket refusal"
+    );
+    assert!(
+        ill_formed(Value::Undef, domain()),
+        "a Value::Undef sample point must be rejected at the probe: `sample` \
+         would yield Undef, so the Sample leg would read Vacuous and blame the \
+         row for the probe's fault"
+    );
+    assert!(
+        ill_formed(point(), Type::Error),
+        "a Type::Error domain accepts every point and so certifies none: it \
+         must be reported, not passed"
+    );
+}
+
+/// A row is reported at the MOST SEVERE leg of any of its probes, located at
+/// that probe, ties broken to the first.
+///
+/// Driven over synthetic [`LegOutcome`]s rather than real rows, in the same
+/// dialect as the synthetic-table adjudication tests below and for the same
+/// reason: every real row matches on every probe and leg, so the aggregation
+/// rule would otherwise be unobservable — a rule that silently reported the
+/// row's BEST outcome, or kept only each probe's Call leg, would pass the whole
+/// suite today and hollow the harness out the moment one shape, or one
+/// codomain, stopped matching.
+#[test]
+fn worst_outcome_reports_the_most_severe_leg_of_any_probe_and_breaks_ties_to_the_first() {
+    let leg = |leg: Leg, verdict: ParityVerdict| LegOutcome {
+        leg,
         observed: Value::Undef,
         declared: Type::String,
         verdict,
     };
+    let call = |verdict| leg(Leg::Call, verdict);
+    let sample = |verdict| leg(Leg::Sample, verdict);
+    let reported = |legs_per_probe| {
+        let ProbeOutcome { index, outcome } = worst_outcome(legs_per_probe).expect("non-empty");
+        (index, outcome.leg, outcome.verdict)
+    };
 
     // A shape that matches does NOT cover a shape that was never really
-    // compared — this is the whole reason the rule is "worst", not "any".
-    let worst = worst_probe(vec![
-        outcome(1, ParityVerdict::Matches),
-        outcome(2, ParityVerdict::Vacuous),
-    ])
-    .expect("non-empty");
-    assert_eq!(worst.verdict, ParityVerdict::Vacuous);
+    // compared — this is the whole reason the rule is "worst", not "any". The
+    // index lets the failure line point at the probe that actually failed.
     assert_eq!(
-        worst.index, 2,
-        "the failure line must point at the probe that actually failed"
+        reported(vec![
+            vec![call(ParityVerdict::Matches)],
+            vec![call(ParityVerdict::Vacuous)],
+        ]),
+        (2, Leg::Call, ParityVerdict::Vacuous)
+    );
+
+    // A Field probe whose Call leg matches is still reported at a Sample leg
+    // that diverges: the matching Call leg is Field-vs-Field and says nothing
+    // about the codomain, which only the Sample leg executes.
+    assert_eq!(
+        reported(vec![
+            vec![call(ParityVerdict::Matches)],
+            vec![
+                call(ParityVerdict::Matches),
+                sample(ParityVerdict::Diverges)
+            ],
+        ]),
+        (2, Leg::Sample, ParityVerdict::Diverges)
     );
 
     // Diverges outranks Vacuous.
     assert_eq!(
-        worst_probe(vec![
-            outcome(1, ParityVerdict::Vacuous),
-            outcome(2, ParityVerdict::Diverges),
-        ])
-        .expect("non-empty")
-        .verdict,
-        ParityVerdict::Diverges
+        reported(vec![
+            vec![call(ParityVerdict::Vacuous)],
+            vec![call(ParityVerdict::Diverges)],
+        ]),
+        (2, Leg::Call, ParityVerdict::Diverges)
     );
 
     // Ties report the first, so the reported line is stable across runs.
     assert_eq!(
-        worst_probe(vec![
-            outcome(1, ParityVerdict::Diverges),
-            outcome(2, ParityVerdict::Diverges),
-        ])
-        .expect("non-empty")
-        .index,
-        1
+        reported(vec![
+            vec![call(ParityVerdict::Diverges)],
+            vec![call(ParityVerdict::Diverges)],
+        ]),
+        (1, Leg::Call, ParityVerdict::Diverges)
     );
 
     // No probe at all is not a pass. `observe_row` panics on this rather than
     // manufacturing a verdict for a row it never executed.
-    assert!(worst_probe(vec![]).is_none());
+    assert!(worst_outcome(vec![]).is_none());
+}
+
+// ── a Field probe is compared twice: at its call and at a sample ───────────
+
+/// A Field probe is compared on TWO legs — the call's result against the
+/// declared `Type::Field`, then one sample of that result against the declared
+/// codomain — both through the same [`classify`].
+///
+/// Driven over REAL execution of the `VonMises` row's Callable Field probe.
+/// Part (b) is the teeth: [`crate::value_type_kind_matches`] maps a
+/// `Value::Field` onto ANY `Type::Field`, so the Call leg alone cannot tell a
+/// right codomain from a wrong one — and the codomain is the only thing that
+/// distinguishes the four analysis rows' Field claims. Only the Sample leg
+/// executes it.
+#[test]
+fn a_field_probe_is_compared_at_its_call_and_at_a_sample_of_its_result() {
+    let (_, row) = eval_builtin_rows()
+        .into_iter()
+        .find(|(id, _)| *id == EvalBuiltinId::VonMises)
+        .expect("VonMises is a BindingKind::EvalBuiltin row");
+    let field_probe = || {
+        representative_probes(EvalBuiltinId::VonMises)
+            .into_iter()
+            .find(|probe| probe.sample_at.is_some())
+            .expect("VonMises registers a Field probe that names a sample point")
+    };
+    let declared = row
+        .result
+        .resolve(&field_probe().arg_types())
+        .expect("probe well-formedness (d) guarantees the resolver answers");
+    let Type::Field { domain, codomain } = &declared else {
+        panic!("premise: the resolver answers a Type::Field for a Field probe, got {declared:?}")
+    };
+    let legs_of = |outcomes: &[LegOutcome]| outcomes.iter().map(|o| o.leg).collect::<Vec<_>>();
+    let verdicts_of =
+        |outcomes: &[LegOutcome]| outcomes.iter().map(|o| o.verdict).collect::<Vec<_>>();
+
+    // (a) the declared type the row really answers: both legs match, and the
+    // Sample leg is judged against the Field's codomain.
+    let outcomes = probe_legs(row.name, field_probe(), declared.clone());
+    assert_eq!(legs_of(&outcomes), vec![Leg::Call, Leg::Sample]);
+    assert_eq!(
+        verdicts_of(&outcomes),
+        vec![ParityVerdict::Matches, ParityVerdict::Matches],
+        "the row's own Field claim must agree with its execution on both legs"
+    );
+    assert_eq!(
+        outcomes[1].declared, **codomain,
+        "the Sample leg must be judged against the declared Field's codomain"
+    );
+
+    // (b) a WRONG codomain: the Call leg still matches (Field-vs-Field is
+    // shallow), and only the Sample leg sees the lie.
+    let wrong = Type::Field {
+        domain: domain.clone(),
+        codomain: Box::new(Type::List(codomain.clone())),
+    };
+    let outcomes = probe_legs(row.name, field_probe(), wrong);
+    assert_eq!(
+        verdicts_of(&outcomes),
+        vec![ParityVerdict::Matches, ParityVerdict::Diverges],
+        "a wrong codomain must be caught by the Sample leg and only there"
+    );
+
+    // (c) no sample point: the Call leg alone.
+    let mut unsampled = field_probe();
+    unsampled.sample_at = None;
+    assert_eq!(
+        legs_of(&probe_legs(row.name, unsampled, declared)),
+        vec![Leg::Call]
+    );
 }
 
 // ── the exemption ledger ────────────────────────────────────────────────────
@@ -779,9 +941,10 @@ struct ExemptionEntry {
 }
 
 /// Every row whose parity assertion cannot be made non-vacuously today, one
-/// entry each. **Empty at α**, and that is the measured state, not a stub.
+/// entry each. **Empty at α, and still empty with the Field probes registered
+/// (#7563)** — that is the measured state, not a stub.
 ///
-/// # Measured at α: all seven seed rows classify `Matches`
+/// # Measured at α: all seven seed rows classify `Matches` (concrete probes)
 ///
 /// Observed by running the sweep, not derived by reading the table:
 ///
@@ -804,6 +967,9 @@ struct ExemptionEntry {
 /// `StructureInstance` whose `type_id` is a sentinel, and the matcher's
 /// `Type::StructureRef` arm compares `type_name` only, which is why
 /// `registry: None` suffices (see [`classify`]).
+///
+/// The Field probes (#7563) also classify `Matches` on both legs; their
+/// per-leg observations are recorded in that task's commit history.
 ///
 /// # Why the PRD's named seed entry cannot be here yet
 ///
@@ -907,78 +1073,176 @@ fn adjudicate(
         .collect()
 }
 
-/// What the sweep observed at ONE probe of one row.
+// ── the executor: the engine's own evaluator ────────────────────────────────
+
+/// Execute one call of the builtin `name` the way the engine does: as a
+/// `FunctionCall` expression evaluated by `reify_expr::eval_expr`, each argument
+/// a typed literal.
+///
+/// `name` is always a VARIABLE taken from the row table, never a literal (see
+/// the sweep's "I-REG-1 is satisfied twice over"). `result_type` is the type
+/// the call is compiled at — the declared type, as the compiler would stamp it.
+/// Only a few reify-expr arms read it, and for a row reaching one of them the
+/// comparison is tautological (see the module header's "What this harness
+/// cannot see"). No value cells are bound: every argument is a literal.
+fn evaluate_call(name: &str, args: Vec<(Value, Type)>, result_type: Type) -> Value {
+    let call = reify_test_support::std_call(
+        name,
+        args.into_iter()
+            .map(|(value, ty)| CompiledExpr::literal(value, ty))
+            .collect(),
+        result_type,
+    );
+    let no_bindings = ValueMap::new();
+    reify_expr::eval_expr(&call, &reify_expr::EvalContext::simple(&no_bindings))
+}
+
+/// reify-expr's field-sampling intercept, through which the Sample leg reads a
+/// Field result at a point. Not a registry row, and never passed to
+/// `eval_builtin`.
+const FIELD_SAMPLE_CALL: &str = "sample";
+
+/// Which comparison of a probe an outcome reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leg {
+    /// The call's result against the row's declared type.
+    Call,
+    /// One sample of a Field result against the declared Field's codomain.
+    /// [`crate::value_type_kind_matches`] maps a `Value::Field` onto ANY
+    /// `Type::Field`, so this is the only leg that executes a Field claim's
+    /// codomain — which is all that tells the analysis rows' Field claims
+    /// apart.
+    Sample,
+}
+
+/// One leg of one probe: what executed, what it was judged against, and the
+/// verdict.
+struct LegOutcome {
+    leg: Leg,
+    observed: Value,
+    declared: Type,
+    verdict: ParityVerdict,
+}
+
+/// Execute one probe of the builtin `name` and compare it on every leg it has.
+///
+/// The Call leg always runs: [`evaluate_call`] at `declared`, classified
+/// against `declared`. The Sample leg runs only when the probe names a sample
+/// point AND the call produced a `Value::Field` AND `declared` is a
+/// `Type::Field`: it evaluates `sample(result, point)` through the same
+/// [`evaluate_call`] and classifies the sample against the declared codomain
+/// with the same [`classify`], so there is no second kind matcher (I-REG-4).
+/// A Field result against a non-Field declared type has already diverged on
+/// the Call leg, and a non-Field result has nothing to sample.
+fn probe_legs(name: &str, probe: Probe, declared: Type) -> Vec<LegOutcome> {
+    let Probe { args, sample_at } = probe;
+    let observed = evaluate_call(name, args, declared.clone());
+    let call = LegOutcome {
+        leg: Leg::Call,
+        verdict: classify(&observed, &declared),
+        observed,
+        declared,
+    };
+
+    let sample = match (sample_at, &call.observed, &call.declared) {
+        (Some(point), Value::Field { .. }, Type::Field { domain, codomain }) => {
+            let sampled = evaluate_call(
+                FIELD_SAMPLE_CALL,
+                vec![
+                    (call.observed.clone(), call.declared.clone()),
+                    (point, (**domain).clone()),
+                ],
+                (**codomain).clone(),
+            );
+            Some(LegOutcome {
+                leg: Leg::Sample,
+                verdict: classify(&sampled, codomain),
+                observed: sampled,
+                declared: (**codomain).clone(),
+            })
+        }
+        _ => None,
+    };
+
+    std::iter::once(call).chain(sample).collect()
+}
+
+/// A [`LegOutcome`], located at the probe it came from.
 struct ProbeOutcome {
     /// 1-based position in the row's probe list, so a failure line points at
     /// the shape that actually failed.
     index: usize,
-    observed: Value,
-    declared: Type,
-    verdict: ParityVerdict,
+    outcome: LegOutcome,
 }
 
-/// The probe a row is reported at: its most severe, ties broken to the first.
+/// The outcome a row is reported at: the most severe leg of any of its probes,
+/// ties broken to the first. `legs_per_probe` holds one list per probe, in
+/// probe order, each that probe's legs in leg order.
 ///
 /// A row is only as certified as its WEAKEST probe (see
-/// [`ParityVerdict::severity`]), so a row with one `Vacuous` shape is reported
-/// `Vacuous` and needs a ledger entry even when its other shapes match. Ties
-/// resolve to the first so the reported line is stable across runs.
+/// [`ParityVerdict::severity`]), and a probe only as certified as its weaker
+/// leg — so a row with one `Vacuous` shape, or one Field probe whose Sample leg
+/// diverges, is reported at that outcome even when everything else matches.
+/// Ties resolve to the first so the reported line is stable across runs.
 ///
-/// `None` only for an empty probe list, which [`observe_row`] rejects outright:
-/// a row swept at no shape has not been checked, and must not read as a pass.
-fn worst_probe(outcomes: Vec<ProbeOutcome>) -> Option<ProbeOutcome> {
-    outcomes.into_iter().reduce(|worst, next| {
-        if next.verdict.severity() > worst.verdict.severity() {
-            next
-        } else {
-            worst
-        }
-    })
+/// The legs arrive grouped per probe rather than pre-flattened so that the fold
+/// locating each leg at its probe belongs to this one pure, unit-tested rule,
+/// not to [`observe_row`]'s execution code, where dropping a leg would go
+/// unseen by every test while the real sweep is all-`Matches`.
+///
+/// `None` only when no probe produced a leg, which [`observe_row`] rejects
+/// outright: a row swept at no shape has not been checked, and must not read as
+/// a pass.
+fn worst_outcome(legs_per_probe: Vec<Vec<LegOutcome>>) -> Option<ProbeOutcome> {
+    legs_per_probe
+        .into_iter()
+        .enumerate()
+        .flat_map(|(i, legs)| {
+            legs.into_iter().map(move |outcome| ProbeOutcome {
+                index: i + 1,
+                outcome,
+            })
+        })
+        .reduce(|worst, next| {
+            if next.outcome.verdict.severity() > worst.outcome.verdict.severity() {
+                next
+            } else {
+                worst
+            }
+        })
 }
 
 /// What the sweep observed for one row — the evidence a [`Failure`] is rendered
-/// against, taken from the row's [`worst_probe`].
+/// against.
 struct RowObservation {
     id: EvalBuiltinId,
     name: &'static str,
-    /// 1-based index of the reported probe, and how many the row was swept at.
-    probe_index: usize,
+    /// How many probes the row was swept at.
     probe_count: usize,
-    observed: Value,
-    declared: Type,
-    verdict: ParityVerdict,
+    /// The outcome the row is reported at: its [`worst_outcome`].
+    reported: ProbeOutcome,
 }
 
-/// Sweep one row at every probe it registers, and report its most severe.
+/// Sweep one row at every leg of every probe it registers, and report its most
+/// severe.
 fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObservation {
     let probes = representative_probes(id);
     let probe_count = probes.len();
 
-    let outcomes: Vec<ProbeOutcome> = probes
+    let legs_per_probe: Vec<Vec<LegOutcome>> = probes
         .into_iter()
-        .enumerate()
-        .map(|(i, probe)| {
-            let (values, types): (Vec<Value>, Vec<Type>) = probe.into_iter().unzip();
-
+        .map(|probe| {
             let declared = row
                 .result
-                .resolve(&types)
+                .resolve(&probe.arg_types())
                 .expect("probe well-formedness (d) guarantees the resolver answers");
 
-            // The public path. `row.name` is a VARIABLE — see the sweep's doc.
-            let observed = reify_stdlib::eval_builtin(row.name, &values);
-            let verdict = classify(&observed, &declared);
-
-            ProbeOutcome {
-                index: i + 1,
-                observed,
-                declared,
-                verdict,
-            }
+            // `row.name` is a VARIABLE — see the sweep's doc.
+            probe_legs(row.name, probe, declared)
         })
         .collect();
 
-    let worst = worst_probe(outcomes).unwrap_or_else(|| {
+    let reported = worst_outcome(legs_per_probe).unwrap_or_else(|| {
         panic!(
             "{id:?}: no representative probe, so this row would be swept at no \
              argument shape at all — see \
@@ -990,11 +1254,8 @@ fn observe_row(id: EvalBuiltinId, row: &'static BuiltinRow<BuiltinId>) -> RowObs
     RowObservation {
         id,
         name: row.name,
-        probe_index: worst.index,
         probe_count,
-        observed: worst.observed,
-        declared: worst.declared,
-        verdict: worst.verdict,
+        reported,
     }
 }
 
@@ -1034,15 +1295,13 @@ fn describe_failure(
 ) -> String {
     let id = failure.id();
     let name = observation.name;
+    let ProbeOutcome { index, outcome } = &observation.reported;
 
     match failure {
         Failure::Unledgered { observed, .. } => format!(
             "  UNLEDGERED {id:?} ({name:?}) — verdict {observed:?} at probe \
-             {} of {}; observed {:?}, declared {:?}",
-            observation.probe_index,
-            observation.probe_count,
-            observation.observed,
-            observation.declared
+             {index} of {}, {:?} leg; observed {:?}, declared {:?}",
+            observation.probe_count, outcome.leg, outcome.observed, outcome.declared
         ),
         Failure::Stale { ledgered, .. } => format!(
             "  STALE LEDGER ENTRY {id:?} ({name:?}) — the row now \
@@ -1066,29 +1325,45 @@ fn describe_failure(
 /// **The headline assertion** (PRD §3 decision 12 / §7.2 I-REG-4 / §8 row 9).
 ///
 /// For every `BindingKind::EvalBuiltin` row: synthesize representative args,
-/// evaluate them through the PUBLIC `reify_stdlib::eval_builtin`, resolve the
-/// row's declared result type from the same args' static types, and classify
-/// the pair. Only [`ParityVerdict::Matches`] is a pass; anything else must be
-/// named in [`PARITY_EXEMPTION_LEDGER`].
+/// evaluate the call through reify-expr's PUBLIC evaluator ([`evaluate_call`]),
+/// resolve the row's declared result type from the same args' static types,
+/// and classify the pair. Only [`ParityVerdict::Matches`] is a pass; anything
+/// else must be named in [`PARITY_EXEMPTION_LEDGER`].
 ///
-/// # Why the public path, not α's id-keyed shim
+/// # Why reify-expr's evaluator, not `eval_builtin` or α's id-keyed shim
 ///
-/// `reify_stdlib::eval_builtin` runs the full 26-arm dispatch chain with the
-/// registry hoisted to its front (`registry_dispatch::try_dispatch`), so it
-/// asserts strictly more than `__registry_dispatch_for_test` would: a later
-/// family arm that shadowed a registered name — a live migration hazard while
-/// the great majority of builtin names are still string-matched — surfaces here
-/// as a kind mismatch. The shim takes an `EvalBuiltinId` and therefore bypasses
-/// name resolution by construction, as its own doc-comment says.
+/// `reify_expr::eval_expr` is the path the engine evaluates a builtin call
+/// through. For every argument shape reify-expr does not intercept, it reaches
+/// `reify_stdlib::eval_builtin` through its catch-all arm, and that runs the
+/// full dispatch chain with the registry hoisted to its front
+/// (`registry_dispatch::try_dispatch`). So everything a direct `eval_builtin`
+/// call asserted is still asserted: a later family arm that shadowed a
+/// registered name — a live migration hazard while the great majority of
+/// builtin names are still string-matched — surfaces here as a kind mismatch.
+///
+/// It additionally reaches what `eval_builtin` cannot: reify-expr's named
+/// intercepts, which answer the four analysis rows over a `Value::Field`
+/// argument by wrapping the field lazily (`crates/reify-expr/src/analysis.rs`).
+/// Called directly, `eval_builtin` has no Field handling and answers those
+/// shapes `Value::Undef`, so the resolvers' `Type::Field` branch would read
+/// `Vacuous` and certify nothing.
+///
+/// α's `__registry_dispatch_for_test` shim asserts strictly less than either:
+/// it takes an `EvalBuiltinId` and therefore bypasses name resolution by
+/// construction, as its own doc-comment says.
 ///
 /// # I-REG-1 is satisfied twice over
 ///
 /// `row.name` is passed as a **variable**, derived from `reify_builtins::rows()`
-/// — no builtin-name literal appears anywhere in this file, so the seed
-/// string-dispatch gate
+/// — no registry-row name literal appears anywhere in this file or in its
+/// `probes` child, so the seed string-dispatch gate
 /// (`crates/reify-builtins/tests/i_reg_1_seed_string_dispatch_gate.rs`) has
 /// nothing to find even before its `#[cfg(test)]`-block masking applies. No
 /// ledger entry there is needed or wanted.
+///
+/// The one call-name literal is [`FIELD_SAMPLE_CALL`], reify-expr's `sample`
+/// intercept. It has no registry row, so the gate, which sweeps registered
+/// names only, cannot match it, and it is never passed to `eval_builtin`.
 ///
 /// # Every row is reported, not just the first
 ///
@@ -1105,7 +1380,7 @@ fn every_eval_builtin_row_agrees_with_its_executed_kind() {
     // ONE adjudication rule, shared with the synthetic-table tests below.
     let verdicts: Vec<(EvalBuiltinId, ParityVerdict)> = observations
         .iter()
-        .map(|obs| (obs.id, obs.verdict))
+        .map(|obs| (obs.id, obs.reported.outcome.verdict))
         .collect();
     let failures = adjudicate(&verdicts, PARITY_EXEMPTION_LEDGER);
 

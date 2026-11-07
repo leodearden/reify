@@ -12,6 +12,7 @@
 //! that the join is now reported instead of being silently picked. See
 //! `crates/reify-syntax/src/member_continuation.rs` for the normative rule.
 
+use crate::common::tracked_corpus::{tracked_ri_paths, workspace_root};
 use reify_core::ModulePath;
 // The "is this a member-continuation diagnostic?" question is answered by the
 // rule's own exported discriminator, never by a substring predicate restated
@@ -309,51 +310,6 @@ fn a_guarded_block_closing_brace_at_the_member_column_is_clean() {
 
 // ── (e) repo-wide sweep: the standing guard ──────────────────────────────────
 
-/// The workspace root, resolved from this crate's manifest dir
-/// (`<root>/crates/reify-syntax` → up two).
-fn workspace_root() -> std::path::PathBuf {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("CARGO_MANIFEST_DIR must be <workspace>/crates/reify-syntax")
-        .to_path_buf()
-}
-
-/// Every `*.ri` file TRACKED by git under `root`, as absolute paths.
-///
-/// Asked of git rather than derived by walking the filesystem: the guard below
-/// makes a claim about this repository's SOURCE, and a filesystem walk cannot
-/// tell source from a scratch design a developer is mid-way through authoring
-/// (the reify-design workflow writes `.ri` files in-tree) or from a fixture
-/// some aborted run left behind. Either would turn this suite red while
-/// asserting, wrongly, that tracked source is ambiguous.
-///
-/// Built through `reify_git_env::command`, so an ambient `GIT_DIR`/
-/// `GIT_WORK_TREE` cannot point this `git -C <root>` at a different repository.
-fn tracked_ri_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let output = reify_git_env::command(root)
-        .args(["ls-files", "-z", "--", "*.ri"])
-        .output()
-        .unwrap_or_else(|e| panic!("cannot run `git ls-files` in {}: {e}", root.display()));
-    assert!(
-        output.status.success(),
-        "`git ls-files` failed in {} ({}): {}",
-        root.display(),
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let listing = String::from_utf8(output.stdout).expect("git ls-files output must be UTF-8");
-    let mut out: Vec<_> = listing
-        .split('\0')
-        .filter(|entry| !entry.is_empty())
-        .map(|entry| root.join(entry))
-        .collect();
-    out.sort();
-    out
-}
-
 /// Byte offset → 1-based (line, column), for actionable failure reporting.
 fn line_col(source: &str, offset: u32) -> (usize, usize) {
     let offset = offset as usize;
@@ -373,7 +329,7 @@ fn line_col(source: &str, offset: u32) -> (usize, usize) {
 #[test]
 fn no_tracked_ri_source_trips_the_member_continuation_check() {
     let root = workspace_root();
-    let files = tracked_ri_files(&root);
+    let files = tracked_ri_paths(&root);
     assert!(
         files.len() > 100,
         "sweep found only {} tracked .ri files under {} — the listing is broken, \
@@ -383,14 +339,13 @@ fn no_tracked_ri_source_trips_the_member_continuation_check() {
     );
 
     let mut hits: Vec<String> = Vec::new();
-    for path in &files {
-        let Ok(source) = std::fs::read_to_string(path) else {
+    for rel in &files {
+        let Ok(source) = std::fs::read_to_string(root.join(rel)) else {
             continue;
         };
         for (start, _end, message) in member_continuation_errors(&source) {
             let (line, col) = line_col(&source, start);
-            let rel = path.strip_prefix(&root).unwrap_or(path);
-            hits.push(format!("{}:{}:{}: {}", rel.display(), line, col, message));
+            hits.push(format!("{rel}:{line}:{col}: {message}"));
         }
     }
 

@@ -287,6 +287,7 @@ export function findSmokeDriverConventionViolations(source: string): SmokeDriver
 export const SMOKE_DRIVERS = [
   "smoke_appearance_e2e.mjs",
   "smoke_diagnostics_e2e.mjs",
+  "smoke_edges_toggle_e2e.mjs",
   "smoke_find_uses.mjs",
   "smoke_mesh_count_parity_e2e.mjs",
   "smoke_multi_pane_e2e.mjs",

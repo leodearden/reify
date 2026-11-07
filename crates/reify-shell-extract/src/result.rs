@@ -35,15 +35,15 @@ use std::io::{self, Read, Write};
 
 // ---- Bounds on length-prefix fields read from the on-disk header ----
 //
-// These guards mirror `MAX_F64_ELEMENTS` at `persistent_cache.rs:362` and
+// These guards mirror `reify_compute_contract::MAX_F64_ELEMENTS` and
 // prevent a corrupted or tampered cache entry from triggering a
 // gigabyte-scale `Vec::with_capacity` allocation during deserialization.
 // Sized for shell-extract producer outputs at workstation scale.
 
 /// Maximum number of vertices in a deserialized `MidSurfaceMesh`. Each
 /// vertex is 24 bytes on the slab (3 × `f64`), so 1 << 24 ≈ 16 M
-/// vertices ≈ 384 MiB. Mirrors `MAX_F64_ELEMENTS` rationale at
-/// `persistent_cache.rs:343-361`.
+/// vertices ≈ 384 MiB. Mirrors the rationale in the rustdoc of
+/// `reify_compute_contract::MAX_F64_ELEMENTS`.
 const MAX_VERTICES: u64 = 1 << 24;
 /// Maximum number of triangles in a deserialized `MidSurfaceMesh`. Each
 /// triangle is 12 bytes on the slab (3 × `u32`), so 1 << 24 ≈ 16 M
@@ -79,8 +79,9 @@ const MAX_HEADER_BYTES: u64 = 1 << 22;
 /// paths. Pinning the chain in one place ensures byte-shape parity
 /// between `serialize_to_writer` and `deserialize_from_reader` —
 /// `with_fixint_encoding` matches the legacy `bincode::serialize_into`
-/// default (verified by the cross-format pin at
-/// `crates/reify-eval/src/persistent_cache.rs:1670`), `with_limit`
+/// default (verified by the cross-format pin
+/// `elastic_result_header_bincode_encoding_matches_pinned_hex_literal` in
+/// reify-compute-contract's `elastic_result.rs` tests), `with_limit`
 /// is enforced on **both** encode and decode in bincode 1.3 (confirmed
 /// by test `shell_extraction_result_bincode_options_enforces_limit_on_encode`
 /// for the encode side and by
@@ -97,7 +98,7 @@ fn bincode_options() -> impl bincode::Options + Copy {
 
 /// Convert a `u64` length prefix into a validated `usize`, returning
 /// `io::Error(InvalidData)` if it exceeds `max`. Mirrors
-/// `check_f64_vec_len` at `persistent_cache.rs:464`. The cast is safe
+/// `reify_compute_contract::check_f64_vec_len`. The cast is safe
 /// post-check because all `MAX_*` constants are ≤ `1 << 26`, well within
 /// `u32`.
 fn check_len(field: &str, len: u64, max: u64) -> io::Result<usize> {
@@ -318,7 +319,8 @@ struct RegionInfoOnDisk {
     /// `f64` bit pattern of `RegionInfo::mean_thickness`. Stored as `u64`
     /// (NOT `f64`) so NaN payloads, signaling-NaN bits, and signed zeros
     /// survive serde NaN-normalization — same trick as
-    /// `ElasticResultHeader::max_von_mises_bits` at `persistent_cache.rs:385`.
+    /// `ElasticResultHeader::max_von_mises_bits` in reify-compute-contract's
+    /// `elastic_result.rs`.
     mean_thickness_bits: u64,
     extent_bits: u64,
     /// `RegionInfo::thickness_extent_ratio` can be `f64::INFINITY` (per the
@@ -634,11 +636,12 @@ fn diagnostic_from_disk(d: &DiagnosticOnDisk) -> io::Result<Diagnostic> {
 
 // ---- f64 / u32 / i32 slab read/write helpers ----
 //
-// Mirrors `write_f64_slab` / `read_f64_slab` at `persistent_cache.rs:492 /
-// :542`. On LE hosts a zero-copy `bytemuck::cast_slice` reinterprets the
-// typed slice as `&[u8]` without copying; on BE hosts a manual per-element
-// byte-swap path. Empty input produces zero bytes. On-disk format is
-// unconditionally LE regardless of host byte order.
+// Mirrors `reify_compute_contract::write_f64_slab` /
+// `reify_compute_contract::read_f64_slab`. On LE hosts a zero-copy
+// `bytemuck::cast_slice` reinterprets the typed slice as `&[u8]` without
+// copying; on BE hosts a manual per-element byte-swap path. Empty input
+// produces zero bytes. On-disk format is unconditionally LE regardless of
+// host byte order.
 
 fn write_f64_slab<W: Write>(w: &mut W, slab: &[f64]) -> io::Result<()> {
     #[cfg(target_endian = "little")]
@@ -906,8 +909,9 @@ fn read_i32x3_slab<R: Read>(r: &mut R, len: usize) -> io::Result<Vec<[i32; 3]>> 
 
 // Compile-time assertion that `ShellExtractionResult: PersistentlyCacheable`.
 // Lives at module scope (outside `#[cfg(test)]`) so the trait-bound is
-// enforced on every build, not only when `cargo test` links. Mirrors
-// `persistent_cache.rs:369-372`.
+// enforced on every build, not only when `cargo test` links. Mirrors the
+// module-scope `const _` `ElasticResult: PersistentlyCacheable` assertion in
+// reify-compute-contract's `elastic_result.rs`.
 const _: fn() = || {
     fn assert_impl<T: reify_core::persistent_cache::PersistentlyCacheable>() {}
     assert_impl::<ShellExtractionResult>();
@@ -923,8 +927,8 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
     // genuinely change (e.g. a field is added/removed, or its codec changes).
     const FORMAT_VERSION: u32 = 1;
 
-    /// Encoding pipeline mirrors `ElasticResult::serialize_to_writer` at
-    /// `crates/reify-eval/src/persistent_cache.rs:700`:
+    /// Encoding pipeline mirrors
+    /// `reify_compute_contract::ElasticResult::serialize_to_writer`:
     ///
     /// 1. `zstd::Encoder::new(w, 0)` — level 0 selects zstd's default level
     ///    (3 in zstd 0.13), which is byte-deterministic for identical input.
@@ -946,7 +950,8 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
     ///
     /// Bumping `bincode` past `=1.3` or `zstd` past `0.13` must be paired
     /// with a `FORMAT_VERSION` bump in the same commit, mirroring
-    /// `ELASTIC_RESULT_FORMAT_VERSION` (`persistent_cache.rs:296-313`).
+    /// `ELASTIC_RESULT_FORMAT_VERSION` in reify-compute-contract's
+    /// `elastic_result.rs`.
     fn serialize_to_writer(&self, w: &mut impl Write) -> io::Result<()> {
         // Level 0 selects zstd's default compression level (3 in zstd
         // 0.13), which is byte-deterministic for identical input. Pinned
@@ -956,8 +961,8 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
         // verified by `shell_extraction_result_serialization_is_byte_deterministic`
         // and `shell_extraction_result_reserialize_after_deserialize_is_byte_identical`;
         // bump the level if a future zstd release breaks default-level
-        // determinism. Mirrors the comment block at
-        // `persistent_cache.rs:700-710`.
+        // determinism. Mirrors the zstd level-0 comment block in
+        // `reify_compute_contract::ElasticResult::serialize_to_writer`.
         // Single-threaded only — `Encoder::multithread()` breaks byte-determinism.
         let mut encoder = zstd::Encoder::new(w, 0)?;
 
@@ -988,8 +993,8 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
     }
 
     /// Inverse of [`Self::serialize_to_writer`]. Error-propagation
-    /// discipline mirrors `ElasticResult::deserialize_from_reader` at
-    /// `persistent_cache.rs:730`:
+    /// discipline mirrors
+    /// `reify_compute_contract::ElasticResult::deserialize_from_reader`:
     ///   * `zstd::Decoder::new(r)?` — `zstd::Error: Into<io::Error>`.
     ///   * `bincode::deserialize_from(...).map_err(io::Error::other)` —
     ///     `bincode::Error` does NOT implement `Into<io::Error>`.
@@ -1189,8 +1194,8 @@ impl reify_core::persistent_cache::PersistentlyCacheable for ShellExtractionResu
         // `bincode::serialized_size` is used rather than a hardcoded magic
         // constant so that wire-shape mirror struct edits (e.g. adding a new
         // `Diagnostic` field to `DiagnosticOnDisk`) automatically update the
-        // size accounting without a manual edit. Mirrors the `ElasticResult`
-        // discipline at `persistent_cache.rs:768-797`.
+        // size accounting without a manual edit. Mirrors the discipline of
+        // `reify_compute_contract::ElasticResult::uncompressed_byte_size`.
         //
         // The on-disk header is built via `build_on_disk_header`, the same
         // helper `serialize_to_writer` uses — so byte-shape drift between
@@ -1310,8 +1315,8 @@ mod tests {
         // unchanged from initial serialisation.  The stricter decoder added by
         // task 4806 / P1 α (fallible `FeatureId::from_str`) is a decode-only
         // change and does not require a version bump.  Mirrors
-        // `elastic_result_format_version_is_one` at
-        // `persistent_cache.rs:1101`.
+        // `elastic_result_format_version_pinned` in reify-compute-contract's
+        // `elastic_result.rs` tests.
         assert_eq!(
             <ShellExtractionResult as PersistentlyCacheable>::FORMAT_VERSION,
             1
@@ -1458,9 +1463,9 @@ mod tests {
     #[test]
     fn shell_extraction_result_solve_time_ms_returns_constructor_value() {
         // Build two values with distinct solve_time_ms and confirm the trait
-        // accessor reads the field. Mirrors `elastic_result_solve_time_ms_*`
-        // at `persistent_cache.rs:1115` — the second sample with
-        // solve_time_ms = 0 catches a hard-coded constant.
+        // accessor reads the field. Mirrors reify-compute-contract's
+        // `elastic_result_solve_time_ms_returns_constructor_value` — the
+        // second sample with solve_time_ms = 0 catches a hard-coded constant.
         let nine_thousand_nine_hundred_ninety_nine = ShellExtractionResult::new(
             MidSurfaceMesh {
                 vertices: vec![],
@@ -1586,8 +1591,9 @@ mod tests {
 
     /// Assert that two `f64` values share the exact same bit-pattern. Used
     /// for NaN / Inf / signed-zero round-trip pinning where `PartialEq`
-    /// would fail (NaN != NaN) or silently accept sign-bit drift. Mirrors
-    /// `persistent_cache.rs:1192` (the ElasticResult NaN bit-pattern pin).
+    /// would fail (NaN != NaN) or silently accept sign-bit drift. Mirrors the
+    /// ElasticResult NaN bit-pattern pin in reify-compute-contract's
+    /// `elastic_result_round_trip_preserves_nan_and_infinity_bit_patterns`.
     fn assert_f64_bits_eq(label: &str, a: f64, b: f64) {
         assert_eq!(
             a.to_bits(),
@@ -1777,8 +1783,8 @@ mod tests {
     fn shell_extraction_result_round_trips_with_empty_buffers() {
         // Pin that all-zero-length slabs and empty nested Vecs round-trip
         // cleanly — the slab loops must not assume "at least one element"
-        // (cf. `elastic_result_round_trips_with_empty_field_arrays` at
-        // `persistent_cache.rs:1207`).
+        // (cf. `elastic_result_round_trips_with_empty_field_arrays` in
+        // reify-compute-contract's `elastic_result.rs` tests).
         let original = ShellExtractionResult {
             mid_surface: MidSurfaceMesh {
                 vertices: vec![],
@@ -1815,8 +1821,9 @@ mod tests {
     fn shell_extraction_result_serialization_is_byte_deterministic() {
         // Two independent serializations of the same fixture must produce
         // byte-identical output. Mirrors
-        // `elastic_result_serialization_is_byte_deterministic` at
-        // `persistent_cache.rs:1152`. The contract holds because:
+        // `elastic_result_serialization_is_byte_deterministic` in
+        // reify-compute-contract's `elastic_result.rs` tests. The contract
+        // holds because:
         //   * zstd `Encoder::new(w, 0)` selects deterministic level-0;
         //   * bincode 1.3 fixint-LE is byte-stable for the header;
         //   * all Vec sources have stable insertion order (no HashMap
@@ -1835,10 +1842,10 @@ mod tests {
     #[test]
     fn shell_extraction_result_reserialize_after_deserialize_is_byte_identical() {
         // Mirrors `elastic_result_reserialize_after_deserialize_is_byte_identical`
-        // at `persistent_cache.rs:1163`. Serialize → deserialize → reserialize
-        // must yield the same bytes; any field-shape drift in the wire
-        // mirror (e.g. an `Option<String>` reordered relative to a sibling
-        // field) would surface here as a mismatch.
+        // in reify-compute-contract's `elastic_result.rs` tests. Serialize →
+        // deserialize → reserialize must yield the same bytes; any field-shape
+        // drift in the wire mirror (e.g. an `Option<String>` reordered relative
+        // to a sibling field) would surface here as a mismatch.
         let original = make_round_trip_fixture();
         let mut bytes_a: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut bytes_a).unwrap();
@@ -1852,8 +1859,8 @@ mod tests {
 
     /// Hand-build a zstd-framed bincode-encoded `ShellExtractionResultHeader`
     /// so a test can simulate a tampered cache entry without going through
-    /// `serialize_to_writer`. Mirrors `encode_header` at
-    /// `persistent_cache.rs:1298`. Uses `bincode_options()` so the wire
+    /// `serialize_to_writer`. Mirrors `encode_header` in reify-compute-contract's
+    /// `elastic_result.rs` tests. Uses `bincode_options()` so the wire
     /// shape matches the production write path byte-for-byte.
     fn encode_header_only_for_test(header: &ShellExtractionResultHeader) -> Vec<u8> {
         use bincode::Options;
@@ -2080,7 +2087,8 @@ mod tests {
     }
 
     /// Acceptable error kinds from a malformed/truncated input. Mirrors
-    /// `assert_decode_error` at `persistent_cache.rs:1231`.
+    /// `assert_decode_error` in reify-compute-contract's `elastic_result.rs`
+    /// tests.
     fn assert_decode_error(label: &str, err: &io::Error) {
         let kind = err.kind();
         assert!(
@@ -2100,7 +2108,8 @@ mod tests {
         //   * len/4, len/2 → mid-bincode-header or mid-slab
         //   * len-1 → one byte short of the final block
         // Every offset must surface `Err(io::Error)` panic-free (mirrors
-        // `persistent_cache.rs:1243`).
+        // reify-compute-contract's
+        // `elastic_result_deserialize_from_truncated_reader_returns_io_error`).
         let original = make_round_trip_fixture();
         let mut buf: Vec<u8> = Vec::new();
         original.serialize_to_writer(&mut buf).unwrap();

@@ -37,9 +37,13 @@ use reify_solver_elastic::linear_solve::{
 };
 use reify_solver_elastic::split_cholesky::SplitCholesky;
 use reify_solver_elastic::{
-    AssemblyElement, DirichletBc, ElementOrder, ElementStiffness, IsotropicElastic,
+    AssemblyElement, ElementOrder, ElementStiffness, IsotropicElastic,
     apply_dirichlet_row_elimination, assemble_stiffness, element_stiffness,
 };
+
+#[path = "common/fea_harness.rs"]
+mod fea_harness;
+use fea_harness::{box_p1_mesh, dirichlet_fix_face, end_face_nodes};
 
 // ---------------------------------------------------------------------------
 // Fixtures and checks (copied from tests/split_cholesky.rs per the
@@ -304,64 +308,6 @@ const GIB: u64 = 1024 * 1024 * 1024;
 
 const JACOBI: Strategy = Strategy::Pcg(PreconditionerKind::Jacobi);
 
-/// Split a hex cell into 6 tetrahedra via the Kuhn triangulation (copied from
-/// `tests/determinism.rs` per the per-test-file helper convention).
-fn kuhn_split_hex_to_six_tets(c: [usize; 8]) -> [[usize; 4]; 6] {
-    [
-        [c[0], c[1], c[2], c[6]],
-        [c[0], c[1], c[5], c[6]],
-        [c[0], c[3], c[2], c[6]],
-        [c[0], c[3], c[7], c[6]],
-        [c[0], c[4], c[5], c[6]],
-        [c[0], c[4], c[7], c[6]],
-    ]
-}
-
-/// A structured P1 tet mesh of `[0,lx]×[0,ly]×[0,lz]` with `nx×ny×nz` hex
-/// cells, each Kuhn-split into 6 tets (copied from `tests/determinism.rs`).
-fn box_p1_mesh(
-    lx: f64,
-    ly: f64,
-    lz: f64,
-    nx: usize,
-    ny: usize,
-    nz: usize,
-) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
-    let (nnx, nny, nnz) = (nx + 1, ny + 1, nz + 1);
-    let mut nodes = Vec::with_capacity(nnx * nny * nnz);
-    for iz in 0..nnz {
-        for iy in 0..nny {
-            for ix in 0..nnx {
-                nodes.push([
-                    ix as f64 * lx / nx as f64,
-                    iy as f64 * ly / ny as f64,
-                    iz as f64 * lz / nz as f64,
-                ]);
-            }
-        }
-    }
-    let node_idx = |ix: usize, iy: usize, iz: usize| iz * nny * nnx + iy * nnx + ix;
-    let mut connectivity = Vec::with_capacity(6 * nx * ny * nz);
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                let c = [
-                    node_idx(ix, iy, iz),
-                    node_idx(ix + 1, iy, iz),
-                    node_idx(ix + 1, iy + 1, iz),
-                    node_idx(ix, iy + 1, iz),
-                    node_idx(ix, iy, iz + 1),
-                    node_idx(ix + 1, iy, iz + 1),
-                    node_idx(ix + 1, iy + 1, iz + 1),
-                    node_idx(ix, iy + 1, iz + 1),
-                ];
-                connectivity.extend(kuhn_split_hex_to_six_tets(c));
-            }
-        }
-    }
-    (nodes, connectivity)
-}
-
 /// F1: the engine's smoke cantilever after boundary conditions — a
 /// 1.0×0.1×0.1 m steel beam on a 60×1×6 Kuhn-split hex grid, the x=0 face
 /// clamped and −1000 N in z spread equally over the x=L face. 2,562 DOF.
@@ -396,21 +342,8 @@ fn build_cantilever() -> (SparseRowMat<usize, f64>, Vec<f64>) {
     };
 
     let tol = 0.5 * L / NX as f64;
-    let on_face = |x: f64| -> Vec<usize> {
-        (0..nodes.len())
-            .filter(|&n| (nodes[n][0] - x).abs() < tol)
-            .collect()
-    };
-    let clamp: Vec<DirichletBc> = on_face(0.0)
-        .into_iter()
-        .flat_map(|n| {
-            (0..3).map(move |c| DirichletBc {
-                dof: 3 * n + c,
-                value: 0.0,
-            })
-        })
-        .collect();
-    let tip = on_face(L);
+    let clamp = dirichlet_fix_face(&nodes, 0, 0.0, tol);
+    let tip = end_face_nodes(&nodes, L, tol);
     let mut f = vec![0.0; 3 * nodes.len()];
     for &n in &tip {
         f[3 * n + 2] -= 1000.0 / tip.len() as f64;

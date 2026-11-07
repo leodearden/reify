@@ -19,7 +19,7 @@
 //! before/after for both units; the guard re-derives the live numbers on demand, so they are
 //! deliberately not restated here.
 //!
-//! `common` (the shared tree-sitter CST helper module under `tests/common/`) is declared
+//! `common` (the shared test helpers under `tests/common/`) is declared
 //! exactly once here, at the crate root, rather than once per dependent submodule. Ten of
 //! the modules below previously each carried their own `#[path = "../common/mod.rs"] mod
 //! common;` (correct when each was its own standalone binary/crate root); folded together
@@ -132,6 +132,8 @@ mod sub_decl_specialization_body_parser_tests;
 mod sub_decl_specialization_tests;
 #[path = "harness_syntax/sub_placement_spec_example_parses.rs"]
 mod sub_placement_spec_example_parses;
+#[path = "harness_syntax/tracked_ri_parse_guard.rs"]
+mod tracked_ri_parse_guard;
 #[path = "harness_syntax/trait_tests.rs"]
 mod trait_tests;
 #[path = "harness_syntax/type_alias_tests.rs"]

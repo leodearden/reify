@@ -6,6 +6,7 @@ license.workspace = true
 description = "The workspace's single constructor and sanitizer for git invocations that target a specific repository"
 
 [dependencies]
+workspace-feature-union.workspace = true
 
 [features]
 # Exposes `removed_vars`, a test-side reader, to dependents' tests. Enable it

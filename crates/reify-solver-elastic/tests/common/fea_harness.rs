@@ -1,7 +1,8 @@
 //! The FEA harness shared by this crate's FEA integration-test binaries: a
 //! structured box mesh generator and its Kuhn hex-to-tet split, Dirichlet-BC
-//! and point-load builders, P1 stiffness assembly and the assemble-and-CG-solve
-//! pipeline built on it, and the element-level post-processing
+//! and point-load builders, the element-agnostic retaining eliminate → CG tail
+//! and its displacement-only projection, P1 stiffness assembly and the two P1
+//! compositions built from them, and the element-level post-processing
 //! (`gather_u_p1`, `von_mises_of_tensor`) that consumes a solve's output.
 //!
 //! Not a test binary. A consumer includes it with
@@ -124,10 +125,11 @@ pub fn dirichlet_fix_face(
 /// Prescribe the full 3-DOF displacement `field(x)` on every node lying on any
 /// of the six bounding planes of `[0,lx]×[0,ly]×[0,lz]` (within `tol`).
 ///
-/// Used by the simple-shear constant-strain patch test: prescribing the exact
-/// linear field `u = (γ·y, 0, 0)` on the whole boundary makes the interior
-/// solution that same field — which P1/P2 tets represent *exactly* — yielding a
-/// uniform `σ_xy = G·γ` everywhere.
+/// Prescribing an affine `field` on the whole boundary of a homogeneous body,
+/// with no other loads, makes the interior P1/P2 solution that same field: the
+/// affine field is the exact continuum solution (uniform strain, hence uniform
+/// stress, so div σ = 0), and P1/P2 tets represent it exactly. This is the
+/// constant-strain patch-test property.
 pub fn dirichlet_prescribe_boundary_field(
     nodes: &[[f64; 3]],
     lx: f64,
@@ -223,39 +225,150 @@ pub fn assemble_p1_stiffness(
     assemble_global_stiffness(nodes.len(), &elements, AssemblyMode::Deterministic)
 }
 
-/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system.
+/// Scatter nodal point loads into a freshly zeroed global RHS of length
+/// `3 * n_nodes`.
 ///
-/// Uses `SolverMode::Deterministic` for bit-stable, CI-safe results.
+/// [`eliminate_and_solve`] takes a whole RHS rather than a
+/// `(dof, value)` list so that a caller can equally pass it a load assembled
+/// another way, such as a quantity of interest's `dual_load`.
+pub fn rhs_from_point_loads(n_nodes: usize, point_loads: &[(usize, f64)]) -> Vec<f64> {
+    let mut f = vec![0.0_f64; 3 * n_nodes];
+    for &(dof, val) in point_loads {
+        f[dof] += val;
+    }
+    f
+}
+
+/// What [`eliminate_and_solve`] retains of a solve: everything a dual
+/// (adjoint) solve over the same system needs, so that it repeats neither the
+/// assembly nor the elimination.
+pub struct RetainedSolve {
+    /// `K`, already row-eliminated, so a dual solve reuses it verbatim.
+    pub k_eliminated: SparseRowMat<usize, f64>,
+    /// The ELIMINATED right-hand side: the `f` that the reciprocity identity
+    /// `J(u_h) == fᵀz_h` is stated against (`J` a quantity of interest, `u_h`
+    /// the primal solution, `z_h` the dual solution), not the raw one.
+    pub f_eliminated: Vec<f64>,
+    /// The deduplicated BC list, i.e. the DOFs at which a dual load is zeroed:
+    /// exactly those that were actually constrained.
+    pub bcs_deduped: Vec<DirichletBc>,
+    /// The primal CG solve. It is not asserted on, so the caller decides what
+    /// an unconverged solve means.
+    pub primal: CgResult,
+}
+
+/// Eliminate Dirichlet BCs from an assembled system and CG-solve it, retaining
+/// everything a dual (adjoint) solve over the same system needs (see
+/// [`RetainedSolve`]). Element-agnostic: `k` may come from any assembly.
+///
+/// Runs [`dedup_bcs`] → `apply_dirichlet_row_elimination` → `solve_cg`.
+/// `SolverMode::Deterministic` is fixed (not a parameter) for bit-stable,
+/// CI-safe results; `opts` IS a parameter so a caller can tighten the tolerance
+/// below the crate default or raise the iteration cap.
+///
+/// # Panics
+///
+/// If `raw_f.len() != k.nrows()`.
+pub fn eliminate_and_solve(
+    mut k: SparseRowMat<usize, f64>,
+    raw_f: &[f64],
+    mut bcs: Vec<DirichletBc>,
+    opts: CgSolverOptions,
+) -> RetainedSolve {
+    assert_eq!(
+        raw_f.len(),
+        k.nrows(),
+        "raw_f.len() = {} but the system has {} DOFs",
+        raw_f.len(),
+        k.nrows(),
+    );
+
+    let mut f = raw_f.to_vec();
+    dedup_bcs(&mut bcs);
+    apply_dirichlet_row_elimination(&mut k, &mut f, &bcs);
+
+    let primal = solve_cg(&k, &f, opts, SolverMode::Deterministic);
+
+    RetainedSolve {
+        k_eliminated: k,
+        f_eliminated: f,
+        bcs_deduped: bcs,
+        primal,
+    }
+}
+
+/// Assemble, eliminate and CG-solve a P1 tetrahedral FEA system, retaining
+/// everything a dual (adjoint) solve over the same system needs:
+/// [`assemble_p1_stiffness`] + [`eliminate_and_solve`].
+///
+/// # Panics
+///
+/// As [`eliminate_and_solve`]; for P1, `K`'s dimension is `3 * nodes.len()`.
+pub fn assemble_p1_eliminate_and_solve(
+    nodes: &[[f64; 3]],
+    conns: &[[usize; 4]],
+    mat: &IsotropicElastic,
+    bcs: Vec<DirichletBc>,
+    raw_f: &[f64],
+    opts: CgSolverOptions,
+) -> RetainedSolve {
+    eliminate_and_solve(assemble_p1_stiffness(nodes, conns, mat), raw_f, bcs, opts)
+}
+
+/// [`eliminate_and_solve`] with an asserted convergence, keeping only the
+/// displacement `u`.
+///
+/// # Returns
+///
+/// Displacement vector `u` of length `k.nrows()`.
+///
+/// # Panics
+///
+/// As [`eliminate_and_solve`], and if the CG solve does not converge within
+/// `opts.max_iter` iterations. The convergence panic is `#[track_caller]`, so
+/// it names the line that called the pipeline; a wrapper that carries the
+/// attribute too passes that line through.
+#[track_caller]
+pub fn solve_displacement(
+    k: SparseRowMat<usize, f64>,
+    raw_f: &[f64],
+    bcs: Vec<DirichletBc>,
+    opts: CgSolverOptions,
+) -> Vec<f64> {
+    let max_iter = opts.max_iter;
+    let solved = eliminate_and_solve(k, raw_f, bcs, opts);
+    assert!(
+        solved.primal.converged,
+        "solve_displacement: CG did not converge after {} iterations (cap={max_iter}, ndof={})",
+        solved.primal.iterations,
+        solved.k_eliminated.nrows(),
+    );
+    solved.primal.u().to_vec()
+}
+
+/// Assemble, apply BCs, and CG-solve a P1 tetrahedral FEA system, keeping only
+/// the displacement: [`rhs_from_point_loads`] and [`assemble_p1_stiffness`]
+/// fed to [`solve_displacement`] with the crate-default `CgSolverOptions`.
 ///
 /// # Returns
 ///
 /// Displacement vector `u` of length `3 * nodes.len()`:
 /// `u[3*n + α]` is displacement of node `n` in axis `α ∈ {0=x, 1=y, 2=z}`.
+#[track_caller]
 pub fn solve_p1_pipeline(
     nodes: &[[f64; 3]],
     conns: &[[usize; 4]],
-    bcs: &mut Vec<DirichletBc>,
+    bcs: Vec<DirichletBc>,
     point_loads: &[(usize, f64)],
     mat: &IsotropicElastic,
 ) -> Vec<f64> {
-    let mut k = assemble_p1_stiffness(nodes, conns, mat);
-
-    let mut f = vec![0.0_f64; 3 * nodes.len()];
-    for &(dof, val) in point_loads {
-        f[dof] += val;
-    }
-
-    dedup_bcs(bcs);
-    apply_dirichlet_row_elimination(&mut k, &mut f, bcs);
-
-    let opts = CgSolverOptions::default();
-    let result: CgResult = solve_cg(&k, &f, opts, SolverMode::Deterministic);
-    assert!(
-        result.converged,
-        "solve_p1_pipeline: CG did not converge (iterations={})",
-        result.iterations,
-    );
-    result.u().to_vec()
+    let f = rhs_from_point_loads(nodes.len(), point_loads);
+    solve_displacement(
+        assemble_p1_stiffness(nodes, conns, mat),
+        &f,
+        bcs,
+        CgSolverOptions::default(),
+    )
 }
 
 /// Gather the 12 element DOFs (`[u_x,u_y,u_z]` per corner) for a P1 tet from the

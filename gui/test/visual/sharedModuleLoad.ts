@@ -99,6 +99,8 @@ export const SHARED_ESM_MODULES = [
   "smokeDriverGuards.mjs",
   "railLengtheningGate.mjs",
   "sliderWriteBackGate.mjs",
+  "edgesToggleGate.mjs",
+  "debugServerEndpoint.mjs",
 ];
 
 /**

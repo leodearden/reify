@@ -43,6 +43,7 @@ stub_register = []
 mesh-morph = []
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-core.workspace = true
 reify-ir.workspace = true
 inventory.workspace = true

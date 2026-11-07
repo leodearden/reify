@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerate tree-sitter parser from grammar.js.
-# Produces: src/parser.c, src/grammar.json, src/node-types.json
+# Produces: src/parser.c, src/grammar.json, src/node-types.json, src/tree_sitter/*.h
 #
 # This script is idempotent — safe to run repeatedly.
 # Called by: build.rs (auto), orchestrator verification, hooks/project-checks.
@@ -51,6 +51,8 @@ OUTPUTS_STAMP_FILE="src/.generated_outputs.stamp"
 # The generated outputs, in LC_ALL=C sort order — the order the manifest is
 # written in, and the order build_support.rs's EXPECTED_OUTPUTS is compared as.
 OUTPUTS="grammar.json node-types.json parser.c"
+# Mirrors build_support.rs GENERATED_HEADERS: existence-checked only, not in the manifest.
+GENERATED_HEADERS="tree_sitter/alloc.h tree_sitter/array.h tree_sitter/parser.h"
 
 # _hash_one <path>
 #
@@ -132,7 +134,7 @@ _stamp_is_current() {
     local f recorded actual
     [ -f "$STAMP_FILE" ] || return 1
     [ "$(cat "$STAMP_FILE" 2>/dev/null)" = "$GRAMMAR_HASH" ] || return 1
-    for f in $OUTPUTS; do
+    for f in $OUTPUTS $GENERATED_HEADERS; do
         [ -f "src/$f" ] || return 1
     done
     [ -f "$OUTPUTS_STAMP_FILE" ] || return 1
@@ -263,9 +265,9 @@ elif [ "$GEN_EXIT" -ne 0 ]; then
 fi
 
 # Verify expected outputs exist.
-for f in src/parser.c src/grammar.json src/node-types.json; do
-    if [ ! -f "$f" ]; then
-        echo "ERROR: tree-sitter generate did not produce $f" >&2
+for f in $OUTPUTS $GENERATED_HEADERS; do
+    if [ ! -f "src/$f" ]; then
+        echo "ERROR: tree-sitter generate did not produce src/$f" >&2
         exit 1
     fi
 done

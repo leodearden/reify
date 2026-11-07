@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 9098 (S18 γ1): the Python verify package's plan
-# model, in process — the records' invariants, build_steps' gate-path
-# declarations, bashcall.source_delta, and the test-side emitters no
-# γ1-printable plan reaches, each rendered step a line of bash's plan in
-# bash's order (PRD docs/prds/v0_6/verify-structured-plan-and-role-table.md
-# D2, D8, D12).
+# Infrastructure test for tasks 9098 and 9099 (S18 γ1, γ2): the Python verify
+# package's plan model, in process — the records' invariants, build_steps'
+# gate-path declarations, PlanInputs' test-region invariant,
+# nextest.nextest_config_path's three arms and bashcall.source_delta (PRD
+# docs/prds/v0_6/verify-structured-plan-and-role-table.md D2, D8, D12).
 #
 # This wrapper is the member run_all.sh actually discovers (it globs
 # `test_*.sh` only); the assertions live in the sibling .py, which imports
-# scripts/reify_verify and runs `bash scripts/verify.sh test ... --print-plan`
-# as a subprocess.
+# scripts/reify_verify and drives its functions directly.
 #
-# CLASSIFIED `pool`: every bash run is a --print-plan, and every scratch
-# $HOME is private to its own tempdir.
+# CLASSIFIED `pool`: every scratch $HOME and TMPDIR is private to its own
+# tempdir.
 #
 # Verifies that:
 #   1. python3 is on PATH

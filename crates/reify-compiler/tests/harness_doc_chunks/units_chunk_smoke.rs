@@ -557,8 +557,8 @@ fn bare_zero_is_not_special_cased() {
 /// a lowered floor is a SYNC row that has quietly stopped claiming anything. How
 /// to re-measure one — and why a batched sweep under-reports — is stated once,
 /// next to `geometry_chunk_smoke.rs::MINIMUM_FN_CITES`, not repeated here.
-const MINIMUM_FN_CITES: usize = 10;
-const MINIMUM_RS_FILES: usize = 5;
+const MINIMUM_FN_CITES: usize = 9;
+const MINIMUM_RS_FILES: usize = 4;
 const MINIMUM_RI_FILES: usize = 2;
 
 /// Every test units.md cites as PINNING a claim must still exist.
@@ -635,9 +635,8 @@ fn units_chunk_points_at_the_geometry_length_argument_catalogue() {
 ///
 /// `mirror` USED TO BE A THIRD MEMBER and no longer is: its arity-7 pivot triple
 /// gained `length_arg(1..=3, "ox"/"oy"/"oz")` slots, so a bare origin is now a
-/// COMPILE error and `reify check` exits 1 on it (pinned at the CLI seam by
-/// `crates/reify-cli/tests/harness_cli/cli_check.rs`'s
-/// `check_rejects_bare_scalar_mirror_origin_before_reaching_build`). This test
+/// COMPILE error and `reify check` exits 1 on it (pinned at the CLI seam by its row in
+/// `crates/reify-cli/tests/harness_cli/cli_check_bare_length_exit.rs`). This test
 /// went red exactly as its panic message promised, and the row moved to the
 /// ```` ```reify-rejected ```` block in the commit that recorded the move — the
 /// lifecycle "WHY PIN THE NEGATIVE" below describes, actually exercised.

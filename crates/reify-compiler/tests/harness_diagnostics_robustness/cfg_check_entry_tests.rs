@@ -1,8 +1,9 @@
-//! Tests for `compile_entry_with_stdlib_cfg` — the `reify check` compiler entry
-//! point that seeds the full stdlib prelude AND walks a `#cfg(...)`-gated
-//! user-import DAG (Task δ / Slice D).
+//! Tests for `program::compile_program_with_parsed_entry` — the `reify check`
+//! compiler entry point, handed the entry's parse as the CLI hands it — which
+//! seeds the full stdlib prelude AND walks a `#cfg(...)`-gated user-import DAG
+//! (Task δ / Slice D; promoted to the program compile by #5516).
 //!
-//! This is the bridge that neither existing entry point provides alone:
+//! This is the bridge that neither of the other entry points provides alone:
 //! - `compile_with_stdlib` seeds the stdlib prelude but has no user-import DAG.
 //! - `compile_project_with_entry_source_cfg` gates imports by cfg but does NOT
 //!   seed the stdlib prelude.
@@ -17,8 +18,11 @@ use std::fs;
 use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::compile_program_with_parsed_entry;
 use reify_core::Severity;
+use reify_ir::Satisfaction;
+use reify_test_support::mocks::MockConstraintChecker;
 
 /// A `CfgSet` with only `target` set (no flags / kv).
 fn target_cfg(target: &str) -> CfgSet {
@@ -83,10 +87,12 @@ fn write_entry_fixtures(dir: &Path) {
     .unwrap();
 }
 
-/// Parse `main.ri` from `dir` with the stdlib enum pre-seed, asserting it is
-/// free of parse errors, and return the `ParsedModule`.
-fn parse_entry(dir: &Path) -> reify_ast::ParsedModule {
-    let entry_src = fs::read_to_string(dir.join("main.ri")).unwrap();
+/// Compile `main.ri` from `dir` under `cfg` and return the program's entry,
+/// first asserting the entry source parses cleanly (with the stdlib enum
+/// pre-seed) so a fixture typo cannot masquerade as a gating result.
+fn compile_main(dir: &Path, cfg: &CfgSet) -> reify_compiler::CompiledModule {
+    let entry_path = dir.join("main.ri");
+    let entry_src = fs::read_to_string(&entry_path).unwrap();
     let parsed =
         reify_compiler::parse_with_stdlib(&entry_src, reify_core::ModulePath::single("main"));
     assert!(
@@ -94,7 +100,16 @@ fn parse_entry(dir: &Path) -> reify_ast::ParsedModule {
         "fixture entry should parse cleanly, got parse errors: {:?}",
         parsed.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
-    parsed
+    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
+    compile_program_with_parsed_entry(
+        &entry_path,
+        &entry_src,
+        &parsed,
+        &resolver,
+        cfg,
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    )
+    .entry
 }
 
 /// Under `target = "linux"`, the gated linux import is followed: `LinuxOnly`
@@ -106,9 +121,7 @@ fn entry_target_linux_resolves_linux_import_and_stdlib() {
     let dir = tmp.path();
     write_entry_fixtures(dir);
 
-    let parsed = parse_entry(dir);
-    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+    let compiled = compile_main(dir, &target_cfg("linux"));
 
     assert!(
         !has_error_containing(&compiled, "LinuxOnly"),
@@ -133,9 +146,7 @@ fn entry_target_wasm_gates_out_linux_import_but_keeps_stdlib() {
     let dir = tmp.path();
     write_entry_fixtures(dir);
 
-    let parsed = parse_entry(dir);
-    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("wasm"));
+    let compiled = compile_main(dir, &target_cfg("wasm"));
 
     assert!(
         has_error_containing(&compiled, "LinuxOnly"),
@@ -168,10 +179,7 @@ fn entry_merges_pub_templates_from_cfg_satisfied_import() {
     let dir = tmp.path();
     write_entry_fixtures(dir);
 
-    let parsed = parse_entry(dir);
-    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-
-    let compiled_linux = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+    let compiled_linux = compile_main(dir, &target_cfg("linux"));
     assert!(
         entry_has_template(&compiled_linux, "LinuxOnly"),
         "under target=linux the pub structure 'LinuxOnly' from the followed \
@@ -183,7 +191,7 @@ fn entry_merges_pub_templates_from_cfg_satisfied_import() {
             .collect::<Vec<_>>()
     );
 
-    let compiled_wasm = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("wasm"));
+    let compiled_wasm = compile_main(dir, &target_cfg("wasm"));
     assert!(
         !entry_has_template(&compiled_wasm, "LinuxOnly"),
         "under target=wasm the platform_linux import is gated out, so 'LinuxOnly' \
@@ -231,9 +239,7 @@ fn entry_collision_between_two_cfg_satisfied_imports_emits_first_wins_warning() 
     let dir = tmp.path();
     write_collision_fixtures(dir);
 
-    let parsed = parse_entry(dir);
-    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+    let compiled = compile_main(dir, &target_cfg("linux"));
 
     // First-wins: 'Widget' is merged exactly once despite two declarers.
     let widget_count = compiled
@@ -303,9 +309,7 @@ fn entry_followed_import_missing_module_surfaces_error_diagnostic() {
     let dir = tmp.path();
     write_missing_import_fixtures(dir);
 
-    let parsed = parse_entry(dir);
-    let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
+    let compiled = compile_main(dir, &target_cfg("linux"));
 
     // The followed-but-missing import surfaces an Error diagnostic naming it.
     assert!(

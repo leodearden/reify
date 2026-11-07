@@ -15,10 +15,11 @@ use std::fs;
 use reify_ast::{Declaration, ParsedModule};
 use reify_compiler::CompiledModule;
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
+use reify_compiler::module_dag::ModuleResolver;
+use reify_compiler::program::compile_program_with_parsed_entry;
 use reify_core::{Diagnostic, ModulePath, Severity};
 use reify_eval::{Engine, SolverPosture};
-use reify_ir::Value;
+use reify_ir::{Satisfaction, Value};
 use reify_test_support::mocks::MockConstraintChecker;
 
 /// How a row's entry is compiled, and what its `Engine` prelude is.
@@ -26,9 +27,9 @@ enum Setup {
     /// One file compiled with the real stdlib prelude; production `Engine`.
     SingleFileWithStdlib,
     /// A tempdir project: `main.ri` plus `(module name, source)` siblings,
-    /// compiled through `compile_entry_with_stdlib_cfg` (prelude = stdlib ++
-    /// followed imports); production `Engine`. See [`parse_project_entry`]
-    /// for how the entry is parsed.
+    /// compiled through `program::compile_program_with_parsed_entry` (prelude
+    /// = stdlib ++ followed imports); production `Engine`. See
+    /// [`parse_project_entry`] for how the entry is parsed.
     Project(&'static [(&'static str, &'static str)]),
     /// `(dotted module path, source)` modules each compiled standalone and
     /// used, in this order, as BOTH the compile prelude and the `Engine`
@@ -229,7 +230,15 @@ fn compile_project(row: &str, entry: &str, imports: &[(&str, &str)]) -> Compiled
         parsed.errors
     );
     let resolver = ModuleResolver::new(dir, dir.join("stdlib"));
-    compile_entry_with_stdlib_cfg(&parsed, &resolver, &CfgSet::default())
+    compile_program_with_parsed_entry(
+        &dir.join("main.ri"),
+        entry,
+        &parsed,
+        &resolver,
+        &CfgSet::default(),
+        &MockConstraintChecker::new().with_default(Satisfaction::Indeterminate),
+    )
+    .entry
 }
 
 /// Parse a project entry knowing the enum names of the stdlib AND of its

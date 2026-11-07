@@ -41,7 +41,8 @@ struct RoleRule {
     searches: &'static [ExportKind],
     /// Names this position resolves to a builtin before any definition.
     is_builtin: fn(&str) -> bool,
-    /// `None` where no local binding can stand in for the name.
+    /// `None` where every definition outranks a local binding, as in a call
+    /// head, which resolves through templates and functions before any local.
     shadowed_by: Option<Binders>,
 }
 
@@ -71,7 +72,7 @@ fn role_rule(role: NameRole) -> RoleRule {
                 ExportKind::Field,
             ],
             is_builtin: no_builtin,
-            shadowed_by: Some(Binders::Value),
+            shadowed_by: None,
         },
         NameRole::Value => RoleRule {
             searches: &[

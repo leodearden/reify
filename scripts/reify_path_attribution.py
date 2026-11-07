@@ -43,6 +43,7 @@ RI_CORPUS_CRATES: frozenset[str] = frozenset(
         "reify-eval",
         "reify-eval-fea-tests",
         "reify-gui",
+        "reify-syntax",
         "reify-test-support",
     }
 )

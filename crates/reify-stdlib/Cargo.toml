@@ -13,6 +13,7 @@ description = "Standard library: unit definitions and built-in functions"
 test-support = []
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-builtins.workspace = true
 reify-core.workspace = true
 reify-gcode.workspace = true

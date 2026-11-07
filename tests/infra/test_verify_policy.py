@@ -349,7 +349,7 @@ class TestNotPortedActions(unittest.TestCase):
 
     def test_actions_refuse(self):
         env = base_env()
-        for argv in (["lint"], ["test", "--print-plan"]):
+        for argv in (["lint"], ["test"]):
             with self.subTest(argv=argv):
                 py = run_py(argv, env)
                 self.assertNotEqual(py.returncode, 0)

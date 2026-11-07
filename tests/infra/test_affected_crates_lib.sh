@@ -670,10 +670,10 @@ _check_b13_corpus_not_vacuous() {
         && [ "$(_b13_route Cargo.lock)" = "ALL" ] \
         && _b13_route docs/x.md >/dev/null && [ -z "$(_b13_route docs/x.md)" ] \
         && [ "$(_b13_route gui/src-tauri/src/main.rs)" = "reify-gui" ] \
-        && [ "$(wc -w <<<"$bracket")" -eq 6 ] \
+        && [ "$(wc -w <<<"$bracket")" -eq 7 ] \
         && [ "$manifest_rows" -ge 1 ]
 }
-assert "B13 corpus is not vacuous: >= 4918 rows with an ALL, an empty, a reify-gui, the six-crate corpus and a manifest-union row" \
+assert "B13 corpus is not vacuous: >= 4918 rows with an ALL, an empty, a reify-gui, the seven-crate corpus and a manifest-union row" \
     _check_b13_corpus_not_vacuous
 
 # ---------------------------------------------------------------------------

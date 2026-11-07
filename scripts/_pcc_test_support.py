@@ -3,10 +3,12 @@ _pcc_test_support.py — shared, downward support for the scripts/test_pcc_*.py
 partitions of the scripts/prd-capability-check.py unittest suite.  It loads the
 hyphenated checker by path as `pcc` (the filename is not importable by name),
 and holds what more than one partition needs: the repo paths and value-cell
-constants, the grammar-e2e skip-guard (with the un-memoized status it wraps),
-the measured cache-denial signature and the shared TREE_SITTER_BIN stub
-factories.  A fixture only one partition uses lives in that partition.  It
-imports no test file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
+constants, the ProbeContext builders and the recording fake runner, the
+grammar-e2e and reify-e2e skip-guards (with the un-memoized grammar status it
+wraps; the reify-e2e policy itself lives in _pdv_test_support), the measured
+cache-denial signature and the shared TREE_SITTER_BIN stub factories.  A
+fixture only one partition uses lives in that partition.  It imports no test
+file and defines no TestCase.  Run the suite through tests/infra/test_prd_capability_check.sh, or
 one partition at a time with `python3 scripts/test_pcc_<area>.py`.
 """
 
@@ -16,7 +18,8 @@ import os
 import shlex
 import sys
 import textwrap
-import unittest.mock
+
+from _pdv_test_support import require_reify_binary
 
 
 # ---------------------------------------------------------------------------
@@ -54,31 +57,58 @@ _VALUE_CELLS_STDOUT = (
 
 
 # ---------------------------------------------------------------------------
-# Grammar-e2e skip-guard — can a grammar probe run in this lane?
+# ProbeContext builders — what a test hands α instead of an environment
 # ---------------------------------------------------------------------------
 
-# Helper: parser.c path for the skip-guard
-_TS_GRAMMAR_PARSER = os.path.join(_REPO_ROOT, "tree-sitter-reify", "src", "parser.c")
+def probe_context(**fields):
+    """A hermetic pcc.ProbeContext: this repo's root and bare PATH binary names.
 
-
-def _patch_parser_c(exists: bool):
-    """Patch os.path.isfile so parser.c reports `exists`; other paths are real.
-
-    Keeps every case that depends on the generated grammar independent of
-    whether this lane happened to generate it, without blinding unrelated
-    isfile() calls.  Module-level because both the skip-guard tests and the
-    --grammar-substrate-status CLI tests now need it: the CLI checks the same
-    file, resolved through pcc._find_repo_root(), which agrees with _REPO_ROOT.
+    Reads no environment variable, so a test's context never depends on what
+    the lane exported; **fields override any default, and every field not
+    named here keeps the class default.
     """
-    real_isfile = os.path.isfile
+    defaults = {
+        "repo_root": _REPO_ROOT,
+        "reify_bin": "reify",
+        "tree_sitter_bin": "tree-sitter",
+    }
+    return pcc.ProbeContext(**{**defaults, **fields})
 
-    def fake_isfile(path):
-        if path == _TS_GRAMMAR_PARSER:
-            return exists
-        return real_isfile(path)
 
-    return unittest.mock.patch("os.path.isfile", side_effect=fake_isfile)
+def make_fixture_repo(tmpdir: str, *, parser_c: bool = False) -> str:
+    """Lay a fixture repo root out in `tmpdir` and return `tmpdir`.
 
+    Creates <tmpdir>/tree-sitter-reify/src/, plus an empty parser.c in it when
+    `parser_c`.  A test hands the result to ProbeContext as repo_root, since
+    α's own root discovery walks up from its file and no environment variable
+    redirects it.
+    """
+    src = os.path.join(tmpdir, "tree-sitter-reify", "src")
+    os.makedirs(src, exist_ok=True)
+    if parser_c:
+        open(os.path.join(src, "parser.c"), "w").close()
+    return tmpdir
+
+
+def recording_runner(run=None):
+    """A fake ProbeRunner answering every probe with `run`, and its call list.
+
+    `run` defaults to a clean ProbeRun(0, "", "").  Each call appends
+    (probe, ctx, timeout), so a test can assert what was asked for, under
+    which context and bound, as well as how often.
+    """
+    answer = pcc.ProbeRun(0, "", "") if run is None else run
+    calls = []
+
+    def runner(probe, ctx, timeout=None):
+        calls.append((probe, ctx, timeout))
+        return answer
+    return runner, calls
+
+
+# ---------------------------------------------------------------------------
+# Grammar-e2e skip-guard — can a grammar probe run in this lane?
+# ---------------------------------------------------------------------------
 
 # The grammar e2e needs tree-sitter to actually LOAD the reify grammar, which
 # isfile(parser.c) does not establish: in a sandboxed agent role the grammar is
@@ -86,11 +116,14 @@ def _patch_parser_c(exists: bool):
 # fails to load the language, observe() classifies it HARNESS_ERROR, and the
 # suite reported a spurious FAIL (exit 70) instead of a clean skip.
 #
-# Order matters.  isfile() runs first and short-circuits, so a lane that never
-# generated the grammar pays no subprocess; only when parser.c exists do we spend
-# one probe asking whether it can be loaded.
-def _compute_grammar_e2e_status() -> tuple:
-    """Return (available, reason) for the grammar e2e.  Never raises.
+# Order matters.  grammar_generated() runs first and short-circuits, so a lane
+# that never generated the grammar pays no subprocess; only when parser.c exists
+# do we spend one probe asking whether it can be loaded.
+def _compute_grammar_e2e_status(ctx=None, runner=None) -> tuple:
+    """Return (available, reason) for the grammar e2e under ctx.  Never raises.
+
+    ctx defaults to pcc.ProbeContext.from_environment() and runner to
+    pcc.run_probe; a test hands in a fixture-repo ctx and a fake runner.
 
     The bare `except Exception` is deliberate: the only sane failure mode here is
     "cannot confirm the substrate → skip the one test that needs it".  The
@@ -98,10 +131,13 @@ def _compute_grammar_e2e_status() -> tuple:
     It is defence-in-depth, not the fix — the trigger is fixed at source in
     run_probe(), which represents an unlaunchable binary rather than raising.
     """
-    if not os.path.isfile(_TS_GRAMMAR_PARSER):
-        return (False, f"{_TS_GRAMMAR_PARSER} not found — grammar never generated")
     try:
-        usable, reason = pcc.grammar_substrate_usable()
+        if ctx is None:
+            ctx = pcc.ProbeContext.from_environment()
+        generated, parser_c = pcc.grammar_generated(ctx)
+        if not generated:
+            return (False, f"{parser_c} not found — grammar never generated")
+        usable, reason = pcc.grammar_substrate_usable(ctx, runner=runner or pcc.run_probe)
     except Exception as exc:
         return (False, f"the grammar substrate could not be interrogated ({exc!r})")
     return (bool(usable), reason)
@@ -123,12 +159,21 @@ def _require_grammar_substrate(test) -> None:
     """skipTest unless a grammar probe can run here.  Call from a test body.
 
     Carries the MEASURED reason into the skip message: an unusable verdict caused
-    by tree-sitter exceeding _SUBSTRATE_PROBE_TIMEOUT_S on a loaded machine is a
+    by tree-sitter exceeding the substrate bound on a loaded machine is a
     coverage hole, not a real gap, and must be tellable from a genuine denial.
     """
     available, reason = _grammar_e2e_status()
     if not available:
         test.skipTest(f"grammar substrate unavailable — {reason}; skip grammar e2e")
+
+
+def _require_reify_binary(test):
+    """skipTest unless α would run a reify binary here; return the ctx it would use.
+
+    The policy lives once, in _pdv_test_support.require_reify_binary; this asks
+    it about the α instance these partitions load.
+    """
+    return require_reify_binary(test, pcc=pcc)
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +256,20 @@ def _ts_stub_hangs(tmpdir: str, name: str = "ts_stub_hangs", seconds: int = 5) -
     """Stub that never answers within the test's patched timeout.
 
     Models a tree-sitter wedged on ~/.cache/tree-sitter/lock/<grammar>.lock.
-    Tests pair it with a sub-second _SUBSTRATE_PROBE_TIMEOUT_S, so the sleep only
-    has to outlast that bound.
+    Tests pair it with a sub-second ProbeContext.substrate_timeout_s, so the sleep
+    only has to outlast that bound.
     """
     return _write_ts_stub(tmpdir, name, f"sleep {seconds}\n")
+
+
+def _argv_echo_stub(tmpdir: str, name: str = "argv_echo") -> str:
+    """Stub that prints the argv it was launched with, one element per line, $0 first.
+
+    Stands in for either binary.  What the child prints is the only outside
+    measurement of the command that really ran, so a test can compare it with
+    the command a ProbeRun or a --json record says ran.
+    """
+    return _write_ts_stub(tmpdir, name, """printf '%s\\n' "$0" "$@"\n""")
 
 
 def _ts_stub_not_executable(tmpdir: str, name: str = "ts_stub_not_exec") -> str:

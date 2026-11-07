@@ -46,6 +46,13 @@ are deliberately unparseable or deliberately failing, because they are *probe* i
 whose expected observation is a rejection. Nothing in the repo compiles this directory
 wholesale.
 
+The tracked-`.ri` parse guard
+(`crates/reify-syntax/tests/harness_syntax/tracked_ri_parse_guard.rs`) skips this
+directory's undeclared fixtures unread, so adding a fixture stays inert. A fixture listed
+in its `MUST_ERROR_RI_FIXTURES` is read and must keep showing its declared fault; such a
+fixture is Rust-coupled, so it is registered in `scripts/verify.sh`'s
+`_RUST_COUPLED_RI_FIXTURES` like any other (PG-DRIFT reds otherwise).
+
 ## Committed-probe-set format (JSON)
 
 ```json
@@ -155,7 +162,7 @@ is still recorded.
 | 0 | All probes PASS |
 | 1 | ≥1 probe FAIL |
 | 2 | ≥1 probe UNPROVABLE, 0 FAIL |
-| 64 | Usage / argument error (`EX_USAGE`) |
+| 64 | Usage / argument error (`EX_USAGE`), or no trusted reify binary: both profile binaries built and `target/.reify-bin-sha` not naming HEAD — set `REIFY_BIN` (the D3 workflow: `args.reify_bin`) |
 | 70 | Tool / runtime error (`EX_SOFTWARE`) — a `harness_failure`: missing binary, grammar load failure, … |
 
 ## Running the probe set
@@ -163,7 +170,13 @@ is still recorded.
 ```bash
 python3 scripts/prd-capability-check.py tests/prd-gate/example-probe-set.json
 python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
+REIFY_BIN="$PWD/target/debug/reify" python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.json
 ```
+
+The `REIFY_BIN` form is for when the runner will not choose a binary itself (exit
+64 above). Name a binary built from the commit under test: `REIFY_BIN` is taken
+verbatim, never refused. Binary trust is SHA identity, and
+`scripts/reify-bin-freshness.sh` holds that rule.
 
 Each `--json` record also carries the typed probe outcome: `fixture` (as written
 in the probe set), `fixture_present` and `harness_failure`. The record contract is

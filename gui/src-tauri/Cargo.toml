@@ -23,6 +23,7 @@ gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog", "dep:tau
 embedded-frontend = ["gui", "tauri/custom-protocol"]
 
 [dependencies]
+workspace-feature-union.workspace = true
 reify-ast.workspace = true
 reify-core = { workspace = true, features = ["serde"] }
 reify-ir.workspace = true

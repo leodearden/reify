@@ -14,7 +14,7 @@ mod name_uses;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use reify_ast::ParsedModule;
-use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+use reify_core::{Diagnostic, DiagnosticIdentity, ModulePath, Severity};
 
 pub use name_uses::{NameRole, NameUse};
 
@@ -42,10 +42,6 @@ impl ImportPlan {
             .collect()
     }
 
-    pub fn required(&self) -> &[RequiredImport] {
-        &self.required
-    }
-
     /// The required modules `parsed` does not already import, in any form.
     pub fn missing_from(&self, parsed: &ParsedModule) -> Vec<&RequiredImport> {
         let declared: HashSet<&str> = header_edit::declared_import_paths(parsed).collect();
@@ -58,7 +54,8 @@ impl ImportPlan {
 
 /// Derive the std imports `parsed` needs, attributing each written name to
 /// its winning definition over `parsed`'s own definitions and `universe`.
-/// A module of `universe` is std-tier exactly when its path starts with `std`.
+/// Which modules of `universe` are std-tier is
+/// [`name_env::Origin::tier`](crate::name_env::Origin::tier)'s decision.
 pub fn derive_std_imports(parsed: &ParsedModule, universe: &[&CompiledModule]) -> ImportPlan {
     let local = crate::compile_with_prelude_refs(parsed, universe);
     let index = attribution::ExportIndex::new(&local, universe);
@@ -103,7 +100,7 @@ pub fn stdlib_universe_excluding(module: &ModulePath) -> Vec<&'static CompiledMo
 
 /// The Error and Warning diagnostics `parsed` gets when compiled against only
 /// the `imports` modules of `universe`, less those the whole `universe` gives
-/// it too (matched one for one on severity, code and message). Empty when the
+/// it too (matched one for one on their [`DiagnosticIdentity`]). Empty when the
 /// imports supply everything the module needs from `universe`; a diagnostic
 /// the module raises regardless is never counted against them.
 pub fn residual_diagnostics(
@@ -119,16 +116,18 @@ pub fn residual_diagnostics(
     let restricted = crate::compile_with_prelude_refs(parsed, &imported);
     let full = crate::compile_with_prelude_refs(parsed, universe);
 
-    let mut unmatched: HashMap<DiagnosticKey<'_>, usize> = HashMap::new();
+    let mut unmatched: HashMap<DiagnosticIdentity<'_>, usize> = HashMap::new();
     for diagnostic in full.diagnostics.iter().filter(|d| is_reportable(d)) {
-        *unmatched.entry(DiagnosticKey::of(diagnostic)).or_default() += 1;
+        *unmatched
+            .entry(DiagnosticIdentity::of(diagnostic))
+            .or_default() += 1;
     }
     restricted
         .diagnostics
         .iter()
         .filter(|d| is_reportable(d))
         .filter(
-            |diagnostic| match unmatched.get_mut(&DiagnosticKey::of(diagnostic)) {
+            |diagnostic| match unmatched.get_mut(&DiagnosticIdentity::of(diagnostic)) {
                 Some(count) if *count > 0 => {
                     *count -= 1;
                     false
@@ -142,23 +141,6 @@ pub fn residual_diagnostics(
 
 fn is_reportable(diagnostic: &Diagnostic) -> bool {
     matches!(diagnostic.severity, Severity::Error | Severity::Warning)
-}
-
-#[derive(PartialEq, Eq, Hash)]
-struct DiagnosticKey<'d> {
-    severity: Severity,
-    code: Option<DiagnosticCode>,
-    message: &'d str,
-}
-
-impl<'d> DiagnosticKey<'d> {
-    fn of(diagnostic: &'d Diagnostic) -> Self {
-        Self {
-            severity: diagnostic.severity,
-            code: diagnostic.code,
-            message: &diagnostic.message,
-        }
-    }
 }
 
 /// `source` with an `import` line added for every module of `modules` it

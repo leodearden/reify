@@ -40,6 +40,7 @@ import { createSelectionStore } from './stores/selectionStore';
 import { createClaudeStore } from './stores/claudeStore';
 import { createViewStateStore, type ViewStateStore } from './stores/viewStateStore';
 import { createLayoutStore } from './stores/layoutStore';
+import { createViewportDisplayStore } from './stores/viewportDisplayStore';
 import { createViewportStore, type CameraState, type ViewportState, type ViewportStore } from './stores/viewportStore';
 import { createDefPreviewStore } from './stores/defPreviewStore';
 import { createFeaModeStoreRegistry, type FeaModeStoreRegistry } from './stores/feaModeStoreRegistry';
@@ -417,6 +418,7 @@ const App: Component = () => {
 
   const viewStateStore = createViewStateStore();
   const viewportStore = createViewportStore();
+  const viewportDisplayStore = createViewportDisplayStore();
   const defPreviewStore = createDefPreviewStore();
   const mechanismStore = createMechanismStore({ getMechanismDescriptors: bridgeGetMechanismDescriptors });
   const bucklingStore = createBucklingStore();
@@ -798,6 +800,7 @@ const App: Component = () => {
         fitToViewRef: pane === 0 ? (fn: () => void) => { fitToViewFn = fn; } : undefined,
         flyToEntityRef: pane === 0 ? (fn: (path: string) => void) => { flyToEntityFn = fn; } : undefined,
         get displayAppearance() { return appearanceData().overrides; },
+        get showEdges() { return viewportDisplayStore.state.edges; },
       };
       return config;
     },
@@ -1319,6 +1322,7 @@ const App: Component = () => {
       setShowPalette(true);
     },
     onToggleDiagnostics: handleToggleDiagnostics,
+    onToggleEdges: () => viewportDisplayStore.toggleEdges(),
   };
   useKeyboardShortcuts(shortcutCallbacks);
 
@@ -1468,6 +1472,7 @@ const App: Component = () => {
           claude: claudeStore,
           viewState: viewStateStore,
           layout: layoutStore,
+          viewportDisplay: viewportDisplayStore,
         });
       },
       onFailure: (err) => console.error('[debug-bridge] init failed:', err),
@@ -2082,7 +2087,12 @@ const App: Component = () => {
             onToggleChat={handleToggleChat}
             onHelp={() => setShowHelp((v) => !v)}
           />
-          <Toolbar onExport={handleExport} onFitToView={handleFitToView} />
+          <Toolbar
+            onExport={handleExport}
+            onFitToView={handleFitToView}
+            edges={viewportDisplayStore.state.edges}
+            onToggleEdges={() => viewportDisplayStore.toggleEdges()}
+          />
           <ReloadPrompt
             filePaths={Array.from(changedFiles())}
             hasDirtyFiles={confirmReload()}
@@ -2140,6 +2150,7 @@ const App: Component = () => {
                     fitToViewRef={(fn) => { fitToViewFn = fn; }}
                     entityVisibility={effectiveVisibility()}
                     displayAppearance={appearanceData().overrides}
+                    showEdges={viewportDisplayStore.state.edges}
                     feaDiagnostics={engineStore.state.feaDiagnostics}
                     feaConvergence={engineStore.state.feaConvergence}
                     feaModeStore={feaModeStores.get('design-main')}

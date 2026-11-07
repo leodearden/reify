@@ -19,9 +19,28 @@
 //     against a parser that does not match the grammar is the silent false
 //     GREEN this whole file exists to prevent.
 
-/// The expected output files that tree-sitter generate produces.
+/// The grammar-derived outputs of `tree-sitter generate`, content-attested by
+/// the outputs manifest.
 #[allow(dead_code)]
 const EXPECTED_OUTPUTS: &[&str] = &["parser.c", "grammar.json", "node-types.json"];
+
+/// The runtime headers `tree-sitter generate` writes beside its outputs
+/// (`src_dir`-relative). Untracked since `#9741`: their bytes vary by CLI
+/// version. Existence-checked only, since they do not derive from grammar.js.
+#[allow(dead_code)]
+const GENERATED_HEADERS: &[&str] = &[
+    "tree_sitter/alloc.h",
+    "tree_sitter/array.h",
+    "tree_sitter/parser.h",
+];
+
+/// True when every `GENERATED_HEADERS` entry exists in `src_dir`.
+#[allow(dead_code)]
+fn generated_headers_present(src_dir: &std::path::Path) -> bool {
+    GENERATED_HEADERS
+        .iter()
+        .all(|rel| src_dir.join(rel).exists())
+}
 
 /// Compute a content hash of a file's bytes, returning a hex-encoded u64.
 /// Used for staleness detection — not for security.
@@ -34,12 +53,14 @@ fn content_hash(path: &std::path::Path) -> String {
     format!("{:016x}", std::hash::Hasher::finish(&hasher))
 }
 
-/// Report which `EXPECTED_OUTPUTS` are missing from `src_dir` after a generate.
+/// Report which `EXPECTED_OUTPUTS`, then which `GENERATED_HEADERS`, are missing
+/// from `src_dir` after a generate.
 /// The build script panics on `Err`, so the message is what cargo prints.
 #[allow(dead_code)]
 fn verify_outputs(src_dir: &std::path::Path) -> Result<(), String> {
     let missing: Vec<&str> = EXPECTED_OUTPUTS
         .iter()
+        .chain(GENERATED_HEADERS)
         .copied()
         .filter(|name| !src_dir.join(name).exists())
         .collect();
@@ -354,10 +375,10 @@ fn outputs_manifest_matches(manifest_path: &std::path::Path, src_dir: &std::path
 
 /// Check if regeneration is needed based on content staleness.
 ///
-/// TRUE (regenerate) when any expected output is missing, when
-/// `$OUT_DIR/grammar_hash.stamp` is missing, when its hash differs from
-/// `grammar_hash`, OR when `src_dir`'s outputs do not match the
-/// `.generated_outputs.stamp` beside them.
+/// TRUE (regenerate) when any expected output is missing, when any
+/// `GENERATED_HEADERS` entry is missing, when `$OUT_DIR/grammar_hash.stamp` is
+/// missing, when its hash differs from `grammar_hash`, OR when `src_dir`'s
+/// outputs do not match the `.generated_outputs.stamp` beside them.
 ///
 /// That last clause is `#6992`. The OUT_DIR stamp attests ONE fact — "the
 /// grammar hashed to X when this stamp was written" — and the old code let a
@@ -384,6 +405,9 @@ fn needs_generate(
             return true;
         }
     }
+    if !generated_headers_present(src_dir) {
+        return true;
+    }
     // Must regenerate if stamp file is missing.
     let stamp_content = match std::fs::read_to_string(stamp_path) {
         Ok(s) => s,
@@ -409,7 +433,7 @@ fn needs_generate(
 /// the build script is redundant and, on a loaded host, risks timing out.
 ///
 /// Returns `true` (safe to skip generation) only when ALL of:
-///   1. Every expected output file exists.
+///   1. Every expected output file and every `GENERATED_HEADERS` entry exists.
 ///   2. `.grammar_hash.stamp` contains a non-empty hash string.
 ///   3. `sha256(grammar.js)` matches that hash exactly.
 ///   4. `.generated_outputs.stamp` matches the outputs' bytes ON DISK.
@@ -443,11 +467,14 @@ fn shell_stamp_is_current(
     output_paths: &[&std::path::Path],
     src_dir: &std::path::Path,
 ) -> bool {
-    // 1. All expected output files must exist.
+    // 1. All expected output files and generated headers must exist.
     for path in output_paths {
         if !path.exists() {
             return false;
         }
+    }
+    if !generated_headers_present(src_dir) {
+        return false;
     }
     // 2. Shell-script stamp must exist and contain a non-empty hash.
     let shell_stamp = match std::fs::read_to_string(src_dir.join(GRAMMAR_STAMP_NAME)) {

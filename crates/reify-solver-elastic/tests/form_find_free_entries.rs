@@ -1,21 +1,21 @@
 //! The public-entry contract of the free-standing force-density form-finding
 //! entries — `form_find_free` and `form_find_free_surfaces` — driven from the
-//! crate root only: the explicit-q sign, length, index, form-certification and
-//! recovery verdicts and the result's force signs; the GroupRatios search's
-//! non-convergence verdicts and group-spec guards; and the surface entry's input
-//! guards and line-only equivalence. Moved from `form_find_free.rs`'s unit tests
-//! by #9275; the GroupRatios closed-form recovery golden is
-//! `tensegrity_t1b_form_find_free.rs`.
+//! crate root only: the explicit-q form-certification and recovery verdicts and
+//! the result's force signs; the GroupRatios search's non-convergence verdicts;
+//! and the surface entry's line-only equivalence. The input contract these
+//! entries share is `tests/force_density_input.rs`. Moved from
+//! `form_find_free.rs`'s unit tests by #9275; the GroupRatios closed-form
+//! recovery golden is `tensegrity_t1b_form_find_free.rs`.
 
 use reify_solver_elastic::{
-    ForceDensityInputError, ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult,
-    GroupSpecDefect, IndexedInput, MemberKind, form_find_free, form_find_free_surfaces,
+    ForceDensitySpec, FormDefect, FreeFormError, FreeFormResult, MemberKind, form_find_free,
+    form_find_free_surfaces,
 };
 
 #[allow(dead_code)] // each test binary uses a subset of the shared fixtures
 mod common;
 
-use common::{analytic_combined_q, prism_surfaces, triplex_group_ids, triplex_topology};
+use common::{analytic_combined_q, triplex_group_ids, triplex_topology};
 use reify_test_support::tensegrity_fixtures::{CANONICAL_TRIPLEX_BOTTOM_Z, triplex_node_coords};
 
 /// A mildly perturbed (≈1e-3 per coordinate, deterministic) guess: the shared
@@ -64,44 +64,6 @@ fn generic_admissible_q(kinds: &[MemberKind]) -> Vec<f64> {
 // ---- Explicit-mode feasibility diagnostics ----
 
 #[test]
-fn explicit_cable_with_nonpositive_q_is_sign_violation() {
-    let (members, kinds) = triplex_topology();
-    let mut q = analytic_combined_q(0.0);
-    // Force a top cable (member 3) to a non-positive density: a cable must
-    // carry tension (q > 0), so this is infeasible input.
-    q[3] = -1.0;
-    assert_eq!(
-        form_find_free(
-            &perturbed_twisted_prism(),
-            &members,
-            &kinds,
-            &ForceDensitySpec::Explicit(q),
-        )
-        .unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::SignViolation { member: 3 }),
-    );
-}
-
-#[test]
-fn explicit_strut_with_nonnegative_q_is_sign_violation() {
-    let (members, kinds) = triplex_topology();
-    let mut q = analytic_combined_q(0.0);
-    // Force a strut (member 0) to a non-negative density: a strut must carry
-    // compression (q < 0), so this is infeasible input.
-    q[0] = 1.0;
-    assert_eq!(
-        form_find_free(
-            &perturbed_twisted_prism(),
-            &members,
-            &kinds,
-            &ForceDensitySpec::Explicit(q),
-        )
-        .unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::SignViolation { member: 0 }),
-    );
-}
-
-#[test]
 fn explicit_wrong_nullity_q_is_not_a_form_naming_its_nullity() {
     let (members, kinds) = triplex_topology();
     // Admissible (signs honour kinds) but non-special: nullity 1 (only the
@@ -119,49 +81,6 @@ fn explicit_wrong_nullity_q_is_not_a_form_naming_its_nullity() {
         FreeFormError::NotAForm(FormDefect {
             nullity: 1,
             components: 1,
-        }),
-    );
-}
-
-#[test]
-fn explicit_length_mismatch_is_dimension_mismatch() {
-    let (members, kinds) = triplex_topology();
-    // One density short of the 12 members → dimension mismatch, caught up
-    // front before any sign or nullity work.
-    let q = vec![1.0; members.len() - 1];
-    assert_eq!(
-        form_find_free(
-            &perturbed_twisted_prism(),
-            &members,
-            &kinds,
-            &ForceDensitySpec::Explicit(q),
-        )
-        .unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::DimensionMismatch),
-    );
-}
-
-#[test]
-fn explicit_out_of_range_member_index_is_index_out_of_range() {
-    let (mut members, kinds) = triplex_topology();
-    let q = analytic_combined_q(0.0);
-    // Point a member at node 6 — out of range for the 6-node (0..=5) problem.
-    // `D` is 6×6, so without the bounds guard this panics on the `d[(j, j)]`
-    // index in `assemble_d`; the guard turns it into a
-    // clean indexed input error through the public entry point (no panic).
-    members[0] = (0, 6);
-    assert_eq!(
-        form_find_free(
-            &perturbed_twisted_prism(),
-            &members,
-            &kinds,
-            &ForceDensitySpec::Explicit(q),
-        )
-        .unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::MemberEndpoint { member: 0 },
-            index: 6,
-            len: 6,
         }),
     );
 }
@@ -336,185 +255,9 @@ fn line_only_group_ratios_with_a_disconnected_cable_pair_does_not_converge() {
     assert!(is_two_piece_non_convergence(&result), "{result:?}");
 }
 
-#[test]
-fn group_ratios_out_of_range_member_index_is_index_out_of_range() {
-    let (mut members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // An out-of-range node index (6 ≥ the 6-node problem) must be rejected
-    // before the search assembles `D`, not panic mid-search.
-    members[0] = (0, 6);
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-    assert_eq!(
-        form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::MemberEndpoint { member: 0 },
-            index: 6,
-            len: 6,
-        }),
-    );
-}
-
-// ---- GroupRatios-mode group-spec guards (GroupSpec::new) ----
-
-#[test]
-fn group_ratios_zero_seed_ratio_is_a_zero_seed() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // A zero seed has no sign to hold fixed while the search varies its
-    // magnitude, so a zero entry in `seed_ratios` is rejected up front.
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 0.0, 1.0],
-        reference_group: 1,
-    };
-    assert_eq!(
-        form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
-            GroupSpecDefect::ZeroSeed { group: 1 }
-        )),
-    );
-}
-
-#[test]
-fn group_ratios_reference_group_out_of_range_is_unseeded() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // `seed_ratios` is indexed by group id (3 groups ⇒ valid ids 0..=2), so a
-    // `reference_group` of 3 is out of range.
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 3,
-    };
-    assert_eq!(
-        form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
-            GroupSpecDefect::UnseededReferenceGroup
-        )),
-    );
-}
-
-#[test]
-fn group_ratios_group_id_out_of_range_is_an_unseeded_group() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // A `group_ids` entry referencing a group with no seed ratio (id 3 with
-    // only 3 groups defined) is out of range.
-    let mut group_ids = triplex_group_ids();
-    group_ids[0] = 3; // no seed_ratios[3]
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids,
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-    assert_eq!(
-        form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
-            GroupSpecDefect::UnseededGroup { member: 0 }
-        )),
-    );
-}
-
-#[test]
-fn group_ratios_group_ids_length_mismatch_is_not_per_member() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // `group_ids` must be parallel to `members`; one short is caught before
-    // any search work.
-    let mut group_ids = triplex_group_ids();
-    group_ids.pop();
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids,
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-    assert_eq!(
-        form_find_free(&guess, &members, &kinds, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::MalformedGroupSpec(
-            GroupSpecDefect::GroupIdsNotPerMember
-        )),
-    );
-}
-
 // ── δ (task 4415): surface-aware form_find_free_surfaces ──────────────────
 
-// (a) `surfaces` and `surface_stresses` must agree in length — each triangle
-// needs exactly one isotropic σ. One stress short ⇒ SurfaceCountMismatch.
-#[test]
-fn surfaces_free_count_mismatch_is_surface_count_mismatch() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    let surfaces = prism_surfaces();
-    let sigmas = vec![0.2]; // 2 surfaces, 1 stress → mismatch
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-
-    assert_eq!(
-        form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::SurfaceCountMismatch),
-    );
-}
-
-// (b) A non-positive surface stress σ ≤ 0 is infeasible — the surface
-// analogue of a cable with q ≤ 0. Must return NonTensionSurfaceStress.
-#[test]
-fn surfaces_free_nonpositive_sigma_is_non_tension() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    let surfaces = prism_surfaces();
-    let sigmas = vec![0.2, -0.1]; // second triangle σ < 0 → infeasible
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-
-    assert_eq!(
-        form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::NonTensionSurfaceStress { surface: 1 }),
-    );
-}
-
-// (c) A surface triangle corner that indexes past the node array is
-// infeasible input — `assemble_surface_matrix` would panic on its
-// `nodes[gi]` index. The module contract promises infeasible input becomes
-// a clean typed error, never a panic.
-#[test]
-fn surfaces_free_out_of_range_index_is_index_out_of_range() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // Boundary index: 6 is the FIRST invalid index for the 6-node triplex,
-    // so this pins the `≥ n` comparison that a `> n` typo would let pass.
-    // The predicate ANDs three comparisons, so each sibling test puts the
-    // bad index in a different corner — THIRD here, first and second in the
-    // two anchored tests in tests/form_find_anchored_entries.rs — pinning all
-    // three between them.
-    let surfaces = vec![(0usize, 1usize, 6usize)];
-    let sigmas = vec![0.2];
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-
-    assert_eq!(
-        form_find_free_surfaces(&guess, &members, &kinds, &surfaces, &sigmas, &spec).unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::IndexOutOfRange {
-            what: IndexedInput::SurfaceCorner { surface: 0 },
-            index: 6,
-            len: 6,
-        }),
-    );
-}
-
-// (d) Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
+// Empty surfaces: form_find_free_surfaces with empty surfaces/stresses
 // must return a result that matches form_find_free in all line-only fields
 // (nodes / member_forces / force_densities / nullity / converged) and
 // carries an empty (NEVER absent) surface_stresses echo.
@@ -558,41 +301,4 @@ fn surfaces_free_empty_matches_line_only_form_find_free() {
     for (a, b) in surf.nodes.iter().zip(line.nodes.iter()) {
         assert!(sub(*a, *b) < 1e-12, "node mismatch: {a:?} vs {b:?}");
     }
-}
-
-// A degenerate (collinear / zero-area) INPUT surface triangle is an input
-// error, reported instead of assembling a NaN/∞ stencil.
-#[test]
-fn surfaces_free_degenerate_triangle_is_degenerate_triangle() {
-    let (members, kinds) = triplex_topology();
-    let guess = perturbed_twisted_prism();
-    // Collinear triangle: all three corners on the x-axis → zero area.
-    let degenerate_surfaces = vec![(0, 1, 2)]; // nodes 0,1,2 will be collinear
-    // Override the guess so nodes 0,1,2 are collinear on the x-axis.
-    let mut linear_guess = guess.clone();
-    linear_guess[0] = [0.0, 0.0, 0.0];
-    linear_guess[1] = [1.0, 0.0, 0.0];
-    linear_guess[2] = [2.0, 0.0, 0.0];
-    linear_guess[3] = [0.5, 1.0, 0.0];
-    linear_guess[4] = [1.5, 1.0, 0.0];
-    linear_guess[5] = [1.0, 2.0, 0.0];
-
-    let spec = ForceDensitySpec::GroupRatios {
-        group_ids: triplex_group_ids(),
-        seed_ratios: vec![-1.0, 1.0, 1.0],
-        reference_group: 1,
-    };
-
-    assert_eq!(
-        form_find_free_surfaces(
-            &linear_guess,
-            &members,
-            &kinds,
-            &degenerate_surfaces,
-            &[0.2],
-            &spec,
-        )
-        .unwrap_err(),
-        FreeFormError::Input(ForceDensityInputError::DegenerateTriangle { surface: 0 }),
-    );
 }

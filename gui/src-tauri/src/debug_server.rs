@@ -142,7 +142,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "store_state",
-            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count)",
+            description: "Snapshot of all Solid.js stores: engine (mesh keys, values, constraints, eval status), editor (open files, active file, cursor), selection, claude (session status, message count), viewports (per-viewport mesh count), viewport (edges: the edges-in-black toggle)",
             input_schema: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -390,7 +390,7 @@ fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "reset_app_state",
-            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), and reset layout pane dimensions to their defaults. Does NOT reset the OCCT engine process. Frontend-mediated.",
+            description: "Reset app-level store state: close all open files, clear the selection, reset the camera view, clear any injected diagnostics (compile and tessellation), reset layout pane dimensions to their defaults, and turn the edges-in-black toggle off (persisted). Does NOT reset the OCCT engine process. Frontend-mediated.",
             input_schema: json!({
                 "type": "object",
                 "properties": {}
