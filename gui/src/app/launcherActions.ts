@@ -39,8 +39,11 @@ export interface LauncherDeps {
   listRecent(): Promise<RecentEntry[]>;
   setMode(mode: LaunchMode): Promise<ModeState>;
   showAssistant(open: boolean): void;
-  /** Start the frontend half of the reify-debug bridge. */
-  startDebugBridge(): void | Promise<unknown>;
+  /**
+   * Start the frontend half of the reify-debug bridge unless it is live or
+   * starting. Every caller awaits the one start and sees its failure.
+   */
+  ensureDebugBridge(): Promise<void>;
   /** Report a non-fatal problem to the user. */
   notify(message: string): void;
 }
@@ -77,13 +80,12 @@ export function createLauncherActions(store: LauncherStore, deps: LauncherDeps) 
   }
 
   async function selectMode(mode: LaunchMode): Promise<void> {
-    const bridgeWasLive = store.state.mode.debugPort !== null;
     const reply = await inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () =>
       deps.setMode(mode),
     );
     store.applyModeState(reply);
     if (mode === 'debug') {
-      if (!bridgeWasLive) await deps.startDebugBridge();
+      await inStage(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, () => deps.ensureDebugBridge());
     } else {
       deps.showAssistant(mode === 'assistant');
     }

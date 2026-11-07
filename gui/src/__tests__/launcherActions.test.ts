@@ -20,7 +20,7 @@ function makeDeps() {
       .fn<LauncherDeps['setMode']>()
       .mockImplementation(async (mode) => ({ mode, debug_port: mode === 'debug' ? 3939 : null })),
     showAssistant: vi.fn<LauncherDeps['showAssistant']>(),
-    startDebugBridge: vi.fn<LauncherDeps['startDebugBridge']>(),
+    ensureDebugBridge: vi.fn<LauncherDeps['ensureDebugBridge']>().mockResolvedValue(undefined),
     notify: vi.fn<LauncherDeps['notify']>(),
   };
 }
@@ -142,7 +142,7 @@ describe('selectMode', () => {
     expect(deps.setMode).toHaveBeenCalledWith('assistant');
     expect(store.state.mode.selected).toBe('assistant');
     expect(deps.showAssistant).toHaveBeenCalledWith(true);
-    expect(deps.startDebugBridge).not.toHaveBeenCalled();
+    expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
   });
 
   it('design: selects the mode and closes the assistant', async () => {
@@ -155,27 +155,52 @@ describe('selectMode', () => {
     expect(deps.showAssistant).toHaveBeenCalledWith(false);
   });
 
-  it('debug: records the live port and starts the debug bridge once, even when selected twice', async () => {
+  it('debug: records the live port and ensures the debug bridge on every selection', async () => {
     const actions = createLauncherActions(store, deps);
 
     await actions.selectMode('debug');
 
     expect(store.state.mode).toEqual({ selected: 'debug', debugPort: 3939, error: null });
-    expect(deps.startDebugBridge).toHaveBeenCalledTimes(1);
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(1);
 
     await actions.selectMode('debug');
 
     expect(deps.setMode).toHaveBeenCalledTimes(2);
-    expect(deps.startDebugBridge).toHaveBeenCalledTimes(1);
+    expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(2);
   });
 
-  it('debug: does not start the bridge when the store already holds a live port', async () => {
-    store.applyModeState({ mode: 'debug', debug_port: 3939 });
+  it('debug: rejects with E_GUI_DEBUG_LISTENER_FAILED when the debug bridge fails to start', async () => {
+    deps.ensureDebugBridge.mockRejectedValue(new Error('Failed to fetch dynamically imported module'));
     const actions = createLauncherActions(store, deps);
 
-    await actions.selectMode('debug');
+    const failure = await failureOf(actions.selectMode('debug'));
 
-    expect(deps.startDebugBridge).not.toHaveBeenCalled();
+    expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
+    expect(failure.message).toContain('Failed to fetch dynamically imported module');
+    expect(store.state.mode.debugPort).toBe(3939);
+  });
+
+  it('debug: two selections in flight together both settle with the one bridge start', async () => {
+    let failStart: (err: unknown) => void = () => {};
+    const sharedStart = new Promise<void>((_, reject) => {
+      failStart = reject;
+    });
+    deps.ensureDebugBridge.mockReturnValue(sharedStart);
+    const actions = createLauncherActions(store, deps);
+    const settled: string[] = [];
+
+    const first = failureOf(actions.selectMode('debug')).then((f) => settled.push(f.code));
+    const second = failureOf(actions.selectMode('debug')).then((f) => settled.push(f.code));
+    await vi.waitFor(() => expect(deps.ensureDebugBridge).toHaveBeenCalledTimes(2));
+    expect(settled).toEqual([]);
+
+    failStart(new Error('listen failed'));
+    await Promise.all([first, second]);
+
+    expect(settled).toEqual([
+      LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+    ]);
   });
 
   it('rejects with E_GUI_DEBUG_LISTENER_FAILED, keeps the selection and starts no bridge when set_mode fails', async () => {
@@ -186,7 +211,7 @@ describe('selectMode', () => {
 
     expect(failure.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
     expect(store.state.mode.selected).toBe('assistant');
-    expect(deps.startDebugBridge).not.toHaveBeenCalled();
+    expect(deps.ensureDebugBridge).not.toHaveBeenCalled();
     expect(deps.showAssistant).not.toHaveBeenCalled();
   });
 });

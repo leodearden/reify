@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@solidjs/testing-library';
 import { createRoot } from 'solid-js';
-import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, PublishedState, ValueData } from '../types';
+import type { EntityTreeNode, GuiState, MeshData, AppearanceDirective, DisplayStyleData, DisplayDirective, ModeState, PublishedState, ValueData } from '../types';
 import type { ReferenceResult } from '../editor/references';
 import {
   EXTERNALLY_CHANGED_SAVE_CONFLICT_PROMPT_MSG,
@@ -3525,6 +3525,27 @@ describe('App launcher Start view (alpha-spine β)', () => {
     await waitFor(() => expect(bridge.recordRecent).toHaveBeenCalledWith('/designs/bracket.ri'));
   });
 
+  it('a typed path opens under the canonical key open_file returned, not the typed spelling', async () => {
+    const canonical = '/home/user/designs/bracket.ri';
+    vi.mocked(bridge.getEntityTree).mockResolvedValue([makeNode({ entity_path: 'Root.A' })]);
+    vi.mocked(bridge.openFile).mockResolvedValue({ path: canonical, content: 'structure Bracket {}' });
+    await renderAndWaitForReady();
+
+    typeStartPath('designs/../designs/bracket.ri');
+    fireEvent.click(screen.getByTestId('start-open-path'));
+
+    await waitFor(() => expect(sidecarPersistence.loadSidecar).toHaveBeenCalledWith(canonical));
+    expect(bridge.openFile).toHaveBeenCalledWith('designs/../designs/bracket.ri');
+    expect(bridge.openFileEngine).toHaveBeenCalledWith(canonical);
+    expect(capturedEditorStore.state.activeFile).toBe(canonical);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Default' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: /save views/i }));
+    await waitFor(() =>
+      expect(sidecarPersistence.saveSidecar).toHaveBeenCalledWith(canonical, expect.anything()),
+    );
+  });
+
   it('a failed open keeps the start view with E_GUI_OPEN_FAILED (B4)', async () => {
     vi.mocked(bridge.openFile).mockRejectedValue('No such file: /designs/missing.ri');
     await renderAndWaitForReady();
@@ -3640,6 +3661,44 @@ describe('App launcher Start view (alpha-spine β)', () => {
     expect(bridge.setMode).toHaveBeenCalledWith('debug');
     expect(screen.getByTestId('start-mode-debug').getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('start-debug-port').textContent).toContain('3939');
+  });
+
+  it('a second Debug click sent before the first set_mode reply starts no second debug bridge', async () => {
+    const firstReply = deferred<ModeState>();
+    const secondReply = deferred<ModeState>();
+    vi.mocked(bridge.setMode).mockReturnValueOnce(firstReply.promise).mockReturnValueOnce(secondReply.promise);
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+    await waitFor(() => expect(bridge.setMode).toHaveBeenCalledTimes(2));
+
+    firstReply.resolve({ mode: 'debug', debug_port: 3939 });
+    await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1));
+    secondReply.resolve({ mode: 'debug', debug_port: 3939 });
+    await flushMacrotasks(50);
+
+    expect(mockedInitDebugBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it('a debug bridge that fails to start shows E_GUI_DEBUG_LISTENER_FAILED, and Debug again retries it', async () => {
+    vi.mocked(bridge.setMode).mockImplementation(async (mode) => ({
+      mode,
+      debug_port: mode === 'debug' ? 3939 : null,
+    }));
+    vi.mocked(mockedInitDebugBridge).mockRejectedValueOnce(new Error('listen failed'));
+    await renderAndWaitForReady();
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(error.textContent).toContain('listen failed');
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    await waitFor(() => expect(mockedInitDebugBridge).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId('start-mode-error')).toBeNull());
   });
 
   it('an env-launched debug session reports Debug mode', async () => {

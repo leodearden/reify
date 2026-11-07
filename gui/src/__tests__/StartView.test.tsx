@@ -284,4 +284,18 @@ describe('StartView mode buttons', () => {
     expect(store.state.mode.error?.code).toBe(LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED);
     expect(store.state.mode.selected).toBe('assistant');
   });
+
+  it('a mode rejection that is not a LaunchFailure is presented under E_GUI_DEBUG_LISTENER_FAILED', async () => {
+    actions.selectMode.mockRejectedValue(new Error('unexpected'));
+    renderStartView();
+
+    fireEvent.click(screen.getByTestId('start-mode-debug'));
+
+    const error = await screen.findByTestId('start-mode-error');
+    expect(error.textContent).toContain('E_GUI_DEBUG_LISTENER_FAILED');
+    expect(store.state.mode.error).toEqual({
+      code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED,
+      message: 'unexpected',
+    });
+  });
 });

@@ -57,12 +57,16 @@ export const StartView: Component<StartViewProps> = (props) => {
     }
   }
 
+  /** Select a mode and present any failure in the store, as `attemptDocument` does. */
   async function attemptMode(mode: LaunchMode): Promise<void> {
     try {
       await props.actions.selectMode(mode);
     } catch (err) {
-      if (!(err instanceof LaunchFailure)) throw err;
-      props.launcher.failMode(err.toInfo());
+      const failure =
+        err instanceof LaunchFailure
+          ? err.toInfo()
+          : { code: LAUNCH_ERROR_CODES.E_GUI_DEBUG_LISTENER_FAILED, message: errorMessage(err) };
+      props.launcher.failMode(failure);
     }
   }
 

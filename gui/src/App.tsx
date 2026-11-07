@@ -1183,8 +1183,11 @@ const App: Component = () => {
    * accidentally diverged between callers — the subtle race it prevents is
    * documented in the batch() block below.
    */
-  async function loadPathIntoStores(path: string): Promise<void> {
-    const fileData = await bridgeOpenFile(path);
+  async function loadPathIntoStores(requestedPath: string): Promise<void> {
+    const fileData = await bridgeOpenFile(requestedPath);
+    // The canonical document key, not the spelling the user typed, keys the
+    // engine, the editor tab, view persistence and the save path alike.
+    const path = fileData.path;
     const published = await bridgeOpenFileEngine(path);
     editorStore.openFile(fileData);
     engineStore.applyPublishedState(published);
@@ -1479,27 +1482,21 @@ const App: Component = () => {
       subscribe: () => subscribeModeShapeFrames(bucklingStore),
       onFailure: (err) => console.error('[buckling] subscribeModeShapeFrames failed:', err),
     },
-    // Debug bridge when the reify-debug server is already live (REIFY_DEBUG=1
-    // at launch, or Debug mode selected before a Retry): report Debug mode.
+    // The reify-debug server is already live (REIFY_DEBUG=1 at launch): enter
+    // Debug mode through the same action as the Start view's Debug button.
     {
       subscribe: async () => {
-        if (!(await isDebugEnabled())) return () => {};
-        launcherStore.applyModeState(await bridgeSetMode('debug'));
-        return startDebugBridge();
+        if (await isDebugEnabled()) await launcherActions.selectMode('debug');
+        return () => {};
       },
-      onFailure: reportDebugBridgeFailure,
+      onFailure: (err) => console.error('[debug-bridge] init failed:', err),
     },
   ];
 
-  function reportDebugBridgeFailure(err: unknown): void {
-    console.error('[debug-bridge] init failed:', err);
-  }
-
   /** The frontend half of the reify-debug server (dynamic import for tree-shaking). */
   async function startDebugBridge(): Promise<Unsubscribe> {
-    setDebugEnabled(true);
     const { initDebugBridge } = await import('./debug');
-    return initDebugBridge({
+    const stop = await initDebugBridge({
       engine: engineStore,
       editor: editorStore,
       selection: selectionStore,
@@ -1509,10 +1506,46 @@ const App: Component = () => {
       viewportDisplay: viewportDisplayStore,
       launcher: launcherStore,
     });
+    setDebugEnabled(true);
+    return () => {
+      setDebugEnabled(false);
+      stop();
+    };
   }
 
-  // Debug mode selected at runtime: the bridge handle joins the same
-  // subscription set, so a Retry disposes it and the row above re-inits it once.
+  let debugBridgeStart: Promise<void> | null = null;
+
+  /**
+   * Start the debug bridge unless it is live or starting, so one debug-request
+   * listener answers however many callers ask. Every caller awaits the one
+   * start and sees its failure. The handle joins the subscription set; a failed
+   * start, or disposing the handle, lets the next call start afresh.
+   */
+  function ensureDebugBridge(): Promise<void> {
+    debugBridgeStart ??= holdDebugBridge();
+    return debugBridgeStart;
+  }
+
+  async function holdDebugBridge(): Promise<void> {
+    const failures: unknown[] = [];
+    await subscriptions.subscribeAll([
+      {
+        subscribe: async () => {
+          const stop = await startDebugBridge();
+          return () => {
+            debugBridgeStart = null;
+            stop();
+          };
+        },
+        onFailure: (err) => failures.push(err),
+      },
+    ]);
+    if (failures.length > 0) {
+      debugBridgeStart = null;
+      throw failures[0];
+    }
+  }
+
   const launcherActions = createLauncherActions(launcherStore, {
     loadDocument: loadPathIntoStores,
     createNewFile: bridgeCreateNewFile,
@@ -1523,8 +1556,7 @@ const App: Component = () => {
       setChatOpen(open);
       clampToContainer();
     },
-    startDebugBridge: () =>
-      subscriptions.subscribeAll([{ subscribe: startDebugBridge, onFailure: reportDebugBridgeFailure }]),
+    ensureDebugBridge,
     notify: (message) => showToast(message, 'info'),
   });
 
